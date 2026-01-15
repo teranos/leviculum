@@ -3,7 +3,7 @@
 **/*.rs.bk
 
 # Markdown files
-*.md
+IMPLEMENTATION_PLAN.md
 
 # IDE
 .idea/
