@@ -1,0 +1,27 @@
+[package]
+name = "leviculum-core"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+description = "Core library for leviculum - no_std compatible"
+
+[features]
+default = ["std"]
+std = ["alloc", "sha2/std", "hmac/std", "hkdf/std", "rand_core/std", "rand_core/getrandom"]
+alloc = []
+
+[dependencies]
+curve25519-dalek.workspace = true
+ed25519-dalek.workspace = true
+x25519-dalek.workspace = true
+aes.workspace = true
+cbc.workspace = true
+sha2.workspace = true
+hmac.workspace = true
+hkdf.workspace = true
+rand_core.workspace = true
+zeroize.workspace = true
+
+[dev-dependencies]
+proptest.workspace = true

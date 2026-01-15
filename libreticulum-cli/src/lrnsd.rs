@@ -1,0 +1,71 @@
+//! lrnsd - Leviculum daemon
+//!
+//! This is the main daemon process that runs the Reticulum network stack.
+//! Equivalent to rnsd in the Python implementation.
+
+use std::path::PathBuf;
+
+use clap::Parser;
+use tracing::{info, Level};
+use tracing_subscriber::FmtSubscriber;
+
+use leviculum_std::config::Config;
+use leviculum_std::Reticulum;
+
+#[derive(Parser, Debug)]
+#[command(name = "lrnsd")]
+#[command(author, version, about = "Leviculum network daemon")]
+struct Args {
+    /// Configuration file path
+    #[arg(short, long)]
+    config: Option<PathBuf>,
+
+    /// Storage directory path
+    #[arg(short, long)]
+    storage: Option<PathBuf>,
+
+    /// Enable verbose logging
+    #[arg(short, long)]
+    verbose: bool,
+
+    /// Run in foreground (don't daemonize)
+    #[arg(short, long)]
+    foreground: bool,
+}
+
+#[tokio::main]
+async fn main() -> Result<(), Box<dyn std::error::Error>> {
+    let args = Args::parse();
+
+    // Initialize logging
+    let log_level = if args.verbose { Level::DEBUG } else { Level::INFO };
+    let subscriber = FmtSubscriber::builder()
+        .with_max_level(log_level)
+        .finish();
+    tracing::subscriber::set_global_default(subscriber)?;
+
+    info!("Starting lrnsd v{}", env!("CARGO_PKG_VERSION"));
+
+    // Load configuration
+    let config_path = args.config.unwrap_or_else(Config::default_config_path);
+    let storage_path = args
+        .storage
+        .unwrap_or_else(|| Config::default_config_dir().join("storage"));
+
+    info!("Config: {}", config_path.display());
+    info!("Storage: {}", storage_path.display());
+
+    // Create and start Reticulum instance
+    let rns = Reticulum::with_paths(config_path, storage_path).await?;
+    rns.start().await?;
+
+    info!("Reticulum daemon running");
+
+    // Wait for shutdown signal
+    tokio::signal::ctrl_c().await?;
+
+    info!("Shutting down...");
+    rns.stop().await?;
+
+    Ok(())
+}

@@ -1,0 +1,23 @@
+[package]
+name = "leviculum-cli"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+description = "Command-line tools for leviculum"
+
+[[bin]]
+name = "lrnsd"
+path = "src/lrnsd.rs"
+
+[[bin]]
+name = "lrns"
+path = "src/lrns.rs"
+
+[dependencies]
+leviculum-core = { path = "../leviculum-core", default-features = true }
+leviculum-std = { path = "../leviculum-std" }
+tokio.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true
+clap = { version = "4", features = ["derive"] }

@@ -1,0 +1,29 @@
+# Build artifacts
+/target/
+**/*.rs.bk
+
+# Markdown files
+*.md
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Testing artifacts
+*.log
+*.tmp
+
+# Documentation builds
+/doc/
+
+# Coverage reports
+/coverage/
+*.profraw
+*.profdata

@@ -1,0 +1,254 @@
+//! C-API/FFI bindings for leviculum
+//!
+//! This crate provides a C-compatible API for using leviculum from
+//! other programming languages. The API follows these conventions:
+//!
+//! - All functions are prefixed with `lrns_` (leviculum namespace)
+//! - Opaque pointers are used for complex types
+//! - Error codes are returned as integers
+//! - Strings are passed as null-terminated C strings
+//! - Memory allocated by the library must be freed using the corresponding free function
+
+#![allow(clippy::missing_safety_doc)]
+
+use std::ffi::{CStr, CString};
+use std::os::raw::{c_char, c_int, c_void};
+use std::ptr;
+
+use leviculum_core::constants::TRUNCATED_HASHBYTES;
+
+// Error codes
+pub const LRNS_OK: c_int = 0;
+pub const LRNS_ERR_NULL_PTR: c_int = -1;
+pub const LRNS_ERR_INVALID_ARG: c_int = -2;
+pub const LRNS_ERR_INIT_FAILED: c_int = -3;
+pub const LRNS_ERR_NOT_RUNNING: c_int = -4;
+pub const LRNS_ERR_ALREADY_RUNNING: c_int = -5;
+pub const LRNS_ERR_IO: c_int = -6;
+pub const LRNS_ERR_CRYPTO: c_int = -7;
+pub const LRNS_ERR_BUFFER_TOO_SMALL: c_int = -8;
+
+/// Opaque handle to a Reticulum instance
+pub struct LrnsReticulum {
+    // Will hold the actual Reticulum instance and runtime
+    _runtime: tokio::runtime::Runtime,
+    // instance: leviculum_std::Reticulum,
+}
+
+/// Opaque handle to an Identity
+pub struct LrnsIdentity {
+    inner: leviculum_core::Identity,
+}
+
+/// Opaque handle to a Destination
+pub struct LrnsDestination {
+    // Will hold the actual Destination
+    _placeholder: (),
+}
+
+/// Initialize the library (call once at startup)
+#[no_mangle]
+pub extern "C" fn lrns_init() -> c_int {
+    // Initialize logging, etc.
+    LRNS_OK
+}
+
+/// Get the library version string
+#[no_mangle]
+pub extern "C" fn lrns_version() -> *const c_char {
+    static VERSION: &[u8] = b"0.1.0\0";
+    VERSION.as_ptr() as *const c_char
+}
+
+// --- Identity functions ---
+
+/// Create a new random identity
+#[no_mangle]
+pub extern "C" fn lrns_identity_new() -> *mut LrnsIdentity {
+    let identity = leviculum_core::Identity::new();
+    Box::into_raw(Box::new(LrnsIdentity { inner: identity }))
+}
+
+/// Free an identity
+#[no_mangle]
+pub unsafe extern "C" fn lrns_identity_free(identity: *mut LrnsIdentity) {
+    if !identity.is_null() {
+        drop(Box::from_raw(identity));
+    }
+}
+
+/// Get the identity hash (16 bytes)
+#[no_mangle]
+pub unsafe extern "C" fn lrns_identity_hash(
+    identity: *const LrnsIdentity,
+    out_hash: *mut u8,
+    out_len: *mut usize,
+) -> c_int {
+    if identity.is_null() || out_hash.is_null() || out_len.is_null() {
+        return LRNS_ERR_NULL_PTR;
+    }
+
+    let identity = &(*identity).inner;
+    let hash = identity.hash();
+
+    if *out_len < TRUNCATED_HASHBYTES {
+        *out_len = TRUNCATED_HASHBYTES;
+        return LRNS_ERR_BUFFER_TOO_SMALL;
+    }
+
+    ptr::copy_nonoverlapping(hash.as_ptr(), out_hash, TRUNCATED_HASHBYTES);
+    *out_len = TRUNCATED_HASHBYTES;
+
+    LRNS_OK
+}
+
+/// Get the public key bytes (64 bytes)
+#[no_mangle]
+pub unsafe extern "C" fn lrns_identity_public_key(
+    identity: *const LrnsIdentity,
+    out_key: *mut u8,
+    out_len: *mut usize,
+) -> c_int {
+    if identity.is_null() || out_key.is_null() || out_len.is_null() {
+        return LRNS_ERR_NULL_PTR;
+    }
+
+    let identity = &(*identity).inner;
+    let key = identity.public_key_bytes();
+
+    if *out_len < key.len() {
+        *out_len = key.len();
+        return LRNS_ERR_BUFFER_TOO_SMALL;
+    }
+
+    ptr::copy_nonoverlapping(key.as_ptr(), out_key, key.len());
+    *out_len = key.len();
+
+    LRNS_OK
+}
+
+/// Sign a message
+#[no_mangle]
+pub unsafe extern "C" fn lrns_identity_sign(
+    identity: *const LrnsIdentity,
+    message: *const u8,
+    message_len: usize,
+    out_signature: *mut u8,
+    out_len: *mut usize,
+) -> c_int {
+    if identity.is_null() || message.is_null() || out_signature.is_null() || out_len.is_null() {
+        return LRNS_ERR_NULL_PTR;
+    }
+
+    let identity = &(*identity).inner;
+    let message = std::slice::from_raw_parts(message, message_len);
+
+    match identity.sign(message) {
+        Ok(sig) => {
+            if *out_len < sig.len() {
+                *out_len = sig.len();
+                return LRNS_ERR_BUFFER_TOO_SMALL;
+            }
+            ptr::copy_nonoverlapping(sig.as_ptr(), out_signature, sig.len());
+            *out_len = sig.len();
+            LRNS_OK
+        }
+        Err(_) => LRNS_ERR_CRYPTO,
+    }
+}
+
+/// Verify a signature
+#[no_mangle]
+pub unsafe extern "C" fn lrns_identity_verify(
+    identity: *const LrnsIdentity,
+    message: *const u8,
+    message_len: usize,
+    signature: *const u8,
+    signature_len: usize,
+) -> c_int {
+    if identity.is_null() || message.is_null() || signature.is_null() {
+        return LRNS_ERR_NULL_PTR;
+    }
+
+    let identity = &(*identity).inner;
+    let message = std::slice::from_raw_parts(message, message_len);
+    let signature = std::slice::from_raw_parts(signature, signature_len);
+
+    match identity.verify(message, signature) {
+        Ok(true) => LRNS_OK,
+        Ok(false) => LRNS_ERR_CRYPTO,
+        Err(_) => LRNS_ERR_CRYPTO,
+    }
+}
+
+/// Load identity from private key bytes (64 bytes)
+#[no_mangle]
+pub unsafe extern "C" fn lrns_identity_from_private_key(
+    key: *const u8,
+    key_len: usize,
+) -> *mut LrnsIdentity {
+    if key.is_null() || key_len != 64 {
+        return ptr::null_mut();
+    }
+
+    let key_bytes = std::slice::from_raw_parts(key, key_len);
+
+    match leviculum_core::Identity::from_private_key_bytes(key_bytes) {
+        Ok(identity) => Box::into_raw(Box::new(LrnsIdentity { inner: identity })),
+        Err(_) => ptr::null_mut(),
+    }
+}
+
+/// Load identity from public key bytes (64 bytes)
+#[no_mangle]
+pub unsafe extern "C" fn lrns_identity_from_public_key(
+    key: *const u8,
+    key_len: usize,
+) -> *mut LrnsIdentity {
+    if key.is_null() || key_len != 64 {
+        return ptr::null_mut();
+    }
+
+    let key_bytes = std::slice::from_raw_parts(key, key_len);
+
+    match leviculum_core::Identity::from_public_key_bytes(key_bytes) {
+        Ok(identity) => Box::into_raw(Box::new(LrnsIdentity { inner: identity })),
+        Err(_) => ptr::null_mut(),
+    }
+}
+
+// --- Utility functions ---
+
+/// Free a string allocated by the library
+#[no_mangle]
+pub unsafe extern "C" fn lrns_string_free(s: *mut c_char) {
+    if !s.is_null() {
+        drop(CString::from_raw(s));
+    }
+}
+
+/// Get the error message for an error code
+#[no_mangle]
+pub extern "C" fn lrns_error_string(code: c_int) -> *const c_char {
+    let msg: &'static [u8] = match code {
+        LRNS_OK => b"Success\0",
+        LRNS_ERR_NULL_PTR => b"Null pointer\0",
+        LRNS_ERR_INVALID_ARG => b"Invalid argument\0",
+        LRNS_ERR_INIT_FAILED => b"Initialization failed\0",
+        LRNS_ERR_NOT_RUNNING => b"Not running\0",
+        LRNS_ERR_ALREADY_RUNNING => b"Already running\0",
+        LRNS_ERR_IO => b"I/O error\0",
+        LRNS_ERR_CRYPTO => b"Cryptographic error\0",
+        LRNS_ERR_BUFFER_TOO_SMALL => b"Buffer too small\0",
+        _ => b"Unknown error\0",
+    };
+    msg.as_ptr() as *const c_char
+}
+
+// TODO: Add more FFI functions for:
+// - Reticulum instance management
+// - Destination creation and management
+// - Link establishment
+// - Packet sending/receiving
+// - Path requests
+// - Resource transfers
