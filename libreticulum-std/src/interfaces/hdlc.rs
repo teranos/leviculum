@@ -1,7 +1,12 @@
 //! HDLC framing for stream-based interfaces
 //!
 //! Used by TCP and Serial interfaces to frame packets.
-//! Format: [FLAG (0x7E)] [Escaped Data] [CRC-16] [FLAG (0x7E)]
+//!
+//! Reticulum uses simplified HDLC framing WITHOUT CRC:
+//! Format: [FLAG (0x7E)] [Escaped Data] [FLAG (0x7E)]
+//!
+//! The `frame_with_crc` and CRC verification functions are kept for
+//! potential future use with interfaces that require CRC.
 
 /// HDLC flag byte
 pub const FLAG: u8 = 0x7E;
@@ -38,8 +43,32 @@ fn needs_escape(byte: u8) -> bool {
     byte == FLAG || byte == ESCAPE
 }
 
-/// Frame data with HDLC encoding
+/// Frame data with simplified HDLC encoding (no CRC)
+///
+/// This matches Python Reticulum's framing format.
 pub fn frame(data: &[u8], output: &mut Vec<u8>) {
+    output.clear();
+
+    // Start flag
+    output.push(FLAG);
+
+    // Escape and write data
+    for &byte in data {
+        if needs_escape(byte) {
+            output.push(ESCAPE);
+            output.push(byte ^ ESCAPE_XOR);
+        } else {
+            output.push(byte);
+        }
+    }
+
+    // End flag
+    output.push(FLAG);
+}
+
+/// Frame data with HDLC encoding including CRC-16
+#[allow(dead_code)]
+pub fn frame_with_crc(data: &[u8], output: &mut Vec<u8>) {
     output.clear();
 
     // Start flag
@@ -84,11 +113,9 @@ pub struct Deframer {
 pub enum DeframeResult {
     /// Need more data
     NeedMore,
-    /// Complete frame (without CRC, CRC verified)
+    /// Complete frame
     Frame(Vec<u8>),
-    /// CRC error
-    CrcError,
-    /// Frame too short
+    /// Frame too short (empty)
     TooShort,
 }
 
@@ -151,25 +178,13 @@ impl Deframer {
         None
     }
 
-    /// Finalize and verify a complete frame
+    /// Finalize a complete frame (no CRC verification)
     fn finalize_frame(&mut self) -> DeframeResult {
-        // Need at least 2 bytes for CRC
-        if self.buffer.len() < 2 {
+        if self.buffer.is_empty() {
             return DeframeResult::TooShort;
         }
 
-        let data_len = self.buffer.len() - 2;
-        let data = &self.buffer[..data_len];
-        let received_crc =
-            u16::from_be_bytes([self.buffer[data_len], self.buffer[data_len + 1]]);
-
-        let calculated_crc = crc16(data);
-
-        if received_crc == calculated_crc {
-            DeframeResult::Frame(data.to_vec())
-        } else {
-            DeframeResult::CrcError
-        }
+        DeframeResult::Frame(self.buffer.clone())
     }
 }
 
@@ -197,12 +212,16 @@ mod tests {
         let mut framed = Vec::new();
         frame(data, &mut framed);
 
+        // Frame should be: FLAG + escaped_data + FLAG
+        assert_eq!(framed[0], FLAG);
+        assert_eq!(framed[framed.len() - 1], FLAG);
+
         let mut deframer = Deframer::new();
         let results = deframer.process(&framed);
 
         assert_eq!(results.len(), 1);
         match &results[0] {
-            DeframeResult::Frame(decoded) => assert_eq!(decoded, data),
+            DeframeResult::Frame(decoded) => assert_eq!(decoded.as_slice(), data.as_slice()),
             _ => panic!("Expected Frame result"),
         }
     }
@@ -214,15 +233,16 @@ mod tests {
         let mut framed = Vec::new();
         frame(&data, &mut framed);
 
-        // Check that FLAG is escaped
-        assert!(framed.contains(&ESCAPE));
+        // Check that FLAG is escaped (should see ESCAPE followed by FLAG^0x20)
+        let escaped_flag = FLAG ^ ESCAPE_XOR;
+        assert!(framed.windows(2).any(|w| w == [ESCAPE, escaped_flag]));
 
         let mut deframer = Deframer::new();
         let results = deframer.process(&framed);
 
         assert_eq!(results.len(), 1);
         match &results[0] {
-            DeframeResult::Frame(decoded) => assert_eq!(decoded.as_slice(), data),
+            DeframeResult::Frame(decoded) => assert_eq!(decoded.as_slice(), data.as_slice()),
             _ => panic!("Expected Frame result"),
         }
     }
@@ -239,7 +259,7 @@ mod tests {
 
         assert_eq!(results.len(), 1);
         match &results[0] {
-            DeframeResult::Frame(decoded) => assert_eq!(decoded.as_slice(), data),
+            DeframeResult::Frame(decoded) => assert_eq!(decoded.as_slice(), data.as_slice()),
             _ => panic!("Expected Frame result"),
         }
     }
@@ -261,5 +281,22 @@ mod tests {
                 assert_eq!(results.len(), 1);
             }
         }
+    }
+
+    #[test]
+    fn test_frame_with_crc_roundtrip() {
+        // Test the CRC variant still works for internal consistency
+        let data = b"Hello, HDLC with CRC!";
+        let mut framed = Vec::new();
+        frame_with_crc(data, &mut framed);
+
+        // Frame should include data + 2 byte CRC
+        // We can't easily verify this without a CRC-aware deframer
+        // Just verify it's longer than the no-CRC version
+        let mut framed_no_crc = Vec::new();
+        frame(data, &mut framed_no_crc);
+
+        // CRC version should be at least 2 bytes longer (might be more due to escaping)
+        assert!(framed.len() >= framed_no_crc.len() + 2);
     }
 }

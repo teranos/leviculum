@@ -20,9 +20,6 @@ Thumbs.db
 *.log
 *.tmp
 
-# Documentation builds
-/doc/
-
 # Coverage reports
 /coverage/
 *.profraw

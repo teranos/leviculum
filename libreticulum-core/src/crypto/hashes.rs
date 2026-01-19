@@ -18,6 +18,12 @@ pub fn sha512(data: &[u8]) -> [u8; 64] {
     hasher.finalize().into()
 }
 
+/// Compute full SHA-256 hash
+/// Returns the complete 32-byte hash
+pub fn full_hash(data: &[u8]) -> [u8; 32] {
+    sha256(data)
+}
+
 /// Compute truncated hash (first 16 bytes of SHA-256)
 /// Used for destination addresses
 pub fn truncated_hash(data: &[u8]) -> [u8; TRUNCATED_HASHBYTES] {

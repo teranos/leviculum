@@ -8,10 +8,10 @@
 //! identifier in the network.
 
 use crate::constants::{
-    ED25519_KEY_SIZE, ED25519_SIGNATURE_SIZE, IDENTITY_HASHBYTES, IDENTITY_KEY_SIZE,
-    RATCHET_SIZE, X25519_KEY_SIZE,
+    AES_BLOCK_SIZE, ED25519_KEY_SIZE, ED25519_SIGNATURE_SIZE, IDENTITY_HASHBYTES,
+    IDENTITY_KEY_SIZE, X25519_KEY_SIZE,
 };
-use crate::crypto::{sha256, truncated_hash};
+use crate::crypto::{derive_key, encrypt_token, decrypt_token, truncated_hash, TokenError};
 
 #[cfg(feature = "alloc")]
 use alloc::vec::Vec;
@@ -226,7 +226,165 @@ impl Identity {
         &self.ed25519_verifying
     }
 
-    // TODO: Implement encryption/decryption methods
+    /// Derived key length for encryption (64 bytes: 32 signing + 32 encryption)
+    const DERIVED_KEY_LENGTH: usize = 64;
+
+    /// Encrypt data for this identity
+    ///
+    /// Uses ephemeral ECDH key exchange followed by token encryption.
+    /// Format: [ephemeral_pub (32)] [token (variable)]
+    ///
+    /// # Arguments
+    /// * `plaintext` - Data to encrypt
+    ///
+    /// # Returns
+    /// Ciphertext that can be decrypted by the holder of this identity's private key
+    #[cfg(feature = "std")]
+    pub fn encrypt(&self, plaintext: &[u8]) -> Vec<u8> {
+        use rand_core::OsRng;
+        self.encrypt_with_rng(plaintext, &mut OsRng)
+    }
+
+    /// Encrypt data for this identity with a provided RNG
+    #[cfg(feature = "alloc")]
+    pub fn encrypt_with_rng<R: rand_core::CryptoRngCore>(&self, plaintext: &[u8], rng: &mut R) -> Vec<u8> {
+        use rand_core::RngCore;
+
+        // Generate ephemeral X25519 key pair
+        let ephemeral_private = x25519_dalek::StaticSecret::random_from_rng(&mut *rng);
+        let ephemeral_public = x25519_dalek::PublicKey::from(&ephemeral_private);
+
+        // Perform ECDH
+        let shared_key = ephemeral_private.diffie_hellman(&self.x25519_public);
+
+        // Derive encryption key using HKDF
+        // salt = identity hash, context = None (empty)
+        let mut derived_key = [0u8; Self::DERIVED_KEY_LENGTH];
+        derive_key(
+            shared_key.as_bytes(),
+            Some(&self.hash),
+            None,
+            &mut derived_key,
+        );
+
+        // Generate random IV
+        let mut iv = [0u8; AES_BLOCK_SIZE];
+        rng.fill_bytes(&mut iv);
+
+        // Calculate token size: IV + padded ciphertext + HMAC
+        let padded_len = ((plaintext.len() / AES_BLOCK_SIZE) + 1) * AES_BLOCK_SIZE;
+        let token_len = AES_BLOCK_SIZE + padded_len + 32; // IV + ciphertext + HMAC
+
+        // Allocate output: ephemeral_pub + token
+        let mut output = alloc::vec![0u8; X25519_KEY_SIZE + token_len];
+
+        // Write ephemeral public key
+        output[..X25519_KEY_SIZE].copy_from_slice(ephemeral_public.as_bytes());
+
+        // Encrypt with token
+        let token_size = encrypt_token(
+            &derived_key,
+            &iv,
+            plaintext,
+            &mut output[X25519_KEY_SIZE..],
+        )
+        .expect("token encryption should succeed with valid parameters");
+
+        output.truncate(X25519_KEY_SIZE + token_size);
+        output
+    }
+
+    /// Encrypt data for this identity with a specific ephemeral key and IV (for testing)
+    #[cfg(feature = "alloc")]
+    pub fn encrypt_with_keys(
+        &self,
+        plaintext: &[u8],
+        ephemeral_private_bytes: &[u8; X25519_KEY_SIZE],
+        iv: &[u8; AES_BLOCK_SIZE],
+    ) -> Vec<u8> {
+        // Create ephemeral key from bytes
+        let ephemeral_private = x25519_dalek::StaticSecret::from(*ephemeral_private_bytes);
+        let ephemeral_public = x25519_dalek::PublicKey::from(&ephemeral_private);
+
+        // Perform ECDH
+        let shared_key = ephemeral_private.diffie_hellman(&self.x25519_public);
+
+        // Derive encryption key using HKDF
+        let mut derived_key = [0u8; Self::DERIVED_KEY_LENGTH];
+        derive_key(
+            shared_key.as_bytes(),
+            Some(&self.hash),
+            None,
+            &mut derived_key,
+        );
+
+        // Calculate token size
+        let padded_len = ((plaintext.len() / AES_BLOCK_SIZE) + 1) * AES_BLOCK_SIZE;
+        let token_len = AES_BLOCK_SIZE + padded_len + 32;
+
+        // Allocate output
+        let mut output = alloc::vec![0u8; X25519_KEY_SIZE + token_len];
+
+        // Write ephemeral public key
+        output[..X25519_KEY_SIZE].copy_from_slice(ephemeral_public.as_bytes());
+
+        // Encrypt with token
+        let token_size = encrypt_token(
+            &derived_key,
+            iv,
+            plaintext,
+            &mut output[X25519_KEY_SIZE..],
+        )
+        .expect("token encryption should succeed");
+
+        output.truncate(X25519_KEY_SIZE + token_size);
+        output
+    }
+
+    /// Decrypt data encrypted for this identity
+    ///
+    /// # Arguments
+    /// * `ciphertext` - Data encrypted with `encrypt()`
+    ///
+    /// # Returns
+    /// Decrypted plaintext, or error if decryption fails
+    #[cfg(feature = "alloc")]
+    pub fn decrypt(&self, ciphertext: &[u8]) -> Result<Vec<u8>, IdentityError> {
+        let x25519_prv = self.x25519_private.as_ref().ok_or(IdentityError::NoPrivateKey)?;
+
+        // Minimum size: ephemeral_pub (32) + IV (16) + one block (16) + HMAC (32) = 96
+        if ciphertext.len() < X25519_KEY_SIZE + AES_BLOCK_SIZE + AES_BLOCK_SIZE + 32 {
+            return Err(IdentityError::DecryptionFailed);
+        }
+
+        // Extract ephemeral public key
+        let mut peer_pub_bytes = [0u8; X25519_KEY_SIZE];
+        peer_pub_bytes.copy_from_slice(&ciphertext[..X25519_KEY_SIZE]);
+        let peer_public = x25519_dalek::PublicKey::from(peer_pub_bytes);
+
+        // Perform ECDH
+        let shared_key = x25519_prv.diffie_hellman(&peer_public);
+
+        // Derive decryption key
+        let mut derived_key = [0u8; Self::DERIVED_KEY_LENGTH];
+        derive_key(
+            shared_key.as_bytes(),
+            Some(&self.hash),
+            None,
+            &mut derived_key,
+        );
+
+        // Decrypt token
+        let token = &ciphertext[X25519_KEY_SIZE..];
+        let mut plaintext = alloc::vec![0u8; token.len()];
+
+        let plaintext_len = decrypt_token(&derived_key, token, &mut plaintext)
+            .map_err(|_| IdentityError::DecryptionFailed)?;
+
+        plaintext.truncate(plaintext_len);
+        Ok(plaintext)
+    }
+
     // TODO: Implement ratcheting support
 }
 
@@ -289,5 +447,330 @@ mod tests {
 
         let result = pub_only.sign(b"test");
         assert_eq!(result, Err(IdentityError::NoPrivateKey));
+    }
+
+    // ==================== EDGE CASE TESTS ====================
+
+    #[cfg(feature = "std")]
+    #[test]
+    fn test_public_only_cannot_decrypt() {
+        let identity = Identity::new();
+        let pub_bytes = identity.public_key_bytes();
+        let pub_only = Identity::from_public_key_bytes(&pub_bytes).unwrap();
+
+        // Encrypt something for this identity
+        let plaintext = b"Secret message";
+        let ciphertext = identity.encrypt(plaintext);
+
+        // Public-only identity should not be able to decrypt
+        let result = pub_only.decrypt(&ciphertext);
+        assert_eq!(result, Err(IdentityError::NoPrivateKey));
+    }
+
+    #[cfg(feature = "std")]
+    #[test]
+    fn test_public_only_cannot_get_private_key() {
+        let identity = Identity::new();
+        let pub_bytes = identity.public_key_bytes();
+        let pub_only = Identity::from_public_key_bytes(&pub_bytes).unwrap();
+
+        let result = pub_only.private_key_bytes();
+        assert_eq!(result, Err(IdentityError::NoPrivateKey));
+    }
+
+    #[cfg(feature = "std")]
+    #[test]
+    fn test_decrypt_with_wrong_identity() {
+        let alice = Identity::new();
+        let bob = Identity::new();
+
+        // Encrypt for Alice
+        let plaintext = b"Secret for Alice";
+        let ciphertext = alice.encrypt(plaintext);
+
+        // Bob should not be able to decrypt
+        let result = bob.decrypt(&ciphertext);
+        assert!(result.is_err());
+    }
+
+    #[cfg(feature = "std")]
+    #[test]
+    fn test_verify_signature_wrong_identity() {
+        let alice = Identity::new();
+        let bob = Identity::new();
+
+        let message = b"Signed by Alice";
+        let signature = alice.sign(message).unwrap();
+
+        // Bob should not verify Alice's signature
+        assert!(!bob.verify(message, &signature).unwrap());
+    }
+
+    #[cfg(feature = "std")]
+    #[test]
+    fn test_sign_empty_message() {
+        let identity = Identity::new();
+        let message: &[u8] = b"";
+
+        let signature = identity.sign(message).unwrap();
+        assert_eq!(signature.len(), ED25519_SIGNATURE_SIZE);
+        assert!(identity.verify(message, &signature).unwrap());
+    }
+
+    #[cfg(feature = "std")]
+    #[test]
+    fn test_encrypt_empty_plaintext() {
+        let identity = Identity::new();
+        let plaintext: &[u8] = b"";
+
+        let ciphertext = identity.encrypt(plaintext);
+        let decrypted = identity.decrypt(&ciphertext).unwrap();
+
+        assert_eq!(decrypted.len(), 0);
+    }
+
+    #[cfg(feature = "std")]
+    #[test]
+    fn test_sign_large_message() {
+        let identity = Identity::new();
+        let message = [0xab; 100000]; // 100KB
+
+        let signature = identity.sign(&message).unwrap();
+        assert!(identity.verify(&message, &signature).unwrap());
+    }
+
+    #[cfg(feature = "std")]
+    #[test]
+    fn test_encrypt_large_plaintext() {
+        let identity = Identity::new();
+        let plaintext = [0xab; 100000]; // 100KB
+
+        let ciphertext = identity.encrypt(&plaintext);
+        let decrypted = identity.decrypt(&ciphertext).unwrap();
+
+        assert_eq!(decrypted.len(), plaintext.len());
+        assert_eq!(&decrypted[..], &plaintext[..]);
+    }
+
+    #[cfg(feature = "std")]
+    #[test]
+    fn test_invalid_public_key_length() {
+        let short_bytes = [0u8; 32]; // Should be 64
+        let result = Identity::from_public_key_bytes(&short_bytes);
+        assert!(matches!(result, Err(IdentityError::InvalidKeyLength)));
+    }
+
+    #[cfg(feature = "std")]
+    #[test]
+    fn test_invalid_private_key_length() {
+        let short_bytes = [0u8; 32]; // Should be 64
+        let result = Identity::from_private_key_bytes(&short_bytes);
+        assert!(matches!(result, Err(IdentityError::InvalidKeyLength)));
+    }
+
+    #[cfg(feature = "std")]
+    #[test]
+    fn test_invalid_signature_length() {
+        let identity = Identity::new();
+        let short_sig = [0u8; 32]; // Should be 64
+
+        // Short signature should return false, not error
+        let result = identity.verify(b"message", &short_sig);
+        assert_eq!(result, Ok(false));
+    }
+
+    #[cfg(feature = "std")]
+    #[test]
+    fn test_corrupted_signature() {
+        let identity = Identity::new();
+        let message = b"Test message";
+
+        let mut signature = identity.sign(message).unwrap();
+        // Corrupt the signature
+        signature[0] ^= 0x01;
+
+        assert!(!identity.verify(message, &signature).unwrap());
+    }
+
+    #[cfg(feature = "std")]
+    #[test]
+    fn test_decrypt_corrupted_ephemeral_key() {
+        let identity = Identity::new();
+        let plaintext = b"Secret message";
+
+        let mut ciphertext = identity.encrypt(plaintext);
+        // Corrupt the ephemeral public key (first 32 bytes)
+        ciphertext[0] ^= 0x01;
+
+        // Should fail (HMAC will fail because derived key is different)
+        let result = identity.decrypt(&ciphertext);
+        assert!(result.is_err());
+    }
+
+    #[cfg(feature = "std")]
+    #[test]
+    fn test_decrypt_corrupted_token() {
+        let identity = Identity::new();
+        let plaintext = b"Secret message";
+
+        let mut ciphertext = identity.encrypt(plaintext);
+        // Corrupt the token part (after ephemeral key)
+        ciphertext[40] ^= 0x01;
+
+        let result = identity.decrypt(&ciphertext);
+        assert_eq!(result, Err(IdentityError::DecryptionFailed));
+    }
+
+    #[cfg(feature = "std")]
+    #[test]
+    fn test_decrypt_truncated_ciphertext() {
+        let identity = Identity::new();
+        let plaintext = b"Secret message";
+
+        let ciphertext = identity.encrypt(plaintext);
+        // Truncate to less than minimum size
+        let truncated = &ciphertext[..32];
+
+        let result = identity.decrypt(truncated);
+        assert_eq!(result, Err(IdentityError::DecryptionFailed));
+    }
+
+    #[cfg(feature = "std")]
+    #[test]
+    fn test_each_identity_unique_hash() {
+        let id1 = Identity::new();
+        let id2 = Identity::new();
+
+        assert_ne!(id1.hash(), id2.hash());
+    }
+
+    #[cfg(feature = "std")]
+    #[test]
+    fn test_identity_hash_deterministic() {
+        let identity = Identity::new();
+        let prv_bytes = identity.private_key_bytes().unwrap();
+
+        let restored = Identity::from_private_key_bytes(&prv_bytes).unwrap();
+
+        assert_eq!(identity.hash(), restored.hash());
+    }
+
+    #[cfg(feature = "std")]
+    #[test]
+    fn test_signature_deterministic() {
+        // Ed25519 signatures are deterministic
+        let identity = Identity::new();
+        let message = b"Test message";
+
+        let sig1 = identity.sign(message).unwrap();
+        let sig2 = identity.sign(message).unwrap();
+
+        assert_eq!(sig1, sig2);
+    }
+
+    #[cfg(feature = "std")]
+    #[test]
+    fn test_encryption_not_deterministic() {
+        // Each encryption should produce different ciphertext (random ephemeral key + IV)
+        let identity = Identity::new();
+        let plaintext = b"Same message";
+
+        let ct1 = identity.encrypt(plaintext);
+        let ct2 = identity.encrypt(plaintext);
+
+        // Ciphertexts should be different
+        assert_ne!(ct1, ct2);
+
+        // But both should decrypt to the same plaintext
+        assert_eq!(identity.decrypt(&ct1).unwrap(), plaintext);
+        assert_eq!(identity.decrypt(&ct2).unwrap(), plaintext);
+    }
+
+    #[cfg(feature = "std")]
+    #[test]
+    fn test_encrypt_for_public_only_identity() {
+        // Should be able to encrypt for a public-only identity
+        let identity = Identity::new();
+        let pub_bytes = identity.public_key_bytes();
+        let pub_only = Identity::from_public_key_bytes(&pub_bytes).unwrap();
+
+        let plaintext = b"Secret message";
+        let ciphertext = pub_only.encrypt(plaintext);
+
+        // Original identity (with private key) should be able to decrypt
+        let decrypted = identity.decrypt(&ciphertext).unwrap();
+        assert_eq!(&decrypted[..], plaintext);
+    }
+
+    #[cfg(feature = "std")]
+    #[test]
+    fn test_multiple_encrypt_decrypt_cycles() {
+        let identity = Identity::new();
+
+        for i in 0..10 {
+            let plaintext = format!("Message number {}", i);
+            let ciphertext = identity.encrypt(plaintext.as_bytes());
+            let decrypted = identity.decrypt(&ciphertext).unwrap();
+            assert_eq!(&decrypted[..], plaintext.as_bytes());
+        }
+    }
+
+    #[cfg(feature = "std")]
+    #[test]
+    fn test_different_identities_different_public_keys() {
+        let id1 = Identity::new();
+        let id2 = Identity::new();
+
+        assert_ne!(id1.public_key_bytes(), id2.public_key_bytes());
+    }
+
+    #[cfg(feature = "std")]
+    #[test]
+    fn test_sign_then_verify_roundtrip() {
+        let signer = Identity::new();
+        let pub_bytes = signer.public_key_bytes();
+        let verifier = Identity::from_public_key_bytes(&pub_bytes).unwrap();
+
+        let message = b"Important document";
+        let signature = signer.sign(message).unwrap();
+
+        // Verifier (public-only) should be able to verify
+        assert!(verifier.verify(message, &signature).unwrap());
+    }
+
+    #[cfg(feature = "std")]
+    #[test]
+    fn test_encrypt_single_byte() {
+        let identity = Identity::new();
+        let plaintext = [0xaa];
+
+        let ciphertext = identity.encrypt(&plaintext);
+        let decrypted = identity.decrypt(&ciphertext).unwrap();
+
+        assert_eq!(decrypted.len(), 1);
+        assert_eq!(decrypted[0], 0xaa);
+    }
+
+    #[cfg(feature = "std")]
+    #[test]
+    fn test_verify_tampered_message() {
+        let identity = Identity::new();
+        let message = b"Original message";
+        let signature = identity.sign(message).unwrap();
+
+        // Tampered message should not verify
+        let tampered = b"Tampered message";
+        assert!(!identity.verify(tampered, &signature).unwrap());
+    }
+
+    #[cfg(feature = "std")]
+    #[test]
+    fn test_decrypt_minimum_ciphertext_size() {
+        let identity = Identity::new();
+        // Minimum: ephemeral_pub (32) + IV (16) + one block (16) + HMAC (32) = 96
+        let too_short = [0u8; 95];
+
+        let result = identity.decrypt(&too_short);
+        assert_eq!(result, Err(IdentityError::DecryptionFailed));
     }
 }

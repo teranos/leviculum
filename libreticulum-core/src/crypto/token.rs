@@ -225,4 +225,285 @@ mod tests {
 
         assert_eq!(decrypted, plaintext);
     }
+
+    // ==================== EDGE CASE TESTS ====================
+
+    #[test]
+    fn test_token_empty_plaintext() {
+        // Empty plaintext should work (produces one padding block)
+        let key = test_key();
+        let iv = [0x42u8; 16];
+        let plaintext: &[u8] = b"";
+
+        let mut token = [0u8; 64]; // IV (16) + one block (16) + HMAC (32) = 64
+        let token_len = encrypt_token(&key, &iv, plaintext, &mut token).unwrap();
+        assert_eq!(token_len, 64);
+
+        let mut decrypted = [0u8; 16];
+        let dec_len = decrypt_token(&key, &token[..token_len], &mut decrypted).unwrap();
+        assert_eq!(dec_len, 0);
+    }
+
+    #[test]
+    fn test_token_tamper_iv() {
+        // Tampering with IV should be detected by HMAC
+        let key = test_key();
+        let iv = [0x42u8; 16];
+        let plaintext = b"Secret message";
+
+        let mut token = [0u8; 128];
+        let token_len = encrypt_token(&key, &iv, plaintext, &mut token).unwrap();
+
+        // Tamper with IV (first byte)
+        token[0] ^= 0x01;
+
+        let mut decrypted = [0u8; 64];
+        let result = decrypt_token(&key, &token[..token_len], &mut decrypted);
+        assert_eq!(result, Err(TokenError::HmacVerificationFailed));
+    }
+
+    #[test]
+    fn test_token_tamper_hmac() {
+        // Tampering with HMAC should be detected
+        let key = test_key();
+        let iv = [0x42u8; 16];
+        let plaintext = b"Secret message";
+
+        let mut token = [0u8; 128];
+        let token_len = encrypt_token(&key, &iv, plaintext, &mut token).unwrap();
+
+        // Tamper with HMAC (last byte)
+        token[token_len - 1] ^= 0x01;
+
+        let mut decrypted = [0u8; 64];
+        let result = decrypt_token(&key, &token[..token_len], &mut decrypted);
+        assert_eq!(result, Err(TokenError::HmacVerificationFailed));
+    }
+
+    #[test]
+    fn test_token_wrong_key() {
+        let key1 = test_key();
+        let mut key2 = test_key();
+        key2[0] ^= 0x01; // Different key
+
+        let iv = [0x42u8; 16];
+        let plaintext = b"Secret message";
+
+        let mut token = [0u8; 128];
+        let token_len = encrypt_token(&key1, &iv, plaintext, &mut token).unwrap();
+
+        // Try to decrypt with different key
+        let mut decrypted = [0u8; 64];
+        let result = decrypt_token(&key2, &token[..token_len], &mut decrypted);
+        assert_eq!(result, Err(TokenError::HmacVerificationFailed));
+    }
+
+    #[test]
+    fn test_token_buffer_too_small_encrypt() {
+        let key = test_key();
+        let iv = [0x42u8; 16];
+        let plaintext = b"Hello!";
+
+        let mut token = [0u8; 32]; // Too small
+        let result = encrypt_token(&key, &iv, plaintext, &mut token);
+        assert_eq!(result, Err(TokenError::BufferTooSmall));
+    }
+
+    #[test]
+    fn test_token_invalid_iv_length() {
+        let key = test_key();
+        let iv = [0x42u8; 8]; // Wrong IV size
+        let plaintext = b"test";
+        let mut output = [0u8; 128];
+
+        let result = encrypt_token(&key, &iv, plaintext, &mut output);
+        assert_eq!(result, Err(TokenError::DecryptionFailed));
+    }
+
+    #[test]
+    fn test_token_minimum_size() {
+        // Token exactly at minimum size (64 bytes)
+        let key = test_key();
+        let token = [0u8; 64]; // Exactly MIN_TOKEN_SIZE
+        let mut output = [0u8; 64];
+
+        // Should not return TokenTooShort (may fail on HMAC verification)
+        let result = decrypt_token(&key, &token, &mut output);
+        assert_ne!(result, Err(TokenError::TokenTooShort));
+    }
+
+    #[test]
+    fn test_token_one_byte_below_minimum() {
+        let key = test_key();
+        let token = [0u8; 63]; // One byte below minimum
+        let mut output = [0u8; 64];
+
+        let result = decrypt_token(&key, &token, &mut output);
+        assert_eq!(result, Err(TokenError::TokenTooShort));
+    }
+
+    #[test]
+    fn test_token_decrypt_invalid_key_length() {
+        let key = [0u8; 32]; // Wrong size
+        let token = [0u8; 64];
+        let mut output = [0u8; 64];
+
+        let result = decrypt_token(&key, &token, &mut output);
+        assert_eq!(result, Err(TokenError::InvalidKeyLength));
+    }
+
+    #[test]
+    fn test_token_large_plaintext() {
+        let key = test_key();
+        let iv = [0x42u8; 16];
+        let plaintext = [0xab; 10000]; // 10KB
+
+        let padded_len = ((plaintext.len() / 16) + 1) * 16;
+        let token_len = 16 + padded_len + 32;
+        let mut token = vec![0u8; token_len];
+
+        let len = encrypt_token(&key, &iv, &plaintext, &mut token).unwrap();
+
+        let mut decrypted = vec![0u8; plaintext.len() + 16];
+        let dec_len = decrypt_token(&key, &token[..len], &mut decrypted).unwrap();
+
+        assert_eq!(dec_len, plaintext.len());
+        assert_eq!(&decrypted[..dec_len], &plaintext[..]);
+    }
+
+    #[test]
+    fn test_token_deterministic() {
+        let key = test_key();
+        let iv = [0x42u8; 16];
+        let plaintext = b"deterministic test";
+
+        let mut token1 = [0u8; 128];
+        let mut token2 = [0u8; 128];
+
+        let len1 = encrypt_token(&key, &iv, plaintext, &mut token1).unwrap();
+        let len2 = encrypt_token(&key, &iv, plaintext, &mut token2).unwrap();
+
+        assert_eq!(len1, len2);
+        assert_eq!(&token1[..len1], &token2[..len2]);
+    }
+
+    #[test]
+    fn test_token_different_iv_different_output() {
+        let key = test_key();
+        let iv1 = [0x42u8; 16];
+        let iv2 = [0x43u8; 16];
+        let plaintext = b"same plaintext";
+
+        let mut token1 = [0u8; 128];
+        let mut token2 = [0u8; 128];
+
+        let len1 = encrypt_token(&key, &iv1, plaintext, &mut token1).unwrap();
+        let len2 = encrypt_token(&key, &iv2, plaintext, &mut token2).unwrap();
+
+        // Same length but different content
+        assert_eq!(len1, len2);
+        assert_ne!(&token1[..len1], &token2[..len2]);
+    }
+
+    #[test]
+    fn test_token_format() {
+        // Verify token structure: IV (16) + ciphertext (variable) + HMAC (32)
+        let key = test_key();
+        let iv = [0x42u8; 16];
+        let plaintext = b"Hello!"; // 6 bytes -> 16 bytes ciphertext
+
+        let mut token = [0u8; 128];
+        let token_len = encrypt_token(&key, &iv, plaintext, &mut token).unwrap();
+
+        // Token should be IV (16) + ciphertext (16) + HMAC (32) = 64
+        assert_eq!(token_len, 64);
+
+        // IV should be at the start
+        assert_eq!(&token[..16], &iv);
+    }
+
+    #[test]
+    fn test_token_ciphertext_corruption_middle() {
+        // Corrupt a byte in the middle of ciphertext
+        let key = test_key();
+        let iv = [0x42u8; 16];
+        let plaintext = [0xab; 48]; // 3 blocks of data
+
+        let mut token = [0u8; 128];
+        let token_len = encrypt_token(&key, &iv, &plaintext, &mut token).unwrap();
+
+        // Corrupt middle of second block
+        token[24] ^= 0xff;
+
+        let mut decrypted = [0u8; 64];
+        let result = decrypt_token(&key, &token[..token_len], &mut decrypted);
+        assert_eq!(result, Err(TokenError::HmacVerificationFailed));
+    }
+
+    #[test]
+    fn test_token_single_byte_plaintext() {
+        let key = test_key();
+        let iv = [0x42u8; 16];
+        let plaintext = [0xaa; 1];
+
+        let mut token = [0u8; 64];
+        let token_len = encrypt_token(&key, &iv, &plaintext, &mut token).unwrap();
+
+        let mut decrypted = [0u8; 16];
+        let dec_len = decrypt_token(&key, &token[..token_len], &mut decrypted).unwrap();
+
+        assert_eq!(dec_len, 1);
+        assert_eq!(decrypted[0], 0xaa);
+    }
+
+    #[test]
+    fn test_token_block_aligned_plaintext() {
+        // Exactly 16 bytes -> needs extra padding block
+        let key = test_key();
+        let iv = [0x42u8; 16];
+        let plaintext = [0xab; 16];
+
+        let mut token = [0u8; 80]; // IV (16) + 2 blocks (32) + HMAC (32)
+        let token_len = encrypt_token(&key, &iv, &plaintext, &mut token).unwrap();
+        assert_eq!(token_len, 80);
+
+        let mut decrypted = [0u8; 32];
+        let dec_len = decrypt_token(&key, &token[..token_len], &mut decrypted).unwrap();
+
+        assert_eq!(dec_len, 16);
+        assert_eq!(&decrypted[..16], &plaintext);
+    }
+
+    #[cfg(feature = "alloc")]
+    #[test]
+    fn test_token_vec_too_short() {
+        let key = test_key();
+        let short_token = [0u8; 32];
+
+        let result = decrypt_token_vec(&key, &short_token);
+        assert_eq!(result, Err(TokenError::TokenTooShort));
+    }
+
+    #[test]
+    fn test_authenticate_then_decrypt() {
+        // Verify that HMAC is checked before decryption
+        // If we tamper with ciphertext, we should get HMAC error, not decryption error
+        let key = test_key();
+        let iv = [0x42u8; 16];
+        let plaintext = b"test message";
+
+        let mut token = [0u8; 128];
+        let token_len = encrypt_token(&key, &iv, plaintext, &mut token).unwrap();
+
+        // Tamper with ciphertext in a way that would cause bad padding
+        // (but HMAC check should happen first)
+        token[16] = 0xff;
+        token[17] = 0xff;
+
+        let mut decrypted = [0u8; 64];
+        let result = decrypt_token(&key, &token[..token_len], &mut decrypted);
+
+        // Should be HMAC error, not decryption error
+        assert_eq!(result, Err(TokenError::HmacVerificationFailed));
+    }
 }

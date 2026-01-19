@@ -231,4 +231,243 @@ mod tests {
         let decrypted = aes256_cbc_decrypt_vec(&key, &iv, &encrypted).unwrap();
         assert_eq!(decrypted, plaintext);
     }
+
+    // ==================== EDGE CASE TESTS ====================
+
+    #[test]
+    fn test_empty_plaintext() {
+        // Empty plaintext should produce exactly one block (all padding)
+        let key = [0x42u8; 32];
+        let iv = [0x13u8; 16];
+        let plaintext = b"";
+
+        let mut encrypted = [0u8; 16];
+        let enc_len = aes256_cbc_encrypt(&key, &iv, plaintext, &mut encrypted).unwrap();
+        assert_eq!(enc_len, 16); // One full block of padding (16 bytes of 0x10)
+
+        let mut decrypted = [0u8; 16];
+        let dec_len = aes256_cbc_decrypt(&key, &iv, &encrypted[..enc_len], &mut decrypted).unwrap();
+        assert_eq!(dec_len, 0); // Empty plaintext
+    }
+
+    #[test]
+    fn test_buffer_too_small_encrypt() {
+        let key = [0x42u8; 32];
+        let iv = [0x13u8; 16];
+        let plaintext = b"Hello, World!"; // 13 bytes -> needs 16 bytes output
+
+        let mut output = [0u8; 8]; // Too small
+        let result = aes256_cbc_encrypt(&key, &iv, plaintext, &mut output);
+        assert_eq!(result, Err(AesError::BufferTooSmall));
+    }
+
+    #[test]
+    fn test_buffer_too_small_decrypt() {
+        let key = [0x42u8; 32];
+        let iv = [0x13u8; 16];
+        let plaintext = b"Hello, World!";
+
+        let mut encrypted = [0u8; 16];
+        let enc_len = aes256_cbc_encrypt(&key, &iv, plaintext, &mut encrypted).unwrap();
+
+        let mut output = [0u8; 8]; // Too small
+        let result = aes256_cbc_decrypt(&key, &iv, &encrypted[..enc_len], &mut output);
+        assert_eq!(result, Err(AesError::BufferTooSmall));
+    }
+
+    #[test]
+    fn test_invalid_ciphertext_length() {
+        // Ciphertext must be multiple of block size
+        let key = [0x42u8; 32];
+        let iv = [0x13u8; 16];
+        let bad_ciphertext = [0u8; 17]; // Not a multiple of 16
+
+        let mut output = [0u8; 32];
+        let result = aes256_cbc_decrypt(&key, &iv, &bad_ciphertext, &mut output);
+        assert_eq!(result, Err(AesError::DecryptionFailed));
+    }
+
+    #[test]
+    fn test_empty_ciphertext() {
+        let key = [0x42u8; 32];
+        let iv = [0x13u8; 16];
+        let empty_ciphertext: [u8; 0] = [];
+
+        let mut output = [0u8; 16];
+        let result = aes256_cbc_decrypt(&key, &iv, &empty_ciphertext, &mut output);
+        assert_eq!(result, Err(AesError::DecryptionFailed));
+    }
+
+    #[test]
+    fn test_invalid_padding_zero() {
+        // Padding byte of 0 is invalid
+        let key = [0x42u8; 32];
+        let iv = [0x13u8; 16];
+
+        // Create ciphertext that decrypts to data ending in 0x00
+        // We'll encrypt known data and corrupt it to test padding validation
+        let mut bad_block = [0u8; 16];
+        bad_block[15] = 0; // Invalid padding value
+
+        // Create "ciphertext" that would decrypt to this bad padding
+        // Instead, let's test pkcs7_unpad directly
+        let result = pkcs7_unpad(&bad_block);
+        assert_eq!(result, Err(AesError::DecryptionFailed));
+    }
+
+    #[test]
+    fn test_invalid_padding_too_large() {
+        // Padding byte larger than block size is invalid
+        let mut bad_block = [0u8; 16];
+        bad_block[15] = 17; // Invalid: larger than block size
+
+        let result = pkcs7_unpad(&bad_block);
+        assert_eq!(result, Err(AesError::DecryptionFailed));
+    }
+
+    #[test]
+    fn test_invalid_padding_inconsistent() {
+        // All padding bytes must be the same value
+        let mut bad_block = [0u8; 16];
+        // Claim 4 bytes of padding
+        bad_block[15] = 4;
+        bad_block[14] = 4;
+        bad_block[13] = 4;
+        bad_block[12] = 3; // Inconsistent!
+
+        let result = pkcs7_unpad(&bad_block);
+        assert_eq!(result, Err(AesError::DecryptionFailed));
+    }
+
+    #[test]
+    fn test_wrong_key_decrypt() {
+        let key1 = [0x42u8; 32];
+        let key2 = [0x43u8; 32]; // Different key
+        let iv = [0x13u8; 16];
+        let plaintext = b"Secret message";
+
+        let mut encrypted = [0u8; 16];
+        let enc_len = aes256_cbc_encrypt(&key1, &iv, plaintext, &mut encrypted).unwrap();
+
+        // Decrypting with wrong key should fail (bad padding after decryption)
+        let mut decrypted = [0u8; 16];
+        let result = aes256_cbc_decrypt(&key2, &iv, &encrypted[..enc_len], &mut decrypted);
+        // This will likely produce invalid padding
+        assert!(result.is_err() || {
+            // Or if it happens to produce valid-looking padding, the data will be garbage
+            let len = result.unwrap();
+            &decrypted[..len] != plaintext
+        });
+    }
+
+    #[test]
+    fn test_wrong_iv_decrypt() {
+        let key = [0x42u8; 32];
+        let iv1 = [0x13u8; 16];
+        let iv2 = [0x14u8; 16]; // Different IV
+        let plaintext = b"Secret message";
+
+        let mut encrypted = [0u8; 16];
+        let enc_len = aes256_cbc_encrypt(&key, &iv1, plaintext, &mut encrypted).unwrap();
+
+        // Decrypting with wrong IV - first block will be corrupted
+        let mut decrypted = [0u8; 16];
+        let result = aes256_cbc_decrypt(&key, &iv2, &encrypted[..enc_len], &mut decrypted);
+
+        // With wrong IV, first block is XORed with wrong value
+        // The padding in last block might still be valid, but data is corrupted
+        if let Ok(len) = result {
+            assert_ne!(&decrypted[..len], plaintext);
+        }
+        // Or it might fail due to corrupted padding
+    }
+
+    #[test]
+    fn test_multi_block_roundtrip() {
+        let key = [0x42u8; 32];
+        let iv = [0x13u8; 16];
+        // 100 bytes = 6 full blocks + 4 bytes -> 7 blocks total with padding
+        let plaintext = [0xab; 100];
+
+        let mut encrypted = [0u8; 112]; // 7 * 16 = 112
+        let enc_len = aes256_cbc_encrypt(&key, &iv, &plaintext, &mut encrypted).unwrap();
+        assert_eq!(enc_len, 112);
+
+        let mut decrypted = [0u8; 112];
+        let dec_len = aes256_cbc_decrypt(&key, &iv, &encrypted[..enc_len], &mut decrypted).unwrap();
+        assert_eq!(dec_len, 100);
+        assert_eq!(&decrypted[..dec_len], &plaintext);
+    }
+
+    #[test]
+    fn test_single_byte_plaintext() {
+        let key = [0x42u8; 32];
+        let iv = [0x13u8; 16];
+        let plaintext = [0xaa; 1];
+
+        let mut encrypted = [0u8; 16];
+        let enc_len = aes256_cbc_encrypt(&key, &iv, &plaintext, &mut encrypted).unwrap();
+        assert_eq!(enc_len, 16);
+
+        let mut decrypted = [0u8; 16];
+        let dec_len = aes256_cbc_decrypt(&key, &iv, &encrypted[..enc_len], &mut decrypted).unwrap();
+        assert_eq!(dec_len, 1);
+        assert_eq!(decrypted[0], 0xaa);
+    }
+
+    #[test]
+    fn test_deterministic_encryption() {
+        // Same key + IV + plaintext should always produce same ciphertext
+        let key = [0x42u8; 32];
+        let iv = [0x13u8; 16];
+        let plaintext = b"deterministic test";
+
+        let mut enc1 = [0u8; 32];
+        let mut enc2 = [0u8; 32];
+
+        let len1 = aes256_cbc_encrypt(&key, &iv, plaintext, &mut enc1).unwrap();
+        let len2 = aes256_cbc_encrypt(&key, &iv, plaintext, &mut enc2).unwrap();
+
+        assert_eq!(len1, len2);
+        assert_eq!(&enc1[..len1], &enc2[..len2]);
+    }
+
+    #[test]
+    fn test_decrypt_invalid_key_length() {
+        let key = [0x42u8; 16]; // Wrong size
+        let iv = [0x13u8; 16];
+        let ciphertext = [0u8; 16];
+        let mut output = [0u8; 16];
+
+        let result = aes256_cbc_decrypt(&key, &iv, &ciphertext, &mut output);
+        assert_eq!(result, Err(AesError::InvalidKeyLength));
+    }
+
+    #[test]
+    fn test_decrypt_invalid_iv_length() {
+        let key = [0x42u8; 32];
+        let iv = [0x13u8; 8]; // Wrong size
+        let ciphertext = [0u8; 16];
+        let mut output = [0u8; 16];
+
+        let result = aes256_cbc_decrypt(&key, &iv, &ciphertext, &mut output);
+        assert_eq!(result, Err(AesError::InvalidIvLength));
+    }
+
+    #[test]
+    fn test_full_padding_block() {
+        // When plaintext is exactly n*16 bytes, we need an extra full padding block
+        let key = [0x42u8; 32];
+        let iv = [0x13u8; 16];
+        let plaintext = [0xab; 32]; // Exactly 2 blocks
+
+        let mut encrypted = [0u8; 48]; // Need 3 blocks for output
+        let enc_len = aes256_cbc_encrypt(&key, &iv, &plaintext, &mut encrypted).unwrap();
+        assert_eq!(enc_len, 48); // 32 bytes data + 16 bytes padding block
+
+        let mut decrypted = [0u8; 48];
+        let dec_len = aes256_cbc_decrypt(&key, &iv, &encrypted[..enc_len], &mut decrypted).unwrap();
+        assert_eq!(dec_len, 32);
+        assert_eq!(&decrypted[..dec_len], &plaintext);
+    }
 }
