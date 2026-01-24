@@ -1928,3 +1928,114 @@ async fn test_mixed_packet_sequence() {
 
     println!("\nSUCCESS: All {} mixed packets accepted!", packets_sent);
 }
+
+/// Test sending an announce with an INVALID signature
+///
+/// This test verifies that rnsd properly rejects announces with bad signatures
+/// and logs an error about it. Used to confirm rnsd validates packets.
+#[tokio::test]
+#[ignore = "requires running rnsd"]
+async fn test_invalid_announce_signature() {
+    let mut stream = timeout(CONNECTION_TIMEOUT, TcpStream::connect(RNSD_ADDR))
+        .await
+        .expect("Connection timeout")
+        .expect("Failed to connect to rnsd");
+
+    println!("=== INVALID ANNOUNCE SIGNATURE TEST ===\n");
+
+    // Create a new identity
+    let identity = Identity::new();
+    let public_key = identity.public_key_bytes();
+    let identity_hash = *identity.hash();
+
+    // Compute name_hash for a test application
+    let app_name = "leviculum";
+    let aspects = ["test", "invalid"];
+    let name_hash = compute_name_hash(app_name, &aspects);
+
+    // Generate random_hash
+    let random_hash = generate_random_hash();
+
+    // Compute destination_hash
+    let destination_hash = compute_destination_hash(&name_hash, &identity_hash);
+
+    println!("Created announce with:");
+    println!("  Destination hash: {:02x?}", &destination_hash[..4]);
+
+    // Create app_data
+    let app_data = b"invalid-signature-test";
+
+    // Build signed_data correctly
+    let mut signed_data = Vec::with_capacity(100 + app_data.len());
+    signed_data.extend_from_slice(&destination_hash);
+    signed_data.extend_from_slice(&public_key);
+    signed_data.extend_from_slice(&name_hash);
+    signed_data.extend_from_slice(&random_hash);
+    signed_data.extend_from_slice(app_data);
+
+    // Sign the data correctly first
+    let mut signature = identity.sign(&signed_data).expect("Failed to sign");
+
+    // NOW CORRUPT THE SIGNATURE - flip some bits
+    signature[0] ^= 0xFF;
+    signature[1] ^= 0xFF;
+    signature[32] ^= 0xFF;
+
+    println!("  Signature CORRUPTED: {:02x?}...", &signature[..8]);
+
+    // Build announce payload with the BAD signature
+    let mut payload = Vec::with_capacity(148 + app_data.len());
+    payload.extend_from_slice(&public_key);
+    payload.extend_from_slice(&name_hash);
+    payload.extend_from_slice(&random_hash);
+    payload.extend_from_slice(&signature);
+    payload.extend_from_slice(app_data);
+
+    // Build the packet
+    let packet = Packet {
+        flags: PacketFlags {
+            header_type: HeaderType::Type1,
+            context_flag: false,
+            transport_type: TransportType::Broadcast,
+            dest_type: DestinationType::Single,
+            packet_type: PacketType::Announce,
+        },
+        hops: 0,
+        transport_id: None,
+        destination_hash,
+        context: PacketContext::None,
+        data: PacketData::Owned(payload),
+    };
+
+    // Pack and frame the packet
+    let mut raw_packet = [0u8; MTU];
+    let size = packet.pack(&mut raw_packet).expect("Failed to pack packet");
+
+    let mut framed = Vec::new();
+    frame(&raw_packet[..size], &mut framed);
+
+    println!("  Packet size: {} bytes, framed: {} bytes", size, framed.len());
+    println!("\nSending announce with INVALID signature...");
+
+    // Send to rnsd
+    stream.write_all(&framed).await.expect("Failed to send");
+    stream.flush().await.expect("Failed to flush");
+
+    println!("Packet sent!");
+    println!("\nCheck ~/.reticulum/logfile for signature verification error.");
+    println!("Expected: An error about signature verification failure for destination {:02x?}", &destination_hash[..4]);
+
+    // Wait a moment for rnsd to process
+    tokio::time::sleep(Duration::from_millis(500)).await;
+
+    // Connection should still be open (rnsd doesn't close on bad packets)
+    let mut buffer = [0u8; 1024];
+    match timeout(Duration::from_millis(500), stream.read(&mut buffer)).await {
+        Ok(Ok(0)) => println!("Connection closed (unexpected)"),
+        Ok(Ok(n)) => println!("Received {} bytes of other traffic", n),
+        Ok(Err(e)) => println!("Read error: {}", e),
+        Err(_) => println!("No response (expected - bad announce is silently dropped)"),
+    }
+
+    println!("\nTest complete - check the log file for errors!");
+}
