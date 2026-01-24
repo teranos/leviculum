@@ -116,12 +116,13 @@ impl TryFrom<u8> for PacketContext {
     }
 }
 
-/// Packet flags byte layout:
-/// Bit 7: Header Type (0=H1, 1=H2)
-/// Bit 6: Context Flag (0=unset, 1=set)
-/// Bit 5: Transport Type (0=broadcast, 1=transport)
-/// Bits 4-3: Destination Type
+/// Packet flags byte layout (matching Python Reticulum):
+/// Bit 6: Header Type (0=H1, 1=H2)
+/// Bit 5: Context Flag (0=unset, 1=set)
+/// Bit 4: Transport Type (0=broadcast, 1=transport)
+/// Bits 3-2: Destination Type
 /// Bits 1-0: Packet Type
+/// Bit 7: Unused (always 0)
 #[derive(Debug, Clone, Copy)]
 pub struct PacketFlags {
     pub header_type: HeaderType,
@@ -135,29 +136,29 @@ impl PacketFlags {
     /// Encode flags to a byte
     pub fn to_byte(&self) -> u8 {
         let mut flags = 0u8;
-        flags |= (self.header_type as u8) << 7;
-        flags |= (self.context_flag as u8) << 6;
-        flags |= (self.transport_type as u8) << 5;
-        flags |= (self.dest_type as u8) << 3;
+        flags |= (self.header_type as u8) << 6;
+        flags |= (self.context_flag as u8) << 5;
+        flags |= (self.transport_type as u8) << 4;
+        flags |= (self.dest_type as u8) << 2;
         flags |= self.packet_type as u8;
         flags
     }
 
     /// Decode flags from a byte
     pub fn from_byte(byte: u8) -> Result<Self, PacketError> {
-        let header_type = if byte & 0x80 != 0 {
+        let header_type = if byte & 0x40 != 0 {
             HeaderType::Type2
         } else {
             HeaderType::Type1
         };
-        let context_flag = byte & 0x40 != 0;
-        let transport_type = if byte & 0x20 != 0 {
+        let context_flag = byte & 0x20 != 0;
+        let transport_type = if byte & 0x10 != 0 {
             TransportType::Transport
         } else {
             TransportType::Broadcast
         };
         let dest_type =
-            DestinationType::try_from((byte >> 3) & 0x03).map_err(|_| PacketError::InvalidFlags)?;
+            DestinationType::try_from((byte >> 2) & 0x03).map_err(|_| PacketError::InvalidFlags)?;
         let packet_type =
             PacketType::try_from(byte & 0x03).map_err(|_| PacketError::InvalidFlags)?;
 
@@ -302,7 +303,8 @@ impl Packet {
     /// Unpack a packet from bytes
     #[cfg(feature = "alloc")]
     pub fn unpack(raw: &[u8]) -> Result<Self, PacketError> {
-        if raw.len() < HEADER_MINSIZE + 2 {
+        // HEADER_MINSIZE includes flags(1) + hops(1) + dest_hash(16) + context(1) = 19 bytes
+        if raw.len() < HEADER_MINSIZE {
             return Err(PacketError::TooShort);
         }
         if raw.len() > MTU {
@@ -321,7 +323,8 @@ impl Packet {
 
         // Header
         let transport_id = if flags.header_type == HeaderType::Type2 {
-            if raw.len() < HEADER_MAXSIZE + 2 {
+            // HEADER_MAXSIZE includes transport_id(16) + dest_hash(16) = 35 bytes total
+            if raw.len() < HEADER_MAXSIZE {
                 return Err(PacketError::TooShort);
             }
             let mut tid = [0u8; TRUNCATED_HASHBYTES];
