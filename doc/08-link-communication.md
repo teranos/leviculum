@@ -4,6 +4,18 @@ Once a link is established, both sides can exchange encrypted data. This chapter
 
 ## 8.1 Data Packets on Links
 
+### Why Links Are Efficient
+
+Compared to sending individual packets to a SINGLE destination, links offer significant advantages:
+
+1. **No per-packet key exchange**: SINGLE destination packets include a 32-byte ephemeral public key. Link packets don't—the key exchange happened during establishment.
+
+2. **Symmetric encryption**: Links use the pre-derived Fernet key (AES + HMAC). SINGLE packets require asymmetric ECDH for each message.
+
+3. **Bidirectional**: Either side can send without re-negotiating. SINGLE destinations are inherently one-way (sender → destination).
+
+4. **State tracking**: Links maintain RTT measurements, keep-alive timers, and connection state—enabling reliable communication patterns.
+
 ### Packet Structure
 
 Data packets on links use the LINK destination type:
@@ -18,6 +30,12 @@ Header 0x0C = BROADCAST + Header1 + LINK + DATA
 ```
 
 ### Sending Data
+
+Sending on a link is straightforward: encrypt the data with the pre-shared link key and send it addressed to the link ID.
+
+**State checking**: Only ACTIVE links can send. Attempting to send on a PENDING, STALE, or CLOSED link will fail. This prevents data from being sent before key derivation completes or after the link has timed out.
+
+**Activity tracking**: Each successful send updates `last_activity`, which the keep-alive mechanism uses to detect idle links.
 
 ```c
 bool link_send(Link *link, const uint8_t *data, size_t len,
@@ -201,9 +219,22 @@ Data:   0xFF = Request
 
 ### Implementation
 
+**Timing rationale:**
+
+- **Keep-alive interval (6 minutes)**: Long enough to avoid unnecessary traffic on slow/metered links, short enough to detect dead links reasonably quickly. The interval adjusts based on measured RTT—faster links can use shorter intervals.
+
+- **Stale timeout (12 minutes = 2× keep-alive)**: If we send a keep-alive and don't hear back within another full interval, the link is considered dead. The 2× factor allows for one keep-alive to be lost without immediately closing the link.
+
+**Why asymmetric request/response (0xFF/0xFE)?**
+
+A simple ping/pong could use any values, but distinct values let implementations:
+1. Distinguish between "I'm checking if you're alive" vs "I'm confirming I'm alive"
+2. Avoid infinite loops (both sides sending requests simultaneously)
+3. Allow passive keep-alive (respond only, never initiate)
+
 ```c
-#define KEEPALIVE_INTERVAL_MS 120000  // 2 minutes
-#define STALE_TIMEOUT_MS      300000  // 5 minutes
+#define KEEPALIVE_INTERVAL_MS 360000  // 6 minutes (default, adjusts based on RTT)
+#define STALE_TIMEOUT_MS      720000  // 12 minutes (2x keepalive interval)
 
 void link_send_keepalive(Link *link, Transport *transport) {
     uint8_t data = 0xFF;  // Request
@@ -558,8 +589,8 @@ typedef struct Link {
 
 | Timeout | Default | Purpose |
 |---------|---------|---------|
-| Keep-alive interval | 2 minutes | Send ping if idle |
-| Stale timeout | 5 minutes | Close if no response |
+| Keep-alive interval | 6 minutes | Send ping if idle (adjusts based on RTT) |
+| Stale timeout | 12 minutes | Close if no response (2x keepalive) |
 | Proof timeout | 15 seconds | Initial handshake |
 
 Link communication provides:
@@ -569,4 +600,4 @@ Link communication provides:
 - **Efficiency**: Key exchange once, symmetric crypto thereafter
 - **Health monitoring**: Keep-alive detects dead links
 
-The remaining chapters cover advanced topics: announces/routing, resource transfers, and the transport layer.
+[The remaining chapters cover advanced topics: announces/routing, resource transfers, and the transport layer.](09-announces.md)

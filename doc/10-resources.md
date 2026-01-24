@@ -380,7 +380,19 @@ void send_part_request(Resource *res) {
 
 ## 10.7 Part Transfer
 
+### How Parts Are Identified
+
+Parts are identified by their **map hash**, not by index. This design choice has important benefits:
+
+1. **Out-of-order delivery**: Parts can arrive in any order and still be matched correctly
+2. **Retransmission**: If a part is lost, the receiver simply re-requests that map hash
+3. **Deduplication**: Receiving the same part twice is harmless—the hash matches an already-filled slot
+
+**Map hash computation**: For each part, compute `SHA256(part_data || random_hash)[0:4]`. The random hash (from the resource advertisement) ensures that different resources with identical content produce different map hashes.
+
 ### Sending Parts
+
+The sender receives a list of requested map hashes and sends the corresponding data. The lookup is O(n×m) for n requested hashes and m total parts, but since parts are typically requested in sliding window order, performance is acceptable.
 
 ```c
 void send_requested_parts(Resource *res, ResourceRequest *req) {
@@ -401,6 +413,16 @@ void send_requested_parts(Resource *res, ResourceRequest *req) {
 ```
 
 ### Receiving Parts
+
+When a part arrives, the receiver:
+1. Computes the map hash from the received data
+2. Searches the hashmap for a matching slot
+3. Stores the data in that slot (if not already received)
+4. Updates the "consecutive completed" counter
+
+**Consecutive completed tracking**: This counter tracks how many parts from the beginning are complete. When all parts up to index N are received, we can potentially start processing them before the entire resource completes. It also determines when to trigger final assembly.
+
+**Why search from consecutive_completed?** Parts before this index are already received, so we skip them. This optimization matters for large transfers where early parts are typically received first.
 
 ```c
 void receive_part(Resource *res, const uint8_t *data, size_t len) {
@@ -472,6 +494,18 @@ void send_hashmap_update(Resource *res, size_t from_index) {
 ```
 
 ## 10.9 Flow Control
+
+Resource transfers use **window-based flow control** to adapt to link speed. This is similar to TCP congestion control but simpler, designed for Reticulum's diverse link speeds (from 500 bps radio links to fast Internet connections).
+
+### Key Concepts
+
+**Window size**: How many parts to request before waiting for responses. Larger windows improve throughput on fast links; smaller windows prevent overwhelming slow links.
+
+**Rate detection**: The system measures actual throughput and adjusts the maximum window size accordingly:
+- **Fast links (>50 Kbps)**: Can handle up to 75 outstanding parts
+- **Slow links (<2 Kbps)**: Limited to 4 outstanding parts
+
+**AIMD-like behavior**: On success, grow the window (additive increase). On timeout, shrink it (multiplicative decrease). This classic approach converges to optimal throughput.
 
 ### Window Management
 
@@ -726,4 +760,4 @@ Resource transfers enable reliable large data transfer over links with:
 - Optional bz2 compression
 - Proof of successful receipt
 
-The next chapter covers the **transport layer** - how all these components work together for packet routing.
+[The next chapter covers the **transport layer** - how all these components work together for packet routing.](11-transport.md)

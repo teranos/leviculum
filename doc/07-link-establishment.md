@@ -103,7 +103,17 @@ typedef struct Link {
 
 ## 7.3 Link ID Computation
 
-The **link ID** uniquely identifies a link. It's computed from the link request packet:
+The **link ID** uniquely identifies a link throughout its lifetime. Both initiator and responder compute the same link ID independently, which is essential for:
+
+1. **Addressing link packets**: Once established, packets are addressed to the link ID, not the destination hash
+2. **Key derivation**: The link ID serves as the salt for HKDF when deriving encryption keys
+3. **Proof binding**: The link proof includes the link ID to prevent proof substitution attacks
+
+**Design rationale:**
+
+- **Only first 64 bytes of data**: The link ID is computed from the initiator's public keys (64 bytes), not any MTU signalling bytes. This ensures both sides compute the same ID even if signalling is added/removed.
+- **Lower 4 bits of header only**: The IFAC flag (bit 7) varies by interface, so it's excluded. Using only bits 0-3 ensures the same link ID regardless of which interface received the request.
+- **Includes destination and context**: This binds the link to a specific destination, preventing an attacker from redirecting a link request to a different destination.
 
 ```c
 void compute_link_id(const uint8_t header_meta,
@@ -291,10 +301,43 @@ void derive_link_key(Link *link) {
 
 ## 7.6 The Link Proof
 
-The responder must prove they control the destination's private key.
+The responder must prove they control the destination's private key. This prevents man-in-the-middle attacks where an attacker intercepts a link request and responds pretending to be the destination.
+
+### Security Purpose
+
+Without proof verification, this attack is possible:
+
+1. Initiator sends LINKREQUEST to destination
+2. Attacker intercepts the request
+3. Attacker generates their own ephemeral keys
+4. Attacker responds to initiator with their keys
+5. Attacker forwards modified request to destination
+6. Destination responds to attacker
+
+The initiator would think they're talking to the destination, but the attacker sits in the middle.
+
+**The proof prevents this**: The responder signs with the destination's **long-term Ed25519 private key** (known only to the real destination). The initiator verifies the signature against the destination's public key (from the announce). An attacker cannot forge this signature without the private key.
+
+### Why Sign the Responder's Keys (Not the Initiator's)?
+
+A common mistake: signing the initiator's public keys instead of the responder's.
+
+**Why this is wrong**: If the responder signed the initiator's keys, an attacker who intercepts the link request could:
+1. Extract the initiator's public keys from the request
+2. Forward the request to the real destination
+3. Get a valid signature over those keys
+4. Use that signature in their own proof (with the attacker's keys for X25519)
+
+**The correct approach**: The responder signs their OWN ephemeral X25519 public key (used for key exchange) and their Ed25519 public key (which matches the destination's announced key). The initiator verifies:
+- The Ed25519 key in the proof matches the destination's announced key
+- The signature is valid for the responder's keys
+- The X25519 key in the proof is used for the shared secret
+
+This binds the proof to the specific keys being used for this link.
 
 ### Proof Structure
 
+Current format (with MTU signalling):
 ```
 +------------------+-------------------+-------------+
 | Signature        | Responder X25519  | Signalling  |
@@ -304,9 +347,21 @@ The responder must prove they control the destination's private key.
 Total: 99 bytes
 ```
 
+Legacy format (without signalling):
+```
++------------------+-------------------+
+| Signature        | Responder X25519  |
+| 64 bytes         | 32 bytes          |
++------------------+-------------------+
+
+Total: 96 bytes
+```
+
+Implementations should accept both 96-byte and 99-byte proofs for compatibility.
+
 ### Signed Data
 
-The signature covers 83 bytes:
+Current format - the signature covers 83 bytes:
 
 ```
 +----------+--------------------+---------------------+-------------+
@@ -314,6 +369,8 @@ The signature covers 83 bytes:
 | 16 bytes | 32 bytes           | 32 bytes            | 3 bytes     |
 +----------+--------------------+---------------------+-------------+
 ```
+
+Legacy format - 80 bytes (without signalling).
 
 **Critical**: The responder signs with their **own** public keys, not the initiator's!
 
@@ -635,9 +692,9 @@ if (existing && existing->state == LINK_ACTIVE) {
 
 | Data Structure | Size | Contents |
 |----------------|------|----------|
-| LINKREQUEST payload | 64 bytes | init_x25519 + init_ed25519 |
-| PROOF payload | 99 bytes | signature + resp_x25519 + signalling |
-| Signed data | 83 bytes | link_id + resp_x25519 + resp_ed25519 + signalling |
+| LINKREQUEST payload | 64 or 67 bytes | keys, optionally + 3 signalling bytes |
+| PROOF payload | 96 or 99 bytes | signature + key, optionally + signalling |
+| Signed data | 80 or 83 bytes | link_id + keys, optionally + signalling |
 | Link key | 32-64 bytes | HKDF(shared_secret, link_id) |
 
-The next chapter covers **link communication** - sending and receiving encrypted data on established links.
+[The next chapter covers **link communication** - sending and receiving encrypted data on established links.](08-link-communication.md)

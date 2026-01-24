@@ -235,33 +235,43 @@ crypto_auth_hmacsha256(mac, message, 5, key);
 
 ### Fernet Implementation
 
-Fernet isn't in libsodium, so implement it:
+Fernet isn't in libsodium, so implement it manually. Fernet is an authenticated encryption scheme that combines AES-CBC encryption with HMAC-SHA256 authentication.
+
+**Why Reticulum modifies standard Fernet**: The standard Fernet specification includes a version byte (0x80) and an 8-byte timestamp. Reticulum strips both to save bandwidth—the protocol doesn't need versioning (there's only one format), and timestamps are handled at the protocol layer where needed.
+
+**Key structure**: A Fernet key is split in half. The first half is the HMAC key for authentication, the second half is the AES key for encryption. For AES-128 (16-byte key), the total Fernet key is 32 bytes; for AES-256 (32-byte key), it would be 64 bytes.
+
+**Encrypt-then-MAC order**: Fernet encrypts first, then computes the HMAC over the ciphertext. This order is security-critical—it allows the receiver to verify integrity before attempting decryption, preventing padding oracle attacks where a malicious party can learn about the plaintext by observing decryption errors.
 
 ```c
 #include <sodium.h>
 #include <string.h>
 
-#define FERNET_VERSION 0x80
+// Reticulum's modified Fernet format:
+// - NO version byte (stripped from standard Fernet)
+// - NO timestamp (stripped from standard Fernet)
+// Token format: IV (16 bytes) + ciphertext (padded) + HMAC (32 bytes)
+// Total overhead: 48 bytes fixed + PKCS7 padding
+
 #define FERNET_IV_SIZE 16
 #define FERNET_HMAC_SIZE 32
+#define FERNET_OVERHEAD 48  // IV + HMAC, before padding
 
-// Fernet key: first 16 bytes = HMAC key, last 16 bytes = AES key
-// (For AES-256 variant: 32 + 32 = 64 bytes)
+// Fernet key: first half = HMAC key, second half = AES key
+// AES-128: 16 + 16 = 32 bytes
+// AES-256: 32 + 32 = 64 bytes
 
 size_t fernet_encrypt(const uint8_t key[32],
                       const uint8_t *plaintext, size_t plain_len,
                       uint8_t *output, size_t output_max) {
-    // Calculate padded size
+    // Calculate padded size (PKCS7)
     size_t padded_len = ((plain_len / 16) + 1) * 16;
-    size_t total_len = 1 + FERNET_IV_SIZE + padded_len + FERNET_HMAC_SIZE;
+    size_t total_len = FERNET_IV_SIZE + padded_len + FERNET_HMAC_SIZE;
 
     if (output_max < total_len) return 0;
 
-    // Version byte
-    output[0] = FERNET_VERSION;
-
-    // Random IV
-    randombytes_buf(&output[1], FERNET_IV_SIZE);
+    // Random IV (at start, no version byte)
+    randombytes_buf(output, FERNET_IV_SIZE);
 
     // PKCS7 padding
     uint8_t padded[plain_len + 16];
@@ -272,17 +282,17 @@ size_t fernet_encrypt(const uint8_t key[32],
     // AES-CBC encrypt
     // (Using OpenSSL for AES-CBC as libsodium doesn't have it directly)
     EVP_CIPHER_CTX *ctx = EVP_CIPHER_CTX_new();
-    EVP_EncryptInit_ex(ctx, EVP_aes_128_cbc(), NULL, &key[16], &output[1]);
+    EVP_EncryptInit_ex(ctx, EVP_aes_128_cbc(), NULL, &key[16], output);
     EVP_CIPHER_CTX_set_padding(ctx, 0);  // We handle padding
 
     int out_len;
-    EVP_EncryptUpdate(ctx, &output[1 + FERNET_IV_SIZE], &out_len,
+    EVP_EncryptUpdate(ctx, &output[FERNET_IV_SIZE], &out_len,
                       padded, padded_len);
     EVP_CIPHER_CTX_free(ctx);
 
-    // HMAC over version + IV + ciphertext
-    crypto_auth_hmacsha256(&output[1 + FERNET_IV_SIZE + padded_len],
-                           output, 1 + FERNET_IV_SIZE + padded_len,
+    // HMAC over IV + ciphertext (no version byte)
+    crypto_auth_hmacsha256(&output[FERNET_IV_SIZE + padded_len],
+                           output, FERNET_IV_SIZE + padded_len,
                            key);
 
     return total_len;
@@ -291,35 +301,30 @@ size_t fernet_encrypt(const uint8_t key[32],
 bool fernet_decrypt(const uint8_t key[32],
                     const uint8_t *token, size_t token_len,
                     uint8_t *plaintext, size_t *plain_len) {
-    if (token_len < 1 + FERNET_IV_SIZE + 16 + FERNET_HMAC_SIZE) {
+    if (token_len < FERNET_IV_SIZE + 16 + FERNET_HMAC_SIZE) {
         return false;
     }
 
-    // Verify version
-    if (token[0] != FERNET_VERSION) {
-        return false;
-    }
+    size_t cipher_len = token_len - FERNET_IV_SIZE - FERNET_HMAC_SIZE;
 
-    size_t cipher_len = token_len - 1 - FERNET_IV_SIZE - FERNET_HMAC_SIZE;
-
-    // Verify HMAC
+    // Verify HMAC first (encrypt-then-MAC)
     uint8_t expected_hmac[32];
     crypto_auth_hmacsha256(expected_hmac, token,
                            token_len - FERNET_HMAC_SIZE, key);
 
     if (sodium_memcmp(expected_hmac,
                       &token[token_len - FERNET_HMAC_SIZE], 32) != 0) {
-        return false;  // HMAC mismatch
+        return false;  // HMAC mismatch - reject before decryption
     }
 
-    // AES-CBC decrypt
+    // AES-CBC decrypt (IV is at offset 0, ciphertext at offset 16)
     EVP_CIPHER_CTX *ctx = EVP_CIPHER_CTX_new();
-    EVP_DecryptInit_ex(ctx, EVP_aes_128_cbc(), NULL, &key[16], &token[1]);
+    EVP_DecryptInit_ex(ctx, EVP_aes_128_cbc(), NULL, &key[16], token);
     EVP_CIPHER_CTX_set_padding(ctx, 0);
 
     int out_len;
     EVP_DecryptUpdate(ctx, plaintext, &out_len,
-                      &token[1 + FERNET_IV_SIZE], cipher_len);
+                      &token[FERNET_IV_SIZE], cipher_len);
     EVP_CIPHER_CTX_free(ctx);
 
     // Remove PKCS7 padding
@@ -335,9 +340,20 @@ bool fernet_decrypt(const uint8_t key[32],
 
 ## 12.5 Memory Management
 
+Memory management strategy significantly impacts where your implementation can run. Desktop applications can freely use heap allocation, but embedded systems often prohibit dynamic allocation entirely due to memory fragmentation concerns and real-time constraints.
+
 ### Static Allocation (Embedded)
 
-For embedded systems without heap:
+For embedded systems without heap, all memory must be pre-allocated at compile time. This requires knowing your maximum limits upfront: how many interfaces, destinations, links, and path entries you'll support simultaneously.
+
+**Trade-offs**:
+- **Pro**: Deterministic memory usage—you know exactly how much RAM is needed
+- **Pro**: No allocation failures during operation
+- **Pro**: No memory fragmentation over time
+- **Con**: Memory is reserved even when not used
+- **Con**: Hard limits that can't be exceeded at runtime
+
+The approach below allocates fixed arrays and uses simple counters to track usage. When a resource is "allocated," you return a pointer to the next free slot and increment the counter.
 
 ```c
 #define MAX_INTERFACES 4
@@ -374,7 +390,14 @@ rns_link_t* rns_link_alloc(void) {
 
 ### Buffer Pools
 
-For packet buffers, use a pool:
+Packet buffers are a special case: they're frequently allocated and freed as packets arrive, get processed, and are sent or discarded. Rather than allocating each buffer individually, a pool pre-allocates a fixed number of buffers and tracks which are in use.
+
+**Why pools work well for packets**:
+- All packet buffers are the same size (MTU = 500 bytes)
+- Lifetimes are short and predictable (receive → process → free)
+- The pool size bounds how many packets can be in-flight simultaneously
+
+**Failure handling**: When the pool is exhausted, `packet_buffer_alloc` returns NULL. This naturally applies backpressure—the caller (interface receive handler) can't accept more packets until existing ones are processed and freed. This is desirable behavior: it prevents unbounded memory growth under load.
 
 ```c
 #define PACKET_POOL_SIZE 16
@@ -443,6 +466,19 @@ use ed25519_dalek::{SigningKey, VerifyingKey};
 ```
 
 ### Threading Models
+
+The choice of threading model affects code complexity, performance, and portability.
+
+**Single-threaded polling** is the simplest model: one thread loops continuously, checking each interface for incoming data and running timer-based tasks. This works well for:
+- Embedded systems without OS threading support
+- Simple applications with low throughput
+- Situations where deterministic timing is important
+
+The downside is that all work happens sequentially—a slow interface can delay processing of other interfaces.
+
+**Multi-threaded** models dedicate a thread to each interface, allowing blocking I/O. Received packets are queued for a main processing thread. This provides better responsiveness when interfaces have varying latencies (e.g., a fast TCP connection alongside a slow serial link).
+
+**Async** models (Rust async/await, libuv, etc.) provide multi-threaded-like concurrency without actual threads. An event loop multiplexes I/O across all interfaces. This is memory-efficient (no per-thread stacks) and scales well to many connections.
 
 **Single-threaded (polling):**
 ```c
@@ -789,11 +825,11 @@ hex = "0.4"
 | Constant | Value | Critical For |
 |----------|-------|--------------|
 | Truncated hash | 16 bytes | All addressing |
-| Link proof | 99 bytes | Link establishment |
-| Signed data | 83 bytes | Proof verification |
-| Link request payload | 64 bytes | Link establishment |
+| Link proof | 96 or 99 bytes | Without/with MTU signalling |
+| Signed data | 80 or 83 bytes | Without/with signalling |
+| Link request payload | 64 or 67 bytes | Without/with MTU signalling |
 | HDLC flag | 0x7E | Framing |
 | HDLC escape | 0x7D | Framing |
-| Fernet version | 0x80 | Encryption |
+| Fernet overhead | 48 bytes | IV (16) + HMAC (32), no version byte |
 
-The next chapter provides test vectors and interoperability testing guidance.
+[The next chapter provides test vectors and interoperability testing guidance.](13-testing.md)

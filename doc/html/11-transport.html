@@ -1,0 +1,977 @@
+<!DOCTYPE html>
+<html xmlns="http://www.w3.org/1999/xhtml" lang="" xml:lang="">
+<head>
+  <meta charset="utf-8" />
+  <meta name="generator" content="pandoc" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=yes" />
+  <title>Chapter 11: Transport Layer</title>
+  <style>
+    code{white-space: pre-wrap;}
+    span.smallcaps{font-variant: small-caps;}
+    div.columns{display: flex; gap: min(4vw, 1.5em);}
+    div.column{flex: auto; overflow-x: auto;}
+    div.hanging-indent{margin-left: 1.5em; text-indent: -1.5em;}
+    /* The extra [class] is a hack that increases specificity enough to
+       override a similar rule in reveal.js */
+    ul.task-list[class]{list-style: none;}
+    ul.task-list li input[type="checkbox"] {
+      font-size: inherit;
+      width: 0.8em;
+      margin: 0 0.8em 0.2em -1.6em;
+      vertical-align: middle;
+    }
+    .display.math{display: block; text-align: center; margin: 0.5rem auto;}
+    /* CSS for syntax highlighting */
+    pre > code.sourceCode { white-space: pre; position: relative; }
+    pre > code.sourceCode > span { line-height: 1.25; }
+    pre > code.sourceCode > span:empty { height: 1.2em; }
+    .sourceCode { overflow: visible; }
+    code.sourceCode > span { color: inherit; text-decoration: inherit; }
+    div.sourceCode { margin: 1em 0; }
+    pre.sourceCode { margin: 0; }
+    @media screen {
+    div.sourceCode { overflow: auto; }
+    }
+    @media print {
+    pre > code.sourceCode { white-space: pre-wrap; }
+    pre > code.sourceCode > span { display: inline-block; text-indent: -5em; padding-left: 5em; }
+    }
+    pre.numberSource code
+      { counter-reset: source-line 0; }
+    pre.numberSource code > span
+      { position: relative; left: -4em; counter-increment: source-line; }
+    pre.numberSource code > span > a:first-child::before
+      { content: counter(source-line);
+        position: relative; left: -1em; text-align: right; vertical-align: baseline;
+        border: none; display: inline-block;
+        -webkit-touch-callout: none; -webkit-user-select: none;
+        -khtml-user-select: none; -moz-user-select: none;
+        -ms-user-select: none; user-select: none;
+        padding: 0 4px; width: 4em;
+        color: #aaaaaa;
+      }
+    pre.numberSource { margin-left: 3em; border-left: 1px solid #aaaaaa;  padding-left: 4px; }
+    div.sourceCode
+      {   }
+    @media screen {
+    pre > code.sourceCode > span > a:first-child::before { text-decoration: underline; }
+    }
+    code span.al { color: #ff0000; font-weight: bold; } /* Alert */
+    code span.an { color: #60a0b0; font-weight: bold; font-style: italic; } /* Annotation */
+    code span.at { color: #7d9029; } /* Attribute */
+    code span.bn { color: #40a070; } /* BaseN */
+    code span.bu { color: #008000; } /* BuiltIn */
+    code span.cf { color: #007020; font-weight: bold; } /* ControlFlow */
+    code span.ch { color: #4070a0; } /* Char */
+    code span.cn { color: #880000; } /* Constant */
+    code span.co { color: #60a0b0; font-style: italic; } /* Comment */
+    code span.cv { color: #60a0b0; font-weight: bold; font-style: italic; } /* CommentVar */
+    code span.do { color: #ba2121; font-style: italic; } /* Documentation */
+    code span.dt { color: #902000; } /* DataType */
+    code span.dv { color: #40a070; } /* DecVal */
+    code span.er { color: #ff0000; font-weight: bold; } /* Error */
+    code span.ex { } /* Extension */
+    code span.fl { color: #40a070; } /* Float */
+    code span.fu { color: #06287e; } /* Function */
+    code span.im { color: #008000; font-weight: bold; } /* Import */
+    code span.in { color: #60a0b0; font-weight: bold; font-style: italic; } /* Information */
+    code span.kw { color: #007020; font-weight: bold; } /* Keyword */
+    code span.op { color: #666666; } /* Operator */
+    code span.ot { color: #007020; } /* Other */
+    code span.pp { color: #bc7a00; } /* Preprocessor */
+    code span.sc { color: #4070a0; } /* SpecialChar */
+    code span.ss { color: #bb6688; } /* SpecialString */
+    code span.st { color: #4070a0; } /* String */
+    code span.va { color: #19177c; } /* Variable */
+    code span.vs { color: #4070a0; } /* VerbatimString */
+    code span.wa { color: #60a0b0; font-weight: bold; font-style: italic; } /* Warning */
+  </style>
+  <link rel="stylesheet" href="style.css" />
+</head>
+<body>
+<header id="title-block-header">
+<h1 class="title">Chapter 11: Transport Layer</h1>
+</header>
+<p>The <strong>Transport</strong> layer is the central coordinator of a
+Reticulum node. It manages interfaces, routes packets, maintains tables,
+and connects all the components we’ve discussed. This chapter explains
+how it all fits together.</p>
+<h2 id="transport-overview">11.1 Transport Overview</h2>
+<p>The Transport instance is responsible for:</p>
+<ul>
+<li><strong>Interface management</strong>: Adding, removing, and
+monitoring interfaces</li>
+<li><strong>Packet routing</strong>: Forwarding packets toward their
+destinations</li>
+<li><strong>Table maintenance</strong>: Path table, link table, announce
+table</li>
+<li><strong>Destination registry</strong>: Tracking local
+destinations</li>
+<li><strong>Deduplication</strong>: Preventing packet loops</li>
+</ul>
+<div class="sourceCode" id="cb1"><pre class="sourceCode c"><code class="sourceCode c"><span id="cb1-1"><a href="#cb1-1" aria-hidden="true" tabindex="-1"></a><span class="kw">typedef</span> <span class="kw">struct</span> Transport <span class="op">{</span></span>
+<span id="cb1-2"><a href="#cb1-2" aria-hidden="true" tabindex="-1"></a>    <span class="co">// Identity</span></span>
+<span id="cb1-3"><a href="#cb1-3" aria-hidden="true" tabindex="-1"></a>    <span class="dt">uint8_t</span> identity_hash<span class="op">[</span><span class="dv">16</span><span class="op">];</span></span>
+<span id="cb1-4"><a href="#cb1-4" aria-hidden="true" tabindex="-1"></a>    Identity <span class="op">*</span>identity<span class="op">;</span></span>
+<span id="cb1-5"><a href="#cb1-5" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb1-6"><a href="#cb1-6" aria-hidden="true" tabindex="-1"></a>    <span class="co">// Interfaces</span></span>
+<span id="cb1-7"><a href="#cb1-7" aria-hidden="true" tabindex="-1"></a>    Interface <span class="op">**</span>interfaces<span class="op">;</span></span>
+<span id="cb1-8"><a href="#cb1-8" aria-hidden="true" tabindex="-1"></a>    <span class="dt">size_t</span> interface_count<span class="op">;</span></span>
+<span id="cb1-9"><a href="#cb1-9" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb1-10"><a href="#cb1-10" aria-hidden="true" tabindex="-1"></a>    <span class="co">// Tables</span></span>
+<span id="cb1-11"><a href="#cb1-11" aria-hidden="true" tabindex="-1"></a>    PathTable path_table<span class="op">;</span></span>
+<span id="cb1-12"><a href="#cb1-12" aria-hidden="true" tabindex="-1"></a>    LinkTable link_table<span class="op">;</span></span>
+<span id="cb1-13"><a href="#cb1-13" aria-hidden="true" tabindex="-1"></a>    AnnounceTable announce_table<span class="op">;</span></span>
+<span id="cb1-14"><a href="#cb1-14" aria-hidden="true" tabindex="-1"></a>    ReverseTable reverse_table<span class="op">;</span></span>
+<span id="cb1-15"><a href="#cb1-15" aria-hidden="true" tabindex="-1"></a>    RateLimiter rate_limiter<span class="op">;</span></span>
+<span id="cb1-16"><a href="#cb1-16" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb1-17"><a href="#cb1-17" aria-hidden="true" tabindex="-1"></a>    <span class="co">// Local destinations</span></span>
+<span id="cb1-18"><a href="#cb1-18" aria-hidden="true" tabindex="-1"></a>    Destination <span class="op">**</span>destinations<span class="op">;</span></span>
+<span id="cb1-19"><a href="#cb1-19" aria-hidden="true" tabindex="-1"></a>    <span class="dt">size_t</span> destination_count<span class="op">;</span></span>
+<span id="cb1-20"><a href="#cb1-20" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb1-21"><a href="#cb1-21" aria-hidden="true" tabindex="-1"></a>    <span class="co">// Deduplication</span></span>
+<span id="cb1-22"><a href="#cb1-22" aria-hidden="true" tabindex="-1"></a>    <span class="dt">uint8_t</span> packet_hashes<span class="op">[</span><span class="dv">1024</span><span class="op">][</span><span class="dv">32</span><span class="op">];</span></span>
+<span id="cb1-23"><a href="#cb1-23" aria-hidden="true" tabindex="-1"></a>    <span class="dt">size_t</span> packet_hash_count<span class="op">;</span></span>
+<span id="cb1-24"><a href="#cb1-24" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb1-25"><a href="#cb1-25" aria-hidden="true" tabindex="-1"></a>    <span class="co">// Configuration</span></span>
+<span id="cb1-26"><a href="#cb1-26" aria-hidden="true" tabindex="-1"></a>    <span class="dt">bool</span> transport_enabled<span class="op">;</span></span>
+<span id="cb1-27"><a href="#cb1-27" aria-hidden="true" tabindex="-1"></a>    TransportMode mode<span class="op">;</span></span>
+<span id="cb1-28"><a href="#cb1-28" aria-hidden="true" tabindex="-1"></a><span class="op">}</span> Transport<span class="op">;</span></span>
+<span id="cb1-29"><a href="#cb1-29" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb1-30"><a href="#cb1-30" aria-hidden="true" tabindex="-1"></a><span class="kw">typedef</span> <span class="kw">enum</span> <span class="op">{</span></span>
+<span id="cb1-31"><a href="#cb1-31" aria-hidden="true" tabindex="-1"></a>    TRANSPORT_MODE_BOUNDARY<span class="op">,</span>     <span class="co">// Default - route between interfaces</span></span>
+<span id="cb1-32"><a href="#cb1-32" aria-hidden="true" tabindex="-1"></a>    TRANSPORT_MODE_ACCESS_POINT<span class="op">,</span> <span class="co">// Shorter path TTL</span></span>
+<span id="cb1-33"><a href="#cb1-33" aria-hidden="true" tabindex="-1"></a>    TRANSPORT_MODE_ROAMING<span class="op">,</span>      <span class="co">// Very short path TTL</span></span>
+<span id="cb1-34"><a href="#cb1-34" aria-hidden="true" tabindex="-1"></a><span class="op">}</span> TransportMode<span class="op">;</span></span></code></pre></div>
+<p><strong>Transport modes</strong> affect how long path entries are
+cached:</p>
+<table>
+<colgroup>
+<col style="width: 23%" />
+<col style="width: 38%" />
+<col style="width: 38%" />
+</colgroup>
+<thead>
+<tr class="header">
+<th>Mode</th>
+<th>Path TTL</th>
+<th>Use Case</th>
+</tr>
+</thead>
+<tbody>
+<tr class="odd">
+<td>BOUNDARY</td>
+<td>7 days</td>
+<td>Fixed infrastructure nodes that route between networks</td>
+</tr>
+<tr class="even">
+<td>ACCESS_POINT</td>
+<td>2 days</td>
+<td>Semi-mobile nodes (e.g., vehicle gateway)</td>
+</tr>
+<tr class="odd">
+<td>ROAMING</td>
+<td>1 hour</td>
+<td>Mobile nodes that frequently change location</td>
+</tr>
+</tbody>
+</table>
+<p>Shorter TTLs cause more frequent path rediscovery but handle mobility
+better.</p>
+<h2 id="packet-flow">11.2 Packet Flow</h2>
+<h3 id="inbound-packet-processing">Inbound Packet Processing</h3>
+<p>When a packet arrives on an interface:</p>
+<div class="sourceCode" id="cb2"><pre class="sourceCode c"><code class="sourceCode c"><span id="cb2-1"><a href="#cb2-1" aria-hidden="true" tabindex="-1"></a><span class="dt">void</span> transport_receive<span class="op">(</span>Transport <span class="op">*</span>t<span class="op">,</span> Interface <span class="op">*</span>iface<span class="op">,</span></span>
+<span id="cb2-2"><a href="#cb2-2" aria-hidden="true" tabindex="-1"></a>                       <span class="dt">const</span> <span class="dt">uint8_t</span> <span class="op">*</span>raw<span class="op">,</span> <span class="dt">size_t</span> raw_len<span class="op">)</span> <span class="op">{</span></span>
+<span id="cb2-3"><a href="#cb2-3" aria-hidden="true" tabindex="-1"></a>    <span class="co">// 1. Parse packet</span></span>
+<span id="cb2-4"><a href="#cb2-4" aria-hidden="true" tabindex="-1"></a>    Packet pkt<span class="op">;</span></span>
+<span id="cb2-5"><a href="#cb2-5" aria-hidden="true" tabindex="-1"></a>    <span class="cf">if</span> <span class="op">(!</span>parse_packet<span class="op">(</span>raw<span class="op">,</span> raw_len<span class="op">,</span> <span class="op">&amp;</span>pkt<span class="op">))</span> <span class="op">{</span></span>
+<span id="cb2-6"><a href="#cb2-6" aria-hidden="true" tabindex="-1"></a>        <span class="cf">return</span><span class="op">;</span>  <span class="co">// Invalid packet</span></span>
+<span id="cb2-7"><a href="#cb2-7" aria-hidden="true" tabindex="-1"></a>    <span class="op">}</span></span>
+<span id="cb2-8"><a href="#cb2-8" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb2-9"><a href="#cb2-9" aria-hidden="true" tabindex="-1"></a>    <span class="co">// 2. IFAC verification (if enabled)</span></span>
+<span id="cb2-10"><a href="#cb2-10" aria-hidden="true" tabindex="-1"></a>    <span class="cf">if</span> <span class="op">(</span>iface<span class="op">-&gt;</span>ifac_enabled<span class="op">)</span> <span class="op">{</span></span>
+<span id="cb2-11"><a href="#cb2-11" aria-hidden="true" tabindex="-1"></a>        <span class="cf">if</span> <span class="op">(!</span>verify_ifac<span class="op">(&amp;</span>pkt<span class="op">,</span> iface<span class="op">-&gt;</span>ifac_key<span class="op">))</span> <span class="op">{</span></span>
+<span id="cb2-12"><a href="#cb2-12" aria-hidden="true" tabindex="-1"></a>            <span class="cf">return</span><span class="op">;</span>  <span class="co">// Auth failed</span></span>
+<span id="cb2-13"><a href="#cb2-13" aria-hidden="true" tabindex="-1"></a>        <span class="op">}</span></span>
+<span id="cb2-14"><a href="#cb2-14" aria-hidden="true" tabindex="-1"></a>        <span class="co">// Remove IFAC tag from packet</span></span>
+<span id="cb2-15"><a href="#cb2-15" aria-hidden="true" tabindex="-1"></a>        strip_ifac<span class="op">(&amp;</span>pkt<span class="op">);</span></span>
+<span id="cb2-16"><a href="#cb2-16" aria-hidden="true" tabindex="-1"></a>    <span class="op">}</span></span>
+<span id="cb2-17"><a href="#cb2-17" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb2-18"><a href="#cb2-18" aria-hidden="true" tabindex="-1"></a>    <span class="co">// 3. Deduplication</span></span>
+<span id="cb2-19"><a href="#cb2-19" aria-hidden="true" tabindex="-1"></a>    <span class="dt">uint8_t</span> packet_hash<span class="op">[</span><span class="dv">32</span><span class="op">];</span></span>
+<span id="cb2-20"><a href="#cb2-20" aria-hidden="true" tabindex="-1"></a>    compute_packet_hash<span class="op">(&amp;</span>pkt<span class="op">,</span> packet_hash<span class="op">);</span></span>
+<span id="cb2-21"><a href="#cb2-21" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb2-22"><a href="#cb2-22" aria-hidden="true" tabindex="-1"></a>    <span class="cf">if</span> <span class="op">(</span>is_duplicate<span class="op">(</span>t<span class="op">,</span> packet_hash<span class="op">))</span> <span class="op">{</span></span>
+<span id="cb2-23"><a href="#cb2-23" aria-hidden="true" tabindex="-1"></a>        <span class="cf">return</span><span class="op">;</span>  <span class="co">// Already seen</span></span>
+<span id="cb2-24"><a href="#cb2-24" aria-hidden="true" tabindex="-1"></a>    <span class="op">}</span></span>
+<span id="cb2-25"><a href="#cb2-25" aria-hidden="true" tabindex="-1"></a>    add_packet_hash<span class="op">(</span>t<span class="op">,</span> packet_hash<span class="op">);</span></span>
+<span id="cb2-26"><a href="#cb2-26" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb2-27"><a href="#cb2-27" aria-hidden="true" tabindex="-1"></a>    <span class="co">// 4. Process by packet type</span></span>
+<span id="cb2-28"><a href="#cb2-28" aria-hidden="true" tabindex="-1"></a>    <span class="cf">switch</span> <span class="op">(</span>pkt<span class="op">.</span>packet_type<span class="op">)</span> <span class="op">{</span></span>
+<span id="cb2-29"><a href="#cb2-29" aria-hidden="true" tabindex="-1"></a>    <span class="cf">case</span> PACKET_DATA<span class="op">:</span></span>
+<span id="cb2-30"><a href="#cb2-30" aria-hidden="true" tabindex="-1"></a>        process_data_packet<span class="op">(</span>t<span class="op">,</span> iface<span class="op">,</span> <span class="op">&amp;</span>pkt<span class="op">,</span> packet_hash<span class="op">);</span></span>
+<span id="cb2-31"><a href="#cb2-31" aria-hidden="true" tabindex="-1"></a>        <span class="cf">break</span><span class="op">;</span></span>
+<span id="cb2-32"><a href="#cb2-32" aria-hidden="true" tabindex="-1"></a>    <span class="cf">case</span> PACKET_ANNOUNCE<span class="op">:</span></span>
+<span id="cb2-33"><a href="#cb2-33" aria-hidden="true" tabindex="-1"></a>        process_announce_packet<span class="op">(</span>t<span class="op">,</span> iface<span class="op">,</span> <span class="op">&amp;</span>pkt<span class="op">);</span></span>
+<span id="cb2-34"><a href="#cb2-34" aria-hidden="true" tabindex="-1"></a>        <span class="cf">break</span><span class="op">;</span></span>
+<span id="cb2-35"><a href="#cb2-35" aria-hidden="true" tabindex="-1"></a>    <span class="cf">case</span> PACKET_LINKREQUEST<span class="op">:</span></span>
+<span id="cb2-36"><a href="#cb2-36" aria-hidden="true" tabindex="-1"></a>        process_link_request<span class="op">(</span>t<span class="op">,</span> iface<span class="op">,</span> <span class="op">&amp;</span>pkt<span class="op">);</span></span>
+<span id="cb2-37"><a href="#cb2-37" aria-hidden="true" tabindex="-1"></a>        <span class="cf">break</span><span class="op">;</span></span>
+<span id="cb2-38"><a href="#cb2-38" aria-hidden="true" tabindex="-1"></a>    <span class="cf">case</span> PACKET_PROOF<span class="op">:</span></span>
+<span id="cb2-39"><a href="#cb2-39" aria-hidden="true" tabindex="-1"></a>        process_proof_packet<span class="op">(</span>t<span class="op">,</span> iface<span class="op">,</span> <span class="op">&amp;</span>pkt<span class="op">);</span></span>
+<span id="cb2-40"><a href="#cb2-40" aria-hidden="true" tabindex="-1"></a>        <span class="cf">break</span><span class="op">;</span></span>
+<span id="cb2-41"><a href="#cb2-41" aria-hidden="true" tabindex="-1"></a>    <span class="op">}</span></span>
+<span id="cb2-42"><a href="#cb2-42" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb2-43"><a href="#cb2-43" aria-hidden="true" tabindex="-1"></a>    <span class="co">// 5. Consider forwarding</span></span>
+<span id="cb2-44"><a href="#cb2-44" aria-hidden="true" tabindex="-1"></a>    <span class="cf">if</span> <span class="op">(</span>pkt<span class="op">.</span>hops <span class="op">&lt;</span> MAX_HOPS <span class="op">&amp;&amp;</span> should_forward<span class="op">(</span>t<span class="op">,</span> <span class="op">&amp;</span>pkt<span class="op">,</span> iface<span class="op">))</span> <span class="op">{</span></span>
+<span id="cb2-45"><a href="#cb2-45" aria-hidden="true" tabindex="-1"></a>        pkt<span class="op">.</span>hops<span class="op">++;</span></span>
+<span id="cb2-46"><a href="#cb2-46" aria-hidden="true" tabindex="-1"></a>        forward_packet<span class="op">(</span>t<span class="op">,</span> <span class="op">&amp;</span>pkt<span class="op">,</span> iface<span class="op">);</span></span>
+<span id="cb2-47"><a href="#cb2-47" aria-hidden="true" tabindex="-1"></a>    <span class="op">}</span></span>
+<span id="cb2-48"><a href="#cb2-48" aria-hidden="true" tabindex="-1"></a><span class="op">}</span></span></code></pre></div>
+<h3 id="outbound-packet-processing">Outbound Packet Processing</h3>
+<p>When sending a packet:</p>
+<div class="sourceCode" id="cb3"><pre class="sourceCode c"><code class="sourceCode c"><span id="cb3-1"><a href="#cb3-1" aria-hidden="true" tabindex="-1"></a><span class="dt">bool</span> transport_send<span class="op">(</span>Transport <span class="op">*</span>t<span class="op">,</span> Packet <span class="op">*</span>pkt<span class="op">)</span> <span class="op">{</span></span>
+<span id="cb3-2"><a href="#cb3-2" aria-hidden="true" tabindex="-1"></a>    <span class="co">// 1. Determine outbound interface(s)</span></span>
+<span id="cb3-3"><a href="#cb3-3" aria-hidden="true" tabindex="-1"></a>    <span class="cf">if</span> <span class="op">(</span>pkt<span class="op">-&gt;</span>destination_type <span class="op">==</span> DEST_LINK<span class="op">)</span> <span class="op">{</span></span>
+<span id="cb3-4"><a href="#cb3-4" aria-hidden="true" tabindex="-1"></a>        <span class="co">// Link packets - use link table</span></span>
+<span id="cb3-5"><a href="#cb3-5" aria-hidden="true" tabindex="-1"></a>        <span class="cf">return</span> send_link_packet<span class="op">(</span>t<span class="op">,</span> pkt<span class="op">);</span></span>
+<span id="cb3-6"><a href="#cb3-6" aria-hidden="true" tabindex="-1"></a>    <span class="op">}</span></span>
+<span id="cb3-7"><a href="#cb3-7" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb3-8"><a href="#cb3-8" aria-hidden="true" tabindex="-1"></a>    <span class="co">// 2. Check path table for route</span></span>
+<span id="cb3-9"><a href="#cb3-9" aria-hidden="true" tabindex="-1"></a>    PathEntry <span class="op">*</span>path <span class="op">=</span> path_table_lookup<span class="op">(&amp;</span>t<span class="op">-&gt;</span>path_table<span class="op">,</span> pkt<span class="op">-&gt;</span>destination<span class="op">);</span></span>
+<span id="cb3-10"><a href="#cb3-10" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb3-11"><a href="#cb3-11" aria-hidden="true" tabindex="-1"></a>    <span class="cf">if</span> <span class="op">(</span>path <span class="op">!=</span> NULL <span class="op">&amp;&amp;</span> <span class="op">!</span>path_expired<span class="op">(</span>path<span class="op">))</span> <span class="op">{</span></span>
+<span id="cb3-12"><a href="#cb3-12" aria-hidden="true" tabindex="-1"></a>        <span class="co">// Known path - use it</span></span>
+<span id="cb3-13"><a href="#cb3-13" aria-hidden="true" tabindex="-1"></a>        <span class="cf">if</span> <span class="op">(</span>path<span class="op">-&gt;</span>hops <span class="op">&gt;</span> <span class="dv">0</span><span class="op">)</span> <span class="op">{</span></span>
+<span id="cb3-14"><a href="#cb3-14" aria-hidden="true" tabindex="-1"></a>            <span class="co">// Multi-hop: add transport header</span></span>
+<span id="cb3-15"><a href="#cb3-15" aria-hidden="true" tabindex="-1"></a>            pkt<span class="op">-&gt;</span>header_type <span class="op">=</span> <span class="dv">1</span><span class="op">;</span>  <span class="co">// Header Type 2</span></span>
+<span id="cb3-16"><a href="#cb3-16" aria-hidden="true" tabindex="-1"></a>            memcpy<span class="op">(</span>pkt<span class="op">-&gt;</span>transport<span class="op">,</span> path<span class="op">-&gt;</span>next_hop<span class="op">,</span> <span class="dv">16</span><span class="op">);</span></span>
+<span id="cb3-17"><a href="#cb3-17" aria-hidden="true" tabindex="-1"></a>        <span class="op">}</span></span>
+<span id="cb3-18"><a href="#cb3-18" aria-hidden="true" tabindex="-1"></a>        <span class="cf">return</span> interface_send<span class="op">(</span>path<span class="op">-&gt;</span>interface<span class="op">,</span> pkt<span class="op">);</span></span>
+<span id="cb3-19"><a href="#cb3-19" aria-hidden="true" tabindex="-1"></a>    <span class="op">}</span></span>
+<span id="cb3-20"><a href="#cb3-20" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb3-21"><a href="#cb3-21" aria-hidden="true" tabindex="-1"></a>    <span class="co">// 3. No path - broadcast on all interfaces</span></span>
+<span id="cb3-22"><a href="#cb3-22" aria-hidden="true" tabindex="-1"></a>    <span class="dt">bool</span> sent <span class="op">=</span> <span class="kw">false</span><span class="op">;</span></span>
+<span id="cb3-23"><a href="#cb3-23" aria-hidden="true" tabindex="-1"></a>    <span class="cf">for</span> <span class="op">(</span><span class="dt">size_t</span> i <span class="op">=</span> <span class="dv">0</span><span class="op">;</span> i <span class="op">&lt;</span> t<span class="op">-&gt;</span>interface_count<span class="op">;</span> i<span class="op">++)</span> <span class="op">{</span></span>
+<span id="cb3-24"><a href="#cb3-24" aria-hidden="true" tabindex="-1"></a>        <span class="cf">if</span> <span class="op">(</span>t<span class="op">-&gt;</span>interfaces<span class="op">[</span>i<span class="op">]-&gt;</span>enabled <span class="op">&amp;&amp;</span> t<span class="op">-&gt;</span>interfaces<span class="op">[</span>i<span class="op">]-&gt;</span>online<span class="op">)</span> <span class="op">{</span></span>
+<span id="cb3-25"><a href="#cb3-25" aria-hidden="true" tabindex="-1"></a>            <span class="cf">if</span> <span class="op">(</span>interface_send<span class="op">(</span>t<span class="op">-&gt;</span>interfaces<span class="op">[</span>i<span class="op">],</span> pkt<span class="op">))</span> <span class="op">{</span></span>
+<span id="cb3-26"><a href="#cb3-26" aria-hidden="true" tabindex="-1"></a>                sent <span class="op">=</span> <span class="kw">true</span><span class="op">;</span></span>
+<span id="cb3-27"><a href="#cb3-27" aria-hidden="true" tabindex="-1"></a>            <span class="op">}</span></span>
+<span id="cb3-28"><a href="#cb3-28" aria-hidden="true" tabindex="-1"></a>        <span class="op">}</span></span>
+<span id="cb3-29"><a href="#cb3-29" aria-hidden="true" tabindex="-1"></a>    <span class="op">}</span></span>
+<span id="cb3-30"><a href="#cb3-30" aria-hidden="true" tabindex="-1"></a>    <span class="cf">return</span> sent<span class="op">;</span></span>
+<span id="cb3-31"><a href="#cb3-31" aria-hidden="true" tabindex="-1"></a><span class="op">}</span></span></code></pre></div>
+<h2 id="packet-routing">11.3 Packet Routing</h2>
+<h3 id="header-type-1-vs-header-type-2">Header Type 1 vs Header Type
+2</h3>
+<p><strong>Header Type 1</strong> (single hop or broadcast):</p>
+<pre><code>+------+------+-------------+---------+---------+
+|Header| Hops | Destination | Context | Payload |
++------+------+-------------+---------+---------+</code></pre>
+<p><strong>Header Type 2</strong> (routed through transport):</p>
+<pre><code>+------+------+-------------+-----------+---------+---------+
+|Header| Hops | Destination | Transport | Context | Payload |
++------+------+-------------+-----------+---------+---------+</code></pre>
+<p>The Transport field contains the next-hop’s transport identity
+hash.</p>
+<h3 id="forwarding-logic">Forwarding Logic</h3>
+<p>The forwarding logic handles two fundamentally different cases:</p>
+<p><strong>Header Type 2 (Routed) Packets</strong>: These packets have a
+specific next-hop address in the Transport field. When a node receives
+such a packet, it first checks if the Transport field matches its own
+identity hash—if not, the packet isn’t meant for this node to route and
+is ignored. If it matches, the node looks up the final destination in
+its path table to determine where to send the packet next. If the path
+table shows zero remaining hops, the destination is directly reachable,
+so the node converts the packet to Header Type 1 and sends it directly.
+Otherwise, it updates the Transport field with the next hop’s address
+and forwards.</p>
+<p><strong>Header Type 1 (Broadcast) Packets</strong>: These packets
+have no specific route and should be flooded to all interfaces except
+the one they arrived on. This is how announces propagate and how packets
+reach destinations when no path is known.</p>
+<div class="sourceCode" id="cb6"><pre class="sourceCode c"><code class="sourceCode c"><span id="cb6-1"><a href="#cb6-1" aria-hidden="true" tabindex="-1"></a><span class="dt">void</span> forward_packet<span class="op">(</span>Transport <span class="op">*</span>t<span class="op">,</span> Packet <span class="op">*</span>pkt<span class="op">,</span> Interface <span class="op">*</span>received_from<span class="op">)</span> <span class="op">{</span></span>
+<span id="cb6-2"><a href="#cb6-2" aria-hidden="true" tabindex="-1"></a>    <span class="cf">if</span> <span class="op">(</span>pkt<span class="op">-&gt;</span>header_type <span class="op">==</span> <span class="dv">1</span><span class="op">)</span> <span class="op">{</span></span>
+<span id="cb6-3"><a href="#cb6-3" aria-hidden="true" tabindex="-1"></a>        <span class="co">// Header Type 2 - routed packet</span></span>
+<span id="cb6-4"><a href="#cb6-4" aria-hidden="true" tabindex="-1"></a>        <span class="cf">if</span> <span class="op">(</span>memcmp<span class="op">(</span>pkt<span class="op">-&gt;</span>transport<span class="op">,</span> t<span class="op">-&gt;</span>identity_hash<span class="op">,</span> <span class="dv">16</span><span class="op">)</span> <span class="op">!=</span> <span class="dv">0</span><span class="op">)</span> <span class="op">{</span></span>
+<span id="cb6-5"><a href="#cb6-5" aria-hidden="true" tabindex="-1"></a>            <span class="co">// Not for us to route - ignore</span></span>
+<span id="cb6-6"><a href="#cb6-6" aria-hidden="true" tabindex="-1"></a>            <span class="cf">return</span><span class="op">;</span></span>
+<span id="cb6-7"><a href="#cb6-7" aria-hidden="true" tabindex="-1"></a>        <span class="op">}</span></span>
+<span id="cb6-8"><a href="#cb6-8" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb6-9"><a href="#cb6-9" aria-hidden="true" tabindex="-1"></a>        <span class="co">// We&#39;re the next hop - look up path</span></span>
+<span id="cb6-10"><a href="#cb6-10" aria-hidden="true" tabindex="-1"></a>        PathEntry <span class="op">*</span>path <span class="op">=</span> path_table_lookup<span class="op">(&amp;</span>t<span class="op">-&gt;</span>path_table<span class="op">,</span> pkt<span class="op">-&gt;</span>destination<span class="op">);</span></span>
+<span id="cb6-11"><a href="#cb6-11" aria-hidden="true" tabindex="-1"></a>        <span class="cf">if</span> <span class="op">(</span>path <span class="op">==</span> NULL<span class="op">)</span> <span class="op">{</span></span>
+<span id="cb6-12"><a href="#cb6-12" aria-hidden="true" tabindex="-1"></a>            <span class="cf">return</span><span class="op">;</span>  <span class="co">// No path</span></span>
+<span id="cb6-13"><a href="#cb6-13" aria-hidden="true" tabindex="-1"></a>        <span class="op">}</span></span>
+<span id="cb6-14"><a href="#cb6-14" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb6-15"><a href="#cb6-15" aria-hidden="true" tabindex="-1"></a>        <span class="cf">if</span> <span class="op">(</span>path<span class="op">-&gt;</span>hops <span class="op">==</span> <span class="dv">0</span><span class="op">)</span> <span class="op">{</span></span>
+<span id="cb6-16"><a href="#cb6-16" aria-hidden="true" tabindex="-1"></a>            <span class="co">// Direct delivery - convert to Header Type 1</span></span>
+<span id="cb6-17"><a href="#cb6-17" aria-hidden="true" tabindex="-1"></a>            pkt<span class="op">-&gt;</span>header_type <span class="op">=</span> <span class="dv">0</span><span class="op">;</span></span>
+<span id="cb6-18"><a href="#cb6-18" aria-hidden="true" tabindex="-1"></a>            interface_send<span class="op">(</span>path<span class="op">-&gt;</span>interface<span class="op">,</span> pkt<span class="op">);</span></span>
+<span id="cb6-19"><a href="#cb6-19" aria-hidden="true" tabindex="-1"></a>        <span class="op">}</span> <span class="cf">else</span> <span class="op">{</span></span>
+<span id="cb6-20"><a href="#cb6-20" aria-hidden="true" tabindex="-1"></a>            <span class="co">// More hops - update transport field</span></span>
+<span id="cb6-21"><a href="#cb6-21" aria-hidden="true" tabindex="-1"></a>            memcpy<span class="op">(</span>pkt<span class="op">-&gt;</span>transport<span class="op">,</span> path<span class="op">-&gt;</span>next_hop<span class="op">,</span> <span class="dv">16</span><span class="op">);</span></span>
+<span id="cb6-22"><a href="#cb6-22" aria-hidden="true" tabindex="-1"></a>            interface_send<span class="op">(</span>path<span class="op">-&gt;</span>interface<span class="op">,</span> pkt<span class="op">);</span></span>
+<span id="cb6-23"><a href="#cb6-23" aria-hidden="true" tabindex="-1"></a>        <span class="op">}</span></span>
+<span id="cb6-24"><a href="#cb6-24" aria-hidden="true" tabindex="-1"></a>    <span class="op">}</span> <span class="cf">else</span> <span class="op">{</span></span>
+<span id="cb6-25"><a href="#cb6-25" aria-hidden="true" tabindex="-1"></a>        <span class="co">// Header Type 1 - broadcast</span></span>
+<span id="cb6-26"><a href="#cb6-26" aria-hidden="true" tabindex="-1"></a>        <span class="co">// Forward on all interfaces except the one it came from</span></span>
+<span id="cb6-27"><a href="#cb6-27" aria-hidden="true" tabindex="-1"></a>        <span class="cf">for</span> <span class="op">(</span><span class="dt">size_t</span> i <span class="op">=</span> <span class="dv">0</span><span class="op">;</span> i <span class="op">&lt;</span> t<span class="op">-&gt;</span>interface_count<span class="op">;</span> i<span class="op">++)</span> <span class="op">{</span></span>
+<span id="cb6-28"><a href="#cb6-28" aria-hidden="true" tabindex="-1"></a>            Interface <span class="op">*</span>iface <span class="op">=</span> t<span class="op">-&gt;</span>interfaces<span class="op">[</span>i<span class="op">];</span></span>
+<span id="cb6-29"><a href="#cb6-29" aria-hidden="true" tabindex="-1"></a>            <span class="cf">if</span> <span class="op">(</span>iface <span class="op">!=</span> received_from <span class="op">&amp;&amp;</span> iface<span class="op">-&gt;</span>enabled <span class="op">&amp;&amp;</span> iface<span class="op">-&gt;</span>online<span class="op">)</span> <span class="op">{</span></span>
+<span id="cb6-30"><a href="#cb6-30" aria-hidden="true" tabindex="-1"></a>                interface_send<span class="op">(</span>iface<span class="op">,</span> pkt<span class="op">);</span></span>
+<span id="cb6-31"><a href="#cb6-31" aria-hidden="true" tabindex="-1"></a>            <span class="op">}</span></span>
+<span id="cb6-32"><a href="#cb6-32" aria-hidden="true" tabindex="-1"></a>        <span class="op">}</span></span>
+<span id="cb6-33"><a href="#cb6-33" aria-hidden="true" tabindex="-1"></a>    <span class="op">}</span></span>
+<span id="cb6-34"><a href="#cb6-34" aria-hidden="true" tabindex="-1"></a><span class="op">}</span></span></code></pre></div>
+<h3 id="remaining-hops-calculation">Remaining Hops Calculation</h3>
+<div class="sourceCode" id="cb7"><pre class="sourceCode c"><code class="sourceCode c"><span id="cb7-1"><a href="#cb7-1" aria-hidden="true" tabindex="-1"></a><span class="dt">int</span> remaining_hops<span class="op">(</span>Transport <span class="op">*</span>t<span class="op">,</span> <span class="dt">const</span> <span class="dt">uint8_t</span> dest<span class="op">[</span><span class="dv">16</span><span class="op">])</span> <span class="op">{</span></span>
+<span id="cb7-2"><a href="#cb7-2" aria-hidden="true" tabindex="-1"></a>    PathEntry <span class="op">*</span>path <span class="op">=</span> path_table_lookup<span class="op">(&amp;</span>t<span class="op">-&gt;</span>path_table<span class="op">,</span> dest<span class="op">);</span></span>
+<span id="cb7-3"><a href="#cb7-3" aria-hidden="true" tabindex="-1"></a>    <span class="cf">if</span> <span class="op">(</span>path <span class="op">==</span> NULL<span class="op">)</span> <span class="op">{</span></span>
+<span id="cb7-4"><a href="#cb7-4" aria-hidden="true" tabindex="-1"></a>        <span class="cf">return</span> <span class="op">-</span><span class="dv">1</span><span class="op">;</span>  <span class="co">// Unknown</span></span>
+<span id="cb7-5"><a href="#cb7-5" aria-hidden="true" tabindex="-1"></a>    <span class="op">}</span></span>
+<span id="cb7-6"><a href="#cb7-6" aria-hidden="true" tabindex="-1"></a>    <span class="cf">return</span> path<span class="op">-&gt;</span>hops<span class="op">;</span></span>
+<span id="cb7-7"><a href="#cb7-7" aria-hidden="true" tabindex="-1"></a><span class="op">}</span></span></code></pre></div>
+<h2 id="link-table">11.4 Link Table</h2>
+<p>The link table tracks established links for routing link packets.</p>
+<p><strong>Why a separate table?</strong> Regular packets are routed
+using the path table, which maps destination hashes to next-hop
+interfaces. But link packets are addressed to Link IDs, not destination
+hashes. A Link ID is computed from the link establishment handshake and
+doesn’t appear in any announce—it’s only known to nodes that saw the
+link request pass through them.</p>
+<p>The link table serves two purposes: 1. <strong>Forward
+routing</strong>: When a node originates a packet on a link, the link
+table tells it which interface and next hop to use 2. <strong>Reverse
+routing</strong>: When a link request passes through a node, the node
+records how to send replies (proofs, data) back to the initiator</p>
+<p>Each entry stores both directions:
+<code>next_hop_transport</code>/<code>next_hop_interface</code> for
+outbound packets, and
+<code>received_interface</code>/<code>taken_hops</code> for routing
+proofs back to the initiator.</p>
+<h3 id="link-table-entry">Link Table Entry</h3>
+<div class="sourceCode" id="cb8"><pre class="sourceCode c"><code class="sourceCode c"><span id="cb8-1"><a href="#cb8-1" aria-hidden="true" tabindex="-1"></a><span class="kw">typedef</span> <span class="kw">struct</span> <span class="op">{</span></span>
+<span id="cb8-2"><a href="#cb8-2" aria-hidden="true" tabindex="-1"></a>    <span class="dt">uint8_t</span> link_id<span class="op">[</span><span class="dv">16</span><span class="op">];</span>         <span class="co">// Key</span></span>
+<span id="cb8-3"><a href="#cb8-3" aria-hidden="true" tabindex="-1"></a>    <span class="dt">uint64_t</span> timestamp<span class="op">;</span></span>
+<span id="cb8-4"><a href="#cb8-4" aria-hidden="true" tabindex="-1"></a>    <span class="dt">uint8_t</span> next_hop_transport<span class="op">[</span><span class="dv">16</span><span class="op">];</span></span>
+<span id="cb8-5"><a href="#cb8-5" aria-hidden="true" tabindex="-1"></a>    Interface <span class="op">*</span>next_hop_interface<span class="op">;</span></span>
+<span id="cb8-6"><a href="#cb8-6" aria-hidden="true" tabindex="-1"></a>    <span class="dt">int</span> remaining_hops<span class="op">;</span></span>
+<span id="cb8-7"><a href="#cb8-7" aria-hidden="true" tabindex="-1"></a>    Interface <span class="op">*</span>received_interface<span class="op">;</span></span>
+<span id="cb8-8"><a href="#cb8-8" aria-hidden="true" tabindex="-1"></a>    <span class="dt">int</span> taken_hops<span class="op">;</span></span>
+<span id="cb8-9"><a href="#cb8-9" aria-hidden="true" tabindex="-1"></a>    <span class="dt">uint8_t</span> destination_hash<span class="op">[</span><span class="dv">16</span><span class="op">];</span></span>
+<span id="cb8-10"><a href="#cb8-10" aria-hidden="true" tabindex="-1"></a>    <span class="dt">bool</span> validated<span class="op">;</span></span>
+<span id="cb8-11"><a href="#cb8-11" aria-hidden="true" tabindex="-1"></a>    <span class="dt">uint64_t</span> proof_timeout<span class="op">;</span></span>
+<span id="cb8-12"><a href="#cb8-12" aria-hidden="true" tabindex="-1"></a><span class="op">}</span> LinkTableEntry<span class="op">;</span></span>
+<span id="cb8-13"><a href="#cb8-13" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb8-14"><a href="#cb8-14" aria-hidden="true" tabindex="-1"></a><span class="kw">typedef</span> <span class="kw">struct</span> <span class="op">{</span></span>
+<span id="cb8-15"><a href="#cb8-15" aria-hidden="true" tabindex="-1"></a>    LinkTableEntry entries<span class="op">[</span><span class="dv">2048</span><span class="op">];</span></span>
+<span id="cb8-16"><a href="#cb8-16" aria-hidden="true" tabindex="-1"></a>    <span class="dt">size_t</span> count<span class="op">;</span></span>
+<span id="cb8-17"><a href="#cb8-17" aria-hidden="true" tabindex="-1"></a><span class="op">}</span> LinkTable<span class="op">;</span></span></code></pre></div>
+<h3 id="link-packet-routing">Link Packet Routing</h3>
+<div class="sourceCode" id="cb9"><pre class="sourceCode c"><code class="sourceCode c"><span id="cb9-1"><a href="#cb9-1" aria-hidden="true" tabindex="-1"></a><span class="dt">bool</span> send_link_packet<span class="op">(</span>Transport <span class="op">*</span>t<span class="op">,</span> Packet <span class="op">*</span>pkt<span class="op">)</span> <span class="op">{</span></span>
+<span id="cb9-2"><a href="#cb9-2" aria-hidden="true" tabindex="-1"></a>    <span class="co">// Find link in table</span></span>
+<span id="cb9-3"><a href="#cb9-3" aria-hidden="true" tabindex="-1"></a>    LinkTableEntry <span class="op">*</span>entry <span class="op">=</span> link_table_lookup<span class="op">(&amp;</span>t<span class="op">-&gt;</span>link_table<span class="op">,</span> pkt<span class="op">-&gt;</span>destination<span class="op">);</span></span>
+<span id="cb9-4"><a href="#cb9-4" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb9-5"><a href="#cb9-5" aria-hidden="true" tabindex="-1"></a>    <span class="cf">if</span> <span class="op">(</span>entry <span class="op">==</span> NULL<span class="op">)</span> <span class="op">{</span></span>
+<span id="cb9-6"><a href="#cb9-6" aria-hidden="true" tabindex="-1"></a>        <span class="co">// Unknown link - broadcast</span></span>
+<span id="cb9-7"><a href="#cb9-7" aria-hidden="true" tabindex="-1"></a>        <span class="cf">for</span> <span class="op">(</span><span class="dt">size_t</span> i <span class="op">=</span> <span class="dv">0</span><span class="op">;</span> i <span class="op">&lt;</span> t<span class="op">-&gt;</span>interface_count<span class="op">;</span> i<span class="op">++)</span> <span class="op">{</span></span>
+<span id="cb9-8"><a href="#cb9-8" aria-hidden="true" tabindex="-1"></a>            interface_send<span class="op">(</span>t<span class="op">-&gt;</span>interfaces<span class="op">[</span>i<span class="op">],</span> pkt<span class="op">);</span></span>
+<span id="cb9-9"><a href="#cb9-9" aria-hidden="true" tabindex="-1"></a>        <span class="op">}</span></span>
+<span id="cb9-10"><a href="#cb9-10" aria-hidden="true" tabindex="-1"></a>        <span class="cf">return</span> <span class="kw">true</span><span class="op">;</span></span>
+<span id="cb9-11"><a href="#cb9-11" aria-hidden="true" tabindex="-1"></a>    <span class="op">}</span></span>
+<span id="cb9-12"><a href="#cb9-12" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb9-13"><a href="#cb9-13" aria-hidden="true" tabindex="-1"></a>    <span class="cf">if</span> <span class="op">(</span>entry<span class="op">-&gt;</span>remaining_hops <span class="op">==</span> <span class="dv">0</span><span class="op">)</span> <span class="op">{</span></span>
+<span id="cb9-14"><a href="#cb9-14" aria-hidden="true" tabindex="-1"></a>        <span class="co">// Direct delivery</span></span>
+<span id="cb9-15"><a href="#cb9-15" aria-hidden="true" tabindex="-1"></a>        <span class="cf">return</span> interface_send<span class="op">(</span>entry<span class="op">-&gt;</span>next_hop_interface<span class="op">,</span> pkt<span class="op">);</span></span>
+<span id="cb9-16"><a href="#cb9-16" aria-hidden="true" tabindex="-1"></a>    <span class="op">}</span> <span class="cf">else</span> <span class="op">{</span></span>
+<span id="cb9-17"><a href="#cb9-17" aria-hidden="true" tabindex="-1"></a>        <span class="co">// Routed</span></span>
+<span id="cb9-18"><a href="#cb9-18" aria-hidden="true" tabindex="-1"></a>        pkt<span class="op">-&gt;</span>header_type <span class="op">=</span> <span class="dv">1</span><span class="op">;</span></span>
+<span id="cb9-19"><a href="#cb9-19" aria-hidden="true" tabindex="-1"></a>        memcpy<span class="op">(</span>pkt<span class="op">-&gt;</span>transport<span class="op">,</span> entry<span class="op">-&gt;</span>next_hop_transport<span class="op">,</span> <span class="dv">16</span><span class="op">);</span></span>
+<span id="cb9-20"><a href="#cb9-20" aria-hidden="true" tabindex="-1"></a>        <span class="cf">return</span> interface_send<span class="op">(</span>entry<span class="op">-&gt;</span>next_hop_interface<span class="op">,</span> pkt<span class="op">);</span></span>
+<span id="cb9-21"><a href="#cb9-21" aria-hidden="true" tabindex="-1"></a>    <span class="op">}</span></span>
+<span id="cb9-22"><a href="#cb9-22" aria-hidden="true" tabindex="-1"></a><span class="op">}</span></span></code></pre></div>
+<h3 id="link-table-population">Link Table Population</h3>
+<div class="sourceCode" id="cb10"><pre class="sourceCode c"><code class="sourceCode c"><span id="cb10-1"><a href="#cb10-1" aria-hidden="true" tabindex="-1"></a><span class="dt">void</span> populate_link_table<span class="op">(</span>Transport <span class="op">*</span>t<span class="op">,</span> Packet <span class="op">*</span>link_request<span class="op">,</span></span>
+<span id="cb10-2"><a href="#cb10-2" aria-hidden="true" tabindex="-1"></a>                         Interface <span class="op">*</span>received_from<span class="op">)</span> <span class="op">{</span></span>
+<span id="cb10-3"><a href="#cb10-3" aria-hidden="true" tabindex="-1"></a>    <span class="co">// Compute link ID</span></span>
+<span id="cb10-4"><a href="#cb10-4" aria-hidden="true" tabindex="-1"></a>    <span class="dt">uint8_t</span> link_id<span class="op">[</span><span class="dv">16</span><span class="op">];</span></span>
+<span id="cb10-5"><a href="#cb10-5" aria-hidden="true" tabindex="-1"></a>    compute_link_id<span class="op">(&amp;</span>link_request<span class="op">-&gt;</span>header<span class="op">,</span> link_request<span class="op">-&gt;</span>destination<span class="op">,</span></span>
+<span id="cb10-6"><a href="#cb10-6" aria-hidden="true" tabindex="-1"></a>                    link_request<span class="op">-&gt;</span>context<span class="op">,</span></span>
+<span id="cb10-7"><a href="#cb10-7" aria-hidden="true" tabindex="-1"></a>                    link_request<span class="op">-&gt;</span>payload<span class="op">,</span> link_request<span class="op">-&gt;</span>payload_len<span class="op">,</span></span>
+<span id="cb10-8"><a href="#cb10-8" aria-hidden="true" tabindex="-1"></a>                    link_id<span class="op">);</span></span>
+<span id="cb10-9"><a href="#cb10-9" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb10-10"><a href="#cb10-10" aria-hidden="true" tabindex="-1"></a>    <span class="co">// Add to link table</span></span>
+<span id="cb10-11"><a href="#cb10-11" aria-hidden="true" tabindex="-1"></a>    LinkTableEntry <span class="op">*</span>entry <span class="op">=</span> link_table_add<span class="op">(&amp;</span>t<span class="op">-&gt;</span>link_table<span class="op">,</span> link_id<span class="op">);</span></span>
+<span id="cb10-12"><a href="#cb10-12" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb10-13"><a href="#cb10-13" aria-hidden="true" tabindex="-1"></a>    entry<span class="op">-&gt;</span>timestamp <span class="op">=</span> time<span class="op">(</span>NULL<span class="op">);</span></span>
+<span id="cb10-14"><a href="#cb10-14" aria-hidden="true" tabindex="-1"></a>    memset<span class="op">(</span>entry<span class="op">-&gt;</span>next_hop_transport<span class="op">,</span> <span class="dv">0</span><span class="op">,</span> <span class="dv">16</span><span class="op">);</span>  <span class="co">// Direct for now</span></span>
+<span id="cb10-15"><a href="#cb10-15" aria-hidden="true" tabindex="-1"></a>    entry<span class="op">-&gt;</span>next_hop_interface <span class="op">=</span> received_from<span class="op">;</span></span>
+<span id="cb10-16"><a href="#cb10-16" aria-hidden="true" tabindex="-1"></a>    entry<span class="op">-&gt;</span>remaining_hops <span class="op">=</span> <span class="dv">0</span><span class="op">;</span></span>
+<span id="cb10-17"><a href="#cb10-17" aria-hidden="true" tabindex="-1"></a>    entry<span class="op">-&gt;</span>received_interface <span class="op">=</span> received_from<span class="op">;</span></span>
+<span id="cb10-18"><a href="#cb10-18" aria-hidden="true" tabindex="-1"></a>    entry<span class="op">-&gt;</span>taken_hops <span class="op">=</span> link_request<span class="op">-&gt;</span>hops<span class="op">;</span></span>
+<span id="cb10-19"><a href="#cb10-19" aria-hidden="true" tabindex="-1"></a>    memcpy<span class="op">(</span>entry<span class="op">-&gt;</span>destination_hash<span class="op">,</span> link_request<span class="op">-&gt;</span>destination<span class="op">,</span> <span class="dv">16</span><span class="op">);</span></span>
+<span id="cb10-20"><a href="#cb10-20" aria-hidden="true" tabindex="-1"></a>    entry<span class="op">-&gt;</span>validated <span class="op">=</span> <span class="kw">false</span><span class="op">;</span></span>
+<span id="cb10-21"><a href="#cb10-21" aria-hidden="true" tabindex="-1"></a>    entry<span class="op">-&gt;</span>proof_timeout <span class="op">=</span> time<span class="op">(</span>NULL<span class="op">)</span> <span class="op">+</span> PROOF_TIMEOUT_PER_HOP <span class="op">*</span> <span class="op">(</span>link_request<span class="op">-&gt;</span>hops <span class="op">+</span> <span class="dv">1</span><span class="op">);</span></span>
+<span id="cb10-22"><a href="#cb10-22" aria-hidden="true" tabindex="-1"></a><span class="op">}</span></span></code></pre></div>
+<h2 id="reverse-table">11.5 Reverse Table</h2>
+<p>The reverse table enables proofs and replies to reach their
+originators.</p>
+<p><strong>The problem it solves</strong>: When Alice sends a packet
+that gets forwarded through multiple hops to reach Bob, Bob may need to
+send a proof back to Alice. But Bob doesn’t necessarily know a route to
+Alice—he only received a packet from the final forwarding node, not
+directly from Alice.</p>
+<p><strong>The solution</strong>: Each forwarding node remembers where
+packets came from for a short time (8 minutes). When Bob’s proof travels
+back, each node looks up the original packet’s hash in its reverse table
+and sends the proof back toward wherever the original packet came
+from.</p>
+<p>This creates a breadcrumb trail: the proof follows the original
+packet’s path in reverse, even though no explicit “route to Alice” was
+ever established. After 8 minutes, the breadcrumbs expire—this is enough
+time for any reasonable proof to arrive, but not so long that memory
+fills up with stale entries.</p>
+<h3 id="reverse-table-entry">Reverse Table Entry</h3>
+<div class="sourceCode" id="cb11"><pre class="sourceCode c"><code class="sourceCode c"><span id="cb11-1"><a href="#cb11-1" aria-hidden="true" tabindex="-1"></a><span class="pp">#define REVERSE_TIMEOUT </span><span class="dv">480</span><span class="pp">  </span><span class="co">// 8 minutes</span></span>
+<span id="cb11-2"><a href="#cb11-2" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb11-3"><a href="#cb11-3" aria-hidden="true" tabindex="-1"></a><span class="kw">typedef</span> <span class="kw">struct</span> <span class="op">{</span></span>
+<span id="cb11-4"><a href="#cb11-4" aria-hidden="true" tabindex="-1"></a>    <span class="dt">uint8_t</span> packet_hash<span class="op">[</span><span class="dv">32</span><span class="op">];</span>     <span class="co">// Key</span></span>
+<span id="cb11-5"><a href="#cb11-5" aria-hidden="true" tabindex="-1"></a>    Interface <span class="op">*</span>received_from<span class="op">;</span></span>
+<span id="cb11-6"><a href="#cb11-6" aria-hidden="true" tabindex="-1"></a>    Interface <span class="op">*</span>outbound_interface<span class="op">;</span></span>
+<span id="cb11-7"><a href="#cb11-7" aria-hidden="true" tabindex="-1"></a>    <span class="dt">uint64_t</span> timestamp<span class="op">;</span></span>
+<span id="cb11-8"><a href="#cb11-8" aria-hidden="true" tabindex="-1"></a><span class="op">}</span> ReverseTableEntry<span class="op">;</span></span>
+<span id="cb11-9"><a href="#cb11-9" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb11-10"><a href="#cb11-10" aria-hidden="true" tabindex="-1"></a><span class="kw">typedef</span> <span class="kw">struct</span> <span class="op">{</span></span>
+<span id="cb11-11"><a href="#cb11-11" aria-hidden="true" tabindex="-1"></a>    ReverseTableEntry entries<span class="op">[</span><span class="dv">4096</span><span class="op">];</span></span>
+<span id="cb11-12"><a href="#cb11-12" aria-hidden="true" tabindex="-1"></a>    <span class="dt">size_t</span> count<span class="op">;</span></span>
+<span id="cb11-13"><a href="#cb11-13" aria-hidden="true" tabindex="-1"></a><span class="op">}</span> ReverseTable<span class="op">;</span></span></code></pre></div>
+<h3 id="recording-reverse-path">Recording Reverse Path</h3>
+<div class="sourceCode" id="cb12"><pre class="sourceCode c"><code class="sourceCode c"><span id="cb12-1"><a href="#cb12-1" aria-hidden="true" tabindex="-1"></a><span class="dt">void</span> record_reverse_path<span class="op">(</span>Transport <span class="op">*</span>t<span class="op">,</span> <span class="dt">const</span> <span class="dt">uint8_t</span> packet_hash<span class="op">[</span><span class="dv">32</span><span class="op">],</span></span>
+<span id="cb12-2"><a href="#cb12-2" aria-hidden="true" tabindex="-1"></a>                         Interface <span class="op">*</span>received_from<span class="op">,</span></span>
+<span id="cb12-3"><a href="#cb12-3" aria-hidden="true" tabindex="-1"></a>                         Interface <span class="op">*</span>outbound_interface<span class="op">)</span> <span class="op">{</span></span>
+<span id="cb12-4"><a href="#cb12-4" aria-hidden="true" tabindex="-1"></a>    ReverseTableEntry <span class="op">*</span>entry <span class="op">=</span> reverse_table_add<span class="op">(&amp;</span>t<span class="op">-&gt;</span>reverse_table<span class="op">,</span> packet_hash<span class="op">);</span></span>
+<span id="cb12-5"><a href="#cb12-5" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb12-6"><a href="#cb12-6" aria-hidden="true" tabindex="-1"></a>    entry<span class="op">-&gt;</span>received_from <span class="op">=</span> received_from<span class="op">;</span></span>
+<span id="cb12-7"><a href="#cb12-7" aria-hidden="true" tabindex="-1"></a>    entry<span class="op">-&gt;</span>outbound_interface <span class="op">=</span> outbound_interface<span class="op">;</span></span>
+<span id="cb12-8"><a href="#cb12-8" aria-hidden="true" tabindex="-1"></a>    entry<span class="op">-&gt;</span>timestamp <span class="op">=</span> time<span class="op">(</span>NULL<span class="op">);</span></span>
+<span id="cb12-9"><a href="#cb12-9" aria-hidden="true" tabindex="-1"></a><span class="op">}</span></span></code></pre></div>
+<h3 id="using-reverse-path-for-proofs">Using Reverse Path for
+Proofs</h3>
+<div class="sourceCode" id="cb13"><pre class="sourceCode c"><code class="sourceCode c"><span id="cb13-1"><a href="#cb13-1" aria-hidden="true" tabindex="-1"></a><span class="dt">void</span> route_proof<span class="op">(</span>Transport <span class="op">*</span>t<span class="op">,</span> Packet <span class="op">*</span>proof_pkt<span class="op">,</span></span>
+<span id="cb13-2"><a href="#cb13-2" aria-hidden="true" tabindex="-1"></a>                 <span class="dt">const</span> <span class="dt">uint8_t</span> original_packet_hash<span class="op">[</span><span class="dv">32</span><span class="op">])</span> <span class="op">{</span></span>
+<span id="cb13-3"><a href="#cb13-3" aria-hidden="true" tabindex="-1"></a>    ReverseTableEntry <span class="op">*</span>entry <span class="op">=</span> reverse_table_lookup<span class="op">(&amp;</span>t<span class="op">-&gt;</span>reverse_table<span class="op">,</span></span>
+<span id="cb13-4"><a href="#cb13-4" aria-hidden="true" tabindex="-1"></a>                                                     original_packet_hash<span class="op">);</span></span>
+<span id="cb13-5"><a href="#cb13-5" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb13-6"><a href="#cb13-6" aria-hidden="true" tabindex="-1"></a>    <span class="cf">if</span> <span class="op">(</span>entry <span class="op">!=</span> NULL <span class="op">&amp;&amp;</span> <span class="op">!</span>reverse_expired<span class="op">(</span>entry<span class="op">))</span> <span class="op">{</span></span>
+<span id="cb13-7"><a href="#cb13-7" aria-hidden="true" tabindex="-1"></a>        <span class="co">// Route back the way it came</span></span>
+<span id="cb13-8"><a href="#cb13-8" aria-hidden="true" tabindex="-1"></a>        interface_send<span class="op">(</span>entry<span class="op">-&gt;</span>received_from<span class="op">,</span> proof_pkt<span class="op">);</span></span>
+<span id="cb13-9"><a href="#cb13-9" aria-hidden="true" tabindex="-1"></a>    <span class="op">}</span> <span class="cf">else</span> <span class="op">{</span></span>
+<span id="cb13-10"><a href="#cb13-10" aria-hidden="true" tabindex="-1"></a>        <span class="co">// No reverse path - broadcast</span></span>
+<span id="cb13-11"><a href="#cb13-11" aria-hidden="true" tabindex="-1"></a>        transport_send<span class="op">(</span>t<span class="op">,</span> proof_pkt<span class="op">);</span></span>
+<span id="cb13-12"><a href="#cb13-12" aria-hidden="true" tabindex="-1"></a>    <span class="op">}</span></span>
+<span id="cb13-13"><a href="#cb13-13" aria-hidden="true" tabindex="-1"></a><span class="op">}</span></span></code></pre></div>
+<h2 id="destination-registry">11.6 Destination Registry</h2>
+<h3 id="registering-destinations">Registering Destinations</h3>
+<div class="sourceCode" id="cb14"><pre class="sourceCode c"><code class="sourceCode c"><span id="cb14-1"><a href="#cb14-1" aria-hidden="true" tabindex="-1"></a><span class="dt">void</span> transport_register_destination<span class="op">(</span>Transport <span class="op">*</span>t<span class="op">,</span> Destination <span class="op">*</span>dest<span class="op">)</span> <span class="op">{</span></span>
+<span id="cb14-2"><a href="#cb14-2" aria-hidden="true" tabindex="-1"></a>    <span class="co">// Add to destination list</span></span>
+<span id="cb14-3"><a href="#cb14-3" aria-hidden="true" tabindex="-1"></a>    t<span class="op">-&gt;</span>destinations <span class="op">=</span> realloc<span class="op">(</span>t<span class="op">-&gt;</span>destinations<span class="op">,</span></span>
+<span id="cb14-4"><a href="#cb14-4" aria-hidden="true" tabindex="-1"></a>                              <span class="op">(</span>t<span class="op">-&gt;</span>destination_count <span class="op">+</span> <span class="dv">1</span><span class="op">)</span> <span class="op">*</span> <span class="kw">sizeof</span><span class="op">(</span>Destination<span class="op">*));</span></span>
+<span id="cb14-5"><a href="#cb14-5" aria-hidden="true" tabindex="-1"></a>    t<span class="op">-&gt;</span>destinations<span class="op">[</span>t<span class="op">-&gt;</span>destination_count<span class="op">++]</span> <span class="op">=</span> dest<span class="op">;</span></span>
+<span id="cb14-6"><a href="#cb14-6" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb14-7"><a href="#cb14-7" aria-hidden="true" tabindex="-1"></a>    <span class="co">// If desired, announce immediately</span></span>
+<span id="cb14-8"><a href="#cb14-8" aria-hidden="true" tabindex="-1"></a>    <span class="cf">if</span> <span class="op">(</span>dest<span class="op">-&gt;</span>auto_announce<span class="op">)</span> <span class="op">{</span></span>
+<span id="cb14-9"><a href="#cb14-9" aria-hidden="true" tabindex="-1"></a>        send_announce<span class="op">(</span>t<span class="op">,</span> dest<span class="op">);</span></span>
+<span id="cb14-10"><a href="#cb14-10" aria-hidden="true" tabindex="-1"></a>    <span class="op">}</span></span>
+<span id="cb14-11"><a href="#cb14-11" aria-hidden="true" tabindex="-1"></a><span class="op">}</span></span>
+<span id="cb14-12"><a href="#cb14-12" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb14-13"><a href="#cb14-13" aria-hidden="true" tabindex="-1"></a>Destination<span class="op">*</span> transport_find_destination<span class="op">(</span>Transport <span class="op">*</span>t<span class="op">,</span> <span class="dt">const</span> <span class="dt">uint8_t</span> hash<span class="op">[</span><span class="dv">16</span><span class="op">])</span> <span class="op">{</span></span>
+<span id="cb14-14"><a href="#cb14-14" aria-hidden="true" tabindex="-1"></a>    <span class="cf">for</span> <span class="op">(</span><span class="dt">size_t</span> i <span class="op">=</span> <span class="dv">0</span><span class="op">;</span> i <span class="op">&lt;</span> t<span class="op">-&gt;</span>destination_count<span class="op">;</span> i<span class="op">++)</span> <span class="op">{</span></span>
+<span id="cb14-15"><a href="#cb14-15" aria-hidden="true" tabindex="-1"></a>        <span class="cf">if</span> <span class="op">(</span>memcmp<span class="op">(</span>t<span class="op">-&gt;</span>destinations<span class="op">[</span>i<span class="op">]-&gt;</span>hash<span class="op">,</span> hash<span class="op">,</span> <span class="dv">16</span><span class="op">)</span> <span class="op">==</span> <span class="dv">0</span><span class="op">)</span> <span class="op">{</span></span>
+<span id="cb14-16"><a href="#cb14-16" aria-hidden="true" tabindex="-1"></a>            <span class="cf">return</span> t<span class="op">-&gt;</span>destinations<span class="op">[</span>i<span class="op">];</span></span>
+<span id="cb14-17"><a href="#cb14-17" aria-hidden="true" tabindex="-1"></a>        <span class="op">}</span></span>
+<span id="cb14-18"><a href="#cb14-18" aria-hidden="true" tabindex="-1"></a>    <span class="op">}</span></span>
+<span id="cb14-19"><a href="#cb14-19" aria-hidden="true" tabindex="-1"></a>    <span class="cf">return</span> NULL<span class="op">;</span></span>
+<span id="cb14-20"><a href="#cb14-20" aria-hidden="true" tabindex="-1"></a><span class="op">}</span></span></code></pre></div>
+<h3 id="delivering-to-local-destinations">Delivering to Local
+Destinations</h3>
+<div class="sourceCode" id="cb15"><pre class="sourceCode c"><code class="sourceCode c"><span id="cb15-1"><a href="#cb15-1" aria-hidden="true" tabindex="-1"></a><span class="dt">void</span> deliver_locally<span class="op">(</span>Transport <span class="op">*</span>t<span class="op">,</span> Packet <span class="op">*</span>pkt<span class="op">,</span> <span class="dt">const</span> <span class="dt">uint8_t</span> packet_hash<span class="op">[</span><span class="dv">32</span><span class="op">])</span> <span class="op">{</span></span>
+<span id="cb15-2"><a href="#cb15-2" aria-hidden="true" tabindex="-1"></a>    Destination <span class="op">*</span>dest <span class="op">=</span> transport_find_destination<span class="op">(</span>t<span class="op">,</span> pkt<span class="op">-&gt;</span>destination<span class="op">);</span></span>
+<span id="cb15-3"><a href="#cb15-3" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb15-4"><a href="#cb15-4" aria-hidden="true" tabindex="-1"></a>    <span class="cf">if</span> <span class="op">(</span>dest <span class="op">==</span> NULL<span class="op">)</span> <span class="op">{</span></span>
+<span id="cb15-5"><a href="#cb15-5" aria-hidden="true" tabindex="-1"></a>        <span class="cf">return</span><span class="op">;</span>  <span class="co">// Not for us</span></span>
+<span id="cb15-6"><a href="#cb15-6" aria-hidden="true" tabindex="-1"></a>    <span class="op">}</span></span>
+<span id="cb15-7"><a href="#cb15-7" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb15-8"><a href="#cb15-8" aria-hidden="true" tabindex="-1"></a>    <span class="co">// Decrypt if needed</span></span>
+<span id="cb15-9"><a href="#cb15-9" aria-hidden="true" tabindex="-1"></a>    <span class="dt">uint8_t</span> plaintext<span class="op">[</span>PACKET_MTU<span class="op">];</span></span>
+<span id="cb15-10"><a href="#cb15-10" aria-hidden="true" tabindex="-1"></a>    <span class="dt">size_t</span> plain_len<span class="op">;</span></span>
+<span id="cb15-11"><a href="#cb15-11" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb15-12"><a href="#cb15-12" aria-hidden="true" tabindex="-1"></a>    <span class="cf">switch</span> <span class="op">(</span>dest<span class="op">-&gt;</span>type<span class="op">)</span> <span class="op">{</span></span>
+<span id="cb15-13"><a href="#cb15-13" aria-hidden="true" tabindex="-1"></a>    <span class="cf">case</span> DEST_SINGLE<span class="op">:</span></span>
+<span id="cb15-14"><a href="#cb15-14" aria-hidden="true" tabindex="-1"></a>        <span class="cf">if</span> <span class="op">(!</span>decrypt_single<span class="op">(</span>dest<span class="op">,</span> pkt<span class="op">-&gt;</span>payload<span class="op">,</span> pkt<span class="op">-&gt;</span>payload_len<span class="op">,</span></span>
+<span id="cb15-15"><a href="#cb15-15" aria-hidden="true" tabindex="-1"></a>                            plaintext<span class="op">,</span> <span class="op">&amp;</span>plain_len<span class="op">))</span> <span class="op">{</span></span>
+<span id="cb15-16"><a href="#cb15-16" aria-hidden="true" tabindex="-1"></a>            <span class="cf">return</span><span class="op">;</span>  <span class="co">// Decryption failed</span></span>
+<span id="cb15-17"><a href="#cb15-17" aria-hidden="true" tabindex="-1"></a>        <span class="op">}</span></span>
+<span id="cb15-18"><a href="#cb15-18" aria-hidden="true" tabindex="-1"></a>        <span class="cf">break</span><span class="op">;</span></span>
+<span id="cb15-19"><a href="#cb15-19" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb15-20"><a href="#cb15-20" aria-hidden="true" tabindex="-1"></a>    <span class="cf">case</span> DEST_GROUP<span class="op">:</span></span>
+<span id="cb15-21"><a href="#cb15-21" aria-hidden="true" tabindex="-1"></a>        <span class="cf">if</span> <span class="op">(!</span>decrypt_group<span class="op">(</span>dest<span class="op">,</span> pkt<span class="op">-&gt;</span>payload<span class="op">,</span> pkt<span class="op">-&gt;</span>payload_len<span class="op">,</span></span>
+<span id="cb15-22"><a href="#cb15-22" aria-hidden="true" tabindex="-1"></a>                           plaintext<span class="op">,</span> <span class="op">&amp;</span>plain_len<span class="op">))</span> <span class="op">{</span></span>
+<span id="cb15-23"><a href="#cb15-23" aria-hidden="true" tabindex="-1"></a>            <span class="cf">return</span><span class="op">;</span></span>
+<span id="cb15-24"><a href="#cb15-24" aria-hidden="true" tabindex="-1"></a>        <span class="op">}</span></span>
+<span id="cb15-25"><a href="#cb15-25" aria-hidden="true" tabindex="-1"></a>        <span class="cf">break</span><span class="op">;</span></span>
+<span id="cb15-26"><a href="#cb15-26" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb15-27"><a href="#cb15-27" aria-hidden="true" tabindex="-1"></a>    <span class="cf">case</span> DEST_PLAIN<span class="op">:</span></span>
+<span id="cb15-28"><a href="#cb15-28" aria-hidden="true" tabindex="-1"></a>        memcpy<span class="op">(</span>plaintext<span class="op">,</span> pkt<span class="op">-&gt;</span>payload<span class="op">,</span> pkt<span class="op">-&gt;</span>payload_len<span class="op">);</span></span>
+<span id="cb15-29"><a href="#cb15-29" aria-hidden="true" tabindex="-1"></a>        plain_len <span class="op">=</span> pkt<span class="op">-&gt;</span>payload_len<span class="op">;</span></span>
+<span id="cb15-30"><a href="#cb15-30" aria-hidden="true" tabindex="-1"></a>        <span class="cf">break</span><span class="op">;</span></span>
+<span id="cb15-31"><a href="#cb15-31" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb15-32"><a href="#cb15-32" aria-hidden="true" tabindex="-1"></a>    <span class="cf">default</span><span class="op">:</span></span>
+<span id="cb15-33"><a href="#cb15-33" aria-hidden="true" tabindex="-1"></a>        <span class="cf">return</span><span class="op">;</span></span>
+<span id="cb15-34"><a href="#cb15-34" aria-hidden="true" tabindex="-1"></a>    <span class="op">}</span></span>
+<span id="cb15-35"><a href="#cb15-35" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb15-36"><a href="#cb15-36" aria-hidden="true" tabindex="-1"></a>    <span class="co">// Invoke callback</span></span>
+<span id="cb15-37"><a href="#cb15-37" aria-hidden="true" tabindex="-1"></a>    <span class="cf">if</span> <span class="op">(</span>dest<span class="op">-&gt;</span>on_packet<span class="op">)</span> <span class="op">{</span></span>
+<span id="cb15-38"><a href="#cb15-38" aria-hidden="true" tabindex="-1"></a>        dest<span class="op">-&gt;</span>on_packet<span class="op">(</span>dest<span class="op">,</span> plaintext<span class="op">,</span> plain_len<span class="op">,</span> packet_hash<span class="op">);</span></span>
+<span id="cb15-39"><a href="#cb15-39" aria-hidden="true" tabindex="-1"></a>    <span class="op">}</span></span>
+<span id="cb15-40"><a href="#cb15-40" aria-hidden="true" tabindex="-1"></a><span class="op">}</span></span></code></pre></div>
+<h2 id="table-maintenance">11.7 Table Maintenance</h2>
+<h3 id="periodic-jobs">Periodic Jobs</h3>
+<div class="sourceCode" id="cb16"><pre class="sourceCode c"><code class="sourceCode c"><span id="cb16-1"><a href="#cb16-1" aria-hidden="true" tabindex="-1"></a><span class="pp">#define TABLES_CULL_INTERVAL </span><span class="dv">5</span><span class="pp">  </span><span class="co">// seconds</span></span>
+<span id="cb16-2"><a href="#cb16-2" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb16-3"><a href="#cb16-3" aria-hidden="true" tabindex="-1"></a><span class="dt">void</span> transport_job_loop<span class="op">(</span>Transport <span class="op">*</span>t<span class="op">)</span> <span class="op">{</span></span>
+<span id="cb16-4"><a href="#cb16-4" aria-hidden="true" tabindex="-1"></a>    <span class="dt">static</span> <span class="dt">uint64_t</span> last_cull <span class="op">=</span> <span class="dv">0</span><span class="op">;</span></span>
+<span id="cb16-5"><a href="#cb16-5" aria-hidden="true" tabindex="-1"></a>    <span class="dt">uint64_t</span> now <span class="op">=</span> time<span class="op">(</span>NULL<span class="op">);</span></span>
+<span id="cb16-6"><a href="#cb16-6" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb16-7"><a href="#cb16-7" aria-hidden="true" tabindex="-1"></a>    <span class="co">// Cull expired entries</span></span>
+<span id="cb16-8"><a href="#cb16-8" aria-hidden="true" tabindex="-1"></a>    <span class="cf">if</span> <span class="op">(</span>now <span class="op">-</span> last_cull <span class="op">&gt;=</span> TABLES_CULL_INTERVAL<span class="op">)</span> <span class="op">{</span></span>
+<span id="cb16-9"><a href="#cb16-9" aria-hidden="true" tabindex="-1"></a>        cull_path_table<span class="op">(&amp;</span>t<span class="op">-&gt;</span>path_table<span class="op">);</span></span>
+<span id="cb16-10"><a href="#cb16-10" aria-hidden="true" tabindex="-1"></a>        cull_link_table<span class="op">(&amp;</span>t<span class="op">-&gt;</span>link_table<span class="op">);</span></span>
+<span id="cb16-11"><a href="#cb16-11" aria-hidden="true" tabindex="-1"></a>        cull_reverse_table<span class="op">(&amp;</span>t<span class="op">-&gt;</span>reverse_table<span class="op">);</span></span>
+<span id="cb16-12"><a href="#cb16-12" aria-hidden="true" tabindex="-1"></a>        cull_packet_hashes<span class="op">(</span>t<span class="op">);</span></span>
+<span id="cb16-13"><a href="#cb16-13" aria-hidden="true" tabindex="-1"></a>        last_cull <span class="op">=</span> now<span class="op">;</span></span>
+<span id="cb16-14"><a href="#cb16-14" aria-hidden="true" tabindex="-1"></a>    <span class="op">}</span></span>
+<span id="cb16-15"><a href="#cb16-15" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb16-16"><a href="#cb16-16" aria-hidden="true" tabindex="-1"></a>    <span class="co">// Process pending announces</span></span>
+<span id="cb16-17"><a href="#cb16-17" aria-hidden="true" tabindex="-1"></a>    process_announce_retransmissions<span class="op">(</span>t<span class="op">);</span></span>
+<span id="cb16-18"><a href="#cb16-18" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb16-19"><a href="#cb16-19" aria-hidden="true" tabindex="-1"></a>    <span class="co">// Process pending link proofs</span></span>
+<span id="cb16-20"><a href="#cb16-20" aria-hidden="true" tabindex="-1"></a>    process_pending_link_proofs<span class="op">(</span>t<span class="op">);</span></span>
+<span id="cb16-21"><a href="#cb16-21" aria-hidden="true" tabindex="-1"></a><span class="op">}</span></span></code></pre></div>
+<h3 id="culling-tables">Culling Tables</h3>
+<div class="sourceCode" id="cb17"><pre class="sourceCode c"><code class="sourceCode c"><span id="cb17-1"><a href="#cb17-1" aria-hidden="true" tabindex="-1"></a><span class="dt">void</span> cull_path_table<span class="op">(</span>PathTable <span class="op">*</span>pt<span class="op">)</span> <span class="op">{</span></span>
+<span id="cb17-2"><a href="#cb17-2" aria-hidden="true" tabindex="-1"></a>    <span class="dt">uint64_t</span> now <span class="op">=</span> time<span class="op">(</span>NULL<span class="op">);</span></span>
+<span id="cb17-3"><a href="#cb17-3" aria-hidden="true" tabindex="-1"></a>    <span class="dt">size_t</span> write_idx <span class="op">=</span> <span class="dv">0</span><span class="op">;</span></span>
+<span id="cb17-4"><a href="#cb17-4" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb17-5"><a href="#cb17-5" aria-hidden="true" tabindex="-1"></a>    <span class="cf">for</span> <span class="op">(</span><span class="dt">size_t</span> i <span class="op">=</span> <span class="dv">0</span><span class="op">;</span> i <span class="op">&lt;</span> pt<span class="op">-&gt;</span>count<span class="op">;</span> i<span class="op">++)</span> <span class="op">{</span></span>
+<span id="cb17-6"><a href="#cb17-6" aria-hidden="true" tabindex="-1"></a>        <span class="cf">if</span> <span class="op">(</span>now <span class="op">&lt;</span> pt<span class="op">-&gt;</span>entries<span class="op">[</span>i<span class="op">].</span>expires<span class="op">)</span> <span class="op">{</span></span>
+<span id="cb17-7"><a href="#cb17-7" aria-hidden="true" tabindex="-1"></a>            <span class="cf">if</span> <span class="op">(</span>write_idx <span class="op">!=</span> i<span class="op">)</span> <span class="op">{</span></span>
+<span id="cb17-8"><a href="#cb17-8" aria-hidden="true" tabindex="-1"></a>                pt<span class="op">-&gt;</span>entries<span class="op">[</span>write_idx<span class="op">]</span> <span class="op">=</span> pt<span class="op">-&gt;</span>entries<span class="op">[</span>i<span class="op">];</span></span>
+<span id="cb17-9"><a href="#cb17-9" aria-hidden="true" tabindex="-1"></a>            <span class="op">}</span></span>
+<span id="cb17-10"><a href="#cb17-10" aria-hidden="true" tabindex="-1"></a>            write_idx<span class="op">++;</span></span>
+<span id="cb17-11"><a href="#cb17-11" aria-hidden="true" tabindex="-1"></a>        <span class="op">}</span></span>
+<span id="cb17-12"><a href="#cb17-12" aria-hidden="true" tabindex="-1"></a>    <span class="op">}</span></span>
+<span id="cb17-13"><a href="#cb17-13" aria-hidden="true" tabindex="-1"></a>    pt<span class="op">-&gt;</span>count <span class="op">=</span> write_idx<span class="op">;</span></span>
+<span id="cb17-14"><a href="#cb17-14" aria-hidden="true" tabindex="-1"></a><span class="op">}</span></span>
+<span id="cb17-15"><a href="#cb17-15" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb17-16"><a href="#cb17-16" aria-hidden="true" tabindex="-1"></a><span class="dt">void</span> cull_link_table<span class="op">(</span>LinkTable <span class="op">*</span>lt<span class="op">)</span> <span class="op">{</span></span>
+<span id="cb17-17"><a href="#cb17-17" aria-hidden="true" tabindex="-1"></a>    <span class="dt">uint64_t</span> now <span class="op">=</span> time<span class="op">(</span>NULL<span class="op">);</span></span>
+<span id="cb17-18"><a href="#cb17-18" aria-hidden="true" tabindex="-1"></a>    <span class="dt">uint64_t</span> timeout <span class="op">=</span> LINK_STALE_TIME <span class="op">*</span> <span class="fl">1.25</span><span class="op">;</span></span>
+<span id="cb17-19"><a href="#cb17-19" aria-hidden="true" tabindex="-1"></a>    <span class="dt">size_t</span> write_idx <span class="op">=</span> <span class="dv">0</span><span class="op">;</span></span>
+<span id="cb17-20"><a href="#cb17-20" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb17-21"><a href="#cb17-21" aria-hidden="true" tabindex="-1"></a>    <span class="cf">for</span> <span class="op">(</span><span class="dt">size_t</span> i <span class="op">=</span> <span class="dv">0</span><span class="op">;</span> i <span class="op">&lt;</span> lt<span class="op">-&gt;</span>count<span class="op">;</span> i<span class="op">++)</span> <span class="op">{</span></span>
+<span id="cb17-22"><a href="#cb17-22" aria-hidden="true" tabindex="-1"></a>        <span class="cf">if</span> <span class="op">(</span>now <span class="op">-</span> lt<span class="op">-&gt;</span>entries<span class="op">[</span>i<span class="op">].</span>timestamp <span class="op">&lt;</span> timeout<span class="op">)</span> <span class="op">{</span></span>
+<span id="cb17-23"><a href="#cb17-23" aria-hidden="true" tabindex="-1"></a>            <span class="cf">if</span> <span class="op">(</span>write_idx <span class="op">!=</span> i<span class="op">)</span> <span class="op">{</span></span>
+<span id="cb17-24"><a href="#cb17-24" aria-hidden="true" tabindex="-1"></a>                lt<span class="op">-&gt;</span>entries<span class="op">[</span>write_idx<span class="op">]</span> <span class="op">=</span> lt<span class="op">-&gt;</span>entries<span class="op">[</span>i<span class="op">];</span></span>
+<span id="cb17-25"><a href="#cb17-25" aria-hidden="true" tabindex="-1"></a>            <span class="op">}</span></span>
+<span id="cb17-26"><a href="#cb17-26" aria-hidden="true" tabindex="-1"></a>            write_idx<span class="op">++;</span></span>
+<span id="cb17-27"><a href="#cb17-27" aria-hidden="true" tabindex="-1"></a>        <span class="op">}</span></span>
+<span id="cb17-28"><a href="#cb17-28" aria-hidden="true" tabindex="-1"></a>    <span class="op">}</span></span>
+<span id="cb17-29"><a href="#cb17-29" aria-hidden="true" tabindex="-1"></a>    lt<span class="op">-&gt;</span>count <span class="op">=</span> write_idx<span class="op">;</span></span>
+<span id="cb17-30"><a href="#cb17-30" aria-hidden="true" tabindex="-1"></a><span class="op">}</span></span>
+<span id="cb17-31"><a href="#cb17-31" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb17-32"><a href="#cb17-32" aria-hidden="true" tabindex="-1"></a><span class="dt">void</span> cull_reverse_table<span class="op">(</span>ReverseTable <span class="op">*</span>rt<span class="op">)</span> <span class="op">{</span></span>
+<span id="cb17-33"><a href="#cb17-33" aria-hidden="true" tabindex="-1"></a>    <span class="dt">uint64_t</span> now <span class="op">=</span> time<span class="op">(</span>NULL<span class="op">);</span></span>
+<span id="cb17-34"><a href="#cb17-34" aria-hidden="true" tabindex="-1"></a>    <span class="dt">size_t</span> write_idx <span class="op">=</span> <span class="dv">0</span><span class="op">;</span></span>
+<span id="cb17-35"><a href="#cb17-35" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb17-36"><a href="#cb17-36" aria-hidden="true" tabindex="-1"></a>    <span class="cf">for</span> <span class="op">(</span><span class="dt">size_t</span> i <span class="op">=</span> <span class="dv">0</span><span class="op">;</span> i <span class="op">&lt;</span> rt<span class="op">-&gt;</span>count<span class="op">;</span> i<span class="op">++)</span> <span class="op">{</span></span>
+<span id="cb17-37"><a href="#cb17-37" aria-hidden="true" tabindex="-1"></a>        <span class="cf">if</span> <span class="op">(</span>now <span class="op">-</span> rt<span class="op">-&gt;</span>entries<span class="op">[</span>i<span class="op">].</span>timestamp <span class="op">&lt;</span> REVERSE_TIMEOUT<span class="op">)</span> <span class="op">{</span></span>
+<span id="cb17-38"><a href="#cb17-38" aria-hidden="true" tabindex="-1"></a>            <span class="cf">if</span> <span class="op">(</span>write_idx <span class="op">!=</span> i<span class="op">)</span> <span class="op">{</span></span>
+<span id="cb17-39"><a href="#cb17-39" aria-hidden="true" tabindex="-1"></a>                rt<span class="op">-&gt;</span>entries<span class="op">[</span>write_idx<span class="op">]</span> <span class="op">=</span> rt<span class="op">-&gt;</span>entries<span class="op">[</span>i<span class="op">];</span></span>
+<span id="cb17-40"><a href="#cb17-40" aria-hidden="true" tabindex="-1"></a>            <span class="op">}</span></span>
+<span id="cb17-41"><a href="#cb17-41" aria-hidden="true" tabindex="-1"></a>            write_idx<span class="op">++;</span></span>
+<span id="cb17-42"><a href="#cb17-42" aria-hidden="true" tabindex="-1"></a>        <span class="op">}</span></span>
+<span id="cb17-43"><a href="#cb17-43" aria-hidden="true" tabindex="-1"></a>    <span class="op">}</span></span>
+<span id="cb17-44"><a href="#cb17-44" aria-hidden="true" tabindex="-1"></a>    rt<span class="op">-&gt;</span>count <span class="op">=</span> write_idx<span class="op">;</span></span>
+<span id="cb17-45"><a href="#cb17-45" aria-hidden="true" tabindex="-1"></a><span class="op">}</span></span></code></pre></div>
+<h2 id="interface-management">11.8 Interface Management</h2>
+<h3 id="adding-interfaces">Adding Interfaces</h3>
+<div class="sourceCode" id="cb18"><pre class="sourceCode c"><code class="sourceCode c"><span id="cb18-1"><a href="#cb18-1" aria-hidden="true" tabindex="-1"></a><span class="dt">void</span> transport_add_interface<span class="op">(</span>Transport <span class="op">*</span>t<span class="op">,</span> Interface <span class="op">*</span>iface<span class="op">)</span> <span class="op">{</span></span>
+<span id="cb18-2"><a href="#cb18-2" aria-hidden="true" tabindex="-1"></a>    t<span class="op">-&gt;</span>interfaces <span class="op">=</span> realloc<span class="op">(</span>t<span class="op">-&gt;</span>interfaces<span class="op">,</span></span>
+<span id="cb18-3"><a href="#cb18-3" aria-hidden="true" tabindex="-1"></a>                            <span class="op">(</span>t<span class="op">-&gt;</span>interface_count <span class="op">+</span> <span class="dv">1</span><span class="op">)</span> <span class="op">*</span> <span class="kw">sizeof</span><span class="op">(</span>Interface<span class="op">*));</span></span>
+<span id="cb18-4"><a href="#cb18-4" aria-hidden="true" tabindex="-1"></a>    t<span class="op">-&gt;</span>interfaces<span class="op">[</span>t<span class="op">-&gt;</span>interface_count<span class="op">++]</span> <span class="op">=</span> iface<span class="op">;</span></span>
+<span id="cb18-5"><a href="#cb18-5" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb18-6"><a href="#cb18-6" aria-hidden="true" tabindex="-1"></a>    <span class="co">// Set up receive callback</span></span>
+<span id="cb18-7"><a href="#cb18-7" aria-hidden="true" tabindex="-1"></a>    iface<span class="op">-&gt;</span>on_receive <span class="op">=</span> transport_receive_callback<span class="op">;</span></span>
+<span id="cb18-8"><a href="#cb18-8" aria-hidden="true" tabindex="-1"></a>    iface<span class="op">-&gt;</span>transport <span class="op">=</span> t<span class="op">;</span></span>
+<span id="cb18-9"><a href="#cb18-9" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb18-10"><a href="#cb18-10" aria-hidden="true" tabindex="-1"></a>    <span class="co">// Start interface</span></span>
+<span id="cb18-11"><a href="#cb18-11" aria-hidden="true" tabindex="-1"></a>    interface_start<span class="op">(</span>iface<span class="op">);</span></span>
+<span id="cb18-12"><a href="#cb18-12" aria-hidden="true" tabindex="-1"></a><span class="op">}</span></span></code></pre></div>
+<h3 id="interface-status">Interface Status</h3>
+<div class="sourceCode" id="cb19"><pre class="sourceCode c"><code class="sourceCode c"><span id="cb19-1"><a href="#cb19-1" aria-hidden="true" tabindex="-1"></a><span class="kw">typedef</span> <span class="kw">struct</span> <span class="op">{</span></span>
+<span id="cb19-2"><a href="#cb19-2" aria-hidden="true" tabindex="-1"></a>    <span class="dt">char</span> <span class="op">*</span>name<span class="op">;</span></span>
+<span id="cb19-3"><a href="#cb19-3" aria-hidden="true" tabindex="-1"></a>    <span class="dt">bool</span> enabled<span class="op">;</span></span>
+<span id="cb19-4"><a href="#cb19-4" aria-hidden="true" tabindex="-1"></a>    <span class="dt">bool</span> online<span class="op">;</span></span>
+<span id="cb19-5"><a href="#cb19-5" aria-hidden="true" tabindex="-1"></a>    <span class="dt">uint64_t</span> tx_bytes<span class="op">;</span></span>
+<span id="cb19-6"><a href="#cb19-6" aria-hidden="true" tabindex="-1"></a>    <span class="dt">uint64_t</span> rx_bytes<span class="op">;</span></span>
+<span id="cb19-7"><a href="#cb19-7" aria-hidden="true" tabindex="-1"></a>    <span class="dt">uint64_t</span> tx_packets<span class="op">;</span></span>
+<span id="cb19-8"><a href="#cb19-8" aria-hidden="true" tabindex="-1"></a>    <span class="dt">uint64_t</span> rx_packets<span class="op">;</span></span>
+<span id="cb19-9"><a href="#cb19-9" aria-hidden="true" tabindex="-1"></a><span class="op">}</span> InterfaceStatus<span class="op">;</span></span>
+<span id="cb19-10"><a href="#cb19-10" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb19-11"><a href="#cb19-11" aria-hidden="true" tabindex="-1"></a><span class="dt">void</span> get_interface_status<span class="op">(</span>Interface <span class="op">*</span>iface<span class="op">,</span> InterfaceStatus <span class="op">*</span>status<span class="op">)</span> <span class="op">{</span></span>
+<span id="cb19-12"><a href="#cb19-12" aria-hidden="true" tabindex="-1"></a>    status<span class="op">-&gt;</span>name <span class="op">=</span> iface<span class="op">-&gt;</span>name<span class="op">;</span></span>
+<span id="cb19-13"><a href="#cb19-13" aria-hidden="true" tabindex="-1"></a>    status<span class="op">-&gt;</span>enabled <span class="op">=</span> iface<span class="op">-&gt;</span>enabled<span class="op">;</span></span>
+<span id="cb19-14"><a href="#cb19-14" aria-hidden="true" tabindex="-1"></a>    status<span class="op">-&gt;</span>online <span class="op">=</span> iface<span class="op">-&gt;</span>online<span class="op">;</span></span>
+<span id="cb19-15"><a href="#cb19-15" aria-hidden="true" tabindex="-1"></a>    status<span class="op">-&gt;</span>tx_bytes <span class="op">=</span> iface<span class="op">-&gt;</span>tx_bytes<span class="op">;</span></span>
+<span id="cb19-16"><a href="#cb19-16" aria-hidden="true" tabindex="-1"></a>    status<span class="op">-&gt;</span>rx_bytes <span class="op">=</span> iface<span class="op">-&gt;</span>rx_bytes<span class="op">;</span></span>
+<span id="cb19-17"><a href="#cb19-17" aria-hidden="true" tabindex="-1"></a>    status<span class="op">-&gt;</span>tx_packets <span class="op">=</span> iface<span class="op">-&gt;</span>tx_packets<span class="op">;</span></span>
+<span id="cb19-18"><a href="#cb19-18" aria-hidden="true" tabindex="-1"></a>    status<span class="op">-&gt;</span>rx_packets <span class="op">=</span> iface<span class="op">-&gt;</span>rx_packets<span class="op">;</span></span>
+<span id="cb19-19"><a href="#cb19-19" aria-hidden="true" tabindex="-1"></a><span class="op">}</span></span></code></pre></div>
+<h2 id="transport-modes">11.9 Transport Modes</h2>
+<h3 id="boundary-mode-default">Boundary Mode (Default)</h3>
+<p>Standard routing between interfaces: - Path TTL: 7 days - Full mesh
+participation - Routes packets for others</p>
+<h3 id="access-point-mode">Access Point Mode</h3>
+<p>For gateways that serve clients: - Path TTL: 1 day (shorter) -
+Optimized for client-server patterns - Faster path expiration</p>
+<h3 id="roaming-mode">Roaming Mode</h3>
+<p>For mobile nodes: - Path TTL: 6 hours (very short) - Frequent path
+updates - Handles network changes gracefully</p>
+<div class="sourceCode" id="cb20"><pre class="sourceCode c"><code class="sourceCode c"><span id="cb20-1"><a href="#cb20-1" aria-hidden="true" tabindex="-1"></a><span class="dt">uint64_t</span> get_path_ttl<span class="op">(</span>Transport <span class="op">*</span>t<span class="op">,</span> Interface <span class="op">*</span>iface<span class="op">)</span> <span class="op">{</span></span>
+<span id="cb20-2"><a href="#cb20-2" aria-hidden="true" tabindex="-1"></a>    <span class="cf">switch</span> <span class="op">(</span>t<span class="op">-&gt;</span>mode<span class="op">)</span> <span class="op">{</span></span>
+<span id="cb20-3"><a href="#cb20-3" aria-hidden="true" tabindex="-1"></a>    <span class="cf">case</span> TRANSPORT_MODE_ACCESS_POINT<span class="op">:</span></span>
+<span id="cb20-4"><a href="#cb20-4" aria-hidden="true" tabindex="-1"></a>        <span class="cf">return</span> <span class="dv">86400</span><span class="op">;</span>   <span class="co">// 1 day</span></span>
+<span id="cb20-5"><a href="#cb20-5" aria-hidden="true" tabindex="-1"></a>    <span class="cf">case</span> TRANSPORT_MODE_ROAMING<span class="op">:</span></span>
+<span id="cb20-6"><a href="#cb20-6" aria-hidden="true" tabindex="-1"></a>        <span class="cf">return</span> <span class="dv">21600</span><span class="op">;</span>   <span class="co">// 6 hours</span></span>
+<span id="cb20-7"><a href="#cb20-7" aria-hidden="true" tabindex="-1"></a>    <span class="cf">default</span><span class="op">:</span></span>
+<span id="cb20-8"><a href="#cb20-8" aria-hidden="true" tabindex="-1"></a>        <span class="cf">return</span> <span class="dv">604800</span><span class="op">;</span>  <span class="co">// 7 days</span></span>
+<span id="cb20-9"><a href="#cb20-9" aria-hidden="true" tabindex="-1"></a>    <span class="op">}</span></span>
+<span id="cb20-10"><a href="#cb20-10" aria-hidden="true" tabindex="-1"></a><span class="op">}</span></span></code></pre></div>
+<h2 id="deduplication">11.10 Deduplication</h2>
+<p><strong>Why deduplication is essential</strong>: In a mesh network
+where packets are broadcast and forwarded by multiple nodes, the same
+packet can arrive at a node multiple times via different paths. Without
+deduplication: - A node would process the same packet repeatedly,
+wasting CPU - Forwarding nodes would re-broadcast packets they’ve
+already forwarded, creating infinite loops - The network would quickly
+become saturated with duplicate traffic</p>
+<p><strong>How it works</strong>: Each node maintains a cache of
+recently-seen packet hashes. When a packet arrives, the node computes
+its SHA-256 hash and checks if that hash is in the cache. If found, the
+packet is silently dropped as a duplicate. If not found, the hash is
+added to the cache and processing continues.</p>
+<p><strong>Cache sizing</strong>: The cache holds 1024 hashes and uses a
+FIFO eviction policy—when full, the oldest hash is removed to make room.
+The 5-minute timeout is a fallback; in practice, the FIFO limit is
+usually hit first on active networks. The cache size balances memory
+usage against the risk of false negatives (processing duplicates because
+the hash was evicted).</p>
+<h3 id="packet-hash-cache">Packet Hash Cache</h3>
+<div class="sourceCode" id="cb21"><pre class="sourceCode c"><code class="sourceCode c"><span id="cb21-1"><a href="#cb21-1" aria-hidden="true" tabindex="-1"></a><span class="pp">#define MAX_PACKET_HASHES </span><span class="dv">1024</span></span>
+<span id="cb21-2"><a href="#cb21-2" aria-hidden="true" tabindex="-1"></a><span class="pp">#define PACKET_HASH_TIMEOUT </span><span class="dv">300</span><span class="pp">  </span><span class="co">// 5 minutes</span></span>
+<span id="cb21-3"><a href="#cb21-3" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb21-4"><a href="#cb21-4" aria-hidden="true" tabindex="-1"></a><span class="kw">typedef</span> <span class="kw">struct</span> <span class="op">{</span></span>
+<span id="cb21-5"><a href="#cb21-5" aria-hidden="true" tabindex="-1"></a>    <span class="dt">uint8_t</span> hash<span class="op">[</span><span class="dv">32</span><span class="op">];</span></span>
+<span id="cb21-6"><a href="#cb21-6" aria-hidden="true" tabindex="-1"></a>    <span class="dt">uint64_t</span> timestamp<span class="op">;</span></span>
+<span id="cb21-7"><a href="#cb21-7" aria-hidden="true" tabindex="-1"></a><span class="op">}</span> PacketHashEntry<span class="op">;</span></span>
+<span id="cb21-8"><a href="#cb21-8" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb21-9"><a href="#cb21-9" aria-hidden="true" tabindex="-1"></a><span class="dt">bool</span> is_duplicate<span class="op">(</span>Transport <span class="op">*</span>t<span class="op">,</span> <span class="dt">const</span> <span class="dt">uint8_t</span> hash<span class="op">[</span><span class="dv">32</span><span class="op">])</span> <span class="op">{</span></span>
+<span id="cb21-10"><a href="#cb21-10" aria-hidden="true" tabindex="-1"></a>    <span class="cf">for</span> <span class="op">(</span><span class="dt">size_t</span> i <span class="op">=</span> <span class="dv">0</span><span class="op">;</span> i <span class="op">&lt;</span> t<span class="op">-&gt;</span>packet_hash_count<span class="op">;</span> i<span class="op">++)</span> <span class="op">{</span></span>
+<span id="cb21-11"><a href="#cb21-11" aria-hidden="true" tabindex="-1"></a>        <span class="cf">if</span> <span class="op">(</span>memcmp<span class="op">(</span>t<span class="op">-&gt;</span>packet_hashes<span class="op">[</span>i<span class="op">].</span>hash<span class="op">,</span> hash<span class="op">,</span> <span class="dv">32</span><span class="op">)</span> <span class="op">==</span> <span class="dv">0</span><span class="op">)</span> <span class="op">{</span></span>
+<span id="cb21-12"><a href="#cb21-12" aria-hidden="true" tabindex="-1"></a>            <span class="cf">return</span> <span class="kw">true</span><span class="op">;</span></span>
+<span id="cb21-13"><a href="#cb21-13" aria-hidden="true" tabindex="-1"></a>        <span class="op">}</span></span>
+<span id="cb21-14"><a href="#cb21-14" aria-hidden="true" tabindex="-1"></a>    <span class="op">}</span></span>
+<span id="cb21-15"><a href="#cb21-15" aria-hidden="true" tabindex="-1"></a>    <span class="cf">return</span> <span class="kw">false</span><span class="op">;</span></span>
+<span id="cb21-16"><a href="#cb21-16" aria-hidden="true" tabindex="-1"></a><span class="op">}</span></span>
+<span id="cb21-17"><a href="#cb21-17" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb21-18"><a href="#cb21-18" aria-hidden="true" tabindex="-1"></a><span class="dt">void</span> add_packet_hash<span class="op">(</span>Transport <span class="op">*</span>t<span class="op">,</span> <span class="dt">const</span> <span class="dt">uint8_t</span> hash<span class="op">[</span><span class="dv">32</span><span class="op">])</span> <span class="op">{</span></span>
+<span id="cb21-19"><a href="#cb21-19" aria-hidden="true" tabindex="-1"></a>    <span class="cf">if</span> <span class="op">(</span>t<span class="op">-&gt;</span>packet_hash_count <span class="op">&gt;=</span> MAX_PACKET_HASHES<span class="op">)</span> <span class="op">{</span></span>
+<span id="cb21-20"><a href="#cb21-20" aria-hidden="true" tabindex="-1"></a>        <span class="co">// Remove oldest</span></span>
+<span id="cb21-21"><a href="#cb21-21" aria-hidden="true" tabindex="-1"></a>        memmove<span class="op">(&amp;</span>t<span class="op">-&gt;</span>packet_hashes<span class="op">[</span><span class="dv">0</span><span class="op">],</span> <span class="op">&amp;</span>t<span class="op">-&gt;</span>packet_hashes<span class="op">[</span><span class="dv">1</span><span class="op">],</span></span>
+<span id="cb21-22"><a href="#cb21-22" aria-hidden="true" tabindex="-1"></a>                <span class="op">(</span>MAX_PACKET_HASHES <span class="op">-</span> <span class="dv">1</span><span class="op">)</span> <span class="op">*</span> <span class="kw">sizeof</span><span class="op">(</span>PacketHashEntry<span class="op">));</span></span>
+<span id="cb21-23"><a href="#cb21-23" aria-hidden="true" tabindex="-1"></a>        t<span class="op">-&gt;</span>packet_hash_count<span class="op">--;</span></span>
+<span id="cb21-24"><a href="#cb21-24" aria-hidden="true" tabindex="-1"></a>    <span class="op">}</span></span>
+<span id="cb21-25"><a href="#cb21-25" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb21-26"><a href="#cb21-26" aria-hidden="true" tabindex="-1"></a>    memcpy<span class="op">(</span>t<span class="op">-&gt;</span>packet_hashes<span class="op">[</span>t<span class="op">-&gt;</span>packet_hash_count<span class="op">].</span>hash<span class="op">,</span> hash<span class="op">,</span> <span class="dv">32</span><span class="op">);</span></span>
+<span id="cb21-27"><a href="#cb21-27" aria-hidden="true" tabindex="-1"></a>    t<span class="op">-&gt;</span>packet_hashes<span class="op">[</span>t<span class="op">-&gt;</span>packet_hash_count<span class="op">].</span>timestamp <span class="op">=</span> time<span class="op">(</span>NULL<span class="op">);</span></span>
+<span id="cb21-28"><a href="#cb21-28" aria-hidden="true" tabindex="-1"></a>    t<span class="op">-&gt;</span>packet_hash_count<span class="op">++;</span></span>
+<span id="cb21-29"><a href="#cb21-29" aria-hidden="true" tabindex="-1"></a><span class="op">}</span></span></code></pre></div>
+<h3 id="computing-packet-hash">Computing Packet Hash</h3>
+<div class="sourceCode" id="cb22"><pre class="sourceCode c"><code class="sourceCode c"><span id="cb22-1"><a href="#cb22-1" aria-hidden="true" tabindex="-1"></a><span class="dt">void</span> compute_packet_hash<span class="op">(</span>Packet <span class="op">*</span>pkt<span class="op">,</span> <span class="dt">uint8_t</span> hash<span class="op">[</span><span class="dv">32</span><span class="op">])</span> <span class="op">{</span></span>
+<span id="cb22-2"><a href="#cb22-2" aria-hidden="true" tabindex="-1"></a>    <span class="co">// Hash the raw packet data</span></span>
+<span id="cb22-3"><a href="#cb22-3" aria-hidden="true" tabindex="-1"></a>    sha256<span class="op">(</span>pkt<span class="op">-&gt;</span>raw<span class="op">,</span> pkt<span class="op">-&gt;</span>raw_len<span class="op">,</span> hash<span class="op">);</span></span>
+<span id="cb22-4"><a href="#cb22-4" aria-hidden="true" tabindex="-1"></a><span class="op">}</span></span></code></pre></div>
+<h2 id="path-selection">11.11 Path Selection</h2>
+<p>When an announce arrives, should it update the path table? This
+decision is critical for routing efficiency.</p>
+<h3 id="selection-criteria">Selection Criteria</h3>
+<p>Reticulum uses a simple priority order:</p>
+<ol type="1">
+<li><strong>Hop count</strong> (primary): Fewer hops always
+preferred</li>
+<li><strong>Emission timestamp</strong> (secondary): More recent
+announce wins for equal hops</li>
+<li><strong>Path responsiveness</strong> (tertiary): Unresponsive paths
+can be replaced</li>
+</ol>
+<div class="sourceCode" id="cb23"><pre class="sourceCode c"><code class="sourceCode c"><span id="cb23-1"><a href="#cb23-1" aria-hidden="true" tabindex="-1"></a><span class="dt">bool</span> should_update_path<span class="op">(</span>PathTable <span class="op">*</span>pt<span class="op">,</span> <span class="dt">const</span> <span class="dt">uint8_t</span> dest<span class="op">[</span><span class="dv">16</span><span class="op">],</span></span>
+<span id="cb23-2"><a href="#cb23-2" aria-hidden="true" tabindex="-1"></a>                        <span class="dt">int</span> new_hops<span class="op">,</span> <span class="dt">uint64_t</span> new_emission_time<span class="op">,</span></span>
+<span id="cb23-3"><a href="#cb23-3" aria-hidden="true" tabindex="-1"></a>                        <span class="dt">const</span> <span class="dt">uint8_t</span> <span class="op">*</span>new_random_blob<span class="op">)</span> <span class="op">{</span></span>
+<span id="cb23-4"><a href="#cb23-4" aria-hidden="true" tabindex="-1"></a>    PathEntry <span class="op">*</span>existing <span class="op">=</span> path_table_lookup<span class="op">(</span>pt<span class="op">,</span> dest<span class="op">);</span></span>
+<span id="cb23-5"><a href="#cb23-5" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb23-6"><a href="#cb23-6" aria-hidden="true" tabindex="-1"></a>    <span class="cf">if</span> <span class="op">(</span>existing <span class="op">==</span> NULL<span class="op">)</span> <span class="op">{</span></span>
+<span id="cb23-7"><a href="#cb23-7" aria-hidden="true" tabindex="-1"></a>        <span class="cf">return</span> <span class="kw">true</span><span class="op">;</span>  <span class="co">// No existing path - accept</span></span>
+<span id="cb23-8"><a href="#cb23-8" aria-hidden="true" tabindex="-1"></a>    <span class="op">}</span></span>
+<span id="cb23-9"><a href="#cb23-9" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb23-10"><a href="#cb23-10" aria-hidden="true" tabindex="-1"></a>    <span class="cf">if</span> <span class="op">(</span>path_expired<span class="op">(</span>existing<span class="op">))</span> <span class="op">{</span></span>
+<span id="cb23-11"><a href="#cb23-11" aria-hidden="true" tabindex="-1"></a>        <span class="cf">return</span> <span class="kw">true</span><span class="op">;</span>  <span class="co">// Existing path expired - accept</span></span>
+<span id="cb23-12"><a href="#cb23-12" aria-hidden="true" tabindex="-1"></a>    <span class="op">}</span></span>
+<span id="cb23-13"><a href="#cb23-13" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb23-14"><a href="#cb23-14" aria-hidden="true" tabindex="-1"></a>    <span class="co">// Check for replay (same random blob)</span></span>
+<span id="cb23-15"><a href="#cb23-15" aria-hidden="true" tabindex="-1"></a>    <span class="cf">if</span> <span class="op">(</span>is_replay<span class="op">(</span>existing<span class="op">,</span> new_random_blob<span class="op">))</span> <span class="op">{</span></span>
+<span id="cb23-16"><a href="#cb23-16" aria-hidden="true" tabindex="-1"></a>        <span class="cf">return</span> <span class="kw">false</span><span class="op">;</span>  <span class="co">// Reject replay</span></span>
+<span id="cb23-17"><a href="#cb23-17" aria-hidden="true" tabindex="-1"></a>    <span class="op">}</span></span>
+<span id="cb23-18"><a href="#cb23-18" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb23-19"><a href="#cb23-19" aria-hidden="true" tabindex="-1"></a>    <span class="cf">if</span> <span class="op">(</span>new_hops <span class="op">&lt;</span> existing<span class="op">-&gt;</span>hops<span class="op">)</span> <span class="op">{</span></span>
+<span id="cb23-20"><a href="#cb23-20" aria-hidden="true" tabindex="-1"></a>        <span class="cf">return</span> <span class="kw">true</span><span class="op">;</span>  <span class="co">// Fewer hops - accept</span></span>
+<span id="cb23-21"><a href="#cb23-21" aria-hidden="true" tabindex="-1"></a>    <span class="op">}</span></span>
+<span id="cb23-22"><a href="#cb23-22" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb23-23"><a href="#cb23-23" aria-hidden="true" tabindex="-1"></a>    <span class="cf">if</span> <span class="op">(</span>new_hops <span class="op">==</span> existing<span class="op">-&gt;</span>hops<span class="op">)</span> <span class="op">{</span></span>
+<span id="cb23-24"><a href="#cb23-24" aria-hidden="true" tabindex="-1"></a>        <span class="co">// Equal hops: accept if newer emission time</span></span>
+<span id="cb23-25"><a href="#cb23-25" aria-hidden="true" tabindex="-1"></a>        <span class="cf">return</span> new_emission_time <span class="op">&gt;</span> existing<span class="op">-&gt;</span>emission_time<span class="op">;</span></span>
+<span id="cb23-26"><a href="#cb23-26" aria-hidden="true" tabindex="-1"></a>    <span class="op">}</span></span>
+<span id="cb23-27"><a href="#cb23-27" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb23-28"><a href="#cb23-28" aria-hidden="true" tabindex="-1"></a>    <span class="co">// More hops - only accept if:</span></span>
+<span id="cb23-29"><a href="#cb23-29" aria-hidden="true" tabindex="-1"></a>    <span class="co">// 1. Path marked unresponsive, OR</span></span>
+<span id="cb23-30"><a href="#cb23-30" aria-hidden="true" tabindex="-1"></a>    <span class="co">// 2. Significantly newer emission time</span></span>
+<span id="cb23-31"><a href="#cb23-31" aria-hidden="true" tabindex="-1"></a>    <span class="cf">if</span> <span class="op">(</span>existing<span class="op">-&gt;</span>unresponsive<span class="op">)</span> <span class="op">{</span></span>
+<span id="cb23-32"><a href="#cb23-32" aria-hidden="true" tabindex="-1"></a>        <span class="cf">return</span> <span class="kw">true</span><span class="op">;</span></span>
+<span id="cb23-33"><a href="#cb23-33" aria-hidden="true" tabindex="-1"></a>    <span class="op">}</span></span>
+<span id="cb23-34"><a href="#cb23-34" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb23-35"><a href="#cb23-35" aria-hidden="true" tabindex="-1"></a>    <span class="cf">return</span> new_emission_time <span class="op">&gt;</span> existing<span class="op">-&gt;</span>emission_time<span class="op">;</span></span>
+<span id="cb23-36"><a href="#cb23-36" aria-hidden="true" tabindex="-1"></a><span class="op">}</span></span></code></pre></div>
+<h3 id="what-path-selection-does-not-consider">What Path Selection Does
+NOT Consider</h3>
+<table>
+<thead>
+<tr class="header">
+<th>Factor</th>
+<th>Considered?</th>
+<th>Notes</th>
+</tr>
+</thead>
+<tbody>
+<tr class="odd">
+<td>Hop count</td>
+<td>Yes</td>
+<td>Primary criterion</td>
+</tr>
+<tr class="even">
+<td>Emission timestamp</td>
+<td>Yes</td>
+<td>Tiebreaker</td>
+</tr>
+<tr class="odd">
+<td>Interface bitrate</td>
+<td>No</td>
+<td>Used for TX ordering, not routing</td>
+</tr>
+<tr class="even">
+<td>Link quality (RSSI/SNR)</td>
+<td>No</td>
+<td>Logged but not used for routing</td>
+</tr>
+<tr class="odd">
+<td>Historical reliability</td>
+<td>No</td>
+<td>No path quality metrics</td>
+</tr>
+<tr class="even">
+<td>Geographic distance</td>
+<td>No</td>
+<td>Not available</td>
+</tr>
+<tr class="odd">
+<td>Latency</td>
+<td>No</td>
+<td>Would require probing</td>
+</tr>
+</tbody>
+</table>
+<h3 id="interface-bitrate-ordering">Interface Bitrate Ordering</h3>
+<p>Interfaces are sorted by bitrate for <strong>transmission
+priority</strong>, not path selection:</p>
+<div class="sourceCode" id="cb24"><pre class="sourceCode c"><code class="sourceCode c"><span id="cb24-1"><a href="#cb24-1" aria-hidden="true" tabindex="-1"></a><span class="co">// High-bitrate interfaces transmit announces first</span></span>
+<span id="cb24-2"><a href="#cb24-2" aria-hidden="true" tabindex="-1"></a><span class="dt">void</span> prioritize_interfaces<span class="op">(</span>Transport <span class="op">*</span>t<span class="op">)</span> <span class="op">{</span></span>
+<span id="cb24-3"><a href="#cb24-3" aria-hidden="true" tabindex="-1"></a>    qsort<span class="op">(</span>t<span class="op">-&gt;</span>interfaces<span class="op">,</span> t<span class="op">-&gt;</span>interface_count<span class="op">,</span> <span class="kw">sizeof</span><span class="op">(</span>Interface<span class="op">*),</span></span>
+<span id="cb24-4"><a href="#cb24-4" aria-hidden="true" tabindex="-1"></a>          compare_by_bitrate_desc<span class="op">);</span></span>
+<span id="cb24-5"><a href="#cb24-5" aria-hidden="true" tabindex="-1"></a><span class="op">}</span></span></code></pre></div>
+<p>This affects announce propagation speed, not which path is
+chosen.</p>
+<h3 id="limitations">Limitations</h3>
+<ul>
+<li><strong>Single path only</strong>: Only one path stored per
+destination (no multi-path)</li>
+<li><strong>No load balancing</strong>: All traffic uses the single
+stored path</li>
+<li><strong>No quality metrics</strong>: Can’t route around congested
+links</li>
+<li><strong>Future improvement</strong>: Code comments note “Best would
+be to have full support for alternative paths”</li>
+</ul>
+<h2 id="complete-transport-loop">11.12 Complete Transport Loop</h2>
+<div class="sourceCode" id="cb25"><pre class="sourceCode c"><code class="sourceCode c"><span id="cb25-1"><a href="#cb25-1" aria-hidden="true" tabindex="-1"></a><span class="dt">void</span> transport_run<span class="op">(</span>Transport <span class="op">*</span>t<span class="op">)</span> <span class="op">{</span></span>
+<span id="cb25-2"><a href="#cb25-2" aria-hidden="true" tabindex="-1"></a>    <span class="cf">while</span> <span class="op">(</span>t<span class="op">-&gt;</span>running<span class="op">)</span> <span class="op">{</span></span>
+<span id="cb25-3"><a href="#cb25-3" aria-hidden="true" tabindex="-1"></a>        <span class="co">// 1. Poll all interfaces for incoming packets</span></span>
+<span id="cb25-4"><a href="#cb25-4" aria-hidden="true" tabindex="-1"></a>        <span class="cf">for</span> <span class="op">(</span><span class="dt">size_t</span> i <span class="op">=</span> <span class="dv">0</span><span class="op">;</span> i <span class="op">&lt;</span> t<span class="op">-&gt;</span>interface_count<span class="op">;</span> i<span class="op">++)</span> <span class="op">{</span></span>
+<span id="cb25-5"><a href="#cb25-5" aria-hidden="true" tabindex="-1"></a>            interface_poll<span class="op">(</span>t<span class="op">-&gt;</span>interfaces<span class="op">[</span>i<span class="op">]);</span></span>
+<span id="cb25-6"><a href="#cb25-6" aria-hidden="true" tabindex="-1"></a>        <span class="op">}</span></span>
+<span id="cb25-7"><a href="#cb25-7" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb25-8"><a href="#cb25-8" aria-hidden="true" tabindex="-1"></a>        <span class="co">// 2. Run periodic jobs</span></span>
+<span id="cb25-9"><a href="#cb25-9" aria-hidden="true" tabindex="-1"></a>        transport_job_loop<span class="op">(</span>t<span class="op">);</span></span>
+<span id="cb25-10"><a href="#cb25-10" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb25-11"><a href="#cb25-11" aria-hidden="true" tabindex="-1"></a>        <span class="co">// 3. Small sleep to prevent busy-waiting</span></span>
+<span id="cb25-12"><a href="#cb25-12" aria-hidden="true" tabindex="-1"></a>        usleep<span class="op">(</span><span class="dv">1000</span><span class="op">);</span>  <span class="co">// 1ms</span></span>
+<span id="cb25-13"><a href="#cb25-13" aria-hidden="true" tabindex="-1"></a>    <span class="op">}</span></span>
+<span id="cb25-14"><a href="#cb25-14" aria-hidden="true" tabindex="-1"></a><span class="op">}</span></span></code></pre></div>
+<h2 id="putting-it-all-together">11.12 Putting It All Together</h2>
+<h3 id="complete-packet-journey-outbound">Complete Packet Journey
+(Outbound)</h3>
+<pre><code>Application
+    |
+    v
++-------------------+
+| Destination       | Encrypt payload
++-------------------+
+    |
+    v
++-------------------+
+| Transport         | Look up route, build packet
++-------------------+
+    |
+    v
++-------------------+
+| Interface         | HDLC frame, send
++-------------------+
+    |
+    v
+[Physical Medium]</code></pre>
+<h3 id="complete-packet-journey-inbound">Complete Packet Journey
+(Inbound)</h3>
+<pre><code>[Physical Medium]
+    |
+    v
++-------------------+
+| Interface         | HDLC deframe, IFAC verify
++-------------------+
+    |
+    v
++-------------------+
+| Transport         | Deduplicate, route, forward
++-------------------+
+    |
+    v
++-------------------+
+| Destination       | Decrypt, deliver
++-------------------+
+    |
+    v
+Application</code></pre>
+<h2 id="summary">11.13 Summary</h2>
+<table>
+<colgroup>
+<col style="width: 23%" />
+<col style="width: 16%" />
+<col style="width: 30%" />
+<col style="width: 30%" />
+</colgroup>
+<thead>
+<tr class="header">
+<th>Table</th>
+<th>Key</th>
+<th>Purpose</th>
+<th>Timeout</th>
+</tr>
+</thead>
+<tbody>
+<tr class="odd">
+<td>Path Table</td>
+<td>Destination hash</td>
+<td>Route to destinations</td>
+<td>7 days / 1 day / 6 hours</td>
+</tr>
+<tr class="even">
+<td>Link Table</td>
+<td>Link ID</td>
+<td>Route link packets</td>
+<td>STALE_TIME * 1.25</td>
+</tr>
+<tr class="odd">
+<td>Reverse Table</td>
+<td>Packet hash</td>
+<td>Route proofs back</td>
+<td>8 minutes</td>
+</tr>
+<tr class="even">
+<td>Announce Table</td>
+<td>Destination hash</td>
+<td>Pending retransmissions</td>
+<td>Until sent</td>
+</tr>
+<tr class="odd">
+<td>Packet Hashes</td>
+<td>Packet hash</td>
+<td>Deduplication</td>
+<td>5 minutes</td>
+</tr>
+</tbody>
+</table>
+<table>
+<thead>
+<tr class="header">
+<th>Transport Mode</th>
+<th>Path TTL</th>
+<th>Use Case</th>
+</tr>
+</thead>
+<tbody>
+<tr class="odd">
+<td>Boundary</td>
+<td>7 days</td>
+<td>Default, full mesh</td>
+</tr>
+<tr class="even">
+<td>Access Point</td>
+<td>1 day</td>
+<td>Gateway nodes</td>
+</tr>
+<tr class="odd">
+<td>Roaming</td>
+<td>6 hours</td>
+<td>Mobile nodes</td>
+</tr>
+</tbody>
+</table>
+<p>The Transport layer coordinates: - <strong>Interfaces</strong>:
+Physical connections to the network - <strong>Routing</strong>: Finding
+paths to destinations - <strong>Forwarding</strong>: Moving packets
+toward their destinations - <strong>Tables</strong>: Maintaining network
+state - <strong>Delivery</strong>: Getting packets to local
+destinations</p>
+<p>This completes the core Reticulum protocol documentation. <a
+href="12-implementation.md">The remaining chapters cover implementation
+guidance and testing.</a></p>
+</body>
+</html>

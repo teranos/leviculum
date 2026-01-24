@@ -1,0 +1,514 @@
+<!DOCTYPE html>
+<html xmlns="http://www.w3.org/1999/xhtml" lang="" xml:lang="">
+<head>
+  <meta charset="utf-8" />
+  <meta name="generator" content="pandoc" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=yes" />
+  <title>Chapter 3: Identity and Addressing</title>
+  <style>
+    code{white-space: pre-wrap;}
+    span.smallcaps{font-variant: small-caps;}
+    div.columns{display: flex; gap: min(4vw, 1.5em);}
+    div.column{flex: auto; overflow-x: auto;}
+    div.hanging-indent{margin-left: 1.5em; text-indent: -1.5em;}
+    /* The extra [class] is a hack that increases specificity enough to
+       override a similar rule in reveal.js */
+    ul.task-list[class]{list-style: none;}
+    ul.task-list li input[type="checkbox"] {
+      font-size: inherit;
+      width: 0.8em;
+      margin: 0 0.8em 0.2em -1.6em;
+      vertical-align: middle;
+    }
+    .display.math{display: block; text-align: center; margin: 0.5rem auto;}
+    /* CSS for syntax highlighting */
+    pre > code.sourceCode { white-space: pre; position: relative; }
+    pre > code.sourceCode > span { line-height: 1.25; }
+    pre > code.sourceCode > span:empty { height: 1.2em; }
+    .sourceCode { overflow: visible; }
+    code.sourceCode > span { color: inherit; text-decoration: inherit; }
+    div.sourceCode { margin: 1em 0; }
+    pre.sourceCode { margin: 0; }
+    @media screen {
+    div.sourceCode { overflow: auto; }
+    }
+    @media print {
+    pre > code.sourceCode { white-space: pre-wrap; }
+    pre > code.sourceCode > span { display: inline-block; text-indent: -5em; padding-left: 5em; }
+    }
+    pre.numberSource code
+      { counter-reset: source-line 0; }
+    pre.numberSource code > span
+      { position: relative; left: -4em; counter-increment: source-line; }
+    pre.numberSource code > span > a:first-child::before
+      { content: counter(source-line);
+        position: relative; left: -1em; text-align: right; vertical-align: baseline;
+        border: none; display: inline-block;
+        -webkit-touch-callout: none; -webkit-user-select: none;
+        -khtml-user-select: none; -moz-user-select: none;
+        -ms-user-select: none; user-select: none;
+        padding: 0 4px; width: 4em;
+        color: #aaaaaa;
+      }
+    pre.numberSource { margin-left: 3em; border-left: 1px solid #aaaaaa;  padding-left: 4px; }
+    div.sourceCode
+      {  background-color: #f8f8f8; }
+    @media screen {
+    pre > code.sourceCode > span > a:first-child::before { text-decoration: underline; }
+    }
+    code span.al { color: #ef2929; } /* Alert */
+    code span.an { color: #8f5902; font-weight: bold; font-style: italic; } /* Annotation */
+    code span.at { color: #204a87; } /* Attribute */
+    code span.bn { color: #0000cf; } /* BaseN */
+    code span.cf { color: #204a87; font-weight: bold; } /* ControlFlow */
+    code span.ch { color: #4e9a06; } /* Char */
+    code span.cn { color: #8f5902; } /* Constant */
+    code span.co { color: #8f5902; font-style: italic; } /* Comment */
+    code span.cv { color: #8f5902; font-weight: bold; font-style: italic; } /* CommentVar */
+    code span.do { color: #8f5902; font-weight: bold; font-style: italic; } /* Documentation */
+    code span.dt { color: #204a87; } /* DataType */
+    code span.dv { color: #0000cf; } /* DecVal */
+    code span.er { color: #a40000; font-weight: bold; } /* Error */
+    code span.ex { } /* Extension */
+    code span.fl { color: #0000cf; } /* Float */
+    code span.fu { color: #204a87; font-weight: bold; } /* Function */
+    code span.im { } /* Import */
+    code span.in { color: #8f5902; font-weight: bold; font-style: italic; } /* Information */
+    code span.kw { color: #204a87; font-weight: bold; } /* Keyword */
+    code span.op { color: #ce5c00; font-weight: bold; } /* Operator */
+    code span.ot { color: #8f5902; } /* Other */
+    code span.pp { color: #8f5902; font-style: italic; } /* Preprocessor */
+    code span.sc { color: #ce5c00; font-weight: bold; } /* SpecialChar */
+    code span.ss { color: #4e9a06; } /* SpecialString */
+    code span.st { color: #4e9a06; } /* String */
+    code span.va { color: #000000; } /* Variable */
+    code span.vs { color: #4e9a06; } /* VerbatimString */
+    code span.wa { color: #8f5902; font-weight: bold; font-style: italic; } /* Warning */
+  </style>
+  <link rel="stylesheet" href="style.css" />
+</head>
+<body>
+<nav class="breadcrumb"><a href="index.html">← Table of Contents</a></nav>
+<header id="title-block-header">
+<h1 class="title">Chapter 3: Identity and Addressing</h1>
+</header>
+<nav id="TOC" role="doc-toc">
+<ul>
+<li><a href="#the-identity-concept" id="toc-the-identity-concept">3.1
+The Identity Concept</a></li>
+<li><a href="#address-hashing" id="toc-address-hashing">3.2 Address
+Hashing</a></li>
+<li><a href="#identity-operations" id="toc-identity-operations">3.3
+Identity Operations</a></li>
+<li><a href="#destination-addresses" id="toc-destination-addresses">3.4
+Destination Addresses</a></li>
+<li><a href="#full-hash-vs-truncated-hash"
+id="toc-full-hash-vs-truncated-hash">3.5 Full Hash vs Truncated
+Hash</a></li>
+<li><a href="#identity-recall-caching"
+id="toc-identity-recall-caching">3.6 Identity Recall (Caching)</a></li>
+<li><a href="#hexadecimal-representation"
+id="toc-hexadecimal-representation">3.7 Hexadecimal
+Representation</a></li>
+<li><a href="#summary" id="toc-summary">3.8 Summary</a></li>
+</ul>
+</nav>
+<p>In Reticulum, your <strong>identity</strong> is a pair of
+cryptographic keys. Your <strong>address</strong> is derived from those
+keys. This chapter explains how identities work and how addresses are
+computed.</p>
+<h2 id="the-identity-concept">3.1 The Identity Concept</h2>
+<h3 id="traditional-vs-cryptographic-identity">Traditional vs
+Cryptographic Identity</h3>
+<p>In traditional networks: - Your identity is a username in someone
+else’s database - Your address is assigned by someone else (DHCP, ISP) -
+Trust comes from institutions (certificate authorities)</p>
+<p>In Reticulum: - Your identity is a key pair you generate yourself -
+Your address is mathematically derived from your public keys - Trust
+comes from cryptographic proofs</p>
+<h3 id="what-is-an-identity">What is an Identity?</h3>
+<p>A Reticulum identity consists of two key pairs:</p>
+<pre><code>Identity = {
+    X25519 key pair:   For key exchange (encryption)
+    Ed25519 key pair:  For signatures (authentication)
+}</code></pre>
+<p>Each key pair has: - <strong>Private key</strong>: 32 bytes, kept
+secret - <strong>Public key</strong>: 32 bytes, shared freely</p>
+<p>The <strong>public identity</strong> (what others see) is:</p>
+<pre><code>Public Identity = X25519_public (32 bytes) || Ed25519_public (32 bytes)
+                = 64 bytes total</code></pre>
+<h3 id="self-sovereign-identity">Self-Sovereign Identity</h3>
+<p>Key insight: <strong>you create your own identity</strong>.</p>
+<div class="sourceCode" id="cb3"><pre class="sourceCode c"><code class="sourceCode c"><span id="cb3-1"><a href="#cb3-1" aria-hidden="true" tabindex="-1"></a><span class="dt">void</span> create_identity<span class="op">(</span><span class="dt">uint8_t</span> priv_x25519<span class="op">[</span><span class="dv">32</span><span class="op">],</span> <span class="dt">uint8_t</span> pub_x25519<span class="op">[</span><span class="dv">32</span><span class="op">],</span></span>
+<span id="cb3-2"><a href="#cb3-2" aria-hidden="true" tabindex="-1"></a>                     <span class="dt">uint8_t</span> priv_ed25519<span class="op">[</span><span class="dv">32</span><span class="op">],</span> <span class="dt">uint8_t</span> pub_ed25519<span class="op">[</span><span class="dv">32</span><span class="op">])</span> <span class="op">{</span></span>
+<span id="cb3-3"><a href="#cb3-3" aria-hidden="true" tabindex="-1"></a>    <span class="co">// Generate X25519 key pair</span></span>
+<span id="cb3-4"><a href="#cb3-4" aria-hidden="true" tabindex="-1"></a>    randombytes_buf<span class="op">(</span>priv_x25519<span class="op">,</span> <span class="dv">32</span><span class="op">);</span></span>
+<span id="cb3-5"><a href="#cb3-5" aria-hidden="true" tabindex="-1"></a>    crypto_scalarmult_base<span class="op">(</span>pub_x25519<span class="op">,</span> priv_x25519<span class="op">);</span></span>
+<span id="cb3-6"><a href="#cb3-6" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb3-7"><a href="#cb3-7" aria-hidden="true" tabindex="-1"></a>    <span class="co">// Generate Ed25519 key pair</span></span>
+<span id="cb3-8"><a href="#cb3-8" aria-hidden="true" tabindex="-1"></a>    randombytes_buf<span class="op">(</span>priv_ed25519<span class="op">,</span> <span class="dv">32</span><span class="op">);</span></span>
+<span id="cb3-9"><a href="#cb3-9" aria-hidden="true" tabindex="-1"></a>    crypto_sign_seed_keypair<span class="op">(</span>pub_ed25519<span class="op">,</span> priv_ed25519_full<span class="op">,</span> priv_ed25519<span class="op">);</span></span>
+<span id="cb3-10"><a href="#cb3-10" aria-hidden="true" tabindex="-1"></a><span class="op">}</span></span></code></pre></div>
+<p>No registration. No permission. No authority. You generate random
+bytes, and you have an identity.</p>
+<h3 id="identity-persistence">Identity Persistence</h3>
+<p>Identities can be: - <strong>Ephemeral</strong>: Generated for a
+single session, then discarded - <strong>Persistent</strong>: Saved to
+disk and reused across sessions</p>
+<p>For persistent identities, store the private keys securely:</p>
+<div class="sourceCode" id="cb4"><pre class="sourceCode c"><code class="sourceCode c"><span id="cb4-1"><a href="#cb4-1" aria-hidden="true" tabindex="-1"></a><span class="co">// Save identity (PROTECT THIS FILE!)</span></span>
+<span id="cb4-2"><a href="#cb4-2" aria-hidden="true" tabindex="-1"></a><span class="dt">void</span> save_identity<span class="op">(</span><span class="dt">const</span> <span class="dt">char</span> <span class="op">*</span>path<span class="op">,</span></span>
+<span id="cb4-3"><a href="#cb4-3" aria-hidden="true" tabindex="-1"></a>                   <span class="dt">const</span> <span class="dt">uint8_t</span> priv_x25519<span class="op">[</span><span class="dv">32</span><span class="op">],</span></span>
+<span id="cb4-4"><a href="#cb4-4" aria-hidden="true" tabindex="-1"></a>                   <span class="dt">const</span> <span class="dt">uint8_t</span> priv_ed25519<span class="op">[</span><span class="dv">32</span><span class="op">])</span> <span class="op">{</span></span>
+<span id="cb4-5"><a href="#cb4-5" aria-hidden="true" tabindex="-1"></a>    <span class="dt">FILE</span> <span class="op">*</span>f <span class="op">=</span> fopen<span class="op">(</span>path<span class="op">,</span> <span class="st">&quot;wb&quot;</span><span class="op">);</span></span>
+<span id="cb4-6"><a href="#cb4-6" aria-hidden="true" tabindex="-1"></a>    fwrite<span class="op">(</span>priv_x25519<span class="op">,</span> <span class="dv">1</span><span class="op">,</span> <span class="dv">32</span><span class="op">,</span> f<span class="op">);</span></span>
+<span id="cb4-7"><a href="#cb4-7" aria-hidden="true" tabindex="-1"></a>    fwrite<span class="op">(</span>priv_ed25519<span class="op">,</span> <span class="dv">1</span><span class="op">,</span> <span class="dv">32</span><span class="op">,</span> f<span class="op">);</span></span>
+<span id="cb4-8"><a href="#cb4-8" aria-hidden="true" tabindex="-1"></a>    fclose<span class="op">(</span>f<span class="op">);</span></span>
+<span id="cb4-9"><a href="#cb4-9" aria-hidden="true" tabindex="-1"></a>    chmod<span class="op">(</span>path<span class="op">,</span> <span class="bn">0600</span><span class="op">);</span>  <span class="co">// Owner read/write only</span></span>
+<span id="cb4-10"><a href="#cb4-10" aria-hidden="true" tabindex="-1"></a><span class="op">}</span></span></code></pre></div>
+<p><strong>Warning: Never share identity files between nodes.</strong>
+If two nodes use the same identity (e.g., by copying the identity file),
+both can announce and receive packets for that destination. This causes:
+- <strong>Path instability</strong>: Announces from different network
+locations overwrite each other - <strong>Message delivery
+issues</strong>: Packets may be routed to either node unpredictably -
+<strong>No conflict detection</strong>: Reticulum does not warn about
+duplicate identities (only about hash collisions with <em>different</em>
+keys)</p>
+<p>Each node should generate its own unique identity.</p>
+<h2 id="address-hashing">3.2 Address Hashing</h2>
+<h3 id="the-address-problem">The Address Problem</h3>
+<p>Network addresses need to be: - Globally unique (no collisions) -
+Compact (bandwidth is precious) - Self-certifying (prove ownership)</p>
+<p>IP addresses solve uniqueness through central allocation. Reticulum
+uses <strong>hash-based addressing</strong> instead.</p>
+<h3 id="computing-the-address-hash">Computing the Address Hash</h3>
+<p>The address is derived from the public identity:</p>
+<pre><code>full_hash = SHA256(X25519_public || Ed25519_public)
+address_hash = full_hash[0:16]  // First 128 bits</code></pre>
+<p>In code:</p>
+<div class="sourceCode" id="cb6"><pre class="sourceCode c"><code class="sourceCode c"><span id="cb6-1"><a href="#cb6-1" aria-hidden="true" tabindex="-1"></a><span class="dt">void</span> compute_address_hash<span class="op">(</span><span class="dt">const</span> <span class="dt">uint8_t</span> pub_x25519<span class="op">[</span><span class="dv">32</span><span class="op">],</span></span>
+<span id="cb6-2"><a href="#cb6-2" aria-hidden="true" tabindex="-1"></a>                          <span class="dt">const</span> <span class="dt">uint8_t</span> pub_ed25519<span class="op">[</span><span class="dv">32</span><span class="op">],</span></span>
+<span id="cb6-3"><a href="#cb6-3" aria-hidden="true" tabindex="-1"></a>                          <span class="dt">uint8_t</span> address<span class="op">[</span><span class="dv">16</span><span class="op">])</span> <span class="op">{</span></span>
+<span id="cb6-4"><a href="#cb6-4" aria-hidden="true" tabindex="-1"></a>    <span class="dt">uint8_t</span> full_hash<span class="op">[</span><span class="dv">32</span><span class="op">];</span></span>
+<span id="cb6-5"><a href="#cb6-5" aria-hidden="true" tabindex="-1"></a>    SHA256_CTX ctx<span class="op">;</span></span>
+<span id="cb6-6"><a href="#cb6-6" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb6-7"><a href="#cb6-7" aria-hidden="true" tabindex="-1"></a>    SHA256_Init<span class="op">(&amp;</span>ctx<span class="op">);</span></span>
+<span id="cb6-8"><a href="#cb6-8" aria-hidden="true" tabindex="-1"></a>    SHA256_Update<span class="op">(&amp;</span>ctx<span class="op">,</span> pub_x25519<span class="op">,</span> <span class="dv">32</span><span class="op">);</span></span>
+<span id="cb6-9"><a href="#cb6-9" aria-hidden="true" tabindex="-1"></a>    SHA256_Update<span class="op">(&amp;</span>ctx<span class="op">,</span> pub_ed25519<span class="op">,</span> <span class="dv">32</span><span class="op">);</span></span>
+<span id="cb6-10"><a href="#cb6-10" aria-hidden="true" tabindex="-1"></a>    SHA256_Final<span class="op">(</span>full_hash<span class="op">,</span> <span class="op">&amp;</span>ctx<span class="op">);</span></span>
+<span id="cb6-11"><a href="#cb6-11" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb6-12"><a href="#cb6-12" aria-hidden="true" tabindex="-1"></a>    memcpy<span class="op">(</span>address<span class="op">,</span> full_hash<span class="op">,</span> <span class="dv">16</span><span class="op">);</span>  <span class="co">// Truncate to 128 bits</span></span>
+<span id="cb6-13"><a href="#cb6-13" aria-hidden="true" tabindex="-1"></a><span class="op">}</span></span></code></pre></div>
+<h3 id="properties-of-hash-based-addresses">Properties of Hash-Based
+Addresses</h3>
+<ol type="1">
+<li><strong>Deterministic</strong>: Same keys always produce same
+address</li>
+<li><strong>Collision-resistant</strong>: ~2^64 work to find collision
+(birthday bound)</li>
+<li><strong>Self-certifying</strong>: Knowing the address lets you
+verify public keys</li>
+</ol>
+<h3 id="why-128-bits">Why 128 Bits?</h3>
+<p>Full SHA-256 is 256 bits, but Reticulum truncates to 128 bits.
+Why?</p>
+<ul>
+<li><strong>Bandwidth</strong>: 16 bytes vs 32 bytes saves 16 bytes per
+packet</li>
+<li><strong>Security</strong>: 128 bits provides ~2^64 collision
+resistance</li>
+<li><strong>Practicality</strong>: Finding collisions requires massive
+computation</li>
+</ul>
+<p>For comparison: - IPv4: 32 bits (4 billion addresses, exhausted) -
+IPv6: 128 bits (same as Reticulum) - Bitcoin addresses: 160 bits</p>
+<h3 id="address-representation">Address Representation</h3>
+<p>Addresses are typically shown as hex strings:</p>
+<div class="sourceCode" id="cb7"><pre class="sourceCode c"><code class="sourceCode c"><span id="cb7-1"><a href="#cb7-1" aria-hidden="true" tabindex="-1"></a><span class="dt">void</span> address_to_hex<span class="op">(</span><span class="dt">const</span> <span class="dt">uint8_t</span> address<span class="op">[</span><span class="dv">16</span><span class="op">],</span> <span class="dt">char</span> hex<span class="op">[</span><span class="dv">33</span><span class="op">])</span> <span class="op">{</span></span>
+<span id="cb7-2"><a href="#cb7-2" aria-hidden="true" tabindex="-1"></a>    <span class="cf">for</span> <span class="op">(</span><span class="dt">int</span> i <span class="op">=</span> <span class="dv">0</span><span class="op">;</span> i <span class="op">&lt;</span> <span class="dv">16</span><span class="op">;</span> i<span class="op">++)</span> <span class="op">{</span></span>
+<span id="cb7-3"><a href="#cb7-3" aria-hidden="true" tabindex="-1"></a>        sprintf<span class="op">(&amp;</span>hex<span class="op">[</span>i<span class="op">*</span><span class="dv">2</span><span class="op">],</span> <span class="st">&quot;</span><span class="sc">%02x</span><span class="st">&quot;</span><span class="op">,</span> address<span class="op">[</span>i<span class="op">]);</span></span>
+<span id="cb7-4"><a href="#cb7-4" aria-hidden="true" tabindex="-1"></a>    <span class="op">}</span></span>
+<span id="cb7-5"><a href="#cb7-5" aria-hidden="true" tabindex="-1"></a>    hex<span class="op">[</span><span class="dv">32</span><span class="op">]</span> <span class="op">=</span> <span class="ch">&#39;</span><span class="sc">\0</span><span class="ch">&#39;</span><span class="op">;</span></span>
+<span id="cb7-6"><a href="#cb7-6" aria-hidden="true" tabindex="-1"></a><span class="op">}</span></span>
+<span id="cb7-7"><a href="#cb7-7" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb7-8"><a href="#cb7-8" aria-hidden="true" tabindex="-1"></a><span class="co">// Example: &quot;a1b2c3d4e5f6789012345678abcdef01&quot;</span></span></code></pre></div>
+<h2 id="identity-operations">3.3 Identity Operations</h2>
+<p>Identities support several cryptographic operations.</p>
+<h3 id="signing-and-verification">Signing and Verification</h3>
+<p>Use Ed25519 to prove authorship:</p>
+<div class="sourceCode" id="cb8"><pre class="sourceCode c"><code class="sourceCode c"><span id="cb8-1"><a href="#cb8-1" aria-hidden="true" tabindex="-1"></a><span class="co">// Sign data with your identity</span></span>
+<span id="cb8-2"><a href="#cb8-2" aria-hidden="true" tabindex="-1"></a><span class="dt">void</span> identity_sign<span class="op">(</span><span class="dt">const</span> <span class="dt">uint8_t</span> priv_ed25519<span class="op">[</span><span class="dv">32</span><span class="op">],</span></span>
+<span id="cb8-3"><a href="#cb8-3" aria-hidden="true" tabindex="-1"></a>                   <span class="dt">const</span> <span class="dt">uint8_t</span> <span class="op">*</span>data<span class="op">,</span> <span class="dt">size_t</span> len<span class="op">,</span></span>
+<span id="cb8-4"><a href="#cb8-4" aria-hidden="true" tabindex="-1"></a>                   <span class="dt">uint8_t</span> signature<span class="op">[</span><span class="dv">64</span><span class="op">])</span> <span class="op">{</span></span>
+<span id="cb8-5"><a href="#cb8-5" aria-hidden="true" tabindex="-1"></a>    <span class="co">// Need full 64-byte private key for signing</span></span>
+<span id="cb8-6"><a href="#cb8-6" aria-hidden="true" tabindex="-1"></a>    <span class="dt">uint8_t</span> full_key<span class="op">[</span><span class="dv">64</span><span class="op">],</span> pub<span class="op">[</span><span class="dv">32</span><span class="op">];</span></span>
+<span id="cb8-7"><a href="#cb8-7" aria-hidden="true" tabindex="-1"></a>    crypto_sign_seed_keypair<span class="op">(</span>pub<span class="op">,</span> full_key<span class="op">,</span> priv_ed25519<span class="op">);</span></span>
+<span id="cb8-8"><a href="#cb8-8" aria-hidden="true" tabindex="-1"></a>    crypto_sign_detached<span class="op">(</span>signature<span class="op">,</span> NULL<span class="op">,</span> data<span class="op">,</span> len<span class="op">,</span> full_key<span class="op">);</span></span>
+<span id="cb8-9"><a href="#cb8-9" aria-hidden="true" tabindex="-1"></a><span class="op">}</span></span>
+<span id="cb8-10"><a href="#cb8-10" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb8-11"><a href="#cb8-11" aria-hidden="true" tabindex="-1"></a><span class="co">// Verify signature against public identity</span></span>
+<span id="cb8-12"><a href="#cb8-12" aria-hidden="true" tabindex="-1"></a><span class="dt">bool</span> identity_verify<span class="op">(</span><span class="dt">const</span> <span class="dt">uint8_t</span> pub_ed25519<span class="op">[</span><span class="dv">32</span><span class="op">],</span></span>
+<span id="cb8-13"><a href="#cb8-13" aria-hidden="true" tabindex="-1"></a>                     <span class="dt">const</span> <span class="dt">uint8_t</span> <span class="op">*</span>data<span class="op">,</span> <span class="dt">size_t</span> len<span class="op">,</span></span>
+<span id="cb8-14"><a href="#cb8-14" aria-hidden="true" tabindex="-1"></a>                     <span class="dt">const</span> <span class="dt">uint8_t</span> signature<span class="op">[</span><span class="dv">64</span><span class="op">])</span> <span class="op">{</span></span>
+<span id="cb8-15"><a href="#cb8-15" aria-hidden="true" tabindex="-1"></a>    <span class="cf">return</span> crypto_sign_verify_detached<span class="op">(</span>signature<span class="op">,</span> data<span class="op">,</span> len<span class="op">,</span> pub_ed25519<span class="op">)</span> <span class="op">==</span> <span class="dv">0</span><span class="op">;</span></span>
+<span id="cb8-16"><a href="#cb8-16" aria-hidden="true" tabindex="-1"></a><span class="op">}</span></span></code></pre></div>
+<h3 id="key-exchange">Key Exchange</h3>
+<p>Use X25519 to establish shared secrets:</p>
+<div class="sourceCode" id="cb9"><pre class="sourceCode c"><code class="sourceCode c"><span id="cb9-1"><a href="#cb9-1" aria-hidden="true" tabindex="-1"></a><span class="co">// Compute shared secret with another identity</span></span>
+<span id="cb9-2"><a href="#cb9-2" aria-hidden="true" tabindex="-1"></a><span class="dt">void</span> identity_key_exchange<span class="op">(</span><span class="dt">const</span> <span class="dt">uint8_t</span> my_priv_x25519<span class="op">[</span><span class="dv">32</span><span class="op">],</span></span>
+<span id="cb9-3"><a href="#cb9-3" aria-hidden="true" tabindex="-1"></a>                           <span class="dt">const</span> <span class="dt">uint8_t</span> peer_pub_x25519<span class="op">[</span><span class="dv">32</span><span class="op">],</span></span>
+<span id="cb9-4"><a href="#cb9-4" aria-hidden="true" tabindex="-1"></a>                           <span class="dt">uint8_t</span> shared_secret<span class="op">[</span><span class="dv">32</span><span class="op">])</span> <span class="op">{</span></span>
+<span id="cb9-5"><a href="#cb9-5" aria-hidden="true" tabindex="-1"></a>    crypto_scalarmult<span class="op">(</span>shared_secret<span class="op">,</span> my_priv_x25519<span class="op">,</span> peer_pub_x25519<span class="op">);</span></span>
+<span id="cb9-6"><a href="#cb9-6" aria-hidden="true" tabindex="-1"></a><span class="op">}</span></span></code></pre></div>
+<h3 id="encrypting-to-an-identity">Encrypting to an Identity</h3>
+<p>To encrypt data for a specific identity:</p>
+<ol type="1">
+<li>Generate ephemeral X25519 key pair</li>
+<li>Compute shared secret with recipient’s public key</li>
+<li>Derive encryption key via HKDF</li>
+<li>Encrypt with Fernet</li>
+<li>Include ephemeral public key in output</li>
+</ol>
+<div class="sourceCode" id="cb10"><pre class="sourceCode c"><code class="sourceCode c"><span id="cb10-1"><a href="#cb10-1" aria-hidden="true" tabindex="-1"></a><span class="dt">size_t</span> encrypt_to_identity<span class="op">(</span><span class="dt">const</span> <span class="dt">uint8_t</span> recipient_pub_x25519<span class="op">[</span><span class="dv">32</span><span class="op">],</span></span>
+<span id="cb10-2"><a href="#cb10-2" aria-hidden="true" tabindex="-1"></a>                           <span class="dt">const</span> <span class="dt">uint8_t</span> <span class="op">*</span>plaintext<span class="op">,</span> <span class="dt">size_t</span> plain_len<span class="op">,</span></span>
+<span id="cb10-3"><a href="#cb10-3" aria-hidden="true" tabindex="-1"></a>                           <span class="dt">uint8_t</span> <span class="op">*</span>output<span class="op">,</span> <span class="dt">size_t</span> output_max<span class="op">)</span> <span class="op">{</span></span>
+<span id="cb10-4"><a href="#cb10-4" aria-hidden="true" tabindex="-1"></a>    <span class="co">// 1. Generate ephemeral key pair</span></span>
+<span id="cb10-5"><a href="#cb10-5" aria-hidden="true" tabindex="-1"></a>    <span class="dt">uint8_t</span> eph_priv<span class="op">[</span><span class="dv">32</span><span class="op">],</span> eph_pub<span class="op">[</span><span class="dv">32</span><span class="op">];</span></span>
+<span id="cb10-6"><a href="#cb10-6" aria-hidden="true" tabindex="-1"></a>    crypto_box_keypair<span class="op">(</span>eph_pub<span class="op">,</span> eph_priv<span class="op">);</span></span>
+<span id="cb10-7"><a href="#cb10-7" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb10-8"><a href="#cb10-8" aria-hidden="true" tabindex="-1"></a>    <span class="co">// 2. Compute shared secret</span></span>
+<span id="cb10-9"><a href="#cb10-9" aria-hidden="true" tabindex="-1"></a>    <span class="dt">uint8_t</span> shared<span class="op">[</span><span class="dv">32</span><span class="op">];</span></span>
+<span id="cb10-10"><a href="#cb10-10" aria-hidden="true" tabindex="-1"></a>    crypto_scalarmult<span class="op">(</span>shared<span class="op">,</span> eph_priv<span class="op">,</span> recipient_pub_x25519<span class="op">);</span></span>
+<span id="cb10-11"><a href="#cb10-11" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb10-12"><a href="#cb10-12" aria-hidden="true" tabindex="-1"></a>    <span class="co">// 3. Derive encryption key</span></span>
+<span id="cb10-13"><a href="#cb10-13" aria-hidden="true" tabindex="-1"></a>    <span class="dt">uint8_t</span> derived<span class="op">[</span><span class="dv">32</span><span class="op">];</span></span>
+<span id="cb10-14"><a href="#cb10-14" aria-hidden="true" tabindex="-1"></a>    hkdf_sha256<span class="op">(</span>derived<span class="op">,</span> <span class="dv">32</span><span class="op">,</span> shared<span class="op">,</span> <span class="dv">32</span><span class="op">,</span> NULL<span class="op">,</span> <span class="dv">0</span><span class="op">,</span> NULL<span class="op">,</span> <span class="dv">0</span><span class="op">);</span></span>
+<span id="cb10-15"><a href="#cb10-15" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb10-16"><a href="#cb10-16" aria-hidden="true" tabindex="-1"></a>    <span class="co">// 4. Copy ephemeral public key to output</span></span>
+<span id="cb10-17"><a href="#cb10-17" aria-hidden="true" tabindex="-1"></a>    memcpy<span class="op">(</span>output<span class="op">,</span> eph_pub<span class="op">,</span> <span class="dv">32</span><span class="op">);</span></span>
+<span id="cb10-18"><a href="#cb10-18" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb10-19"><a href="#cb10-19" aria-hidden="true" tabindex="-1"></a>    <span class="co">// 5. Encrypt with derived key (Fernet format)</span></span>
+<span id="cb10-20"><a href="#cb10-20" aria-hidden="true" tabindex="-1"></a>    <span class="dt">size_t</span> cipher_len <span class="op">=</span> fernet_encrypt<span class="op">(</span>derived<span class="op">,</span> plaintext<span class="op">,</span> plain_len<span class="op">,</span></span>
+<span id="cb10-21"><a href="#cb10-21" aria-hidden="true" tabindex="-1"></a>                                       output <span class="op">+</span> <span class="dv">32</span><span class="op">,</span> output_max <span class="op">-</span> <span class="dv">32</span><span class="op">);</span></span>
+<span id="cb10-22"><a href="#cb10-22" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb10-23"><a href="#cb10-23" aria-hidden="true" tabindex="-1"></a>    <span class="co">// 6. Clean up secrets</span></span>
+<span id="cb10-24"><a href="#cb10-24" aria-hidden="true" tabindex="-1"></a>    sodium_memzero<span class="op">(</span>eph_priv<span class="op">,</span> <span class="dv">32</span><span class="op">);</span></span>
+<span id="cb10-25"><a href="#cb10-25" aria-hidden="true" tabindex="-1"></a>    sodium_memzero<span class="op">(</span>shared<span class="op">,</span> <span class="dv">32</span><span class="op">);</span></span>
+<span id="cb10-26"><a href="#cb10-26" aria-hidden="true" tabindex="-1"></a>    sodium_memzero<span class="op">(</span>derived<span class="op">,</span> <span class="dv">32</span><span class="op">);</span></span>
+<span id="cb10-27"><a href="#cb10-27" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb10-28"><a href="#cb10-28" aria-hidden="true" tabindex="-1"></a>    <span class="cf">return</span> <span class="dv">32</span> <span class="op">+</span> cipher_len<span class="op">;</span>  <span class="co">// ephemeral_pub + ciphertext</span></span>
+<span id="cb10-29"><a href="#cb10-29" aria-hidden="true" tabindex="-1"></a><span class="op">}</span></span></code></pre></div>
+<p>The recipient decrypts by: 1. Extracting the ephemeral public key 2.
+Computing the shared secret with their private key 3. Deriving the same
+encryption key 4. Decrypting the Fernet token</p>
+<h2 id="destination-addresses">3.4 Destination Addresses</h2>
+<p>In Reticulum, you don’t communicate with identities directly. You
+communicate with <strong>destinations</strong>. A destination’s address
+includes more than just the identity hash.</p>
+<h3 id="application-names-and-aspects">Application Names and
+Aspects</h3>
+<p>Destinations include: - <strong>Application name</strong>: String
+identifying the application - <strong>Aspect</strong>: Additional
+qualifier (like a “port”) - <strong>Identity</strong>: The cryptographic
+identity</p>
+<h3 id="destination-hash-computation">Destination Hash Computation</h3>
+<p>The name is first “expanded” by concatenating the app name and
+aspects with dots:</p>
+<pre><code>expanded_name = &quot;app_name.aspect1.aspect2...&quot;</code></pre>
+<p>Then the destination hash is computed:</p>
+<pre><code>name_hash = SHA256(expanded_name_utf8)[0:10]   // First 10 bytes only!
+address_hash = SHA256(name_hash || identity_hash)[0:16]</code></pre>
+<p>Note: The name hash is only <strong>10 bytes</strong> (80 bits), not
+16 bytes. This is a Reticulum-specific truncation different from the
+standard 16-byte address truncation.</p>
+<h3 id="example">Example</h3>
+<div class="sourceCode" id="cb13"><pre class="sourceCode c"><code class="sourceCode c"><span id="cb13-1"><a href="#cb13-1" aria-hidden="true" tabindex="-1"></a><span class="co">// Application: &quot;myapp&quot;, Aspect: &quot;receiver&quot;, Identity hash: 0xabcd...</span></span>
+<span id="cb13-2"><a href="#cb13-2" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb13-3"><a href="#cb13-3" aria-hidden="true" tabindex="-1"></a><span class="dt">void</span> compute_destination_hash<span class="op">(</span><span class="dt">const</span> <span class="dt">char</span> <span class="op">*</span>app_name<span class="op">,</span></span>
+<span id="cb13-4"><a href="#cb13-4" aria-hidden="true" tabindex="-1"></a>                              <span class="dt">const</span> <span class="dt">char</span> <span class="op">*</span>aspect<span class="op">,</span></span>
+<span id="cb13-5"><a href="#cb13-5" aria-hidden="true" tabindex="-1"></a>                              <span class="dt">const</span> <span class="dt">uint8_t</span> identity_hash<span class="op">[</span><span class="dv">16</span><span class="op">],</span></span>
+<span id="cb13-6"><a href="#cb13-6" aria-hidden="true" tabindex="-1"></a>                              <span class="dt">uint8_t</span> dest_hash<span class="op">[</span><span class="dv">16</span><span class="op">])</span> <span class="op">{</span></span>
+<span id="cb13-7"><a href="#cb13-7" aria-hidden="true" tabindex="-1"></a>    <span class="co">// Build expanded name: &quot;myapp.receiver&quot;</span></span>
+<span id="cb13-8"><a href="#cb13-8" aria-hidden="true" tabindex="-1"></a>    <span class="dt">char</span> expanded_name<span class="op">[</span><span class="dv">256</span><span class="op">];</span></span>
+<span id="cb13-9"><a href="#cb13-9" aria-hidden="true" tabindex="-1"></a>    snprintf<span class="op">(</span>expanded_name<span class="op">,</span> <span class="kw">sizeof</span><span class="op">(</span>expanded_name<span class="op">),</span> <span class="st">&quot;</span><span class="sc">%s</span><span class="st">.</span><span class="sc">%s</span><span class="st">&quot;</span><span class="op">,</span> app_name<span class="op">,</span> aspect<span class="op">);</span></span>
+<span id="cb13-10"><a href="#cb13-10" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb13-11"><a href="#cb13-11" aria-hidden="true" tabindex="-1"></a>    <span class="co">// Hash expanded name, take first 10 bytes</span></span>
+<span id="cb13-12"><a href="#cb13-12" aria-hidden="true" tabindex="-1"></a>    <span class="dt">uint8_t</span> full_hash<span class="op">[</span><span class="dv">32</span><span class="op">];</span></span>
+<span id="cb13-13"><a href="#cb13-13" aria-hidden="true" tabindex="-1"></a>    SHA256<span class="op">((</span><span class="dt">uint8_t</span><span class="op">*)</span>expanded_name<span class="op">,</span> strlen<span class="op">(</span>expanded_name<span class="op">),</span> full_hash<span class="op">);</span></span>
+<span id="cb13-14"><a href="#cb13-14" aria-hidden="true" tabindex="-1"></a>    <span class="dt">uint8_t</span> name_hash<span class="op">[</span><span class="dv">10</span><span class="op">];</span></span>
+<span id="cb13-15"><a href="#cb13-15" aria-hidden="true" tabindex="-1"></a>    memcpy<span class="op">(</span>name_hash<span class="op">,</span> full_hash<span class="op">,</span> <span class="dv">10</span><span class="op">);</span>  <span class="co">// Only 10 bytes!</span></span>
+<span id="cb13-16"><a href="#cb13-16" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb13-17"><a href="#cb13-17" aria-hidden="true" tabindex="-1"></a>    <span class="co">// Combine: name_hash (10 bytes) || identity_hash (16 bytes) = 26 bytes</span></span>
+<span id="cb13-18"><a href="#cb13-18" aria-hidden="true" tabindex="-1"></a>    <span class="dt">uint8_t</span> combined<span class="op">[</span><span class="dv">26</span><span class="op">];</span></span>
+<span id="cb13-19"><a href="#cb13-19" aria-hidden="true" tabindex="-1"></a>    memcpy<span class="op">(</span>combined<span class="op">,</span> name_hash<span class="op">,</span> <span class="dv">10</span><span class="op">);</span></span>
+<span id="cb13-20"><a href="#cb13-20" aria-hidden="true" tabindex="-1"></a>    memcpy<span class="op">(</span>combined <span class="op">+</span> <span class="dv">10</span><span class="op">,</span> identity_hash<span class="op">,</span> <span class="dv">16</span><span class="op">);</span></span>
+<span id="cb13-21"><a href="#cb13-21" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb13-22"><a href="#cb13-22" aria-hidden="true" tabindex="-1"></a>    <span class="co">// Final hash, take first 16 bytes</span></span>
+<span id="cb13-23"><a href="#cb13-23" aria-hidden="true" tabindex="-1"></a>    SHA256<span class="op">(</span>combined<span class="op">,</span> <span class="dv">26</span><span class="op">,</span> full_hash<span class="op">);</span></span>
+<span id="cb13-24"><a href="#cb13-24" aria-hidden="true" tabindex="-1"></a>    memcpy<span class="op">(</span>dest_hash<span class="op">,</span> full_hash<span class="op">,</span> <span class="dv">16</span><span class="op">);</span></span>
+<span id="cb13-25"><a href="#cb13-25" aria-hidden="true" tabindex="-1"></a><span class="op">}</span></span></code></pre></div>
+<h3 id="why-include-app-name-and-aspect">Why Include App Name and
+Aspect?</h3>
+<p>This design allows: - <strong>Multiple destinations per
+identity</strong>: Same identity can host different services -
+<strong>Service discovery</strong>: Destination hash encodes what the
+service is - <strong>Namespace separation</strong>: Different apps won’t
+collide</p>
+<h2 id="full-hash-vs-truncated-hash">3.5 Full Hash vs Truncated
+Hash</h2>
+<p>Reticulum uses both full (256-bit) and truncated (128-bit)
+hashes:</p>
+<table>
+<thead>
+<tr class="header">
+<th>Use Case</th>
+<th>Hash Size</th>
+<th>Why</th>
+</tr>
+</thead>
+<tbody>
+<tr class="odd">
+<td>Address (destination hash)</td>
+<td>128 bits</td>
+<td>Bandwidth efficiency</td>
+</tr>
+<tr class="even">
+<td>Link ID</td>
+<td>128 bits</td>
+<td>Bandwidth efficiency</td>
+</tr>
+<tr class="odd">
+<td>Announce hash</td>
+<td>256 bits</td>
+<td>Full security</td>
+</tr>
+<tr class="even">
+<td>Internal operations</td>
+<td>256 bits</td>
+<td>No bandwidth constraint</td>
+</tr>
+</tbody>
+</table>
+<p>The truncated hash is always the <strong>first</strong> 128 bits (16
+bytes) of the full SHA-256 output.</p>
+<h2 id="identity-recall-caching">3.6 Identity Recall (Caching)</h2>
+<p>When you receive an announce or proof, you learn a remote identity’s
+public keys. Reticulum caches these for future use:</p>
+<div class="sourceCode" id="cb14"><pre class="sourceCode c"><code class="sourceCode c"><span id="cb14-1"><a href="#cb14-1" aria-hidden="true" tabindex="-1"></a><span class="kw">typedef</span> <span class="kw">struct</span> <span class="op">{</span></span>
+<span id="cb14-2"><a href="#cb14-2" aria-hidden="true" tabindex="-1"></a>    <span class="dt">uint8_t</span> address_hash<span class="op">[</span><span class="dv">16</span><span class="op">];</span>      <span class="co">// Lookup key</span></span>
+<span id="cb14-3"><a href="#cb14-3" aria-hidden="true" tabindex="-1"></a>    <span class="dt">uint8_t</span> x25519_public<span class="op">[</span><span class="dv">32</span><span class="op">];</span>     <span class="co">// For encryption</span></span>
+<span id="cb14-4"><a href="#cb14-4" aria-hidden="true" tabindex="-1"></a>    <span class="dt">uint8_t</span> ed25519_public<span class="op">[</span><span class="dv">32</span><span class="op">];</span>    <span class="co">// For verification</span></span>
+<span id="cb14-5"><a href="#cb14-5" aria-hidden="true" tabindex="-1"></a>    <span class="dt">time_t</span>  last_seen<span class="op">;</span>             <span class="co">// For expiry</span></span>
+<span id="cb14-6"><a href="#cb14-6" aria-hidden="true" tabindex="-1"></a><span class="op">}</span> IdentityCache<span class="op">;</span></span>
+<span id="cb14-7"><a href="#cb14-7" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb14-8"><a href="#cb14-8" aria-hidden="true" tabindex="-1"></a><span class="co">// Cache an identity</span></span>
+<span id="cb14-9"><a href="#cb14-9" aria-hidden="true" tabindex="-1"></a><span class="dt">void</span> cache_identity<span class="op">(</span>IdentityCache <span class="op">*</span>cache<span class="op">,</span> <span class="dt">size_t</span> <span class="op">*</span>count<span class="op">,</span></span>
+<span id="cb14-10"><a href="#cb14-10" aria-hidden="true" tabindex="-1"></a>                    <span class="dt">const</span> <span class="dt">uint8_t</span> addr<span class="op">[</span><span class="dv">16</span><span class="op">],</span></span>
+<span id="cb14-11"><a href="#cb14-11" aria-hidden="true" tabindex="-1"></a>                    <span class="dt">const</span> <span class="dt">uint8_t</span> x25519<span class="op">[</span><span class="dv">32</span><span class="op">],</span></span>
+<span id="cb14-12"><a href="#cb14-12" aria-hidden="true" tabindex="-1"></a>                    <span class="dt">const</span> <span class="dt">uint8_t</span> ed25519<span class="op">[</span><span class="dv">32</span><span class="op">])</span> <span class="op">{</span></span>
+<span id="cb14-13"><a href="#cb14-13" aria-hidden="true" tabindex="-1"></a>    <span class="co">// Check if already cached</span></span>
+<span id="cb14-14"><a href="#cb14-14" aria-hidden="true" tabindex="-1"></a>    <span class="cf">for</span> <span class="op">(</span><span class="dt">size_t</span> i <span class="op">=</span> <span class="dv">0</span><span class="op">;</span> i <span class="op">&lt;</span> <span class="op">*</span>count<span class="op">;</span> i<span class="op">++)</span> <span class="op">{</span></span>
+<span id="cb14-15"><a href="#cb14-15" aria-hidden="true" tabindex="-1"></a>        <span class="cf">if</span> <span class="op">(</span>memcmp<span class="op">(</span>cache<span class="op">[</span>i<span class="op">].</span>address_hash<span class="op">,</span> addr<span class="op">,</span> <span class="dv">16</span><span class="op">)</span> <span class="op">==</span> <span class="dv">0</span><span class="op">)</span> <span class="op">{</span></span>
+<span id="cb14-16"><a href="#cb14-16" aria-hidden="true" tabindex="-1"></a>            cache<span class="op">[</span>i<span class="op">].</span>last_seen <span class="op">=</span> time<span class="op">(</span>NULL<span class="op">);</span></span>
+<span id="cb14-17"><a href="#cb14-17" aria-hidden="true" tabindex="-1"></a>            <span class="cf">return</span><span class="op">;</span></span>
+<span id="cb14-18"><a href="#cb14-18" aria-hidden="true" tabindex="-1"></a>        <span class="op">}</span></span>
+<span id="cb14-19"><a href="#cb14-19" aria-hidden="true" tabindex="-1"></a>    <span class="op">}</span></span>
+<span id="cb14-20"><a href="#cb14-20" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb14-21"><a href="#cb14-21" aria-hidden="true" tabindex="-1"></a>    <span class="co">// Add new entry</span></span>
+<span id="cb14-22"><a href="#cb14-22" aria-hidden="true" tabindex="-1"></a>    memcpy<span class="op">(</span>cache<span class="op">[*</span>count<span class="op">].</span>address_hash<span class="op">,</span> addr<span class="op">,</span> <span class="dv">16</span><span class="op">);</span></span>
+<span id="cb14-23"><a href="#cb14-23" aria-hidden="true" tabindex="-1"></a>    memcpy<span class="op">(</span>cache<span class="op">[*</span>count<span class="op">].</span>x25519_public<span class="op">,</span> x25519<span class="op">,</span> <span class="dv">32</span><span class="op">);</span></span>
+<span id="cb14-24"><a href="#cb14-24" aria-hidden="true" tabindex="-1"></a>    memcpy<span class="op">(</span>cache<span class="op">[*</span>count<span class="op">].</span>ed25519_public<span class="op">,</span> ed25519<span class="op">,</span> <span class="dv">32</span><span class="op">);</span></span>
+<span id="cb14-25"><a href="#cb14-25" aria-hidden="true" tabindex="-1"></a>    cache<span class="op">[*</span>count<span class="op">].</span>last_seen <span class="op">=</span> time<span class="op">(</span>NULL<span class="op">);</span></span>
+<span id="cb14-26"><a href="#cb14-26" aria-hidden="true" tabindex="-1"></a>    <span class="op">(*</span>count<span class="op">)++;</span></span>
+<span id="cb14-27"><a href="#cb14-27" aria-hidden="true" tabindex="-1"></a><span class="op">}</span></span>
+<span id="cb14-28"><a href="#cb14-28" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb14-29"><a href="#cb14-29" aria-hidden="true" tabindex="-1"></a><span class="co">// Lookup identity by address</span></span>
+<span id="cb14-30"><a href="#cb14-30" aria-hidden="true" tabindex="-1"></a><span class="dt">bool</span> lookup_identity<span class="op">(</span>IdentityCache <span class="op">*</span>cache<span class="op">,</span> <span class="dt">size_t</span> count<span class="op">,</span></span>
+<span id="cb14-31"><a href="#cb14-31" aria-hidden="true" tabindex="-1"></a>                     <span class="dt">const</span> <span class="dt">uint8_t</span> addr<span class="op">[</span><span class="dv">16</span><span class="op">],</span></span>
+<span id="cb14-32"><a href="#cb14-32" aria-hidden="true" tabindex="-1"></a>                     <span class="dt">uint8_t</span> x25519_out<span class="op">[</span><span class="dv">32</span><span class="op">],</span></span>
+<span id="cb14-33"><a href="#cb14-33" aria-hidden="true" tabindex="-1"></a>                     <span class="dt">uint8_t</span> ed25519_out<span class="op">[</span><span class="dv">32</span><span class="op">])</span> <span class="op">{</span></span>
+<span id="cb14-34"><a href="#cb14-34" aria-hidden="true" tabindex="-1"></a>    <span class="cf">for</span> <span class="op">(</span><span class="dt">size_t</span> i <span class="op">=</span> <span class="dv">0</span><span class="op">;</span> i <span class="op">&lt;</span> count<span class="op">;</span> i<span class="op">++)</span> <span class="op">{</span></span>
+<span id="cb14-35"><a href="#cb14-35" aria-hidden="true" tabindex="-1"></a>        <span class="cf">if</span> <span class="op">(</span>memcmp<span class="op">(</span>cache<span class="op">[</span>i<span class="op">].</span>address_hash<span class="op">,</span> addr<span class="op">,</span> <span class="dv">16</span><span class="op">)</span> <span class="op">==</span> <span class="dv">0</span><span class="op">)</span> <span class="op">{</span></span>
+<span id="cb14-36"><a href="#cb14-36" aria-hidden="true" tabindex="-1"></a>            memcpy<span class="op">(</span>x25519_out<span class="op">,</span> cache<span class="op">[</span>i<span class="op">].</span>x25519_public<span class="op">,</span> <span class="dv">32</span><span class="op">);</span></span>
+<span id="cb14-37"><a href="#cb14-37" aria-hidden="true" tabindex="-1"></a>            memcpy<span class="op">(</span>ed25519_out<span class="op">,</span> cache<span class="op">[</span>i<span class="op">].</span>ed25519_public<span class="op">,</span> <span class="dv">32</span><span class="op">);</span></span>
+<span id="cb14-38"><a href="#cb14-38" aria-hidden="true" tabindex="-1"></a>            <span class="cf">return</span> <span class="kw">true</span><span class="op">;</span></span>
+<span id="cb14-39"><a href="#cb14-39" aria-hidden="true" tabindex="-1"></a>        <span class="op">}</span></span>
+<span id="cb14-40"><a href="#cb14-40" aria-hidden="true" tabindex="-1"></a>    <span class="op">}</span></span>
+<span id="cb14-41"><a href="#cb14-41" aria-hidden="true" tabindex="-1"></a>    <span class="cf">return</span> <span class="kw">false</span><span class="op">;</span></span>
+<span id="cb14-42"><a href="#cb14-42" aria-hidden="true" tabindex="-1"></a><span class="op">}</span></span></code></pre></div>
+<p>This cache is populated by: - <strong>Announces</strong>: Broadcast
+identity information - <strong>Link proofs</strong>: Include responder’s
+public key - <strong>Explicit recall</strong>: Request identity from
+network</p>
+<h2 id="hexadecimal-representation">3.7 Hexadecimal Representation</h2>
+<p>Identities and addresses are often displayed as hex strings:</p>
+<h3 id="address-hash-16-bytes-32-hex-chars">Address Hash (16 bytes → 32
+hex chars)</h3>
+<pre><code>a1b2c3d4e5f6789012345678abcdef01</code></pre>
+<h3 id="public-identity-64-bytes-128-hex-chars">Public Identity (64
+bytes → 128 hex chars)</h3>
+<pre><code>1234567890abcdef1234567890abcdef1234567890abcdef1234567890abcdef  (X25519)
+fedcba0987654321fedcba0987654321fedcba0987654321fedcba0987654321  (Ed25519)</code></pre>
+<h3 id="private-identity-64-bytes-128-hex-chars">Private Identity (64
+bytes → 128 hex chars)</h3>
+<p><strong>Never share this!</strong></p>
+<pre><code>[32 bytes X25519 private][32 bytes Ed25519 private]</code></pre>
+<h3 id="parsing-hex">Parsing Hex</h3>
+<div class="sourceCode" id="cb18"><pre class="sourceCode c"><code class="sourceCode c"><span id="cb18-1"><a href="#cb18-1" aria-hidden="true" tabindex="-1"></a><span class="dt">bool</span> hex_to_bytes<span class="op">(</span><span class="dt">const</span> <span class="dt">char</span> <span class="op">*</span>hex<span class="op">,</span> <span class="dt">uint8_t</span> <span class="op">*</span>out<span class="op">,</span> <span class="dt">size_t</span> out_len<span class="op">)</span> <span class="op">{</span></span>
+<span id="cb18-2"><a href="#cb18-2" aria-hidden="true" tabindex="-1"></a>    <span class="cf">if</span> <span class="op">(</span>strlen<span class="op">(</span>hex<span class="op">)</span> <span class="op">!=</span> out_len <span class="op">*</span> <span class="dv">2</span><span class="op">)</span> <span class="cf">return</span> <span class="kw">false</span><span class="op">;</span></span>
+<span id="cb18-3"><a href="#cb18-3" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb18-4"><a href="#cb18-4" aria-hidden="true" tabindex="-1"></a>    <span class="cf">for</span> <span class="op">(</span><span class="dt">size_t</span> i <span class="op">=</span> <span class="dv">0</span><span class="op">;</span> i <span class="op">&lt;</span> out_len<span class="op">;</span> i<span class="op">++)</span> <span class="op">{</span></span>
+<span id="cb18-5"><a href="#cb18-5" aria-hidden="true" tabindex="-1"></a>        <span class="dt">char</span> byte<span class="op">[</span><span class="dv">3</span><span class="op">]</span> <span class="op">=</span> <span class="op">{</span>hex<span class="op">[</span>i<span class="op">*</span><span class="dv">2</span><span class="op">],</span> hex<span class="op">[</span>i<span class="op">*</span><span class="dv">2</span><span class="op">+</span><span class="dv">1</span><span class="op">],</span> <span class="ch">&#39;</span><span class="sc">\0</span><span class="ch">&#39;</span><span class="op">};</span></span>
+<span id="cb18-6"><a href="#cb18-6" aria-hidden="true" tabindex="-1"></a>        <span class="dt">char</span> <span class="op">*</span>end<span class="op">;</span></span>
+<span id="cb18-7"><a href="#cb18-7" aria-hidden="true" tabindex="-1"></a>        out<span class="op">[</span>i<span class="op">]</span> <span class="op">=</span> strtoul<span class="op">(</span>byte<span class="op">,</span> <span class="op">&amp;</span>end<span class="op">,</span> <span class="dv">16</span><span class="op">);</span></span>
+<span id="cb18-8"><a href="#cb18-8" aria-hidden="true" tabindex="-1"></a>        <span class="cf">if</span> <span class="op">(*</span>end <span class="op">!=</span> <span class="ch">&#39;</span><span class="sc">\0</span><span class="ch">&#39;</span><span class="op">)</span> <span class="cf">return</span> <span class="kw">false</span><span class="op">;</span></span>
+<span id="cb18-9"><a href="#cb18-9" aria-hidden="true" tabindex="-1"></a>    <span class="op">}</span></span>
+<span id="cb18-10"><a href="#cb18-10" aria-hidden="true" tabindex="-1"></a>    <span class="cf">return</span> <span class="kw">true</span><span class="op">;</span></span>
+<span id="cb18-11"><a href="#cb18-11" aria-hidden="true" tabindex="-1"></a><span class="op">}</span></span></code></pre></div>
+<h2 id="summary">3.8 Summary</h2>
+<table>
+<colgroup>
+<col style="width: 32%" />
+<col style="width: 21%" />
+<col style="width: 46%" />
+</colgroup>
+<thead>
+<tr class="header">
+<th>Concept</th>
+<th>Size</th>
+<th>Description</th>
+</tr>
+</thead>
+<tbody>
+<tr class="odd">
+<td>Identity</td>
+<td>64 bytes (public)</td>
+<td>X25519 pubkey + Ed25519 pubkey</td>
+</tr>
+<tr class="even">
+<td>Private Identity</td>
+<td>64 bytes</td>
+<td>X25519 privkey + Ed25519 privkey</td>
+</tr>
+<tr class="odd">
+<td>Identity Hash</td>
+<td>16 bytes</td>
+<td>SHA256(public identity)[0:16]</td>
+</tr>
+<tr class="even">
+<td>Destination Hash</td>
+<td>16 bytes</td>
+<td>SHA256(name + aspects + identity)[0:16]</td>
+</tr>
+</tbody>
+</table>
+<p>Key operations: - <strong>Sign</strong>: Ed25519(private_key, data) →
+64-byte signature - <strong>Verify</strong>: Ed25519_verify(public_key,
+data, signature) → bool - <strong>Key Exchange</strong>:
+X25519(my_private, peer_public) → 32-byte shared secret -
+<strong>Encrypt</strong>: Ephemeral ECDH + HKDF + Fernet</p>
+<p><a href="04-packets.html">The next chapter explains how data is
+structured into <strong>packets</strong> for transmission.</a></p>
+</body>
+</html>

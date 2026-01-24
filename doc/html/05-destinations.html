@@ -1,0 +1,825 @@
+<!DOCTYPE html>
+<html xmlns="http://www.w3.org/1999/xhtml" lang="" xml:lang="">
+<head>
+  <meta charset="utf-8" />
+  <meta name="generator" content="pandoc" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=yes" />
+  <title>Chapter 5: Destinations</title>
+  <style>
+    code{white-space: pre-wrap;}
+    span.smallcaps{font-variant: small-caps;}
+    div.columns{display: flex; gap: min(4vw, 1.5em);}
+    div.column{flex: auto; overflow-x: auto;}
+    div.hanging-indent{margin-left: 1.5em; text-indent: -1.5em;}
+    /* The extra [class] is a hack that increases specificity enough to
+       override a similar rule in reveal.js */
+    ul.task-list[class]{list-style: none;}
+    ul.task-list li input[type="checkbox"] {
+      font-size: inherit;
+      width: 0.8em;
+      margin: 0 0.8em 0.2em -1.6em;
+      vertical-align: middle;
+    }
+    .display.math{display: block; text-align: center; margin: 0.5rem auto;}
+    /* CSS for syntax highlighting */
+    pre > code.sourceCode { white-space: pre; position: relative; }
+    pre > code.sourceCode > span { line-height: 1.25; }
+    pre > code.sourceCode > span:empty { height: 1.2em; }
+    .sourceCode { overflow: visible; }
+    code.sourceCode > span { color: inherit; text-decoration: inherit; }
+    div.sourceCode { margin: 1em 0; }
+    pre.sourceCode { margin: 0; }
+    @media screen {
+    div.sourceCode { overflow: auto; }
+    }
+    @media print {
+    pre > code.sourceCode { white-space: pre-wrap; }
+    pre > code.sourceCode > span { display: inline-block; text-indent: -5em; padding-left: 5em; }
+    }
+    pre.numberSource code
+      { counter-reset: source-line 0; }
+    pre.numberSource code > span
+      { position: relative; left: -4em; counter-increment: source-line; }
+    pre.numberSource code > span > a:first-child::before
+      { content: counter(source-line);
+        position: relative; left: -1em; text-align: right; vertical-align: baseline;
+        border: none; display: inline-block;
+        -webkit-touch-callout: none; -webkit-user-select: none;
+        -khtml-user-select: none; -moz-user-select: none;
+        -ms-user-select: none; user-select: none;
+        padding: 0 4px; width: 4em;
+        color: #aaaaaa;
+      }
+    pre.numberSource { margin-left: 3em; border-left: 1px solid #aaaaaa;  padding-left: 4px; }
+    div.sourceCode
+      {   }
+    @media screen {
+    pre > code.sourceCode > span > a:first-child::before { text-decoration: underline; }
+    }
+    code span.al { color: #ff0000; font-weight: bold; } /* Alert */
+    code span.an { color: #60a0b0; font-weight: bold; font-style: italic; } /* Annotation */
+    code span.at { color: #7d9029; } /* Attribute */
+    code span.bn { color: #40a070; } /* BaseN */
+    code span.bu { color: #008000; } /* BuiltIn */
+    code span.cf { color: #007020; font-weight: bold; } /* ControlFlow */
+    code span.ch { color: #4070a0; } /* Char */
+    code span.cn { color: #880000; } /* Constant */
+    code span.co { color: #60a0b0; font-style: italic; } /* Comment */
+    code span.cv { color: #60a0b0; font-weight: bold; font-style: italic; } /* CommentVar */
+    code span.do { color: #ba2121; font-style: italic; } /* Documentation */
+    code span.dt { color: #902000; } /* DataType */
+    code span.dv { color: #40a070; } /* DecVal */
+    code span.er { color: #ff0000; font-weight: bold; } /* Error */
+    code span.ex { } /* Extension */
+    code span.fl { color: #40a070; } /* Float */
+    code span.fu { color: #06287e; } /* Function */
+    code span.im { color: #008000; font-weight: bold; } /* Import */
+    code span.in { color: #60a0b0; font-weight: bold; font-style: italic; } /* Information */
+    code span.kw { color: #007020; font-weight: bold; } /* Keyword */
+    code span.op { color: #666666; } /* Operator */
+    code span.ot { color: #007020; } /* Other */
+    code span.pp { color: #bc7a00; } /* Preprocessor */
+    code span.sc { color: #4070a0; } /* SpecialChar */
+    code span.ss { color: #bb6688; } /* SpecialString */
+    code span.st { color: #4070a0; } /* String */
+    code span.va { color: #19177c; } /* Variable */
+    code span.vs { color: #4070a0; } /* VerbatimString */
+    code span.wa { color: #60a0b0; font-weight: bold; font-style: italic; } /* Warning */
+  </style>
+  <link rel="stylesheet" href="style.css" />
+</head>
+<body>
+<header id="title-block-header">
+<h1 class="title">Chapter 5: Destinations</h1>
+</header>
+<p>A <strong>destination</strong> is an addressable endpoint in
+Reticulum. This chapter explains destination types, how they’re created,
+and how they handle incoming packets.</p>
+<h2 id="what-is-a-destination">5.1 What is a Destination?</h2>
+<p>In traditional networking, you send data to an IP address and port.
+In Reticulum, you send data to a <strong>destination</strong>.</p>
+<p>A destination combines: - <strong>Identity</strong>: The
+cryptographic key pair - <strong>Application name</strong>: A string
+identifying the application - <strong>Aspects</strong>: Optional
+qualifiers (like sub-services) - <strong>Type</strong>: How data is
+encrypted (SINGLE, GROUP, PLAIN)</p>
+<div class="sourceCode" id="cb1"><pre class="sourceCode c"><code class="sourceCode c"><span id="cb1-1"><a href="#cb1-1" aria-hidden="true" tabindex="-1"></a><span class="kw">typedef</span> <span class="kw">struct</span> <span class="op">{</span></span>
+<span id="cb1-2"><a href="#cb1-2" aria-hidden="true" tabindex="-1"></a>    <span class="dt">uint8_t</span>  hash<span class="op">[</span><span class="dv">16</span><span class="op">];</span>           <span class="co">// Destination address hash</span></span>
+<span id="cb1-3"><a href="#cb1-3" aria-hidden="true" tabindex="-1"></a>    <span class="dt">uint8_t</span>  type<span class="op">;</span>               <span class="co">// SINGLE, GROUP, or PLAIN</span></span>
+<span id="cb1-4"><a href="#cb1-4" aria-hidden="true" tabindex="-1"></a>    <span class="dt">char</span>     <span class="op">*</span>app_name<span class="op">;</span>          <span class="co">// Application name string</span></span>
+<span id="cb1-5"><a href="#cb1-5" aria-hidden="true" tabindex="-1"></a>    <span class="dt">char</span>     <span class="op">**</span>aspects<span class="op">;</span>          <span class="co">// Array of aspect strings</span></span>
+<span id="cb1-6"><a href="#cb1-6" aria-hidden="true" tabindex="-1"></a>    <span class="dt">size_t</span>   aspect_count<span class="op">;</span></span>
+<span id="cb1-7"><a href="#cb1-7" aria-hidden="true" tabindex="-1"></a>    Identity <span class="op">*</span>identity<span class="op">;</span>          <span class="co">// Associated identity</span></span>
+<span id="cb1-8"><a href="#cb1-8" aria-hidden="true" tabindex="-1"></a><span class="op">}</span> Destination<span class="op">;</span></span></code></pre></div>
+<h2 id="destination-types">5.2 Destination Types</h2>
+<h3 id="single-destination">SINGLE Destination</h3>
+<p>The most common type. Each SINGLE destination has a unique
+identity.</p>
+<p><strong>Properties</strong>: - Encrypted with the destination’s
+public key - Only the destination’s private key can decrypt - Provides
+confidentiality and authentication</p>
+<p><strong>Use cases</strong>: - Private messaging - Secure file
+transfer - Any point-to-point communication</p>
+<div class="sourceCode" id="cb2"><pre class="sourceCode c"><code class="sourceCode c"><span id="cb2-1"><a href="#cb2-1" aria-hidden="true" tabindex="-1"></a>Destination<span class="op">*</span> create_single_destination<span class="op">(</span>Identity <span class="op">*</span>identity<span class="op">,</span></span>
+<span id="cb2-2"><a href="#cb2-2" aria-hidden="true" tabindex="-1"></a>                                       <span class="dt">const</span> <span class="dt">char</span> <span class="op">*</span>app_name<span class="op">,</span></span>
+<span id="cb2-3"><a href="#cb2-3" aria-hidden="true" tabindex="-1"></a>                                       <span class="dt">const</span> <span class="dt">char</span> <span class="op">**</span>aspects<span class="op">,</span></span>
+<span id="cb2-4"><a href="#cb2-4" aria-hidden="true" tabindex="-1"></a>                                       <span class="dt">size_t</span> aspect_count<span class="op">)</span> <span class="op">{</span></span>
+<span id="cb2-5"><a href="#cb2-5" aria-hidden="true" tabindex="-1"></a>    Destination <span class="op">*</span>dest <span class="op">=</span> malloc<span class="op">(</span><span class="kw">sizeof</span><span class="op">(</span>Destination<span class="op">));</span></span>
+<span id="cb2-6"><a href="#cb2-6" aria-hidden="true" tabindex="-1"></a>    dest<span class="op">-&gt;</span>type <span class="op">=</span> DEST_SINGLE<span class="op">;</span>  <span class="co">// 0x00</span></span>
+<span id="cb2-7"><a href="#cb2-7" aria-hidden="true" tabindex="-1"></a>    dest<span class="op">-&gt;</span>identity <span class="op">=</span> identity<span class="op">;</span></span>
+<span id="cb2-8"><a href="#cb2-8" aria-hidden="true" tabindex="-1"></a>    dest<span class="op">-&gt;</span>app_name <span class="op">=</span> strdup<span class="op">(</span>app_name<span class="op">);</span></span>
+<span id="cb2-9"><a href="#cb2-9" aria-hidden="true" tabindex="-1"></a>    <span class="co">// ... copy aspects</span></span>
+<span id="cb2-10"><a href="#cb2-10" aria-hidden="true" tabindex="-1"></a>    compute_destination_hash<span class="op">(</span>dest<span class="op">);</span></span>
+<span id="cb2-11"><a href="#cb2-11" aria-hidden="true" tabindex="-1"></a>    <span class="cf">return</span> dest<span class="op">;</span></span>
+<span id="cb2-12"><a href="#cb2-12" aria-hidden="true" tabindex="-1"></a><span class="op">}</span></span></code></pre></div>
+<h3 id="group-destination">GROUP Destination</h3>
+<p>Multiple nodes share the same group key. Anyone with the key can
+encrypt/decrypt.</p>
+<p><strong>Properties</strong>: - Shared symmetric key for encryption
+(32 or 64 bytes for AES-128/AES-256) - All group members can read
+messages - No individual authentication - Cannot announce (only SINGLE
+destinations can announce)</p>
+<p><strong>Use cases</strong>: - Group chat rooms - Broadcast
+notifications - Multicast data</p>
+<div class="sourceCode" id="cb3"><pre class="sourceCode c"><code class="sourceCode c"><span id="cb3-1"><a href="#cb3-1" aria-hidden="true" tabindex="-1"></a>Destination<span class="op">*</span> create_group_destination<span class="op">(</span><span class="dt">const</span> <span class="dt">uint8_t</span> group_key<span class="op">[</span><span class="dv">32</span><span class="op">],</span></span>
+<span id="cb3-2"><a href="#cb3-2" aria-hidden="true" tabindex="-1"></a>                                      <span class="dt">const</span> <span class="dt">char</span> <span class="op">*</span>app_name<span class="op">)</span> <span class="op">{</span></span>
+<span id="cb3-3"><a href="#cb3-3" aria-hidden="true" tabindex="-1"></a>    Destination <span class="op">*</span>dest <span class="op">=</span> malloc<span class="op">(</span><span class="kw">sizeof</span><span class="op">(</span>Destination<span class="op">));</span></span>
+<span id="cb3-4"><a href="#cb3-4" aria-hidden="true" tabindex="-1"></a>    dest<span class="op">-&gt;</span>type <span class="op">=</span> DEST_GROUP<span class="op">;</span>  <span class="co">// 0x01</span></span>
+<span id="cb3-5"><a href="#cb3-5" aria-hidden="true" tabindex="-1"></a>    memcpy<span class="op">(</span>dest<span class="op">-&gt;</span>group_key<span class="op">,</span> group_key<span class="op">,</span> <span class="dv">32</span><span class="op">);</span></span>
+<span id="cb3-6"><a href="#cb3-6" aria-hidden="true" tabindex="-1"></a>    dest<span class="op">-&gt;</span>app_name <span class="op">=</span> strdup<span class="op">(</span>app_name<span class="op">);</span></span>
+<span id="cb3-7"><a href="#cb3-7" aria-hidden="true" tabindex="-1"></a>    compute_group_hash<span class="op">(</span>dest<span class="op">);</span></span>
+<span id="cb3-8"><a href="#cb3-8" aria-hidden="true" tabindex="-1"></a>    <span class="cf">return</span> dest<span class="op">;</span></span>
+<span id="cb3-9"><a href="#cb3-9" aria-hidden="true" tabindex="-1"></a><span class="op">}</span></span></code></pre></div>
+<p><strong>Key distribution</strong>: Reticulum does NOT automatically
+distribute GROUP keys. The application must share the symmetric key
+through an out-of-band mechanism:</p>
+<ol type="1">
+<li>One node generates the key:
+<code>destination_create_keys(dest)</code></li>
+<li>Extract the key bytes:
+<code>key = destination_get_private_key(dest)</code></li>
+<li>Share <code>key</code> securely (e.g., via encrypted SINGLE message,
+QR code, physical exchange)</li>
+<li>Other members load the key:
+<code>destination_load_private_key(dest, key)</code></li>
+</ol>
+<p>All members must use identical <code>app_name</code> and aspects to
+compute the same destination hash. There is no built-in key rotation; if
+compromised, all members must manually update.</p>
+<h3 id="plain-destination">PLAIN Destination</h3>
+<p>No encryption. Data is sent in cleartext.</p>
+<p><strong>Properties</strong>: - No encryption of payload - Transport
+may still be encrypted (on links) - Anyone can read the data</p>
+<p><strong>Use cases</strong>: - Public announcements -
+Debugging/testing - Broadcast beacons</p>
+<p><strong>Warning</strong>: Use sparingly. Encryption should be the
+default.</p>
+<div class="sourceCode" id="cb4"><pre class="sourceCode c"><code class="sourceCode c"><span id="cb4-1"><a href="#cb4-1" aria-hidden="true" tabindex="-1"></a>Destination<span class="op">*</span> create_plain_destination<span class="op">(</span><span class="dt">const</span> <span class="dt">char</span> <span class="op">*</span>app_name<span class="op">)</span> <span class="op">{</span></span>
+<span id="cb4-2"><a href="#cb4-2" aria-hidden="true" tabindex="-1"></a>    Destination <span class="op">*</span>dest <span class="op">=</span> malloc<span class="op">(</span><span class="kw">sizeof</span><span class="op">(</span>Destination<span class="op">));</span></span>
+<span id="cb4-3"><a href="#cb4-3" aria-hidden="true" tabindex="-1"></a>    dest<span class="op">-&gt;</span>type <span class="op">=</span> DEST_PLAIN<span class="op">;</span>  <span class="co">// 0x02</span></span>
+<span id="cb4-4"><a href="#cb4-4" aria-hidden="true" tabindex="-1"></a>    dest<span class="op">-&gt;</span>identity <span class="op">=</span> NULL<span class="op">;</span></span>
+<span id="cb4-5"><a href="#cb4-5" aria-hidden="true" tabindex="-1"></a>    dest<span class="op">-&gt;</span>app_name <span class="op">=</span> strdup<span class="op">(</span>app_name<span class="op">);</span></span>
+<span id="cb4-6"><a href="#cb4-6" aria-hidden="true" tabindex="-1"></a>    compute_plain_hash<span class="op">(</span>dest<span class="op">);</span></span>
+<span id="cb4-7"><a href="#cb4-7" aria-hidden="true" tabindex="-1"></a>    <span class="cf">return</span> dest<span class="op">;</span></span>
+<span id="cb4-8"><a href="#cb4-8" aria-hidden="true" tabindex="-1"></a><span class="op">}</span></span></code></pre></div>
+<h2 id="destination-hash-computation">5.3 Destination Hash
+Computation</h2>
+<p>Each destination type computes its hash differently.</p>
+<h3 id="single-destination-hash">SINGLE Destination Hash</h3>
+<pre><code>identity_hash = SHA256(x25519_pub || ed25519_pub)[0:16]
+name_hash = SHA256(app_name)[0:16]
+aspects_hash = SHA256(aspect1 || aspect2 || ...)[0:16]
+
+If no aspects:
+  dest_hash = SHA256(name_hash || identity_hash)[0:16]
+
+If aspects:
+  dest_hash = SHA256(name_hash || aspects_hash || identity_hash)[0:16]</code></pre>
+<p>Implementation:</p>
+<div class="sourceCode" id="cb6"><pre class="sourceCode c"><code class="sourceCode c"><span id="cb6-1"><a href="#cb6-1" aria-hidden="true" tabindex="-1"></a><span class="dt">void</span> compute_single_destination_hash<span class="op">(</span><span class="dt">const</span> <span class="dt">char</span> <span class="op">*</span>app_name<span class="op">,</span></span>
+<span id="cb6-2"><a href="#cb6-2" aria-hidden="true" tabindex="-1"></a>                                     <span class="dt">const</span> <span class="dt">char</span> <span class="op">**</span>aspects<span class="op">,</span></span>
+<span id="cb6-3"><a href="#cb6-3" aria-hidden="true" tabindex="-1"></a>                                     <span class="dt">size_t</span> aspect_count<span class="op">,</span></span>
+<span id="cb6-4"><a href="#cb6-4" aria-hidden="true" tabindex="-1"></a>                                     <span class="dt">const</span> <span class="dt">uint8_t</span> identity_hash<span class="op">[</span><span class="dv">16</span><span class="op">],</span></span>
+<span id="cb6-5"><a href="#cb6-5" aria-hidden="true" tabindex="-1"></a>                                     <span class="dt">uint8_t</span> dest_hash<span class="op">[</span><span class="dv">16</span><span class="op">])</span> <span class="op">{</span></span>
+<span id="cb6-6"><a href="#cb6-6" aria-hidden="true" tabindex="-1"></a>    <span class="dt">uint8_t</span> name_hash<span class="op">[</span><span class="dv">32</span><span class="op">],</span> aspects_hash<span class="op">[</span><span class="dv">32</span><span class="op">],</span> temp<span class="op">[</span><span class="dv">32</span><span class="op">];</span></span>
+<span id="cb6-7"><a href="#cb6-7" aria-hidden="true" tabindex="-1"></a>    SHA256_CTX ctx<span class="op">;</span></span>
+<span id="cb6-8"><a href="#cb6-8" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb6-9"><a href="#cb6-9" aria-hidden="true" tabindex="-1"></a>    <span class="co">// Hash application name</span></span>
+<span id="cb6-10"><a href="#cb6-10" aria-hidden="true" tabindex="-1"></a>    SHA256_Init<span class="op">(&amp;</span>ctx<span class="op">);</span></span>
+<span id="cb6-11"><a href="#cb6-11" aria-hidden="true" tabindex="-1"></a>    SHA256_Update<span class="op">(&amp;</span>ctx<span class="op">,</span> <span class="op">(</span><span class="dt">uint8_t</span><span class="op">*)</span>app_name<span class="op">,</span> strlen<span class="op">(</span>app_name<span class="op">));</span></span>
+<span id="cb6-12"><a href="#cb6-12" aria-hidden="true" tabindex="-1"></a>    SHA256_Final<span class="op">(</span>name_hash<span class="op">,</span> <span class="op">&amp;</span>ctx<span class="op">);</span></span>
+<span id="cb6-13"><a href="#cb6-13" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb6-14"><a href="#cb6-14" aria-hidden="true" tabindex="-1"></a>    <span class="co">// Build destination hash</span></span>
+<span id="cb6-15"><a href="#cb6-15" aria-hidden="true" tabindex="-1"></a>    SHA256_Init<span class="op">(&amp;</span>ctx<span class="op">);</span></span>
+<span id="cb6-16"><a href="#cb6-16" aria-hidden="true" tabindex="-1"></a>    SHA256_Update<span class="op">(&amp;</span>ctx<span class="op">,</span> name_hash<span class="op">,</span> <span class="dv">16</span><span class="op">);</span>  <span class="co">// Truncated name hash</span></span>
+<span id="cb6-17"><a href="#cb6-17" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb6-18"><a href="#cb6-18" aria-hidden="true" tabindex="-1"></a>    <span class="cf">if</span> <span class="op">(</span>aspect_count <span class="op">&gt;</span> <span class="dv">0</span><span class="op">)</span> <span class="op">{</span></span>
+<span id="cb6-19"><a href="#cb6-19" aria-hidden="true" tabindex="-1"></a>        <span class="co">// Hash all aspects concatenated</span></span>
+<span id="cb6-20"><a href="#cb6-20" aria-hidden="true" tabindex="-1"></a>        SHA256_Init<span class="op">(&amp;</span>ctx<span class="op">);</span></span>
+<span id="cb6-21"><a href="#cb6-21" aria-hidden="true" tabindex="-1"></a>        <span class="cf">for</span> <span class="op">(</span><span class="dt">size_t</span> i <span class="op">=</span> <span class="dv">0</span><span class="op">;</span> i <span class="op">&lt;</span> aspect_count<span class="op">;</span> i<span class="op">++)</span> <span class="op">{</span></span>
+<span id="cb6-22"><a href="#cb6-22" aria-hidden="true" tabindex="-1"></a>            SHA256_Update<span class="op">(&amp;</span>ctx<span class="op">,</span> <span class="op">(</span><span class="dt">uint8_t</span><span class="op">*)</span>aspects<span class="op">[</span>i<span class="op">],</span> strlen<span class="op">(</span>aspects<span class="op">[</span>i<span class="op">]));</span></span>
+<span id="cb6-23"><a href="#cb6-23" aria-hidden="true" tabindex="-1"></a>        <span class="op">}</span></span>
+<span id="cb6-24"><a href="#cb6-24" aria-hidden="true" tabindex="-1"></a>        SHA256_Final<span class="op">(</span>aspects_hash<span class="op">,</span> <span class="op">&amp;</span>ctx<span class="op">);</span></span>
+<span id="cb6-25"><a href="#cb6-25" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb6-26"><a href="#cb6-26" aria-hidden="true" tabindex="-1"></a>        SHA256_Init<span class="op">(&amp;</span>ctx<span class="op">);</span></span>
+<span id="cb6-27"><a href="#cb6-27" aria-hidden="true" tabindex="-1"></a>        SHA256_Update<span class="op">(&amp;</span>ctx<span class="op">,</span> name_hash<span class="op">,</span> <span class="dv">16</span><span class="op">);</span></span>
+<span id="cb6-28"><a href="#cb6-28" aria-hidden="true" tabindex="-1"></a>        SHA256_Update<span class="op">(&amp;</span>ctx<span class="op">,</span> aspects_hash<span class="op">,</span> <span class="dv">16</span><span class="op">);</span></span>
+<span id="cb6-29"><a href="#cb6-29" aria-hidden="true" tabindex="-1"></a>    <span class="op">}</span></span>
+<span id="cb6-30"><a href="#cb6-30" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb6-31"><a href="#cb6-31" aria-hidden="true" tabindex="-1"></a>    SHA256_Update<span class="op">(&amp;</span>ctx<span class="op">,</span> identity_hash<span class="op">,</span> <span class="dv">16</span><span class="op">);</span></span>
+<span id="cb6-32"><a href="#cb6-32" aria-hidden="true" tabindex="-1"></a>    SHA256_Final<span class="op">(</span>temp<span class="op">,</span> <span class="op">&amp;</span>ctx<span class="op">);</span></span>
+<span id="cb6-33"><a href="#cb6-33" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb6-34"><a href="#cb6-34" aria-hidden="true" tabindex="-1"></a>    memcpy<span class="op">(</span>dest_hash<span class="op">,</span> temp<span class="op">,</span> <span class="dv">16</span><span class="op">);</span></span>
+<span id="cb6-35"><a href="#cb6-35" aria-hidden="true" tabindex="-1"></a><span class="op">}</span></span></code></pre></div>
+<h3 id="group-destination-hash">GROUP Destination Hash</h3>
+<p>GROUP destinations use the same hash derivation as PLAIN - the
+symmetric key is NOT included in the hash:</p>
+<pre><code>name_hash = SHA256(app_name)[0:10]
+dest_hash = SHA256(name_hash)[0:16]</code></pre>
+<p>The group key is used only for encryption/decryption, not for
+addressing.</p>
+<h3 id="plain-destination-hash">PLAIN Destination Hash</h3>
+<pre><code>name_hash = SHA256(app_name)[0:10]
+dest_hash = SHA256(name_hash)[0:16]</code></pre>
+<h2 id="registering-destinations">5.4 Registering Destinations</h2>
+<p>To receive packets, a destination must be <strong>registered</strong>
+with the transport layer.</p>
+<div class="sourceCode" id="cb9"><pre class="sourceCode c"><code class="sourceCode c"><span id="cb9-1"><a href="#cb9-1" aria-hidden="true" tabindex="-1"></a><span class="kw">typedef</span> <span class="dt">void</span> <span class="op">(*</span>PacketCallback<span class="op">)(</span>Destination <span class="op">*</span>dest<span class="op">,</span></span>
+<span id="cb9-2"><a href="#cb9-2" aria-hidden="true" tabindex="-1"></a>                               <span class="dt">const</span> <span class="dt">uint8_t</span> <span class="op">*</span>data<span class="op">,</span></span>
+<span id="cb9-3"><a href="#cb9-3" aria-hidden="true" tabindex="-1"></a>                               <span class="dt">size_t</span> len<span class="op">,</span></span>
+<span id="cb9-4"><a href="#cb9-4" aria-hidden="true" tabindex="-1"></a>                               <span class="dt">const</span> <span class="dt">uint8_t</span> <span class="op">*</span>packet_hash<span class="op">);</span></span>
+<span id="cb9-5"><a href="#cb9-5" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb9-6"><a href="#cb9-6" aria-hidden="true" tabindex="-1"></a><span class="kw">typedef</span> <span class="dt">void</span> <span class="op">(*</span>LinkCallback<span class="op">)(</span>Destination <span class="op">*</span>dest<span class="op">,</span></span>
+<span id="cb9-7"><a href="#cb9-7" aria-hidden="true" tabindex="-1"></a>                             Link <span class="op">*</span>link<span class="op">);</span></span>
+<span id="cb9-8"><a href="#cb9-8" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb9-9"><a href="#cb9-9" aria-hidden="true" tabindex="-1"></a><span class="kw">typedef</span> <span class="kw">struct</span> <span class="op">{</span></span>
+<span id="cb9-10"><a href="#cb9-10" aria-hidden="true" tabindex="-1"></a>    Destination <span class="op">*</span>dest<span class="op">;</span></span>
+<span id="cb9-11"><a href="#cb9-11" aria-hidden="true" tabindex="-1"></a>    PacketCallback on_packet<span class="op">;</span></span>
+<span id="cb9-12"><a href="#cb9-12" aria-hidden="true" tabindex="-1"></a>    LinkCallback on_link_established<span class="op">;</span></span>
+<span id="cb9-13"><a href="#cb9-13" aria-hidden="true" tabindex="-1"></a><span class="op">}</span> DestinationRegistration<span class="op">;</span></span>
+<span id="cb9-14"><a href="#cb9-14" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb9-15"><a href="#cb9-15" aria-hidden="true" tabindex="-1"></a><span class="dt">void</span> register_destination<span class="op">(</span>Transport <span class="op">*</span>transport<span class="op">,</span></span>
+<span id="cb9-16"><a href="#cb9-16" aria-hidden="true" tabindex="-1"></a>                          Destination <span class="op">*</span>dest<span class="op">,</span></span>
+<span id="cb9-17"><a href="#cb9-17" aria-hidden="true" tabindex="-1"></a>                          PacketCallback on_packet<span class="op">,</span></span>
+<span id="cb9-18"><a href="#cb9-18" aria-hidden="true" tabindex="-1"></a>                          LinkCallback on_link<span class="op">)</span> <span class="op">{</span></span>
+<span id="cb9-19"><a href="#cb9-19" aria-hidden="true" tabindex="-1"></a>    DestinationRegistration reg <span class="op">=</span> <span class="op">{</span></span>
+<span id="cb9-20"><a href="#cb9-20" aria-hidden="true" tabindex="-1"></a>        <span class="op">.</span>dest <span class="op">=</span> dest<span class="op">,</span></span>
+<span id="cb9-21"><a href="#cb9-21" aria-hidden="true" tabindex="-1"></a>        <span class="op">.</span>on_packet <span class="op">=</span> on_packet<span class="op">,</span></span>
+<span id="cb9-22"><a href="#cb9-22" aria-hidden="true" tabindex="-1"></a>        <span class="op">.</span>on_link_established <span class="op">=</span> on_link</span>
+<span id="cb9-23"><a href="#cb9-23" aria-hidden="true" tabindex="-1"></a>    <span class="op">};</span></span>
+<span id="cb9-24"><a href="#cb9-24" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb9-25"><a href="#cb9-25" aria-hidden="true" tabindex="-1"></a>    <span class="co">// Add to transport&#39;s destination table</span></span>
+<span id="cb9-26"><a href="#cb9-26" aria-hidden="true" tabindex="-1"></a>    transport_add_destination<span class="op">(</span>transport<span class="op">,</span> <span class="op">&amp;</span>reg<span class="op">);</span></span>
+<span id="cb9-27"><a href="#cb9-27" aria-hidden="true" tabindex="-1"></a><span class="op">}</span></span></code></pre></div>
+<p>When a packet arrives: 1. Transport looks up destination by hash 2.
+If found, decrypts payload (if needed) 3. Calls the registered
+callback</p>
+<h2 id="sending-to-destinations">5.5 Sending to Destinations</h2>
+<p>Sending data to a destination requires encryption appropriate to the
+destination type. This section explains the cryptographic flow for each
+type.</p>
+<h3 id="sending-to-a-single-destination">Sending to a SINGLE
+Destination</h3>
+<p>When sending to a SINGLE destination, Reticulum uses
+<strong>ephemeral key exchange</strong> to provide forward secrecy. Each
+message gets a fresh keypair, so compromising long-term keys doesn’t
+reveal past messages.</p>
+<p><strong>The encryption flow:</strong></p>
+<ol type="1">
+<li><strong>Generate ephemeral keypair</strong>: Create a one-time
+X25519 keypair just for this message</li>
+<li><strong>Compute shared secret</strong>: Use ECDH between our
+ephemeral private key and the recipient’s long-term public key</li>
+<li><strong>Derive encryption key</strong>: Run the shared secret
+through HKDF to get an AES key</li>
+<li><strong>Encrypt with Fernet</strong>: Use the derived key to encrypt
+the actual data</li>
+<li><strong>Prepend ephemeral public key</strong>: The recipient needs
+our ephemeral public key to decrypt</li>
+</ol>
+<p><strong>Why ephemeral keys?</strong> If an attacker records encrypted
+traffic and later obtains the recipient’s private key, they still cannot
+decrypt old messages. Each message used a different ephemeral key that
+was discarded after sending.</p>
+<p><strong>Why include the ephemeral public key in the payload?</strong>
+The recipient must perform the same ECDH calculation. They use their
+long-term private key with our ephemeral public key to derive the same
+shared secret.</p>
+<div class="sourceCode" id="cb10"><pre class="sourceCode c"><code class="sourceCode c"><span id="cb10-1"><a href="#cb10-1" aria-hidden="true" tabindex="-1"></a><span class="dt">bool</span> send_to_single<span class="op">(</span>Transport <span class="op">*</span>transport<span class="op">,</span></span>
+<span id="cb10-2"><a href="#cb10-2" aria-hidden="true" tabindex="-1"></a>                    Destination <span class="op">*</span>dest<span class="op">,</span></span>
+<span id="cb10-3"><a href="#cb10-3" aria-hidden="true" tabindex="-1"></a>                    <span class="dt">const</span> <span class="dt">uint8_t</span> <span class="op">*</span>data<span class="op">,</span></span>
+<span id="cb10-4"><a href="#cb10-4" aria-hidden="true" tabindex="-1"></a>                    <span class="dt">size_t</span> len<span class="op">)</span> <span class="op">{</span></span>
+<span id="cb10-5"><a href="#cb10-5" aria-hidden="true" tabindex="-1"></a>    <span class="co">// 1. Check if we know the identity</span></span>
+<span id="cb10-6"><a href="#cb10-6" aria-hidden="true" tabindex="-1"></a>    <span class="cf">if</span> <span class="op">(!</span>dest<span class="op">-&gt;</span>identity<span class="op">)</span> <span class="op">{</span></span>
+<span id="cb10-7"><a href="#cb10-7" aria-hidden="true" tabindex="-1"></a>        <span class="co">// Need to wait for announce or request identity</span></span>
+<span id="cb10-8"><a href="#cb10-8" aria-hidden="true" tabindex="-1"></a>        <span class="cf">return</span> <span class="kw">false</span><span class="op">;</span></span>
+<span id="cb10-9"><a href="#cb10-9" aria-hidden="true" tabindex="-1"></a>    <span class="op">}</span></span>
+<span id="cb10-10"><a href="#cb10-10" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb10-11"><a href="#cb10-11" aria-hidden="true" tabindex="-1"></a>    <span class="co">// 2. Create ephemeral key for this message</span></span>
+<span id="cb10-12"><a href="#cb10-12" aria-hidden="true" tabindex="-1"></a>    <span class="dt">uint8_t</span> eph_priv<span class="op">[</span><span class="dv">32</span><span class="op">],</span> eph_pub<span class="op">[</span><span class="dv">32</span><span class="op">];</span></span>
+<span id="cb10-13"><a href="#cb10-13" aria-hidden="true" tabindex="-1"></a>    crypto_box_keypair<span class="op">(</span>eph_pub<span class="op">,</span> eph_priv<span class="op">);</span></span>
+<span id="cb10-14"><a href="#cb10-14" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb10-15"><a href="#cb10-15" aria-hidden="true" tabindex="-1"></a>    <span class="co">// 3. Compute shared secret</span></span>
+<span id="cb10-16"><a href="#cb10-16" aria-hidden="true" tabindex="-1"></a>    <span class="dt">uint8_t</span> shared<span class="op">[</span><span class="dv">32</span><span class="op">];</span></span>
+<span id="cb10-17"><a href="#cb10-17" aria-hidden="true" tabindex="-1"></a>    crypto_scalarmult<span class="op">(</span>shared<span class="op">,</span> eph_priv<span class="op">,</span> dest<span class="op">-&gt;</span>identity<span class="op">-&gt;</span>x25519_pub<span class="op">);</span></span>
+<span id="cb10-18"><a href="#cb10-18" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb10-19"><a href="#cb10-19" aria-hidden="true" tabindex="-1"></a>    <span class="co">// 4. Derive encryption key</span></span>
+<span id="cb10-20"><a href="#cb10-20" aria-hidden="true" tabindex="-1"></a>    <span class="dt">uint8_t</span> derived<span class="op">[</span><span class="dv">32</span><span class="op">];</span></span>
+<span id="cb10-21"><a href="#cb10-21" aria-hidden="true" tabindex="-1"></a>    hkdf_sha256<span class="op">(</span>derived<span class="op">,</span> <span class="dv">32</span><span class="op">,</span> shared<span class="op">,</span> <span class="dv">32</span><span class="op">,</span> NULL<span class="op">,</span> <span class="dv">0</span><span class="op">,</span> NULL<span class="op">,</span> <span class="dv">0</span><span class="op">);</span></span>
+<span id="cb10-22"><a href="#cb10-22" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb10-23"><a href="#cb10-23" aria-hidden="true" tabindex="-1"></a>    <span class="co">// 5. Encrypt with Fernet</span></span>
+<span id="cb10-24"><a href="#cb10-24" aria-hidden="true" tabindex="-1"></a>    <span class="dt">uint8_t</span> payload<span class="op">[</span>PACKET_MTU<span class="op">];</span></span>
+<span id="cb10-25"><a href="#cb10-25" aria-hidden="true" tabindex="-1"></a>    <span class="dt">size_t</span> payload_len <span class="op">=</span> <span class="dv">0</span><span class="op">;</span></span>
+<span id="cb10-26"><a href="#cb10-26" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb10-27"><a href="#cb10-27" aria-hidden="true" tabindex="-1"></a>    <span class="co">// Add ephemeral public key</span></span>
+<span id="cb10-28"><a href="#cb10-28" aria-hidden="true" tabindex="-1"></a>    memcpy<span class="op">(</span>payload<span class="op">,</span> eph_pub<span class="op">,</span> <span class="dv">32</span><span class="op">);</span></span>
+<span id="cb10-29"><a href="#cb10-29" aria-hidden="true" tabindex="-1"></a>    payload_len <span class="op">+=</span> <span class="dv">32</span><span class="op">;</span></span>
+<span id="cb10-30"><a href="#cb10-30" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb10-31"><a href="#cb10-31" aria-hidden="true" tabindex="-1"></a>    <span class="co">// Encrypt data</span></span>
+<span id="cb10-32"><a href="#cb10-32" aria-hidden="true" tabindex="-1"></a>    payload_len <span class="op">+=</span> fernet_encrypt<span class="op">(</span>derived<span class="op">,</span> data<span class="op">,</span> len<span class="op">,</span></span>
+<span id="cb10-33"><a href="#cb10-33" aria-hidden="true" tabindex="-1"></a>                                  <span class="op">&amp;</span>payload<span class="op">[</span><span class="dv">32</span><span class="op">],</span> <span class="kw">sizeof</span><span class="op">(</span>payload<span class="op">)</span> <span class="op">-</span> <span class="dv">32</span><span class="op">);</span></span>
+<span id="cb10-34"><a href="#cb10-34" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb10-35"><a href="#cb10-35" aria-hidden="true" tabindex="-1"></a>    <span class="co">// 6. Build and send packet</span></span>
+<span id="cb10-36"><a href="#cb10-36" aria-hidden="true" tabindex="-1"></a>    Packet pkt <span class="op">=</span> <span class="op">{</span></span>
+<span id="cb10-37"><a href="#cb10-37" aria-hidden="true" tabindex="-1"></a>        <span class="op">.</span>header_type <span class="op">=</span> <span class="dv">0</span><span class="op">,</span></span>
+<span id="cb10-38"><a href="#cb10-38" aria-hidden="true" tabindex="-1"></a>        <span class="op">.</span>destination_type <span class="op">=</span> DEST_SINGLE<span class="op">,</span></span>
+<span id="cb10-39"><a href="#cb10-39" aria-hidden="true" tabindex="-1"></a>        <span class="op">.</span>packet_type <span class="op">=</span> PACKET_DATA<span class="op">,</span></span>
+<span id="cb10-40"><a href="#cb10-40" aria-hidden="true" tabindex="-1"></a>        <span class="op">.</span>hops <span class="op">=</span> <span class="dv">0</span><span class="op">,</span></span>
+<span id="cb10-41"><a href="#cb10-41" aria-hidden="true" tabindex="-1"></a>    <span class="op">};</span></span>
+<span id="cb10-42"><a href="#cb10-42" aria-hidden="true" tabindex="-1"></a>    memcpy<span class="op">(</span>pkt<span class="op">.</span>destination<span class="op">,</span> dest<span class="op">-&gt;</span>hash<span class="op">,</span> <span class="dv">16</span><span class="op">);</span></span>
+<span id="cb10-43"><a href="#cb10-43" aria-hidden="true" tabindex="-1"></a>    pkt<span class="op">.</span>context <span class="op">=</span> CONTEXT_NONE<span class="op">;</span></span>
+<span id="cb10-44"><a href="#cb10-44" aria-hidden="true" tabindex="-1"></a>    pkt<span class="op">.</span>payload <span class="op">=</span> payload<span class="op">;</span></span>
+<span id="cb10-45"><a href="#cb10-45" aria-hidden="true" tabindex="-1"></a>    pkt<span class="op">.</span>payload_len <span class="op">=</span> payload_len<span class="op">;</span></span>
+<span id="cb10-46"><a href="#cb10-46" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb10-47"><a href="#cb10-47" aria-hidden="true" tabindex="-1"></a>    <span class="cf">return</span> transport_send<span class="op">(</span>transport<span class="op">,</span> <span class="op">&amp;</span>pkt<span class="op">);</span></span>
+<span id="cb10-48"><a href="#cb10-48" aria-hidden="true" tabindex="-1"></a><span class="op">}</span></span></code></pre></div>
+<h3 id="receiving-at-a-single-destination">Receiving at a SINGLE
+Destination</h3>
+<p>On the receiving side, the process mirrors sending:</p>
+<ol type="1">
+<li><strong>Extract ephemeral public key</strong>: The first 32 bytes of
+the payload contain the sender’s ephemeral public key</li>
+<li><strong>Compute shared secret</strong>: ECDH with our long-term
+private key and the sender’s ephemeral public key produces the same
+shared secret the sender computed</li>
+<li><strong>Derive decryption key</strong>: Same HKDF derivation
+produces the same AES key</li>
+<li><strong>Decrypt Fernet token</strong>: Verify HMAC and decrypt the
+ciphertext</li>
+</ol>
+<p><strong>Security note</strong>: The HMAC verification happens before
+decryption. If the HMAC fails, the recipient knows the message was
+tampered with or incorrectly encrypted, and decryption is aborted.</p>
+<div class="sourceCode" id="cb11"><pre class="sourceCode c"><code class="sourceCode c"><span id="cb11-1"><a href="#cb11-1" aria-hidden="true" tabindex="-1"></a><span class="dt">bool</span> receive_single<span class="op">(</span>Destination <span class="op">*</span>dest<span class="op">,</span></span>
+<span id="cb11-2"><a href="#cb11-2" aria-hidden="true" tabindex="-1"></a>                    <span class="dt">const</span> <span class="dt">uint8_t</span> <span class="op">*</span>payload<span class="op">,</span></span>
+<span id="cb11-3"><a href="#cb11-3" aria-hidden="true" tabindex="-1"></a>                    <span class="dt">size_t</span> payload_len<span class="op">,</span></span>
+<span id="cb11-4"><a href="#cb11-4" aria-hidden="true" tabindex="-1"></a>                    <span class="dt">uint8_t</span> <span class="op">*</span>plaintext<span class="op">,</span></span>
+<span id="cb11-5"><a href="#cb11-5" aria-hidden="true" tabindex="-1"></a>                    <span class="dt">size_t</span> <span class="op">*</span>plaintext_len<span class="op">)</span> <span class="op">{</span></span>
+<span id="cb11-6"><a href="#cb11-6" aria-hidden="true" tabindex="-1"></a>    <span class="cf">if</span> <span class="op">(</span>payload_len <span class="op">&lt;</span> <span class="dv">32</span><span class="op">)</span> <span class="cf">return</span> <span class="kw">false</span><span class="op">;</span>  <span class="co">// Need ephemeral key</span></span>
+<span id="cb11-7"><a href="#cb11-7" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb11-8"><a href="#cb11-8" aria-hidden="true" tabindex="-1"></a>    <span class="co">// 1. Extract ephemeral public key</span></span>
+<span id="cb11-9"><a href="#cb11-9" aria-hidden="true" tabindex="-1"></a>    <span class="dt">uint8_t</span> eph_pub<span class="op">[</span><span class="dv">32</span><span class="op">];</span></span>
+<span id="cb11-10"><a href="#cb11-10" aria-hidden="true" tabindex="-1"></a>    memcpy<span class="op">(</span>eph_pub<span class="op">,</span> payload<span class="op">,</span> <span class="dv">32</span><span class="op">);</span></span>
+<span id="cb11-11"><a href="#cb11-11" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb11-12"><a href="#cb11-12" aria-hidden="true" tabindex="-1"></a>    <span class="co">// 2. Compute shared secret</span></span>
+<span id="cb11-13"><a href="#cb11-13" aria-hidden="true" tabindex="-1"></a>    <span class="dt">uint8_t</span> shared<span class="op">[</span><span class="dv">32</span><span class="op">];</span></span>
+<span id="cb11-14"><a href="#cb11-14" aria-hidden="true" tabindex="-1"></a>    crypto_scalarmult<span class="op">(</span>shared<span class="op">,</span> dest<span class="op">-&gt;</span>identity<span class="op">-&gt;</span>x25519_priv<span class="op">,</span> eph_pub<span class="op">);</span></span>
+<span id="cb11-15"><a href="#cb11-15" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb11-16"><a href="#cb11-16" aria-hidden="true" tabindex="-1"></a>    <span class="co">// 3. Derive decryption key</span></span>
+<span id="cb11-17"><a href="#cb11-17" aria-hidden="true" tabindex="-1"></a>    <span class="dt">uint8_t</span> derived<span class="op">[</span><span class="dv">32</span><span class="op">];</span></span>
+<span id="cb11-18"><a href="#cb11-18" aria-hidden="true" tabindex="-1"></a>    hkdf_sha256<span class="op">(</span>derived<span class="op">,</span> <span class="dv">32</span><span class="op">,</span> shared<span class="op">,</span> <span class="dv">32</span><span class="op">,</span> NULL<span class="op">,</span> <span class="dv">0</span><span class="op">,</span> NULL<span class="op">,</span> <span class="dv">0</span><span class="op">);</span></span>
+<span id="cb11-19"><a href="#cb11-19" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb11-20"><a href="#cb11-20" aria-hidden="true" tabindex="-1"></a>    <span class="co">// 4. Decrypt Fernet token</span></span>
+<span id="cb11-21"><a href="#cb11-21" aria-hidden="true" tabindex="-1"></a>    <span class="cf">return</span> fernet_decrypt<span class="op">(</span>derived<span class="op">,</span> <span class="op">&amp;</span>payload<span class="op">[</span><span class="dv">32</span><span class="op">],</span> payload_len <span class="op">-</span> <span class="dv">32</span><span class="op">,</span></span>
+<span id="cb11-22"><a href="#cb11-22" aria-hidden="true" tabindex="-1"></a>                          plaintext<span class="op">,</span> plaintext_len<span class="op">);</span></span>
+<span id="cb11-23"><a href="#cb11-23" aria-hidden="true" tabindex="-1"></a><span class="op">}</span></span></code></pre></div>
+<h2 id="proof-strategies">5.6 Proof Strategies</h2>
+<p>When you receive a packet, you may want to <strong>prove</strong>
+receipt to the sender. This provides delivery confirmation without
+requiring a full response message.</p>
+<h3 id="why-proofs">Why Proofs?</h3>
+<p>In unreliable networks, senders need to know if their message
+arrived. TCP uses ACK packets, but Reticulum operates over diverse media
+where traditional TCP assumptions don’t hold. Proofs provide
+cryptographic confirmation that:</p>
+<ol type="1">
+<li>The packet reached the destination</li>
+<li>The destination had the correct keys to decrypt it</li>
+<li>The destination intentionally acknowledged receipt</li>
+</ol>
+<h3 id="proof-types">Proof Types</h3>
+<p>Destinations can choose when to send proofs:</p>
+<div class="sourceCode" id="cb12"><pre class="sourceCode c"><code class="sourceCode c"><span id="cb12-1"><a href="#cb12-1" aria-hidden="true" tabindex="-1"></a><span class="pp">#define PROVE_NONE     </span><span class="bn">0x21</span><span class="pp">  </span><span class="co">// Never send proofs</span></span>
+<span id="cb12-2"><a href="#cb12-2" aria-hidden="true" tabindex="-1"></a><span class="pp">#define PROVE_APP      </span><span class="bn">0x22</span><span class="pp">  </span><span class="co">// Application decides (callback)</span></span>
+<span id="cb12-3"><a href="#cb12-3" aria-hidden="true" tabindex="-1"></a><span class="pp">#define PROVE_ALL      </span><span class="bn">0x23</span><span class="pp">  </span><span class="co">// Prove all packets</span></span></code></pre></div>
+<ul>
+<li><strong>PROVE_NONE</strong>: Silent receipt. Use when bandwidth is
+precious or acknowledgment isn’t needed</li>
+<li><strong>PROVE_APP</strong>: The application’s callback decides
+per-packet. Useful for selective acknowledgment</li>
+<li><strong>PROVE_ALL</strong>: Always prove. Use when reliable delivery
+confirmation is essential</li>
+</ul>
+<h3 id="generating-a-proof">Generating a Proof</h3>
+<p>A proof is a signature over the packet hash. Only the destination’s
+private key can create this signature, so it proves the destination (not
+an impostor) received the packet:</p>
+<div class="sourceCode" id="cb13"><pre class="sourceCode c"><code class="sourceCode c"><span id="cb13-1"><a href="#cb13-1" aria-hidden="true" tabindex="-1"></a><span class="dt">void</span> generate_proof<span class="op">(</span>Destination <span class="op">*</span>dest<span class="op">,</span></span>
+<span id="cb13-2"><a href="#cb13-2" aria-hidden="true" tabindex="-1"></a>                    <span class="dt">const</span> <span class="dt">uint8_t</span> packet_hash<span class="op">[</span><span class="dv">32</span><span class="op">],</span></span>
+<span id="cb13-3"><a href="#cb13-3" aria-hidden="true" tabindex="-1"></a>                    <span class="dt">uint8_t</span> proof<span class="op">[</span><span class="dv">64</span><span class="op">])</span> <span class="op">{</span></span>
+<span id="cb13-4"><a href="#cb13-4" aria-hidden="true" tabindex="-1"></a>    <span class="co">// Sign the packet hash</span></span>
+<span id="cb13-5"><a href="#cb13-5" aria-hidden="true" tabindex="-1"></a>    crypto_sign_detached<span class="op">(</span>proof<span class="op">,</span> NULL<span class="op">,</span></span>
+<span id="cb13-6"><a href="#cb13-6" aria-hidden="true" tabindex="-1"></a>                         packet_hash<span class="op">,</span> <span class="dv">32</span><span class="op">,</span></span>
+<span id="cb13-7"><a href="#cb13-7" aria-hidden="true" tabindex="-1"></a>                         dest<span class="op">-&gt;</span>identity<span class="op">-&gt;</span>ed25519_priv<span class="op">);</span></span>
+<span id="cb13-8"><a href="#cb13-8" aria-hidden="true" tabindex="-1"></a><span class="op">}</span></span></code></pre></div>
+<h3 id="proof-packet">Proof Packet</h3>
+<p>The proof is sent as a PROOF packet addressed to the original
+sender:</p>
+<div class="sourceCode" id="cb14"><pre class="sourceCode c"><code class="sourceCode c"><span id="cb14-1"><a href="#cb14-1" aria-hidden="true" tabindex="-1"></a><span class="dt">void</span> send_proof<span class="op">(</span>Transport <span class="op">*</span>transport<span class="op">,</span></span>
+<span id="cb14-2"><a href="#cb14-2" aria-hidden="true" tabindex="-1"></a>                <span class="dt">const</span> <span class="dt">uint8_t</span> sender_dest<span class="op">[</span><span class="dv">16</span><span class="op">],</span></span>
+<span id="cb14-3"><a href="#cb14-3" aria-hidden="true" tabindex="-1"></a>                <span class="dt">const</span> <span class="dt">uint8_t</span> packet_hash<span class="op">[</span><span class="dv">32</span><span class="op">],</span></span>
+<span id="cb14-4"><a href="#cb14-4" aria-hidden="true" tabindex="-1"></a>                Destination <span class="op">*</span>dest<span class="op">)</span> <span class="op">{</span></span>
+<span id="cb14-5"><a href="#cb14-5" aria-hidden="true" tabindex="-1"></a>    <span class="dt">uint8_t</span> proof_sig<span class="op">[</span><span class="dv">64</span><span class="op">];</span></span>
+<span id="cb14-6"><a href="#cb14-6" aria-hidden="true" tabindex="-1"></a>    generate_proof<span class="op">(</span>dest<span class="op">,</span> packet_hash<span class="op">,</span> proof_sig<span class="op">);</span></span>
+<span id="cb14-7"><a href="#cb14-7" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb14-8"><a href="#cb14-8" aria-hidden="true" tabindex="-1"></a>    Packet pkt <span class="op">=</span> <span class="op">{</span></span>
+<span id="cb14-9"><a href="#cb14-9" aria-hidden="true" tabindex="-1"></a>        <span class="op">.</span>destination_type <span class="op">=</span> DEST_SINGLE<span class="op">,</span></span>
+<span id="cb14-10"><a href="#cb14-10" aria-hidden="true" tabindex="-1"></a>        <span class="op">.</span>packet_type <span class="op">=</span> PACKET_PROOF<span class="op">,</span></span>
+<span id="cb14-11"><a href="#cb14-11" aria-hidden="true" tabindex="-1"></a>        <span class="op">.</span>hops <span class="op">=</span> <span class="dv">0</span><span class="op">,</span></span>
+<span id="cb14-12"><a href="#cb14-12" aria-hidden="true" tabindex="-1"></a>    <span class="op">};</span></span>
+<span id="cb14-13"><a href="#cb14-13" aria-hidden="true" tabindex="-1"></a>    memcpy<span class="op">(</span>pkt<span class="op">.</span>destination<span class="op">,</span> sender_dest<span class="op">,</span> <span class="dv">16</span><span class="op">);</span></span>
+<span id="cb14-14"><a href="#cb14-14" aria-hidden="true" tabindex="-1"></a>    pkt<span class="op">.</span>context <span class="op">=</span> CONTEXT_NONE<span class="op">;</span></span>
+<span id="cb14-15"><a href="#cb14-15" aria-hidden="true" tabindex="-1"></a>    pkt<span class="op">.</span>payload <span class="op">=</span> proof_sig<span class="op">;</span></span>
+<span id="cb14-16"><a href="#cb14-16" aria-hidden="true" tabindex="-1"></a>    pkt<span class="op">.</span>payload_len <span class="op">=</span> <span class="dv">64</span><span class="op">;</span></span>
+<span id="cb14-17"><a href="#cb14-17" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb14-18"><a href="#cb14-18" aria-hidden="true" tabindex="-1"></a>    transport_send<span class="op">(</span>transport<span class="op">,</span> <span class="op">&amp;</span>pkt<span class="op">);</span></span>
+<span id="cb14-19"><a href="#cb14-19" aria-hidden="true" tabindex="-1"></a><span class="op">}</span></span></code></pre></div>
+<h2 id="announces">5.7 Announces</h2>
+<p>To let others know about your destination, you broadcast an
+<strong>announce</strong>. Announces distribute the public keys needed
+to send encrypted messages to your destination.</p>
+<h3 id="why-announces">Why Announces?</h3>
+<p>In traditional networking, you know a server’s IP address and can
+connect directly. In Reticulum, destinations are identified by
+cryptographic hashes, and you need the public keys to communicate.
+Announces solve this by broadcasting:</p>
+<ol type="1">
+<li><strong>Public keys</strong> for encryption (so others can send you
+messages)</li>
+<li><strong>Name hash</strong> for destination hash verification</li>
+<li><strong>Signature</strong> proving you own the private keys</li>
+</ol>
+<h3 id="announce-contents">Announce Contents</h3>
+<pre><code>+-------------+-----------+-------------+-----------+----------+
+| Public Key  | Name Hash | Random Hash | Signature | App Data |
+| 64 bytes    | 10 bytes  | 10 bytes    | 64 bytes  | variable |
++-------------+-----------+-------------+-----------+----------+
+
+Minimum size: 148 bytes (without app data)</code></pre>
+<ul>
+<li><strong>Public Key</strong>: X25519 (32B) + Ed25519 (32B) public
+keys concatenated</li>
+<li><strong>Name Hash</strong>: First 10 bytes of SHA256(expanded_name)
+- saves bandwidth vs full name</li>
+<li><strong>Random Hash</strong>: 5 random bytes + 5-byte timestamp
+(explained below)</li>
+<li><strong>Signature</strong>: Ed25519 signature over specific data
+(see below)</li>
+<li><strong>App Data</strong>: Optional application-specific data
+(service description, version, etc.)</li>
+</ul>
+<h3 id="random-hash-replay-prevention">Random Hash: Replay
+Prevention</h3>
+<p>The 10-byte random hash serves two purposes:</p>
+<ol type="1">
+<li><p><strong>Replay prevention</strong>: Each announce has unique
+random bytes. Receivers store recent random hashes and reject
+duplicates, preventing attackers from re-broadcasting old
+announces.</p></li>
+<li><p><strong>Timing information</strong>: The 5-byte timestamp
+(seconds since epoch, big-endian) lets receivers:</p>
+<ul>
+<li>Prefer newer announces over older ones</li>
+<li>Detect stale announces in path selection</li>
+<li>Measure approximate announce age for routing decisions</li>
+</ul></li>
+</ol>
+<h3 id="signature-security">Signature Security</h3>
+<p><strong>Critical design decision</strong>: The signature covers the
+destination hash, but the destination hash is NOT transmitted in the
+announce. This prevents a subtle attack:</p>
+<p>If an attacker could intercept an announce and re-sign it for a
+different destination hash, they could redirect traffic. By including
+the (non-transmitted) destination hash in the signed data, the signature
+binds the announce to a specific destination. Receivers recompute the
+destination hash from the transmitted data and verify it matches what
+was signed.</p>
+<p><strong>Signed data</strong> = dest_hash + public_key + name_hash +
+random_hash + app_data</p>
+<p><strong>Transmitted data</strong> = public_key + name_hash +
+random_hash + signature + app_data</p>
+<p>The receiver: 1. Extracts public_key and name_hash from the announce
+2. Computes dest_hash = SHA256(name_hash || identity_hash)[0:16] 3.
+Reconstructs the signed_data using the computed dest_hash 4. Verifies
+the signature with the announced public key</p>
+<p>If an attacker modified anything, the signature won’t verify.</p>
+<p>See <a href="09-announces.md">Chapter 9</a> for full details on
+announce processing and propagation.</p>
+<h3 id="creating-an-announce">Creating an Announce</h3>
+<div class="sourceCode" id="cb16"><pre class="sourceCode c"><code class="sourceCode c"><span id="cb16-1"><a href="#cb16-1" aria-hidden="true" tabindex="-1"></a><span class="dt">size_t</span> create_announce<span class="op">(</span>Destination <span class="op">*</span>dest<span class="op">,</span></span>
+<span id="cb16-2"><a href="#cb16-2" aria-hidden="true" tabindex="-1"></a>                       <span class="dt">const</span> <span class="dt">uint8_t</span> <span class="op">*</span>app_data<span class="op">,</span></span>
+<span id="cb16-3"><a href="#cb16-3" aria-hidden="true" tabindex="-1"></a>                       <span class="dt">size_t</span> app_data_len<span class="op">,</span></span>
+<span id="cb16-4"><a href="#cb16-4" aria-hidden="true" tabindex="-1"></a>                       <span class="dt">uint8_t</span> <span class="op">*</span>announce<span class="op">,</span></span>
+<span id="cb16-5"><a href="#cb16-5" aria-hidden="true" tabindex="-1"></a>                       <span class="dt">size_t</span> max_len<span class="op">)</span> <span class="op">{</span></span>
+<span id="cb16-6"><a href="#cb16-6" aria-hidden="true" tabindex="-1"></a>    <span class="co">// Build random hash (5 random + 5-byte timestamp)</span></span>
+<span id="cb16-7"><a href="#cb16-7" aria-hidden="true" tabindex="-1"></a>    <span class="dt">uint8_t</span> random_hash<span class="op">[</span><span class="dv">10</span><span class="op">];</span></span>
+<span id="cb16-8"><a href="#cb16-8" aria-hidden="true" tabindex="-1"></a>    randombytes_buf<span class="op">(</span>random_hash<span class="op">,</span> <span class="dv">5</span><span class="op">);</span></span>
+<span id="cb16-9"><a href="#cb16-9" aria-hidden="true" tabindex="-1"></a>    <span class="dt">uint64_t</span> now <span class="op">=</span> <span class="op">(</span><span class="dt">uint64_t</span><span class="op">)</span>time<span class="op">(</span>NULL<span class="op">);</span></span>
+<span id="cb16-10"><a href="#cb16-10" aria-hidden="true" tabindex="-1"></a>    random_hash<span class="op">[</span><span class="dv">5</span><span class="op">]</span> <span class="op">=</span> <span class="op">(</span>now <span class="op">&gt;&gt;</span> <span class="dv">32</span><span class="op">)</span> <span class="op">&amp;</span> <span class="bn">0xFF</span><span class="op">;</span></span>
+<span id="cb16-11"><a href="#cb16-11" aria-hidden="true" tabindex="-1"></a>    random_hash<span class="op">[</span><span class="dv">6</span><span class="op">]</span> <span class="op">=</span> <span class="op">(</span>now <span class="op">&gt;&gt;</span> <span class="dv">24</span><span class="op">)</span> <span class="op">&amp;</span> <span class="bn">0xFF</span><span class="op">;</span></span>
+<span id="cb16-12"><a href="#cb16-12" aria-hidden="true" tabindex="-1"></a>    random_hash<span class="op">[</span><span class="dv">7</span><span class="op">]</span> <span class="op">=</span> <span class="op">(</span>now <span class="op">&gt;&gt;</span> <span class="dv">16</span><span class="op">)</span> <span class="op">&amp;</span> <span class="bn">0xFF</span><span class="op">;</span></span>
+<span id="cb16-13"><a href="#cb16-13" aria-hidden="true" tabindex="-1"></a>    random_hash<span class="op">[</span><span class="dv">8</span><span class="op">]</span> <span class="op">=</span> <span class="op">(</span>now <span class="op">&gt;&gt;</span> <span class="dv">8</span><span class="op">)</span> <span class="op">&amp;</span> <span class="bn">0xFF</span><span class="op">;</span></span>
+<span id="cb16-14"><a href="#cb16-14" aria-hidden="true" tabindex="-1"></a>    random_hash<span class="op">[</span><span class="dv">9</span><span class="op">]</span> <span class="op">=</span> now <span class="op">&amp;</span> <span class="bn">0xFF</span><span class="op">;</span></span>
+<span id="cb16-15"><a href="#cb16-15" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb16-16"><a href="#cb16-16" aria-hidden="true" tabindex="-1"></a>    <span class="co">// Build signed data: dest_hash + public_key + name_hash + random_hash + app_data</span></span>
+<span id="cb16-17"><a href="#cb16-17" aria-hidden="true" tabindex="-1"></a>    <span class="dt">uint8_t</span> signed_data<span class="op">[</span><span class="dv">512</span><span class="op">];</span></span>
+<span id="cb16-18"><a href="#cb16-18" aria-hidden="true" tabindex="-1"></a>    <span class="dt">size_t</span> sign_offset <span class="op">=</span> <span class="dv">0</span><span class="op">;</span></span>
+<span id="cb16-19"><a href="#cb16-19" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb16-20"><a href="#cb16-20" aria-hidden="true" tabindex="-1"></a>    memcpy<span class="op">(&amp;</span>signed_data<span class="op">[</span>sign_offset<span class="op">],</span> dest<span class="op">-&gt;</span>hash<span class="op">,</span> <span class="dv">16</span><span class="op">);</span>          <span class="co">// dest hash (NOT transmitted)</span></span>
+<span id="cb16-21"><a href="#cb16-21" aria-hidden="true" tabindex="-1"></a>    sign_offset <span class="op">+=</span> <span class="dv">16</span><span class="op">;</span></span>
+<span id="cb16-22"><a href="#cb16-22" aria-hidden="true" tabindex="-1"></a>    memcpy<span class="op">(&amp;</span>signed_data<span class="op">[</span>sign_offset<span class="op">],</span> dest<span class="op">-&gt;</span>identity<span class="op">-&gt;</span>x25519_pub<span class="op">,</span> <span class="dv">32</span><span class="op">);</span></span>
+<span id="cb16-23"><a href="#cb16-23" aria-hidden="true" tabindex="-1"></a>    sign_offset <span class="op">+=</span> <span class="dv">32</span><span class="op">;</span></span>
+<span id="cb16-24"><a href="#cb16-24" aria-hidden="true" tabindex="-1"></a>    memcpy<span class="op">(&amp;</span>signed_data<span class="op">[</span>sign_offset<span class="op">],</span> dest<span class="op">-&gt;</span>identity<span class="op">-&gt;</span>ed25519_pub<span class="op">,</span> <span class="dv">32</span><span class="op">);</span></span>
+<span id="cb16-25"><a href="#cb16-25" aria-hidden="true" tabindex="-1"></a>    sign_offset <span class="op">+=</span> <span class="dv">32</span><span class="op">;</span></span>
+<span id="cb16-26"><a href="#cb16-26" aria-hidden="true" tabindex="-1"></a>    memcpy<span class="op">(&amp;</span>signed_data<span class="op">[</span>sign_offset<span class="op">],</span> dest<span class="op">-&gt;</span>name_hash<span class="op">,</span> <span class="dv">10</span><span class="op">);</span>     <span class="co">// 10 bytes!</span></span>
+<span id="cb16-27"><a href="#cb16-27" aria-hidden="true" tabindex="-1"></a>    sign_offset <span class="op">+=</span> <span class="dv">10</span><span class="op">;</span></span>
+<span id="cb16-28"><a href="#cb16-28" aria-hidden="true" tabindex="-1"></a>    memcpy<span class="op">(&amp;</span>signed_data<span class="op">[</span>sign_offset<span class="op">],</span> random_hash<span class="op">,</span> <span class="dv">10</span><span class="op">);</span></span>
+<span id="cb16-29"><a href="#cb16-29" aria-hidden="true" tabindex="-1"></a>    sign_offset <span class="op">+=</span> <span class="dv">10</span><span class="op">;</span></span>
+<span id="cb16-30"><a href="#cb16-30" aria-hidden="true" tabindex="-1"></a>    <span class="cf">if</span> <span class="op">(</span>app_data <span class="op">&amp;&amp;</span> app_data_len <span class="op">&gt;</span> <span class="dv">0</span><span class="op">)</span> <span class="op">{</span></span>
+<span id="cb16-31"><a href="#cb16-31" aria-hidden="true" tabindex="-1"></a>        memcpy<span class="op">(&amp;</span>signed_data<span class="op">[</span>sign_offset<span class="op">],</span> app_data<span class="op">,</span> app_data_len<span class="op">);</span></span>
+<span id="cb16-32"><a href="#cb16-32" aria-hidden="true" tabindex="-1"></a>        sign_offset <span class="op">+=</span> app_data_len<span class="op">;</span></span>
+<span id="cb16-33"><a href="#cb16-33" aria-hidden="true" tabindex="-1"></a>    <span class="op">}</span></span>
+<span id="cb16-34"><a href="#cb16-34" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb16-35"><a href="#cb16-35" aria-hidden="true" tabindex="-1"></a>    <span class="co">// Sign</span></span>
+<span id="cb16-36"><a href="#cb16-36" aria-hidden="true" tabindex="-1"></a>    <span class="dt">uint8_t</span> signature<span class="op">[</span><span class="dv">64</span><span class="op">];</span></span>
+<span id="cb16-37"><a href="#cb16-37" aria-hidden="true" tabindex="-1"></a>    crypto_sign_detached<span class="op">(</span>signature<span class="op">,</span> NULL<span class="op">,</span> signed_data<span class="op">,</span> sign_offset<span class="op">,</span></span>
+<span id="cb16-38"><a href="#cb16-38" aria-hidden="true" tabindex="-1"></a>                         dest<span class="op">-&gt;</span>identity<span class="op">-&gt;</span>ed25519_priv<span class="op">);</span></span>
+<span id="cb16-39"><a href="#cb16-39" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb16-40"><a href="#cb16-40" aria-hidden="true" tabindex="-1"></a>    <span class="co">// Build announce data: public_key + name_hash + random_hash + signature + app_data</span></span>
+<span id="cb16-41"><a href="#cb16-41" aria-hidden="true" tabindex="-1"></a>    <span class="dt">size_t</span> offset <span class="op">=</span> <span class="dv">0</span><span class="op">;</span></span>
+<span id="cb16-42"><a href="#cb16-42" aria-hidden="true" tabindex="-1"></a>    memcpy<span class="op">(&amp;</span>announce<span class="op">[</span>offset<span class="op">],</span> dest<span class="op">-&gt;</span>identity<span class="op">-&gt;</span>x25519_pub<span class="op">,</span> <span class="dv">32</span><span class="op">);</span></span>
+<span id="cb16-43"><a href="#cb16-43" aria-hidden="true" tabindex="-1"></a>    offset <span class="op">+=</span> <span class="dv">32</span><span class="op">;</span></span>
+<span id="cb16-44"><a href="#cb16-44" aria-hidden="true" tabindex="-1"></a>    memcpy<span class="op">(&amp;</span>announce<span class="op">[</span>offset<span class="op">],</span> dest<span class="op">-&gt;</span>identity<span class="op">-&gt;</span>ed25519_pub<span class="op">,</span> <span class="dv">32</span><span class="op">);</span></span>
+<span id="cb16-45"><a href="#cb16-45" aria-hidden="true" tabindex="-1"></a>    offset <span class="op">+=</span> <span class="dv">32</span><span class="op">;</span></span>
+<span id="cb16-46"><a href="#cb16-46" aria-hidden="true" tabindex="-1"></a>    memcpy<span class="op">(&amp;</span>announce<span class="op">[</span>offset<span class="op">],</span> dest<span class="op">-&gt;</span>name_hash<span class="op">,</span> <span class="dv">10</span><span class="op">);</span></span>
+<span id="cb16-47"><a href="#cb16-47" aria-hidden="true" tabindex="-1"></a>    offset <span class="op">+=</span> <span class="dv">10</span><span class="op">;</span></span>
+<span id="cb16-48"><a href="#cb16-48" aria-hidden="true" tabindex="-1"></a>    memcpy<span class="op">(&amp;</span>announce<span class="op">[</span>offset<span class="op">],</span> random_hash<span class="op">,</span> <span class="dv">10</span><span class="op">);</span></span>
+<span id="cb16-49"><a href="#cb16-49" aria-hidden="true" tabindex="-1"></a>    offset <span class="op">+=</span> <span class="dv">10</span><span class="op">;</span></span>
+<span id="cb16-50"><a href="#cb16-50" aria-hidden="true" tabindex="-1"></a>    memcpy<span class="op">(&amp;</span>announce<span class="op">[</span>offset<span class="op">],</span> signature<span class="op">,</span> <span class="dv">64</span><span class="op">);</span></span>
+<span id="cb16-51"><a href="#cb16-51" aria-hidden="true" tabindex="-1"></a>    offset <span class="op">+=</span> <span class="dv">64</span><span class="op">;</span></span>
+<span id="cb16-52"><a href="#cb16-52" aria-hidden="true" tabindex="-1"></a>    <span class="cf">if</span> <span class="op">(</span>app_data <span class="op">&amp;&amp;</span> app_data_len <span class="op">&gt;</span> <span class="dv">0</span><span class="op">)</span> <span class="op">{</span></span>
+<span id="cb16-53"><a href="#cb16-53" aria-hidden="true" tabindex="-1"></a>        memcpy<span class="op">(&amp;</span>announce<span class="op">[</span>offset<span class="op">],</span> app_data<span class="op">,</span> app_data_len<span class="op">);</span></span>
+<span id="cb16-54"><a href="#cb16-54" aria-hidden="true" tabindex="-1"></a>        offset <span class="op">+=</span> app_data_len<span class="op">;</span></span>
+<span id="cb16-55"><a href="#cb16-55" aria-hidden="true" tabindex="-1"></a>    <span class="op">}</span></span>
+<span id="cb16-56"><a href="#cb16-56" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb16-57"><a href="#cb16-57" aria-hidden="true" tabindex="-1"></a>    <span class="cf">return</span> offset<span class="op">;</span>  <span class="co">// Minimum 148 bytes without app_data</span></span>
+<span id="cb16-58"><a href="#cb16-58" aria-hidden="true" tabindex="-1"></a><span class="op">}</span></span></code></pre></div>
+<h3 id="sending-an-announce">Sending an Announce</h3>
+<div class="sourceCode" id="cb17"><pre class="sourceCode c"><code class="sourceCode c"><span id="cb17-1"><a href="#cb17-1" aria-hidden="true" tabindex="-1"></a><span class="dt">void</span> send_announce<span class="op">(</span>Transport <span class="op">*</span>transport<span class="op">,</span> Destination <span class="op">*</span>dest<span class="op">)</span> <span class="op">{</span></span>
+<span id="cb17-2"><a href="#cb17-2" aria-hidden="true" tabindex="-1"></a>    <span class="dt">uint8_t</span> announce_data<span class="op">[</span>PACKET_MTU<span class="op">];</span></span>
+<span id="cb17-3"><a href="#cb17-3" aria-hidden="true" tabindex="-1"></a>    <span class="dt">size_t</span> announce_len <span class="op">=</span> create_announce<span class="op">(</span>dest<span class="op">,</span> NULL<span class="op">,</span> <span class="dv">0</span><span class="op">,</span></span>
+<span id="cb17-4"><a href="#cb17-4" aria-hidden="true" tabindex="-1"></a>                                          announce_data<span class="op">,</span> <span class="kw">sizeof</span><span class="op">(</span>announce_data<span class="op">));</span></span>
+<span id="cb17-5"><a href="#cb17-5" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb17-6"><a href="#cb17-6" aria-hidden="true" tabindex="-1"></a>    Packet pkt <span class="op">=</span> <span class="op">{</span></span>
+<span id="cb17-7"><a href="#cb17-7" aria-hidden="true" tabindex="-1"></a>        <span class="op">.</span>destination_type <span class="op">=</span> DEST_SINGLE<span class="op">,</span></span>
+<span id="cb17-8"><a href="#cb17-8" aria-hidden="true" tabindex="-1"></a>        <span class="op">.</span>packet_type <span class="op">=</span> PACKET_ANNOUNCE<span class="op">,</span></span>
+<span id="cb17-9"><a href="#cb17-9" aria-hidden="true" tabindex="-1"></a>        <span class="op">.</span>hops <span class="op">=</span> <span class="dv">0</span><span class="op">,</span></span>
+<span id="cb17-10"><a href="#cb17-10" aria-hidden="true" tabindex="-1"></a>    <span class="op">};</span></span>
+<span id="cb17-11"><a href="#cb17-11" aria-hidden="true" tabindex="-1"></a>    memcpy<span class="op">(</span>pkt<span class="op">.</span>destination<span class="op">,</span> dest<span class="op">-&gt;</span>hash<span class="op">,</span> <span class="dv">16</span><span class="op">);</span></span>
+<span id="cb17-12"><a href="#cb17-12" aria-hidden="true" tabindex="-1"></a>    pkt<span class="op">.</span>context <span class="op">=</span> CONTEXT_NONE<span class="op">;</span></span>
+<span id="cb17-13"><a href="#cb17-13" aria-hidden="true" tabindex="-1"></a>    pkt<span class="op">.</span>payload <span class="op">=</span> announce_data<span class="op">;</span></span>
+<span id="cb17-14"><a href="#cb17-14" aria-hidden="true" tabindex="-1"></a>    pkt<span class="op">.</span>payload_len <span class="op">=</span> announce_len<span class="op">;</span></span>
+<span id="cb17-15"><a href="#cb17-15" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb17-16"><a href="#cb17-16" aria-hidden="true" tabindex="-1"></a>    transport_send<span class="op">(</span>transport<span class="op">,</span> <span class="op">&amp;</span>pkt<span class="op">);</span></span>
+<span id="cb17-17"><a href="#cb17-17" aria-hidden="true" tabindex="-1"></a><span class="op">}</span></span></code></pre></div>
+<h3 id="processing-received-announces">Processing Received
+Announces</h3>
+<div class="sourceCode" id="cb18"><pre class="sourceCode c"><code class="sourceCode c"><span id="cb18-1"><a href="#cb18-1" aria-hidden="true" tabindex="-1"></a><span class="dt">bool</span> process_announce<span class="op">(</span><span class="dt">const</span> <span class="dt">uint8_t</span> dest_hash<span class="op">[</span><span class="dv">16</span><span class="op">],</span></span>
+<span id="cb18-2"><a href="#cb18-2" aria-hidden="true" tabindex="-1"></a>                      <span class="dt">const</span> <span class="dt">uint8_t</span> <span class="op">*</span>payload<span class="op">,</span></span>
+<span id="cb18-3"><a href="#cb18-3" aria-hidden="true" tabindex="-1"></a>                      <span class="dt">size_t</span> payload_len<span class="op">)</span> <span class="op">{</span></span>
+<span id="cb18-4"><a href="#cb18-4" aria-hidden="true" tabindex="-1"></a>    <span class="cf">if</span> <span class="op">(</span>payload_len <span class="op">&lt;</span> <span class="dv">64</span> <span class="op">+</span> <span class="dv">5</span> <span class="op">+</span> <span class="dv">64</span><span class="op">)</span> <span class="op">{</span></span>
+<span id="cb18-5"><a href="#cb18-5" aria-hidden="true" tabindex="-1"></a>        <span class="cf">return</span> <span class="kw">false</span><span class="op">;</span>  <span class="co">// Too short</span></span>
+<span id="cb18-6"><a href="#cb18-6" aria-hidden="true" tabindex="-1"></a>    <span class="op">}</span></span>
+<span id="cb18-7"><a href="#cb18-7" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb18-8"><a href="#cb18-8" aria-hidden="true" tabindex="-1"></a>    <span class="co">// Extract public keys</span></span>
+<span id="cb18-9"><a href="#cb18-9" aria-hidden="true" tabindex="-1"></a>    <span class="dt">uint8_t</span> x25519_pub<span class="op">[</span><span class="dv">32</span><span class="op">],</span> ed25519_pub<span class="op">[</span><span class="dv">32</span><span class="op">];</span></span>
+<span id="cb18-10"><a href="#cb18-10" aria-hidden="true" tabindex="-1"></a>    memcpy<span class="op">(</span>x25519_pub<span class="op">,</span> <span class="op">&amp;</span>payload<span class="op">[</span><span class="dv">0</span><span class="op">],</span> <span class="dv">32</span><span class="op">);</span></span>
+<span id="cb18-11"><a href="#cb18-11" aria-hidden="true" tabindex="-1"></a>    memcpy<span class="op">(</span>ed25519_pub<span class="op">,</span> <span class="op">&amp;</span>payload<span class="op">[</span><span class="dv">32</span><span class="op">],</span> <span class="dv">32</span><span class="op">);</span></span>
+<span id="cb18-12"><a href="#cb18-12" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb18-13"><a href="#cb18-13" aria-hidden="true" tabindex="-1"></a>    <span class="co">// Verify the announced hash matches the keys</span></span>
+<span id="cb18-14"><a href="#cb18-14" aria-hidden="true" tabindex="-1"></a>    <span class="dt">uint8_t</span> computed_hash<span class="op">[</span><span class="dv">16</span><span class="op">];</span></span>
+<span id="cb18-15"><a href="#cb18-15" aria-hidden="true" tabindex="-1"></a>    compute_identity_hash<span class="op">(</span>x25519_pub<span class="op">,</span> ed25519_pub<span class="op">,</span> computed_hash<span class="op">);</span></span>
+<span id="cb18-16"><a href="#cb18-16" aria-hidden="true" tabindex="-1"></a>    <span class="co">// Note: Full verification needs app_name, checking dest_hash derivation</span></span>
+<span id="cb18-17"><a href="#cb18-17" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb18-18"><a href="#cb18-18" aria-hidden="true" tabindex="-1"></a>    <span class="co">// Extract signature (last 64 bytes)</span></span>
+<span id="cb18-19"><a href="#cb18-19" aria-hidden="true" tabindex="-1"></a>    <span class="dt">size_t</span> sig_offset <span class="op">=</span> payload_len <span class="op">-</span> <span class="dv">64</span><span class="op">;</span></span>
+<span id="cb18-20"><a href="#cb18-20" aria-hidden="true" tabindex="-1"></a>    <span class="dt">uint8_t</span> signature<span class="op">[</span><span class="dv">64</span><span class="op">];</span></span>
+<span id="cb18-21"><a href="#cb18-21" aria-hidden="true" tabindex="-1"></a>    memcpy<span class="op">(</span>signature<span class="op">,</span> <span class="op">&amp;</span>payload<span class="op">[</span>sig_offset<span class="op">],</span> <span class="dv">64</span><span class="op">);</span></span>
+<span id="cb18-22"><a href="#cb18-22" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb18-23"><a href="#cb18-23" aria-hidden="true" tabindex="-1"></a>    <span class="co">// Build signed data</span></span>
+<span id="cb18-24"><a href="#cb18-24" aria-hidden="true" tabindex="-1"></a>    <span class="dt">uint8_t</span> sign_data<span class="op">[</span><span class="dv">256</span><span class="op">];</span></span>
+<span id="cb18-25"><a href="#cb18-25" aria-hidden="true" tabindex="-1"></a>    memcpy<span class="op">(</span>sign_data<span class="op">,</span> dest_hash<span class="op">,</span> <span class="dv">16</span><span class="op">);</span></span>
+<span id="cb18-26"><a href="#cb18-26" aria-hidden="true" tabindex="-1"></a>    memcpy<span class="op">(&amp;</span>sign_data<span class="op">[</span><span class="dv">16</span><span class="op">],</span> payload<span class="op">,</span> sig_offset<span class="op">);</span></span>
+<span id="cb18-27"><a href="#cb18-27" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb18-28"><a href="#cb18-28" aria-hidden="true" tabindex="-1"></a>    <span class="co">// Verify signature</span></span>
+<span id="cb18-29"><a href="#cb18-29" aria-hidden="true" tabindex="-1"></a>    <span class="cf">if</span> <span class="op">(</span>crypto_sign_verify_detached<span class="op">(</span>signature<span class="op">,</span> sign_data<span class="op">,</span> <span class="dv">16</span> <span class="op">+</span> sig_offset<span class="op">,</span></span>
+<span id="cb18-30"><a href="#cb18-30" aria-hidden="true" tabindex="-1"></a>                                    ed25519_pub<span class="op">)</span> <span class="op">!=</span> <span class="dv">0</span><span class="op">)</span> <span class="op">{</span></span>
+<span id="cb18-31"><a href="#cb18-31" aria-hidden="true" tabindex="-1"></a>        <span class="cf">return</span> <span class="kw">false</span><span class="op">;</span>  <span class="co">// Invalid signature</span></span>
+<span id="cb18-32"><a href="#cb18-32" aria-hidden="true" tabindex="-1"></a>    <span class="op">}</span></span>
+<span id="cb18-33"><a href="#cb18-33" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb18-34"><a href="#cb18-34" aria-hidden="true" tabindex="-1"></a>    <span class="co">// Cache the identity for future use</span></span>
+<span id="cb18-35"><a href="#cb18-35" aria-hidden="true" tabindex="-1"></a>    cache_identity<span class="op">(</span>dest_hash<span class="op">,</span> x25519_pub<span class="op">,</span> ed25519_pub<span class="op">);</span></span>
+<span id="cb18-36"><a href="#cb18-36" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb18-37"><a href="#cb18-37" aria-hidden="true" tabindex="-1"></a>    <span class="cf">return</span> <span class="kw">true</span><span class="op">;</span></span>
+<span id="cb18-38"><a href="#cb18-38" aria-hidden="true" tabindex="-1"></a><span class="op">}</span></span></code></pre></div>
+<h2 id="destination-naming">5.8 Destination Naming</h2>
+<p>Application names provide human-readable identification:</p>
+<pre><code>&quot;myapp&quot;                  → Simple application
+&quot;myapp.service&quot;          → With aspect
+&quot;myapp.service.v2&quot;       → Multiple aspects</code></pre>
+<h3 id="name-conventions">Name Conventions</h3>
+<ul>
+<li>Use lowercase</li>
+<li>Separate components with dots</li>
+<li>Keep names short (bandwidth matters)</li>
+<li>Be descriptive but concise</li>
+</ul>
+<h3 id="reserved-names">Reserved Names</h3>
+<p>Some names are reserved for Reticulum internals: -
+<code>rnstransport</code> - Transport layer operations -
+<code>rnsresource</code> - Resource transfers - <code>lxmf</code> - LXMF
+messaging protocol</p>
+<h2 id="destination-callbacks">5.9 Destination Callbacks</h2>
+<h3 id="packet-callback">Packet Callback</h3>
+<p>Called when a packet arrives for this destination:</p>
+<div class="sourceCode" id="cb20"><pre class="sourceCode c"><code class="sourceCode c"><span id="cb20-1"><a href="#cb20-1" aria-hidden="true" tabindex="-1"></a><span class="dt">void</span> my_packet_callback<span class="op">(</span>Destination <span class="op">*</span>dest<span class="op">,</span></span>
+<span id="cb20-2"><a href="#cb20-2" aria-hidden="true" tabindex="-1"></a>                        <span class="dt">const</span> <span class="dt">uint8_t</span> <span class="op">*</span>data<span class="op">,</span></span>
+<span id="cb20-3"><a href="#cb20-3" aria-hidden="true" tabindex="-1"></a>                        <span class="dt">size_t</span> len<span class="op">,</span></span>
+<span id="cb20-4"><a href="#cb20-4" aria-hidden="true" tabindex="-1"></a>                        <span class="dt">const</span> <span class="dt">uint8_t</span> <span class="op">*</span>packet_hash<span class="op">)</span> <span class="op">{</span></span>
+<span id="cb20-5"><a href="#cb20-5" aria-hidden="true" tabindex="-1"></a>    printf<span class="op">(</span><span class="st">&quot;Received </span><span class="sc">%zu</span><span class="st"> bytes at destination </span><span class="sc">%s\n</span><span class="st">&quot;</span><span class="op">,</span></span>
+<span id="cb20-6"><a href="#cb20-6" aria-hidden="true" tabindex="-1"></a>           len<span class="op">,</span> dest<span class="op">-&gt;</span>app_name<span class="op">);</span></span>
+<span id="cb20-7"><a href="#cb20-7" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb20-8"><a href="#cb20-8" aria-hidden="true" tabindex="-1"></a>    <span class="co">// Process the data</span></span>
+<span id="cb20-9"><a href="#cb20-9" aria-hidden="true" tabindex="-1"></a>    process_application_data<span class="op">(</span>data<span class="op">,</span> len<span class="op">);</span></span>
+<span id="cb20-10"><a href="#cb20-10" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb20-11"><a href="#cb20-11" aria-hidden="true" tabindex="-1"></a>    <span class="co">// Optionally send a proof</span></span>
+<span id="cb20-12"><a href="#cb20-12" aria-hidden="true" tabindex="-1"></a>    <span class="cf">if</span> <span class="op">(</span>should_prove<span class="op">(</span>dest<span class="op">))</span> <span class="op">{</span></span>
+<span id="cb20-13"><a href="#cb20-13" aria-hidden="true" tabindex="-1"></a>        send_proof_for_packet<span class="op">(</span>dest<span class="op">,</span> packet_hash<span class="op">);</span></span>
+<span id="cb20-14"><a href="#cb20-14" aria-hidden="true" tabindex="-1"></a>    <span class="op">}</span></span>
+<span id="cb20-15"><a href="#cb20-15" aria-hidden="true" tabindex="-1"></a><span class="op">}</span></span></code></pre></div>
+<h3 id="link-established-callback">Link Established Callback</h3>
+<p>Called when someone establishes a link to this destination:</p>
+<div class="sourceCode" id="cb21"><pre class="sourceCode c"><code class="sourceCode c"><span id="cb21-1"><a href="#cb21-1" aria-hidden="true" tabindex="-1"></a><span class="dt">void</span> my_link_callback<span class="op">(</span>Destination <span class="op">*</span>dest<span class="op">,</span> Link <span class="op">*</span>link<span class="op">)</span> <span class="op">{</span></span>
+<span id="cb21-2"><a href="#cb21-2" aria-hidden="true" tabindex="-1"></a>    printf<span class="op">(</span><span class="st">&quot;New link established: </span><span class="sc">%s\n</span><span class="st">&quot;</span><span class="op">,</span></span>
+<span id="cb21-3"><a href="#cb21-3" aria-hidden="true" tabindex="-1"></a>           bytes_to_hex<span class="op">(</span>link<span class="op">-&gt;</span>id<span class="op">,</span> <span class="dv">16</span><span class="op">));</span></span>
+<span id="cb21-4"><a href="#cb21-4" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb21-5"><a href="#cb21-5" aria-hidden="true" tabindex="-1"></a>    <span class="co">// Accept or reject the link</span></span>
+<span id="cb21-6"><a href="#cb21-6" aria-hidden="true" tabindex="-1"></a>    <span class="cf">if</span> <span class="op">(</span>should_accept_link<span class="op">(</span>link<span class="op">))</span> <span class="op">{</span></span>
+<span id="cb21-7"><a href="#cb21-7" aria-hidden="true" tabindex="-1"></a>        link_accept<span class="op">(</span>link<span class="op">);</span></span>
+<span id="cb21-8"><a href="#cb21-8" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb21-9"><a href="#cb21-9" aria-hidden="true" tabindex="-1"></a>        <span class="co">// Register callbacks for this link</span></span>
+<span id="cb21-10"><a href="#cb21-10" aria-hidden="true" tabindex="-1"></a>        link_set_data_callback<span class="op">(</span>link<span class="op">,</span> my_link_data_handler<span class="op">);</span></span>
+<span id="cb21-11"><a href="#cb21-11" aria-hidden="true" tabindex="-1"></a>        link_set_close_callback<span class="op">(</span>link<span class="op">,</span> my_link_close_handler<span class="op">);</span></span>
+<span id="cb21-12"><a href="#cb21-12" aria-hidden="true" tabindex="-1"></a>    <span class="op">}</span> <span class="cf">else</span> <span class="op">{</span></span>
+<span id="cb21-13"><a href="#cb21-13" aria-hidden="true" tabindex="-1"></a>        link_reject<span class="op">(</span>link<span class="op">);</span></span>
+<span id="cb21-14"><a href="#cb21-14" aria-hidden="true" tabindex="-1"></a>    <span class="op">}</span></span>
+<span id="cb21-15"><a href="#cb21-15" aria-hidden="true" tabindex="-1"></a><span class="op">}</span></span></code></pre></div>
+<h2 id="ratchets-optional-forward-secrecy">5.10 Ratchets (Optional
+Forward Secrecy)</h2>
+<p>SINGLE destinations normally use the identity’s static X25519 key for
+encryption. If that key is ever compromised, all past messages can be
+decrypted. <strong>Ratchets</strong> solve this by providing forward
+secrecy for single-packet communication.</p>
+<h3 id="how-ratchets-work">How Ratchets Work</h3>
+<p>When ratchets are enabled on a destination:</p>
+<ol type="1">
+<li>The destination generates and stores rotating X25519 key pairs</li>
+<li>Announces include the current ratchet public key (32 extra
+bytes)</li>
+<li>Senders encrypt to the ratchet key instead of the static identity
+key</li>
+<li>The destination rotates keys periodically (default: every 30
+minutes)</li>
+<li>Old ratchet private keys are eventually deleted</li>
+</ol>
+<div class="sourceCode" id="cb22"><pre class="sourceCode c"><code class="sourceCode c"><span id="cb22-1"><a href="#cb22-1" aria-hidden="true" tabindex="-1"></a><span class="co">// Enable ratchets on a destination</span></span>
+<span id="cb22-2"><a href="#cb22-2" aria-hidden="true" tabindex="-1"></a>destination_enable_ratchets<span class="op">(</span>dest<span class="op">,</span> <span class="st">&quot;/path/to/ratchets.dat&quot;</span><span class="op">);</span></span>
+<span id="cb22-3"><a href="#cb22-3" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb22-4"><a href="#cb22-4" aria-hidden="true" tabindex="-1"></a><span class="co">// Ratchets are automatically rotated during announce</span></span>
+<span id="cb22-5"><a href="#cb22-5" aria-hidden="true" tabindex="-1"></a>destination_announce<span class="op">(</span>dest<span class="op">,</span> transport<span class="op">,</span> NULL<span class="op">,</span> <span class="dv">0</span><span class="op">);</span></span></code></pre></div>
+<h3 id="when-to-use-ratchets">When to Use Ratchets</h3>
+<table style="width:100%;">
+<colgroup>
+<col style="width: 33%" />
+<col style="width: 50%" />
+<col style="width: 16%" />
+</colgroup>
+<thead>
+<tr class="header">
+<th>Scenario</th>
+<th>Use Ratchets?</th>
+<th>Why</th>
+</tr>
+</thead>
+<tbody>
+<tr class="odd">
+<td>Link-based communication</td>
+<td>No</td>
+<td>Links already have forward secrecy</td>
+</tr>
+<tr class="even">
+<td>Single packets, low security</td>
+<td>No</td>
+<td>Overhead not justified</td>
+</tr>
+<tr class="odd">
+<td>Asynchronous messaging (LXMF)</td>
+<td>Yes</td>
+<td>Messages stored/forwarded, need FS</td>
+</tr>
+<tr class="even">
+<td>High-value destinations</td>
+<td>Yes</td>
+<td>Protect past communications</td>
+</tr>
+</tbody>
+</table>
+<h3 id="ratchet-enforcement">Ratchet Enforcement</h3>
+<p>Destinations can require senders to use ratchets:</p>
+<div class="sourceCode" id="cb23"><pre class="sourceCode c"><code class="sourceCode c"><span id="cb23-1"><a href="#cb23-1" aria-hidden="true" tabindex="-1"></a>destination_enforce_ratchets<span class="op">(</span>dest<span class="op">);</span>  <span class="co">// Reject packets using static key</span></span></code></pre></div>
+<p>For the full cryptographic details of how ratchets provide forward
+secrecy, see <a
+href="appendix-a-security.md#a8-ratchet-based-forward-secrecy">Appendix
+A: Ratchet-Based Forward Secrecy</a>.</p>
+<h2 id="summary">5.11 Summary</h2>
+<table>
+<thead>
+<tr class="header">
+<th>Destination Type</th>
+<th>Encryption</th>
+<th>Use Case</th>
+</tr>
+</thead>
+<tbody>
+<tr class="odd">
+<td>SINGLE (0x00)</td>
+<td>Per-identity keys</td>
+<td>Private communication</td>
+</tr>
+<tr class="even">
+<td>GROUP (0x01)</td>
+<td>Shared group key</td>
+<td>Multicast</td>
+</tr>
+<tr class="odd">
+<td>PLAIN (0x02)</td>
+<td>None</td>
+<td>Public broadcast</td>
+</tr>
+</tbody>
+</table>
+<table>
+<thead>
+<tr class="header">
+<th>Component</th>
+<th>Purpose</th>
+</tr>
+</thead>
+<tbody>
+<tr class="odd">
+<td>Identity</td>
+<td>Cryptographic key pair</td>
+</tr>
+<tr class="even">
+<td>App Name</td>
+<td>Human-readable identifier</td>
+</tr>
+<tr class="odd">
+<td>Aspects</td>
+<td>Sub-service qualifiers</td>
+</tr>
+<tr class="even">
+<td>Hash</td>
+<td>16-byte network address</td>
+</tr>
+</tbody>
+</table>
+<p>Key operations: - <strong>Register</strong>: Make destination receive
+packets - <strong>Announce</strong>: Broadcast existence to network -
+<strong>Send</strong>: Transmit data to destination -
+<strong>Prove</strong>: Confirm receipt of packet</p>
+<p><a href="06-framing.md">The next chapter covers <strong>transport
+layer framing</strong> - how packets are sent over physical
+media.</a></p>
+</body>
+</html>

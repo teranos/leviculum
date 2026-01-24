@@ -1,0 +1,566 @@
+<!DOCTYPE html>
+<html xmlns="http://www.w3.org/1999/xhtml" lang="" xml:lang="">
+<head>
+  <meta charset="utf-8" />
+  <meta name="generator" content="pandoc" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=yes" />
+  <title>Chapter 2: Cryptographic Primitives</title>
+  <style>
+    code{white-space: pre-wrap;}
+    span.smallcaps{font-variant: small-caps;}
+    div.columns{display: flex; gap: min(4vw, 1.5em);}
+    div.column{flex: auto; overflow-x: auto;}
+    div.hanging-indent{margin-left: 1.5em; text-indent: -1.5em;}
+    /* The extra [class] is a hack that increases specificity enough to
+       override a similar rule in reveal.js */
+    ul.task-list[class]{list-style: none;}
+    ul.task-list li input[type="checkbox"] {
+      font-size: inherit;
+      width: 0.8em;
+      margin: 0 0.8em 0.2em -1.6em;
+      vertical-align: middle;
+    }
+    .display.math{display: block; text-align: center; margin: 0.5rem auto;}
+    /* CSS for syntax highlighting */
+    pre > code.sourceCode { white-space: pre; position: relative; }
+    pre > code.sourceCode > span { line-height: 1.25; }
+    pre > code.sourceCode > span:empty { height: 1.2em; }
+    .sourceCode { overflow: visible; }
+    code.sourceCode > span { color: inherit; text-decoration: inherit; }
+    div.sourceCode { margin: 1em 0; }
+    pre.sourceCode { margin: 0; }
+    @media screen {
+    div.sourceCode { overflow: auto; }
+    }
+    @media print {
+    pre > code.sourceCode { white-space: pre-wrap; }
+    pre > code.sourceCode > span { display: inline-block; text-indent: -5em; padding-left: 5em; }
+    }
+    pre.numberSource code
+      { counter-reset: source-line 0; }
+    pre.numberSource code > span
+      { position: relative; left: -4em; counter-increment: source-line; }
+    pre.numberSource code > span > a:first-child::before
+      { content: counter(source-line);
+        position: relative; left: -1em; text-align: right; vertical-align: baseline;
+        border: none; display: inline-block;
+        -webkit-touch-callout: none; -webkit-user-select: none;
+        -khtml-user-select: none; -moz-user-select: none;
+        -ms-user-select: none; user-select: none;
+        padding: 0 4px; width: 4em;
+        color: #aaaaaa;
+      }
+    pre.numberSource { margin-left: 3em; border-left: 1px solid #aaaaaa;  padding-left: 4px; }
+    div.sourceCode
+      {  background-color: #f8f8f8; }
+    @media screen {
+    pre > code.sourceCode > span > a:first-child::before { text-decoration: underline; }
+    }
+    code span.al { color: #ef2929; } /* Alert */
+    code span.an { color: #8f5902; font-weight: bold; font-style: italic; } /* Annotation */
+    code span.at { color: #204a87; } /* Attribute */
+    code span.bn { color: #0000cf; } /* BaseN */
+    code span.cf { color: #204a87; font-weight: bold; } /* ControlFlow */
+    code span.ch { color: #4e9a06; } /* Char */
+    code span.cn { color: #8f5902; } /* Constant */
+    code span.co { color: #8f5902; font-style: italic; } /* Comment */
+    code span.cv { color: #8f5902; font-weight: bold; font-style: italic; } /* CommentVar */
+    code span.do { color: #8f5902; font-weight: bold; font-style: italic; } /* Documentation */
+    code span.dt { color: #204a87; } /* DataType */
+    code span.dv { color: #0000cf; } /* DecVal */
+    code span.er { color: #a40000; font-weight: bold; } /* Error */
+    code span.ex { } /* Extension */
+    code span.fl { color: #0000cf; } /* Float */
+    code span.fu { color: #204a87; font-weight: bold; } /* Function */
+    code span.im { } /* Import */
+    code span.in { color: #8f5902; font-weight: bold; font-style: italic; } /* Information */
+    code span.kw { color: #204a87; font-weight: bold; } /* Keyword */
+    code span.op { color: #ce5c00; font-weight: bold; } /* Operator */
+    code span.ot { color: #8f5902; } /* Other */
+    code span.pp { color: #8f5902; font-style: italic; } /* Preprocessor */
+    code span.sc { color: #ce5c00; font-weight: bold; } /* SpecialChar */
+    code span.ss { color: #4e9a06; } /* SpecialString */
+    code span.st { color: #4e9a06; } /* String */
+    code span.va { color: #000000; } /* Variable */
+    code span.vs { color: #4e9a06; } /* VerbatimString */
+    code span.wa { color: #8f5902; font-weight: bold; font-style: italic; } /* Warning */
+  </style>
+  <link rel="stylesheet" href="style.css" />
+</head>
+<body>
+<nav class="breadcrumb"><a href="index.html">← Table of Contents</a></nav>
+<header id="title-block-header">
+<h1 class="title">Chapter 2: Cryptographic Primitives</h1>
+</header>
+<nav id="TOC" role="doc-toc">
+<ul>
+<li><a href="#hash-functions" id="toc-hash-functions">2.1 Hash
+Functions</a></li>
+<li><a href="#symmetric-encryption" id="toc-symmetric-encryption">2.2
+Symmetric Encryption</a></li>
+<li><a href="#asymmetric-cryptography"
+id="toc-asymmetric-cryptography">2.3 Asymmetric Cryptography</a></li>
+<li><a href="#key-derivation" id="toc-key-derivation">2.4 Key
+Derivation</a></li>
+<li><a href="#putting-it-together" id="toc-putting-it-together">2.5
+Putting It Together</a></li>
+<li><a href="#security-considerations"
+id="toc-security-considerations">2.6 Security Considerations</a></li>
+<li><a href="#summary" id="toc-summary">2.7 Summary</a></li>
+</ul>
+</nav>
+<p>This chapter introduces the cryptographic building blocks used by
+Reticulum. If you’re unfamiliar with cryptography, read this chapter
+carefully - everything else builds on it.</p>
+<h2 id="hash-functions">2.1 Hash Functions</h2>
+<p>A <strong>hash function</strong> takes input of any size and produces
+output of fixed size. Reticulum uses SHA-256, which always produces 32
+bytes (256 bits).</p>
+<h3 id="properties-of-cryptographic-hashes">Properties of Cryptographic
+Hashes</h3>
+<pre><code>Input:  &quot;Hello, World!&quot; (13 bytes)
+SHA-256: ae97eca8f8ae1672bcc5c79e3fbafd8ee86f65f775e2250a291d3788b7a8af95 (32 bytes)
+
+Input:  &quot;Hello, World!!&quot; (14 bytes - one character added)
+SHA-256: 629f264d107ccb8966bf751251ea1fed1171809ea1040929584a7d19caef71fd (32 bytes - completely different)</code></pre>
+<p>Key properties:</p>
+<ol type="1">
+<li><strong>Deterministic</strong>: Same input always gives same
+output</li>
+<li><strong>One-way</strong>: Cannot reverse the hash to find the
+input</li>
+<li><strong>Collision-resistant</strong>: Hard to find two inputs with
+the same hash</li>
+<li><strong>Avalanche effect</strong>: Small input changes completely
+change output</li>
+</ol>
+<h3 id="how-reticulum-uses-hashes">How Reticulum Uses Hashes</h3>
+<ul>
+<li><strong>Address derivation</strong>: Destination addresses are
+truncated hashes of public keys</li>
+<li><strong>Packet identification</strong>: Link IDs are hashes of
+packet contents</li>
+<li><strong>Integrity verification</strong>: Detect tampering with
+data</li>
+</ul>
+<h3 id="computing-sha-256">Computing SHA-256</h3>
+<p>In C, you might use OpenSSL:</p>
+<div class="sourceCode" id="cb2"><pre class="sourceCode c"><code class="sourceCode c"><span id="cb2-1"><a href="#cb2-1" aria-hidden="true" tabindex="-1"></a><span class="pp">#include </span><span class="im">&lt;openssl/sha.h&gt;</span></span>
+<span id="cb2-2"><a href="#cb2-2" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb2-3"><a href="#cb2-3" aria-hidden="true" tabindex="-1"></a><span class="dt">void</span> compute_sha256<span class="op">(</span><span class="dt">const</span> <span class="dt">uint8_t</span> <span class="op">*</span>input<span class="op">,</span> <span class="dt">size_t</span> len<span class="op">,</span> <span class="dt">uint8_t</span> output<span class="op">[</span><span class="dv">32</span><span class="op">])</span> <span class="op">{</span></span>
+<span id="cb2-4"><a href="#cb2-4" aria-hidden="true" tabindex="-1"></a>    SHA256_CTX ctx<span class="op">;</span></span>
+<span id="cb2-5"><a href="#cb2-5" aria-hidden="true" tabindex="-1"></a>    SHA256_Init<span class="op">(&amp;</span>ctx<span class="op">);</span></span>
+<span id="cb2-6"><a href="#cb2-6" aria-hidden="true" tabindex="-1"></a>    SHA256_Update<span class="op">(&amp;</span>ctx<span class="op">,</span> input<span class="op">,</span> len<span class="op">);</span></span>
+<span id="cb2-7"><a href="#cb2-7" aria-hidden="true" tabindex="-1"></a>    SHA256_Final<span class="op">(</span>output<span class="op">,</span> <span class="op">&amp;</span>ctx<span class="op">);</span></span>
+<span id="cb2-8"><a href="#cb2-8" aria-hidden="true" tabindex="-1"></a><span class="op">}</span></span></code></pre></div>
+<h3 id="truncated-hashes">Truncated Hashes</h3>
+<p>Reticulum uses <strong>truncated hashes</strong> for addresses - only
+the first 16 bytes (128 bits) of the SHA-256 output:</p>
+<div class="sourceCode" id="cb3"><pre class="sourceCode c"><code class="sourceCode c"><span id="cb3-1"><a href="#cb3-1" aria-hidden="true" tabindex="-1"></a><span class="dt">void</span> truncated_hash<span class="op">(</span><span class="dt">const</span> <span class="dt">uint8_t</span> <span class="op">*</span>input<span class="op">,</span> <span class="dt">size_t</span> len<span class="op">,</span> <span class="dt">uint8_t</span> output<span class="op">[</span><span class="dv">16</span><span class="op">])</span> <span class="op">{</span></span>
+<span id="cb3-2"><a href="#cb3-2" aria-hidden="true" tabindex="-1"></a>    <span class="dt">uint8_t</span> full_hash<span class="op">[</span><span class="dv">32</span><span class="op">];</span></span>
+<span id="cb3-3"><a href="#cb3-3" aria-hidden="true" tabindex="-1"></a>    compute_sha256<span class="op">(</span>input<span class="op">,</span> len<span class="op">,</span> full_hash<span class="op">);</span></span>
+<span id="cb3-4"><a href="#cb3-4" aria-hidden="true" tabindex="-1"></a>    memcpy<span class="op">(</span>output<span class="op">,</span> full_hash<span class="op">,</span> <span class="dv">16</span><span class="op">);</span>  <span class="co">// Take first 16 bytes</span></span>
+<span id="cb3-5"><a href="#cb3-5" aria-hidden="true" tabindex="-1"></a><span class="op">}</span></span></code></pre></div>
+<p>Why truncate? 128 bits still provides ~2^64 collision resistance
+(birthday bound), which is sufficient for addressing. Shorter addresses
+save bandwidth on constrained links.</p>
+<h2 id="symmetric-encryption">2.2 Symmetric Encryption</h2>
+<p><strong>Symmetric encryption</strong> uses the same key to encrypt
+and decrypt. Both parties must share the secret key.</p>
+<h3 id="aes-advanced-encryption-standard">AES (Advanced Encryption
+Standard)</h3>
+<p>AES is a <strong>block cipher</strong> that encrypts 16-byte
+blocks:</p>
+<pre><code>Key:        32 bytes (for AES-256)
+Plaintext:  16 bytes (one block)
+Ciphertext: 16 bytes (one block)</code></pre>
+<p>AES itself only handles 16-byte blocks. To encrypt arbitrary data, we
+need a <strong>mode of operation</strong>.</p>
+<h3 id="cbc-mode-cipher-block-chaining">CBC Mode (Cipher Block
+Chaining)</h3>
+<p>CBC chains blocks together so identical plaintext blocks produce
+different ciphertext:</p>
+<pre><code>    Plaintext Block 1    Plaintext Block 2
+           |                    |
+           v                    v
+        [XOR] &lt;-- IV         [XOR] &lt;-- Ciphertext 1
+           |                    |
+           v                    v
+       [AES-256]            [AES-256]
+           |                    |
+           v                    v
+    Ciphertext Block 1   Ciphertext Block 2</code></pre>
+<p>The <strong>IV</strong> (Initialization Vector) is a random 16-byte
+value that ensures the same plaintext encrypts to different ciphertext
+each time.</p>
+<h3 id="pkcs7-padding">PKCS7 Padding</h3>
+<p>AES requires input to be a multiple of 16 bytes. PKCS7 padding adds
+bytes to reach the next multiple:</p>
+<pre><code>Input:  &quot;Hello&quot; (5 bytes)
+Padded: &quot;Hello\x0b\x0b\x0b\x0b\x0b\x0b\x0b\x0b\x0b\x0b\x0b&quot; (16 bytes)
+        (11 bytes of value 0x0b = 11 added)
+
+Input:  &quot;0123456789ABCDEF&quot; (16 bytes - already aligned)
+Padded: &quot;0123456789ABCDEF\x10\x10\x10\x10\x10\x10\x10\x10\x10\x10\x10\x10\x10\x10\x10\x10&quot; (32 bytes)
+        (16 bytes of value 0x10 = 16 added - always pad!)</code></pre>
+<h3 id="hmac-hash-based-message-authentication-code">HMAC (Hash-based
+Message Authentication Code)</h3>
+<p>HMAC proves that a message hasn’t been tampered with:</p>
+<pre><code>HMAC-SHA256(key, message) → 32-byte authentication tag</code></pre>
+<p>Unlike a plain hash, HMAC requires the secret key. Only someone with
+the key can: - Generate a valid HMAC - Verify an HMAC is correct</p>
+<h3 id="fernet-token-format">Fernet Token Format</h3>
+<p>Reticulum uses a <strong>modified Fernet</strong> format for
+symmetric encryption. Standard Fernet includes a version byte and 8-byte
+timestamp, but Reticulum omits both to save bandwidth and avoid leaking
+timing metadata.</p>
+<p><strong>Reticulum Token Format</strong> (not standard Fernet):</p>
+<pre><code>+------+------------------+------+
+| IV   | Ciphertext       | HMAC |
+| 16 B | (variable, padded) | 32 B |
++------+------------------+------+
+
+Overhead: 48 bytes + padding (up to 15 bytes for AES block alignment)</code></pre>
+<ol type="1">
+<li><strong>IV</strong>: Random 16 bytes for CBC mode</li>
+<li><strong>Ciphertext</strong>: AES-CBC encrypted data with PKCS7
+padding</li>
+<li><strong>HMAC</strong>: HMAC-SHA256 over IV + ciphertext</li>
+</ol>
+<p><strong>Key sizes</strong> (Reticulum supports both):</p>
+<table>
+<thead>
+<tr class="header">
+<th>Mode</th>
+<th>Key Size</th>
+<th>Split</th>
+</tr>
+</thead>
+<tbody>
+<tr class="odd">
+<td>AES-128-CBC</td>
+<td>32 bytes</td>
+<td>HMAC key (16B) + AES key (16B)</td>
+</tr>
+<tr class="even">
+<td>AES-256-CBC</td>
+<td>64 bytes</td>
+<td>HMAC key (32B) + AES key (32B)</td>
+</tr>
+</tbody>
+</table>
+<p>Links use AES-256-CBC (64-byte derived key) by default.</p>
+<h3 id="encrypt-then-mac">Encrypt-then-MAC</h3>
+<p>Fernet uses <strong>encrypt-then-MAC</strong>: encrypt first, then
+HMAC the ciphertext. This is important:</p>
+<pre><code>WRONG (MAC-then-encrypt):
+  1. HMAC(plaintext)
+  2. Encrypt(plaintext || HMAC)
+  Problem: Attacker can modify ciphertext without detection
+
+RIGHT (encrypt-then-MAC):
+  1. Encrypt(plaintext) → ciphertext
+  2. HMAC(ciphertext)
+  Benefit: Tampered ciphertext rejected before decryption</code></pre>
+<h2 id="asymmetric-cryptography">2.3 Asymmetric Cryptography</h2>
+<p><strong>Asymmetric</strong> (or <strong>public-key</strong>)
+cryptography uses key pairs: - <strong>Private key</strong>: Secret,
+never shared - <strong>Public key</strong>: Can be freely
+distributed</p>
+<p>Reticulum uses two asymmetric algorithms: - <strong>X25519</strong>:
+Key exchange (derive shared secrets) - <strong>Ed25519</strong>: Digital
+signatures</p>
+<h3 id="elliptic-curve-cryptography-basics">Elliptic Curve Cryptography
+Basics</h3>
+<p>Both algorithms use <strong>elliptic curves</strong>. An elliptic
+curve is a mathematical structure where:</p>
+<pre><code>Private key:  A large random number (scalar)
+Public key:   A point on the curve = private_key × G
+              where G is a standard &quot;generator point&quot;</code></pre>
+<p>The security comes from the <strong>discrete logarithm
+problem</strong>: given the public key (a point), it’s computationally
+infeasible to find the private key (the scalar).</p>
+<p>You don’t need to understand the math deeply. Just know: - Keys are
+32 bytes each - Public keys can be computed from private keys (one-way)
+- Certain operations are possible with key pairs</p>
+<h3 id="x25519-key-exchange">X25519: Key Exchange</h3>
+<p>X25519 is an <strong>Elliptic Curve Diffie-Hellman (ECDH)</strong>
+algorithm. It lets two parties derive a shared secret:</p>
+<pre><code>Alice:                              Bob:
+  private_key_a (32 bytes)            private_key_b (32 bytes)
+  public_key_a = derive(private_a)    public_key_b = derive(private_b)
+
+        public_key_a  --------&gt;
+                      &lt;--------  public_key_b
+
+  shared = X25519(private_a, public_key_b)    shared = X25519(private_b, public_key_a)
+
+  Both compute the SAME 32-byte shared secret!</code></pre>
+<p>An eavesdropper who sees both public keys <strong>cannot</strong>
+compute the shared secret.</p>
+<p>In C (using libsodium):</p>
+<div class="sourceCode" id="cb12"><pre class="sourceCode c"><code class="sourceCode c"><span id="cb12-1"><a href="#cb12-1" aria-hidden="true" tabindex="-1"></a><span class="pp">#include </span><span class="im">&lt;sodium.h&gt;</span></span>
+<span id="cb12-2"><a href="#cb12-2" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb12-3"><a href="#cb12-3" aria-hidden="true" tabindex="-1"></a><span class="co">// Generate key pair</span></span>
+<span id="cb12-4"><a href="#cb12-4" aria-hidden="true" tabindex="-1"></a><span class="dt">uint8_t</span> private_key<span class="op">[</span><span class="dv">32</span><span class="op">],</span> public_key<span class="op">[</span><span class="dv">32</span><span class="op">];</span></span>
+<span id="cb12-5"><a href="#cb12-5" aria-hidden="true" tabindex="-1"></a>crypto_box_keypair<span class="op">(</span>public_key<span class="op">,</span> private_key<span class="op">);</span></span>
+<span id="cb12-6"><a href="#cb12-6" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb12-7"><a href="#cb12-7" aria-hidden="true" tabindex="-1"></a><span class="co">// Compute shared secret</span></span>
+<span id="cb12-8"><a href="#cb12-8" aria-hidden="true" tabindex="-1"></a><span class="dt">uint8_t</span> shared_secret<span class="op">[</span><span class="dv">32</span><span class="op">];</span></span>
+<span id="cb12-9"><a href="#cb12-9" aria-hidden="true" tabindex="-1"></a><span class="dt">uint8_t</span> peer_public<span class="op">[</span><span class="dv">32</span><span class="op">];</span>  <span class="co">// received from peer</span></span>
+<span id="cb12-10"><a href="#cb12-10" aria-hidden="true" tabindex="-1"></a>crypto_scalarmult<span class="op">(</span>shared_secret<span class="op">,</span> private_key<span class="op">,</span> peer_public<span class="op">);</span></span></code></pre></div>
+<h3 id="ed25519-digital-signatures">Ed25519: Digital Signatures</h3>
+<p>Ed25519 creates <strong>digital signatures</strong> that prove: 1.
+The message was created by the private key holder 2. The message hasn’t
+been modified</p>
+<pre><code>Signing (with private key):
+  signature = Ed25519_sign(private_key, message)
+  → 64-byte signature
+
+Verification (with public key):
+  valid = Ed25519_verify(public_key, message, signature)
+  → true/false</code></pre>
+<p>In C (using libsodium):</p>
+<div class="sourceCode" id="cb14"><pre class="sourceCode c"><code class="sourceCode c"><span id="cb14-1"><a href="#cb14-1" aria-hidden="true" tabindex="-1"></a><span class="pp">#include </span><span class="im">&lt;sodium.h&gt;</span></span>
+<span id="cb14-2"><a href="#cb14-2" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb14-3"><a href="#cb14-3" aria-hidden="true" tabindex="-1"></a><span class="co">// Generate key pair</span></span>
+<span id="cb14-4"><a href="#cb14-4" aria-hidden="true" tabindex="-1"></a><span class="dt">uint8_t</span> private_key<span class="op">[</span><span class="dv">64</span><span class="op">],</span> public_key<span class="op">[</span><span class="dv">32</span><span class="op">];</span>  <span class="co">// Ed25519 private key is 64 bytes</span></span>
+<span id="cb14-5"><a href="#cb14-5" aria-hidden="true" tabindex="-1"></a>crypto_sign_keypair<span class="op">(</span>public_key<span class="op">,</span> private_key<span class="op">);</span></span>
+<span id="cb14-6"><a href="#cb14-6" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb14-7"><a href="#cb14-7" aria-hidden="true" tabindex="-1"></a><span class="co">// Sign a message</span></span>
+<span id="cb14-8"><a href="#cb14-8" aria-hidden="true" tabindex="-1"></a><span class="dt">uint8_t</span> signature<span class="op">[</span><span class="dv">64</span><span class="op">];</span></span>
+<span id="cb14-9"><a href="#cb14-9" aria-hidden="true" tabindex="-1"></a><span class="dt">uint8_t</span> message<span class="op">[]</span> <span class="op">=</span> <span class="st">&quot;Hello&quot;</span><span class="op">;</span></span>
+<span id="cb14-10"><a href="#cb14-10" aria-hidden="true" tabindex="-1"></a>crypto_sign_detached<span class="op">(</span>signature<span class="op">,</span> NULL<span class="op">,</span> message<span class="op">,</span> <span class="dv">5</span><span class="op">,</span> private_key<span class="op">);</span></span>
+<span id="cb14-11"><a href="#cb14-11" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb14-12"><a href="#cb14-12" aria-hidden="true" tabindex="-1"></a><span class="co">// Verify signature</span></span>
+<span id="cb14-13"><a href="#cb14-13" aria-hidden="true" tabindex="-1"></a><span class="cf">if</span> <span class="op">(</span>crypto_sign_verify_detached<span class="op">(</span>signature<span class="op">,</span> message<span class="op">,</span> <span class="dv">5</span><span class="op">,</span> public_key<span class="op">)</span> <span class="op">==</span> <span class="dv">0</span><span class="op">)</span> <span class="op">{</span></span>
+<span id="cb14-14"><a href="#cb14-14" aria-hidden="true" tabindex="-1"></a>    <span class="co">// Signature is valid</span></span>
+<span id="cb14-15"><a href="#cb14-15" aria-hidden="true" tabindex="-1"></a><span class="op">}</span></span></code></pre></div>
+<h3 id="key-sizes-summary">Key Sizes Summary</h3>
+<table>
+<thead>
+<tr class="header">
+<th>Algorithm</th>
+<th>Private Key</th>
+<th>Public Key</th>
+<th>Output</th>
+</tr>
+</thead>
+<tbody>
+<tr class="odd">
+<td>X25519</td>
+<td>32 bytes</td>
+<td>32 bytes</td>
+<td>32-byte shared secret</td>
+</tr>
+<tr class="even">
+<td>Ed25519</td>
+<td>32 bytes (seed)</td>
+<td>32 bytes</td>
+<td>64-byte signature</td>
+</tr>
+</tbody>
+</table>
+<p><strong>Ed25519 key storage note</strong>: Libraries handle Ed25519
+private keys differently:</p>
+<ul>
+<li><strong>Seed</strong>: 32 bytes - the actual secret, can regenerate
+everything else</li>
+<li><strong>libsodium format</strong>: 64 bytes - seed (32B)
+concatenated with public key (32B)</li>
+<li><strong>Expanded key</strong>: 64 bytes - internal signing key
+derived from seed</li>
+</ul>
+<p>libsodium’s <code>crypto_sign_keypair()</code> returns a 64-byte
+private key (seed + public key). To use a 32-byte seed, use
+<code>crypto_sign_seed_keypair()</code>:</p>
+<div class="sourceCode" id="cb15"><pre class="sourceCode c"><code class="sourceCode c"><span id="cb15-1"><a href="#cb15-1" aria-hidden="true" tabindex="-1"></a><span class="dt">uint8_t</span> seed<span class="op">[</span><span class="dv">32</span><span class="op">];</span>           <span class="co">// 32-byte seed (the true private key)</span></span>
+<span id="cb15-2"><a href="#cb15-2" aria-hidden="true" tabindex="-1"></a><span class="dt">uint8_t</span> sk<span class="op">[</span><span class="dv">64</span><span class="op">],</span> pk<span class="op">[</span><span class="dv">32</span><span class="op">];</span>     <span class="co">// libsodium&#39;s storage format</span></span>
+<span id="cb15-3"><a href="#cb15-3" aria-hidden="true" tabindex="-1"></a>crypto_sign_seed_keypair<span class="op">(</span>pk<span class="op">,</span> sk<span class="op">,</span> seed<span class="op">);</span>  <span class="co">// Generate from seed</span></span>
+<span id="cb15-4"><a href="#cb15-4" aria-hidden="true" tabindex="-1"></a><span class="co">// sk now contains: seed || public_key</span></span></code></pre></div>
+<p>Reticulum stores identities as the 32-byte seed for each key (X25519
++ Ed25519 = 64 bytes total for both keys).</p>
+<h2 id="key-derivation">2.4 Key Derivation</h2>
+<p>The output of X25519 is a <strong>shared secret</strong>, but it’s
+not suitable to use directly as an encryption key. We need <strong>key
+derivation</strong> to:</p>
+<ol type="1">
+<li>Expand short secrets into longer keys</li>
+<li>Mix in additional context</li>
+<li>Derive multiple keys from one secret</li>
+</ol>
+<h3 id="hkdf-hmac-based-key-derivation-function">HKDF (HMAC-based Key
+Derivation Function)</h3>
+<p>HKDF has two phases:</p>
+<pre><code>Extract:  PRK = HKDF-Extract(salt, input_key_material)
+Expand:   output = HKDF-Expand(PRK, info, length)</code></pre>
+<p>In practice:</p>
+<div class="sourceCode" id="cb17"><pre class="sourceCode c"><code class="sourceCode c"><span id="cb17-1"><a href="#cb17-1" aria-hidden="true" tabindex="-1"></a><span class="co">// Derive a 64-byte key from a 32-byte shared secret</span></span>
+<span id="cb17-2"><a href="#cb17-2" aria-hidden="true" tabindex="-1"></a><span class="dt">uint8_t</span> shared_secret<span class="op">[</span><span class="dv">32</span><span class="op">];</span>  <span class="co">// from X25519</span></span>
+<span id="cb17-3"><a href="#cb17-3" aria-hidden="true" tabindex="-1"></a><span class="dt">uint8_t</span> salt<span class="op">[</span><span class="dv">16</span><span class="op">];</span>           <span class="co">// optional, can be NULL</span></span>
+<span id="cb17-4"><a href="#cb17-4" aria-hidden="true" tabindex="-1"></a><span class="dt">uint8_t</span> derived_key<span class="op">[</span><span class="dv">64</span><span class="op">];</span></span>
+<span id="cb17-5"><a href="#cb17-5" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb17-6"><a href="#cb17-6" aria-hidden="true" tabindex="-1"></a>HKDF_SHA256<span class="op">(</span></span>
+<span id="cb17-7"><a href="#cb17-7" aria-hidden="true" tabindex="-1"></a>    derived_key<span class="op">,</span> <span class="dv">64</span><span class="op">,</span>        <span class="co">// output buffer and length</span></span>
+<span id="cb17-8"><a href="#cb17-8" aria-hidden="true" tabindex="-1"></a>    shared_secret<span class="op">,</span> <span class="dv">32</span><span class="op">,</span>      <span class="co">// input key material</span></span>
+<span id="cb17-9"><a href="#cb17-9" aria-hidden="true" tabindex="-1"></a>    salt<span class="op">,</span> <span class="dv">16</span><span class="op">,</span>               <span class="co">// salt (or NULL, 0)</span></span>
+<span id="cb17-10"><a href="#cb17-10" aria-hidden="true" tabindex="-1"></a>    NULL<span class="op">,</span> <span class="dv">0</span>                 <span class="co">// info/context (or NULL, 0)</span></span>
+<span id="cb17-11"><a href="#cb17-11" aria-hidden="true" tabindex="-1"></a><span class="op">);</span></span></code></pre></div>
+<h3 id="reticulums-key-derivation">Reticulum’s Key Derivation</h3>
+<p>When establishing a link, Reticulum:</p>
+<ol type="1">
+<li>Performs X25519 key exchange → 32-byte shared secret</li>
+<li>Uses HKDF-SHA256 with the link ID as salt</li>
+<li>Derives 32 or 64 bytes (depending on Fernet mode)</li>
+</ol>
+<pre><code>shared_secret = X25519(my_private, peer_public)
+derived_key = HKDF-SHA256(
+    key_material = shared_secret,
+    salt = link_id,           // 16-byte link identifier
+    info = empty,
+    length = 32 or 64 bytes
+)</code></pre>
+<p>The derived key is then used for Fernet encryption on the link.</p>
+<h2 id="putting-it-together">2.5 Putting It Together</h2>
+<p>Here’s how the cryptographic primitives combine in Reticulum:</p>
+<h3 id="identity-creation">Identity Creation</h3>
+<pre><code>1. Generate X25519 key pair:
+   - x25519_private (32 bytes) - kept secret
+   - x25519_public (32 bytes) - shared
+
+2. Generate Ed25519 key pair:
+   - ed25519_private (32 bytes) - kept secret
+   - ed25519_public (32 bytes) - shared
+
+3. Compute address hash:
+   - full_hash = SHA256(x25519_public || ed25519_public)
+   - address = full_hash[0:16]  // truncated to 16 bytes</code></pre>
+<h3 id="link-establishment">Link Establishment</h3>
+<pre><code>Initiator:                           Responder:
+1. Generate ephemeral X25519         1. Receive request
+   key pair                          2. Generate ephemeral X25519
+2. Send request with public key         key pair
+                                     3. Compute shared secret
+    ----[x25519_pub]----&gt;            4. Derive encryption key
+                                     5. Sign proof data
+    &lt;---[signature + x25519_pub]---  6. Send proof
+
+3. Verify signature
+4. Compute shared secret
+5. Derive encryption key
+6. Link is active</code></pre>
+<h3 id="encrypted-communication">Encrypted Communication</h3>
+<pre><code>1. Sender has derived_key (32 bytes)
+2. To send message:
+   - Generate random IV (16 bytes)
+   - Pad message to block boundary
+   - Encrypt with AES-256-CBC
+   - Compute HMAC-SHA256
+   - Assemble Fernet token
+
+3. Receiver has same derived_key
+4. To receive:
+   - Verify HMAC (reject if invalid)
+   - Decrypt with AES-256-CBC
+   - Remove padding
+   - Process message</code></pre>
+<h2 id="security-considerations">2.6 Security Considerations</h2>
+<h3 id="random-number-generation">Random Number Generation</h3>
+<p>All security depends on <strong>cryptographically secure random
+numbers</strong>:</p>
+<div class="sourceCode" id="cb22"><pre class="sourceCode c"><code class="sourceCode c"><span id="cb22-1"><a href="#cb22-1" aria-hidden="true" tabindex="-1"></a><span class="co">// GOOD: Use OS-provided CSPRNG</span></span>
+<span id="cb22-2"><a href="#cb22-2" aria-hidden="true" tabindex="-1"></a><span class="pp">#include </span><span class="im">&lt;sodium.h&gt;</span></span>
+<span id="cb22-3"><a href="#cb22-3" aria-hidden="true" tabindex="-1"></a>randombytes_buf<span class="op">(</span>buffer<span class="op">,</span> length<span class="op">);</span></span>
+<span id="cb22-4"><a href="#cb22-4" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb22-5"><a href="#cb22-5" aria-hidden="true" tabindex="-1"></a><span class="co">// or on Linux:</span></span>
+<span id="cb22-6"><a href="#cb22-6" aria-hidden="true" tabindex="-1"></a><span class="pp">#include </span><span class="im">&lt;sys/random.h&gt;</span></span>
+<span id="cb22-7"><a href="#cb22-7" aria-hidden="true" tabindex="-1"></a>getrandom<span class="op">(</span>buffer<span class="op">,</span> length<span class="op">,</span> <span class="dv">0</span><span class="op">);</span></span>
+<span id="cb22-8"><a href="#cb22-8" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb22-9"><a href="#cb22-9" aria-hidden="true" tabindex="-1"></a><span class="co">// BAD: Never use these for cryptography</span></span>
+<span id="cb22-10"><a href="#cb22-10" aria-hidden="true" tabindex="-1"></a>rand<span class="op">();</span>      <span class="co">// predictable</span></span>
+<span id="cb22-11"><a href="#cb22-11" aria-hidden="true" tabindex="-1"></a>random<span class="op">();</span>    <span class="co">// predictable</span></span>
+<span id="cb22-12"><a href="#cb22-12" aria-hidden="true" tabindex="-1"></a>time<span class="op">(</span>NULL<span class="op">);</span>  <span class="co">// predictable</span></span></code></pre></div>
+<h3 id="key-management">Key Management</h3>
+<ul>
+<li>Private keys must never be transmitted</li>
+<li>Ephemeral keys provide forward secrecy</li>
+<li>Derived keys should be zeroed after use</li>
+</ul>
+<div class="sourceCode" id="cb23"><pre class="sourceCode c"><code class="sourceCode c"><span id="cb23-1"><a href="#cb23-1" aria-hidden="true" tabindex="-1"></a><span class="co">// Zero sensitive memory when done</span></span>
+<span id="cb23-2"><a href="#cb23-2" aria-hidden="true" tabindex="-1"></a>sodium_memzero<span class="op">(</span>private_key<span class="op">,</span> <span class="dv">32</span><span class="op">);</span></span>
+<span id="cb23-3"><a href="#cb23-3" aria-hidden="true" tabindex="-1"></a>sodium_memzero<span class="op">(</span>derived_key<span class="op">,</span> <span class="dv">64</span><span class="op">);</span></span></code></pre></div>
+<h3 id="side-channel-attacks">Side-Channel Attacks</h3>
+<p>Constant-time implementations prevent timing attacks:</p>
+<div class="sourceCode" id="cb24"><pre class="sourceCode c"><code class="sourceCode c"><span id="cb24-1"><a href="#cb24-1" aria-hidden="true" tabindex="-1"></a><span class="co">// GOOD: Constant-time comparison</span></span>
+<span id="cb24-2"><a href="#cb24-2" aria-hidden="true" tabindex="-1"></a><span class="cf">if</span> <span class="op">(</span>sodium_memcmp<span class="op">(</span>computed_hmac<span class="op">,</span> received_hmac<span class="op">,</span> <span class="dv">32</span><span class="op">)</span> <span class="op">==</span> <span class="dv">0</span><span class="op">)</span> <span class="op">{</span></span>
+<span id="cb24-3"><a href="#cb24-3" aria-hidden="true" tabindex="-1"></a>    <span class="co">// Valid</span></span>
+<span id="cb24-4"><a href="#cb24-4" aria-hidden="true" tabindex="-1"></a><span class="op">}</span></span>
+<span id="cb24-5"><a href="#cb24-5" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb24-6"><a href="#cb24-6" aria-hidden="true" tabindex="-1"></a><span class="co">// BAD: Variable-time comparison leaks information</span></span>
+<span id="cb24-7"><a href="#cb24-7" aria-hidden="true" tabindex="-1"></a><span class="cf">if</span> <span class="op">(</span>memcmp<span class="op">(</span>computed_hmac<span class="op">,</span> received_hmac<span class="op">,</span> <span class="dv">32</span><span class="op">)</span> <span class="op">==</span> <span class="dv">0</span><span class="op">)</span> <span class="op">{</span></span>
+<span id="cb24-8"><a href="#cb24-8" aria-hidden="true" tabindex="-1"></a>    <span class="co">// Timing attack possible</span></span>
+<span id="cb24-9"><a href="#cb24-9" aria-hidden="true" tabindex="-1"></a><span class="op">}</span></span></code></pre></div>
+<h2 id="summary">2.7 Summary</h2>
+<table>
+<thead>
+<tr class="header">
+<th>Primitive</th>
+<th>Algorithm</th>
+<th>Purpose</th>
+<th>Key Size</th>
+<th>Output</th>
+</tr>
+</thead>
+<tbody>
+<tr class="odd">
+<td>Hash</td>
+<td>SHA-256</td>
+<td>Addressing, integrity</td>
+<td>N/A</td>
+<td>32 bytes</td>
+</tr>
+<tr class="even">
+<td>Symmetric</td>
+<td>AES-256-CBC</td>
+<td>Encryption</td>
+<td>32 bytes</td>
+<td>Variable</td>
+</tr>
+<tr class="odd">
+<td>MAC</td>
+<td>HMAC-SHA256</td>
+<td>Authentication</td>
+<td>32 bytes</td>
+<td>32 bytes</td>
+</tr>
+<tr class="even">
+<td>Key Exchange</td>
+<td>X25519</td>
+<td>Shared secrets</td>
+<td>32 bytes</td>
+<td>32 bytes</td>
+</tr>
+<tr class="odd">
+<td>Signatures</td>
+<td>Ed25519</td>
+<td>Authentication</td>
+<td>32 bytes</td>
+<td>64 bytes</td>
+</tr>
+<tr class="even">
+<td>Key Derivation</td>
+<td>HKDF-SHA256</td>
+<td>Key expansion</td>
+<td>Variable</td>
+<td>Variable</td>
+</tr>
+</tbody>
+</table>
+<p>Reticulum combines these into the <strong>Fernet</strong> token
+format for symmetric encryption and uses X25519+HKDF for key
+agreement.</p>
+<p><a href="03-identity.html">The next chapter explains how these
+primitives are used to construct <strong>Identities</strong> - the
+foundation of Reticulum’s addressing system.</a></p>
+</body>
+</html>

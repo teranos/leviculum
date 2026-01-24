@@ -69,17 +69,18 @@ If you're implementing Reticulum:
 | X25519 key (public/private) | 32 bytes |
 | Ed25519 public key | 32 bytes |
 | Ed25519 signature | 64 bytes |
-| Fernet overhead | 48 bytes + padding |
-| Link request payload | 64 bytes |
-| Link proof payload | 99 bytes |
-| Signed data in proof | 83 bytes |
+| Fernet overhead | 48 bytes + padding (no version byte) |
+| Link request payload | 64 or 67 bytes (with MTU signalling) |
+| Link proof payload | 96 or 99 bytes (with signalling) |
+| Signed data in proof | 80 or 83 bytes (with signalling) |
 
 ### Packet Header Bits
 
 ```
 Bit 7: IFAC flag
 Bit 6: Header type (0=type1, 1=type2 with transport)
-Bits 5-4: Propagation (00=broadcast, 01=transport)
+Bit 5: Context flag (used with ratchets)
+Bit 4: Transport type (0=broadcast, 1=transport)
 Bits 3-2: Destination type (00=SINGLE, 01=GROUP, 10=PLAIN, 11=LINK)
 Bits 1-0: Packet type (00=DATA, 01=ANNOUNCE, 10=LINKREQUEST, 11=PROOF)
 ```

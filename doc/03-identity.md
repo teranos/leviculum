@@ -426,4 +426,4 @@ Key operations:
 - **Key Exchange**: X25519(my_private, peer_public) → 32-byte shared secret
 - **Encrypt**: Ephemeral ECDH + HKDF + Fernet
 
-The next chapter explains how data is structured into **packets** for transmission.
+[The next chapter explains how data is structured into **packets** for transmission.](04-packets.md)

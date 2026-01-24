@@ -256,4 +256,4 @@ By the end, you'll understand Reticulum well enough to implement it from scratch
 - Self-configuring mesh topology
 - No central authorities or registries
 
-The next chapter introduces the cryptographic building blocks that make this all possible.
+[The next chapter introduces the cryptographic building blocks that make this all possible.](02-cryptography.md)

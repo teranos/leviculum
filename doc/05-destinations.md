@@ -177,16 +177,19 @@ void compute_single_destination_hash(const char *app_name,
 
 ### GROUP Destination Hash
 
+GROUP destinations use the same hash derivation as PLAIN - the symmetric key is NOT included in the hash:
+
 ```
-name_hash = SHA256(app_name)[0:16]
-key_hash = SHA256(group_key)[0:16]
-dest_hash = SHA256(name_hash || key_hash)[0:16]
+name_hash = SHA256(app_name)[0:10]
+dest_hash = SHA256(name_hash)[0:16]
 ```
+
+The group key is used only for encryption/decryption, not for addressing.
 
 ### PLAIN Destination Hash
 
 ```
-name_hash = SHA256(app_name)[0:16]
+name_hash = SHA256(app_name)[0:10]
 dest_hash = SHA256(name_hash)[0:16]
 ```
 
@@ -231,7 +234,23 @@ When a packet arrives:
 
 ## 5.5 Sending to Destinations
 
+Sending data to a destination requires encryption appropriate to the destination type. This section explains the cryptographic flow for each type.
+
 ### Sending to a SINGLE Destination
+
+When sending to a SINGLE destination, Reticulum uses **ephemeral key exchange** to provide forward secrecy. Each message gets a fresh keypair, so compromising long-term keys doesn't reveal past messages.
+
+**The encryption flow:**
+
+1. **Generate ephemeral keypair**: Create a one-time X25519 keypair just for this message
+2. **Compute shared secret**: Use ECDH between our ephemeral private key and the recipient's long-term public key
+3. **Derive encryption key**: Run the shared secret through HKDF to get an AES key
+4. **Encrypt with Fernet**: Use the derived key to encrypt the actual data
+5. **Prepend ephemeral public key**: The recipient needs our ephemeral public key to decrypt
+
+**Why ephemeral keys?** If an attacker records encrypted traffic and later obtains the recipient's private key, they still cannot decrypt old messages. Each message used a different ephemeral key that was discarded after sending.
+
+**Why include the ephemeral public key in the payload?** The recipient must perform the same ECDH calculation. They use their long-term private key with our ephemeral public key to derive the same shared secret.
 
 ```c
 bool send_to_single(Transport *transport,
@@ -286,6 +305,15 @@ bool send_to_single(Transport *transport,
 
 ### Receiving at a SINGLE Destination
 
+On the receiving side, the process mirrors sending:
+
+1. **Extract ephemeral public key**: The first 32 bytes of the payload contain the sender's ephemeral public key
+2. **Compute shared secret**: ECDH with our long-term private key and the sender's ephemeral public key produces the same shared secret the sender computed
+3. **Derive decryption key**: Same HKDF derivation produces the same AES key
+4. **Decrypt Fernet token**: Verify HMAC and decrypt the ciphertext
+
+**Security note**: The HMAC verification happens before decryption. If the HMAC fails, the recipient knows the message was tampered with or incorrectly encrypted, and decryption is aborted.
+
 ```c
 bool receive_single(Destination *dest,
                     const uint8_t *payload,
@@ -314,19 +342,33 @@ bool receive_single(Destination *dest,
 
 ## 5.6 Proof Strategies
 
-When you receive a packet, you may want to **prove** receipt to the sender. Reticulum supports different proof strategies.
+When you receive a packet, you may want to **prove** receipt to the sender. This provides delivery confirmation without requiring a full response message.
+
+### Why Proofs?
+
+In unreliable networks, senders need to know if their message arrived. TCP uses ACK packets, but Reticulum operates over diverse media where traditional TCP assumptions don't hold. Proofs provide cryptographic confirmation that:
+
+1. The packet reached the destination
+2. The destination had the correct keys to decrypt it
+3. The destination intentionally acknowledged receipt
 
 ### Proof Types
 
+Destinations can choose when to send proofs:
+
 ```c
-#define PROOF_NONE     0  // Never send proofs
-#define PROOF_ALL      1  // Prove all packets
-#define PROOF_ON_REQ   2  // Prove only if requested
+#define PROVE_NONE     0x21  // Never send proofs
+#define PROVE_APP      0x22  // Application decides (callback)
+#define PROVE_ALL      0x23  // Prove all packets
 ```
+
+- **PROVE_NONE**: Silent receipt. Use when bandwidth is precious or acknowledgment isn't needed
+- **PROVE_APP**: The application's callback decides per-packet. Useful for selective acknowledgment
+- **PROVE_ALL**: Always prove. Use when reliable delivery confirmation is essential
 
 ### Generating a Proof
 
-A proof is a signature over the packet hash:
+A proof is a signature over the packet hash. Only the destination's private key can create this signature, so it proves the destination (not an impostor) received the packet:
 
 ```c
 void generate_proof(Destination *dest,
@@ -367,7 +409,15 @@ void send_proof(Transport *transport,
 
 ## 5.7 Announces
 
-To let others know about your destination, you broadcast an **announce**.
+To let others know about your destination, you broadcast an **announce**. Announces distribute the public keys needed to send encrypted messages to your destination.
+
+### Why Announces?
+
+In traditional networking, you know a server's IP address and can connect directly. In Reticulum, destinations are identified by cryptographic hashes, and you need the public keys to communicate. Announces solve this by broadcasting:
+
+1. **Public keys** for encryption (so others can send you messages)
+2. **Name hash** for destination hash verification
+3. **Signature** proving you own the private keys
 
 ### Announce Contents
 
@@ -381,10 +431,39 @@ Minimum size: 148 bytes (without app data)
 ```
 
 - **Public Key**: X25519 (32B) + Ed25519 (32B) public keys concatenated
-- **Name Hash**: First 10 bytes of SHA256(expanded_name)
-- **Random Hash**: 5 random bytes + 5-byte timestamp (replay prevention)
-- **Signature**: Ed25519 signature (see below for what is signed)
-- **App Data**: Optional application-specific data
+- **Name Hash**: First 10 bytes of SHA256(expanded_name) - saves bandwidth vs full name
+- **Random Hash**: 5 random bytes + 5-byte timestamp (explained below)
+- **Signature**: Ed25519 signature over specific data (see below)
+- **App Data**: Optional application-specific data (service description, version, etc.)
+
+### Random Hash: Replay Prevention
+
+The 10-byte random hash serves two purposes:
+
+1. **Replay prevention**: Each announce has unique random bytes. Receivers store recent random hashes and reject duplicates, preventing attackers from re-broadcasting old announces.
+
+2. **Timing information**: The 5-byte timestamp (seconds since epoch, big-endian) lets receivers:
+   - Prefer newer announces over older ones
+   - Detect stale announces in path selection
+   - Measure approximate announce age for routing decisions
+
+### Signature Security
+
+**Critical design decision**: The signature covers the destination hash, but the destination hash is NOT transmitted in the announce. This prevents a subtle attack:
+
+If an attacker could intercept an announce and re-sign it for a different destination hash, they could redirect traffic. By including the (non-transmitted) destination hash in the signed data, the signature binds the announce to a specific destination. Receivers recompute the destination hash from the transmitted data and verify it matches what was signed.
+
+**Signed data** = dest_hash + public_key + name_hash + random_hash + app_data
+
+**Transmitted data** = public_key + name_hash + random_hash + signature + app_data
+
+The receiver:
+1. Extracts public_key and name_hash from the announce
+2. Computes dest_hash = SHA256(name_hash || identity_hash)[0:16]
+3. Reconstructs the signed_data using the computed dest_hash
+4. Verifies the signature with the announced public key
+
+If an attacker modified anything, the signature won't verify.
 
 See [Chapter 9](09-announces.md) for full details on announce processing and propagation.
 
@@ -648,4 +727,4 @@ Key operations:
 - **Send**: Transmit data to destination
 - **Prove**: Confirm receipt of packet
 
-The next chapter covers **transport layer framing** - how packets are sent over physical media.
+[The next chapter covers **transport layer framing** - how packets are sent over physical media.](06-framing.md)

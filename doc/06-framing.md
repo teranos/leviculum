@@ -108,7 +108,22 @@ size_t hdlc_frame(const uint8_t *packet, size_t packet_len,
 
 ### Deframing (Decoding)
 
-Deframing is stateful - we accumulate bytes until we see a complete frame.
+Deframing is more complex than framing because we're processing a continuous byte stream and need to handle:
+
+1. **Synchronization**: Finding frame boundaries in potentially corrupted data
+2. **State management**: Tracking whether we're inside a frame or between frames
+3. **Escape handling**: Properly decoding escaped special bytes
+4. **Error recovery**: Gracefully handling malformed data
+
+**The state machine approach:**
+
+- **HUNTING**: We haven't found a start flag yet. Discard bytes until we see 0x7E.
+- **RECEIVING**: We're inside a frame, accumulating payload bytes.
+- **ESCAPED**: The previous byte was 0x7D, so XOR the next byte with 0x20.
+
+**Why a state machine?** Bytes arrive one at a time (especially on serial links). We can't assume we'll receive a complete frame in one read. The state machine lets us process partial data and resume when more arrives.
+
+**Resynchronization**: If data gets corrupted mid-frame, we'll eventually see a 0x7E flag (either the end of the corrupted frame or the start of a new one). The cryptographic integrity check (Fernet HMAC) will reject corrupted packets, so the state machine just needs to find frame boundaries—not guarantee data integrity.
 
 ```c
 typedef enum {
@@ -378,27 +393,73 @@ typedef struct {
 
 ## 6.6 Interface Authentication (IFAC)
 
-IFAC protects local network segments by adding an authentication code.
+IFAC protects local network segments by adding an authentication code and masking the packet contents.
 
 ### How IFAC Works
 
 When IFAC is enabled:
 
-1. A shared secret is configured for the interface
-2. Outgoing packets include an authentication tag
-3. Incoming packets are verified against the tag
-4. Unauthorized packets are dropped
+1. A shared secret (passphrase) is configured for the interface
+2. An IFAC identity is derived from the secret via HKDF (64 bytes)
+3. Outgoing packets are signed and masked
+4. Incoming packets are verified and unmasked
+5. Unauthorized packets are dropped
+
+### IFAC Key Derivation
+
+```c
+// Derive IFAC identity from passphrase
+void derive_ifac_identity(const char *passphrase,
+                          uint8_t ifac_key[64]) {
+    // Use HKDF with fixed salt
+    static const uint8_t IFAC_SALT[] = {
+        0xad, 0xf5, 0x4d, 0x88, 0x2c, 0x9a, 0x9b, 0x80,
+        0x77, 0x1e, 0xb4, 0x99, 0x5d, 0x70, 0x2d, 0x4a,
+        0x3e, 0x73, 0x33, 0x91, 0xb2, 0xa0, 0xf5, 0x3f,
+        0x41, 0x6d, 0x9f, 0x90, 0x7e, 0x55, 0xcf, 0xf8
+    };
+    hkdf_sha256(IFAC_SALT, 32,
+                (uint8_t*)passphrase, strlen(passphrase),
+                NULL, 0,  // no info
+                ifac_key, 64);
+}
+```
 
 ### IFAC Tag Computation
 
+The IFAC tag is the **last N bytes of an Ed25519 signature**, not an HMAC:
+
 ```c
-void compute_ifac_tag(const uint8_t *ifac_key,
+void compute_ifac_tag(const uint8_t *ifac_signing_key,
                       const uint8_t *packet, size_t packet_len,
-                      uint8_t tag[16]) {
-    // HMAC-SHA256, truncated to 16 bytes
-    uint8_t hmac[32];
-    hmac_sha256(ifac_key, 32, packet, packet_len, hmac);
-    memcpy(tag, hmac, 16);
+                      uint8_t *tag, size_t ifac_size) {
+    // Sign the packet with the IFAC identity
+    uint8_t signature[64];
+    crypto_sign_detached(signature, NULL,
+                         packet, packet_len,
+                         ifac_signing_key);
+    // Take the LAST ifac_size bytes of the signature
+    memcpy(tag, signature + (64 - ifac_size), ifac_size);
+}
+```
+
+### IFAC Masking
+
+IFAC also masks the packet using an HKDF-derived key, providing confidentiality on the local segment:
+
+```c
+void ifac_mask_packet(const uint8_t *ifac_tag, size_t ifac_size,
+                      uint8_t *packet, size_t packet_len) {
+    // Derive mask from IFAC tag
+    uint8_t mask[512];  // enough for max packet
+    hkdf_sha256(ifac_tag, ifac_size,
+                NULL, 0,   // no salt
+                NULL, 0,   // no info
+                mask, packet_len);
+    // XOR packet with mask
+    for (size_t i = 0; i < packet_len; i++) {
+        packet[i] ^= mask[i];
+    }
 }
 ```
 
@@ -407,11 +468,11 @@ void compute_ifac_tag(const uint8_t *ifac_key,
 ```
 +------+------+-----------+------+-----------+------+
 | 0x7E |Header| IFAC Tag  | Hops | Rest of   | 0x7E |
-|      | 0x8x | 16 bytes  |      | packet    |      |
+|      | 0x8x | 16 bytes  |      | (masked)  |      |
 +------+------+-----------+------+-----------+------+
 ```
 
-The header byte has bit 7 set (0x80) to indicate IFAC presence.
+The header byte has bit 7 set (0x80) to indicate IFAC presence. Default IFAC size is 16 bytes.
 
 ## 6.7 Interface Selection
 
@@ -421,9 +482,12 @@ When sending a packet, the transport layer must choose which interface(s) to use
 
 ```c
 typedef enum {
-    IFACE_MODE_FULL,        // Send on all interfaces
-    IFACE_MODE_ACCESS_POINT,// Send on specific interface
-    IFACE_MODE_ROAMING,     // Send on best interface
+    MODE_FULL          = 0x01,  // Full node, send on all interfaces
+    MODE_POINT_TO_POINT= 0x02,  // Direct peer connection
+    MODE_ACCESS_POINT  = 0x03,  // Access point mode
+    MODE_ROAMING       = 0x04,  // Mobile client
+    MODE_BOUNDARY      = 0x05,  // Network boundary
+    MODE_GATEWAY       = 0x06,  // Gateway between networks
 } InterfaceMode;
 
 void transport_send(Transport *t, Packet *pkt) {
@@ -550,7 +614,7 @@ bool rate_limiter_allow(RateLimiter *rl, size_t bytes) {
 | 0x7E | Frame delimiter (FLAG) |
 | 0x7D | Escape character |
 | Byte stuffing | Encode special bytes in data |
-| No CRC | Rely on crypto HMAC instead |
+| No CRC | Rely on cryptographic integrity (Fernet HMAC) |
 
 | Interface Type | Use Case |
 |----------------|----------|
@@ -563,7 +627,8 @@ bool rate_limiter_allow(RateLimiter *rl, size_t bytes) {
 | IFAC | Interface Authentication Code |
 |------|------------------------------|
 | Enabled | Bit 7 of header set |
-| Tag | 16-byte HMAC after header |
-| Purpose | Protect local networks |
+| Tag | 16-byte Ed25519 signature (last N bytes) |
+| Masking | Packet XORed with HKDF-derived mask |
+| Purpose | Protect and obscure local network traffic |
 
-The next chapter covers **link establishment** - creating encrypted bidirectional channels.
+[The next chapter covers **link establishment** - creating encrypted bidirectional channels.](07-link-establishment.md)

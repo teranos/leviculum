@@ -1,0 +1,981 @@
+<!DOCTYPE html>
+<html xmlns="http://www.w3.org/1999/xhtml" lang="" xml:lang="">
+<head>
+  <meta charset="utf-8" />
+  <meta name="generator" content="pandoc" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=yes" />
+  <title>Chapter 12: Building a Reticulum Implementation</title>
+  <style>
+    code{white-space: pre-wrap;}
+    span.smallcaps{font-variant: small-caps;}
+    div.columns{display: flex; gap: min(4vw, 1.5em);}
+    div.column{flex: auto; overflow-x: auto;}
+    div.hanging-indent{margin-left: 1.5em; text-indent: -1.5em;}
+    /* The extra [class] is a hack that increases specificity enough to
+       override a similar rule in reveal.js */
+    ul.task-list[class]{list-style: none;}
+    ul.task-list li input[type="checkbox"] {
+      font-size: inherit;
+      width: 0.8em;
+      margin: 0 0.8em 0.2em -1.6em;
+      vertical-align: middle;
+    }
+    .display.math{display: block; text-align: center; margin: 0.5rem auto;}
+    /* CSS for syntax highlighting */
+    pre > code.sourceCode { white-space: pre; position: relative; }
+    pre > code.sourceCode > span { line-height: 1.25; }
+    pre > code.sourceCode > span:empty { height: 1.2em; }
+    .sourceCode { overflow: visible; }
+    code.sourceCode > span { color: inherit; text-decoration: inherit; }
+    div.sourceCode { margin: 1em 0; }
+    pre.sourceCode { margin: 0; }
+    @media screen {
+    div.sourceCode { overflow: auto; }
+    }
+    @media print {
+    pre > code.sourceCode { white-space: pre-wrap; }
+    pre > code.sourceCode > span { display: inline-block; text-indent: -5em; padding-left: 5em; }
+    }
+    pre.numberSource code
+      { counter-reset: source-line 0; }
+    pre.numberSource code > span
+      { position: relative; left: -4em; counter-increment: source-line; }
+    pre.numberSource code > span > a:first-child::before
+      { content: counter(source-line);
+        position: relative; left: -1em; text-align: right; vertical-align: baseline;
+        border: none; display: inline-block;
+        -webkit-touch-callout: none; -webkit-user-select: none;
+        -khtml-user-select: none; -moz-user-select: none;
+        -ms-user-select: none; user-select: none;
+        padding: 0 4px; width: 4em;
+        color: #aaaaaa;
+      }
+    pre.numberSource { margin-left: 3em; border-left: 1px solid #aaaaaa;  padding-left: 4px; }
+    div.sourceCode
+      {   }
+    @media screen {
+    pre > code.sourceCode > span > a:first-child::before { text-decoration: underline; }
+    }
+    code span.al { color: #ff0000; font-weight: bold; } /* Alert */
+    code span.an { color: #60a0b0; font-weight: bold; font-style: italic; } /* Annotation */
+    code span.at { color: #7d9029; } /* Attribute */
+    code span.bn { color: #40a070; } /* BaseN */
+    code span.bu { color: #008000; } /* BuiltIn */
+    code span.cf { color: #007020; font-weight: bold; } /* ControlFlow */
+    code span.ch { color: #4070a0; } /* Char */
+    code span.cn { color: #880000; } /* Constant */
+    code span.co { color: #60a0b0; font-style: italic; } /* Comment */
+    code span.cv { color: #60a0b0; font-weight: bold; font-style: italic; } /* CommentVar */
+    code span.do { color: #ba2121; font-style: italic; } /* Documentation */
+    code span.dt { color: #902000; } /* DataType */
+    code span.dv { color: #40a070; } /* DecVal */
+    code span.er { color: #ff0000; font-weight: bold; } /* Error */
+    code span.ex { } /* Extension */
+    code span.fl { color: #40a070; } /* Float */
+    code span.fu { color: #06287e; } /* Function */
+    code span.im { color: #008000; font-weight: bold; } /* Import */
+    code span.in { color: #60a0b0; font-weight: bold; font-style: italic; } /* Information */
+    code span.kw { color: #007020; font-weight: bold; } /* Keyword */
+    code span.op { color: #666666; } /* Operator */
+    code span.ot { color: #007020; } /* Other */
+    code span.pp { color: #bc7a00; } /* Preprocessor */
+    code span.sc { color: #4070a0; } /* SpecialChar */
+    code span.ss { color: #bb6688; } /* SpecialString */
+    code span.st { color: #4070a0; } /* String */
+    code span.va { color: #19177c; } /* Variable */
+    code span.vs { color: #4070a0; } /* VerbatimString */
+    code span.wa { color: #60a0b0; font-weight: bold; font-style: italic; } /* Warning */
+  </style>
+  <link rel="stylesheet" href="style.css" />
+</head>
+<body>
+<header id="title-block-header">
+<h1 class="title">Chapter 12: Building a Reticulum Implementation</h1>
+</header>
+<p>This chapter provides practical guidance for implementing Reticulum
+from scratch. We’ll cover the minimum viable implementation, component
+organization, and considerations for different environments.</p>
+<h2 id="implementation-strategy">12.1 Implementation Strategy</h2>
+<h3 id="incremental-approach">Incremental Approach</h3>
+<p>Don’t try to implement everything at once. Build in layers:</p>
+<pre><code>Phase 1: Foundation
+  └── Cryptographic primitives
+  └── Identity handling
+  └── Basic packet parsing
+
+Phase 2: Communication
+  └── HDLC framing
+  └── Single interface (TCP)
+  └── Packet send/receive
+
+Phase 3: Destinations
+  └── Destination types
+  └── Local delivery
+  └── Announces
+
+Phase 4: Links
+  └── Link establishment
+  └── Link communication
+  └── Keep-alive
+
+Phase 5: Routing
+  └── Path table
+  └── Packet forwarding
+  └── Multiple interfaces
+
+Phase 6: Advanced
+  └── Resource transfers
+  └── Rate limiting
+  └── Full transport</code></pre>
+<h3 id="test-against-python-rns">Test Against Python RNS</h3>
+<p>At each phase, test interoperability with the Python reference
+implementation:</p>
+<div class="sourceCode" id="cb2"><pre
+class="sourceCode bash"><code class="sourceCode bash"><span id="cb2-1"><a href="#cb2-1" aria-hidden="true" tabindex="-1"></a><span class="co"># Start Python rnsd</span></span>
+<span id="cb2-2"><a href="#cb2-2" aria-hidden="true" tabindex="-1"></a><span class="ex">rnsd</span> <span class="at">-v</span></span>
+<span id="cb2-3"><a href="#cb2-3" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb2-4"><a href="#cb2-4" aria-hidden="true" tabindex="-1"></a><span class="co"># Your implementation connects and exchanges packets</span></span>
+<span id="cb2-5"><a href="#cb2-5" aria-hidden="true" tabindex="-1"></a><span class="ex">./my_reticulum_impl</span> <span class="at">--connect</span> 127.0.0.1:4242</span></code></pre></div>
+<h2 id="minimum-viable-implementation">12.2 Minimum Viable
+Implementation</h2>
+<h3 id="required-components">Required Components</h3>
+<p>A minimal Reticulum implementation needs:</p>
+<table>
+<thead>
+<tr class="header">
+<th>Component</th>
+<th>Purpose</th>
+<th>Priority</th>
+</tr>
+</thead>
+<tbody>
+<tr class="odd">
+<td>SHA-256</td>
+<td>Hashing</td>
+<td>Required</td>
+</tr>
+<tr class="even">
+<td>X25519</td>
+<td>Key exchange</td>
+<td>Required</td>
+</tr>
+<tr class="odd">
+<td>Ed25519</td>
+<td>Signatures</td>
+<td>Required</td>
+</tr>
+<tr class="even">
+<td>AES-256-CBC</td>
+<td>Encryption</td>
+<td>Required</td>
+</tr>
+<tr class="odd">
+<td>HMAC-SHA256</td>
+<td>Authentication</td>
+<td>Required</td>
+</tr>
+<tr class="even">
+<td>HKDF-SHA256</td>
+<td>Key derivation</td>
+<td>Required</td>
+</tr>
+<tr class="odd">
+<td>HDLC framing</td>
+<td>Packet delimiting</td>
+<td>Required</td>
+</tr>
+<tr class="even">
+<td>Packet parser</td>
+<td>Wire format</td>
+<td>Required</td>
+</tr>
+<tr class="odd">
+<td>Identity</td>
+<td>Key management</td>
+<td>Required</td>
+</tr>
+<tr class="even">
+<td>Destination</td>
+<td>Addressing</td>
+<td>Required</td>
+</tr>
+</tbody>
+</table>
+<h3 id="optional-components">Optional Components</h3>
+<p>These can be added later:</p>
+<table>
+<thead>
+<tr class="header">
+<th>Component</th>
+<th>Purpose</th>
+<th>When Needed</th>
+</tr>
+</thead>
+<tbody>
+<tr class="odd">
+<td>Link</td>
+<td>Bidirectional channels</td>
+<td>For stateful communication</td>
+</tr>
+<tr class="even">
+<td>Resource</td>
+<td>Large transfers</td>
+<td>For files &gt; MTU</td>
+</tr>
+<tr class="odd">
+<td>Path table</td>
+<td>Routing</td>
+<td>For multi-hop networks</td>
+</tr>
+<tr class="even">
+<td>Announce</td>
+<td>Discovery</td>
+<td>For dynamic networks</td>
+</tr>
+<tr class="odd">
+<td>IFAC</td>
+<td>Interface auth</td>
+<td>For secured local networks</td>
+</tr>
+<tr class="even">
+<td>Compression</td>
+<td>Bandwidth savings</td>
+<td>For large resources</td>
+</tr>
+</tbody>
+</table>
+<h2 id="component-organization">12.3 Component Organization</h2>
+<h3 id="suggested-module-structure">Suggested Module Structure</h3>
+<pre><code>reticulum/
+├── crypto/
+│   ├── sha256.c        # Hashing
+│   ├── aes.c           # Block cipher
+│   ├── fernet.c        # Symmetric encryption
+│   ├── x25519.c        # Key exchange
+│   ├── ed25519.c       # Signatures
+│   └── hkdf.c          # Key derivation
+├── identity.c          # Identity management
+├── packet.c            # Packet parsing/building
+├── destination.c       # Destination handling
+├── link.c              # Link protocol
+├── resource.c          # Resource transfers
+├── transport.c         # Routing and coordination
+├── interfaces/
+│   ├── interface.c     # Base interface
+│   ├── tcp.c           # TCP client/server
+│   ├── udp.c           # UDP interface
+│   └── serial.c        # Serial/UART
+├── framing/
+│   └── hdlc.c          # HDLC framing
+└── tables/
+    ├── path_table.c    # Path storage
+    ├── link_table.c    # Link storage
+    └── announce_table.c # Announce handling</code></pre>
+<h3 id="header-files">Header Files</h3>
+<div class="sourceCode" id="cb4"><pre class="sourceCode c"><code class="sourceCode c"><span id="cb4-1"><a href="#cb4-1" aria-hidden="true" tabindex="-1"></a><span class="co">// reticulum.h - Main public API</span></span>
+<span id="cb4-2"><a href="#cb4-2" aria-hidden="true" tabindex="-1"></a><span class="pp">#ifndef RETICULUM_H</span></span>
+<span id="cb4-3"><a href="#cb4-3" aria-hidden="true" tabindex="-1"></a><span class="pp">#define RETICULUM_H</span></span>
+<span id="cb4-4"><a href="#cb4-4" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb4-5"><a href="#cb4-5" aria-hidden="true" tabindex="-1"></a><span class="pp">#include </span><span class="im">&lt;stdint.h&gt;</span></span>
+<span id="cb4-6"><a href="#cb4-6" aria-hidden="true" tabindex="-1"></a><span class="pp">#include </span><span class="im">&lt;stddef.h&gt;</span></span>
+<span id="cb4-7"><a href="#cb4-7" aria-hidden="true" tabindex="-1"></a><span class="pp">#include </span><span class="im">&lt;stdbool.h&gt;</span></span>
+<span id="cb4-8"><a href="#cb4-8" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb4-9"><a href="#cb4-9" aria-hidden="true" tabindex="-1"></a><span class="co">// Constants</span></span>
+<span id="cb4-10"><a href="#cb4-10" aria-hidden="true" tabindex="-1"></a><span class="pp">#define RNS_MTU </span><span class="dv">500</span></span>
+<span id="cb4-11"><a href="#cb4-11" aria-hidden="true" tabindex="-1"></a><span class="pp">#define RNS_TRUNCATED_HASH_SIZE </span><span class="dv">16</span></span>
+<span id="cb4-12"><a href="#cb4-12" aria-hidden="true" tabindex="-1"></a><span class="pp">#define RNS_FULL_HASH_SIZE </span><span class="dv">32</span></span>
+<span id="cb4-13"><a href="#cb4-13" aria-hidden="true" tabindex="-1"></a><span class="pp">#define RNS_PUBLIC_KEY_SIZE </span><span class="dv">32</span></span>
+<span id="cb4-14"><a href="#cb4-14" aria-hidden="true" tabindex="-1"></a><span class="pp">#define RNS_SIGNATURE_SIZE </span><span class="dv">64</span></span>
+<span id="cb4-15"><a href="#cb4-15" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb4-16"><a href="#cb4-16" aria-hidden="true" tabindex="-1"></a><span class="co">// Forward declarations</span></span>
+<span id="cb4-17"><a href="#cb4-17" aria-hidden="true" tabindex="-1"></a><span class="kw">typedef</span> <span class="kw">struct</span> rns_identity rns_identity_t<span class="op">;</span></span>
+<span id="cb4-18"><a href="#cb4-18" aria-hidden="true" tabindex="-1"></a><span class="kw">typedef</span> <span class="kw">struct</span> rns_destination rns_destination_t<span class="op">;</span></span>
+<span id="cb4-19"><a href="#cb4-19" aria-hidden="true" tabindex="-1"></a><span class="kw">typedef</span> <span class="kw">struct</span> rns_link rns_link_t<span class="op">;</span></span>
+<span id="cb4-20"><a href="#cb4-20" aria-hidden="true" tabindex="-1"></a><span class="kw">typedef</span> <span class="kw">struct</span> rns_transport rns_transport_t<span class="op">;</span></span>
+<span id="cb4-21"><a href="#cb4-21" aria-hidden="true" tabindex="-1"></a><span class="kw">typedef</span> <span class="kw">struct</span> rns_interface rns_interface_t<span class="op">;</span></span>
+<span id="cb4-22"><a href="#cb4-22" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb4-23"><a href="#cb4-23" aria-hidden="true" tabindex="-1"></a><span class="co">// Identity API</span></span>
+<span id="cb4-24"><a href="#cb4-24" aria-hidden="true" tabindex="-1"></a>rns_identity_t<span class="op">*</span> rns_identity_create<span class="op">(</span><span class="dt">void</span><span class="op">);</span></span>
+<span id="cb4-25"><a href="#cb4-25" aria-hidden="true" tabindex="-1"></a>rns_identity_t<span class="op">*</span> rns_identity_from_bytes<span class="op">(</span><span class="dt">const</span> <span class="dt">uint8_t</span> <span class="op">*</span>priv<span class="op">,</span> <span class="dt">size_t</span> len<span class="op">);</span></span>
+<span id="cb4-26"><a href="#cb4-26" aria-hidden="true" tabindex="-1"></a><span class="dt">void</span> rns_identity_destroy<span class="op">(</span>rns_identity_t <span class="op">*</span>id<span class="op">);</span></span>
+<span id="cb4-27"><a href="#cb4-27" aria-hidden="true" tabindex="-1"></a><span class="dt">const</span> <span class="dt">uint8_t</span><span class="op">*</span> rns_identity_hash<span class="op">(</span>rns_identity_t <span class="op">*</span>id<span class="op">);</span></span>
+<span id="cb4-28"><a href="#cb4-28" aria-hidden="true" tabindex="-1"></a><span class="dt">bool</span> rns_identity_sign<span class="op">(</span>rns_identity_t <span class="op">*</span>id<span class="op">,</span> <span class="dt">const</span> <span class="dt">uint8_t</span> <span class="op">*</span>data<span class="op">,</span> <span class="dt">size_t</span> len<span class="op">,</span></span>
+<span id="cb4-29"><a href="#cb4-29" aria-hidden="true" tabindex="-1"></a>                       <span class="dt">uint8_t</span> sig<span class="op">[</span>RNS_SIGNATURE_SIZE<span class="op">]);</span></span>
+<span id="cb4-30"><a href="#cb4-30" aria-hidden="true" tabindex="-1"></a><span class="dt">bool</span> rns_identity_verify<span class="op">(</span>rns_identity_t <span class="op">*</span>id<span class="op">,</span> <span class="dt">const</span> <span class="dt">uint8_t</span> <span class="op">*</span>data<span class="op">,</span> <span class="dt">size_t</span> len<span class="op">,</span></span>
+<span id="cb4-31"><a href="#cb4-31" aria-hidden="true" tabindex="-1"></a>                         <span class="dt">const</span> <span class="dt">uint8_t</span> sig<span class="op">[</span>RNS_SIGNATURE_SIZE<span class="op">]);</span></span>
+<span id="cb4-32"><a href="#cb4-32" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb4-33"><a href="#cb4-33" aria-hidden="true" tabindex="-1"></a><span class="co">// Destination API</span></span>
+<span id="cb4-34"><a href="#cb4-34" aria-hidden="true" tabindex="-1"></a>rns_destination_t<span class="op">*</span> rns_destination_create<span class="op">(</span>rns_identity_t <span class="op">*</span>id<span class="op">,</span></span>
+<span id="cb4-35"><a href="#cb4-35" aria-hidden="true" tabindex="-1"></a>                                          <span class="dt">const</span> <span class="dt">char</span> <span class="op">*</span>app_name<span class="op">,</span></span>
+<span id="cb4-36"><a href="#cb4-36" aria-hidden="true" tabindex="-1"></a>                                          <span class="dt">uint8_t</span> type<span class="op">);</span></span>
+<span id="cb4-37"><a href="#cb4-37" aria-hidden="true" tabindex="-1"></a><span class="dt">void</span> rns_destination_destroy<span class="op">(</span>rns_destination_t <span class="op">*</span>dest<span class="op">);</span></span>
+<span id="cb4-38"><a href="#cb4-38" aria-hidden="true" tabindex="-1"></a><span class="dt">const</span> <span class="dt">uint8_t</span><span class="op">*</span> rns_destination_hash<span class="op">(</span>rns_destination_t <span class="op">*</span>dest<span class="op">);</span></span>
+<span id="cb4-39"><a href="#cb4-39" aria-hidden="true" tabindex="-1"></a><span class="dt">void</span> rns_destination_set_callback<span class="op">(</span>rns_destination_t <span class="op">*</span>dest<span class="op">,</span></span>
+<span id="cb4-40"><a href="#cb4-40" aria-hidden="true" tabindex="-1"></a>                                  <span class="dt">void</span> <span class="op">(*</span>cb<span class="op">)(</span><span class="dt">const</span> <span class="dt">uint8_t</span><span class="op">*,</span> <span class="dt">size_t</span><span class="op">,</span> <span class="dt">void</span><span class="op">*),</span></span>
+<span id="cb4-41"><a href="#cb4-41" aria-hidden="true" tabindex="-1"></a>                                  <span class="dt">void</span> <span class="op">*</span>ctx<span class="op">);</span></span>
+<span id="cb4-42"><a href="#cb4-42" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb4-43"><a href="#cb4-43" aria-hidden="true" tabindex="-1"></a><span class="co">// Link API</span></span>
+<span id="cb4-44"><a href="#cb4-44" aria-hidden="true" tabindex="-1"></a>rns_link_t<span class="op">*</span> rns_link_create<span class="op">(</span>rns_destination_t <span class="op">*</span>dest<span class="op">);</span></span>
+<span id="cb4-45"><a href="#cb4-45" aria-hidden="true" tabindex="-1"></a><span class="dt">void</span> rns_link_destroy<span class="op">(</span>rns_link_t <span class="op">*</span>link<span class="op">);</span></span>
+<span id="cb4-46"><a href="#cb4-46" aria-hidden="true" tabindex="-1"></a><span class="dt">bool</span> rns_link_send<span class="op">(</span>rns_link_t <span class="op">*</span>link<span class="op">,</span> <span class="dt">const</span> <span class="dt">uint8_t</span> <span class="op">*</span>data<span class="op">,</span> <span class="dt">size_t</span> len<span class="op">);</span></span>
+<span id="cb4-47"><a href="#cb4-47" aria-hidden="true" tabindex="-1"></a><span class="dt">void</span> rns_link_set_callback<span class="op">(</span>rns_link_t <span class="op">*</span>link<span class="op">,</span></span>
+<span id="cb4-48"><a href="#cb4-48" aria-hidden="true" tabindex="-1"></a>                           <span class="dt">void</span> <span class="op">(*</span>cb<span class="op">)(</span><span class="dt">const</span> <span class="dt">uint8_t</span><span class="op">*,</span> <span class="dt">size_t</span><span class="op">,</span> <span class="dt">void</span><span class="op">*),</span></span>
+<span id="cb4-49"><a href="#cb4-49" aria-hidden="true" tabindex="-1"></a>                           <span class="dt">void</span> <span class="op">*</span>ctx<span class="op">);</span></span>
+<span id="cb4-50"><a href="#cb4-50" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb4-51"><a href="#cb4-51" aria-hidden="true" tabindex="-1"></a><span class="co">// Transport API</span></span>
+<span id="cb4-52"><a href="#cb4-52" aria-hidden="true" tabindex="-1"></a>rns_transport_t<span class="op">*</span> rns_transport_create<span class="op">(</span><span class="dt">void</span><span class="op">);</span></span>
+<span id="cb4-53"><a href="#cb4-53" aria-hidden="true" tabindex="-1"></a><span class="dt">void</span> rns_transport_destroy<span class="op">(</span>rns_transport_t <span class="op">*</span>t<span class="op">);</span></span>
+<span id="cb4-54"><a href="#cb4-54" aria-hidden="true" tabindex="-1"></a><span class="dt">void</span> rns_transport_add_interface<span class="op">(</span>rns_transport_t <span class="op">*</span>t<span class="op">,</span> rns_interface_t <span class="op">*</span>iface<span class="op">);</span></span>
+<span id="cb4-55"><a href="#cb4-55" aria-hidden="true" tabindex="-1"></a><span class="dt">void</span> rns_transport_register_destination<span class="op">(</span>rns_transport_t <span class="op">*</span>t<span class="op">,</span> rns_destination_t <span class="op">*</span>dest<span class="op">);</span></span>
+<span id="cb4-56"><a href="#cb4-56" aria-hidden="true" tabindex="-1"></a><span class="dt">void</span> rns_transport_run<span class="op">(</span>rns_transport_t <span class="op">*</span>t<span class="op">);</span></span>
+<span id="cb4-57"><a href="#cb4-57" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb4-58"><a href="#cb4-58" aria-hidden="true" tabindex="-1"></a><span class="pp">#endif </span><span class="co">// RETICULUM_H</span></span></code></pre></div>
+<h2 id="cryptographic-implementation">12.4 Cryptographic
+Implementation</h2>
+<h3 id="using-existing-libraries">Using Existing Libraries</h3>
+<p>Don’t implement crypto from scratch. Use established libraries:</p>
+<table>
+<thead>
+<tr class="header">
+<th>Library</th>
+<th>Languages</th>
+<th>Notes</th>
+</tr>
+</thead>
+<tbody>
+<tr class="odd">
+<td>libsodium</td>
+<td>C</td>
+<td>Excellent, recommended</td>
+</tr>
+<tr class="even">
+<td>OpenSSL</td>
+<td>C</td>
+<td>Widely available</td>
+</tr>
+<tr class="odd">
+<td>mbedTLS</td>
+<td>C</td>
+<td>Good for embedded</td>
+</tr>
+<tr class="even">
+<td>ring</td>
+<td>Rust</td>
+<td>Pure Rust, audited</td>
+</tr>
+<tr class="odd">
+<td>RustCrypto</td>
+<td>Rust</td>
+<td>Pure Rust ecosystem</td>
+</tr>
+</tbody>
+</table>
+<h3 id="libsodium-example">libsodium Example</h3>
+<div class="sourceCode" id="cb5"><pre class="sourceCode c"><code class="sourceCode c"><span id="cb5-1"><a href="#cb5-1" aria-hidden="true" tabindex="-1"></a><span class="pp">#include </span><span class="im">&lt;sodium.h&gt;</span></span>
+<span id="cb5-2"><a href="#cb5-2" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb5-3"><a href="#cb5-3" aria-hidden="true" tabindex="-1"></a><span class="co">// Initialize once at startup</span></span>
+<span id="cb5-4"><a href="#cb5-4" aria-hidden="true" tabindex="-1"></a><span class="cf">if</span> <span class="op">(</span>sodium_init<span class="op">()</span> <span class="op">&lt;</span> <span class="dv">0</span><span class="op">)</span> <span class="op">{</span></span>
+<span id="cb5-5"><a href="#cb5-5" aria-hidden="true" tabindex="-1"></a>    <span class="co">// Panic - can&#39;t proceed without crypto</span></span>
+<span id="cb5-6"><a href="#cb5-6" aria-hidden="true" tabindex="-1"></a><span class="op">}</span></span>
+<span id="cb5-7"><a href="#cb5-7" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb5-8"><a href="#cb5-8" aria-hidden="true" tabindex="-1"></a><span class="co">// X25519 key exchange</span></span>
+<span id="cb5-9"><a href="#cb5-9" aria-hidden="true" tabindex="-1"></a><span class="dt">uint8_t</span> my_secret<span class="op">[</span><span class="dv">32</span><span class="op">],</span> my_public<span class="op">[</span><span class="dv">32</span><span class="op">];</span></span>
+<span id="cb5-10"><a href="#cb5-10" aria-hidden="true" tabindex="-1"></a><span class="dt">uint8_t</span> peer_public<span class="op">[</span><span class="dv">32</span><span class="op">];</span>  <span class="co">// Received from peer</span></span>
+<span id="cb5-11"><a href="#cb5-11" aria-hidden="true" tabindex="-1"></a><span class="dt">uint8_t</span> shared_secret<span class="op">[</span><span class="dv">32</span><span class="op">];</span></span>
+<span id="cb5-12"><a href="#cb5-12" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb5-13"><a href="#cb5-13" aria-hidden="true" tabindex="-1"></a>crypto_box_keypair<span class="op">(</span>my_public<span class="op">,</span> my_secret<span class="op">);</span></span>
+<span id="cb5-14"><a href="#cb5-14" aria-hidden="true" tabindex="-1"></a>crypto_scalarmult<span class="op">(</span>shared_secret<span class="op">,</span> my_secret<span class="op">,</span> peer_public<span class="op">);</span></span>
+<span id="cb5-15"><a href="#cb5-15" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb5-16"><a href="#cb5-16" aria-hidden="true" tabindex="-1"></a><span class="co">// Ed25519 signing</span></span>
+<span id="cb5-17"><a href="#cb5-17" aria-hidden="true" tabindex="-1"></a><span class="dt">uint8_t</span> sign_secret<span class="op">[</span><span class="dv">64</span><span class="op">],</span> sign_public<span class="op">[</span><span class="dv">32</span><span class="op">];</span></span>
+<span id="cb5-18"><a href="#cb5-18" aria-hidden="true" tabindex="-1"></a><span class="dt">uint8_t</span> signature<span class="op">[</span><span class="dv">64</span><span class="op">];</span></span>
+<span id="cb5-19"><a href="#cb5-19" aria-hidden="true" tabindex="-1"></a><span class="dt">uint8_t</span> message<span class="op">[]</span> <span class="op">=</span> <span class="st">&quot;Hello&quot;</span><span class="op">;</span></span>
+<span id="cb5-20"><a href="#cb5-20" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb5-21"><a href="#cb5-21" aria-hidden="true" tabindex="-1"></a>crypto_sign_keypair<span class="op">(</span>sign_public<span class="op">,</span> sign_secret<span class="op">);</span></span>
+<span id="cb5-22"><a href="#cb5-22" aria-hidden="true" tabindex="-1"></a>crypto_sign_detached<span class="op">(</span>signature<span class="op">,</span> NULL<span class="op">,</span> message<span class="op">,</span> <span class="dv">5</span><span class="op">,</span> sign_secret<span class="op">);</span></span>
+<span id="cb5-23"><a href="#cb5-23" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb5-24"><a href="#cb5-24" aria-hidden="true" tabindex="-1"></a><span class="co">// Verify</span></span>
+<span id="cb5-25"><a href="#cb5-25" aria-hidden="true" tabindex="-1"></a><span class="cf">if</span> <span class="op">(</span>crypto_sign_verify_detached<span class="op">(</span>signature<span class="op">,</span> message<span class="op">,</span> <span class="dv">5</span><span class="op">,</span> sign_public<span class="op">)</span> <span class="op">==</span> <span class="dv">0</span><span class="op">)</span> <span class="op">{</span></span>
+<span id="cb5-26"><a href="#cb5-26" aria-hidden="true" tabindex="-1"></a>    <span class="co">// Valid</span></span>
+<span id="cb5-27"><a href="#cb5-27" aria-hidden="true" tabindex="-1"></a><span class="op">}</span></span>
+<span id="cb5-28"><a href="#cb5-28" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb5-29"><a href="#cb5-29" aria-hidden="true" tabindex="-1"></a><span class="co">// SHA-256</span></span>
+<span id="cb5-30"><a href="#cb5-30" aria-hidden="true" tabindex="-1"></a><span class="dt">uint8_t</span> hash<span class="op">[</span><span class="dv">32</span><span class="op">];</span></span>
+<span id="cb5-31"><a href="#cb5-31" aria-hidden="true" tabindex="-1"></a>crypto_hash_sha256<span class="op">(</span>hash<span class="op">,</span> message<span class="op">,</span> <span class="dv">5</span><span class="op">);</span></span>
+<span id="cb5-32"><a href="#cb5-32" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb5-33"><a href="#cb5-33" aria-hidden="true" tabindex="-1"></a><span class="co">// HMAC-SHA256</span></span>
+<span id="cb5-34"><a href="#cb5-34" aria-hidden="true" tabindex="-1"></a><span class="dt">uint8_t</span> key<span class="op">[</span><span class="dv">32</span><span class="op">],</span> mac<span class="op">[</span><span class="dv">32</span><span class="op">];</span></span>
+<span id="cb5-35"><a href="#cb5-35" aria-hidden="true" tabindex="-1"></a>crypto_auth_hmacsha256<span class="op">(</span>mac<span class="op">,</span> message<span class="op">,</span> <span class="dv">5</span><span class="op">,</span> key<span class="op">);</span></span></code></pre></div>
+<h3 id="fernet-implementation">Fernet Implementation</h3>
+<p>Fernet isn’t in libsodium, so implement it manually. Fernet is an
+authenticated encryption scheme that combines AES-CBC encryption with
+HMAC-SHA256 authentication.</p>
+<p><strong>Why Reticulum modifies standard Fernet</strong>: The standard
+Fernet specification includes a version byte (0x80) and an 8-byte
+timestamp. Reticulum strips both to save bandwidth—the protocol doesn’t
+need versioning (there’s only one format), and timestamps are handled at
+the protocol layer where needed.</p>
+<p><strong>Key structure</strong>: A Fernet key is split in half. The
+first half is the HMAC key for authentication, the second half is the
+AES key for encryption. For AES-128 (16-byte key), the total Fernet key
+is 32 bytes; for AES-256 (32-byte key), it would be 64 bytes.</p>
+<p><strong>Encrypt-then-MAC order</strong>: Fernet encrypts first, then
+computes the HMAC over the ciphertext. This order is
+security-critical—it allows the receiver to verify integrity before
+attempting decryption, preventing padding oracle attacks where a
+malicious party can learn about the plaintext by observing decryption
+errors.</p>
+<div class="sourceCode" id="cb6"><pre class="sourceCode c"><code class="sourceCode c"><span id="cb6-1"><a href="#cb6-1" aria-hidden="true" tabindex="-1"></a><span class="pp">#include </span><span class="im">&lt;sodium.h&gt;</span></span>
+<span id="cb6-2"><a href="#cb6-2" aria-hidden="true" tabindex="-1"></a><span class="pp">#include </span><span class="im">&lt;string.h&gt;</span></span>
+<span id="cb6-3"><a href="#cb6-3" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb6-4"><a href="#cb6-4" aria-hidden="true" tabindex="-1"></a><span class="co">// Reticulum&#39;s modified Fernet format:</span></span>
+<span id="cb6-5"><a href="#cb6-5" aria-hidden="true" tabindex="-1"></a><span class="co">// - NO version byte (stripped from standard Fernet)</span></span>
+<span id="cb6-6"><a href="#cb6-6" aria-hidden="true" tabindex="-1"></a><span class="co">// - NO timestamp (stripped from standard Fernet)</span></span>
+<span id="cb6-7"><a href="#cb6-7" aria-hidden="true" tabindex="-1"></a><span class="co">// Token format: IV (16 bytes) + ciphertext (padded) + HMAC (32 bytes)</span></span>
+<span id="cb6-8"><a href="#cb6-8" aria-hidden="true" tabindex="-1"></a><span class="co">// Total overhead: 48 bytes fixed + PKCS7 padding</span></span>
+<span id="cb6-9"><a href="#cb6-9" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb6-10"><a href="#cb6-10" aria-hidden="true" tabindex="-1"></a><span class="pp">#define FERNET_IV_SIZE </span><span class="dv">16</span></span>
+<span id="cb6-11"><a href="#cb6-11" aria-hidden="true" tabindex="-1"></a><span class="pp">#define FERNET_HMAC_SIZE </span><span class="dv">32</span></span>
+<span id="cb6-12"><a href="#cb6-12" aria-hidden="true" tabindex="-1"></a><span class="pp">#define FERNET_OVERHEAD </span><span class="dv">48</span><span class="pp">  </span><span class="co">// IV + HMAC, before padding</span></span>
+<span id="cb6-13"><a href="#cb6-13" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb6-14"><a href="#cb6-14" aria-hidden="true" tabindex="-1"></a><span class="co">// Fernet key: first half = HMAC key, second half = AES key</span></span>
+<span id="cb6-15"><a href="#cb6-15" aria-hidden="true" tabindex="-1"></a><span class="co">// AES-128: 16 + 16 = 32 bytes</span></span>
+<span id="cb6-16"><a href="#cb6-16" aria-hidden="true" tabindex="-1"></a><span class="co">// AES-256: 32 + 32 = 64 bytes</span></span>
+<span id="cb6-17"><a href="#cb6-17" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb6-18"><a href="#cb6-18" aria-hidden="true" tabindex="-1"></a><span class="dt">size_t</span> fernet_encrypt<span class="op">(</span><span class="dt">const</span> <span class="dt">uint8_t</span> key<span class="op">[</span><span class="dv">32</span><span class="op">],</span></span>
+<span id="cb6-19"><a href="#cb6-19" aria-hidden="true" tabindex="-1"></a>                      <span class="dt">const</span> <span class="dt">uint8_t</span> <span class="op">*</span>plaintext<span class="op">,</span> <span class="dt">size_t</span> plain_len<span class="op">,</span></span>
+<span id="cb6-20"><a href="#cb6-20" aria-hidden="true" tabindex="-1"></a>                      <span class="dt">uint8_t</span> <span class="op">*</span>output<span class="op">,</span> <span class="dt">size_t</span> output_max<span class="op">)</span> <span class="op">{</span></span>
+<span id="cb6-21"><a href="#cb6-21" aria-hidden="true" tabindex="-1"></a>    <span class="co">// Calculate padded size (PKCS7)</span></span>
+<span id="cb6-22"><a href="#cb6-22" aria-hidden="true" tabindex="-1"></a>    <span class="dt">size_t</span> padded_len <span class="op">=</span> <span class="op">((</span>plain_len <span class="op">/</span> <span class="dv">16</span><span class="op">)</span> <span class="op">+</span> <span class="dv">1</span><span class="op">)</span> <span class="op">*</span> <span class="dv">16</span><span class="op">;</span></span>
+<span id="cb6-23"><a href="#cb6-23" aria-hidden="true" tabindex="-1"></a>    <span class="dt">size_t</span> total_len <span class="op">=</span> FERNET_IV_SIZE <span class="op">+</span> padded_len <span class="op">+</span> FERNET_HMAC_SIZE<span class="op">;</span></span>
+<span id="cb6-24"><a href="#cb6-24" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb6-25"><a href="#cb6-25" aria-hidden="true" tabindex="-1"></a>    <span class="cf">if</span> <span class="op">(</span>output_max <span class="op">&lt;</span> total_len<span class="op">)</span> <span class="cf">return</span> <span class="dv">0</span><span class="op">;</span></span>
+<span id="cb6-26"><a href="#cb6-26" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb6-27"><a href="#cb6-27" aria-hidden="true" tabindex="-1"></a>    <span class="co">// Random IV (at start, no version byte)</span></span>
+<span id="cb6-28"><a href="#cb6-28" aria-hidden="true" tabindex="-1"></a>    randombytes_buf<span class="op">(</span>output<span class="op">,</span> FERNET_IV_SIZE<span class="op">);</span></span>
+<span id="cb6-29"><a href="#cb6-29" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb6-30"><a href="#cb6-30" aria-hidden="true" tabindex="-1"></a>    <span class="co">// PKCS7 padding</span></span>
+<span id="cb6-31"><a href="#cb6-31" aria-hidden="true" tabindex="-1"></a>    <span class="dt">uint8_t</span> padded<span class="op">[</span>plain_len <span class="op">+</span> <span class="dv">16</span><span class="op">];</span></span>
+<span id="cb6-32"><a href="#cb6-32" aria-hidden="true" tabindex="-1"></a>    memcpy<span class="op">(</span>padded<span class="op">,</span> plaintext<span class="op">,</span> plain_len<span class="op">);</span></span>
+<span id="cb6-33"><a href="#cb6-33" aria-hidden="true" tabindex="-1"></a>    <span class="dt">uint8_t</span> pad_value <span class="op">=</span> padded_len <span class="op">-</span> plain_len<span class="op">;</span></span>
+<span id="cb6-34"><a href="#cb6-34" aria-hidden="true" tabindex="-1"></a>    memset<span class="op">(&amp;</span>padded<span class="op">[</span>plain_len<span class="op">],</span> pad_value<span class="op">,</span> pad_value<span class="op">);</span></span>
+<span id="cb6-35"><a href="#cb6-35" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb6-36"><a href="#cb6-36" aria-hidden="true" tabindex="-1"></a>    <span class="co">// AES-CBC encrypt</span></span>
+<span id="cb6-37"><a href="#cb6-37" aria-hidden="true" tabindex="-1"></a>    <span class="co">// (Using OpenSSL for AES-CBC as libsodium doesn&#39;t have it directly)</span></span>
+<span id="cb6-38"><a href="#cb6-38" aria-hidden="true" tabindex="-1"></a>    EVP_CIPHER_CTX <span class="op">*</span>ctx <span class="op">=</span> EVP_CIPHER_CTX_new<span class="op">();</span></span>
+<span id="cb6-39"><a href="#cb6-39" aria-hidden="true" tabindex="-1"></a>    EVP_EncryptInit_ex<span class="op">(</span>ctx<span class="op">,</span> EVP_aes_128_cbc<span class="op">(),</span> NULL<span class="op">,</span> <span class="op">&amp;</span>key<span class="op">[</span><span class="dv">16</span><span class="op">],</span> output<span class="op">);</span></span>
+<span id="cb6-40"><a href="#cb6-40" aria-hidden="true" tabindex="-1"></a>    EVP_CIPHER_CTX_set_padding<span class="op">(</span>ctx<span class="op">,</span> <span class="dv">0</span><span class="op">);</span>  <span class="co">// We handle padding</span></span>
+<span id="cb6-41"><a href="#cb6-41" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb6-42"><a href="#cb6-42" aria-hidden="true" tabindex="-1"></a>    <span class="dt">int</span> out_len<span class="op">;</span></span>
+<span id="cb6-43"><a href="#cb6-43" aria-hidden="true" tabindex="-1"></a>    EVP_EncryptUpdate<span class="op">(</span>ctx<span class="op">,</span> <span class="op">&amp;</span>output<span class="op">[</span>FERNET_IV_SIZE<span class="op">],</span> <span class="op">&amp;</span>out_len<span class="op">,</span></span>
+<span id="cb6-44"><a href="#cb6-44" aria-hidden="true" tabindex="-1"></a>                      padded<span class="op">,</span> padded_len<span class="op">);</span></span>
+<span id="cb6-45"><a href="#cb6-45" aria-hidden="true" tabindex="-1"></a>    EVP_CIPHER_CTX_free<span class="op">(</span>ctx<span class="op">);</span></span>
+<span id="cb6-46"><a href="#cb6-46" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb6-47"><a href="#cb6-47" aria-hidden="true" tabindex="-1"></a>    <span class="co">// HMAC over IV + ciphertext (no version byte)</span></span>
+<span id="cb6-48"><a href="#cb6-48" aria-hidden="true" tabindex="-1"></a>    crypto_auth_hmacsha256<span class="op">(&amp;</span>output<span class="op">[</span>FERNET_IV_SIZE <span class="op">+</span> padded_len<span class="op">],</span></span>
+<span id="cb6-49"><a href="#cb6-49" aria-hidden="true" tabindex="-1"></a>                           output<span class="op">,</span> FERNET_IV_SIZE <span class="op">+</span> padded_len<span class="op">,</span></span>
+<span id="cb6-50"><a href="#cb6-50" aria-hidden="true" tabindex="-1"></a>                           key<span class="op">);</span></span>
+<span id="cb6-51"><a href="#cb6-51" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb6-52"><a href="#cb6-52" aria-hidden="true" tabindex="-1"></a>    <span class="cf">return</span> total_len<span class="op">;</span></span>
+<span id="cb6-53"><a href="#cb6-53" aria-hidden="true" tabindex="-1"></a><span class="op">}</span></span>
+<span id="cb6-54"><a href="#cb6-54" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb6-55"><a href="#cb6-55" aria-hidden="true" tabindex="-1"></a><span class="dt">bool</span> fernet_decrypt<span class="op">(</span><span class="dt">const</span> <span class="dt">uint8_t</span> key<span class="op">[</span><span class="dv">32</span><span class="op">],</span></span>
+<span id="cb6-56"><a href="#cb6-56" aria-hidden="true" tabindex="-1"></a>                    <span class="dt">const</span> <span class="dt">uint8_t</span> <span class="op">*</span>token<span class="op">,</span> <span class="dt">size_t</span> token_len<span class="op">,</span></span>
+<span id="cb6-57"><a href="#cb6-57" aria-hidden="true" tabindex="-1"></a>                    <span class="dt">uint8_t</span> <span class="op">*</span>plaintext<span class="op">,</span> <span class="dt">size_t</span> <span class="op">*</span>plain_len<span class="op">)</span> <span class="op">{</span></span>
+<span id="cb6-58"><a href="#cb6-58" aria-hidden="true" tabindex="-1"></a>    <span class="cf">if</span> <span class="op">(</span>token_len <span class="op">&lt;</span> FERNET_IV_SIZE <span class="op">+</span> <span class="dv">16</span> <span class="op">+</span> FERNET_HMAC_SIZE<span class="op">)</span> <span class="op">{</span></span>
+<span id="cb6-59"><a href="#cb6-59" aria-hidden="true" tabindex="-1"></a>        <span class="cf">return</span> <span class="kw">false</span><span class="op">;</span></span>
+<span id="cb6-60"><a href="#cb6-60" aria-hidden="true" tabindex="-1"></a>    <span class="op">}</span></span>
+<span id="cb6-61"><a href="#cb6-61" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb6-62"><a href="#cb6-62" aria-hidden="true" tabindex="-1"></a>    <span class="dt">size_t</span> cipher_len <span class="op">=</span> token_len <span class="op">-</span> FERNET_IV_SIZE <span class="op">-</span> FERNET_HMAC_SIZE<span class="op">;</span></span>
+<span id="cb6-63"><a href="#cb6-63" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb6-64"><a href="#cb6-64" aria-hidden="true" tabindex="-1"></a>    <span class="co">// Verify HMAC first (encrypt-then-MAC)</span></span>
+<span id="cb6-65"><a href="#cb6-65" aria-hidden="true" tabindex="-1"></a>    <span class="dt">uint8_t</span> expected_hmac<span class="op">[</span><span class="dv">32</span><span class="op">];</span></span>
+<span id="cb6-66"><a href="#cb6-66" aria-hidden="true" tabindex="-1"></a>    crypto_auth_hmacsha256<span class="op">(</span>expected_hmac<span class="op">,</span> token<span class="op">,</span></span>
+<span id="cb6-67"><a href="#cb6-67" aria-hidden="true" tabindex="-1"></a>                           token_len <span class="op">-</span> FERNET_HMAC_SIZE<span class="op">,</span> key<span class="op">);</span></span>
+<span id="cb6-68"><a href="#cb6-68" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb6-69"><a href="#cb6-69" aria-hidden="true" tabindex="-1"></a>    <span class="cf">if</span> <span class="op">(</span>sodium_memcmp<span class="op">(</span>expected_hmac<span class="op">,</span></span>
+<span id="cb6-70"><a href="#cb6-70" aria-hidden="true" tabindex="-1"></a>                      <span class="op">&amp;</span>token<span class="op">[</span>token_len <span class="op">-</span> FERNET_HMAC_SIZE<span class="op">],</span> <span class="dv">32</span><span class="op">)</span> <span class="op">!=</span> <span class="dv">0</span><span class="op">)</span> <span class="op">{</span></span>
+<span id="cb6-71"><a href="#cb6-71" aria-hidden="true" tabindex="-1"></a>        <span class="cf">return</span> <span class="kw">false</span><span class="op">;</span>  <span class="co">// HMAC mismatch - reject before decryption</span></span>
+<span id="cb6-72"><a href="#cb6-72" aria-hidden="true" tabindex="-1"></a>    <span class="op">}</span></span>
+<span id="cb6-73"><a href="#cb6-73" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb6-74"><a href="#cb6-74" aria-hidden="true" tabindex="-1"></a>    <span class="co">// AES-CBC decrypt (IV is at offset 0, ciphertext at offset 16)</span></span>
+<span id="cb6-75"><a href="#cb6-75" aria-hidden="true" tabindex="-1"></a>    EVP_CIPHER_CTX <span class="op">*</span>ctx <span class="op">=</span> EVP_CIPHER_CTX_new<span class="op">();</span></span>
+<span id="cb6-76"><a href="#cb6-76" aria-hidden="true" tabindex="-1"></a>    EVP_DecryptInit_ex<span class="op">(</span>ctx<span class="op">,</span> EVP_aes_128_cbc<span class="op">(),</span> NULL<span class="op">,</span> <span class="op">&amp;</span>key<span class="op">[</span><span class="dv">16</span><span class="op">],</span> token<span class="op">);</span></span>
+<span id="cb6-77"><a href="#cb6-77" aria-hidden="true" tabindex="-1"></a>    EVP_CIPHER_CTX_set_padding<span class="op">(</span>ctx<span class="op">,</span> <span class="dv">0</span><span class="op">);</span></span>
+<span id="cb6-78"><a href="#cb6-78" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb6-79"><a href="#cb6-79" aria-hidden="true" tabindex="-1"></a>    <span class="dt">int</span> out_len<span class="op">;</span></span>
+<span id="cb6-80"><a href="#cb6-80" aria-hidden="true" tabindex="-1"></a>    EVP_DecryptUpdate<span class="op">(</span>ctx<span class="op">,</span> plaintext<span class="op">,</span> <span class="op">&amp;</span>out_len<span class="op">,</span></span>
+<span id="cb6-81"><a href="#cb6-81" aria-hidden="true" tabindex="-1"></a>                      <span class="op">&amp;</span>token<span class="op">[</span>FERNET_IV_SIZE<span class="op">],</span> cipher_len<span class="op">);</span></span>
+<span id="cb6-82"><a href="#cb6-82" aria-hidden="true" tabindex="-1"></a>    EVP_CIPHER_CTX_free<span class="op">(</span>ctx<span class="op">);</span></span>
+<span id="cb6-83"><a href="#cb6-83" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb6-84"><a href="#cb6-84" aria-hidden="true" tabindex="-1"></a>    <span class="co">// Remove PKCS7 padding</span></span>
+<span id="cb6-85"><a href="#cb6-85" aria-hidden="true" tabindex="-1"></a>    <span class="dt">uint8_t</span> pad_value <span class="op">=</span> plaintext<span class="op">[</span>out_len <span class="op">-</span> <span class="dv">1</span><span class="op">];</span></span>
+<span id="cb6-86"><a href="#cb6-86" aria-hidden="true" tabindex="-1"></a>    <span class="cf">if</span> <span class="op">(</span>pad_value <span class="op">&gt;</span> <span class="dv">16</span> <span class="op">||</span> pad_value <span class="op">==</span> <span class="dv">0</span><span class="op">)</span> <span class="op">{</span></span>
+<span id="cb6-87"><a href="#cb6-87" aria-hidden="true" tabindex="-1"></a>        <span class="cf">return</span> <span class="kw">false</span><span class="op">;</span>  <span class="co">// Invalid padding</span></span>
+<span id="cb6-88"><a href="#cb6-88" aria-hidden="true" tabindex="-1"></a>    <span class="op">}</span></span>
+<span id="cb6-89"><a href="#cb6-89" aria-hidden="true" tabindex="-1"></a>    <span class="op">*</span>plain_len <span class="op">=</span> out_len <span class="op">-</span> pad_value<span class="op">;</span></span>
+<span id="cb6-90"><a href="#cb6-90" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb6-91"><a href="#cb6-91" aria-hidden="true" tabindex="-1"></a>    <span class="cf">return</span> <span class="kw">true</span><span class="op">;</span></span>
+<span id="cb6-92"><a href="#cb6-92" aria-hidden="true" tabindex="-1"></a><span class="op">}</span></span></code></pre></div>
+<h2 id="memory-management">12.5 Memory Management</h2>
+<p>Memory management strategy significantly impacts where your
+implementation can run. Desktop applications can freely use heap
+allocation, but embedded systems often prohibit dynamic allocation
+entirely due to memory fragmentation concerns and real-time
+constraints.</p>
+<h3 id="static-allocation-embedded">Static Allocation (Embedded)</h3>
+<p>For embedded systems without heap, all memory must be pre-allocated
+at compile time. This requires knowing your maximum limits upfront: how
+many interfaces, destinations, links, and path entries you’ll support
+simultaneously.</p>
+<p><strong>Trade-offs</strong>: - <strong>Pro</strong>: Deterministic
+memory usage—you know exactly how much RAM is needed -
+<strong>Pro</strong>: No allocation failures during operation -
+<strong>Pro</strong>: No memory fragmentation over time -
+<strong>Con</strong>: Memory is reserved even when not used -
+<strong>Con</strong>: Hard limits that can’t be exceeded at runtime</p>
+<p>The approach below allocates fixed arrays and uses simple counters to
+track usage. When a resource is “allocated,” you return a pointer to the
+next free slot and increment the counter.</p>
+<div class="sourceCode" id="cb7"><pre class="sourceCode c"><code class="sourceCode c"><span id="cb7-1"><a href="#cb7-1" aria-hidden="true" tabindex="-1"></a><span class="pp">#define MAX_INTERFACES </span><span class="dv">4</span></span>
+<span id="cb7-2"><a href="#cb7-2" aria-hidden="true" tabindex="-1"></a><span class="pp">#define MAX_DESTINATIONS </span><span class="dv">16</span></span>
+<span id="cb7-3"><a href="#cb7-3" aria-hidden="true" tabindex="-1"></a><span class="pp">#define MAX_LINKS </span><span class="dv">32</span></span>
+<span id="cb7-4"><a href="#cb7-4" aria-hidden="true" tabindex="-1"></a><span class="pp">#define MAX_PATH_ENTRIES </span><span class="dv">256</span></span>
+<span id="cb7-5"><a href="#cb7-5" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb7-6"><a href="#cb7-6" aria-hidden="true" tabindex="-1"></a><span class="kw">typedef</span> <span class="kw">struct</span> <span class="op">{</span></span>
+<span id="cb7-7"><a href="#cb7-7" aria-hidden="true" tabindex="-1"></a>    rns_interface_t interfaces<span class="op">[</span>MAX_INTERFACES<span class="op">];</span></span>
+<span id="cb7-8"><a href="#cb7-8" aria-hidden="true" tabindex="-1"></a>    <span class="dt">size_t</span> interface_count<span class="op">;</span></span>
+<span id="cb7-9"><a href="#cb7-9" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb7-10"><a href="#cb7-10" aria-hidden="true" tabindex="-1"></a>    rns_destination_t destinations<span class="op">[</span>MAX_DESTINATIONS<span class="op">];</span></span>
+<span id="cb7-11"><a href="#cb7-11" aria-hidden="true" tabindex="-1"></a>    <span class="dt">size_t</span> destination_count<span class="op">;</span></span>
+<span id="cb7-12"><a href="#cb7-12" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb7-13"><a href="#cb7-13" aria-hidden="true" tabindex="-1"></a>    rns_link_t links<span class="op">[</span>MAX_LINKS<span class="op">];</span></span>
+<span id="cb7-14"><a href="#cb7-14" aria-hidden="true" tabindex="-1"></a>    <span class="dt">size_t</span> link_count<span class="op">;</span></span>
+<span id="cb7-15"><a href="#cb7-15" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb7-16"><a href="#cb7-16" aria-hidden="true" tabindex="-1"></a>    path_entry_t path_table<span class="op">[</span>MAX_PATH_ENTRIES<span class="op">];</span></span>
+<span id="cb7-17"><a href="#cb7-17" aria-hidden="true" tabindex="-1"></a>    <span class="dt">size_t</span> path_count<span class="op">;</span></span>
+<span id="cb7-18"><a href="#cb7-18" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb7-19"><a href="#cb7-19" aria-hidden="true" tabindex="-1"></a>    <span class="dt">uint8_t</span> packet_buffer<span class="op">[</span>RNS_MTU <span class="op">*</span> <span class="dv">4</span><span class="op">];</span></span>
+<span id="cb7-20"><a href="#cb7-20" aria-hidden="true" tabindex="-1"></a>    <span class="dt">size_t</span> packet_buffer_used<span class="op">;</span></span>
+<span id="cb7-21"><a href="#cb7-21" aria-hidden="true" tabindex="-1"></a><span class="op">}</span> rns_static_storage_t<span class="op">;</span></span>
+<span id="cb7-22"><a href="#cb7-22" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb7-23"><a href="#cb7-23" aria-hidden="true" tabindex="-1"></a><span class="dt">static</span> rns_static_storage_t storage<span class="op">;</span></span>
+<span id="cb7-24"><a href="#cb7-24" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb7-25"><a href="#cb7-25" aria-hidden="true" tabindex="-1"></a>rns_link_t<span class="op">*</span> rns_link_alloc<span class="op">(</span><span class="dt">void</span><span class="op">)</span> <span class="op">{</span></span>
+<span id="cb7-26"><a href="#cb7-26" aria-hidden="true" tabindex="-1"></a>    <span class="cf">if</span> <span class="op">(</span>storage<span class="op">.</span>link_count <span class="op">&gt;=</span> MAX_LINKS<span class="op">)</span> <span class="op">{</span></span>
+<span id="cb7-27"><a href="#cb7-27" aria-hidden="true" tabindex="-1"></a>        <span class="cf">return</span> NULL<span class="op">;</span>  <span class="co">// No space</span></span>
+<span id="cb7-28"><a href="#cb7-28" aria-hidden="true" tabindex="-1"></a>    <span class="op">}</span></span>
+<span id="cb7-29"><a href="#cb7-29" aria-hidden="true" tabindex="-1"></a>    <span class="cf">return</span> <span class="op">&amp;</span>storage<span class="op">.</span>links<span class="op">[</span>storage<span class="op">.</span>link_count<span class="op">++];</span></span>
+<span id="cb7-30"><a href="#cb7-30" aria-hidden="true" tabindex="-1"></a><span class="op">}</span></span></code></pre></div>
+<h3 id="buffer-pools">Buffer Pools</h3>
+<p>Packet buffers are a special case: they’re frequently allocated and
+freed as packets arrive, get processed, and are sent or discarded.
+Rather than allocating each buffer individually, a pool pre-allocates a
+fixed number of buffers and tracks which are in use.</p>
+<p><strong>Why pools work well for packets</strong>: - All packet
+buffers are the same size (MTU = 500 bytes) - Lifetimes are short and
+predictable (receive → process → free) - The pool size bounds how many
+packets can be in-flight simultaneously</p>
+<p><strong>Failure handling</strong>: When the pool is exhausted,
+<code>packet_buffer_alloc</code> returns NULL. This naturally applies
+backpressure—the caller (interface receive handler) can’t accept more
+packets until existing ones are processed and freed. This is desirable
+behavior: it prevents unbounded memory growth under load.</p>
+<div class="sourceCode" id="cb8"><pre class="sourceCode c"><code class="sourceCode c"><span id="cb8-1"><a href="#cb8-1" aria-hidden="true" tabindex="-1"></a><span class="pp">#define PACKET_POOL_SIZE </span><span class="dv">16</span></span>
+<span id="cb8-2"><a href="#cb8-2" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb8-3"><a href="#cb8-3" aria-hidden="true" tabindex="-1"></a><span class="kw">typedef</span> <span class="kw">struct</span> <span class="op">{</span></span>
+<span id="cb8-4"><a href="#cb8-4" aria-hidden="true" tabindex="-1"></a>    <span class="dt">uint8_t</span> data<span class="op">[</span>RNS_MTU<span class="op">];</span></span>
+<span id="cb8-5"><a href="#cb8-5" aria-hidden="true" tabindex="-1"></a>    <span class="dt">bool</span> in_use<span class="op">;</span></span>
+<span id="cb8-6"><a href="#cb8-6" aria-hidden="true" tabindex="-1"></a><span class="op">}</span> packet_buffer_t<span class="op">;</span></span>
+<span id="cb8-7"><a href="#cb8-7" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb8-8"><a href="#cb8-8" aria-hidden="true" tabindex="-1"></a><span class="dt">static</span> packet_buffer_t packet_pool<span class="op">[</span>PACKET_POOL_SIZE<span class="op">];</span></span>
+<span id="cb8-9"><a href="#cb8-9" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb8-10"><a href="#cb8-10" aria-hidden="true" tabindex="-1"></a><span class="dt">uint8_t</span><span class="op">*</span> packet_buffer_alloc<span class="op">(</span><span class="dt">void</span><span class="op">)</span> <span class="op">{</span></span>
+<span id="cb8-11"><a href="#cb8-11" aria-hidden="true" tabindex="-1"></a>    <span class="cf">for</span> <span class="op">(</span><span class="dt">int</span> i <span class="op">=</span> <span class="dv">0</span><span class="op">;</span> i <span class="op">&lt;</span> PACKET_POOL_SIZE<span class="op">;</span> i<span class="op">++)</span> <span class="op">{</span></span>
+<span id="cb8-12"><a href="#cb8-12" aria-hidden="true" tabindex="-1"></a>        <span class="cf">if</span> <span class="op">(!</span>packet_pool<span class="op">[</span>i<span class="op">].</span>in_use<span class="op">)</span> <span class="op">{</span></span>
+<span id="cb8-13"><a href="#cb8-13" aria-hidden="true" tabindex="-1"></a>            packet_pool<span class="op">[</span>i<span class="op">].</span>in_use <span class="op">=</span> <span class="kw">true</span><span class="op">;</span></span>
+<span id="cb8-14"><a href="#cb8-14" aria-hidden="true" tabindex="-1"></a>            <span class="cf">return</span> packet_pool<span class="op">[</span>i<span class="op">].</span>data<span class="op">;</span></span>
+<span id="cb8-15"><a href="#cb8-15" aria-hidden="true" tabindex="-1"></a>        <span class="op">}</span></span>
+<span id="cb8-16"><a href="#cb8-16" aria-hidden="true" tabindex="-1"></a>    <span class="op">}</span></span>
+<span id="cb8-17"><a href="#cb8-17" aria-hidden="true" tabindex="-1"></a>    <span class="cf">return</span> NULL<span class="op">;</span>  <span class="co">// Pool exhausted</span></span>
+<span id="cb8-18"><a href="#cb8-18" aria-hidden="true" tabindex="-1"></a><span class="op">}</span></span>
+<span id="cb8-19"><a href="#cb8-19" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb8-20"><a href="#cb8-20" aria-hidden="true" tabindex="-1"></a><span class="dt">void</span> packet_buffer_free<span class="op">(</span><span class="dt">uint8_t</span> <span class="op">*</span>buf<span class="op">)</span> <span class="op">{</span></span>
+<span id="cb8-21"><a href="#cb8-21" aria-hidden="true" tabindex="-1"></a>    <span class="cf">for</span> <span class="op">(</span><span class="dt">int</span> i <span class="op">=</span> <span class="dv">0</span><span class="op">;</span> i <span class="op">&lt;</span> PACKET_POOL_SIZE<span class="op">;</span> i<span class="op">++)</span> <span class="op">{</span></span>
+<span id="cb8-22"><a href="#cb8-22" aria-hidden="true" tabindex="-1"></a>        <span class="cf">if</span> <span class="op">(</span>packet_pool<span class="op">[</span>i<span class="op">].</span>data <span class="op">==</span> buf<span class="op">)</span> <span class="op">{</span></span>
+<span id="cb8-23"><a href="#cb8-23" aria-hidden="true" tabindex="-1"></a>            packet_pool<span class="op">[</span>i<span class="op">].</span>in_use <span class="op">=</span> <span class="kw">false</span><span class="op">;</span></span>
+<span id="cb8-24"><a href="#cb8-24" aria-hidden="true" tabindex="-1"></a>            <span class="cf">return</span><span class="op">;</span></span>
+<span id="cb8-25"><a href="#cb8-25" aria-hidden="true" tabindex="-1"></a>        <span class="op">}</span></span>
+<span id="cb8-26"><a href="#cb8-26" aria-hidden="true" tabindex="-1"></a>    <span class="op">}</span></span>
+<span id="cb8-27"><a href="#cb8-27" aria-hidden="true" tabindex="-1"></a><span class="op">}</span></span></code></pre></div>
+<h2 id="platform-considerations">12.6 Platform Considerations</h2>
+<h3 id="embedded-systems-no_std">Embedded Systems (no_std)</h3>
+<p>For microcontrollers without standard library:</p>
+<div class="sourceCode" id="cb9"><pre class="sourceCode c"><code class="sourceCode c"><span id="cb9-1"><a href="#cb9-1" aria-hidden="true" tabindex="-1"></a><span class="co">// Provide minimal dependencies</span></span>
+<span id="cb9-2"><a href="#cb9-2" aria-hidden="true" tabindex="-1"></a><span class="kw">extern</span> <span class="dt">void</span><span class="op">*</span> platform_malloc<span class="op">(</span><span class="dt">size_t</span> size<span class="op">);</span></span>
+<span id="cb9-3"><a href="#cb9-3" aria-hidden="true" tabindex="-1"></a><span class="kw">extern</span> <span class="dt">void</span> platform_free<span class="op">(</span><span class="dt">void</span> <span class="op">*</span>ptr<span class="op">);</span></span>
+<span id="cb9-4"><a href="#cb9-4" aria-hidden="true" tabindex="-1"></a><span class="kw">extern</span> <span class="dt">uint64_t</span> platform_time_ms<span class="op">(</span><span class="dt">void</span><span class="op">);</span></span>
+<span id="cb9-5"><a href="#cb9-5" aria-hidden="true" tabindex="-1"></a><span class="kw">extern</span> <span class="dt">void</span> platform_random<span class="op">(</span><span class="dt">uint8_t</span> <span class="op">*</span>buf<span class="op">,</span> <span class="dt">size_t</span> len<span class="op">);</span></span>
+<span id="cb9-6"><a href="#cb9-6" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb9-7"><a href="#cb9-7" aria-hidden="true" tabindex="-1"></a><span class="co">// Avoid floating point if possible</span></span>
+<span id="cb9-8"><a href="#cb9-8" aria-hidden="true" tabindex="-1"></a><span class="co">// Use integer math for RTT calculations</span></span>
+<span id="cb9-9"><a href="#cb9-9" aria-hidden="true" tabindex="-1"></a><span class="kw">typedef</span> <span class="kw">struct</span> <span class="op">{</span></span>
+<span id="cb9-10"><a href="#cb9-10" aria-hidden="true" tabindex="-1"></a>    <span class="dt">uint32_t</span> rtt_us<span class="op">;</span>  <span class="co">// Microseconds instead of float seconds</span></span>
+<span id="cb9-11"><a href="#cb9-11" aria-hidden="true" tabindex="-1"></a><span class="op">}</span> link_timing_t<span class="op">;</span></span></code></pre></div>
+<h3 id="rust-no_std">Rust no_std</h3>
+<div class="sourceCode" id="cb10"><pre
+class="sourceCode rust"><code class="sourceCode rust"><span id="cb10-1"><a href="#cb10-1" aria-hidden="true" tabindex="-1"></a><span class="at">#![</span>no_std<span class="at">]</span></span>
+<span id="cb10-2"><a href="#cb10-2" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb10-3"><a href="#cb10-3" aria-hidden="true" tabindex="-1"></a><span class="kw">extern</span> <span class="kw">crate</span> alloc<span class="op">;</span></span>
+<span id="cb10-4"><a href="#cb10-4" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb10-5"><a href="#cb10-5" aria-hidden="true" tabindex="-1"></a><span class="kw">use</span> <span class="pp">alloc::vec::</span><span class="dt">Vec</span><span class="op">;</span></span>
+<span id="cb10-6"><a href="#cb10-6" aria-hidden="true" tabindex="-1"></a><span class="kw">use</span> <span class="pp">core::time::</span>Duration<span class="op">;</span></span>
+<span id="cb10-7"><a href="#cb10-7" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb10-8"><a href="#cb10-8" aria-hidden="true" tabindex="-1"></a><span class="co">// Use embedded-friendly crypto crates</span></span>
+<span id="cb10-9"><a href="#cb10-9" aria-hidden="true" tabindex="-1"></a><span class="kw">use</span> <span class="pp">sha2::</span><span class="op">{</span>Sha256<span class="op">,</span> Digest<span class="op">};</span></span>
+<span id="cb10-10"><a href="#cb10-10" aria-hidden="true" tabindex="-1"></a><span class="kw">use</span> <span class="pp">x25519_dalek::</span><span class="op">{</span>StaticSecret<span class="op">,</span> PublicKey<span class="op">};</span></span>
+<span id="cb10-11"><a href="#cb10-11" aria-hidden="true" tabindex="-1"></a><span class="kw">use</span> <span class="pp">ed25519_dalek::</span><span class="op">{</span>SigningKey<span class="op">,</span> VerifyingKey<span class="op">};</span></span></code></pre></div>
+<h3 id="threading-models">Threading Models</h3>
+<p>The choice of threading model affects code complexity, performance,
+and portability.</p>
+<p><strong>Single-threaded polling</strong> is the simplest model: one
+thread loops continuously, checking each interface for incoming data and
+running timer-based tasks. This works well for: - Embedded systems
+without OS threading support - Simple applications with low throughput -
+Situations where deterministic timing is important</p>
+<p>The downside is that all work happens sequentially—a slow interface
+can delay processing of other interfaces.</p>
+<p><strong>Multi-threaded</strong> models dedicate a thread to each
+interface, allowing blocking I/O. Received packets are queued for a main
+processing thread. This provides better responsiveness when interfaces
+have varying latencies (e.g., a fast TCP connection alongside a slow
+serial link).</p>
+<p><strong>Async</strong> models (Rust async/await, libuv, etc.) provide
+multi-threaded-like concurrency without actual threads. An event loop
+multiplexes I/O across all interfaces. This is memory-efficient (no
+per-thread stacks) and scales well to many connections.</p>
+<p><strong>Single-threaded (polling):</strong></p>
+<div class="sourceCode" id="cb11"><pre class="sourceCode c"><code class="sourceCode c"><span id="cb11-1"><a href="#cb11-1" aria-hidden="true" tabindex="-1"></a><span class="dt">void</span> main_loop<span class="op">(</span>rns_transport_t <span class="op">*</span>t<span class="op">)</span> <span class="op">{</span></span>
+<span id="cb11-2"><a href="#cb11-2" aria-hidden="true" tabindex="-1"></a>    <span class="cf">while</span> <span class="op">(</span>running<span class="op">)</span> <span class="op">{</span></span>
+<span id="cb11-3"><a href="#cb11-3" aria-hidden="true" tabindex="-1"></a>        <span class="co">// Poll all interfaces</span></span>
+<span id="cb11-4"><a href="#cb11-4" aria-hidden="true" tabindex="-1"></a>        <span class="cf">for</span> <span class="op">(</span><span class="dt">int</span> i <span class="op">=</span> <span class="dv">0</span><span class="op">;</span> i <span class="op">&lt;</span> t<span class="op">-&gt;</span>interface_count<span class="op">;</span> i<span class="op">++)</span> <span class="op">{</span></span>
+<span id="cb11-5"><a href="#cb11-5" aria-hidden="true" tabindex="-1"></a>            interface_poll<span class="op">(</span>t<span class="op">-&gt;</span>interfaces<span class="op">[</span>i<span class="op">]);</span></span>
+<span id="cb11-6"><a href="#cb11-6" aria-hidden="true" tabindex="-1"></a>        <span class="op">}</span></span>
+<span id="cb11-7"><a href="#cb11-7" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb11-8"><a href="#cb11-8" aria-hidden="true" tabindex="-1"></a>        <span class="co">// Process timers</span></span>
+<span id="cb11-9"><a href="#cb11-9" aria-hidden="true" tabindex="-1"></a>        process_timers<span class="op">(</span>t<span class="op">);</span></span>
+<span id="cb11-10"><a href="#cb11-10" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb11-11"><a href="#cb11-11" aria-hidden="true" tabindex="-1"></a>        <span class="co">// Sleep briefly</span></span>
+<span id="cb11-12"><a href="#cb11-12" aria-hidden="true" tabindex="-1"></a>        platform_sleep_ms<span class="op">(</span><span class="dv">1</span><span class="op">);</span></span>
+<span id="cb11-13"><a href="#cb11-13" aria-hidden="true" tabindex="-1"></a>    <span class="op">}</span></span>
+<span id="cb11-14"><a href="#cb11-14" aria-hidden="true" tabindex="-1"></a><span class="op">}</span></span></code></pre></div>
+<p><strong>Multi-threaded:</strong></p>
+<div class="sourceCode" id="cb12"><pre class="sourceCode c"><code class="sourceCode c"><span id="cb12-1"><a href="#cb12-1" aria-hidden="true" tabindex="-1"></a><span class="dt">void</span><span class="op">*</span> interface_thread<span class="op">(</span><span class="dt">void</span> <span class="op">*</span>arg<span class="op">)</span> <span class="op">{</span></span>
+<span id="cb12-2"><a href="#cb12-2" aria-hidden="true" tabindex="-1"></a>    rns_interface_t <span class="op">*</span>iface <span class="op">=</span> arg<span class="op">;</span></span>
+<span id="cb12-3"><a href="#cb12-3" aria-hidden="true" tabindex="-1"></a>    <span class="cf">while</span> <span class="op">(</span>iface<span class="op">-&gt;</span>running<span class="op">)</span> <span class="op">{</span></span>
+<span id="cb12-4"><a href="#cb12-4" aria-hidden="true" tabindex="-1"></a>        <span class="co">// Blocking read</span></span>
+<span id="cb12-5"><a href="#cb12-5" aria-hidden="true" tabindex="-1"></a>        <span class="dt">uint8_t</span> buf<span class="op">[</span>RNS_MTU<span class="op">];</span></span>
+<span id="cb12-6"><a href="#cb12-6" aria-hidden="true" tabindex="-1"></a>        <span class="dt">ssize_t</span> n <span class="op">=</span> interface_read<span class="op">(</span>iface<span class="op">,</span> buf<span class="op">,</span> <span class="kw">sizeof</span><span class="op">(</span>buf<span class="op">));</span></span>
+<span id="cb12-7"><a href="#cb12-7" aria-hidden="true" tabindex="-1"></a>        <span class="cf">if</span> <span class="op">(</span>n <span class="op">&gt;</span> <span class="dv">0</span><span class="op">)</span> <span class="op">{</span></span>
+<span id="cb12-8"><a href="#cb12-8" aria-hidden="true" tabindex="-1"></a>            <span class="co">// Queue for main thread</span></span>
+<span id="cb12-9"><a href="#cb12-9" aria-hidden="true" tabindex="-1"></a>            queue_push<span class="op">(</span>iface<span class="op">-&gt;</span>rx_queue<span class="op">,</span> buf<span class="op">,</span> n<span class="op">);</span></span>
+<span id="cb12-10"><a href="#cb12-10" aria-hidden="true" tabindex="-1"></a>        <span class="op">}</span></span>
+<span id="cb12-11"><a href="#cb12-11" aria-hidden="true" tabindex="-1"></a>    <span class="op">}</span></span>
+<span id="cb12-12"><a href="#cb12-12" aria-hidden="true" tabindex="-1"></a>    <span class="cf">return</span> NULL<span class="op">;</span></span>
+<span id="cb12-13"><a href="#cb12-13" aria-hidden="true" tabindex="-1"></a><span class="op">}</span></span></code></pre></div>
+<p><strong>Async (Rust):</strong></p>
+<div class="sourceCode" id="cb13"><pre
+class="sourceCode rust"><code class="sourceCode rust"><span id="cb13-1"><a href="#cb13-1" aria-hidden="true" tabindex="-1"></a><span class="kw">async</span> <span class="kw">fn</span> interface_task(iface<span class="op">:</span> Interface<span class="op">,</span> tx<span class="op">:</span> Sender<span class="op">&lt;</span>Packet<span class="op">&gt;</span>) <span class="op">{</span></span>
+<span id="cb13-2"><a href="#cb13-2" aria-hidden="true" tabindex="-1"></a>    <span class="cf">loop</span> <span class="op">{</span></span>
+<span id="cb13-3"><a href="#cb13-3" aria-hidden="true" tabindex="-1"></a>        <span class="kw">let</span> packet <span class="op">=</span> iface<span class="op">.</span>recv()<span class="op">.</span><span class="kw">await</span><span class="op">;</span></span>
+<span id="cb13-4"><a href="#cb13-4" aria-hidden="true" tabindex="-1"></a>        tx<span class="op">.</span>send(packet)<span class="op">.</span><span class="kw">await</span><span class="op">.</span>unwrap()<span class="op">;</span></span>
+<span id="cb13-5"><a href="#cb13-5" aria-hidden="true" tabindex="-1"></a>    <span class="op">}</span></span>
+<span id="cb13-6"><a href="#cb13-6" aria-hidden="true" tabindex="-1"></a><span class="op">}</span></span></code></pre></div>
+<h2 id="error-handling">12.7 Error Handling</h2>
+<h3 id="error-types">Error Types</h3>
+<div class="sourceCode" id="cb14"><pre class="sourceCode c"><code class="sourceCode c"><span id="cb14-1"><a href="#cb14-1" aria-hidden="true" tabindex="-1"></a><span class="kw">typedef</span> <span class="kw">enum</span> <span class="op">{</span></span>
+<span id="cb14-2"><a href="#cb14-2" aria-hidden="true" tabindex="-1"></a>    RNS_OK <span class="op">=</span> <span class="dv">0</span><span class="op">,</span></span>
+<span id="cb14-3"><a href="#cb14-3" aria-hidden="true" tabindex="-1"></a>    RNS_ERR_INVALID_ARGUMENT<span class="op">,</span></span>
+<span id="cb14-4"><a href="#cb14-4" aria-hidden="true" tabindex="-1"></a>    RNS_ERR_OUT_OF_MEMORY<span class="op">,</span></span>
+<span id="cb14-5"><a href="#cb14-5" aria-hidden="true" tabindex="-1"></a>    RNS_ERR_CRYPTO_FAILED<span class="op">,</span></span>
+<span id="cb14-6"><a href="#cb14-6" aria-hidden="true" tabindex="-1"></a>    RNS_ERR_INVALID_PACKET<span class="op">,</span></span>
+<span id="cb14-7"><a href="#cb14-7" aria-hidden="true" tabindex="-1"></a>    RNS_ERR_INVALID_SIGNATURE<span class="op">,</span></span>
+<span id="cb14-8"><a href="#cb14-8" aria-hidden="true" tabindex="-1"></a>    RNS_ERR_LINK_CLOSED<span class="op">,</span></span>
+<span id="cb14-9"><a href="#cb14-9" aria-hidden="true" tabindex="-1"></a>    RNS_ERR_TIMEOUT<span class="op">,</span></span>
+<span id="cb14-10"><a href="#cb14-10" aria-hidden="true" tabindex="-1"></a>    RNS_ERR_INTERFACE_DOWN<span class="op">,</span></span>
+<span id="cb14-11"><a href="#cb14-11" aria-hidden="true" tabindex="-1"></a><span class="op">}</span> rns_error_t<span class="op">;</span></span>
+<span id="cb14-12"><a href="#cb14-12" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb14-13"><a href="#cb14-13" aria-hidden="true" tabindex="-1"></a><span class="dt">const</span> <span class="dt">char</span><span class="op">*</span> rns_error_string<span class="op">(</span>rns_error_t err<span class="op">)</span> <span class="op">{</span></span>
+<span id="cb14-14"><a href="#cb14-14" aria-hidden="true" tabindex="-1"></a>    <span class="cf">switch</span> <span class="op">(</span>err<span class="op">)</span> <span class="op">{</span></span>
+<span id="cb14-15"><a href="#cb14-15" aria-hidden="true" tabindex="-1"></a>    <span class="cf">case</span> RNS_OK<span class="op">:</span> <span class="cf">return</span> <span class="st">&quot;OK&quot;</span><span class="op">;</span></span>
+<span id="cb14-16"><a href="#cb14-16" aria-hidden="true" tabindex="-1"></a>    <span class="cf">case</span> RNS_ERR_INVALID_ARGUMENT<span class="op">:</span> <span class="cf">return</span> <span class="st">&quot;Invalid argument&quot;</span><span class="op">;</span></span>
+<span id="cb14-17"><a href="#cb14-17" aria-hidden="true" tabindex="-1"></a>    <span class="cf">case</span> RNS_ERR_OUT_OF_MEMORY<span class="op">:</span> <span class="cf">return</span> <span class="st">&quot;Out of memory&quot;</span><span class="op">;</span></span>
+<span id="cb14-18"><a href="#cb14-18" aria-hidden="true" tabindex="-1"></a>    <span class="cf">case</span> RNS_ERR_CRYPTO_FAILED<span class="op">:</span> <span class="cf">return</span> <span class="st">&quot;Crypto operation failed&quot;</span><span class="op">;</span></span>
+<span id="cb14-19"><a href="#cb14-19" aria-hidden="true" tabindex="-1"></a>    <span class="cf">case</span> RNS_ERR_INVALID_PACKET<span class="op">:</span> <span class="cf">return</span> <span class="st">&quot;Invalid packet&quot;</span><span class="op">;</span></span>
+<span id="cb14-20"><a href="#cb14-20" aria-hidden="true" tabindex="-1"></a>    <span class="cf">case</span> RNS_ERR_INVALID_SIGNATURE<span class="op">:</span> <span class="cf">return</span> <span class="st">&quot;Invalid signature&quot;</span><span class="op">;</span></span>
+<span id="cb14-21"><a href="#cb14-21" aria-hidden="true" tabindex="-1"></a>    <span class="cf">case</span> RNS_ERR_LINK_CLOSED<span class="op">:</span> <span class="cf">return</span> <span class="st">&quot;Link closed&quot;</span><span class="op">;</span></span>
+<span id="cb14-22"><a href="#cb14-22" aria-hidden="true" tabindex="-1"></a>    <span class="cf">case</span> RNS_ERR_TIMEOUT<span class="op">:</span> <span class="cf">return</span> <span class="st">&quot;Timeout&quot;</span><span class="op">;</span></span>
+<span id="cb14-23"><a href="#cb14-23" aria-hidden="true" tabindex="-1"></a>    <span class="cf">case</span> RNS_ERR_INTERFACE_DOWN<span class="op">:</span> <span class="cf">return</span> <span class="st">&quot;Interface down&quot;</span><span class="op">;</span></span>
+<span id="cb14-24"><a href="#cb14-24" aria-hidden="true" tabindex="-1"></a>    <span class="cf">default</span><span class="op">:</span> <span class="cf">return</span> <span class="st">&quot;Unknown error&quot;</span><span class="op">;</span></span>
+<span id="cb14-25"><a href="#cb14-25" aria-hidden="true" tabindex="-1"></a>    <span class="op">}</span></span>
+<span id="cb14-26"><a href="#cb14-26" aria-hidden="true" tabindex="-1"></a><span class="op">}</span></span></code></pre></div>
+<h3 id="result-pattern-rust">Result Pattern (Rust)</h3>
+<div class="sourceCode" id="cb15"><pre
+class="sourceCode rust"><code class="sourceCode rust"><span id="cb15-1"><a href="#cb15-1" aria-hidden="true" tabindex="-1"></a><span class="at">#[</span>derive<span class="at">(</span><span class="bu">Debug</span><span class="at">)]</span></span>
+<span id="cb15-2"><a href="#cb15-2" aria-hidden="true" tabindex="-1"></a><span class="kw">pub</span> <span class="kw">enum</span> RnsError <span class="op">{</span></span>
+<span id="cb15-3"><a href="#cb15-3" aria-hidden="true" tabindex="-1"></a>    InvalidArgument<span class="op">,</span></span>
+<span id="cb15-4"><a href="#cb15-4" aria-hidden="true" tabindex="-1"></a>    OutOfMemory<span class="op">,</span></span>
+<span id="cb15-5"><a href="#cb15-5" aria-hidden="true" tabindex="-1"></a>    CryptoFailed<span class="op">,</span></span>
+<span id="cb15-6"><a href="#cb15-6" aria-hidden="true" tabindex="-1"></a>    InvalidPacket<span class="op">,</span></span>
+<span id="cb15-7"><a href="#cb15-7" aria-hidden="true" tabindex="-1"></a>    InvalidSignature<span class="op">,</span></span>
+<span id="cb15-8"><a href="#cb15-8" aria-hidden="true" tabindex="-1"></a>    LinkClosed<span class="op">,</span></span>
+<span id="cb15-9"><a href="#cb15-9" aria-hidden="true" tabindex="-1"></a>    Timeout<span class="op">,</span></span>
+<span id="cb15-10"><a href="#cb15-10" aria-hidden="true" tabindex="-1"></a>    InterfaceDown<span class="op">,</span></span>
+<span id="cb15-11"><a href="#cb15-11" aria-hidden="true" tabindex="-1"></a><span class="op">}</span></span>
+<span id="cb15-12"><a href="#cb15-12" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb15-13"><a href="#cb15-13" aria-hidden="true" tabindex="-1"></a><span class="kw">pub</span> <span class="kw">type</span> Result<span class="op">&lt;</span>T<span class="op">&gt;</span> <span class="op">=</span> <span class="pp">core::result::</span><span class="dt">Result</span><span class="op">&lt;</span>T<span class="op">,</span> RnsError<span class="op">&gt;;</span></span>
+<span id="cb15-14"><a href="#cb15-14" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb15-15"><a href="#cb15-15" aria-hidden="true" tabindex="-1"></a><span class="kw">impl</span> Link <span class="op">{</span></span>
+<span id="cb15-16"><a href="#cb15-16" aria-hidden="true" tabindex="-1"></a>    <span class="kw">pub</span> <span class="kw">fn</span> send(<span class="op">&amp;</span><span class="kw">mut</span> <span class="kw">self</span><span class="op">,</span> data<span class="op">:</span> <span class="op">&amp;</span>[<span class="dt">u8</span>]) <span class="op">-&gt;</span> <span class="dt">Result</span><span class="op">&lt;</span>()<span class="op">&gt;</span> <span class="op">{</span></span>
+<span id="cb15-17"><a href="#cb15-17" aria-hidden="true" tabindex="-1"></a>        <span class="cf">if</span> <span class="kw">self</span><span class="op">.</span>state <span class="op">!=</span> <span class="pp">LinkState::</span>Active <span class="op">{</span></span>
+<span id="cb15-18"><a href="#cb15-18" aria-hidden="true" tabindex="-1"></a>            <span class="cf">return</span> <span class="cn">Err</span>(<span class="pp">RnsError::</span>LinkClosed)<span class="op">;</span></span>
+<span id="cb15-19"><a href="#cb15-19" aria-hidden="true" tabindex="-1"></a>        <span class="op">}</span></span>
+<span id="cb15-20"><a href="#cb15-20" aria-hidden="true" tabindex="-1"></a>        <span class="co">// ...</span></span>
+<span id="cb15-21"><a href="#cb15-21" aria-hidden="true" tabindex="-1"></a>        <span class="cn">Ok</span>(())</span>
+<span id="cb15-22"><a href="#cb15-22" aria-hidden="true" tabindex="-1"></a>    <span class="op">}</span></span>
+<span id="cb15-23"><a href="#cb15-23" aria-hidden="true" tabindex="-1"></a><span class="op">}</span></span></code></pre></div>
+<h2 id="logging-and-debugging">12.8 Logging and Debugging</h2>
+<h3 id="log-levels">Log Levels</h3>
+<div class="sourceCode" id="cb16"><pre class="sourceCode c"><code class="sourceCode c"><span id="cb16-1"><a href="#cb16-1" aria-hidden="true" tabindex="-1"></a><span class="kw">typedef</span> <span class="kw">enum</span> <span class="op">{</span></span>
+<span id="cb16-2"><a href="#cb16-2" aria-hidden="true" tabindex="-1"></a>    RNS_LOG_TRACE<span class="op">,</span></span>
+<span id="cb16-3"><a href="#cb16-3" aria-hidden="true" tabindex="-1"></a>    RNS_LOG_DEBUG<span class="op">,</span></span>
+<span id="cb16-4"><a href="#cb16-4" aria-hidden="true" tabindex="-1"></a>    RNS_LOG_INFO<span class="op">,</span></span>
+<span id="cb16-5"><a href="#cb16-5" aria-hidden="true" tabindex="-1"></a>    RNS_LOG_WARN<span class="op">,</span></span>
+<span id="cb16-6"><a href="#cb16-6" aria-hidden="true" tabindex="-1"></a>    RNS_LOG_ERROR<span class="op">,</span></span>
+<span id="cb16-7"><a href="#cb16-7" aria-hidden="true" tabindex="-1"></a><span class="op">}</span> rns_log_level_t<span class="op">;</span></span>
+<span id="cb16-8"><a href="#cb16-8" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb16-9"><a href="#cb16-9" aria-hidden="true" tabindex="-1"></a><span class="dt">static</span> rns_log_level_t log_level <span class="op">=</span> RNS_LOG_INFO<span class="op">;</span></span>
+<span id="cb16-10"><a href="#cb16-10" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb16-11"><a href="#cb16-11" aria-hidden="true" tabindex="-1"></a><span class="dt">void</span> rns_log<span class="op">(</span>rns_log_level_t level<span class="op">,</span> <span class="dt">const</span> <span class="dt">char</span> <span class="op">*</span>fmt<span class="op">,</span> <span class="op">...)</span> <span class="op">{</span></span>
+<span id="cb16-12"><a href="#cb16-12" aria-hidden="true" tabindex="-1"></a>    <span class="cf">if</span> <span class="op">(</span>level <span class="op">&lt;</span> log_level<span class="op">)</span> <span class="cf">return</span><span class="op">;</span></span>
+<span id="cb16-13"><a href="#cb16-13" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb16-14"><a href="#cb16-14" aria-hidden="true" tabindex="-1"></a>    <span class="dt">va_list</span> args<span class="op">;</span></span>
+<span id="cb16-15"><a href="#cb16-15" aria-hidden="true" tabindex="-1"></a>    va_start<span class="op">(</span>args<span class="op">,</span> fmt<span class="op">);</span></span>
+<span id="cb16-16"><a href="#cb16-16" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb16-17"><a href="#cb16-17" aria-hidden="true" tabindex="-1"></a>    <span class="dt">const</span> <span class="dt">char</span> <span class="op">*</span>prefix<span class="op">;</span></span>
+<span id="cb16-18"><a href="#cb16-18" aria-hidden="true" tabindex="-1"></a>    <span class="cf">switch</span> <span class="op">(</span>level<span class="op">)</span> <span class="op">{</span></span>
+<span id="cb16-19"><a href="#cb16-19" aria-hidden="true" tabindex="-1"></a>    <span class="cf">case</span> RNS_LOG_TRACE<span class="op">:</span> prefix <span class="op">=</span> <span class="st">&quot;[TRACE]&quot;</span><span class="op">;</span> <span class="cf">break</span><span class="op">;</span></span>
+<span id="cb16-20"><a href="#cb16-20" aria-hidden="true" tabindex="-1"></a>    <span class="cf">case</span> RNS_LOG_DEBUG<span class="op">:</span> prefix <span class="op">=</span> <span class="st">&quot;[DEBUG]&quot;</span><span class="op">;</span> <span class="cf">break</span><span class="op">;</span></span>
+<span id="cb16-21"><a href="#cb16-21" aria-hidden="true" tabindex="-1"></a>    <span class="cf">case</span> RNS_LOG_INFO<span class="op">:</span>  prefix <span class="op">=</span> <span class="st">&quot;[INFO] &quot;</span><span class="op">;</span> <span class="cf">break</span><span class="op">;</span></span>
+<span id="cb16-22"><a href="#cb16-22" aria-hidden="true" tabindex="-1"></a>    <span class="cf">case</span> RNS_LOG_WARN<span class="op">:</span>  prefix <span class="op">=</span> <span class="st">&quot;[WARN] &quot;</span><span class="op">;</span> <span class="cf">break</span><span class="op">;</span></span>
+<span id="cb16-23"><a href="#cb16-23" aria-hidden="true" tabindex="-1"></a>    <span class="cf">case</span> RNS_LOG_ERROR<span class="op">:</span> prefix <span class="op">=</span> <span class="st">&quot;[ERROR]&quot;</span><span class="op">;</span> <span class="cf">break</span><span class="op">;</span></span>
+<span id="cb16-24"><a href="#cb16-24" aria-hidden="true" tabindex="-1"></a>    <span class="op">}</span></span>
+<span id="cb16-25"><a href="#cb16-25" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb16-26"><a href="#cb16-26" aria-hidden="true" tabindex="-1"></a>    fprintf<span class="op">(</span>stderr<span class="op">,</span> <span class="st">&quot;</span><span class="sc">%s</span><span class="st"> &quot;</span><span class="op">,</span> prefix<span class="op">);</span></span>
+<span id="cb16-27"><a href="#cb16-27" aria-hidden="true" tabindex="-1"></a>    vfprintf<span class="op">(</span>stderr<span class="op">,</span> fmt<span class="op">,</span> args<span class="op">);</span></span>
+<span id="cb16-28"><a href="#cb16-28" aria-hidden="true" tabindex="-1"></a>    fprintf<span class="op">(</span>stderr<span class="op">,</span> <span class="st">&quot;</span><span class="sc">\n</span><span class="st">&quot;</span><span class="op">);</span></span>
+<span id="cb16-29"><a href="#cb16-29" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb16-30"><a href="#cb16-30" aria-hidden="true" tabindex="-1"></a>    va_end<span class="op">(</span>args<span class="op">);</span></span>
+<span id="cb16-31"><a href="#cb16-31" aria-hidden="true" tabindex="-1"></a><span class="op">}</span></span>
+<span id="cb16-32"><a href="#cb16-32" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb16-33"><a href="#cb16-33" aria-hidden="true" tabindex="-1"></a><span class="pp">#define LOG_TRACE</span><span class="op">(...)</span><span class="pp"> rns_log</span><span class="op">(</span>RNS_LOG_TRACE<span class="op">,</span><span class="pp"> __VA_ARGS__</span><span class="op">)</span></span>
+<span id="cb16-34"><a href="#cb16-34" aria-hidden="true" tabindex="-1"></a><span class="pp">#define LOG_DEBUG</span><span class="op">(...)</span><span class="pp"> rns_log</span><span class="op">(</span>RNS_LOG_DEBUG<span class="op">,</span><span class="pp"> __VA_ARGS__</span><span class="op">)</span></span>
+<span id="cb16-35"><a href="#cb16-35" aria-hidden="true" tabindex="-1"></a><span class="pp">#define LOG_INFO</span><span class="op">(...)</span><span class="pp">  rns_log</span><span class="op">(</span>RNS_LOG_INFO<span class="op">,</span><span class="pp"> __VA_ARGS__</span><span class="op">)</span></span>
+<span id="cb16-36"><a href="#cb16-36" aria-hidden="true" tabindex="-1"></a><span class="pp">#define LOG_WARN</span><span class="op">(...)</span><span class="pp">  rns_log</span><span class="op">(</span>RNS_LOG_WARN<span class="op">,</span><span class="pp"> __VA_ARGS__</span><span class="op">)</span></span>
+<span id="cb16-37"><a href="#cb16-37" aria-hidden="true" tabindex="-1"></a><span class="pp">#define LOG_ERROR</span><span class="op">(...)</span><span class="pp"> rns_log</span><span class="op">(</span>RNS_LOG_ERROR<span class="op">,</span><span class="pp"> __VA_ARGS__</span><span class="op">)</span></span></code></pre></div>
+<h3 id="hex-dumping">Hex Dumping</h3>
+<div class="sourceCode" id="cb17"><pre class="sourceCode c"><code class="sourceCode c"><span id="cb17-1"><a href="#cb17-1" aria-hidden="true" tabindex="-1"></a><span class="dt">void</span> hex_dump<span class="op">(</span><span class="dt">const</span> <span class="dt">char</span> <span class="op">*</span>label<span class="op">,</span> <span class="dt">const</span> <span class="dt">uint8_t</span> <span class="op">*</span>data<span class="op">,</span> <span class="dt">size_t</span> len<span class="op">)</span> <span class="op">{</span></span>
+<span id="cb17-2"><a href="#cb17-2" aria-hidden="true" tabindex="-1"></a>    fprintf<span class="op">(</span>stderr<span class="op">,</span> <span class="st">&quot;</span><span class="sc">%s</span><span class="st"> (</span><span class="sc">%zu</span><span class="st"> bytes):</span><span class="sc">\n</span><span class="st">&quot;</span><span class="op">,</span> label<span class="op">,</span> len<span class="op">);</span></span>
+<span id="cb17-3"><a href="#cb17-3" aria-hidden="true" tabindex="-1"></a>    <span class="cf">for</span> <span class="op">(</span><span class="dt">size_t</span> i <span class="op">=</span> <span class="dv">0</span><span class="op">;</span> i <span class="op">&lt;</span> len<span class="op">;</span> i<span class="op">++)</span> <span class="op">{</span></span>
+<span id="cb17-4"><a href="#cb17-4" aria-hidden="true" tabindex="-1"></a>        fprintf<span class="op">(</span>stderr<span class="op">,</span> <span class="st">&quot;</span><span class="sc">%02x</span><span class="st"> &quot;</span><span class="op">,</span> data<span class="op">[</span>i<span class="op">]);</span></span>
+<span id="cb17-5"><a href="#cb17-5" aria-hidden="true" tabindex="-1"></a>        <span class="cf">if</span> <span class="op">((</span>i <span class="op">+</span> <span class="dv">1</span><span class="op">)</span> <span class="op">%</span> <span class="dv">16</span> <span class="op">==</span> <span class="dv">0</span><span class="op">)</span> fprintf<span class="op">(</span>stderr<span class="op">,</span> <span class="st">&quot;</span><span class="sc">\n</span><span class="st">&quot;</span><span class="op">);</span></span>
+<span id="cb17-6"><a href="#cb17-6" aria-hidden="true" tabindex="-1"></a>    <span class="op">}</span></span>
+<span id="cb17-7"><a href="#cb17-7" aria-hidden="true" tabindex="-1"></a>    <span class="cf">if</span> <span class="op">(</span>len <span class="op">%</span> <span class="dv">16</span> <span class="op">!=</span> <span class="dv">0</span><span class="op">)</span> fprintf<span class="op">(</span>stderr<span class="op">,</span> <span class="st">&quot;</span><span class="sc">\n</span><span class="st">&quot;</span><span class="op">);</span></span>
+<span id="cb17-8"><a href="#cb17-8" aria-hidden="true" tabindex="-1"></a><span class="op">}</span></span>
+<span id="cb17-9"><a href="#cb17-9" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb17-10"><a href="#cb17-10" aria-hidden="true" tabindex="-1"></a><span class="co">// Usage</span></span>
+<span id="cb17-11"><a href="#cb17-11" aria-hidden="true" tabindex="-1"></a>LOG_DEBUG<span class="op">(</span><span class="st">&quot;Received packet:&quot;</span><span class="op">);</span></span>
+<span id="cb17-12"><a href="#cb17-12" aria-hidden="true" tabindex="-1"></a>hex_dump<span class="op">(</span><span class="st">&quot;  Header&quot;</span><span class="op">,</span> packet<span class="op">,</span> <span class="dv">2</span><span class="op">);</span></span>
+<span id="cb17-13"><a href="#cb17-13" aria-hidden="true" tabindex="-1"></a>hex_dump<span class="op">(</span><span class="st">&quot;  Destination&quot;</span><span class="op">,</span> <span class="op">&amp;</span>packet<span class="op">[</span><span class="dv">2</span><span class="op">],</span> <span class="dv">16</span><span class="op">);</span></span>
+<span id="cb17-14"><a href="#cb17-14" aria-hidden="true" tabindex="-1"></a>hex_dump<span class="op">(</span><span class="st">&quot;  Payload&quot;</span><span class="op">,</span> <span class="op">&amp;</span>packet<span class="op">[</span><span class="dv">19</span><span class="op">],</span> payload_len<span class="op">);</span></span></code></pre></div>
+<h2 id="configuration">12.9 Configuration</h2>
+<h3 id="runtime-configuration">Runtime Configuration</h3>
+<div class="sourceCode" id="cb18"><pre class="sourceCode c"><code class="sourceCode c"><span id="cb18-1"><a href="#cb18-1" aria-hidden="true" tabindex="-1"></a><span class="kw">typedef</span> <span class="kw">struct</span> <span class="op">{</span></span>
+<span id="cb18-2"><a href="#cb18-2" aria-hidden="true" tabindex="-1"></a>    <span class="co">// Network</span></span>
+<span id="cb18-3"><a href="#cb18-3" aria-hidden="true" tabindex="-1"></a>    <span class="dt">uint16_t</span> mtu<span class="op">;</span></span>
+<span id="cb18-4"><a href="#cb18-4" aria-hidden="true" tabindex="-1"></a>    <span class="dt">bool</span> transport_enabled<span class="op">;</span></span>
+<span id="cb18-5"><a href="#cb18-5" aria-hidden="true" tabindex="-1"></a>    <span class="dt">int</span> transport_mode<span class="op">;</span></span>
+<span id="cb18-6"><a href="#cb18-6" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb18-7"><a href="#cb18-7" aria-hidden="true" tabindex="-1"></a>    <span class="co">// Timeouts (milliseconds)</span></span>
+<span id="cb18-8"><a href="#cb18-8" aria-hidden="true" tabindex="-1"></a>    <span class="dt">uint32_t</span> link_timeout_ms<span class="op">;</span></span>
+<span id="cb18-9"><a href="#cb18-9" aria-hidden="true" tabindex="-1"></a>    <span class="dt">uint32_t</span> path_ttl_ms<span class="op">;</span></span>
+<span id="cb18-10"><a href="#cb18-10" aria-hidden="true" tabindex="-1"></a>    <span class="dt">uint32_t</span> announce_rate_target_ms<span class="op">;</span></span>
+<span id="cb18-11"><a href="#cb18-11" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb18-12"><a href="#cb18-12" aria-hidden="true" tabindex="-1"></a>    <span class="co">// Limits</span></span>
+<span id="cb18-13"><a href="#cb18-13" aria-hidden="true" tabindex="-1"></a>    <span class="dt">size_t</span> max_interfaces<span class="op">;</span></span>
+<span id="cb18-14"><a href="#cb18-14" aria-hidden="true" tabindex="-1"></a>    <span class="dt">size_t</span> max_destinations<span class="op">;</span></span>
+<span id="cb18-15"><a href="#cb18-15" aria-hidden="true" tabindex="-1"></a>    <span class="dt">size_t</span> max_links<span class="op">;</span></span>
+<span id="cb18-16"><a href="#cb18-16" aria-hidden="true" tabindex="-1"></a>    <span class="dt">size_t</span> max_path_entries<span class="op">;</span></span>
+<span id="cb18-17"><a href="#cb18-17" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb18-18"><a href="#cb18-18" aria-hidden="true" tabindex="-1"></a>    <span class="co">// Features</span></span>
+<span id="cb18-19"><a href="#cb18-19" aria-hidden="true" tabindex="-1"></a>    <span class="dt">bool</span> enable_compression<span class="op">;</span></span>
+<span id="cb18-20"><a href="#cb18-20" aria-hidden="true" tabindex="-1"></a>    <span class="dt">bool</span> enable_ifac<span class="op">;</span></span>
+<span id="cb18-21"><a href="#cb18-21" aria-hidden="true" tabindex="-1"></a><span class="op">}</span> rns_config_t<span class="op">;</span></span>
+<span id="cb18-22"><a href="#cb18-22" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb18-23"><a href="#cb18-23" aria-hidden="true" tabindex="-1"></a>rns_config_t rns_default_config<span class="op">(</span><span class="dt">void</span><span class="op">)</span> <span class="op">{</span></span>
+<span id="cb18-24"><a href="#cb18-24" aria-hidden="true" tabindex="-1"></a>    <span class="cf">return</span> <span class="op">(</span>rns_config_t<span class="op">){</span></span>
+<span id="cb18-25"><a href="#cb18-25" aria-hidden="true" tabindex="-1"></a>        <span class="op">.</span>mtu <span class="op">=</span> <span class="dv">500</span><span class="op">,</span></span>
+<span id="cb18-26"><a href="#cb18-26" aria-hidden="true" tabindex="-1"></a>        <span class="op">.</span>transport_enabled <span class="op">=</span> <span class="kw">true</span><span class="op">,</span></span>
+<span id="cb18-27"><a href="#cb18-27" aria-hidden="true" tabindex="-1"></a>        <span class="op">.</span>transport_mode <span class="op">=</span> TRANSPORT_MODE_BOUNDARY<span class="op">,</span></span>
+<span id="cb18-28"><a href="#cb18-28" aria-hidden="true" tabindex="-1"></a>        <span class="op">.</span>link_timeout_ms <span class="op">=</span> <span class="dv">120000</span><span class="op">,</span></span>
+<span id="cb18-29"><a href="#cb18-29" aria-hidden="true" tabindex="-1"></a>        <span class="op">.</span>path_ttl_ms <span class="op">=</span> <span class="dv">604800000</span><span class="op">,</span></span>
+<span id="cb18-30"><a href="#cb18-30" aria-hidden="true" tabindex="-1"></a>        <span class="op">.</span>announce_rate_target_ms <span class="op">=</span> <span class="dv">0</span><span class="op">,</span></span>
+<span id="cb18-31"><a href="#cb18-31" aria-hidden="true" tabindex="-1"></a>        <span class="op">.</span>max_interfaces <span class="op">=</span> <span class="dv">8</span><span class="op">,</span></span>
+<span id="cb18-32"><a href="#cb18-32" aria-hidden="true" tabindex="-1"></a>        <span class="op">.</span>max_destinations <span class="op">=</span> <span class="dv">64</span><span class="op">,</span></span>
+<span id="cb18-33"><a href="#cb18-33" aria-hidden="true" tabindex="-1"></a>        <span class="op">.</span>max_links <span class="op">=</span> <span class="dv">128</span><span class="op">,</span></span>
+<span id="cb18-34"><a href="#cb18-34" aria-hidden="true" tabindex="-1"></a>        <span class="op">.</span>max_path_entries <span class="op">=</span> <span class="dv">1024</span><span class="op">,</span></span>
+<span id="cb18-35"><a href="#cb18-35" aria-hidden="true" tabindex="-1"></a>        <span class="op">.</span>enable_compression <span class="op">=</span> <span class="kw">true</span><span class="op">,</span></span>
+<span id="cb18-36"><a href="#cb18-36" aria-hidden="true" tabindex="-1"></a>        <span class="op">.</span>enable_ifac <span class="op">=</span> <span class="kw">false</span><span class="op">,</span></span>
+<span id="cb18-37"><a href="#cb18-37" aria-hidden="true" tabindex="-1"></a>    <span class="op">};</span></span>
+<span id="cb18-38"><a href="#cb18-38" aria-hidden="true" tabindex="-1"></a><span class="op">}</span></span></code></pre></div>
+<h2 id="build-system">12.10 Build System</h2>
+<h3 id="cmake-example">CMake Example</h3>
+<div class="sourceCode" id="cb19"><pre
+class="sourceCode cmake"><code class="sourceCode cmake"><span id="cb19-1"><a href="#cb19-1" aria-hidden="true" tabindex="-1"></a><span class="kw">cmake_minimum_required</span>(<span class="ot">VERSION</span> <span class="dt">3.10</span>)</span>
+<span id="cb19-2"><a href="#cb19-2" aria-hidden="true" tabindex="-1"></a><span class="kw">project</span>(reticulum <span class="ot">C</span>)</span>
+<span id="cb19-3"><a href="#cb19-3" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb19-4"><a href="#cb19-4" aria-hidden="true" tabindex="-1"></a><span class="kw">set</span>(<span class="dv">CMAKE_C_STANDARD</span> 11)</span>
+<span id="cb19-5"><a href="#cb19-5" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb19-6"><a href="#cb19-6" aria-hidden="true" tabindex="-1"></a><span class="co"># Find dependencies</span></span>
+<span id="cb19-7"><a href="#cb19-7" aria-hidden="true" tabindex="-1"></a><span class="kw">find_package</span>(<span class="im">PkgConfig</span> <span class="ot">REQUIRED</span>)</span>
+<span id="cb19-8"><a href="#cb19-8" aria-hidden="true" tabindex="-1"></a><span class="fu">pkg_check_modules</span>(SODIUM <span class="ot">REQUIRED</span> libsodium)</span>
+<span id="cb19-9"><a href="#cb19-9" aria-hidden="true" tabindex="-1"></a><span class="fu">pkg_check_modules</span>(OPENSSL <span class="ot">REQUIRED</span> openssl)</span>
+<span id="cb19-10"><a href="#cb19-10" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb19-11"><a href="#cb19-11" aria-hidden="true" tabindex="-1"></a><span class="co"># Library</span></span>
+<span id="cb19-12"><a href="#cb19-12" aria-hidden="true" tabindex="-1"></a><span class="kw">add_library</span>(<span class="bn">reticulum</span></span>
+<span id="cb19-13"><a href="#cb19-13" aria-hidden="true" tabindex="-1"></a>    src/crypto/sha256.c</span>
+<span id="cb19-14"><a href="#cb19-14" aria-hidden="true" tabindex="-1"></a>    src/crypto/fernet.c</span>
+<span id="cb19-15"><a href="#cb19-15" aria-hidden="true" tabindex="-1"></a>    src/crypto/hkdf.c</span>
+<span id="cb19-16"><a href="#cb19-16" aria-hidden="true" tabindex="-1"></a>    src/identity.c</span>
+<span id="cb19-17"><a href="#cb19-17" aria-hidden="true" tabindex="-1"></a>    src/packet.c</span>
+<span id="cb19-18"><a href="#cb19-18" aria-hidden="true" tabindex="-1"></a>    src/destination.c</span>
+<span id="cb19-19"><a href="#cb19-19" aria-hidden="true" tabindex="-1"></a>    src/link.c</span>
+<span id="cb19-20"><a href="#cb19-20" aria-hidden="true" tabindex="-1"></a>    src/transport.c</span>
+<span id="cb19-21"><a href="#cb19-21" aria-hidden="true" tabindex="-1"></a>    src/interfaces/tcp.c</span>
+<span id="cb19-22"><a href="#cb19-22" aria-hidden="true" tabindex="-1"></a>    src/framing/hdlc.c</span>
+<span id="cb19-23"><a href="#cb19-23" aria-hidden="true" tabindex="-1"></a>)</span>
+<span id="cb19-24"><a href="#cb19-24" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb19-25"><a href="#cb19-25" aria-hidden="true" tabindex="-1"></a><span class="kw">target_include_directories</span>(<span class="bn">reticulum</span> <span class="ot">PUBLIC</span> include)</span>
+<span id="cb19-26"><a href="#cb19-26" aria-hidden="true" tabindex="-1"></a><span class="kw">target_link_libraries</span>(<span class="bn">reticulum</span> <span class="dv">${SODIUM_LIBRARIES}</span> <span class="dv">${OPENSSL_LIBRARIES}</span>)</span>
+<span id="cb19-27"><a href="#cb19-27" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb19-28"><a href="#cb19-28" aria-hidden="true" tabindex="-1"></a><span class="co"># Example</span></span>
+<span id="cb19-29"><a href="#cb19-29" aria-hidden="true" tabindex="-1"></a><span class="kw">add_executable</span>(<span class="bn">rns_example</span> examples/simple.c)</span>
+<span id="cb19-30"><a href="#cb19-30" aria-hidden="true" tabindex="-1"></a><span class="kw">target_link_libraries</span>(<span class="bn">rns_example</span> reticulum)</span>
+<span id="cb19-31"><a href="#cb19-31" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb19-32"><a href="#cb19-32" aria-hidden="true" tabindex="-1"></a><span class="co"># Tests</span></span>
+<span id="cb19-33"><a href="#cb19-33" aria-hidden="true" tabindex="-1"></a><span class="kw">enable_testing</span>()</span>
+<span id="cb19-34"><a href="#cb19-34" aria-hidden="true" tabindex="-1"></a><span class="kw">add_executable</span>(<span class="bn">test_identity</span> tests/test_identity.c)</span>
+<span id="cb19-35"><a href="#cb19-35" aria-hidden="true" tabindex="-1"></a><span class="kw">target_link_libraries</span>(<span class="bn">test_identity</span> reticulum)</span>
+<span id="cb19-36"><a href="#cb19-36" aria-hidden="true" tabindex="-1"></a><span class="kw">add_test</span>(<span class="ot">NAME</span> identity <span class="ot">COMMAND</span> test_identity)</span></code></pre></div>
+<h3 id="cargo.toml-rust">Cargo.toml (Rust)</h3>
+<div class="sourceCode" id="cb20"><pre
+class="sourceCode toml"><code class="sourceCode toml"><span id="cb20-1"><a href="#cb20-1" aria-hidden="true" tabindex="-1"></a><span class="kw">[package]</span></span>
+<span id="cb20-2"><a href="#cb20-2" aria-hidden="true" tabindex="-1"></a><span class="dt">name</span> <span class="op">=</span> <span class="st">&quot;reticulum&quot;</span></span>
+<span id="cb20-3"><a href="#cb20-3" aria-hidden="true" tabindex="-1"></a><span class="dt">version</span> <span class="op">=</span> <span class="st">&quot;0.1.0&quot;</span></span>
+<span id="cb20-4"><a href="#cb20-4" aria-hidden="true" tabindex="-1"></a><span class="dt">edition</span> <span class="op">=</span> <span class="st">&quot;2021&quot;</span></span>
+<span id="cb20-5"><a href="#cb20-5" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb20-6"><a href="#cb20-6" aria-hidden="true" tabindex="-1"></a><span class="kw">[features]</span></span>
+<span id="cb20-7"><a href="#cb20-7" aria-hidden="true" tabindex="-1"></a><span class="dt">default</span> <span class="op">=</span> <span class="op">[</span><span class="st">&quot;std&quot;</span><span class="op">]</span></span>
+<span id="cb20-8"><a href="#cb20-8" aria-hidden="true" tabindex="-1"></a><span class="dt">std</span> <span class="op">=</span> <span class="op">[]</span></span>
+<span id="cb20-9"><a href="#cb20-9" aria-hidden="true" tabindex="-1"></a><span class="dt">no_std</span> <span class="op">=</span> <span class="op">[</span><span class="st">&quot;embedded-hal&quot;</span><span class="op">]</span></span>
+<span id="cb20-10"><a href="#cb20-10" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb20-11"><a href="#cb20-11" aria-hidden="true" tabindex="-1"></a><span class="kw">[dependencies]</span></span>
+<span id="cb20-12"><a href="#cb20-12" aria-hidden="true" tabindex="-1"></a><span class="dt">sha2</span> <span class="op">=</span> <span class="st">&quot;0.10&quot;</span></span>
+<span id="cb20-13"><a href="#cb20-13" aria-hidden="true" tabindex="-1"></a><span class="dt">x25519-dalek</span> <span class="op">=</span> <span class="st">&quot;2.0&quot;</span></span>
+<span id="cb20-14"><a href="#cb20-14" aria-hidden="true" tabindex="-1"></a><span class="dt">ed25519-dalek</span> <span class="op">=</span> <span class="st">&quot;2.0&quot;</span></span>
+<span id="cb20-15"><a href="#cb20-15" aria-hidden="true" tabindex="-1"></a><span class="dt">hkdf</span> <span class="op">=</span> <span class="st">&quot;0.12&quot;</span></span>
+<span id="cb20-16"><a href="#cb20-16" aria-hidden="true" tabindex="-1"></a><span class="dt">aes</span> <span class="op">=</span> <span class="st">&quot;0.8&quot;</span></span>
+<span id="cb20-17"><a href="#cb20-17" aria-hidden="true" tabindex="-1"></a><span class="dt">cbc</span> <span class="op">=</span> <span class="st">&quot;0.1&quot;</span></span>
+<span id="cb20-18"><a href="#cb20-18" aria-hidden="true" tabindex="-1"></a><span class="dt">hmac</span> <span class="op">=</span> <span class="st">&quot;0.12&quot;</span></span>
+<span id="cb20-19"><a href="#cb20-19" aria-hidden="true" tabindex="-1"></a><span class="dt">rand_core</span> <span class="op">=</span> <span class="st">&quot;0.6&quot;</span></span>
+<span id="cb20-20"><a href="#cb20-20" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb20-21"><a href="#cb20-21" aria-hidden="true" tabindex="-1"></a><span class="kw">[target.&#39;</span><span class="dt">cfg(feature = &quot;std&quot;)&#39;</span><span class="kw">.dependencies]</span></span>
+<span id="cb20-22"><a href="#cb20-22" aria-hidden="true" tabindex="-1"></a><span class="dt">rand</span> <span class="op">=</span> <span class="st">&quot;0.8&quot;</span></span>
+<span id="cb20-23"><a href="#cb20-23" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb20-24"><a href="#cb20-24" aria-hidden="true" tabindex="-1"></a><span class="kw">[target.&#39;</span><span class="dt">cfg(feature = &quot;no_std&quot;)&#39;</span><span class="kw">.dependencies]</span></span>
+<span id="cb20-25"><a href="#cb20-25" aria-hidden="true" tabindex="-1"></a><span class="dt">embedded-hal</span> <span class="op">=</span> <span class="op">{ </span><span class="dt">version</span><span class="op"> =</span> <span class="st">&quot;0.2&quot;</span><span class="op">, </span><span class="dt">optional</span><span class="op"> =</span> <span class="cn">true</span><span class="op"> }</span></span>
+<span id="cb20-26"><a href="#cb20-26" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb20-27"><a href="#cb20-27" aria-hidden="true" tabindex="-1"></a><span class="kw">[dev-dependencies]</span></span>
+<span id="cb20-28"><a href="#cb20-28" aria-hidden="true" tabindex="-1"></a><span class="dt">hex</span> <span class="op">=</span> <span class="st">&quot;0.4&quot;</span></span></code></pre></div>
+<h2 id="summary">12.11 Summary</h2>
+<h3 id="implementation-checklist">Implementation Checklist</h3>
+<p><strong>Phase 1: Foundation</strong> - [ ] SHA-256 hashing - [ ]
+X25519 key exchange - [ ] Ed25519 signatures - [ ] AES-256-CBC
+encryption - [ ] HMAC-SHA256 - [ ] HKDF-SHA256 - [ ] Fernet token format
+- [ ] Identity create/sign/verify</p>
+<p><strong>Phase 2: Communication</strong> - [ ] HDLC framing - [ ]
+Packet parsing - [ ] Packet building - [ ] TCP interface (connect) - [ ]
+Send/receive packets</p>
+<p><strong>Phase 3: Destinations</strong> - [ ] SINGLE destination - [ ]
+PLAIN destination - [ ] Destination hash computation - [ ] Local packet
+delivery - [ ] Packet callbacks</p>
+<p><strong>Phase 4: Links</strong> - [ ] Link request creation - [ ]
+Link ID computation - [ ] Proof verification (83-byte signed data) - [ ]
+Key derivation - [ ] Link encryption/decryption - [ ] Keep-alive</p>
+<p><strong>Phase 5: Routing</strong> - [ ] Announce validation - [ ]
+Path table - [ ] Packet forwarding - [ ] Header Type 2 routing - [ ]
+Multiple interfaces</p>
+<p><strong>Phase 6: Advanced</strong> - [ ] Resource segmentation - [ ]
+Resource assembly - [ ] Flow control - [ ] Rate limiting - [ ] Full
+transport loop</p>
+<h3 id="key-constants-to-get-right">Key Constants to Get Right</h3>
+<table>
+<thead>
+<tr class="header">
+<th>Constant</th>
+<th>Value</th>
+<th>Critical For</th>
+</tr>
+</thead>
+<tbody>
+<tr class="odd">
+<td>Truncated hash</td>
+<td>16 bytes</td>
+<td>All addressing</td>
+</tr>
+<tr class="even">
+<td>Link proof</td>
+<td>96 or 99 bytes</td>
+<td>Without/with MTU signalling</td>
+</tr>
+<tr class="odd">
+<td>Signed data</td>
+<td>80 or 83 bytes</td>
+<td>Without/with signalling</td>
+</tr>
+<tr class="even">
+<td>Link request payload</td>
+<td>64 or 67 bytes</td>
+<td>Without/with MTU signalling</td>
+</tr>
+<tr class="odd">
+<td>HDLC flag</td>
+<td>0x7E</td>
+<td>Framing</td>
+</tr>
+<tr class="even">
+<td>HDLC escape</td>
+<td>0x7D</td>
+<td>Framing</td>
+</tr>
+<tr class="odd">
+<td>Fernet overhead</td>
+<td>48 bytes</td>
+<td>IV (16) + HMAC (32), no version byte</td>
+</tr>
+</tbody>
+</table>
+<p><a href="13-testing.md">The next chapter provides test vectors and
+interoperability testing guidance.</a></p>
+</body>
+</html>

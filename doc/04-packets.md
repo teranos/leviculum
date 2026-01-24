@@ -21,10 +21,10 @@ Maximum packet size: ~500 bytes (interface-dependent)
 The first byte encodes multiple fields using bit flags:
 
 ```
-Bit:  7     6      5 4       3 2        1 0
-    +-----+------+-------+---------+----------+
-    |IFAC |Header|Propag.|DestType |PacketType|
-    +-----+------+-------+---------+----------+
+Bit:  7     6      5        4        3 2        1 0
+    +-----+------+--------+--------+---------+----------+
+    |IFAC |Header|Context |TransTyp|DestType |PacketType|
+    +-----+------+--------+--------+---------+----------+
 ```
 
 ### Bit 7: IFAC Flag
@@ -47,13 +47,18 @@ When set, the packet includes authentication data specific to the interface. Use
 
 Header Type 2 includes an additional 16-byte transport address after the destination, used for source routing.
 
-### Bits 5-4: Propagation Type
+### Bit 5: Context Flag
 
 ```
-00 = BROADCAST - Send to all reachable nodes
-01 = TRANSPORT - Routed through specific path
-10 = (reserved)
-11 = (reserved)
+0 = Normal packet
+1 = Context-specific handling (used with ratchets in announces)
+```
+
+### Bit 4: Transport Type (Propagation)
+
+```
+0 = BROADCAST - Send to all reachable nodes
+1 = TRANSPORT - Routed through specific path
 ```
 
 ### Bits 3-2: Destination Type
@@ -99,7 +104,8 @@ Header Type 2 includes an additional 16-byte transport address after the destina
 typedef struct {
     bool     ifac;            // Bit 7
     bool     header_type;     // Bit 6 (0=type1, 1=type2)
-    uint8_t  propagation;     // Bits 5-4
+    bool     context_flag;    // Bit 5
+    bool     transport_type;  // Bit 4 (0=broadcast, 1=transport)
     uint8_t  destination_type;// Bits 3-2
     uint8_t  packet_type;     // Bits 1-0
 } PacketHeader;
@@ -107,7 +113,8 @@ typedef struct {
 void parse_header(uint8_t byte, PacketHeader *h) {
     h->ifac             = (byte >> 7) & 0x01;
     h->header_type      = (byte >> 6) & 0x01;
-    h->propagation      = (byte >> 4) & 0x03;
+    h->context_flag     = (byte >> 5) & 0x01;
+    h->transport_type   = (byte >> 4) & 0x01;
     h->destination_type = (byte >> 2) & 0x03;
     h->packet_type      = byte & 0x03;
 }
@@ -115,7 +122,8 @@ void parse_header(uint8_t byte, PacketHeader *h) {
 uint8_t build_header(PacketHeader *h) {
     return (h->ifac << 7) |
            (h->header_type << 6) |
-           (h->propagation << 4) |
+           (h->context_flag << 5) |
+           (h->transport_type << 4) |
            (h->destination_type << 2) |
            h->packet_type;
 }
@@ -558,4 +566,4 @@ size_t build_packet(const Packet *pkt, uint8_t *out, size_t max_len) {
 | PLAIN | 0x02 | Unencrypted |
 | LINK | 0x03 | Link-derived key |
 
-The next chapter explores **destinations** - the addressable endpoints that receive packets.
+[The next chapter explores **destinations** - the addressable endpoints that receive packets.](05-destinations.md)

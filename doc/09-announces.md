@@ -258,6 +258,22 @@ void send_announce(Transport *transport, Destination *dest,
 
 ## 9.5 Validating Announces
 
+When an announce arrives, the receiver must verify it's authentic and not a replay. This involves several steps, each preventing a different type of attack.
+
+### Verification Overview
+
+1. **Size check**: Reject truncated or malformed announces
+2. **Extract fields**: Parse the announce structure
+3. **Compute identity hash**: Derive from the announced public keys
+4. **Compute destination hash**: Combine name hash with identity hash
+5. **Verify destination hash matches**: Ensures the announce is for the claimed destination
+6. **Reconstruct signed data**: Include the (non-transmitted) destination hash
+7. **Verify signature**: Confirms the sender holds the private key
+
+**Why verify the destination hash?** An attacker might try to announce a valid identity for a different destination (e.g., redirect traffic to a popular service). By verifying the destination hash matches what we'd compute from the announce data, we ensure the announce is for the destination it claims.
+
+**Why reconstruct signed data?** The signature covers data that isn't fully transmitted (the destination hash). We must reconstruct this data identically to how the sender built it.
+
 ### Verification Steps
 
 ```c
@@ -405,6 +421,21 @@ typedef struct {
 
 ### Path Table Operations
 
+**Lookup**: O(n) linear search. For most deployments with hundreds to thousands of paths, this is acceptable. High-performance implementations could use a hash table.
+
+**Update logic**: When an announce arrives for a known destination:
+- Update the path (next hop, hop count, interface)
+- Store the random blob for replay detection
+- Reset the expiration timer
+
+**Random blob storage**: We store up to 64 random blobs per destination. Why?
+- Announces propagate through multiple paths
+- The same announce (same random blob) may arrive via different routes
+- We need to reject duplicates without rejecting legitimate path updates
+- 64 blobs provides a reasonable window for multi-path propagation
+
+**Culling**: Periodically remove expired entries. The compaction algorithm preserves array ordering while removing gaps.
+
 ```c
 PathEntry* path_table_lookup(PathTable *table, const uint8_t dest[16]) {
     for (size_t i = 0; i < table->count; i++) {
@@ -461,7 +492,36 @@ void path_table_cull(PathTable *table) {
 
 ## 9.7 Announce Processing
 
-When an announce arrives, the transport layer processes it:
+When an announce arrives, the transport layer must decide whether to:
+1. Accept it and update the path table
+2. Reject it (invalid, replay, or rate-limited)
+3. Retransmit it to other interfaces
+
+**Decision tree:**
+
+```
+Announce received
+    │
+    ├─ Validate signature → FAIL → Drop
+    │
+    ├─ Check replay (random blob seen?) → YES → Drop
+    │
+    ├─ Check rate limit → EXCEEDED → Drop
+    │
+    ├─ Existing path?
+    │   ├─ NO → Add new path, schedule retransmit
+    │   └─ YES → Compare paths
+    │       ├─ New path better (fewer hops or newer) → Update, retransmit
+    │       └─ Existing path better → Drop (don't retransmit)
+    │
+    └─ Store identity for future use
+```
+
+**Path comparison**: When we have an existing path, prefer:
+1. Fewer hops (shorter paths are more reliable)
+2. Among equal hop counts, prefer newer announces (fresher information)
+
+This ensures the network converges on good paths without flooding with redundant announces.
 
 ```c
 void process_announce(Transport *transport, Packet *pkt, Interface *interface) {
@@ -852,4 +912,4 @@ Key algorithms:
 - **Replay detection**: Store up to 64 random blobs per destination
 - **Rate limiting**: Track last 16 timestamps, block after grace violations
 
-The next chapter covers **resource transfers** - sending large data over established links.
+[The next chapter covers **resource transfers** - sending large data over established links.](10-resources.md)

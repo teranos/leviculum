@@ -1,0 +1,282 @@
+<!DOCTYPE html>
+<html xmlns="http://www.w3.org/1999/xhtml" lang="" xml:lang="">
+<head>
+  <meta charset="utf-8" />
+  <meta name="generator" content="pandoc" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=yes" />
+  <title>Chapter 1: Introduction to Reticulum</title>
+  <style>
+    code{white-space: pre-wrap;}
+    span.smallcaps{font-variant: small-caps;}
+    div.columns{display: flex; gap: min(4vw, 1.5em);}
+    div.column{flex: auto; overflow-x: auto;}
+    div.hanging-indent{margin-left: 1.5em; text-indent: -1.5em;}
+    /* The extra [class] is a hack that increases specificity enough to
+       override a similar rule in reveal.js */
+    ul.task-list[class]{list-style: none;}
+    ul.task-list li input[type="checkbox"] {
+      font-size: inherit;
+      width: 0.8em;
+      margin: 0 0.8em 0.2em -1.6em;
+      vertical-align: middle;
+    }
+    .display.math{display: block; text-align: center; margin: 0.5rem auto;}
+  </style>
+  <link rel="stylesheet" href="style.css" />
+</head>
+<body>
+<header id="title-block-header">
+<h1 class="title">Chapter 1: Introduction to Reticulum</h1>
+</header>
+<h2 id="what-is-reticulum">1.1 What is Reticulum?</h2>
+<p>Reticulum is a cryptography-based networking stack designed for
+building resilient, private, and medium-agnostic communication networks.
+Unlike traditional networking protocols that assume reliable
+infrastructure, abundant bandwidth, and trusted intermediaries,
+Reticulum is built for a different world:</p>
+<ul>
+<li><strong>Medium-agnostic</strong>: Works over any data carrier -
+TCP/IP, UDP, LoRa radio, serial lines, even audio modems</li>
+<li><strong>Bandwidth-efficient</strong>: Designed for links as slow as
+500 bits per second</li>
+<li><strong>Self-configuring</strong>: No central coordination,
+addresses, or registries needed</li>
+<li><strong>Privacy-first</strong>: End-to-end encryption is the
+default, not an option</li>
+<li><strong>Resilient</strong>: Works in mesh topologies, tolerates
+network partitions</li>
+</ul>
+<p>Reticulum does not replace the Internet. Instead, it provides a
+networking layer that can run <em>over</em> the Internet,
+<em>alongside</em> it, or <em>completely without</em> it. A Reticulum
+network can span radio links, serial cables, and TCP connections
+simultaneously.</p>
+<h2 id="the-problem-with-traditional-networks">1.2 The Problem with
+Traditional Networks</h2>
+<p>To understand why Reticulum exists, consider how traditional networks
+work:</p>
+<h3 id="ip-addressing-requires-coordination">IP Addressing Requires
+Coordination</h3>
+<p>Every device on an IP network needs a unique address. This creates
+dependencies: - DHCP servers assign addresses locally - NAT routers
+share public addresses - DNS servers map names to addresses - Regional
+registries allocate address blocks</p>
+<p>Each of these is a point of control, failure, or surveillance.</p>
+<h3 id="client-server-dominates">Client-Server Dominates</h3>
+<p>Most Internet services follow the client-server model: - Clients
+initiate connections to servers - Servers have well-known addresses -
+Data flows through central points - Servers can be blocked, seized, or
+monitored</p>
+<p>Even “peer-to-peer” systems often depend on central trackers, DHT
+bootstraps, or STUN servers.</p>
+<h3 id="encryption-is-bolted-on">Encryption is Bolted On</h3>
+<p>Transport Layer Security (TLS) was added to HTTP decades after the
+web was invented. This pattern - plaintext first, encryption later -
+means: - Encryption is optional and often misconfigured - Metadata (who
+talks to whom, when, how much) remains visible - Legacy systems resist
+encryption adoption</p>
+<h3 id="identity-is-external">Identity is External</h3>
+<p>On the Internet, your identity is: - Your IP address (assigned by
+your ISP) - Your domain name (rented from a registrar) - Your
+certificate (issued by a certificate authority) - Your username (stored
+on someone else’s server)</p>
+<p>None of these are truly <em>yours</em>. They can be revoked,
+reassigned, or compromised by third parties.</p>
+<h2 id="the-reticulum-philosophy">1.3 The Reticulum Philosophy</h2>
+<p>Reticulum takes a fundamentally different approach, guided by
+principles documented in the “Zen of Reticulum”:</p>
+<h3 id="uncentralizability">Uncentralizability</h3>
+<blockquote>
+<p>“No mechanism in Reticulum should ever require, result in, or even
+allow centralised points of authority or control.”</p>
+</blockquote>
+<p>The protocol has no: - Central servers or coordinators - Address
+registries or allocation authorities - Certificate authorities or trust
+anchors - Required Internet connectivity</p>
+<h3 id="cryptographic-identity">Cryptographic Identity</h3>
+<blockquote>
+<p>“Trust issued from cryptographic origins, over authority from
+institutions.”</p>
+</blockquote>
+<p>In Reticulum: - <strong>Your identity is a key pair</strong> -
+specifically, an X25519 key (for encryption) and an Ed25519 key (for
+signing) - <strong>Your address is derived from your keys</strong> - a
+hash of your public keys becomes your network address - <strong>You
+control your identity</strong> - no one can revoke it, and you can use
+it anywhere</p>
+<h3 id="encryption-as-gravity">Encryption as Gravity</h3>
+<blockquote>
+<p>“Encryption is gravity. It must be the overarching influence that
+ensures everything stays together, and without which everything falls
+apart.”</p>
+</blockquote>
+<p>Encryption is not a feature in Reticulum - it’s the foundation: - All
+communication is encrypted by default - The only way to <em>disable</em>
+encryption is to explicitly request it - Even “plaintext” destinations
+encrypt the transport layer</p>
+<h3 id="scarcity-consciousness">Scarcity Consciousness</h3>
+<blockquote>
+<p>“Reticulum must be scarcity-conscious, and designed for simple,
+cheap, low-power and salvaged devices.”</p>
+</blockquote>
+<p>The protocol is designed for: - Low bandwidth (500 bps minimum) -
+Limited memory (microcontrollers) - Intermittent connectivity -
+Heterogeneous links</p>
+<h3 id="medium-agnosticism">Medium Agnosticism</h3>
+<p>Reticulum treats all data carriers the same: - A TCP socket is just a
+byte stream - A serial port is just a byte stream - A LoRa radio is just
+a byte stream (with packet boundaries)</p>
+<p>The same protocol runs unchanged over fiber optics or 1200 baud
+radio.</p>
+<h2 id="comparison-with-tcpip">1.4 Comparison with TCP/IP</h2>
+<p>For programmers familiar with TCP/IP, here’s how Reticulum maps to
+familiar concepts:</p>
+<table>
+<thead>
+<tr class="header">
+<th>TCP/IP Concept</th>
+<th>Reticulum Equivalent</th>
+</tr>
+</thead>
+<tbody>
+<tr class="odd">
+<td>IP Address</td>
+<td>Destination Hash (16 bytes)</td>
+</tr>
+<tr class="even">
+<td>MAC Address</td>
+<td>Interface-specific, not protocol-visible</td>
+</tr>
+<tr class="odd">
+<td>DNS Name</td>
+<td>Application Name (hashed into address)</td>
+</tr>
+<tr class="even">
+<td>TCP Connection</td>
+<td>Link</td>
+</tr>
+<tr class="odd">
+<td>UDP Datagram</td>
+<td>Packet</td>
+</tr>
+<tr class="even">
+<td>TLS Certificate</td>
+<td>Identity (Ed25519 public key)</td>
+</tr>
+<tr class="odd">
+<td>Port Number</td>
+<td>Aspect (hashed into address)</td>
+</tr>
+</tbody>
+</table>
+<h3 id="key-differences">Key Differences</h3>
+<p><strong>Addresses are hashes, not assignments</strong>: A Reticulum
+address is the truncated hash of a public key. You generate it yourself
+- no registration needed.</p>
+<p><strong>No connection state in the network</strong>: Routers don’t
+track connections. Each packet is independently routable.</p>
+<p><strong>Encryption is mandatory</strong>: You cannot send a packet to
+a “single” destination without encrypting it.</p>
+<p><strong>Identity is portable</strong>: Your key pair works anywhere.
+Move to a new network, use a new interface - your identity follows.</p>
+<h2 id="network-topology">1.5 Network Topology</h2>
+<p>Reticulum networks form a mesh topology:</p>
+<pre><code>    [Node A]----[Node B]----[Node C]
+        |           |           |
+        |       [Node D]        |
+        |           |           |
+    [Node E]----[Node F]----[Node G]</code></pre>
+<ul>
+<li>Any node can talk to any other node</li>
+<li>Multiple paths may exist between nodes</li>
+<li>Nodes forward packets for others</li>
+<li>No hierarchy or designated routers</li>
+</ul>
+<h3 id="announces-and-discovery">Announces and Discovery</h3>
+<p>How does Node A find Node G? Through <strong>announces</strong>:</p>
+<ol type="1">
+<li>Node G broadcasts an announce packet with its identity</li>
+<li>The announce propagates through the mesh</li>
+<li>Each forwarding node records the path back to G</li>
+<li>Node A receives the announce and learns how to reach G</li>
+</ol>
+<p>This is similar to how routing protocols like OSPF or BGP work, but:
+- No routing tables to configure - No AS numbers to register - Works
+across heterogeneous links - Includes cryptographic verification</p>
+<h3 id="links">Links</h3>
+<p>For bidirectional communication, nodes establish
+<strong>links</strong>:</p>
+<ol type="1">
+<li>Node A sends a link request to Node G</li>
+<li>Node G responds with a cryptographic proof</li>
+<li>Both derive shared encryption keys</li>
+<li>A bidirectional encrypted channel is established</li>
+</ol>
+<p>Links are similar to TCP connections but: - Encrypted by default -
+Can span multiple hops - Include forward secrecy</p>
+<h2 id="the-protocol-stack">1.6 The Protocol Stack</h2>
+<p>Reticulum is a complete networking stack:</p>
+<pre><code>+------------------------+
+|     Application        |  Your code
++------------------------+
+|     Destination        |  Addressing and identity
++------------------------+
+|     Link               |  Encrypted channels
++------------------------+
+|     Packet             |  Data units
++------------------------+
+|     Interface          |  Physical transport
++------------------------+
+|     Physical Medium    |  TCP, UDP, Serial, Radio...
++------------------------+</code></pre>
+<h3 id="interface-layer">Interface Layer</h3>
+<p>The bottom layer handles byte streams. Reticulum uses HDLC-like
+framing: - <code>0x7E</code> marks frame boundaries - Byte stuffing
+escapes special characters - No CRC (Reticulum relies on cryptographic
+integrity)</p>
+<h3 id="packet-layer">Packet Layer</h3>
+<p>Packets are the basic data unit: - 2-byte header (flags, hops) -
+16-byte destination address - Optional transport address - 1-byte
+context - Payload (up to ~500 bytes)</p>
+<h3 id="link-layer">Link Layer</h3>
+<p>Links provide reliable encrypted channels: - Bidirectional
+communication - Derived symmetric keys - Keep-alive and timeout handling
+- Round-trip time measurement</p>
+<h3 id="destination-layer">Destination Layer</h3>
+<p>Destinations represent addressable endpoints: - Derived from identity
+public keys - Include application name and aspect - Support callbacks
+for incoming packets</p>
+<h3 id="application-layer">Application Layer</h3>
+<p>Your code interacts with destinations and links: - Register a
+destination to receive packets - Establish links for bidirectional
+channels - Send and receive encrypted data</p>
+<h2 id="getting-started">1.7 Getting Started</h2>
+<p>The rest of this textbook will build up your understanding layer by
+layer:</p>
+<ol type="1">
+<li><strong>Chapter 2</strong>: Learn the cryptographic primitives
+(hashing, encryption, signatures)</li>
+<li><strong>Chapter 3</strong>: Understand identity and addressing</li>
+<li><strong>Chapter 4</strong>: Study packet structure</li>
+<li><strong>Chapter 5</strong>: Explore destination types</li>
+<li><strong>Chapter 6</strong>: See how framing works</li>
+<li><strong>Chapter 7-8</strong>: Dive deep into link establishment</li>
+<li><strong>Chapter 9-11</strong>: Advanced topics (routing, resources,
+transport)</li>
+<li><strong>Chapter 12-13</strong>: Implementation guidance</li>
+</ol>
+<p>By the end, you’ll understand Reticulum well enough to implement it
+from scratch.</p>
+<h2 id="summary">1.8 Summary</h2>
+<ul>
+<li>Reticulum is a cryptography-first networking stack</li>
+<li>Addresses are derived from cryptographic keys</li>
+<li>Encryption is default, not optional</li>
+<li>Works over any byte-stream medium</li>
+<li>Self-configuring mesh topology</li>
+<li>No central authorities or registries</li>
+</ul>
+<p><a href="02-cryptography.md">The next chapter introduces the
+cryptographic building blocks that make this all possible.</a></p>
+</body>
+</html>

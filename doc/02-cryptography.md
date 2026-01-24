@@ -455,4 +455,4 @@ if (memcmp(computed_hmac, received_hmac, 32) == 0) {
 
 Reticulum combines these into the **Fernet** token format for symmetric encryption and uses X25519+HKDF for key agreement.
 
-The next chapter explains how these primitives are used to construct **Identities** - the foundation of Reticulum's addressing system.
+[The next chapter explains how these primitives are used to construct **Identities** - the foundation of Reticulum's addressing system.](03-identity.md)

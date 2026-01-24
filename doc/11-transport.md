@@ -176,6 +176,12 @@ The Transport field contains the next-hop's transport identity hash.
 
 ### Forwarding Logic
 
+The forwarding logic handles two fundamentally different cases:
+
+**Header Type 2 (Routed) Packets**: These packets have a specific next-hop address in the Transport field. When a node receives such a packet, it first checks if the Transport field matches its own identity hash—if not, the packet isn't meant for this node to route and is ignored. If it matches, the node looks up the final destination in its path table to determine where to send the packet next. If the path table shows zero remaining hops, the destination is directly reachable, so the node converts the packet to Header Type 1 and sends it directly. Otherwise, it updates the Transport field with the next hop's address and forwards.
+
+**Header Type 1 (Broadcast) Packets**: These packets have no specific route and should be flooded to all interfaces except the one they arrived on. This is how announces propagate and how packets reach destinations when no path is known.
+
 ```c
 void forward_packet(Transport *t, Packet *pkt, Interface *received_from) {
     if (pkt->header_type == 1) {
@@ -228,6 +234,14 @@ int remaining_hops(Transport *t, const uint8_t dest[16]) {
 ## 11.4 Link Table
 
 The link table tracks established links for routing link packets.
+
+**Why a separate table?** Regular packets are routed using the path table, which maps destination hashes to next-hop interfaces. But link packets are addressed to Link IDs, not destination hashes. A Link ID is computed from the link establishment handshake and doesn't appear in any announce—it's only known to nodes that saw the link request pass through them.
+
+The link table serves two purposes:
+1. **Forward routing**: When a node originates a packet on a link, the link table tells it which interface and next hop to use
+2. **Reverse routing**: When a link request passes through a node, the node records how to send replies (proofs, data) back to the initiator
+
+Each entry stores both directions: `next_hop_transport`/`next_hop_interface` for outbound packets, and `received_interface`/`taken_hops` for routing proofs back to the initiator.
 
 ### Link Table Entry
 
@@ -308,6 +322,12 @@ void populate_link_table(Transport *t, Packet *link_request,
 ## 11.5 Reverse Table
 
 The reverse table enables proofs and replies to reach their originators.
+
+**The problem it solves**: When Alice sends a packet that gets forwarded through multiple hops to reach Bob, Bob may need to send a proof back to Alice. But Bob doesn't necessarily know a route to Alice—he only received a packet from the final forwarding node, not directly from Alice.
+
+**The solution**: Each forwarding node remembers where packets came from for a short time (8 minutes). When Bob's proof travels back, each node looks up the original packet's hash in its reverse table and sends the proof back toward wherever the original packet came from.
+
+This creates a breadcrumb trail: the proof follows the original packet's path in reverse, even though no explicit "route to Alice" was ever established. After 8 minutes, the breadcrumbs expire—this is enough time for any reasonable proof to arrive, but not so long that memory fills up with stale entries.
 
 ### Reverse Table Entry
 
@@ -590,6 +610,15 @@ uint64_t get_path_ttl(Transport *t, Interface *iface) {
 
 ## 11.10 Deduplication
 
+**Why deduplication is essential**: In a mesh network where packets are broadcast and forwarded by multiple nodes, the same packet can arrive at a node multiple times via different paths. Without deduplication:
+- A node would process the same packet repeatedly, wasting CPU
+- Forwarding nodes would re-broadcast packets they've already forwarded, creating infinite loops
+- The network would quickly become saturated with duplicate traffic
+
+**How it works**: Each node maintains a cache of recently-seen packet hashes. When a packet arrives, the node computes its SHA-256 hash and checks if that hash is in the cache. If found, the packet is silently dropped as a duplicate. If not found, the hash is added to the cache and processing continues.
+
+**Cache sizing**: The cache holds 1024 hashes and uses a FIFO eviction policy—when full, the oldest hash is removed to make room. The 5-minute timeout is a fallback; in practice, the FIFO limit is usually hit first on active networks. The cache size balances memory usage against the risk of false negatives (processing duplicates because the hash was evicted).
+
 ### Packet Hash Cache
 
 ```c
@@ -809,4 +838,4 @@ The Transport layer coordinates:
 - **Tables**: Maintaining network state
 - **Delivery**: Getting packets to local destinations
 
-This completes the core Reticulum protocol documentation. The remaining chapters cover implementation guidance and testing.
+This completes the core Reticulum protocol documentation. [The remaining chapters cover implementation guidance and testing.](12-implementation.md)
