@@ -107,10 +107,6 @@ Command-line tools:
 - `lrnsd` - Daemon process (equivalent to rnsd)
 - `lrns` - Management utility (planned)
 
-## Documentation
-
-Protocol documentation is in `doc/`. See also [ROADMAP.md](ROADMAP.md) for the development plan.
-
 ## License
 
 MIT
