@@ -8,9 +8,6 @@ type Aes256CbcDec = Decryptor<aes::Aes256>;
 
 use crate::constants::{AES256_KEY_SIZE, AES_BLOCK_SIZE};
 
-#[cfg(feature = "alloc")]
-use alloc::vec::Vec;
-
 /// AES-256-CBC encryption error
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum AesError {
@@ -90,16 +87,6 @@ pub fn aes256_cbc_encrypt(
     Ok(total_len)
 }
 
-/// Encrypt data using AES-256-CBC, returning a new Vec
-#[cfg(feature = "alloc")]
-pub fn aes256_cbc_encrypt_vec(key: &[u8], iv: &[u8], plaintext: &[u8]) -> Result<Vec<u8>, AesError> {
-    let padded_len = ((plaintext.len() / AES_BLOCK_SIZE) + 1) * AES_BLOCK_SIZE;
-    let mut output = alloc::vec![0u8; padded_len];
-    let len = aes256_cbc_encrypt(key, iv, plaintext, &mut output)?;
-    output.truncate(len);
-    Ok(output)
-}
-
 /// Decrypt data using AES-256-CBC with PKCS7 padding
 ///
 /// Returns plaintext length written to the output buffer.
@@ -135,15 +122,6 @@ pub fn aes256_cbc_decrypt(
 
     // Remove PKCS7 padding
     pkcs7_unpad(&output[..ciphertext.len()])
-}
-
-/// Decrypt data using AES-256-CBC, returning a new Vec
-#[cfg(feature = "alloc")]
-pub fn aes256_cbc_decrypt_vec(key: &[u8], iv: &[u8], ciphertext: &[u8]) -> Result<Vec<u8>, AesError> {
-    let mut output = alloc::vec![0u8; ciphertext.len()];
-    let len = aes256_cbc_decrypt(key, iv, ciphertext, &mut output)?;
-    output.truncate(len);
-    Ok(output)
 }
 
 #[cfg(test)]
@@ -220,18 +198,6 @@ mod tests {
         assert_eq!(result, Err(AesError::InvalidIvLength));
     }
 
-    #[cfg(feature = "alloc")]
-    #[test]
-    fn test_vec_roundtrip() {
-        let key = [0x42u8; 32];
-        let iv = [0x13u8; 16];
-        let plaintext = b"Test message for vec functions";
-
-        let encrypted = aes256_cbc_encrypt_vec(&key, &iv, plaintext).unwrap();
-        let decrypted = aes256_cbc_decrypt_vec(&key, &iv, &encrypted).unwrap();
-        assert_eq!(decrypted, plaintext);
-    }
-
     // ==================== EDGE CASE TESTS ====================
 
     #[test]
@@ -301,11 +267,7 @@ mod tests {
     #[test]
     fn test_invalid_padding_zero() {
         // Padding byte of 0 is invalid
-        let key = [0x42u8; 32];
-        let iv = [0x13u8; 16];
-
-        // Create ciphertext that decrypts to data ending in 0x00
-        // We'll encrypt known data and corrupt it to test padding validation
+        // Test pkcs7_unpad directly with invalid padding
         let mut bad_block = [0u8; 16];
         bad_block[15] = 0; // Invalid padding value
 

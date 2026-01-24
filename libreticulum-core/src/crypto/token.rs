@@ -7,13 +7,10 @@
 //! - First 32 bytes: HMAC key
 //! - Last 32 bytes: AES key
 
-use crate::constants::{AES256_KEY_SIZE, AES_BLOCK_SIZE, HMAC_SIZE};
+use crate::constants::{AES_BLOCK_SIZE, HMAC_SIZE};
 
 use super::aes_cbc::{aes256_cbc_decrypt, aes256_cbc_encrypt, AesError};
 use super::hmac_impl::{hmac_sha256, verify_hmac};
-
-#[cfg(feature = "alloc")]
-use alloc::vec::Vec;
 
 /// Token encryption/decryption error
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -32,9 +29,6 @@ pub enum TokenError {
 
 /// Minimum token size: IV (16) + at least one block (16) + HMAC (32) = 64 bytes
 pub const MIN_TOKEN_SIZE: usize = AES_BLOCK_SIZE + AES_BLOCK_SIZE + HMAC_SIZE;
-
-/// Token overhead: IV (16) + HMAC (32) = 48 bytes
-pub const TOKEN_OVERHEAD: usize = AES_BLOCK_SIZE + HMAC_SIZE;
 
 /// Encrypt data to a token
 ///
@@ -88,17 +82,6 @@ pub fn encrypt_token(
     Ok(hmac_input_len + HMAC_SIZE)
 }
 
-/// Encrypt data to a token, returning a new Vec
-#[cfg(feature = "alloc")]
-pub fn encrypt_token_vec(key: &[u8], iv: &[u8], plaintext: &[u8]) -> Result<Vec<u8>, TokenError> {
-    let padded_len = ((plaintext.len() / AES_BLOCK_SIZE) + 1) * AES_BLOCK_SIZE;
-    let token_len = AES_BLOCK_SIZE + padded_len + HMAC_SIZE;
-    let mut output = alloc::vec![0u8; token_len];
-    let len = encrypt_token(key, iv, plaintext, &mut output)?;
-    output.truncate(len);
-    Ok(output)
-}
-
 /// Decrypt a token
 ///
 /// The key must be 64 bytes (32 HMAC + 32 AES).
@@ -132,19 +115,6 @@ pub fn decrypt_token(key: &[u8], token: &[u8], output: &mut [u8]) -> Result<usiz
         .map_err(|_| TokenError::DecryptionFailed)?;
 
     Ok(plaintext_len)
-}
-
-/// Decrypt a token, returning a new Vec
-#[cfg(feature = "alloc")]
-pub fn decrypt_token_vec(key: &[u8], token: &[u8]) -> Result<Vec<u8>, TokenError> {
-    if token.len() < MIN_TOKEN_SIZE {
-        return Err(TokenError::TokenTooShort);
-    }
-    let max_plaintext = token.len() - TOKEN_OVERHEAD;
-    let mut output = alloc::vec![0u8; max_plaintext];
-    let len = decrypt_token(key, token, &mut output)?;
-    output.truncate(len);
-    Ok(output)
 }
 
 #[cfg(test)]
@@ -211,19 +181,6 @@ mod tests {
 
         let result = decrypt_token(&key, &short_token, &mut output);
         assert_eq!(result, Err(TokenError::TokenTooShort));
-    }
-
-    #[cfg(feature = "alloc")]
-    #[test]
-    fn test_vec_roundtrip() {
-        let key = test_key();
-        let iv = [0x42u8; 16];
-        let plaintext = b"Vec-based token encryption test";
-
-        let token = encrypt_token_vec(&key, &iv, plaintext).unwrap();
-        let decrypted = decrypt_token_vec(&key, &token).unwrap();
-
-        assert_eq!(decrypted, plaintext);
     }
 
     // ==================== EDGE CASE TESTS ====================
@@ -472,16 +429,6 @@ mod tests {
 
         assert_eq!(dec_len, 16);
         assert_eq!(&decrypted[..16], &plaintext);
-    }
-
-    #[cfg(feature = "alloc")]
-    #[test]
-    fn test_token_vec_too_short() {
-        let key = test_key();
-        let short_token = [0u8; 32];
-
-        let result = decrypt_token_vec(&key, &short_token);
-        assert_eq!(result, Err(TokenError::TokenTooShort));
     }
 
     #[test]

@@ -11,7 +11,7 @@ use crate::constants::{
     AES_BLOCK_SIZE, ED25519_KEY_SIZE, ED25519_SIGNATURE_SIZE, IDENTITY_HASHBYTES,
     IDENTITY_KEY_SIZE, X25519_KEY_SIZE,
 };
-use crate::crypto::{derive_key, encrypt_token, decrypt_token, truncated_hash, TokenError};
+use crate::crypto::{derive_key, encrypt_token, decrypt_token, truncated_hash};
 
 #[cfg(feature = "alloc")]
 use alloc::vec::Vec;
@@ -67,8 +67,6 @@ impl Identity {
 
     /// Create a new identity with a provided RNG
     pub fn new_with_rng<R: rand_core::CryptoRngCore>(rng: &mut R) -> Self {
-        use rand_core::RngCore;
-
         let x25519_private = x25519_dalek::StaticSecret::random_from_rng(&mut *rng);
         let x25519_public = x25519_dalek::PublicKey::from(&x25519_private);
 
@@ -248,8 +246,6 @@ impl Identity {
     /// Encrypt data for this identity with a provided RNG
     #[cfg(feature = "alloc")]
     pub fn encrypt_with_rng<R: rand_core::CryptoRngCore>(&self, plaintext: &[u8], rng: &mut R) -> Vec<u8> {
-        use rand_core::RngCore;
-
         // Generate ephemeral X25519 key pair
         let ephemeral_private = x25519_dalek::StaticSecret::random_from_rng(&mut *rng);
         let ephemeral_public = x25519_dalek::PublicKey::from(&ephemeral_private);

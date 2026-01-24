@@ -11,8 +11,8 @@
 
 #![allow(clippy::missing_safety_doc)]
 
-use std::ffi::{CStr, CString};
-use std::os::raw::{c_char, c_int, c_void};
+use std::ffi::CString;
+use std::os::raw::{c_char, c_int};
 use std::ptr;
 
 use leviculum_core::constants::TRUNCATED_HASHBYTES;

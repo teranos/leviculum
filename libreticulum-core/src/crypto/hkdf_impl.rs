@@ -19,17 +19,6 @@ pub fn derive_key(ikm: &[u8], salt: Option<&[u8]>, info: Option<&[u8]>, output: 
         .expect("output length should not exceed 255 * hash length");
 }
 
-/// Derive a fixed-size key using HKDF-SHA256
-pub fn derive_key_fixed<const N: usize>(
-    ikm: &[u8],
-    salt: Option<&[u8]>,
-    info: Option<&[u8]>,
-) -> [u8; N] {
-    let mut output = [0u8; N];
-    derive_key(ikm, salt, info, &mut output);
-    output
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -55,19 +44,14 @@ mod tests {
     }
 
     #[test]
-    fn test_hkdf_fixed() {
-        let ikm = b"input key material";
-        let output: [u8; 64] = derive_key_fixed(ikm, None, None);
-        assert_ne!(output, [0u8; 64]);
-    }
-
-    #[test]
     fn test_hkdf_deterministic() {
         let ikm = b"input key material";
         let salt = b"salt";
 
-        let out1: [u8; 32] = derive_key_fixed(ikm, Some(salt), None);
-        let out2: [u8; 32] = derive_key_fixed(ikm, Some(salt), None);
+        let mut out1 = [0u8; 32];
+        let mut out2 = [0u8; 32];
+        derive_key(ikm, Some(salt), None, &mut out1);
+        derive_key(ikm, Some(salt), None, &mut out2);
         assert_eq!(out1, out2);
     }
 

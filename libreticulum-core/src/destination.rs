@@ -11,7 +11,7 @@ use crate::crypto::{sha256, truncated_hash};
 use crate::identity::Identity;
 
 #[cfg(feature = "alloc")]
-use alloc::{string::String, vec::Vec};
+use alloc::string::String;
 
 /// Destination type determining encryption behavior
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

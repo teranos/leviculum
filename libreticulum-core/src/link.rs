@@ -49,6 +49,7 @@ pub enum LinkError {
 pub type LinkId = [u8; TRUNCATED_HASHBYTES];
 
 /// A verified point-to-point link
+#[allow(dead_code)] // Fields for future link management features
 pub struct Link {
     /// Link identifier
     id: LinkId,
@@ -101,8 +102,6 @@ impl Link {
         destination_hash: [u8; TRUNCATED_HASHBYTES],
         rng: &mut R,
     ) -> Self {
-        use rand_core::RngCore;
-
         let ephemeral_private = x25519_dalek::StaticSecret::random_from_rng(&mut *rng);
         let ephemeral_public = x25519_dalek::PublicKey::from(&ephemeral_private);
 
