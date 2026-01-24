@@ -1,10 +1,10 @@
 [workspace]
 resolver = "2"
 members = [
-    "leviculum-core",
-    "leviculum-std",
-    "leviculum-ffi",
-    "leviculum-cli",
+    "reticulum-core",
+    "reticulum-std",
+    "reticulum-ffi",
+    "reticulum-cli",
 ]
 
 [workspace.package]

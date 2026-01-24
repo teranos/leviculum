@@ -1,0 +1,23 @@
+[package]
+name = "reticulum-cli"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+description = "Command-line tools for reticulum"
+
+[[bin]]
+name = "lrnsd"
+path = "src/lrnsd.rs"
+
+[[bin]]
+name = "lrns"
+path = "src/lrns.rs"
+
+[dependencies]
+reticulum-core = { path = "../reticulum-core", default-features = true }
+reticulum-std = { path = "../reticulum-std" }
+tokio.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true
+clap = { version = "4", features = ["derive"] }

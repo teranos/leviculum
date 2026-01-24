@@ -46,22 +46,22 @@ cargo test --workspace
 The integration tests verify compatibility with a running Python rnsd. Start rnsd with a TCP interface on localhost:4242, then:
 
 ```sh
-cargo test --package leviculum-std --test rnsd_interop -- --ignored
+cargo test --package reticulum-std --test rnsd_interop -- --ignored
 ```
 
 ## Project Structure
 
 ```
 leviculum/
-├── leviculum-core/     # no_std compatible core library
-├── leviculum-std/      # std extensions (networking, config, storage)
-├── leviculum-ffi/      # C-API bindings
-├── leviculum-cli/      # Command-line tools (lrnsd, lrns)
-├── doc/                   # Protocol documentation
-└── tests/vectors/         # Test vectors generated from Python
+├── reticulum-core/     # no_std compatible core library
+├── reticulum-std/      # std extensions (networking, config, storage)
+├── reticulum-ffi/      # C-API bindings
+├── reticulum-cli/      # Command-line tools (lrnsd, lrns)
+├── doc/                # Protocol documentation
+└── tests/vectors/      # Test vectors generated from Python
 ```
 
-### leviculum-core
+### reticulum-core
 
 The core library works without the standard library. Contains:
 
@@ -73,10 +73,10 @@ To use without std:
 
 ```toml
 [dependencies]
-leviculum-core = { version = "0.1", default-features = false, features = ["alloc"] }
+reticulum-core = { version = "0.1", default-features = false, features = ["alloc"] }
 ```
 
-### leviculum-std
+### reticulum-std
 
 Extensions that require the standard library:
 
@@ -85,22 +85,22 @@ Extensions that require the standard library:
 - Network interfaces (WIP)
 - Reticulum instance management
 
-### leviculum-ffi
+### reticulum-ffi
 
 C bindings. Build as shared or static library:
 
 ```sh
-cargo build -p leviculum-ffi --release
+cargo build -p reticulum-ffi --release
 ```
 
 Generate C headers (requires cbindgen):
 
 ```sh
-cd leviculum-ffi
-cbindgen --output leviculum.h
+cd reticulum-ffi
+cbindgen --output reticulum.h
 ```
 
-### leviculum-cli
+### reticulum-cli
 
 Command-line tools:
 

@@ -1,0 +1,19 @@
+[package]
+name = "reticulum-ffi"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+description = "C-API/FFI bindings for reticulum"
+
+[lib]
+crate-type = ["cdylib", "staticlib"]
+
+[dependencies]
+reticulum-core = { path = "../reticulum-core", default-features = true }
+reticulum-std = { path = "../reticulum-std" }
+libc.workspace = true
+tokio.workspace = true
+
+[build-dependencies]
+cbindgen = "0.27"

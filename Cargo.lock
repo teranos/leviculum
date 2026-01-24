@@ -578,65 +578,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "bcc35a38544a891a5f7c865aca548a982ccb3b8650a5b06d0fd33a10283c56fc"
 
 [[package]]
-name = "leviculum-cli"
-version = "0.1.0"
-dependencies = [
- "clap",
- "leviculum-core",
- "leviculum-std",
- "tokio",
- "tracing",
- "tracing-subscriber",
-]
-
-[[package]]
-name = "leviculum-core"
-version = "0.1.0"
-dependencies = [
- "aes",
- "cbc",
- "curve25519-dalek",
- "ed25519-dalek",
- "hex",
- "hkdf",
- "hmac",
- "proptest",
- "rand_core 0.6.4",
- "serde",
- "serde_json",
- "sha2",
- "x25519-dalek",
- "zeroize",
-]
-
-[[package]]
-name = "leviculum-ffi"
-version = "0.1.0"
-dependencies = [
- "cbindgen",
- "libc",
- "leviculum-core",
- "leviculum-std",
- "tokio",
-]
-
-[[package]]
-name = "leviculum-std"
-version = "0.1.0"
-dependencies = [
- "bytes",
- "leviculum-core",
- "rmp-serde",
- "serde",
- "thiserror",
- "tokio",
- "tokio-serial",
- "toml",
- "tracing",
- "tracing-subscriber",
-]
-
-[[package]]
 name = "linux-raw-sys"
 version = "0.11.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -914,6 +855,65 @@ name = "regex-syntax"
 version = "0.8.8"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "7a2d987857b319362043e95f5353c0535c1f58eec5336fdfcf626430af7def58"
+
+[[package]]
+name = "reticulum-cli"
+version = "0.1.0"
+dependencies = [
+ "clap",
+ "reticulum-core",
+ "reticulum-std",
+ "tokio",
+ "tracing",
+ "tracing-subscriber",
+]
+
+[[package]]
+name = "reticulum-core"
+version = "0.1.0"
+dependencies = [
+ "aes",
+ "cbc",
+ "curve25519-dalek",
+ "ed25519-dalek",
+ "hex",
+ "hkdf",
+ "hmac",
+ "proptest",
+ "rand_core 0.6.4",
+ "serde",
+ "serde_json",
+ "sha2",
+ "x25519-dalek",
+ "zeroize",
+]
+
+[[package]]
+name = "reticulum-ffi"
+version = "0.1.0"
+dependencies = [
+ "cbindgen",
+ "libc",
+ "reticulum-core",
+ "reticulum-std",
+ "tokio",
+]
+
+[[package]]
+name = "reticulum-std"
+version = "0.1.0"
+dependencies = [
+ "bytes",
+ "reticulum-core",
+ "rmp-serde",
+ "serde",
+ "thiserror",
+ "tokio",
+ "tokio-serial",
+ "toml",
+ "tracing",
+ "tracing-subscriber",
+]
 
 [[package]]
 name = "rmp"
