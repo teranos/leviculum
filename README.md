@@ -32,7 +32,7 @@ Work in progress. The cryptographic layer is complete and validated against the 
 - Resource transfers
 - Channel/Buffer abstractions
 
-**Test coverage:** 198 tests (unit, property-based, Python test vectors), plus 17 integration tests against a running rnsd.
+**Test coverage:** 198 Rust tests + 13 C tests (unit, property-based, Python test vectors), plus 17 integration tests against a running rnsd.
 
 ## Building
 
