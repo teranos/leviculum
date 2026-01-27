@@ -228,9 +228,10 @@ impl Link {
     /// ```
     ///
     /// The raw_packet is: [flags (1)] [hops (1)] [dest_hash (16)] [context (1)] [payload (64-67)]
+    #[cfg(feature = "alloc")]
     pub fn calculate_link_id(raw_packet: &[u8]) -> LinkId {
         // Build hashable part: (flags & 0x0F) + raw[2:]
-        let mut hashable = Vec::with_capacity(raw_packet.len() - 1);
+        let mut hashable = alloc::vec::Vec::with_capacity(raw_packet.len() - 1);
         hashable.push(raw_packet[0] & 0x0F);
         hashable.extend_from_slice(&raw_packet[2..]);
 
@@ -345,20 +346,23 @@ impl Link {
 
     /// Derive the 64-byte link key from shared secret and link ID
     ///
-    /// Format: [encryption_key (32)] [hmac_key (32)]
+    /// Format: [signing/hmac_key (32)] [encryption_key (32)]
+    /// This matches Python Reticulum's Token class which expects:
+    /// - key[:32] = signing_key (for HMAC)
+    /// - key[32:] = encryption_key (for AES)
     fn derive_link_key(shared_secret: &[u8; 32], link_id: &LinkId) -> [u8; 64] {
         let mut key = [0u8; 64];
         derive_key(shared_secret, Some(link_id), None, &mut key);
         key
     }
 
-    /// Get the derived encryption key (first 32 bytes of link_key)
-    pub fn encryption_key(&self) -> Option<&[u8]> {
+    /// Get the derived HMAC/signing key (first 32 bytes of link_key)
+    pub fn hmac_key(&self) -> Option<&[u8]> {
         self.link_key.as_ref().map(|k| &k[..32])
     }
 
-    /// Get the derived HMAC key (last 32 bytes of link_key)
-    pub fn hmac_key(&self) -> Option<&[u8]> {
+    /// Get the derived encryption key (last 32 bytes of link_key)
+    pub fn encryption_key(&self) -> Option<&[u8]> {
         self.link_key.as_ref().map(|k| &k[32..])
     }
 
@@ -402,7 +406,159 @@ impl Link {
         packet
     }
 
-    // TODO: Implement encrypt/decrypt for link data
+    /// Get the token key (same as link key, no conversion needed)
+    ///
+    /// Link key format matches Token format: [hmac/signing (32)][encryption (32)]
+    /// This matches Python Reticulum's Token class expectations.
+    fn token_key(&self) -> Option<[u8; 64]> {
+        self.link_key
+    }
+
+    /// Encrypt data for transmission over this link
+    ///
+    /// Returns the encrypted token: [IV (16)][ciphertext][HMAC (32)]
+    ///
+    /// The output buffer must be large enough for:
+    /// IV (16) + padded plaintext + HMAC (32)
+    /// Padded size = ((plaintext.len() / 16) + 1) * 16
+    #[cfg(feature = "std")]
+    pub fn encrypt(&self, plaintext: &[u8], output: &mut [u8]) -> Result<usize, LinkError> {
+        use crate::crypto::{encrypt_token, random_bytes};
+
+        let token_key = self.token_key().ok_or(LinkError::InvalidState)?;
+        let iv: [u8; 16] = random_bytes();
+
+        encrypt_token(&token_key, &iv, plaintext, output).map_err(|_| LinkError::KeyExchangeFailed)
+    }
+
+    /// Encrypt data for transmission over this link (with provided RNG)
+    ///
+    /// Returns the encrypted token: [IV (16)][ciphertext][HMAC (32)]
+    pub fn encrypt_with_rng<R: rand_core::CryptoRngCore>(
+        &self,
+        plaintext: &[u8],
+        output: &mut [u8],
+        rng: &mut R,
+    ) -> Result<usize, LinkError> {
+        use crate::crypto::encrypt_token;
+
+        let token_key = self.token_key().ok_or(LinkError::InvalidState)?;
+        let mut iv = [0u8; 16];
+        rng.fill_bytes(&mut iv);
+
+        encrypt_token(&token_key, &iv, plaintext, output).map_err(|_| LinkError::KeyExchangeFailed)
+    }
+
+    /// Decrypt data received over this link
+    ///
+    /// The token format is: [IV (16)][ciphertext][HMAC (32)]
+    ///
+    /// Returns the plaintext length written to output.
+    pub fn decrypt(&self, token: &[u8], output: &mut [u8]) -> Result<usize, LinkError> {
+        use crate::crypto::decrypt_token;
+
+        let token_key = self.token_key().ok_or(LinkError::InvalidState)?;
+
+        decrypt_token(&token_key, token, output).map_err(|e| {
+            use crate::crypto::TokenError;
+            match e {
+                TokenError::HmacVerificationFailed => LinkError::InvalidProof,
+                _ => LinkError::KeyExchangeFailed,
+            }
+        })
+    }
+
+    /// Calculate the required output buffer size for encrypting data
+    ///
+    /// Returns the size needed for: IV (16) + padded ciphertext + HMAC (32)
+    pub fn encrypted_size(plaintext_len: usize) -> usize {
+        let padded = ((plaintext_len / 16) + 1) * 16;
+        16 + padded + 32
+    }
+
+    /// Build a data packet for transmission over this link
+    ///
+    /// The plaintext is encrypted and wrapped in a proper packet format.
+    /// Returns the raw packet bytes ready for framing/transmission.
+    #[cfg(feature = "std")]
+    pub fn build_data_packet(&self, plaintext: &[u8]) -> Result<alloc::vec::Vec<u8>, LinkError> {
+        use crate::destination::DestinationType;
+        use crate::packet::{HeaderType, PacketContext, PacketFlags, PacketType, TransportType};
+
+        if self.state != LinkState::Active {
+            return Err(LinkError::InvalidState);
+        }
+
+        // Encrypt the data
+        let encrypted_len = Self::encrypted_size(plaintext.len());
+        let mut encrypted = alloc::vec![0u8; encrypted_len];
+        let enc_len = self.encrypt(plaintext, &mut encrypted)?;
+
+        // Build flags for link data packet
+        let flags = PacketFlags {
+            header_type: HeaderType::Type1,
+            context_flag: false,
+            transport_type: TransportType::Broadcast,
+            dest_type: DestinationType::Link,
+            packet_type: PacketType::Data,
+        };
+
+        // Packet format: [flags (1)] [hops (1)] [link_id (16)] [context (1)] [encrypted_data]
+        let mut packet = alloc::vec::Vec::with_capacity(1 + 1 + TRUNCATED_HASHBYTES + 1 + enc_len);
+        packet.push(flags.to_byte());
+        packet.push(0); // hops = 0
+        packet.extend_from_slice(&self.id);
+        packet.push(PacketContext::None as u8);
+        packet.extend_from_slice(&encrypted[..enc_len]);
+
+        Ok(packet)
+    }
+
+    /// Build the RTT (Round-Trip Time) packet that finalizes link establishment
+    ///
+    /// This packet must be sent by the initiator after processing the proof.
+    /// The destination only considers the link "established" after receiving this.
+    ///
+    /// The RTT value is msgpack-encoded (float64 format).
+    #[cfg(feature = "std")]
+    pub fn build_rtt_packet(&self, rtt_seconds: f64) -> Result<alloc::vec::Vec<u8>, LinkError> {
+        use crate::destination::DestinationType;
+        use crate::packet::{HeaderType, PacketContext, PacketFlags, PacketType, TransportType};
+
+        if self.state != LinkState::Active {
+            return Err(LinkError::InvalidState);
+        }
+
+        // Encode RTT as msgpack float64: 0xCB + 8 bytes big-endian IEEE 754
+        let mut rtt_data = [0u8; 9];
+        rtt_data[0] = 0xCB; // msgpack float64 marker
+        rtt_data[1..9].copy_from_slice(&rtt_seconds.to_be_bytes());
+
+        // Encrypt the RTT data
+        let encrypted_len = Self::encrypted_size(rtt_data.len());
+        let mut encrypted = alloc::vec![0u8; encrypted_len];
+        let enc_len = self.encrypt(&rtt_data, &mut encrypted)?;
+
+        // Build flags for link RTT packet
+        let flags = PacketFlags {
+            header_type: HeaderType::Type1,
+            context_flag: false,
+            transport_type: TransportType::Broadcast,
+            dest_type: DestinationType::Link,
+            packet_type: PacketType::Data,
+        };
+
+        // Packet format: [flags (1)] [hops (1)] [link_id (16)] [context (1)] [encrypted_data]
+        let mut packet = alloc::vec::Vec::with_capacity(1 + 1 + TRUNCATED_HASHBYTES + 1 + enc_len);
+        packet.push(flags.to_byte());
+        packet.push(0); // hops = 0
+        packet.extend_from_slice(&self.id);
+        packet.push(PacketContext::Lrrtt as u8);
+        packet.extend_from_slice(&encrypted[..enc_len]);
+
+        Ok(packet)
+    }
+
     // TODO: Implement keepalive sending
     // TODO: Implement timeout checking
 }
@@ -632,5 +788,228 @@ mod tests {
         assert!(link.link_key().is_some());
         assert!(link.encryption_key().is_some());
         assert!(link.hmac_key().is_some());
+    }
+
+    #[cfg(feature = "std")]
+    #[test]
+    fn test_link_encrypt_decrypt() {
+        use ed25519_dalek::Signer;
+
+        // Set up a link with completed handshake (reuse handshake simulation)
+        let dest_hash = [0x42; TRUNCATED_HASHBYTES];
+        let mut link = Link::new_outgoing(dest_hash);
+        let request = link.create_link_request();
+
+        // Build raw packet
+        let mut raw_packet = Vec::new();
+        raw_packet.push(0x02);
+        raw_packet.push(0x00);
+        raw_packet.extend_from_slice(&dest_hash);
+        raw_packet.push(0x00);
+        raw_packet.extend_from_slice(&request);
+
+        let link_id = Link::calculate_link_id(&raw_packet);
+        link.set_link_id(link_id);
+
+        // Simulate destination side
+        let dest_signing_key = ed25519_dalek::SigningKey::from_bytes(&[0x33; 32]);
+        let dest_verifying_key = dest_signing_key.verifying_key();
+        let dest_ephemeral_private =
+            x25519_dalek::StaticSecret::random_from_rng(&mut rand_core::OsRng);
+        let dest_ephemeral_public = x25519_dalek::PublicKey::from(&dest_ephemeral_private);
+
+        let signalling_bytes: [u8; 3] = [0x43, 0x0f, 0x38];
+        let mut signed_data = [0u8; 83];
+        signed_data[..TRUNCATED_HASHBYTES].copy_from_slice(&link_id);
+        signed_data[TRUNCATED_HASHBYTES..TRUNCATED_HASHBYTES + 32]
+            .copy_from_slice(dest_ephemeral_public.as_bytes());
+        signed_data[TRUNCATED_HASHBYTES + 32..TRUNCATED_HASHBYTES + 64]
+            .copy_from_slice(&dest_verifying_key.to_bytes());
+        signed_data[TRUNCATED_HASHBYTES + 64..].copy_from_slice(&signalling_bytes);
+        let signature = dest_signing_key.sign(&signed_data);
+
+        let mut proof = [0u8; 99];
+        proof[..64].copy_from_slice(&signature.to_bytes());
+        proof[64..96].copy_from_slice(dest_ephemeral_public.as_bytes());
+        proof[96..99].copy_from_slice(&signalling_bytes);
+
+        link.set_destination_keys(&dest_verifying_key.to_bytes()).unwrap();
+        link.process_proof(&proof).unwrap();
+
+        // Now test encrypt/decrypt
+        let plaintext = b"Hello, encrypted link!";
+        let encrypted_len = Link::encrypted_size(plaintext.len());
+        let mut encrypted = vec![0u8; encrypted_len];
+
+        let enc_len = link.encrypt(plaintext, &mut encrypted).unwrap();
+        assert!(enc_len > plaintext.len()); // Should be larger due to IV + padding + HMAC
+
+        let mut decrypted = vec![0u8; plaintext.len() + 16]; // Allow for padding
+        let dec_len = link.decrypt(&encrypted[..enc_len], &mut decrypted).unwrap();
+
+        assert_eq!(dec_len, plaintext.len());
+        assert_eq!(&decrypted[..dec_len], plaintext);
+    }
+
+    #[cfg(feature = "std")]
+    #[test]
+    fn test_link_decrypt_tampered() {
+        use ed25519_dalek::Signer;
+
+        // Set up a link with completed handshake
+        let dest_hash = [0x42; TRUNCATED_HASHBYTES];
+        let mut link = Link::new_outgoing(dest_hash);
+        let request = link.create_link_request();
+
+        let mut raw_packet = Vec::new();
+        raw_packet.push(0x02);
+        raw_packet.push(0x00);
+        raw_packet.extend_from_slice(&dest_hash);
+        raw_packet.push(0x00);
+        raw_packet.extend_from_slice(&request);
+
+        let link_id = Link::calculate_link_id(&raw_packet);
+        link.set_link_id(link_id);
+
+        let dest_signing_key = ed25519_dalek::SigningKey::from_bytes(&[0x33; 32]);
+        let dest_verifying_key = dest_signing_key.verifying_key();
+        let dest_ephemeral_private =
+            x25519_dalek::StaticSecret::random_from_rng(&mut rand_core::OsRng);
+        let dest_ephemeral_public = x25519_dalek::PublicKey::from(&dest_ephemeral_private);
+
+        let signalling_bytes: [u8; 3] = [0x43, 0x0f, 0x38];
+        let mut signed_data = [0u8; 83];
+        signed_data[..TRUNCATED_HASHBYTES].copy_from_slice(&link_id);
+        signed_data[TRUNCATED_HASHBYTES..TRUNCATED_HASHBYTES + 32]
+            .copy_from_slice(dest_ephemeral_public.as_bytes());
+        signed_data[TRUNCATED_HASHBYTES + 32..TRUNCATED_HASHBYTES + 64]
+            .copy_from_slice(&dest_verifying_key.to_bytes());
+        signed_data[TRUNCATED_HASHBYTES + 64..].copy_from_slice(&signalling_bytes);
+        let signature = dest_signing_key.sign(&signed_data);
+
+        let mut proof = [0u8; 99];
+        proof[..64].copy_from_slice(&signature.to_bytes());
+        proof[64..96].copy_from_slice(dest_ephemeral_public.as_bytes());
+        proof[96..99].copy_from_slice(&signalling_bytes);
+
+        link.set_destination_keys(&dest_verifying_key.to_bytes()).unwrap();
+        link.process_proof(&proof).unwrap();
+
+        // Encrypt some data
+        let plaintext = b"Secret message";
+        let mut encrypted = vec![0u8; Link::encrypted_size(plaintext.len())];
+        let enc_len = link.encrypt(plaintext, &mut encrypted).unwrap();
+
+        // Tamper with the ciphertext
+        encrypted[20] ^= 0xFF;
+
+        // Decrypt should fail due to HMAC verification
+        let mut decrypted = vec![0u8; 64];
+        let result = link.decrypt(&encrypted[..enc_len], &mut decrypted);
+        assert!(result.is_err());
+    }
+
+    #[cfg(feature = "std")]
+    #[test]
+    fn test_encrypted_size() {
+        // 0 bytes -> 16 bytes padded -> 16 + 16 IV + 32 HMAC = 64
+        assert_eq!(Link::encrypted_size(0), 64);
+
+        // 1 byte -> 16 bytes padded -> 64
+        assert_eq!(Link::encrypted_size(1), 64);
+
+        // 15 bytes -> 16 bytes padded -> 64
+        assert_eq!(Link::encrypted_size(15), 64);
+
+        // 16 bytes -> 32 bytes padded -> 16 + 32 + 32 = 80
+        assert_eq!(Link::encrypted_size(16), 80);
+
+        // 100 bytes -> 112 bytes padded -> 16 + 112 + 32 = 160
+        assert_eq!(Link::encrypted_size(100), 160);
+    }
+
+    #[cfg(feature = "std")]
+    #[test]
+    fn test_build_data_packet() {
+        use ed25519_dalek::Signer;
+
+        // Set up a link with completed handshake
+        let dest_hash = [0x42; TRUNCATED_HASHBYTES];
+        let mut link = Link::new_outgoing(dest_hash);
+        let request = link.create_link_request();
+
+        let mut raw_packet = Vec::new();
+        raw_packet.push(0x02);
+        raw_packet.push(0x00);
+        raw_packet.extend_from_slice(&dest_hash);
+        raw_packet.push(0x00);
+        raw_packet.extend_from_slice(&request);
+
+        let link_id = Link::calculate_link_id(&raw_packet);
+        link.set_link_id(link_id);
+
+        let dest_signing_key = ed25519_dalek::SigningKey::from_bytes(&[0x33; 32]);
+        let dest_verifying_key = dest_signing_key.verifying_key();
+        let dest_ephemeral_private =
+            x25519_dalek::StaticSecret::random_from_rng(&mut rand_core::OsRng);
+        let dest_ephemeral_public = x25519_dalek::PublicKey::from(&dest_ephemeral_private);
+
+        let signalling_bytes: [u8; 3] = [0x43, 0x0f, 0x38];
+        let mut signed_data = [0u8; 83];
+        signed_data[..TRUNCATED_HASHBYTES].copy_from_slice(&link_id);
+        signed_data[TRUNCATED_HASHBYTES..TRUNCATED_HASHBYTES + 32]
+            .copy_from_slice(dest_ephemeral_public.as_bytes());
+        signed_data[TRUNCATED_HASHBYTES + 32..TRUNCATED_HASHBYTES + 64]
+            .copy_from_slice(&dest_verifying_key.to_bytes());
+        signed_data[TRUNCATED_HASHBYTES + 64..].copy_from_slice(&signalling_bytes);
+        let signature = dest_signing_key.sign(&signed_data);
+
+        let mut proof = [0u8; 99];
+        proof[..64].copy_from_slice(&signature.to_bytes());
+        proof[64..96].copy_from_slice(dest_ephemeral_public.as_bytes());
+        proof[96..99].copy_from_slice(&signalling_bytes);
+
+        link.set_destination_keys(&dest_verifying_key.to_bytes()).unwrap();
+        link.process_proof(&proof).unwrap();
+
+        // Now test build_data_packet
+        let message = b"Hello, link!";
+        let packet = link.build_data_packet(message).unwrap();
+
+        // Verify packet structure:
+        // [flags (1)] [hops (1)] [link_id (16)] [context (1)] [encrypted_data]
+        assert!(packet.len() >= 19 + 48); // header + min encrypted size
+
+        // Flags should be: Type1, no context, broadcast, Link dest type, Data packet type
+        // dest_type=Link=0b11, packet_type=Data=0b00 -> bits 3-0 = 0b1100 = 0x0C
+        assert_eq!(packet[0] & 0x0F, 0x0C);
+
+        // Hops should be 0
+        assert_eq!(packet[1], 0x00);
+
+        // Link ID should be in bytes 2-17
+        assert_eq!(&packet[2..18], &link_id);
+
+        // Context should be None (0x00)
+        assert_eq!(packet[18], 0x00);
+
+        // Encrypted data starts at byte 19
+        // We can decrypt it to verify
+        let encrypted_data = &packet[19..];
+        let mut decrypted = vec![0u8; message.len() + 16];
+        let dec_len = link.decrypt(encrypted_data, &mut decrypted).unwrap();
+        assert_eq!(dec_len, message.len());
+        assert_eq!(&decrypted[..dec_len], message);
+    }
+
+    #[cfg(feature = "std")]
+    #[test]
+    fn test_build_data_packet_not_active() {
+        let dest_hash = [0x42; TRUNCATED_HASHBYTES];
+        let link = Link::new_outgoing(dest_hash);
+
+        // Link is in Pending state, not Active
+        let result = link.build_data_packet(b"Hello");
+        assert!(matches!(result, Err(LinkError::InvalidState)));
     }
 }

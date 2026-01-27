@@ -55,6 +55,7 @@ use reticulum_core::constants::{MTU, TRUNCATED_HASHBYTES};
 use reticulum_core::identity::Identity;
 use reticulum_core::crypto::{truncated_hash, full_hash, random_bytes};
 use reticulum_core::link::Link;
+use reticulum_core::traits::InterfaceError;
 use reticulum_std::interfaces::hdlc::{Deframer, DeframeResult, frame, FLAG};
 
 const RNSD_ADDR: &str = "127.0.0.1:4242";
@@ -2038,4 +2039,414 @@ async fn test_invalid_announce_signature() {
     }
 
     println!("\nTest complete - check the log file for errors!");
+}
+
+/// Test full link establishment with a Python destination
+///
+/// This test requires:
+/// 1. rnsd running with TCP interface on localhost:4242
+/// 2. Python link_test_destination.py running:
+///    python scripts/link_test_destination.py
+///
+/// The test will:
+/// 1. Wait for an announce from linktest.echo destination
+/// 2. Send a link request to that destination
+/// 3. Process the proof response
+/// 4. Verify the link is established
+#[tokio::test]
+#[ignore = "requires running rnsd AND python link_test_destination.py"]
+async fn test_link_establishment_with_python() {
+    use reticulum_core::link::{Link, LinkState};
+
+    println!("=== LINK ESTABLISHMENT TEST ===\n");
+    println!("This test requires:");
+    println!("  1. rnsd running with TCP on localhost:4242");
+    println!("  2. python scripts/link_test_destination.py running");
+    println!();
+
+    // Connect to rnsd
+    let mut stream = timeout(CONNECTION_TIMEOUT, TcpStream::connect(RNSD_ADDR))
+        .await
+        .expect("Connection timeout")
+        .expect("Failed to connect to rnsd");
+
+    println!("Connected to rnsd");
+    println!("Waiting for linktest.echo announce (30 second timeout)...\n");
+
+    // Wait for an announce from the linktest.echo destination
+    let mut deframer = Deframer::new();
+    let mut buffer = [0u8; 2048];
+    let start = std::time::Instant::now();
+    let timeout_duration = Duration::from_secs(30);
+
+    let mut target_announce: Option<ParsedAnnounce> = None;
+    let mut target_dest_hash: Option<[u8; TRUNCATED_HASHBYTES]> = None;
+
+    while start.elapsed() < timeout_duration && target_announce.is_none() {
+        match timeout(Duration::from_millis(500), stream.read(&mut buffer)).await {
+            Ok(Ok(0)) => {
+                panic!("Connection closed");
+            }
+            Ok(Ok(n)) => {
+                let results = deframer.process(&buffer[..n]);
+                for result in results {
+                    if let DeframeResult::Frame(frame_data) = result {
+                        if let Ok(packet) = Packet::unpack(&frame_data) {
+                            if packet.flags.packet_type == PacketType::Announce {
+                                if let Some(announce) = ParsedAnnounce::from_packet(&packet) {
+                                    // Check if this is OUR linktest destination (not other linktest destinations on the network)
+                                    let app_data_str = String::from_utf8_lossy(&announce.app_data);
+                                    if app_data_str.contains("leviculum.linktest") {
+                                        println!("Found leviculum linktest destination!");
+                                        println!("  Destination hash: {:02x?}", &announce.destination_hash[..4]);
+                                        println!("  App data: {}", app_data_str);
+                                        target_dest_hash = Some(announce.destination_hash);
+                                        target_announce = Some(announce);
+                                        break;
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            Ok(Err(e)) => {
+                panic!("Read error: {}", e);
+            }
+            Err(_) => {
+                // Timeout, continue waiting
+            }
+        }
+    }
+
+    let announce = target_announce.expect(
+        "Did not receive leviculum.linktest.echo announce. Make sure link_test_destination.py is running."
+    );
+    let dest_hash = target_dest_hash.unwrap();
+
+    // Extract the Ed25519 signing key (bytes 32-64 of public_key)
+    let signing_key_bytes: [u8; 32] = announce.public_key[32..64]
+        .try_into()
+        .expect("Invalid signing key length");
+
+    println!("\nCreating link request...");
+
+    // Create a link to the destination
+    let mut link = Link::new_outgoing(dest_hash);
+
+    // Set the destination's signing key (needed to verify the proof later)
+    link.set_destination_keys(&signing_key_bytes)
+        .expect("Failed to set destination keys");
+
+    // Build and send the link request packet
+    let raw_packet = link.build_link_request_packet();
+
+    println!("  Link ID: {:02x?}", &link.id()[..4]);
+    println!("  Packet size: {} bytes", raw_packet.len());
+
+    // Frame and send
+    let mut framed = Vec::new();
+    frame(&raw_packet, &mut framed);
+
+    stream.write_all(&framed).await.expect("Failed to send link request");
+    stream.flush().await.expect("Failed to flush");
+
+    println!("  Link request sent!");
+    println!("\nWaiting for link proof (10 second timeout)...");
+
+    // Wait for the proof response
+    let proof_start = std::time::Instant::now();
+    let proof_timeout = Duration::from_secs(10);
+    let mut proof_received = false;
+
+    while proof_start.elapsed() < proof_timeout && !proof_received {
+        match timeout(Duration::from_millis(500), stream.read(&mut buffer)).await {
+            Ok(Ok(0)) => {
+                panic!("Connection closed while waiting for proof");
+            }
+            Ok(Ok(n)) => {
+                let results = deframer.process(&buffer[..n]);
+                for result in results {
+                    if let DeframeResult::Frame(frame_data) = result {
+                        if let Ok(packet) = Packet::unpack(&frame_data) {
+                            println!("  Received packet: type={:?}, dest={:02x?}",
+                                     packet.flags.packet_type, &packet.destination_hash[..4]);
+
+                            // Check if this is a proof for our link
+                            if packet.flags.packet_type == PacketType::Proof {
+                                // Check if destination matches our link ID
+                                if packet.destination_hash == *link.id() {
+                                    println!("\n  Got PROOF for our link!");
+                                    println!("  Proof size: {} bytes", packet.data.len());
+
+                                    // Process the proof
+                                    let proof_data = packet.data.as_slice();
+                                    match link.process_proof(proof_data) {
+                                        Ok(()) => {
+                                            println!("  Proof verified successfully!");
+                                            proof_received = true;
+                                        }
+                                        Err(e) => {
+                                            println!("  Proof verification failed: {:?}", e);
+                                            println!("  Proof data: {:02x?}", &proof_data[..std::cmp::min(32, proof_data.len())]);
+                                        }
+                                    }
+                                } else {
+                                    println!("  (Proof for different link: {:02x?})", &packet.destination_hash[..4]);
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            Ok(Err(e)) => {
+                println!("Read error: {}", e);
+            }
+            Err(_) => {
+                // Timeout, continue waiting
+                print!(".");
+                use std::io::Write;
+                std::io::stdout().flush().ok();
+            }
+        }
+    }
+
+    println!();
+
+    if proof_received {
+        // Verify link state
+        assert_eq!(link.state(), LinkState::Active, "Link should be active after proof");
+        assert!(link.link_key().is_some(), "Link should have derived key");
+
+        println!("\n=== LINK ESTABLISHMENT SUCCESS ===");
+        println!("  Link state: {:?}", link.state());
+        println!("  Link ID: {:02x?}", link.id());
+        println!("  Has encryption key: {}", link.encryption_key().is_some());
+        println!("  Has HMAC key: {}", link.hmac_key().is_some());
+
+        // Send the RTT packet to finalize link establishment on the destination side
+        // The destination only considers the link "established" after receiving this
+        println!("\n=== SENDING RTT PACKET ===");
+        let rtt_seconds = 0.05; // Estimated RTT
+        let rtt_packet = link.build_rtt_packet(rtt_seconds)
+            .expect("Failed to build RTT packet");
+        println!("  RTT packet size: {} bytes", rtt_packet.len());
+
+        let mut framed_rtt = Vec::new();
+        frame(&rtt_packet, &mut framed_rtt);
+        stream.write_all(&framed_rtt).await.expect("Failed to send RTT packet");
+        stream.flush().await.expect("Failed to flush");
+        println!("  RTT packet sent! (This finalizes link on destination)");
+
+        // Give the destination time to process the RTT packet
+        tokio::time::sleep(Duration::from_millis(100)).await;
+
+        // Now test sending data over the link
+        println!("\n=== TESTING DATA TRANSMISSION ===");
+        let test_message = b"Hello from Rust!";
+        println!("  Sending message: {:?}", String::from_utf8_lossy(test_message));
+
+        // Build and send a data packet
+        let data_packet = link.build_data_packet(test_message)
+            .expect("Failed to build data packet");
+        println!("  Data packet size: {} bytes", data_packet.len());
+
+        // Frame and send
+        let mut framed_data = Vec::new();
+        frame(&data_packet, &mut framed_data);
+        stream.write_all(&framed_data).await.expect("Failed to send data packet");
+        stream.flush().await.expect("Failed to flush");
+        println!("  Data packet sent!");
+
+        // Wait for echo response
+        println!("\nWaiting for echo response (10 second timeout)...");
+        let echo_start = std::time::Instant::now();
+        let echo_timeout = Duration::from_secs(10);
+        let mut echo_received = false;
+
+        while echo_start.elapsed() < echo_timeout && !echo_received {
+            match timeout(Duration::from_millis(500), stream.read(&mut buffer)).await {
+                Ok(Ok(0)) => {
+                    println!("Connection closed while waiting for echo");
+                    break;
+                }
+                Ok(Ok(n)) => {
+                    let results = deframer.process(&buffer[..n]);
+                    for result in results {
+                        if let DeframeResult::Frame(frame_data) = result {
+                            if let Ok(packet) = Packet::unpack(&frame_data) {
+                                println!("  Received packet: type={:?}, dest={:02x?}",
+                                         packet.flags.packet_type, &packet.destination_hash[..4]);
+
+                                // Check if this is a data packet for our link
+                                if packet.flags.packet_type == PacketType::Data {
+                                    if packet.destination_hash == *link.id() {
+                                        println!("\n  Got DATA response for our link!");
+                                        println!("  Encrypted size: {} bytes", packet.data.len());
+
+                                        // Decrypt the response
+                                        let encrypted_data = packet.data.as_slice();
+                                        let mut decrypted = vec![0u8; encrypted_data.len()];
+                                        match link.decrypt(encrypted_data, &mut decrypted) {
+                                            Ok(dec_len) => {
+                                                let response = &decrypted[..dec_len];
+                                                println!("  Decrypted message: {:?}",
+                                                         String::from_utf8_lossy(response));
+
+                                                // Verify echo matches
+                                                if response == test_message {
+                                                    println!("\n  *** ECHO VERIFIED! ***");
+                                                    echo_received = true;
+                                                } else {
+                                                    println!("  WARNING: Echo content mismatch!");
+                                                    println!("    Expected: {:?}", test_message);
+                                                    println!("    Got:      {:?}", response);
+                                                }
+                                            }
+                                            Err(e) => {
+                                                println!("  Decryption failed: {:?}", e);
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+                Ok(Err(e)) => {
+                    println!("Read error: {}", e);
+                }
+                Err(_) => {
+                    // Timeout, continue waiting
+                    print!(".");
+                    use std::io::Write;
+                    std::io::stdout().flush().ok();
+                }
+            }
+        }
+
+        if echo_received {
+            println!("\n=== FULL LINK DATA EXCHANGE SUCCESS ===");
+            println!("  - Link established: OK");
+            println!("  - Data sent: OK");
+            println!("  - Echo received: OK");
+            println!("  - Decryption: OK");
+            println!("\nSUCCESS: Full bidirectional encrypted communication!");
+        } else {
+            println!("\nWARNING: Echo not received within timeout");
+            println!("  This may be expected if Python destination doesn't echo");
+            println!("  Link establishment was still successful!");
+        }
+    } else {
+        println!("\nFAILED: Did not receive proof within timeout");
+        println!("  Link state: {:?}", link.state());
+        panic!("Link establishment failed - no proof received");
+    }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// Transport + TcpClientInterface integration test
+// ═══════════════════════════════════════════════════════════════════════════
+
+/// End-to-end test: Transport receives announces via TcpClientInterface
+///
+/// This proves the new architecture works:
+/// TcpClientInterface -> Transport::process_incoming -> TransportEvent::AnnounceReceived
+#[test]
+#[ignore] // Requires rnsd running
+fn test_transport_with_tcp_interface() {
+    use reticulum_core::transport::{Transport, TransportConfig, TransportEvent};
+    use reticulum_core::traits::NoStorage;
+    use reticulum_std::clock::SystemClock;
+    use reticulum_std::interfaces::TcpClientInterface;
+
+    println!("\n=== TRANSPORT + TCP INTERFACE INTEGRATION TEST ===\n");
+
+    // Create Transport with real clock
+    let clock = SystemClock::new();
+    let identity = Identity::new();
+    let config = TransportConfig::default();
+    let mut transport = Transport::new(config, clock, NoStorage, identity);
+
+    // Connect TcpClientInterface to rnsd
+    let iface = TcpClientInterface::connect(
+        "IntegrationTest",
+        RNSD_ADDR,
+        CONNECTION_TIMEOUT,
+    )
+    .expect("Failed to connect to rnsd");
+
+    let iface_idx = transport.register_interface(Box::new(iface));
+    println!("  Interface registered at index {}", iface_idx);
+    assert_eq!(transport.interface_count(), 1);
+
+    // Poll for incoming announces (rnsd sends them on connect)
+    let start = std::time::Instant::now();
+    let mut announce_count = 0;
+    let mut packet_count = 0;
+    let mut path_count = 0;
+    let mut recv_buf = [0u8; MTU];
+
+    println!("  Waiting for announces (10 second timeout)...\n");
+
+    while start.elapsed() < Duration::from_secs(10) {
+        // Read from interface and feed to transport
+        let iface = transport.interface_mut(iface_idx).unwrap();
+        match iface.recv(&mut recv_buf) {
+            Ok(len) => {
+                packet_count += 1;
+                if let Err(e) = transport.process_incoming(iface_idx, &recv_buf[..len]) {
+                    // Not all packets are valid announces, some may be other types
+                    println!("  Packet {}: {} bytes (error: {:?})", packet_count, len, e);
+                }
+            }
+            Err(InterfaceError::WouldBlock) => {
+                // No data, run housekeeping and wait
+                transport.poll();
+                std::thread::sleep(Duration::from_millis(50));
+            }
+            Err(e) => {
+                panic!("Interface error: {:?}", e);
+            }
+        }
+
+        // Process events
+        for event in transport.drain_events() {
+            match event {
+                TransportEvent::AnnounceReceived { announce, .. } => {
+                    announce_count += 1;
+                    let hash = announce.destination_hash();
+                    let hash_hex: String = hash.iter().map(|b| format!("{:02x}", b)).collect();
+                    let app_data = announce.app_data_string().unwrap_or("<binary>");
+                    println!("  Announce {}: dest={} app_data={:?}",
+                        announce_count, hash_hex, app_data);
+                }
+                TransportEvent::PathFound { destination_hash, hops, .. } => {
+                    path_count += 1;
+                    let hash_hex: String = destination_hash.iter().map(|b| format!("{:02x}", b)).collect();
+                    println!("  Path found: dest={} hops={}", hash_hex, hops);
+                }
+                _ => {}
+            }
+        }
+
+        // Stop after receiving some announces
+        if announce_count >= 3 {
+            break;
+        }
+    }
+
+    println!("\n=== RESULTS ===");
+    println!("  Packets received: {}", packet_count);
+    println!("  Announces processed: {}", announce_count);
+    println!("  Paths learned: {}", path_count);
+    println!("  Path table size: {}", transport.path_count());
+    println!("  Stats: {:?}", transport.stats());
+
+    assert!(announce_count > 0, "Should have received at least one announce from rnsd");
+    assert!(transport.path_count() > 0, "Should have learned at least one path");
+    assert_eq!(transport.path_count(), announce_count,
+        "Each announce should create a path entry");
+
+    println!("\nSUCCESS: Transport + TcpClientInterface integration works!");
 }

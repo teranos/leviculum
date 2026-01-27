@@ -113,6 +113,60 @@ impl Storage {
     }
 }
 
+// ─── Core Trait Implementation ──────────────────────────────────────────────
+
+fn hex_encode(bytes: &[u8]) -> String {
+    bytes.iter().map(|b| format!("{:02x}", b)).collect()
+}
+
+fn hex_decode(s: &str) -> Option<Vec<u8>> {
+    if s.len() % 2 != 0 {
+        return None;
+    }
+    (0..s.len())
+        .step_by(2)
+        .map(|i| u8::from_str_radix(&s[i..i + 2], 16).ok())
+        .collect()
+}
+
+impl reticulum_core::traits::Storage for Storage {
+    fn load(&self, category: &str, key: &[u8]) -> Option<Vec<u8>> {
+        let name = hex_encode(key);
+        self.read_raw(category, &name).ok()
+    }
+
+    fn store(
+        &mut self,
+        category: &str,
+        key: &[u8],
+        value: &[u8],
+    ) -> std::result::Result<(), reticulum_core::traits::StorageError> {
+        let name = hex_encode(key);
+        self.write_raw(category, &name, value)
+            .map_err(|_| reticulum_core::traits::StorageError::IoError)
+    }
+
+    fn delete(
+        &mut self,
+        category: &str,
+        key: &[u8],
+    ) -> std::result::Result<(), reticulum_core::traits::StorageError> {
+        let name = hex_encode(key);
+        Storage::delete(self, category, &name)
+            .map_err(|_| reticulum_core::traits::StorageError::NotFound)
+    }
+
+    fn list_keys(&self, category: &str) -> Vec<Vec<u8>> {
+        self.list(category)
+            .unwrap_or_default()
+            .into_iter()
+            .filter_map(|s| hex_decode(&s))
+            .collect()
+    }
+}
+
+// ─── Storage Categories ─────────────────────────────────────────────────────
+
 /// Storage categories used by Reticulum
 pub mod categories {
     pub const IDENTITIES: &str = "identities";
@@ -169,5 +223,32 @@ mod tests {
 
         // Cleanup
         storage.delete("test", "exists.bin").unwrap();
+    }
+
+    #[test]
+    fn test_core_storage_trait() {
+        use reticulum_core::traits::Storage as CoreStorage;
+
+        let mut storage = temp_storage();
+        let key = [0x01, 0x02, 0x03];
+
+        // Store via trait
+        CoreStorage::store(&mut storage, "core_test", &key, b"trait_value").unwrap();
+
+        // Load via trait
+        let data = CoreStorage::load(&storage, "core_test", &key);
+        assert_eq!(data, Some(b"trait_value".to_vec()));
+
+        // Exists via trait
+        assert!(CoreStorage::exists(&storage, "core_test", &key));
+
+        // List keys via trait
+        let keys = CoreStorage::list_keys(&storage, "core_test");
+        assert_eq!(keys.len(), 1);
+        assert_eq!(keys[0], key.to_vec());
+
+        // Delete via trait
+        CoreStorage::delete(&mut storage, "core_test", &key).unwrap();
+        assert!(!CoreStorage::exists(&storage, "core_test", &key));
     }
 }

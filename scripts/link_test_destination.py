@@ -43,6 +43,12 @@ class LinkTestDestination:
         # Enable link acceptance
         self.destination.set_link_established_callback(self.link_established)
 
+        # Set app_data that identifies this destination (unique to avoid conflicts with other linktest destinations)
+        self.destination.default_app_data = b"leviculum.linktest.echo"
+
+        # Announce the destination so others can find it
+        self.destination.announce()
+
         # Get the signing key (Ed25519 public key)
         # In Reticulum, the identity's public keys are: encryption_pub + signing_pub
         # Each is 32 bytes
@@ -93,9 +99,16 @@ class LinkTestDestination:
 
     def run(self):
         """Run the destination loop."""
+        announce_interval = 10  # Re-announce every 10 seconds
+        last_announce = time.time()
         try:
             while True:
                 time.sleep(1)
+                # Periodically re-announce
+                if time.time() - last_announce >= announce_interval:
+                    self.destination.announce()
+                    print(f"Re-announced at {time.strftime('%H:%M:%S')}")
+                    last_announce = time.time()
         except KeyboardInterrupt:
             print("\nShutting down...")
 

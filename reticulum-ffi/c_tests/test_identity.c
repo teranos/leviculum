@@ -1,5 +1,5 @@
 /*
- * C tests for leviculum FFI bindings
+ * C tests for reticulum FFI bindings
  *
  * This file tests the Identity API exposed through the C bindings.
  * It is compiled and run by the Rust test harness.
@@ -8,7 +8,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include "../leviculum.h"
+#include "../reticulum.h"
 
 /* Simple test framework */
 static int tests_run = 0;

@@ -1,23 +1,33 @@
 //! Main Reticulum instance
+//!
+//! High-level entry point that wires together configuration, storage,
+//! core Transport, and the async runtime.
 
-use std::path::PathBuf;
-use std::sync::Arc;
-use tokio::sync::RwLock;
+use std::sync::{Arc, Mutex};
 
+use tokio::sync::{mpsc, watch};
+
+use reticulum_core::identity::Identity;
+use reticulum_core::transport::{Transport, TransportConfig, TransportEvent};
+
+use crate::clock::SystemClock;
 use crate::config::Config;
 use crate::error::{Error, Result};
+use crate::runtime::{StdTransport, TransportRunner};
 use crate::storage::Storage;
 
 /// Main Reticulum instance
 pub struct Reticulum {
     /// Configuration
     config: Config,
-    /// Storage manager
-    storage: Storage,
-    /// Whether transport mode is enabled
-    transport_enabled: bool,
-    /// Running state
-    running: Arc<RwLock<bool>>,
+    /// Handle to the core transport (shared with the runner)
+    transport: Arc<Mutex<StdTransport>>,
+    /// Event receiver
+    event_rx: Option<mpsc::Receiver<TransportEvent>>,
+    /// Shutdown sender
+    shutdown_tx: watch::Sender<bool>,
+    /// Runner task handle
+    runner_handle: Option<tokio::task::JoinHandle<()>>,
 }
 
 impl Reticulum {
@@ -42,71 +52,56 @@ impl Reticulum {
             .unwrap_or_else(|| Config::default_config_dir().join("storage"));
 
         let storage = Storage::new(&storage_path)?;
+        let clock = SystemClock::new();
+        let identity = Identity::new();
 
-        Ok(Self {
-            transport_enabled: config.reticulum.enable_transport,
-            config,
-            storage,
-            running: Arc::new(RwLock::new(false)),
-        })
-    }
-
-    /// Create a new Reticulum instance with custom config and storage paths
-    pub async fn with_paths(config_path: PathBuf, storage_path: PathBuf) -> Result<Self> {
-        let mut config = if config_path.exists() {
-            Config::load(&config_path)?
-        } else {
-            Config::default()
+        let transport_config = TransportConfig {
+            enable_transport: config.reticulum.enable_transport,
+            ..TransportConfig::default()
         };
 
-        config.reticulum.storage_path = Some(storage_path.clone());
-        let storage = Storage::new(&storage_path)?;
+        let transport = Transport::new(transport_config, clock, storage, identity);
+        let (runner, event_rx) = TransportRunner::new(transport);
+        let transport_handle = runner.transport();
+
+        let (shutdown_tx, shutdown_rx) = watch::channel(false);
+
+        // Spawn the runner
+        let runner_handle = tokio::spawn(async move {
+            runner.run(shutdown_rx).await;
+        });
 
         Ok(Self {
-            transport_enabled: config.reticulum.enable_transport,
             config,
-            storage,
-            running: Arc::new(RwLock::new(false)),
+            transport: transport_handle,
+            event_rx: Some(event_rx),
+            shutdown_tx,
+            runner_handle: Some(runner_handle),
         })
-    }
-
-    /// Start the Reticulum instance
-    pub async fn start(&self) -> Result<()> {
-        let mut running = self.running.write().await;
-        if *running {
-            return Err(Error::Config("Reticulum already running".into()));
-        }
-
-        // TODO: Initialize interfaces from config
-        // TODO: Start transport layer
-        // TODO: Load persisted state
-
-        *running = true;
-        tracing::info!("Reticulum started");
-
-        Ok(())
     }
 
     /// Stop the Reticulum instance
-    pub async fn stop(&self) -> Result<()> {
-        let mut running = self.running.write().await;
-        if !*running {
-            return Ok(());
+    pub async fn stop(&mut self) -> Result<()> {
+        // Signal shutdown
+        let _ = self.shutdown_tx.send(true);
+
+        // Wait for runner to finish
+        if let Some(handle) = self.runner_handle.take() {
+            handle
+                .await
+                .map_err(|e| Error::Transport(format!("Runner panicked: {}", e)))?;
         }
 
-        // TODO: Stop interfaces
-        // TODO: Persist state
-        // TODO: Clean up resources
-
-        *running = false;
         tracing::info!("Reticulum stopped");
-
         Ok(())
     }
 
     /// Check if the instance is running
-    pub async fn is_running(&self) -> bool {
-        *self.running.read().await
+    pub fn is_running(&self) -> bool {
+        self.runner_handle
+            .as_ref()
+            .map(|h| !h.is_finished())
+            .unwrap_or(false)
     }
 
     /// Get the configuration
@@ -114,22 +109,24 @@ impl Reticulum {
         &self.config
     }
 
-    /// Get the storage manager
-    pub fn storage(&self) -> &Storage {
-        &self.storage
-    }
-
     /// Check if transport mode is enabled
     pub fn is_transport_enabled(&self) -> bool {
-        self.transport_enabled
+        self.config.reticulum.enable_transport
     }
 
-    // TODO: Add methods for:
-    // - Creating/registering destinations
-    // - Creating identities
-    // - Establishing links
-    // - Sending packets
-    // - Path requests
+    /// Get a handle to the core transport
+    ///
+    /// Use this to register interfaces, destinations, query paths, etc.
+    pub fn transport(&self) -> Arc<Mutex<StdTransport>> {
+        Arc::clone(&self.transport)
+    }
+
+    /// Take the event receiver (can only be called once)
+    ///
+    /// Use this to consume transport events (announces, packets, etc.).
+    pub fn take_event_receiver(&mut self) -> Option<mpsc::Receiver<TransportEvent>> {
+        self.event_rx.take()
+    }
 }
 
 #[cfg(test)]
@@ -139,8 +136,23 @@ mod tests {
     #[tokio::test]
     async fn test_create_instance() {
         let config = Config::default();
-        let rns = Reticulum::with_config(config).await.unwrap();
-        assert!(!rns.is_running().await);
+        let mut rns = Reticulum::with_config(config).await.unwrap();
+        assert!(rns.is_running());
         assert!(!rns.is_transport_enabled());
+
+        // Verify transport is accessible
+        {
+            let handle = rns.transport();
+            let t = handle.lock().unwrap();
+            assert_eq!(t.interface_count(), 0);
+        }
+
+        // Can take event receiver
+        let rx = rns.take_event_receiver();
+        assert!(rx.is_some());
+        assert!(rns.take_event_receiver().is_none()); // Second call returns None
+
+        rns.stop().await.unwrap();
+        assert!(!rns.is_running());
     }
 }

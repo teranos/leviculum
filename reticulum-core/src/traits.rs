@@ -5,7 +5,7 @@
 //!
 //! # Example
 //!
-//! ```ignore
+//! ```text
 //! use reticulum_core::traits::{Interface, Clock, Storage, NoStorage};
 //!
 //! // Implement these traits for your platform:
