@@ -16,5 +16,4 @@ pub use hdlc::{crc16, frame_to_slice, max_framed_size, needs_escape, ESCAPE, ESC
 pub use hdlc::{frame, Deframer, DeframeResult};
 
 #[cfg(feature = "alloc")]
-#[allow(dead_code)]
 pub use hdlc::frame_with_crc;

@@ -12,9 +12,6 @@ use crate::constants::{
 };
 use crate::crypto::{derive_key, truncated_hash};
 
-#[cfg(feature = "alloc")]
-use alloc::vec::Vec;
-
 /// Link state
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum LinkState {
@@ -49,7 +46,6 @@ pub enum LinkError {
 pub type LinkId = [u8; TRUNCATED_HASHBYTES];
 
 /// A verified point-to-point link
-#[allow(dead_code)] // Fields for future link management features
 pub struct Link {
     /// Link identifier
     id: LinkId,
@@ -59,8 +55,8 @@ pub struct Link {
     ephemeral_private: Option<x25519_dalek::StaticSecret>,
     /// Our ephemeral X25519 public key
     ephemeral_public: x25519_dalek::PublicKey,
-    /// Our ephemeral Ed25519 signing key
-    signing_key: Option<ed25519_dalek::SigningKey>,
+    /// Our ephemeral Ed25519 signing key (for future link authentication)
+    _signing_key: Option<ed25519_dalek::SigningKey>,
     /// Our ephemeral Ed25519 verifying key
     verifying_key: ed25519_dalek::VerifyingKey,
     /// Peer's ephemeral public key (after handshake)
@@ -77,16 +73,14 @@ pub struct Link {
     hops: u8,
     /// Round-trip time estimate (microseconds)
     rtt_us: Option<u64>,
-    /// Keepalive interval in seconds
-    keepalive_secs: u64,
+    /// Keepalive interval in seconds (for future keepalive management)
+    _keepalive_secs: u64,
     /// Time of last inbound packet (timestamp)
     last_inbound: u64,
-    /// Time of last outbound packet (timestamp)
-    last_outbound: u64,
-    /// When the link was established (timestamp)
-    established_at: Option<u64>,
-    // TODO: Add MTU discovery
-    // TODO: Add callbacks
+    /// Time of last outbound packet (timestamp, for future keepalive management)
+    _last_outbound: u64,
+    /// When the link was established (timestamp, for future timeout management)
+    _established_at: Option<u64>,
 }
 
 impl Link {
@@ -119,7 +113,7 @@ impl Link {
             state: LinkState::Pending,
             ephemeral_private: Some(ephemeral_private),
             ephemeral_public,
-            signing_key: Some(signing_key),
+            _signing_key: Some(signing_key),
             verifying_key,
             peer_ephemeral_public: None,
             peer_verifying_key: None,
@@ -128,10 +122,10 @@ impl Link {
             initiator: true,
             hops: 0,
             rtt_us: None,
-            keepalive_secs: LINK_KEEPALIVE_SECS,
+            _keepalive_secs: LINK_KEEPALIVE_SECS,
             last_inbound: 0,
-            last_outbound: 0,
-            established_at: None,
+            _last_outbound: 0,
+            _established_at: None,
         }
     }
 

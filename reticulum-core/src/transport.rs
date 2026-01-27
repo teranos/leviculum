@@ -236,7 +236,7 @@ struct DestinationEntry {
 pub struct Transport<C: Clock, S: Storage> {
     config: TransportConfig,
     clock: C,
-    storage: S,
+    _storage: S,
     identity: Identity,
 
     /// Registered interfaces (indices are stable; removed interfaces become None)
@@ -274,7 +274,7 @@ impl<C: Clock, S: Storage> Transport<C, S> {
         Self {
             config,
             clock,
-            storage,
+            _storage: storage,
             identity,
             interfaces: Vec::new(),
             path_table: BTreeMap::new(),

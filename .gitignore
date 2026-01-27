@@ -7,6 +7,12 @@ reticulum-ffi/*.h
 
 # Markdown files
 IMPLEMENTATION_PLAN.md
+ROADMAP.md
+
+# Generated/outdated docs
+doc/html/
+doc/ANNOUNCE_API_DESIGN.md
+doc/ARCHITECTURE.md
 
 # IDE
 .idea/

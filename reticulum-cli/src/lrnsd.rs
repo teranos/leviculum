@@ -55,9 +55,15 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     info!("Config: {}", config_path.display());
     info!("Storage: {}", storage_path.display());
 
-    // Create and start Reticulum instance
-    let rns = Reticulum::with_paths(config_path, storage_path).await?;
-    rns.start().await?;
+    // Load and configure Reticulum
+    let mut config = if config_path.exists() {
+        Config::load(&config_path)?
+    } else {
+        Config::default()
+    };
+    config.reticulum.storage_path = Some(storage_path);
+
+    let mut rns = Reticulum::with_config(config).await?;
 
     info!("Reticulum daemon running");
 

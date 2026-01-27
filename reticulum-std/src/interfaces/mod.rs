@@ -8,12 +8,5 @@
 
 pub mod hdlc;
 pub mod tcp;
-mod traits;
 
 pub use tcp::TcpClientInterface;
-pub use traits::{Interface, InterfaceMode, InterfaceStats};
-
-// Future interface implementations:
-// - local.rs - Local IPC (Unix sockets)
-// - serial.rs - Serial port (KISS protocol)
-// - rnode.rs - RNode LoRa modules
