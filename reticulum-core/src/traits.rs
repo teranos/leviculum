@@ -13,9 +13,13 @@
 //! // - embedded: LoRaInterface, EmbassyClock, FlashStorage or NoStorage
 //! ```
 
+use rand_core::CryptoRngCore;
 use crate::constants::TRUNCATED_HASHBYTES;
 
-#[cfg(feature = "alloc")]
+#[cfg(not(feature = "std"))]
+extern crate alloc;
+
+#[cfg(not(feature = "std"))]
 use alloc::vec::Vec;
 
 /// Error type for interface operations
@@ -189,36 +193,6 @@ impl Storage for NoStorage {
     }
 }
 
-/// Random number generator trait
-///
-/// This is a simplified trait that wraps `rand_core::CryptoRngCore`.
-/// All implementations must be cryptographically secure.
-pub trait Rng {
-    /// Fill a buffer with random bytes
-    fn fill_bytes(&mut self, dest: &mut [u8]);
-
-    /// Generate a random u64
-    fn next_u64(&mut self) -> u64 {
-        let mut buf = [0u8; 8];
-        self.fill_bytes(&mut buf);
-        u64::from_le_bytes(buf)
-    }
-
-    /// Generate a random u32
-    fn next_u32(&mut self) -> u32 {
-        let mut buf = [0u8; 4];
-        self.fill_bytes(&mut buf);
-        u32::from_le_bytes(buf)
-    }
-}
-
-// Blanket implementation for rand_core types
-impl<T: rand_core::CryptoRngCore> Rng for T {
-    fn fill_bytes(&mut self, dest: &mut [u8]) {
-        rand_core::RngCore::fill_bytes(self, dest)
-    }
-}
-
 /// Storage categories used by the protocol
 pub mod categories {
     /// Stored identities (private keys)
@@ -231,6 +205,67 @@ pub mod categories {
     pub const RATCHETS: &str = "ratchets";
     /// Cached data (packet dedup, etc.)
     pub const CACHE: &str = "cache";
+}
+
+/// Platform context trait that bundles all platform-specific dependencies
+///
+/// This is the central abstraction that allows protocol code to run
+/// on any platform. Functions that need platform services take
+/// `ctx: &mut impl Context`.
+///
+/// The trait is stable: new capabilities can be added without
+/// breaking existing function signatures.
+pub trait Context {
+    type Rng: CryptoRngCore;
+    type Clock: Clock;
+    type Storage: Storage;
+
+    fn rng(&mut self) -> &mut Self::Rng;
+    fn clock(&self) -> &Self::Clock;
+    fn storage(&mut self) -> &mut Self::Storage;
+}
+
+/// Standard implementation of [`Context`]
+///
+/// # Example (std)
+/// ```ignore
+/// use rand_core::OsRng;
+/// use reticulum_std::SystemClock;
+/// use reticulum_core::traits::{PlatformContext, NoStorage};
+///
+/// let mut ctx = PlatformContext {
+///     rng: OsRng,
+///     clock: SystemClock,
+///     storage: NoStorage,
+/// };
+/// let identity = Identity::generate(&mut ctx);
+/// ```
+///
+/// # Example (embedded)
+/// ```ignore
+/// use reticulum_core::traits::{PlatformContext, NoStorage};
+///
+/// let mut ctx = PlatformContext {
+///     rng: Stm32Rng::new(),
+///     clock: Tim2Clock::new(),
+///     storage: NoStorage,
+/// };
+/// let identity = Identity::generate(&mut ctx);
+/// ```
+pub struct PlatformContext<R: CryptoRngCore, C: Clock, S: Storage> {
+    pub rng: R,
+    pub clock: C,
+    pub storage: S,
+}
+
+impl<R: CryptoRngCore, C: Clock, S: Storage> Context for PlatformContext<R, C, S> {
+    type Rng = R;
+    type Clock = C;
+    type Storage = S;
+
+    fn rng(&mut self) -> &mut Self::Rng { &mut self.rng }
+    fn clock(&self) -> &Self::Clock { &self.clock }
+    fn storage(&mut self) -> &mut Self::Storage { &mut self.storage }
 }
 
 #[cfg(test)]

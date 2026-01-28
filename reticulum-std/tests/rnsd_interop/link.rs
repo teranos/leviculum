@@ -79,6 +79,22 @@ async fn establish_link(
     let mut deframer = Deframer::new();
     let mut buffer = [0u8; 2048];
     let proof_start = std::time::Instant::now();
+    use reticulum_core::traits::{Clock, PlatformContext, NoStorage};
+    use rand_core::OsRng;
+    struct TestClock;
+    impl Clock for TestClock {
+        fn now_ms(&self) -> u64 {
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_millis() as u64
+        }
+    }
+    let mut ctx = PlatformContext {
+        rng: OsRng,
+        clock: TestClock,
+        storage: NoStorage,
+    };
 
     while proof_start.elapsed() < Duration::from_secs(10) {
         match timeout(Duration::from_millis(500), stream.read(&mut buffer)).await {
@@ -95,7 +111,7 @@ async fn establish_link(
                                 println!("Proof verified! Link active.");
 
                                 // Send RTT
-                                let rtt_pkt = link.build_rtt_packet(0.05).unwrap();
+                                let rtt_pkt = link.build_rtt_packet(0.05, &mut ctx).unwrap();
                                 let mut rtt_framed = Vec::new();
                                 frame(&rtt_pkt, &mut rtt_framed);
                                 stream.write_all(&rtt_framed).await.unwrap();
@@ -277,11 +293,27 @@ async fn test_multiple_data_packets_over_link() {
     let mut sent_count = 0;
     let mut echo_count = 0;
     let mut framed = Vec::new();
+    use reticulum_core::traits::{Clock, PlatformContext, NoStorage};
+    use rand_core::OsRng;
+    struct TestClock;
+    impl Clock for TestClock {
+        fn now_ms(&self) -> u64 {
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_millis() as u64
+        }
+    }
+    let mut ctx = PlatformContext {
+        rng: OsRng,
+        clock: TestClock,
+        storage: NoStorage,
+    };
 
     for &size in test_sizes {
         let data: Vec<u8> = (0..size).map(|i| (i & 0xFF) as u8).collect();
 
-        let data_pkt = link.build_data_packet(&data).unwrap();
+        let data_pkt = link.build_data_packet(&data, &mut ctx).unwrap();
         framed.clear();
         frame(&data_pkt, &mut framed);
         stream.write_all(&framed).await.unwrap();

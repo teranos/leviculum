@@ -10,7 +10,6 @@
 //! - HKDF for key derivation
 //! - SHA-256/SHA-512 for hashing
 
-mod random;
 mod aes_cbc;
 mod hashes;
 mod hkdf_impl;
@@ -22,9 +21,6 @@ pub use hashes::{full_hash, sha256, sha512, truncated_hash};
 pub use hkdf_impl::derive_key;
 pub use hmac_impl::{hmac_sha256, verify_hmac};
 pub use token::{decrypt_token, encrypt_token, TokenError};
-pub use random::random_bytes_with_rng;
-#[cfg(feature = "std")]
-pub use random::random_bytes;
 
 // Re-export key types from dalek crates
 pub use ed25519_dalek::{Signature, SigningKey, VerifyingKey};

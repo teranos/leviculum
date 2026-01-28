@@ -6,9 +6,10 @@ use std::time::Duration;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpStream;
 use tokio::time::timeout;
+use rand_core::{OsRng, RngCore};
 
 use reticulum_core::constants::{MTU, TRUNCATED_HASHBYTES};
-use reticulum_core::crypto::{full_hash, random_bytes, truncated_hash};
+use reticulum_core::crypto::{full_hash, truncated_hash};
 use reticulum_core::destination::DestinationType;
 use reticulum_core::identity::Identity;
 use reticulum_core::packet::{
@@ -213,7 +214,8 @@ impl ParsedAnnounce {
 pub fn generate_random_hash() -> [u8; 10] {
     use std::time::{SystemTime, UNIX_EPOCH};
 
-    let random_16: [u8; 16] = random_bytes();
+    let mut random_16 = [08; 16];
+    OsRng.fill_bytes(&mut random_16);
     let random_hash = truncated_hash(&random_16);
 
     let timestamp_secs = SystemTime::now()

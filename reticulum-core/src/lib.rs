@@ -12,7 +12,7 @@
 //! - `Interface`: Network interface (TCP, UDP, LoRa, BLE)
 //! - `Clock`: Time source for timeouts and RTT
 //! - `Storage`: Persistent storage for identities and paths
-//! - `Rng`: Cryptographic random number generator
+//! - `CryptoRngCore`: Cryptographic random number generator
 //!
 //! # Modules
 //!
@@ -58,4 +58,4 @@ pub use packet::Packet;
 
 // Re-export traits
 #[cfg(feature = "alloc")]
-pub use traits::{Clock, Interface, InterfaceError, InterfaceMode, NoStorage, Rng, Storage, StorageError};
+pub use traits::{Clock, Interface, InterfaceError, InterfaceMode, NoStorage, Storage, StorageError};

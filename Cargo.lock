@@ -904,6 +904,7 @@ name = "reticulum-std"
 version = "0.1.0"
 dependencies = [
  "bytes",
+ "rand_core 0.6.4",
  "reticulum-core",
  "rmp-serde",
  "serde",

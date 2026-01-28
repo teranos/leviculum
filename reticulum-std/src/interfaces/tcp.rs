@@ -270,7 +270,9 @@ mod tests {
         );
 
         let id = dest.identity().unwrap();
-        let random_hash = reticulum_core::crypto::random_bytes::<10>();
+        let mut random_hash = [0u8; 10];
+        use rand_core::{OsRng, RngCore};
+        OsRng.fill_bytes(&mut random_hash);
 
         let mut payload = Vec::new();
         payload.extend_from_slice(&id.public_key_bytes());

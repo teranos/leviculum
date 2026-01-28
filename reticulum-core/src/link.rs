@@ -11,6 +11,8 @@ use crate::constants::{
     X25519_KEY_SIZE,
 };
 use crate::crypto::{derive_key, truncated_hash};
+use crate::traits::Context;
+use rand_core::RngCore;
 
 /// Link state
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -85,7 +87,6 @@ pub struct Link {
 
 impl Link {
     /// Create a new outgoing link (initiator side)
-    #[cfg(feature = "std")]
     pub fn new_outgoing(destination_hash: [u8; TRUNCATED_HASHBYTES]) -> Self {
         use rand_core::OsRng;
         Self::new_outgoing_with_rng(destination_hash, &mut OsRng)
@@ -222,7 +223,6 @@ impl Link {
     /// ```
     ///
     /// The raw_packet is: [flags (1)] [hops (1)] [dest_hash (16)] [context (1)] [payload (64-67)]
-    #[cfg(feature = "alloc")]
     pub fn calculate_link_id(raw_packet: &[u8]) -> LinkId {
         // Build hashable part: (flags & 0x0F) + raw[2:]
         let mut hashable = alloc::vec::Vec::with_capacity(raw_packet.len() - 1);
@@ -369,7 +369,6 @@ impl Link {
     ///
     /// Returns the raw packet bytes ready for framing/transmission.
     /// Also sets the link_id on this Link.
-    #[cfg(feature = "alloc")]
     pub fn build_link_request_packet(&mut self) -> alloc::vec::Vec<u8> {
         use crate::destination::DestinationType;
         use crate::packet::{HeaderType, PacketContext, PacketFlags, PacketType, TransportType};
@@ -408,37 +407,18 @@ impl Link {
         self.link_key
     }
 
-    /// Encrypt data for transmission over this link
-    ///
-    /// Returns the encrypted token: [IV (16)][ciphertext][HMAC (32)]
-    ///
-    /// The output buffer must be large enough for:
-    /// IV (16) + padded plaintext + HMAC (32)
-    /// Padded size = ((plaintext.len() / 16) + 1) * 16
-    #[cfg(feature = "std")]
-    pub fn encrypt(&self, plaintext: &[u8], output: &mut [u8]) -> Result<usize, LinkError> {
-        use crate::crypto::{encrypt_token, random_bytes};
-
-        let token_key = self.token_key().ok_or(LinkError::InvalidState)?;
-        let iv: [u8; 16] = random_bytes();
-
-        encrypt_token(&token_key, &iv, plaintext, output).map_err(|_| LinkError::KeyExchangeFailed)
-    }
-
     /// Encrypt data for transmission over this link (with provided RNG)
     ///
     /// Returns the encrypted token: [IV (16)][ciphertext][HMAC (32)]
-    pub fn encrypt_with_rng<R: rand_core::CryptoRngCore>(
-        &self,
-        plaintext: &[u8],
-        output: &mut [u8],
-        rng: &mut R,
-    ) -> Result<usize, LinkError> {
+    pub fn encrypt(&self,
+                   plaintext: &[u8],
+                   output: &mut [u8],
+                   ctx: &mut impl Context) -> Result<usize, LinkError> {
         use crate::crypto::encrypt_token;
 
         let token_key = self.token_key().ok_or(LinkError::InvalidState)?;
         let mut iv = [0u8; 16];
-        rng.fill_bytes(&mut iv);
+        ctx.rng().fill_bytes(&mut iv);
 
         encrypt_token(&token_key, &iv, plaintext, output).map_err(|_| LinkError::KeyExchangeFailed)
     }
@@ -474,8 +454,7 @@ impl Link {
     ///
     /// The plaintext is encrypted and wrapped in a proper packet format.
     /// Returns the raw packet bytes ready for framing/transmission.
-    #[cfg(feature = "std")]
-    pub fn build_data_packet(&self, plaintext: &[u8]) -> Result<alloc::vec::Vec<u8>, LinkError> {
+    pub fn build_data_packet(&self, plaintext: &[u8], ctx: &mut impl Context) -> Result<alloc::vec::Vec<u8>, LinkError> {
         use crate::destination::DestinationType;
         use crate::packet::{HeaderType, PacketContext, PacketFlags, PacketType, TransportType};
 
@@ -486,7 +465,7 @@ impl Link {
         // Encrypt the data
         let encrypted_len = Self::encrypted_size(plaintext.len());
         let mut encrypted = alloc::vec![0u8; encrypted_len];
-        let enc_len = self.encrypt(plaintext, &mut encrypted)?;
+        let enc_len = self.encrypt(plaintext, &mut encrypted, ctx)?;
 
         // Build flags for link data packet
         let flags = PacketFlags {
@@ -514,8 +493,7 @@ impl Link {
     /// The destination only considers the link "established" after receiving this.
     ///
     /// The RTT value is msgpack-encoded (float64 format).
-    #[cfg(feature = "std")]
-    pub fn build_rtt_packet(&self, rtt_seconds: f64) -> Result<alloc::vec::Vec<u8>, LinkError> {
+    pub fn build_rtt_packet(&self, rtt_seconds: f64, ctx: &mut impl Context) -> Result<alloc::vec::Vec<u8>, LinkError> {
         use crate::destination::DestinationType;
         use crate::packet::{HeaderType, PacketContext, PacketFlags, PacketType, TransportType};
 
@@ -531,7 +509,7 @@ impl Link {
         // Encrypt the RTT data
         let encrypted_len = Self::encrypted_size(rtt_data.len());
         let mut encrypted = alloc::vec![0u8; encrypted_len];
-        let enc_len = self.encrypt(&rtt_data, &mut encrypted)?;
+        let enc_len = self.encrypt(&rtt_data, &mut encrypted, ctx)?;
 
         // Build flags for link RTT packet
         let flags = PacketFlags {
@@ -560,8 +538,18 @@ impl Link {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::traits::{Clock, PlatformContext, NoStorage};
+    use rand_core::OsRng;
+    struct TestClock;
+    impl Clock for TestClock {
+        fn now_ms(&self) -> u64 {
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_millis() as u64
+        }
+    }
 
-    #[cfg(feature = "std")]
     #[test]
     fn test_link_creation() {
         let dest_hash = [0x42; TRUNCATED_HASHBYTES];
@@ -574,7 +562,6 @@ mod tests {
         assert_eq!(link.id(), &[0u8; TRUNCATED_HASHBYTES]);
     }
 
-    #[cfg(feature = "std")]
     #[test]
     fn test_link_request_data() {
         let dest_hash = [0x42; TRUNCATED_HASHBYTES];
@@ -835,7 +822,12 @@ mod tests {
         let encrypted_len = Link::encrypted_size(plaintext.len());
         let mut encrypted = vec![0u8; encrypted_len];
 
-        let enc_len = link.encrypt(plaintext, &mut encrypted).unwrap();
+        let mut ctx = PlatformContext {
+            rng: OsRng,
+            clock: TestClock,
+            storage: NoStorage,
+        };
+        let enc_len = link.encrypt(plaintext, &mut encrypted, &mut ctx).unwrap();
         assert!(enc_len > plaintext.len()); // Should be larger due to IV + padding + HMAC
 
         let mut decrypted = vec![0u8; plaintext.len() + 16]; // Allow for padding
@@ -892,7 +884,12 @@ mod tests {
         // Encrypt some data
         let plaintext = b"Secret message";
         let mut encrypted = vec![0u8; Link::encrypted_size(plaintext.len())];
-        let enc_len = link.encrypt(plaintext, &mut encrypted).unwrap();
+        let mut ctx = PlatformContext {
+            rng: OsRng,
+            clock: TestClock,
+            storage: NoStorage,
+        };
+        let enc_len = link.encrypt(plaintext, &mut encrypted, &mut ctx).unwrap();
 
         // Tamper with the ciphertext
         encrypted[20] ^= 0xFF;
@@ -968,7 +965,12 @@ mod tests {
 
         // Now test build_data_packet
         let message = b"Hello, link!";
-        let packet = link.build_data_packet(message).unwrap();
+        let mut ctx = PlatformContext {
+            rng: OsRng,
+            clock: TestClock,
+            storage: NoStorage,
+        };
+        let packet = link.build_data_packet(message, &mut ctx).unwrap();
 
         // Verify packet structure:
         // [flags (1)] [hops (1)] [link_id (16)] [context (1)] [encrypted_data]
@@ -1002,8 +1004,13 @@ mod tests {
         let dest_hash = [0x42; TRUNCATED_HASHBYTES];
         let link = Link::new_outgoing(dest_hash);
 
+        let mut ctx = PlatformContext {
+            rng: OsRng,
+            clock: TestClock,
+            storage: NoStorage,
+        };
         // Link is in Pending state, not Active
-        let result = link.build_data_packet(b"Hello");
+        let result = link.build_data_packet(b"Hello", &mut ctx);
         assert!(matches!(result, Err(LinkError::InvalidState)));
     }
 }

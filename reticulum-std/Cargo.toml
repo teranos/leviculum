@@ -12,6 +12,7 @@ serial = ["dep:tokio-serial"]
 
 [dependencies]
 reticulum-core = { path = "../reticulum-core", default-features = true }
+rand_core = { version = "0.6", features = ["std", "getrandom"] }
 
 tokio.workspace = true
 tokio-serial = { workspace = true, optional = true }
