@@ -6,9 +6,14 @@
 //! - A type (SINGLE, GROUP, PLAIN, LINK) determining encryption behavior
 //! - A direction (IN, OUT) determining receive/send capability
 
+use crate::announce::{build_announce_payload, AnnounceError};
 use crate::constants::{IDENTITY_HASHBYTES, NAME_HASHBYTES, TRUNCATED_HASHBYTES};
 use crate::crypto::{sha256, truncated_hash};
 use crate::identity::Identity;
+use crate::packet::{
+    HeaderType, Packet, PacketContext, PacketData, PacketFlags, PacketType, TransportType,
+};
+use crate::traits::Context;
 
 use alloc::string::String;
 
@@ -142,8 +147,10 @@ impl Destination {
         self.accepts_links = accept;
     }
 
-    /// Compute the name hash from app_name and aspects
-    fn compute_name_hash(app_name: &str, aspects: &[&str]) -> [u8; NAME_HASHBYTES] {
+    /// Compute the name hash from app_name and aspects.
+    ///
+    /// The name hash is the first 10 bytes of SHA256(app_name.aspect1.aspect2...).
+    pub fn compute_name_hash(app_name: &str, aspects: &[&str]) -> [u8; NAME_HASHBYTES] {
         let mut full_name = String::from(app_name);
         for aspect in aspects {
             full_name.push('.');
@@ -156,8 +163,10 @@ impl Destination {
         name_hash
     }
 
-    /// Compute the destination hash from name_hash and identity_hash
-    fn compute_destination_hash(
+    /// Compute the destination hash from name_hash and identity_hash.
+    ///
+    /// destination_hash = truncated_hash(name_hash + identity_hash)
+    pub fn compute_destination_hash(
         name_hash: &[u8; NAME_HASHBYTES],
         identity_hash: &[u8; IDENTITY_HASHBYTES],
     ) -> [u8; TRUNCATED_HASHBYTES] {
@@ -167,15 +176,88 @@ impl Destination {
         truncated_hash(&combined)
     }
 
+    /// Create a signed announce packet for this destination.
+    ///
+    /// Announces inform the network about this destination's presence.
+    /// Only IN destinations can announce (they receive traffic).
+    ///
+    /// # Arguments
+    /// * `app_data` - Optional application-specific data (max ~350 bytes)
+    /// * `ctx` - Platform context for RNG and clock
+    ///
+    /// # Errors
+    /// * `NoIdentity` - Destination has no identity (PLAIN type)
+    /// * `WrongDirection` - OUT destinations cannot announce
+    /// * `SigningFailed` - Signature could not be created
+    ///
+    /// # Example
+    /// ```ignore
+    /// let dest = Destination::new(Some(identity), Direction::In,
+    ///                             DestinationType::Single, "app", &["echo"]);
+    /// let packet = dest.announce(Some(b"my-data"), &mut ctx)?;
+    /// transport.send_packet(packet)?;
+    /// ```
+    pub fn announce(
+        &self,
+        app_data: Option<&[u8]>,
+        ctx: &mut impl Context,
+    ) -> Result<Packet, AnnounceError> {
+        // Only IN destinations can announce
+        if self.direction != Direction::In {
+            return Err(AnnounceError::WrongDirection);
+        }
+
+        // Must have an identity to sign the announce
+        let identity = self.identity.as_ref().ok_or(AnnounceError::NoIdentity)?;
+
+        // Build the signed payload
+        let payload = build_announce_payload(identity, &self.hash, &self.name_hash, app_data, ctx)?;
+
+        // Create the packet
+        let packet = Packet {
+            flags: PacketFlags {
+                header_type: HeaderType::Type1,
+                context_flag: false, // No ratchet (for now)
+                transport_type: TransportType::Broadcast,
+                dest_type: self.dest_type,
+                packet_type: PacketType::Announce,
+            },
+            hops: 0,
+            transport_id: None,
+            destination_hash: self.hash,
+            context: PacketContext::None,
+            data: PacketData::Owned(payload),
+        };
+
+        Ok(packet)
+    }
+
     // TODO: Implement encrypt/decrypt methods
-    // TODO: Implement announce method
     // TODO: Implement callback registration
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::announce::ReceivedAnnounce;
+    use crate::traits::{NoStorage, PlatformContext};
     use rand_core::OsRng;
+
+    // Mock clock for tests
+    struct MockClock(u64);
+    impl crate::traits::Clock for MockClock {
+        fn now_ms(&self) -> u64 {
+            self.0
+        }
+    }
+
+    fn test_context() -> PlatformContext<OsRng, MockClock, NoStorage> {
+        PlatformContext {
+            rng: OsRng,
+            clock: MockClock(1704067200000), // 2024-01-01 00:00:00 UTC
+            storage: NoStorage,
+        }
+    }
 
     #[test]
     fn test_destination_creation() {
@@ -210,5 +292,110 @@ mod tests {
         assert_eq!(DestinationType::try_from(0x02), Ok(DestinationType::Plain));
         assert_eq!(DestinationType::try_from(0x03), Ok(DestinationType::Link));
         assert_eq!(DestinationType::try_from(0x04), Err(()));
+    }
+
+    #[test]
+    fn test_destination_announce_creates_valid_packet() {
+        let identity = Identity::generate_with_rng(&mut OsRng);
+        let dest = Destination::new(
+            Some(identity),
+            Direction::In,
+            DestinationType::Single,
+            "testapp",
+            &["echo"],
+        );
+
+        let mut ctx = test_context();
+        let packet = dest.announce(Some(b"hello"), &mut ctx).unwrap();
+
+        // Verify packet structure
+        assert_eq!(packet.flags.packet_type, PacketType::Announce);
+        assert_eq!(packet.flags.transport_type, TransportType::Broadcast);
+        assert_eq!(packet.flags.dest_type, DestinationType::Single);
+        assert_eq!(packet.flags.header_type, HeaderType::Type1);
+        assert!(!packet.flags.context_flag); // No ratchet
+        assert_eq!(packet.hops, 0);
+        assert_eq!(packet.destination_hash, *dest.hash());
+
+        // Parse and verify the announce
+        let announce = ReceivedAnnounce::from_packet(&packet).unwrap();
+        assert!(announce.verify_destination_hash());
+        assert!(announce.verify_signature().unwrap());
+        assert_eq!(announce.app_data(), b"hello");
+    }
+
+    #[test]
+    fn test_destination_announce_out_direction_fails() {
+        let identity = Identity::generate_with_rng(&mut OsRng);
+        let dest = Destination::new(
+            Some(identity),
+            Direction::Out, // OUT cannot announce
+            DestinationType::Single,
+            "testapp",
+            &["echo"],
+        );
+
+        let mut ctx = test_context();
+        let result = dest.announce(None, &mut ctx);
+
+        assert!(matches!(result, Err(AnnounceError::WrongDirection)));
+    }
+
+    #[test]
+    fn test_destination_announce_no_identity_fails() {
+        let dest = Destination::new(
+            None, // No identity
+            Direction::In,
+            DestinationType::Plain,
+            "testapp",
+            &["echo"],
+        );
+
+        let mut ctx = test_context();
+        let result = dest.announce(None, &mut ctx);
+
+        assert!(matches!(result, Err(AnnounceError::NoIdentity)));
+    }
+
+    #[test]
+    fn test_destination_announce_without_app_data() {
+        let identity = Identity::generate_with_rng(&mut OsRng);
+        let dest = Destination::new(
+            Some(identity),
+            Direction::In,
+            DestinationType::Single,
+            "testapp",
+            &["echo"],
+        );
+
+        let mut ctx = test_context();
+        let packet = dest.announce(None, &mut ctx).unwrap();
+
+        let announce = ReceivedAnnounce::from_packet(&packet).unwrap();
+        assert!(announce.app_data().is_empty());
+        assert!(announce.validate().is_ok());
+    }
+
+    #[test]
+    fn test_destination_announce_validates_correctly() {
+        // Create destination and announce
+        let identity = Identity::generate_with_rng(&mut OsRng);
+        let dest = Destination::new(
+            Some(identity),
+            Direction::In,
+            DestinationType::Single,
+            "myapp",
+            &["service", "v1"],
+        );
+
+        let mut ctx = test_context();
+        let packet = dest.announce(Some(b"app-data"), &mut ctx).unwrap();
+
+        // Full validation should pass
+        let announce = ReceivedAnnounce::from_packet(&packet).unwrap();
+        assert!(announce.validate().is_ok());
+
+        // Computed hashes should match
+        assert_eq!(announce.computed_destination_hash(), *dest.hash());
     }
 }

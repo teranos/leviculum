@@ -50,7 +50,7 @@ pub mod traits;
 pub mod transport;
 
 // Re-export key types
-pub use announce::{AnnounceError, ReceivedAnnounce};
+pub use announce::{generate_random_hash, AnnounceError, ReceivedAnnounce};
 pub use destination::Destination;
 pub use identity::Identity;
 pub use link::Link;

@@ -9,13 +9,13 @@ use tokio::time::timeout;
 use rand_core::{OsRng, RngCore};
 
 use reticulum_core::constants::{MTU, TRUNCATED_HASHBYTES};
-use reticulum_core::crypto::{full_hash, truncated_hash};
-use reticulum_core::destination::DestinationType;
+use reticulum_core::crypto::truncated_hash;
+use reticulum_core::destination::{Destination, DestinationType, Direction};
 use reticulum_core::identity::Identity;
-use reticulum_core::packet::{
-    HeaderType, Packet, PacketContext, PacketData, PacketFlags, PacketType, TransportType,
-};
+use reticulum_core::packet::{Packet, PacketType};
+use reticulum_core::traits::{NoStorage, PlatformContext};
 use reticulum_std::interfaces::hdlc::{frame, DeframeResult, Deframer};
+use reticulum_std::SystemClock;
 
 pub const RNSD_ADDR: &str = "127.0.0.1:4242";
 pub const CONNECTION_TIMEOUT: Duration = Duration::from_secs(2);
@@ -32,6 +32,15 @@ pub const PROPAGATION_TIMEOUT: Duration = Duration::from_secs(10);
 
 /// Default path to rnsd log file
 const RNSD_LOG_PATH: &str = concat!(env!("HOME"), "/.reticulum/logfile");
+
+/// Create a platform context for tests
+fn test_context() -> PlatformContext<OsRng, SystemClock, NoStorage> {
+    PlatformContext {
+        rng: OsRng,
+        clock: SystemClock::new(),
+        storage: NoStorage,
+    }
+}
 
 /// Errors that indicate packet format problems in rnsd logs
 const RNSD_ERROR_PATTERNS: &[&str] = &[
@@ -231,17 +240,9 @@ pub fn generate_random_hash() -> [u8; 10] {
 }
 
 /// Helper to compute name_hash from app_name and aspects
+/// Delegates to Destination::compute_name_hash
 pub fn compute_name_hash(app_name: &str, aspects: &[&str]) -> [u8; 10] {
-    let mut full_name = app_name.to_string();
-    for aspect in aspects {
-        full_name.push('.');
-        full_name.push_str(aspect);
-    }
-
-    let hash = full_hash(full_name.as_bytes());
-    let mut result = [0u8; 10];
-    result.copy_from_slice(&hash[..10]);
-    result
+    Destination::compute_name_hash(app_name, aspects)
 }
 
 /// Helper to compute destination_hash from name_hash and identity_hash
@@ -253,51 +254,26 @@ pub fn compute_destination_hash(name_hash: &[u8; 10], identity_hash: &[u8; 16]) 
 }
 
 /// Build and send a valid announce on the given stream.
-/// Returns (destination_hash, identity) for verification.
+/// Returns (destination_hash, destination) for verification.
 pub async fn build_and_send_announce(
     stream: &mut TcpStream,
     app_name: &str,
     aspects: &[&str],
     app_data: &[u8],
-) -> ([u8; TRUNCATED_HASHBYTES], Identity) {
-    let identity = Identity::generate_with_rng(&mut rand_core::OsRng);
-    let public_key = identity.public_key_bytes();
-    let identity_hash = *identity.hash();
+) -> ([u8; TRUNCATED_HASHBYTES], Destination) {
+    let identity = Identity::generate_with_rng(&mut OsRng);
+    let dest = Destination::new(
+        Some(identity),
+        Direction::In,
+        DestinationType::Single,
+        app_name,
+        aspects,
+    );
 
-    let name_hash = compute_name_hash(app_name, aspects);
-    let random_hash = generate_random_hash();
-    let destination_hash = compute_destination_hash(&name_hash, &identity_hash);
-
-    let mut signed_data = Vec::with_capacity(100 + app_data.len());
-    signed_data.extend_from_slice(&destination_hash);
-    signed_data.extend_from_slice(&public_key);
-    signed_data.extend_from_slice(&name_hash);
-    signed_data.extend_from_slice(&random_hash);
-    signed_data.extend_from_slice(app_data);
-
-    let signature = identity.sign(&signed_data).expect("Failed to sign");
-
-    let mut payload = Vec::with_capacity(148 + app_data.len());
-    payload.extend_from_slice(&public_key);
-    payload.extend_from_slice(&name_hash);
-    payload.extend_from_slice(&random_hash);
-    payload.extend_from_slice(&signature);
-    payload.extend_from_slice(app_data);
-
-    let packet = Packet {
-        flags: PacketFlags {
-            header_type: HeaderType::Type1,
-            context_flag: false,
-            transport_type: TransportType::Broadcast,
-            dest_type: DestinationType::Single,
-            packet_type: PacketType::Announce,
-        },
-        hops: 0,
-        transport_id: None,
-        destination_hash,
-        context: PacketContext::None,
-        data: PacketData::Owned(payload),
-    };
+    let mut ctx = test_context();
+    let packet = dest
+        .announce(Some(app_data), &mut ctx)
+        .expect("Failed to create announce");
 
     let mut raw_packet = [0u8; MTU];
     let size = packet.pack(&mut raw_packet).expect("Failed to pack packet");
@@ -308,58 +284,35 @@ pub async fn build_and_send_announce(
     stream.write_all(&framed).await.expect("Failed to send");
     stream.flush().await.expect("Failed to flush");
 
-    (destination_hash, identity)
+    let dest_hash = *dest.hash();
+    (dest_hash, dest)
 }
 
-/// Build a valid announce as raw bytes (not framed), returning (raw_bytes, dest_hash, identity).
+/// Build a valid announce as raw bytes (not framed), returning (raw_bytes, dest_hash, destination).
 pub fn build_announce_raw(
     app_name: &str,
     aspects: &[&str],
     app_data: &[u8],
-) -> (Vec<u8>, [u8; TRUNCATED_HASHBYTES], Identity) {
-    let identity = Identity::generate_with_rng(&mut rand_core::OsRng);
-    let public_key = identity.public_key_bytes();
-    let identity_hash = *identity.hash();
+) -> (Vec<u8>, [u8; TRUNCATED_HASHBYTES], Destination) {
+    let identity = Identity::generate_with_rng(&mut OsRng);
+    let dest = Destination::new(
+        Some(identity),
+        Direction::In,
+        DestinationType::Single,
+        app_name,
+        aspects,
+    );
 
-    let name_hash = compute_name_hash(app_name, aspects);
-    let random_hash = generate_random_hash();
-    let destination_hash = compute_destination_hash(&name_hash, &identity_hash);
-
-    let mut signed_data = Vec::with_capacity(100 + app_data.len());
-    signed_data.extend_from_slice(&destination_hash);
-    signed_data.extend_from_slice(&public_key);
-    signed_data.extend_from_slice(&name_hash);
-    signed_data.extend_from_slice(&random_hash);
-    signed_data.extend_from_slice(app_data);
-
-    let signature = identity.sign(&signed_data).expect("Failed to sign");
-
-    let mut payload = Vec::with_capacity(148 + app_data.len());
-    payload.extend_from_slice(&public_key);
-    payload.extend_from_slice(&name_hash);
-    payload.extend_from_slice(&random_hash);
-    payload.extend_from_slice(&signature);
-    payload.extend_from_slice(app_data);
-
-    let packet = Packet {
-        flags: PacketFlags {
-            header_type: HeaderType::Type1,
-            context_flag: false,
-            transport_type: TransportType::Broadcast,
-            dest_type: DestinationType::Single,
-            packet_type: PacketType::Announce,
-        },
-        hops: 0,
-        transport_id: None,
-        destination_hash,
-        context: PacketContext::None,
-        data: PacketData::Owned(payload),
-    };
+    let mut ctx = test_context();
+    let packet = dest
+        .announce(Some(app_data), &mut ctx)
+        .expect("Failed to create announce");
 
     let mut raw_packet = [0u8; MTU];
     let size = packet.pack(&mut raw_packet).expect("Failed to pack packet");
 
-    (raw_packet[..size].to_vec(), destination_hash, identity)
+    let dest_hash = *dest.hash();
+    (raw_packet[..size].to_vec(), dest_hash, dest)
 }
 
 /// Build announce raw bytes with a specific hops value
@@ -368,11 +321,11 @@ pub fn build_announce_raw_with_hops(
     aspects: &[&str],
     app_data: &[u8],
     hops: u8,
-) -> (Vec<u8>, [u8; TRUNCATED_HASHBYTES], Identity) {
-    let (mut raw, dest_hash, identity) = build_announce_raw(app_name, aspects, app_data);
+) -> (Vec<u8>, [u8; TRUNCATED_HASHBYTES], Destination) {
+    let (mut raw, dest_hash, dest) = build_announce_raw(app_name, aspects, app_data);
     // Hops is the second byte (offset 1) in the raw packet
     raw[1] = hops;
-    (raw, dest_hash, identity)
+    (raw, dest_hash, dest)
 }
 
 /// Wait for an announce with a specific destination hash on the given stream.

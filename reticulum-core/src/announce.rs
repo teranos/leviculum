@@ -33,8 +33,10 @@ use crate::constants::{
 use crate::crypto::truncated_hash;
 use crate::identity::{Identity, IdentityError};
 use crate::packet::{Packet, PacketType};
+use crate::traits::{Clock, Context};
 
 use alloc::vec::Vec;
+use rand_core::RngCore;
 
 /// Minimum announce payload size (without ratchet, without app_data)
 /// public_key(64) + name_hash(10) + random_hash(10) + signature(64) = 148
@@ -44,6 +46,65 @@ pub const ANNOUNCE_MIN_SIZE: usize =
 /// Minimum announce payload size with ratchet (without app_data)
 /// public_key(64) + name_hash(10) + random_hash(10) + ratchet(32) + signature(64) = 180
 pub const ANNOUNCE_RATCHETED_MIN_SIZE: usize = ANNOUNCE_MIN_SIZE + RATCHET_SIZE;
+
+/// Generate a random hash for announces (5 random + 5 timestamp bytes).
+///
+/// The random hash ensures announce uniqueness even for the same destination.
+/// Format: 5 bytes from truncated_hash(random_16) + 5 bytes from timestamp_ms.
+pub fn generate_random_hash(ctx: &mut impl Context) -> [u8; RANDOM_HASHBYTES] {
+    let mut random_16 = [0u8; 16];
+    ctx.rng().fill_bytes(&mut random_16);
+    let random_part = truncated_hash(&random_16);
+
+    let timestamp_ms = ctx.clock().now_ms();
+    let timestamp_bytes = timestamp_ms.to_be_bytes();
+
+    let mut result = [0u8; RANDOM_HASHBYTES]; // 10 bytes
+    result[0..5].copy_from_slice(&random_part[0..5]);
+    result[5..10].copy_from_slice(&timestamp_bytes[3..8]);
+    result
+}
+
+/// Build an announce payload (internal helper for Destination::announce).
+///
+/// Payload format: public_key(64) + name_hash(10) + random_hash(10) + signature(64) + app_data
+///
+/// The signature covers: destination_hash + public_key + name_hash + random_hash + app_data
+pub(crate) fn build_announce_payload(
+    identity: &Identity,
+    destination_hash: &[u8; TRUNCATED_HASHBYTES],
+    name_hash: &[u8; NAME_HASHBYTES],
+    app_data: Option<&[u8]>,
+    ctx: &mut impl Context,
+) -> Result<Vec<u8>, AnnounceError> {
+    let public_key = identity.public_key_bytes();
+    let random_hash = generate_random_hash(ctx);
+
+    // Build signed data: dest_hash + public_key + name_hash + random_hash + app_data
+    let app_data_bytes = app_data.unwrap_or(&[]);
+    let mut signed_data = Vec::with_capacity(
+        TRUNCATED_HASHBYTES + IDENTITY_KEY_SIZE + NAME_HASHBYTES + RANDOM_HASHBYTES + app_data_bytes.len(),
+    );
+    signed_data.extend_from_slice(destination_hash);
+    signed_data.extend_from_slice(&public_key);
+    signed_data.extend_from_slice(name_hash);
+    signed_data.extend_from_slice(&random_hash);
+    signed_data.extend_from_slice(app_data_bytes);
+
+    let signature = identity
+        .sign(&signed_data)
+        .map_err(|_| AnnounceError::SigningFailed)?;
+
+    // Build payload: public_key + name_hash + random_hash + signature + app_data
+    let mut payload = Vec::with_capacity(ANNOUNCE_MIN_SIZE + app_data_bytes.len());
+    payload.extend_from_slice(&public_key);
+    payload.extend_from_slice(name_hash);
+    payload.extend_from_slice(&random_hash);
+    payload.extend_from_slice(&signature);
+    payload.extend_from_slice(app_data_bytes);
+
+    Ok(payload)
+}
 
 /// Error type for announce operations
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -58,6 +119,12 @@ pub enum AnnounceError {
     InvalidSignature,
     /// Destination hash mismatch
     HashMismatch,
+    /// Failed to sign announce (no private key)
+    SigningFailed,
+    /// Destination has no identity (PLAIN destination)
+    NoIdentity,
+    /// OUT destinations cannot announce (only IN)
+    WrongDirection,
 }
 
 impl core::fmt::Display for AnnounceError {
@@ -68,6 +135,9 @@ impl core::fmt::Display for AnnounceError {
             AnnounceError::InvalidPublicKey => write!(f, "Invalid public key in announce"),
             AnnounceError::InvalidSignature => write!(f, "Signature verification failed"),
             AnnounceError::HashMismatch => write!(f, "Destination hash mismatch"),
+            AnnounceError::SigningFailed => write!(f, "Failed to sign announce"),
+            AnnounceError::NoIdentity => write!(f, "Destination has no identity"),
+            AnnounceError::WrongDirection => write!(f, "OUT destinations cannot announce"),
         }
     }
 }
@@ -323,7 +393,25 @@ mod tests {
     use super::*;
     use crate::destination::DestinationType;
     use crate::packet::{HeaderType, PacketContext, PacketData, PacketFlags, TransportType};
+    use crate::traits::{NoStorage, PlatformContext};
     use alloc::vec;
+    use rand_core::OsRng;
+
+    // Mock clock for tests
+    struct MockClock(u64);
+    impl crate::traits::Clock for MockClock {
+        fn now_ms(&self) -> u64 {
+            self.0
+        }
+    }
+
+    fn test_context() -> PlatformContext<OsRng, MockClock, NoStorage> {
+        PlatformContext {
+            rng: OsRng,
+            clock: MockClock(1704067200000), // 2024-01-01 00:00:00 UTC
+            storage: NoStorage,
+        }
+    }
 
     fn create_test_announce_payload(with_ratchet: bool) -> Vec<u8> {
         let mut payload = Vec::new();
@@ -548,5 +636,34 @@ mod tests {
         assert!(announce.verify_destination_hash());
         assert!(announce.verify_signature().unwrap());
         assert!(announce.validate().is_ok());
+    }
+
+    #[test]
+    fn test_generate_random_hash_format() {
+        let mut ctx = test_context();
+        let hash = generate_random_hash(&mut ctx);
+
+        // Should be 10 bytes
+        assert_eq!(hash.len(), RANDOM_HASHBYTES);
+
+        // Last 5 bytes should be from timestamp (1704067200000 ms)
+        // 1704067200000 = 0x18CC251F400
+        // to_be_bytes() gives [0x00, 0x00, 0x01, 0x8C, 0xC2, 0x51, 0xF4, 0x00]
+        // bytes 3..8 are [0x8C, 0xC2, 0x51, 0xF4, 0x00]
+        assert_eq!(&hash[5..10], &[0x8C, 0xC2, 0x51, 0xF4, 0x00]);
+    }
+
+    #[test]
+    fn test_generate_random_hash_different_each_call() {
+        let mut ctx = test_context();
+        let hash1 = generate_random_hash(&mut ctx);
+        let hash2 = generate_random_hash(&mut ctx);
+
+        // First 5 bytes (random) should be different
+        // (with overwhelming probability)
+        assert_ne!(&hash1[0..5], &hash2[0..5]);
+
+        // Last 5 bytes (timestamp) should be the same (same mock clock)
+        assert_eq!(&hash1[5..10], &hash2[5..10]);
     }
 }
