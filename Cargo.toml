@@ -10,9 +10,9 @@ members = [
 [workspace.package]
 version = "0.1.0"
 edition = "2021"
-authors = ["Lew"]
+authors = ["Lew Palm"]
 license = "MIT"
-repository = "https://github.com/lew/leviculum"
+repository = "https://codeberg.org/Lew_Palm/leviculum"
 description = "Rust implementation of the Reticulum network stack"
 
 [workspace.dependencies]

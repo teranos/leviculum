@@ -10,6 +10,7 @@
 //! - HKDF for key derivation
 //! - SHA-256/SHA-512 for hashing
 
+mod random;
 mod aes_cbc;
 mod hashes;
 mod hkdf_impl;
@@ -21,23 +22,10 @@ pub use hashes::{full_hash, sha256, sha512, truncated_hash};
 pub use hkdf_impl::derive_key;
 pub use hmac_impl::{hmac_sha256, verify_hmac};
 pub use token::{decrypt_token, encrypt_token, TokenError};
+pub use random::random_bytes_with_rng;
+#[cfg(feature = "std")]
+pub use random::random_bytes;
 
 // Re-export key types from dalek crates
 pub use ed25519_dalek::{Signature, SigningKey, VerifyingKey};
 pub use x25519_dalek::{EphemeralSecret, PublicKey, SharedSecret, StaticSecret};
-
-/// Generate random bytes using the provided RNG
-#[cfg(feature = "std")]
-pub fn random_bytes<const N: usize>() -> [u8; N] {
-    use rand_core::OsRng;
-    let mut bytes = [0u8; N];
-    rand_core::RngCore::fill_bytes(&mut OsRng, &mut bytes);
-    bytes
-}
-
-/// Generate random bytes using a provided RNG (for no_std)
-pub fn random_bytes_with_rng<R: rand_core::RngCore, const N: usize>(rng: &mut R) -> [u8; N] {
-    let mut bytes = [0u8; N];
-    rng.fill_bytes(&mut bytes);
-    bytes
-}
