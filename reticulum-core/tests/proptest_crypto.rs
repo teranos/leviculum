@@ -9,6 +9,12 @@ use reticulum_core::crypto::{
 };
 use reticulum_core::identity::Identity;
 use proptest::prelude::*;
+use rand_core::OsRng;
+
+// Helper to create identity in tests
+fn new_identity() -> Identity {
+    Identity::generate_with_rng(&mut OsRng)
+}
 
 // ==================== AES-256-CBC PROPERTY TESTS ====================
 
@@ -186,9 +192,9 @@ proptest! {
     fn prop_identity_encrypt_decrypt_roundtrip(
         plaintext in prop::collection::vec(any::<u8>(), 0..500)
     ) {
-        let identity = Identity::new();
+        let identity = new_identity();
 
-        let ciphertext = identity.encrypt(&plaintext);
+        let ciphertext = identity.encrypt_with_rng(&plaintext, &mut OsRng);
         let decrypted = identity.decrypt(&ciphertext).unwrap();
 
         prop_assert_eq!(decrypted, plaintext);
@@ -198,7 +204,7 @@ proptest! {
     fn prop_identity_sign_verify_roundtrip(
         message in prop::collection::vec(any::<u8>(), 0..1000)
     ) {
-        let identity = Identity::new();
+        let identity = new_identity();
 
         let signature = identity.sign(&message).unwrap();
         prop_assert!(identity.verify(&message, &signature).unwrap());
@@ -208,10 +214,10 @@ proptest! {
     fn prop_identity_different_identities_cannot_decrypt(
         plaintext in prop::collection::vec(any::<u8>(), 1..100)
     ) {
-        let alice = Identity::new();
-        let bob = Identity::new();
+        let alice = new_identity();
+        let bob = new_identity();
 
-        let ciphertext = alice.encrypt(&plaintext);
+        let ciphertext = alice.encrypt_with_rng(&plaintext, &mut OsRng);
         let result = bob.decrypt(&ciphertext);
 
         prop_assert!(result.is_err());
@@ -221,8 +227,8 @@ proptest! {
     fn prop_identity_different_identities_cannot_verify(
         message in prop::collection::vec(any::<u8>(), 1..100)
     ) {
-        let alice = Identity::new();
-        let bob = Identity::new();
+        let alice = new_identity();
+        let bob = new_identity();
 
         let signature = alice.sign(&message).unwrap();
 
@@ -234,10 +240,10 @@ proptest! {
     fn prop_identity_encryption_non_deterministic(
         plaintext in prop::collection::vec(any::<u8>(), 1..100)
     ) {
-        let identity = Identity::new();
+        let identity = new_identity();
 
-        let ct1 = identity.encrypt(&plaintext);
-        let ct2 = identity.encrypt(&plaintext);
+        let ct1 = identity.encrypt_with_rng(&plaintext, &mut OsRng);
+        let ct2 = identity.encrypt_with_rng(&plaintext, &mut OsRng);
 
         // Ciphertexts should be different (different ephemeral keys)
         prop_assert!(ct1 != ct2);
@@ -251,7 +257,7 @@ proptest! {
     fn prop_identity_signature_deterministic(
         message in prop::collection::vec(any::<u8>(), 0..100)
     ) {
-        let identity = Identity::new();
+        let identity = new_identity();
 
         let sig1 = identity.sign(&message).unwrap();
         let sig2 = identity.sign(&message).unwrap();
@@ -266,7 +272,7 @@ proptest! {
     ) {
         prop_assume!(message1 != message2);
 
-        let identity = Identity::new();
+        let identity = new_identity();
         let signature = identity.sign(&message1).unwrap();
 
         prop_assert!(!identity.verify(&message2, &signature).unwrap());
@@ -280,7 +286,7 @@ proptest! {
 
     #[test]
     fn prop_identity_public_key_roundtrip(_seed in any::<u64>()) {
-        let identity = Identity::new();
+        let identity = new_identity();
         let pub_bytes = identity.public_key_bytes();
 
         let restored = Identity::from_public_key_bytes(&pub_bytes).unwrap();
@@ -291,7 +297,7 @@ proptest! {
 
     #[test]
     fn prop_identity_private_key_roundtrip(_seed in any::<u64>()) {
-        let identity = Identity::new();
+        let identity = new_identity();
         let prv_bytes = identity.private_key_bytes().unwrap();
 
         let restored = Identity::from_private_key_bytes(&prv_bytes).unwrap();

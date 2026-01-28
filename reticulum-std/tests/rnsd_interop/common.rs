@@ -260,7 +260,7 @@ pub async fn build_and_send_announce(
     aspects: &[&str],
     app_data: &[u8],
 ) -> ([u8; TRUNCATED_HASHBYTES], Identity) {
-    let identity = Identity::new();
+    let identity = Identity::generate_with_rng(&mut rand_core::OsRng);
     let public_key = identity.public_key_bytes();
     let identity_hash = *identity.hash();
 
@@ -317,7 +317,7 @@ pub fn build_announce_raw(
     aspects: &[&str],
     app_data: &[u8],
 ) -> (Vec<u8>, [u8; TRUNCATED_HASHBYTES], Identity) {
-    let identity = Identity::new();
+    let identity = Identity::generate_with_rng(&mut rand_core::OsRng);
     let public_key = identity.public_key_bytes();
     let identity_hash = *identity.hash();
 

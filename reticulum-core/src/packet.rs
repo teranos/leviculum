@@ -208,7 +208,6 @@ pub struct Packet {
 #[derive(Debug)]
 pub enum PacketData {
     /// Borrowed data (for parsing)
-    #[cfg(feature = "alloc")]
     Owned(alloc::vec::Vec<u8>),
     /// Fixed-size inline buffer for no_std
     Inline {
@@ -221,7 +220,6 @@ impl PacketData {
     /// Get the data as a slice
     pub fn as_slice(&self) -> &[u8] {
         match self {
-            #[cfg(feature = "alloc")]
             PacketData::Owned(v) => v,
             PacketData::Inline { buffer, len } => &buffer[..*len],
         }
@@ -230,7 +228,6 @@ impl PacketData {
     /// Get the data length
     pub fn len(&self) -> usize {
         match self {
-            #[cfg(feature = "alloc")]
             PacketData::Owned(v) => v.len(),
             PacketData::Inline { len, .. } => *len,
         }
@@ -301,7 +298,6 @@ impl Packet {
     }
 
     /// Unpack a packet from bytes
-    #[cfg(feature = "alloc")]
     pub fn unpack(raw: &[u8]) -> Result<Self, PacketError> {
         // HEADER_MINSIZE includes flags(1) + hops(1) + dest_hash(16) + context(1) = 19 bytes
         if raw.len() < HEADER_MINSIZE {
@@ -382,7 +378,6 @@ mod tests {
         assert_eq!(decoded.packet_type as u8, flags.packet_type as u8);
     }
 
-    #[cfg(feature = "alloc")]
     #[test]
     fn test_packet_pack_unpack() {
         let packet = Packet {

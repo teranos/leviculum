@@ -10,7 +10,6 @@ use crate::constants::{IDENTITY_HASHBYTES, NAME_HASHBYTES, TRUNCATED_HASHBYTES};
 use crate::crypto::{sha256, truncated_hash};
 use crate::identity::Identity;
 
-#[cfg(feature = "alloc")]
 use alloc::string::String;
 
 /// Destination type determining encryption behavior
@@ -79,7 +78,6 @@ impl Destination {
     /// * `dest_type` - The encryption type
     /// * `app_name` - Application name
     /// * `aspects` - Additional name components
-    #[cfg(feature = "alloc")]
     pub fn new(
         identity: Option<Identity>,
         direction: Direction,
@@ -145,7 +143,6 @@ impl Destination {
     }
 
     /// Compute the name hash from app_name and aspects
-    #[cfg(feature = "alloc")]
     fn compute_name_hash(app_name: &str, aspects: &[&str]) -> [u8; NAME_HASHBYTES] {
         let mut full_name = String::from(app_name);
         for aspect in aspects {
@@ -178,11 +175,11 @@ impl Destination {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use rand_core::OsRng;
 
-    #[cfg(all(feature = "std", feature = "alloc"))]
     #[test]
     fn test_destination_creation() {
-        let identity = Identity::new();
+        let identity = Identity::generate_with_rng(&mut OsRng);
         let dest = Destination::new(
             Some(identity),
             Direction::In,
@@ -196,7 +193,6 @@ mod tests {
         assert_eq!(dest.hash().len(), TRUNCATED_HASHBYTES);
     }
 
-    #[cfg(feature = "alloc")]
     #[test]
     fn test_name_hash() {
         let hash1 = Destination::compute_name_hash("app", &["aspect1"]);

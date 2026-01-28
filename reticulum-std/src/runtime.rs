@@ -171,7 +171,7 @@ mod tests {
             std::process::id()
         ));
         let storage = Storage::new(&storage_path).unwrap();
-        let identity = Identity::new();
+        let identity = Identity::generate_with_rng(&mut rand_core::OsRng);
         let config = TransportConfig::default();
 
         let transport = Transport::new(config, clock, storage, identity);
@@ -193,7 +193,7 @@ mod tests {
             std::process::id()
         ));
         let storage = Storage::new(&storage_path).unwrap();
-        let identity = Identity::new();
+        let identity = Identity::generate_with_rng(&mut rand_core::OsRng);
         let config = TransportConfig::default();
 
         let transport = Transport::new(config, clock, storage, identity);

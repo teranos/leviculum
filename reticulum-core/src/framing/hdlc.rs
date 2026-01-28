@@ -10,7 +10,6 @@
 //! Core framing functions (`frame_to_slice`, `crc16`) work without allocation.
 //! The `Deframer` and `frame()` convenience functions require the `alloc` feature.
 
-#[cfg(feature = "alloc")]
 use alloc::vec::Vec;
 
 /// HDLC flag byte
@@ -115,7 +114,6 @@ pub fn frame_to_slice(data: &[u8], output: &mut [u8]) -> Option<usize> {
 /// Frame data with simplified HDLC encoding (no CRC)
 ///
 /// This matches Python Reticulum's framing format.
-#[cfg(feature = "alloc")]
 pub fn frame(data: &[u8], output: &mut Vec<u8>) {
     output.clear();
     output.reserve(max_framed_size(data.len()));
@@ -138,7 +136,6 @@ pub fn frame(data: &[u8], output: &mut Vec<u8>) {
 }
 
 /// Frame data with HDLC encoding including CRC-16
-#[cfg(feature = "alloc")]
 #[allow(dead_code)]
 pub fn frame_with_crc(data: &[u8], output: &mut Vec<u8>) {
     output.clear();
@@ -175,7 +172,6 @@ pub fn frame_with_crc(data: &[u8], output: &mut Vec<u8>) {
 }
 
 /// Deframing result
-#[cfg(feature = "alloc")]
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum DeframeResult {
     /// Need more data
@@ -208,14 +204,12 @@ pub enum DeframeResult {
 ///     _ => panic!("Expected frame"),
 /// }
 /// ```
-#[cfg(feature = "alloc")]
 pub struct Deframer {
     buffer: Vec<u8>,
     in_frame: bool,
     escape_next: bool,
 }
 
-#[cfg(feature = "alloc")]
 impl Deframer {
     /// Create a new deframer
     pub fn new() -> Self {
@@ -285,7 +279,6 @@ impl Deframer {
     }
 }
 
-#[cfg(feature = "alloc")]
 impl Default for Deframer {
     fn default() -> Self {
         Self::new()
@@ -341,7 +334,6 @@ mod tests {
     }
 
     #[test]
-    #[cfg(feature = "alloc")]
     fn test_frame_roundtrip() {
         let data = b"Hello, HDLC!";
         let mut framed = Vec::new();
@@ -362,7 +354,6 @@ mod tests {
     }
 
     #[test]
-    #[cfg(feature = "alloc")]
     fn test_escape_flag_byte() {
         // Data containing FLAG byte should be escaped
         let data = [0x00, FLAG, 0xFF];
@@ -384,7 +375,6 @@ mod tests {
     }
 
     #[test]
-    #[cfg(feature = "alloc")]
     fn test_escape_escape_byte() {
         // Data containing ESCAPE byte should be escaped
         let data = [0x00, ESCAPE, 0xFF];
@@ -402,7 +392,6 @@ mod tests {
     }
 
     #[test]
-    #[cfg(feature = "alloc")]
     fn test_incremental_processing() {
         let data = b"Test data";
         let mut framed = Vec::new();
@@ -422,7 +411,6 @@ mod tests {
     }
 
     #[test]
-    #[cfg(feature = "alloc")]
     fn test_frame_with_crc_roundtrip() {
         // Test the CRC variant still works for internal consistency
         let data = b"Hello, HDLC with CRC!";
@@ -440,7 +428,6 @@ mod tests {
     }
 
     // Python Reticulum interop test vectors
-    #[cfg(feature = "alloc")]
     fn hex_decode(s: &str) -> Vec<u8> {
         (0..s.len())
             .step_by(2)
@@ -449,7 +436,6 @@ mod tests {
     }
 
     #[test]
-    #[cfg(feature = "alloc")]
     fn test_python_vector_simple() {
         // Simple data "Hello" with no escaping needed
         let data = hex_decode("48656c6c6f");
@@ -470,7 +456,6 @@ mod tests {
     }
 
     #[test]
-    #[cfg(feature = "alloc")]
     fn test_python_vector_with_flag() {
         // Data containing FLAG byte (0x7E): [0x00, 0x7E, 0xFF]
         let data = hex_decode("007eff");
@@ -490,7 +475,6 @@ mod tests {
     }
 
     #[test]
-    #[cfg(feature = "alloc")]
     fn test_python_vector_with_escape() {
         // Data containing ESCAPE byte (0x7D): [0x00, 0x7D, 0xFF]
         let data = hex_decode("007dff");
@@ -513,7 +497,6 @@ mod tests {
     }
 
     #[test]
-    #[cfg(feature = "alloc")]
     fn test_python_vector_with_both() {
         // Data containing both FLAG and ESCAPE: [0x7E, 0x00, 0x7D, 0xFF]
         let data = hex_decode("7e007dff");
@@ -536,7 +519,6 @@ mod tests {
     }
 
     #[test]
-    #[cfg(feature = "alloc")]
     fn test_python_vector_packet() {
         // A real Reticulum packet
         let data = hex_decode("0000010203040506070809101112131415160048656c6c6f");

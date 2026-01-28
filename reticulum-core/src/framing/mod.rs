@@ -11,9 +11,4 @@ pub mod hdlc;
 
 // Re-export commonly used items
 pub use hdlc::{crc16, frame_to_slice, max_framed_size, needs_escape, ESCAPE, ESCAPE_XOR, FLAG};
-
-#[cfg(feature = "alloc")]
-pub use hdlc::{frame, Deframer, DeframeResult};
-
-#[cfg(feature = "alloc")]
-pub use hdlc::frame_with_crc;
+pub use hdlc::{frame, frame_with_crc, Deframer, DeframeResult};

@@ -23,7 +23,7 @@ fn test_transport_with_tcp_interface() {
     println!("\n=== TRANSPORT + TCP INTERFACE INTEGRATION TEST ===\n");
 
     let clock = SystemClock::new();
-    let identity = Identity::new();
+    let identity = Identity::generate_with_rng(&mut rand_core::OsRng);
     let config = TransportConfig::default();
     let mut transport = Transport::new(config, clock, NoStorage, identity);
 

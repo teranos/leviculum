@@ -355,11 +355,13 @@ fn test_destination_hash() {
 
 #[test]
 fn test_encrypt_decrypt_roundtrip() {
+    use rand_core::OsRng;
+
     // Test that our own encrypt/decrypt roundtrips correctly
-    let identity = Identity::new();
+    let identity = Identity::generate_with_rng(&mut OsRng);
     let plaintext = b"Hello, this is a test message for roundtrip encryption!";
 
-    let ciphertext = identity.encrypt(plaintext);
+    let ciphertext = identity.encrypt_with_rng(plaintext, &mut OsRng);
     let decrypted = identity.decrypt(&ciphertext).unwrap();
 
     assert_eq!(decrypted, plaintext);

@@ -223,7 +223,7 @@ async fn test_announce_at_mtu_boundary() {
     // Now try one byte over Type1 MTU - this should fail to pack
     let max_type1_app_data = MTU - packed_overhead - fixed_payload;
     let over_mtu_app_data = vec![0x42u8; max_type1_app_data + 1];
-    let identity = Identity::new();
+    let identity = Identity::generate_with_rng(&mut rand_core::OsRng);
     let public_key = identity.public_key_bytes();
     let identity_hash = *identity.hash();
     let name_hash = compute_name_hash("leviculum", &["mtu", "over"]);
@@ -369,7 +369,7 @@ async fn test_announce_with_swapped_public_keys() {
 
     tokio::time::sleep(INTERFACE_SETTLE_TIME).await;
 
-    let identity = Identity::new();
+    let identity = Identity::generate_with_rng(&mut rand_core::OsRng);
     let public_key = identity.public_key_bytes();
 
     // Swap X25519 (0..32) and Ed25519 (32..64) halves

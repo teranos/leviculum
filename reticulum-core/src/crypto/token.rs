@@ -120,6 +120,7 @@ pub fn decrypt_token(key: &[u8], token: &[u8], output: &mut [u8]) -> Result<usiz
 #[cfg(test)]
 mod tests {
     use super::*;
+    use alloc::vec;
 
     fn test_key() -> [u8; 64] {
         let mut key = [0u8; 64];

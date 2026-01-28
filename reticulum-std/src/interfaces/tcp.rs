@@ -260,7 +260,7 @@ mod tests {
         .expect("Failed to connect to rnsd");
 
         // Create a valid announce and send it
-        let identity = reticulum_core::identity::Identity::new();
+        let identity = reticulum_core::identity::Identity::generate_with_rng(&mut rand_core::OsRng);
         let dest = Destination::new(
             Some(identity),
             Direction::In,

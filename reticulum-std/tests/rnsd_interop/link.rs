@@ -65,7 +65,7 @@ async fn establish_link(
 
     println!("Found linktest destination: {:02x?}", &dh[..4]);
 
-    let mut link = Link::new_outgoing(dh);
+    let mut link = Link::new_outgoing_with_rng(dh, &mut rand_core::OsRng);
     link.set_destination_keys(&sk).unwrap();
 
     let raw_packet = link.build_link_request_packet();
@@ -147,7 +147,7 @@ async fn test_send_linkrequest_packet() {
     println!("=== LINKREQUEST PACKET TEST ===\n");
 
     let dummy_dest_hash = [0x42u8; TRUNCATED_HASHBYTES];
-    let mut link = Link::new_outgoing(dummy_dest_hash);
+    let mut link = Link::new_outgoing_with_rng(dummy_dest_hash, &mut rand_core::OsRng);
 
     let raw_packet = link.build_link_request_packet();
 
@@ -205,7 +205,7 @@ async fn test_link_request_with_mtu_signaling() {
 
     println!("Found linktest destination: {:02x?}", &dh[..4]);
 
-    let mut link = Link::new_outgoing(dh);
+    let mut link = Link::new_outgoing_with_rng(dh, &mut rand_core::OsRng);
     link.set_destination_keys(&sk).unwrap();
 
     // Use create_link_request_with_mtu instead of standard

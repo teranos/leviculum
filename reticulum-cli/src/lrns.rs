@@ -105,8 +105,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         Commands::Identity { action } => match action {
             IdentityAction::Generate { output } => {
                 use reticulum_core::Identity;
+                use rand_core::OsRng;
 
-                let identity = Identity::new();
+                let identity = Identity::generate_with_rng(&mut OsRng);
                 let hash = identity.hash();
                 let hash_hex: String = hash.iter().map(|b| format!("{:02x}", b)).collect();
 

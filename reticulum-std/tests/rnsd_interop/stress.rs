@@ -100,7 +100,7 @@ async fn test_rapid_announce_rate_limiting() {
 
     tokio::time::sleep(INTERFACE_SETTLE_TIME).await;
 
-    let identity = Identity::new();
+    let identity = Identity::generate_with_rng(&mut rand_core::OsRng);
     let public_key = identity.public_key_bytes();
     let identity_hash = *identity.hash();
     let name_hash = compute_name_hash("leviculum", &["ratelimit", "test"]);
@@ -225,7 +225,7 @@ async fn test_burst_of_mixed_packet_types() {
             }
             // LinkRequests
             2 => {
-                let mut link = Link::new_outgoing([i as u8; TRUNCATED_HASHBYTES]);
+                let mut link = Link::new_outgoing_with_rng([i as u8; TRUNCATED_HASHBYTES], &mut rand_core::OsRng);
                 link.build_link_request_packet()
             }
             // H2 Transport

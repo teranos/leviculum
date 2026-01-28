@@ -13,7 +13,6 @@ use crate::constants::{
 };
 use crate::crypto::{derive_key, encrypt_token, decrypt_token, truncated_hash};
 
-#[cfg(feature = "alloc")]
 use alloc::vec::Vec;
 
 /// Error types for identity operations
@@ -41,6 +40,9 @@ impl core::fmt::Display for IdentityError {
 }
 
 #[cfg(feature = "std")]
+extern crate std;
+
+#[cfg(feature = "std")]
 impl std::error::Error for IdentityError {}
 
 /// A cryptographic identity with X25519 and Ed25519 key pairs
@@ -58,15 +60,19 @@ pub struct Identity {
 }
 
 impl Identity {
-    /// Create a new identity with random keys
-    #[cfg(feature = "std")]
-    pub fn new() -> Self {
-        use rand_core::OsRng;
-        Self::new_with_rng(&mut OsRng)
+    /// Create a new identity with random keys from a Context
+    ///
+    /// # Example
+    /// ```ignore
+    /// let mut ctx = PlatformContext { rng: OsRng, clock: SystemClock, storage: NoStorage };
+    /// let identity = Identity::generate(&mut ctx);
+    /// ```
+    pub fn generate(ctx: &mut impl crate::traits::Context) -> Self {
+        Self::generate_with_rng(ctx.rng())
     }
 
     /// Create a new identity with a provided RNG
-    pub fn new_with_rng<R: rand_core::CryptoRngCore>(rng: &mut R) -> Self {
+    pub fn generate_with_rng<R: rand_core::CryptoRngCore>(rng: &mut R) -> Self {
         let x25519_private = x25519_dalek::StaticSecret::random_from_rng(&mut *rng);
         let x25519_public = x25519_dalek::PublicKey::from(&x25519_private);
 
@@ -227,24 +233,22 @@ impl Identity {
     /// Derived key length for encryption (64 bytes: 32 signing + 32 encryption)
     const DERIVED_KEY_LENGTH: usize = 64;
 
-    /// Encrypt data for this identity
+    /// Encrypt data for this identity using a Context
     ///
     /// Uses ephemeral ECDH key exchange followed by token encryption.
     /// Format: [ephemeral_pub (32)] [token (variable)]
     ///
     /// # Arguments
     /// * `plaintext` - Data to encrypt
+    /// * `ctx` - Platform context providing RNG
     ///
     /// # Returns
     /// Ciphertext that can be decrypted by the holder of this identity's private key
-    #[cfg(feature = "std")]
-    pub fn encrypt(&self, plaintext: &[u8]) -> Vec<u8> {
-        use rand_core::OsRng;
-        self.encrypt_with_rng(plaintext, &mut OsRng)
+    pub fn encrypt(&self, plaintext: &[u8], ctx: &mut impl crate::traits::Context) -> Vec<u8> {
+        self.encrypt_with_rng(plaintext, ctx.rng())
     }
 
     /// Encrypt data for this identity with a provided RNG
-    #[cfg(feature = "alloc")]
     pub fn encrypt_with_rng<R: rand_core::CryptoRngCore>(&self, plaintext: &[u8], rng: &mut R) -> Vec<u8> {
         // Generate ephemeral X25519 key pair
         let ephemeral_private = x25519_dalek::StaticSecret::random_from_rng(&mut *rng);
@@ -291,7 +295,6 @@ impl Identity {
     }
 
     /// Encrypt data for this identity with a specific ephemeral key and IV (for testing)
-    #[cfg(feature = "alloc")]
     pub fn encrypt_with_keys(
         &self,
         plaintext: &[u8],
@@ -344,7 +347,6 @@ impl Identity {
     ///
     /// # Returns
     /// Decrypted plaintext, or error if decryption fails
-    #[cfg(feature = "alloc")]
     pub fn decrypt(&self, ciphertext: &[u8]) -> Result<Vec<u8>, IdentityError> {
         let x25519_prv = self.x25519_private.as_ref().ok_or(IdentityError::NoPrivateKey)?;
 
@@ -384,29 +386,28 @@ impl Identity {
     // TODO: Implement ratcheting support
 }
 
-#[cfg(feature = "std")]
-impl Default for Identity {
-    fn default() -> Self {
-        Self::new()
-    }
-}
+// Note: No Default impl - use Identity::generate(ctx) instead
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use rand_core::OsRng;
 
-    #[cfg(feature = "std")]
+    // Helper to create identity in tests (uses OsRng directly)
+    fn new_identity() -> Identity {
+        Identity::generate_with_rng(&mut OsRng)
+    }
+
     #[test]
     fn test_identity_creation() {
-        let identity = Identity::new();
+        let identity = new_identity();
         assert!(identity.has_private_keys());
         assert_eq!(identity.hash().len(), IDENTITY_HASHBYTES);
     }
 
-    #[cfg(feature = "std")]
     #[test]
     fn test_sign_verify() {
-        let identity = Identity::new();
+        let identity = new_identity();
         let message = b"Test message for signing";
 
         let signature = identity.sign(message).unwrap();
@@ -416,10 +417,9 @@ mod tests {
         assert!(!identity.verify(b"Wrong message", &signature).unwrap());
     }
 
-    #[cfg(feature = "std")]
     #[test]
     fn test_key_serialization() {
-        let identity = Identity::new();
+        let identity = new_identity();
 
         // Test public key roundtrip
         let pub_bytes = identity.public_key_bytes();
@@ -434,10 +434,9 @@ mod tests {
         assert!(restored.has_private_keys());
     }
 
-    #[cfg(feature = "std")]
     #[test]
     fn test_public_only_cannot_sign() {
-        let identity = Identity::new();
+        let identity = new_identity();
         let pub_bytes = identity.public_key_bytes();
         let pub_only = Identity::from_public_key_bytes(&pub_bytes).unwrap();
 
@@ -447,26 +446,24 @@ mod tests {
 
     // ==================== EDGE CASE TESTS ====================
 
-    #[cfg(feature = "std")]
     #[test]
     fn test_public_only_cannot_decrypt() {
-        let identity = Identity::new();
+        let identity = new_identity();
         let pub_bytes = identity.public_key_bytes();
         let pub_only = Identity::from_public_key_bytes(&pub_bytes).unwrap();
 
         // Encrypt something for this identity
         let plaintext = b"Secret message";
-        let ciphertext = identity.encrypt(plaintext);
+        let ciphertext = identity.encrypt_with_rng(plaintext, &mut OsRng);
 
         // Public-only identity should not be able to decrypt
         let result = pub_only.decrypt(&ciphertext);
         assert_eq!(result, Err(IdentityError::NoPrivateKey));
     }
 
-    #[cfg(feature = "std")]
     #[test]
     fn test_public_only_cannot_get_private_key() {
-        let identity = Identity::new();
+        let identity = new_identity();
         let pub_bytes = identity.public_key_bytes();
         let pub_only = Identity::from_public_key_bytes(&pub_bytes).unwrap();
 
@@ -474,26 +471,24 @@ mod tests {
         assert_eq!(result, Err(IdentityError::NoPrivateKey));
     }
 
-    #[cfg(feature = "std")]
     #[test]
     fn test_decrypt_with_wrong_identity() {
-        let alice = Identity::new();
-        let bob = Identity::new();
+        let alice = new_identity();
+        let bob = new_identity();
 
         // Encrypt for Alice
         let plaintext = b"Secret for Alice";
-        let ciphertext = alice.encrypt(plaintext);
+        let ciphertext = alice.encrypt_with_rng(plaintext, &mut OsRng);
 
         // Bob should not be able to decrypt
         let result = bob.decrypt(&ciphertext);
         assert!(result.is_err());
     }
 
-    #[cfg(feature = "std")]
     #[test]
     fn test_verify_signature_wrong_identity() {
-        let alice = Identity::new();
-        let bob = Identity::new();
+        let alice = new_identity();
+        let bob = new_identity();
 
         let message = b"Signed by Alice";
         let signature = alice.sign(message).unwrap();
@@ -502,10 +497,9 @@ mod tests {
         assert!(!bob.verify(message, &signature).unwrap());
     }
 
-    #[cfg(feature = "std")]
     #[test]
     fn test_sign_empty_message() {
-        let identity = Identity::new();
+        let identity = new_identity();
         let message: &[u8] = b"";
 
         let signature = identity.sign(message).unwrap();
@@ -513,42 +507,38 @@ mod tests {
         assert!(identity.verify(message, &signature).unwrap());
     }
 
-    #[cfg(feature = "std")]
     #[test]
     fn test_encrypt_empty_plaintext() {
-        let identity = Identity::new();
+        let identity = new_identity();
         let plaintext: &[u8] = b"";
 
-        let ciphertext = identity.encrypt(plaintext);
+        let ciphertext = identity.encrypt_with_rng(plaintext, &mut OsRng);
         let decrypted = identity.decrypt(&ciphertext).unwrap();
 
         assert_eq!(decrypted.len(), 0);
     }
 
-    #[cfg(feature = "std")]
     #[test]
     fn test_sign_large_message() {
-        let identity = Identity::new();
+        let identity = new_identity();
         let message = [0xab; 100000]; // 100KB
 
         let signature = identity.sign(&message).unwrap();
         assert!(identity.verify(&message, &signature).unwrap());
     }
 
-    #[cfg(feature = "std")]
     #[test]
     fn test_encrypt_large_plaintext() {
-        let identity = Identity::new();
+        let identity = new_identity();
         let plaintext = [0xab; 100000]; // 100KB
 
-        let ciphertext = identity.encrypt(&plaintext);
+        let ciphertext = identity.encrypt_with_rng(&plaintext, &mut OsRng);
         let decrypted = identity.decrypt(&ciphertext).unwrap();
 
         assert_eq!(decrypted.len(), plaintext.len());
         assert_eq!(&decrypted[..], &plaintext[..]);
     }
 
-    #[cfg(feature = "std")]
     #[test]
     fn test_invalid_public_key_length() {
         let short_bytes = [0u8; 32]; // Should be 64
@@ -556,7 +546,6 @@ mod tests {
         assert!(matches!(result, Err(IdentityError::InvalidKeyLength)));
     }
 
-    #[cfg(feature = "std")]
     #[test]
     fn test_invalid_private_key_length() {
         let short_bytes = [0u8; 32]; // Should be 64
@@ -564,10 +553,9 @@ mod tests {
         assert!(matches!(result, Err(IdentityError::InvalidKeyLength)));
     }
 
-    #[cfg(feature = "std")]
     #[test]
     fn test_invalid_signature_length() {
-        let identity = Identity::new();
+        let identity = new_identity();
         let short_sig = [0u8; 32]; // Should be 64
 
         // Short signature should return false, not error
@@ -575,10 +563,9 @@ mod tests {
         assert_eq!(result, Ok(false));
     }
 
-    #[cfg(feature = "std")]
     #[test]
     fn test_corrupted_signature() {
-        let identity = Identity::new();
+        let identity = new_identity();
         let message = b"Test message";
 
         let mut signature = identity.sign(message).unwrap();
@@ -588,13 +575,12 @@ mod tests {
         assert!(!identity.verify(message, &signature).unwrap());
     }
 
-    #[cfg(feature = "std")]
     #[test]
     fn test_decrypt_corrupted_ephemeral_key() {
-        let identity = Identity::new();
+        let identity = new_identity();
         let plaintext = b"Secret message";
 
-        let mut ciphertext = identity.encrypt(plaintext);
+        let mut ciphertext = identity.encrypt_with_rng(plaintext, &mut OsRng);
         // Corrupt the ephemeral public key (first 32 bytes)
         ciphertext[0] ^= 0x01;
 
@@ -603,13 +589,12 @@ mod tests {
         assert!(result.is_err());
     }
 
-    #[cfg(feature = "std")]
     #[test]
     fn test_decrypt_corrupted_token() {
-        let identity = Identity::new();
+        let identity = new_identity();
         let plaintext = b"Secret message";
 
-        let mut ciphertext = identity.encrypt(plaintext);
+        let mut ciphertext = identity.encrypt_with_rng(plaintext, &mut OsRng);
         // Corrupt the token part (after ephemeral key)
         ciphertext[40] ^= 0x01;
 
@@ -617,13 +602,12 @@ mod tests {
         assert_eq!(result, Err(IdentityError::DecryptionFailed));
     }
 
-    #[cfg(feature = "std")]
     #[test]
     fn test_decrypt_truncated_ciphertext() {
-        let identity = Identity::new();
+        let identity = new_identity();
         let plaintext = b"Secret message";
 
-        let ciphertext = identity.encrypt(plaintext);
+        let ciphertext = identity.encrypt_with_rng(plaintext, &mut OsRng);
         // Truncate to less than minimum size
         let truncated = &ciphertext[..32];
 
@@ -631,19 +615,17 @@ mod tests {
         assert_eq!(result, Err(IdentityError::DecryptionFailed));
     }
 
-    #[cfg(feature = "std")]
     #[test]
     fn test_each_identity_unique_hash() {
-        let id1 = Identity::new();
-        let id2 = Identity::new();
+        let id1 = new_identity();
+        let id2 = new_identity();
 
         assert_ne!(id1.hash(), id2.hash());
     }
 
-    #[cfg(feature = "std")]
     #[test]
     fn test_identity_hash_deterministic() {
-        let identity = Identity::new();
+        let identity = new_identity();
         let prv_bytes = identity.private_key_bytes().unwrap();
 
         let restored = Identity::from_private_key_bytes(&prv_bytes).unwrap();
@@ -651,11 +633,10 @@ mod tests {
         assert_eq!(identity.hash(), restored.hash());
     }
 
-    #[cfg(feature = "std")]
     #[test]
     fn test_signature_deterministic() {
         // Ed25519 signatures are deterministic
-        let identity = Identity::new();
+        let identity = new_identity();
         let message = b"Test message";
 
         let sig1 = identity.sign(message).unwrap();
@@ -664,15 +645,14 @@ mod tests {
         assert_eq!(sig1, sig2);
     }
 
-    #[cfg(feature = "std")]
     #[test]
     fn test_encryption_not_deterministic() {
         // Each encryption should produce different ciphertext (random ephemeral key + IV)
-        let identity = Identity::new();
+        let identity = new_identity();
         let plaintext = b"Same message";
 
-        let ct1 = identity.encrypt(plaintext);
-        let ct2 = identity.encrypt(plaintext);
+        let ct1 = identity.encrypt_with_rng(plaintext, &mut OsRng);
+        let ct2 = identity.encrypt_with_rng(plaintext, &mut OsRng);
 
         // Ciphertexts should be different
         assert_ne!(ct1, ct2);
@@ -682,48 +662,44 @@ mod tests {
         assert_eq!(identity.decrypt(&ct2).unwrap(), plaintext);
     }
 
-    #[cfg(feature = "std")]
     #[test]
     fn test_encrypt_for_public_only_identity() {
         // Should be able to encrypt for a public-only identity
-        let identity = Identity::new();
+        let identity = new_identity();
         let pub_bytes = identity.public_key_bytes();
         let pub_only = Identity::from_public_key_bytes(&pub_bytes).unwrap();
 
         let plaintext = b"Secret message";
-        let ciphertext = pub_only.encrypt(plaintext);
+        let ciphertext = pub_only.encrypt_with_rng(plaintext, &mut OsRng);
 
         // Original identity (with private key) should be able to decrypt
         let decrypted = identity.decrypt(&ciphertext).unwrap();
         assert_eq!(&decrypted[..], plaintext);
     }
 
-    #[cfg(feature = "std")]
     #[test]
     fn test_multiple_encrypt_decrypt_cycles() {
-        let identity = Identity::new();
+        let identity = new_identity();
 
         for i in 0..10 {
-            let plaintext = format!("Message number {}", i);
-            let ciphertext = identity.encrypt(plaintext.as_bytes());
+            let plaintext = alloc::format!("Message number {}", i);
+            let ciphertext = identity.encrypt_with_rng(plaintext.as_bytes(), &mut OsRng);
             let decrypted = identity.decrypt(&ciphertext).unwrap();
             assert_eq!(&decrypted[..], plaintext.as_bytes());
         }
     }
 
-    #[cfg(feature = "std")]
     #[test]
     fn test_different_identities_different_public_keys() {
-        let id1 = Identity::new();
-        let id2 = Identity::new();
+        let id1 = new_identity();
+        let id2 = new_identity();
 
         assert_ne!(id1.public_key_bytes(), id2.public_key_bytes());
     }
 
-    #[cfg(feature = "std")]
     #[test]
     fn test_sign_then_verify_roundtrip() {
-        let signer = Identity::new();
+        let signer = new_identity();
         let pub_bytes = signer.public_key_bytes();
         let verifier = Identity::from_public_key_bytes(&pub_bytes).unwrap();
 
@@ -734,23 +710,21 @@ mod tests {
         assert!(verifier.verify(message, &signature).unwrap());
     }
 
-    #[cfg(feature = "std")]
     #[test]
     fn test_encrypt_single_byte() {
-        let identity = Identity::new();
+        let identity = new_identity();
         let plaintext = [0xaa];
 
-        let ciphertext = identity.encrypt(&plaintext);
+        let ciphertext = identity.encrypt_with_rng(&plaintext, &mut OsRng);
         let decrypted = identity.decrypt(&ciphertext).unwrap();
 
         assert_eq!(decrypted.len(), 1);
         assert_eq!(decrypted[0], 0xaa);
     }
 
-    #[cfg(feature = "std")]
     #[test]
     fn test_verify_tampered_message() {
-        let identity = Identity::new();
+        let identity = new_identity();
         let message = b"Original message";
         let signature = identity.sign(message).unwrap();
 
@@ -759,10 +733,9 @@ mod tests {
         assert!(!identity.verify(tampered, &signature).unwrap());
     }
 
-    #[cfg(feature = "std")]
     #[test]
     fn test_decrypt_minimum_ciphertext_size() {
-        let identity = Identity::new();
+        let identity = new_identity();
         // Minimum: ephemeral_pub (32) + IV (16) + one block (16) + HMAC (32) = 96
         let too_short = [0u8; 95];
 

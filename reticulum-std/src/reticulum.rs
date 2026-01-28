@@ -53,7 +53,7 @@ impl Reticulum {
 
         let storage = Storage::new(&storage_path)?;
         let clock = SystemClock::new();
-        let identity = Identity::new();
+        let identity = Identity::generate_with_rng(&mut rand_core::OsRng);
 
         let transport_config = TransportConfig {
             enable_transport: config.reticulum.enable_transport,

@@ -86,10 +86,9 @@ pub struct Link {
 }
 
 impl Link {
-    /// Create a new outgoing link (initiator side)
-    pub fn new_outgoing(destination_hash: [u8; TRUNCATED_HASHBYTES]) -> Self {
-        use rand_core::OsRng;
-        Self::new_outgoing_with_rng(destination_hash, &mut OsRng)
+    /// Create a new outgoing link (initiator side) using a Context
+    pub fn new_outgoing(destination_hash: [u8; TRUNCATED_HASHBYTES], ctx: &mut impl Context) -> Self {
+        Self::new_outgoing_with_rng(destination_hash, ctx.rng())
     }
 
     /// Create a new outgoing link with a provided RNG
@@ -537,9 +536,14 @@ impl Link {
 
 #[cfg(test)]
 mod tests {
+    extern crate std;
+
     use super::*;
     use crate::traits::{Clock, PlatformContext, NoStorage};
+    use alloc::vec;
+    use alloc::vec::Vec;
     use rand_core::OsRng;
+
     struct TestClock;
     impl Clock for TestClock {
         fn now_ms(&self) -> u64 {
@@ -553,7 +557,7 @@ mod tests {
     #[test]
     fn test_link_creation() {
         let dest_hash = [0x42; TRUNCATED_HASHBYTES];
-        let link = Link::new_outgoing(dest_hash);
+        let link = Link::new_outgoing_with_rng(dest_hash, &mut OsRng);
 
         assert_eq!(link.state(), LinkState::Pending);
         assert!(link.is_initiator());
@@ -565,7 +569,7 @@ mod tests {
     #[test]
     fn test_link_request_data() {
         let dest_hash = [0x42; TRUNCATED_HASHBYTES];
-        let link = Link::new_outgoing(dest_hash);
+        let link = Link::new_outgoing_with_rng(dest_hash, &mut OsRng);
 
         let request = link.create_link_request();
         assert_eq!(request.len(), 64);
@@ -575,11 +579,10 @@ mod tests {
         assert_eq!(&request[32..64], &link.verifying_key.to_bytes());
     }
 
-    #[cfg(feature = "std")]
-    #[test]
+        #[test]
     fn test_link_request_with_mtu() {
         let dest_hash = [0x42; TRUNCATED_HASHBYTES];
-        let link = Link::new_outgoing(dest_hash);
+        let link = Link::new_outgoing_with_rng(dest_hash, &mut OsRng);
 
         let request = link.create_link_request_with_mtu(500, 1);
         assert_eq!(request.len(), 67);
@@ -596,11 +599,10 @@ mod tests {
         assert_eq!(request[66], 0xF4);
     }
 
-    #[cfg(feature = "std")]
-    #[test]
+        #[test]
     fn test_link_id_calculation() {
         let dest_hash = [0x42; TRUNCATED_HASHBYTES];
-        let link = Link::new_outgoing(dest_hash);
+        let link = Link::new_outgoing_with_rng(dest_hash, &mut OsRng);
 
         // Construct raw packet: [flags][hops][dest_hash][context][request_data]
         let request = link.create_link_request();
@@ -619,11 +621,10 @@ mod tests {
         assert_eq!(link_id, Link::calculate_link_id(&raw_packet));
     }
 
-    #[cfg(feature = "std")]
-    #[test]
+        #[test]
     fn test_set_link_id() {
         let dest_hash = [0x42; TRUNCATED_HASHBYTES];
-        let mut link = Link::new_outgoing(dest_hash);
+        let mut link = Link::new_outgoing_with_rng(dest_hash, &mut OsRng);
 
         let new_id = [0xAB; TRUNCATED_HASHBYTES];
         link.set_link_id(new_id);
@@ -631,11 +632,10 @@ mod tests {
         assert_eq!(link.id(), &new_id);
     }
 
-    #[cfg(feature = "std")]
-    #[test]
+        #[test]
     fn test_process_proof_invalid_state() {
         let dest_hash = [0x42; TRUNCATED_HASHBYTES];
-        let mut link = Link::new_outgoing(dest_hash);
+        let mut link = Link::new_outgoing_with_rng(dest_hash, &mut OsRng);
 
         // Manually set state to Active
         link.state = LinkState::Active;
@@ -645,22 +645,20 @@ mod tests {
         assert!(matches!(result, Err(LinkError::InvalidState)));
     }
 
-    #[cfg(feature = "std")]
-    #[test]
+        #[test]
     fn test_process_proof_too_short() {
         let dest_hash = [0x42; TRUNCATED_HASHBYTES];
-        let mut link = Link::new_outgoing(dest_hash);
+        let mut link = Link::new_outgoing_with_rng(dest_hash, &mut OsRng);
 
         let short_proof = [0u8; 98]; // One byte short of required 99
         let result = link.process_proof(&short_proof);
         assert!(matches!(result, Err(LinkError::InvalidProof)));
     }
 
-    #[cfg(feature = "std")]
-    #[test]
+        #[test]
     fn test_process_proof_no_destination_key() {
         let dest_hash = [0x42; TRUNCATED_HASHBYTES];
-        let mut link = Link::new_outgoing(dest_hash);
+        let mut link = Link::new_outgoing_with_rng(dest_hash, &mut OsRng);
 
         let fake_proof = [0u8; 99]; // 64 sig + 32 X25519 + 3 signalling
         let result = link.process_proof(&fake_proof);
@@ -668,11 +666,10 @@ mod tests {
         assert!(matches!(result, Err(LinkError::NoDestination)));
     }
 
-    #[cfg(feature = "std")]
-    #[test]
+        #[test]
     fn test_set_destination_keys() {
         let dest_hash = [0x42; TRUNCATED_HASHBYTES];
-        let mut link = Link::new_outgoing(dest_hash);
+        let mut link = Link::new_outgoing_with_rng(dest_hash, &mut OsRng);
 
         // Create a valid Ed25519 verifying key
         let signing_key = ed25519_dalek::SigningKey::from_bytes(&[0x42; 32]);
@@ -682,8 +679,7 @@ mod tests {
         assert!(result.is_ok());
     }
 
-    #[cfg(feature = "std")]
-    #[test]
+        #[test]
     fn test_key_derivation() {
         // Test that key derivation produces consistent results
         let shared_secret = [0x42; 32];
@@ -701,8 +697,7 @@ mod tests {
         assert_ne!(key1, key3);
     }
 
-    #[cfg(feature = "std")]
-    #[test]
+        #[test]
     fn test_full_handshake_simulation() {
         use ed25519_dalek::Signer;
 
@@ -710,7 +705,7 @@ mod tests {
         let dest_hash = [0x42; TRUNCATED_HASHBYTES];
 
         // --- Initiator side ---
-        let mut link = Link::new_outgoing(dest_hash);
+        let mut link = Link::new_outgoing_with_rng(dest_hash, &mut OsRng);
         let request = link.create_link_request();
 
         // Build raw packet: [flags][hops][dest_hash][context][request]
@@ -771,14 +766,13 @@ mod tests {
         assert!(link.hmac_key().is_some());
     }
 
-    #[cfg(feature = "std")]
-    #[test]
+        #[test]
     fn test_link_encrypt_decrypt() {
         use ed25519_dalek::Signer;
 
         // Set up a link with completed handshake (reuse handshake simulation)
         let dest_hash = [0x42; TRUNCATED_HASHBYTES];
-        let mut link = Link::new_outgoing(dest_hash);
+        let mut link = Link::new_outgoing_with_rng(dest_hash, &mut OsRng);
         let request = link.create_link_request();
 
         // Build raw packet
@@ -837,14 +831,13 @@ mod tests {
         assert_eq!(&decrypted[..dec_len], plaintext);
     }
 
-    #[cfg(feature = "std")]
-    #[test]
+        #[test]
     fn test_link_decrypt_tampered() {
         use ed25519_dalek::Signer;
 
         // Set up a link with completed handshake
         let dest_hash = [0x42; TRUNCATED_HASHBYTES];
-        let mut link = Link::new_outgoing(dest_hash);
+        let mut link = Link::new_outgoing_with_rng(dest_hash, &mut OsRng);
         let request = link.create_link_request();
 
         let mut raw_packet = Vec::new();
@@ -900,8 +893,7 @@ mod tests {
         assert!(result.is_err());
     }
 
-    #[cfg(feature = "std")]
-    #[test]
+        #[test]
     fn test_encrypted_size() {
         // 0 bytes -> 16 bytes padded -> 16 + 16 IV + 32 HMAC = 64
         assert_eq!(Link::encrypted_size(0), 64);
@@ -919,14 +911,13 @@ mod tests {
         assert_eq!(Link::encrypted_size(100), 160);
     }
 
-    #[cfg(feature = "std")]
-    #[test]
+        #[test]
     fn test_build_data_packet() {
         use ed25519_dalek::Signer;
 
         // Set up a link with completed handshake
         let dest_hash = [0x42; TRUNCATED_HASHBYTES];
-        let mut link = Link::new_outgoing(dest_hash);
+        let mut link = Link::new_outgoing_with_rng(dest_hash, &mut OsRng);
         let request = link.create_link_request();
 
         let mut raw_packet = Vec::new();
@@ -998,11 +989,10 @@ mod tests {
         assert_eq!(&decrypted[..dec_len], message);
     }
 
-    #[cfg(feature = "std")]
     #[test]
     fn test_build_data_packet_not_active() {
         let dest_hash = [0x42; TRUNCATED_HASHBYTES];
-        let link = Link::new_outgoing(dest_hash);
+        let link = Link::new_outgoing_with_rng(dest_hash, &mut OsRng);
 
         let mut ctx = PlatformContext {
             rng: OsRng,

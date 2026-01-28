@@ -28,12 +28,13 @@
 //!
 //! # Features
 //!
-//! - `std` (default): Enable standard library support
-//! - `alloc`: Enable heap allocation (Vec, String) without full std
+//! - `std` (default): Enable optimized crypto and OS RNG
+//!
+//! The crate is always `no_std` compatible with `alloc`. The `std` feature
+//! only enables optimized crypto implementations and access to `OsRng`.
 
-#![cfg_attr(not(feature = "std"), no_std)]
+#![no_std]
 
-#[cfg(feature = "alloc")]
 extern crate alloc;
 
 pub mod announce;
@@ -49,7 +50,6 @@ pub mod traits;
 pub mod transport;
 
 // Re-export key types
-#[cfg(feature = "alloc")]
 pub use announce::{AnnounceError, ReceivedAnnounce};
 pub use destination::Destination;
 pub use identity::Identity;
@@ -57,5 +57,4 @@ pub use link::Link;
 pub use packet::Packet;
 
 // Re-export traits
-#[cfg(feature = "alloc")]
 pub use traits::{Clock, Interface, InterfaceError, InterfaceMode, NoStorage, Storage, StorageError};

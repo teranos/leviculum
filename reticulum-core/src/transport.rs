@@ -29,24 +29,16 @@
 //! transport.poll();
 //! ```
 
-#[cfg(feature = "alloc")]
 use alloc::boxed::Box;
-#[cfg(feature = "alloc")]
 use alloc::collections::BTreeMap;
-#[cfg(feature = "alloc")]
 use alloc::vec::Vec;
 
 use crate::constants::{PATHFINDER_EXPIRY_SECS, PATHFINDER_MAX_HOPS, TRUNCATED_HASHBYTES};
 
-#[cfg(feature = "alloc")]
 use crate::announce::ReceivedAnnounce;
-#[cfg(feature = "alloc")]
 use crate::crypto::truncated_hash;
-#[cfg(feature = "alloc")]
 use crate::identity::Identity;
-#[cfg(feature = "alloc")]
 use crate::packet::{Packet, PacketError, PacketType};
-#[cfg(feature = "alloc")]
 use crate::traits::{Clock, InterfaceError, Interface, Storage};
 
 // ─── Data Structures (always available) ─────────────────────────────────────
@@ -146,7 +138,6 @@ pub struct TransportStats {
 // ─── Events ─────────────────────────────────────────────────────────────────
 
 /// Events emitted by Transport for the application to handle
-#[cfg(feature = "alloc")]
 #[derive(Debug)]
 pub enum TransportEvent {
     /// A new announce was received and validated
@@ -186,7 +177,6 @@ pub enum TransportEvent {
 // ─── Error Types ────────────────────────────────────────────────────────────
 
 /// Transport error type
-#[cfg(feature = "alloc")]
 #[derive(Debug)]
 pub enum TransportError {
     /// No path to destination
@@ -201,14 +191,12 @@ pub enum TransportError {
     InvalidInterface,
 }
 
-#[cfg(feature = "alloc")]
 impl From<PacketError> for TransportError {
     fn from(e: PacketError) -> Self {
         TransportError::PacketError(e)
     }
 }
 
-#[cfg(feature = "alloc")]
 impl From<InterfaceError> for TransportError {
     fn from(e: InterfaceError) -> Self {
         TransportError::InterfaceError(e)
@@ -218,7 +206,6 @@ impl From<InterfaceError> for TransportError {
 // ─── Destination Entry ──────────────────────────────────────────────────────
 
 /// Entry for a registered destination
-#[cfg(feature = "alloc")]
 struct DestinationEntry {
     /// Whether this destination accepts incoming links
     accepts_links: bool,
@@ -232,7 +219,6 @@ struct DestinationEntry {
 ///
 /// - `C`: Clock implementation for timestamps
 /// - `S`: Storage implementation for persistence
-#[cfg(feature = "alloc")]
 pub struct Transport<C: Clock, S: Storage> {
     config: TransportConfig,
     clock: C,
@@ -267,7 +253,6 @@ pub struct Transport<C: Clock, S: Storage> {
     stats: TransportStats,
 }
 
-#[cfg(feature = "alloc")]
 impl<C: Clock, S: Storage> Transport<C, S> {
     /// Create a new Transport instance
     pub fn new(config: TransportConfig, clock: C, storage: S, identity: Identity) -> Self {
@@ -758,10 +743,10 @@ mod tests {
         assert_eq!(config.max_hops, PATHFINDER_MAX_HOPS);
     }
 
-    #[cfg(feature = "alloc")]
     mod transport_tests {
         use super::*;
         use crate::traits::NoStorage;
+        use rand_core::OsRng;
 
         // Mock clock for deterministic testing
         struct MockClock {
@@ -831,7 +816,7 @@ mod tests {
 
         fn make_transport() -> Transport<MockClock, NoStorage> {
             let clock = MockClock::new(1_000_000);
-            let identity = Identity::new();
+            let identity = Identity::generate_with_rng(&mut OsRng);
             Transport::new(TransportConfig::default(), clock, NoStorage, identity)
         }
 
@@ -1145,7 +1130,7 @@ mod tests {
             transport.register_interface(Box::new(MockInterface::new("test", 1)));
 
             // Create a real announce
-            let identity = Identity::new();
+            let identity = Identity::generate_with_rng(&mut OsRng);
             let dest = Destination::new(
                 Some(identity),
                 Direction::In,

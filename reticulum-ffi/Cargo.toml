@@ -14,6 +14,7 @@ reticulum-core = { path = "../reticulum-core", default-features = true }
 reticulum-std = { path = "../reticulum-std" }
 libc.workspace = true
 tokio.workspace = true
+rand_core.workspace = true
 
 [build-dependencies]
 cbindgen = "0.27"

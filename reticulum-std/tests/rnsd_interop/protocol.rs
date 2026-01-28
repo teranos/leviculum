@@ -235,7 +235,7 @@ async fn test_mixed_packet_sequence() {
     packets_sent += 1;
 
     // 2. LinkRequest
-    let link = Link::new_outgoing([0x22; TRUNCATED_HASHBYTES]);
+    let link = Link::new_outgoing_with_rng([0x22; TRUNCATED_HASHBYTES], &mut rand_core::OsRng);
     let link_req = link.create_link_request();
     let p2 = Packet {
         flags: PacketFlags {
@@ -279,7 +279,7 @@ async fn test_mixed_packet_sequence() {
     packets_sent += 1;
 
     // 4. Announce
-    let identity = Identity::new();
+    let identity = Identity::generate_with_rng(&mut rand_core::OsRng);
     let name_hash = compute_name_hash("test", &["mixed"]);
     let random_hash = generate_random_hash();
     let dest_hash = compute_destination_hash(&name_hash, identity.hash());
@@ -634,7 +634,7 @@ async fn test_announce_signed_data_byte_order() {
 #[test]
 fn test_link_request_packet_byte_layout() {
     let dest_hash = [0x42u8; TRUNCATED_HASHBYTES];
-    let mut link = Link::new_outgoing(dest_hash);
+    let mut link = Link::new_outgoing_with_rng(dest_hash, &mut rand_core::OsRng);
 
     let raw = link.build_link_request_packet();
 

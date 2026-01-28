@@ -55,7 +55,7 @@ fn run_link_test(
     host_port: &str,
 ) -> TestResult {
     // Create link
-    let mut link = Link::new_outgoing(dest_hash);
+    let mut link = Link::new_outgoing_with_rng(dest_hash, &mut rand_core::OsRng);
     if let Err(e) = link.set_destination_keys(&signing_key) {
         return TestResult::SetupError(format!("Failed to set destination keys: {:?}", e));
     }

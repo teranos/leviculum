@@ -34,7 +34,6 @@ use crate::crypto::truncated_hash;
 use crate::identity::{Identity, IdentityError};
 use crate::packet::{Packet, PacketType};
 
-#[cfg(feature = "alloc")]
 use alloc::vec::Vec;
 
 /// Minimum announce payload size (without ratchet, without app_data)
@@ -74,13 +73,15 @@ impl core::fmt::Display for AnnounceError {
 }
 
 #[cfg(feature = "std")]
+extern crate std;
+
+#[cfg(feature = "std")]
 impl std::error::Error for AnnounceError {}
 
 /// A received announce message parsed from a packet
 ///
 /// This struct holds the parsed components of an announce and provides
 /// methods to verify the signature and compute hashes.
-#[cfg(feature = "alloc")]
 pub struct ReceivedAnnounce {
     /// Destination hash from packet header
     destination_hash: [u8; TRUNCATED_HASHBYTES],
@@ -98,7 +99,6 @@ pub struct ReceivedAnnounce {
     app_data: Vec<u8>,
 }
 
-#[cfg(feature = "alloc")]
 impl ReceivedAnnounce {
     /// Parse an announce from a packet
     ///
@@ -212,7 +212,6 @@ impl ReceivedAnnounce {
     }
 
     /// Get app_data as a string if valid UTF-8
-    #[cfg(feature = "alloc")]
     pub fn app_data_string(&self) -> Option<&str> {
         core::str::from_utf8(&self.app_data).ok()
     }
@@ -306,7 +305,6 @@ impl ReceivedAnnounce {
     }
 }
 
-#[cfg(feature = "alloc")]
 impl core::fmt::Debug for ReceivedAnnounce {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         f.debug_struct("ReceivedAnnounce")
@@ -325,8 +323,8 @@ mod tests {
     use super::*;
     use crate::destination::DestinationType;
     use crate::packet::{HeaderType, PacketContext, PacketData, PacketFlags, TransportType};
+    use alloc::vec;
 
-    #[cfg(feature = "alloc")]
     fn create_test_announce_payload(with_ratchet: bool) -> Vec<u8> {
         let mut payload = Vec::new();
 
@@ -353,7 +351,6 @@ mod tests {
         payload
     }
 
-    #[cfg(feature = "alloc")]
     #[test]
     fn test_parse_announce_without_ratchet() {
         let payload = create_test_announce_payload(false);
@@ -384,7 +381,6 @@ mod tests {
         assert_eq!(announce.app_data_string(), Some("test.app"));
     }
 
-    #[cfg(feature = "alloc")]
     #[test]
     fn test_parse_announce_with_ratchet() {
         let payload = create_test_announce_payload(true);
@@ -411,7 +407,6 @@ mod tests {
         assert_eq!(announce.app_data(), b"test.app");
     }
 
-    #[cfg(feature = "alloc")]
     #[test]
     fn test_not_announce_packet() {
         let packet = Packet {
@@ -433,7 +428,6 @@ mod tests {
         assert!(matches!(result, Err(AnnounceError::NotAnnounce)));
     }
 
-    #[cfg(feature = "alloc")]
     #[test]
     fn test_payload_too_short() {
         let packet = Packet {
@@ -455,7 +449,6 @@ mod tests {
         assert!(matches!(result, Err(AnnounceError::PayloadTooShort)));
     }
 
-    #[cfg(feature = "alloc")]
     #[test]
     fn test_computed_hashes() {
         // Create a minimal valid announce with known test data
@@ -490,13 +483,13 @@ mod tests {
         assert!(!announce.verify_destination_hash());
     }
 
-    #[cfg(all(feature = "alloc", feature = "std"))]
     #[test]
     fn test_real_announce_creation_and_verification() {
         use crate::destination::{Destination, Direction};
+        use rand_core::OsRng;
 
         // Create a real identity and destination
-        let identity = Identity::new();
+        let identity = Identity::generate_with_rng(&mut OsRng);
         let dest = Destination::new(
             Some(identity),
             Direction::In,

@@ -16,10 +16,8 @@
 use rand_core::CryptoRngCore;
 use crate::constants::TRUNCATED_HASHBYTES;
 
-#[cfg(not(feature = "std"))]
 extern crate alloc;
 
-#[cfg(not(feature = "std"))]
 use alloc::vec::Vec;
 
 /// Error type for interface operations
@@ -131,7 +129,6 @@ pub trait Clock {
 ///
 /// Storage is optional - transport works without it but won't persist
 /// identities or learned paths across restarts.
-#[cfg(feature = "alloc")]
 pub trait Storage {
     /// Load data by key from a category
     ///
@@ -170,11 +167,9 @@ pub enum StorageError {
 ///
 /// All operations succeed but nothing is actually stored.
 /// Use this for stateless embedded devices or testing.
-#[cfg(feature = "alloc")]
 #[derive(Debug, Clone, Copy, Default)]
 pub struct NoStorage;
 
-#[cfg(feature = "alloc")]
 impl Storage for NoStorage {
     fn load(&self, _category: &str, _key: &[u8]) -> Option<Vec<u8>> {
         None

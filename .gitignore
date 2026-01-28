@@ -33,3 +33,4 @@ Thumbs.db
 /coverage/
 *.profraw
 *.profdata
+__pycache__/
