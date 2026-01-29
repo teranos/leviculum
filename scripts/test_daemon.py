@@ -34,17 +34,37 @@ import tempfile
 import threading
 import time
 
-# Allow using local Reticulum checkout
-RETICULUM_PATH = "/home/lew/coding/Reticulum"
-if os.path.exists(RETICULUM_PATH):
+
+def find_reticulum_path():
+    """Find Reticulum in order: env var, vendor submodule, system."""
+    script_dir = os.path.dirname(os.path.abspath(__file__))
+    project_root = os.path.dirname(script_dir)
+
+    candidates = [
+        os.environ.get("RETICULUM_PATH"),  # 1. Explicit override
+        os.path.join(project_root, "vendor", "Reticulum"),  # 2. Vendor submodule
+    ]
+
+    for path in candidates:
+        if path and os.path.isdir(path) and os.path.exists(os.path.join(path, "RNS")):
+            return path
+
+    return None  # Fall back to system-installed
+
+
+RETICULUM_PATH = find_reticulum_path()
+if RETICULUM_PATH:
     sys.path.insert(0, RETICULUM_PATH)
 
 try:
     import RNS
     from RNS import Transport
 except ImportError:
-    print("ERROR: Reticulum (RNS) not installed and not found at", RETICULUM_PATH)
-    print("Install with: pip install rns")
+    print("ERROR: Reticulum (RNS) not found.")
+    print("Options:")
+    print("  1. Run: git submodule update --init vendor/Reticulum")
+    print("  2. Set RETICULUM_PATH=/path/to/Reticulum")
+    print("  3. Install system-wide: pip install rns")
     sys.exit(1)
 
 

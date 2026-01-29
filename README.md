@@ -43,10 +43,19 @@ cargo test --workspace
 
 ### Running interop tests
 
-The integration tests verify compatibility with a running Python rnsd. Start rnsd with a TCP interface on localhost:4242, then:
+The integration tests verify compatibility with the Python Reticulum implementation. They use a vendored copy of Python Reticulum as a git submodule:
 
 ```sh
-cargo test --package reticulum-std --test rnsd_interop -- --ignored
+git submodule update --init  # One-time setup
+cargo test --package reticulum-std --test rnsd_interop
+```
+
+The tests will auto-initialize the submodule if needed, so the explicit `git submodule update` is optional.
+
+To use your own Reticulum checkout instead:
+
+```sh
+RETICULUM_PATH=/path/to/Reticulum cargo test --package reticulum-std --test rnsd_interop
 ```
 
 ## Project Structure

@@ -30,6 +30,7 @@
 use std::collections::HashMap;
 use std::io::{BufRead, BufReader};
 use std::net::{SocketAddr, TcpListener, TcpStream as StdTcpStream};
+use std::path::Path;
 use std::process::{Child, Command, Stdio};
 use std::time::Duration;
 
@@ -53,6 +54,8 @@ pub enum HarnessError {
     CommandFailed(String),
     /// Connection to daemon failed
     ConnectionFailed(std::io::Error),
+    /// Failed to initialize git submodule
+    SubmoduleInitFailed(String),
 }
 
 impl std::fmt::Display for HarnessError {
@@ -64,11 +67,62 @@ impl std::fmt::Display for HarnessError {
             HarnessError::PortUnavailable(p) => write!(f, "Port {} is not available", p),
             HarnessError::CommandFailed(s) => write!(f, "JSON-RPC command failed: {}", s),
             HarnessError::ConnectionFailed(e) => write!(f, "Connection to daemon failed: {}", e),
+            HarnessError::SubmoduleInitFailed(s) => {
+                write!(f, "Failed to initialize Reticulum submodule: {}", s)
+            }
         }
     }
 }
 
 impl std::error::Error for HarnessError {}
+
+/// Ensure the Reticulum submodule is initialized if it exists.
+///
+/// This checks for the vendor/Reticulum directory and initializes the submodule
+/// if it exists but the RNS module is missing (indicating uninitialized state).
+fn ensure_reticulum_submodule() -> Result<(), HarnessError> {
+    // Skip if RETICULUM_PATH is set (user override)
+    if std::env::var("RETICULUM_PATH").is_ok() {
+        return Ok(());
+    }
+
+    let project_root = Path::new(env!("CARGO_MANIFEST_DIR")).join("..");
+    let vendor_dir = project_root.join("vendor/Reticulum");
+    let rns_path = vendor_dir.join("RNS");
+
+    if rns_path.exists() {
+        // Already initialized
+        return Ok(());
+    }
+
+    if vendor_dir.exists() {
+        // Directory exists but RNS not present - need to init submodule
+        eprintln!("Initializing Reticulum submodule...");
+        let output = Command::new("git")
+            .current_dir(&project_root)
+            .args(["submodule", "update", "--init", "vendor/Reticulum"])
+            .output()
+            .map_err(|e| HarnessError::SubmoduleInitFailed(e.to_string()))?;
+
+        if !output.status.success() {
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            return Err(HarnessError::SubmoduleInitFailed(format!(
+                "git submodule update failed: {}",
+                stderr
+            )));
+        }
+
+        // Verify initialization succeeded
+        if !rns_path.exists() {
+            return Err(HarnessError::SubmoduleInitFailed(
+                "Submodule initialized but RNS directory not found".to_string(),
+            ));
+        }
+    }
+    // If vendor dir doesn't exist at all, test_daemon.py will handle the error
+
+    Ok(())
+}
 
 /// A handle to a running test daemon.
 ///
@@ -90,7 +144,12 @@ impl TestDaemon {
     ///
     /// This spawns the Python test daemon with dynamically allocated ports,
     /// waits for it to signal readiness, and returns a handle for interaction.
+    ///
+    /// If the Reticulum submodule exists but is not initialized, this will
+    /// automatically run `git submodule update --init` first.
     pub async fn start() -> Result<Self, HarnessError> {
+        ensure_reticulum_submodule()?;
+
         let (rns_port, cmd_port) = find_two_available_ports()?;
 
         Self::start_with_ports(rns_port, cmd_port).await
