@@ -53,7 +53,7 @@ pub mod transport;
 pub use announce::{generate_random_hash, AnnounceError, ReceivedAnnounce};
 pub use destination::Destination;
 pub use identity::Identity;
-pub use link::Link;
+pub use link::{Link, LinkCloseReason, LinkError, LinkEvent, LinkId, LinkManager, LinkState, PeerKeys};
 pub use packet::Packet;
 
 // Re-export traits

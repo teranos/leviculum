@@ -23,7 +23,21 @@
 //! 3. Send PROOF via `build_proof_packet()`
 //! 4. Receive RTT packet
 //! 5. Finalize with `process_rtt()`
+//!
+//! ## High-Level API
+//!
+//! For easier link management, use the [`LinkManager`] which handles:
+//! - Tracking pending and active links
+//! - Processing incoming link packets
+//! - Emitting [`LinkEvent`]s for state changes
+//!
+//! [`LinkManager`]: manager::LinkManager
 
+mod manager;
+
+pub use manager::LinkManager;
+
+use alloc::vec::Vec;
 use crate::constants::{
     ED25519_SIGNATURE_SIZE, LINK_KEEPALIVE_SECS, LINK_STALE_TIME_SECS, TRUNCATED_HASHBYTES,
     X25519_KEY_SIZE,
@@ -67,6 +81,67 @@ pub enum LinkError {
     NoIdentity,
     /// Invalid RTT packet
     InvalidRtt,
+    /// Link not found
+    NotFound,
+}
+
+/// Reason why a link was closed
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LinkCloseReason {
+    /// Normal close requested
+    Normal,
+    /// Handshake timed out
+    Timeout,
+    /// Invalid proof received
+    InvalidProof,
+    /// Peer closed the link
+    PeerClosed,
+    /// Link became stale (no activity)
+    Stale,
+}
+
+/// Peer's public keys from a link request
+#[derive(Debug, Clone)]
+pub struct PeerKeys {
+    /// Peer's ephemeral X25519 public key (32 bytes)
+    pub x25519_public: [u8; 32],
+    /// Peer's ephemeral Ed25519 verifying key (32 bytes)
+    pub ed25519_verifying: [u8; 32],
+}
+
+/// Events emitted by LinkManager
+#[derive(Debug)]
+pub enum LinkEvent {
+    /// Incoming link request received (responder should accept/reject)
+    LinkRequestReceived {
+        /// The link ID for this request
+        link_id: LinkId,
+        /// Destination hash the request was sent to
+        dest_hash: [u8; 16],
+        /// Peer's public keys
+        peer_keys: PeerKeys,
+    },
+    /// Link handshake completed
+    LinkEstablished {
+        /// The link ID
+        link_id: LinkId,
+        /// Whether we initiated this link
+        is_initiator: bool,
+    },
+    /// Data received on a link
+    DataReceived {
+        /// The link ID
+        link_id: LinkId,
+        /// The decrypted data
+        data: Vec<u8>,
+    },
+    /// Link closed or failed
+    LinkClosed {
+        /// The link ID
+        link_id: LinkId,
+        /// Why the link was closed
+        reason: LinkCloseReason,
+    },
 }
 
 /// Link identifier (16 bytes - truncated hash)
