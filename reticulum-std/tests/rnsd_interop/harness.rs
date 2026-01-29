@@ -368,6 +368,68 @@ impl TestDaemon {
         let _ = self.query("shutdown", serde_json::json!({})).await;
         Ok(())
     }
+
+    /// Get established links from the daemon.
+    pub async fn get_links(&self) -> Result<HashMap<String, LinkInfo>, HarnessError> {
+        let result = self.query("get_links", serde_json::json!({})).await?;
+        let mut links = HashMap::new();
+
+        if let serde_json::Value::Object(map) = result {
+            for (hash, entry) in map {
+                let status = entry
+                    .get("status")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("unknown")
+                    .to_string();
+                let activated_at = entry.get("activated_at").and_then(|v| v.as_f64());
+
+                links.insert(
+                    hash,
+                    LinkInfo {
+                        hash: String::new(), // Will be set from key
+                        status,
+                        activated_at,
+                    },
+                );
+            }
+        }
+
+        // Fill in hashes from keys
+        for (hash, info) in links.iter_mut() {
+            info.hash = hash.clone();
+        }
+
+        Ok(links)
+    }
+
+    /// Get packets received over links from the daemon.
+    pub async fn get_received_packets(&self) -> Result<Vec<ReceivedPacket>, HarnessError> {
+        let result = self.query("get_received_packets", serde_json::json!({})).await?;
+        let mut packets = Vec::new();
+
+        if let serde_json::Value::Array(arr) = result {
+            for entry in arr {
+                let timestamp = entry.get("timestamp").and_then(|v| v.as_f64());
+                let link_hash = entry
+                    .get("link_hash")
+                    .and_then(|v| v.as_str())
+                    .map(|s| s.to_string());
+                let data = entry
+                    .get("data")
+                    .and_then(|v| v.as_str())
+                    .map(|s| hex::decode(s).unwrap_or_default())
+                    .unwrap_or_default();
+
+                packets.push(ReceivedPacket {
+                    timestamp,
+                    link_hash,
+                    data,
+                });
+            }
+        }
+
+        Ok(packets)
+    }
 }
 
 impl Drop for TestDaemon {
@@ -421,6 +483,24 @@ pub struct DestinationInfo {
     /// Ed25519 signing key (last 32 bytes of public_key)
     #[allow(dead_code)]
     pub signing_key: String,
+}
+
+/// Information about an established link.
+#[derive(Debug, Clone)]
+#[allow(dead_code)]
+pub struct LinkInfo {
+    pub hash: String,
+    pub status: String,
+    pub activated_at: Option<f64>,
+}
+
+/// A packet received over a link.
+#[derive(Debug, Clone)]
+#[allow(dead_code)]
+pub struct ReceivedPacket {
+    pub timestamp: Option<f64>,
+    pub link_hash: Option<String>,
+    pub data: Vec<u8>,
 }
 
 /// Find an available TCP port.

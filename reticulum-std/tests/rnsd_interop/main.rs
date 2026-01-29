@@ -37,6 +37,7 @@
 mod common;
 mod harness;
 mod daemon_tests;
+mod link_tests;
 mod basic;
 mod crypto;
 mod announce;

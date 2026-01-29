@@ -474,3 +474,115 @@ pub async fn connect_to_daemon(daemon: &TestDaemon) -> TcpStream {
 
     stream
 }
+
+// =========================================================================
+// Link test helpers
+// =========================================================================
+
+use reticulum_core::packet::PacketContext;
+
+/// Wait for a packet of a specific type on the stream.
+/// Returns the packet if found within timeout.
+#[allow(dead_code)]
+pub async fn receive_packet_of_type(
+    stream: &mut TcpStream,
+    deframer: &mut Deframer,
+    packet_type: PacketType,
+    timeout_duration: Duration,
+) -> Option<Packet> {
+    let mut buffer = [0u8; 2048];
+    let start = std::time::Instant::now();
+
+    while start.elapsed() < timeout_duration {
+        match timeout(Duration::from_millis(100), stream.read(&mut buffer)).await {
+            Ok(Ok(0)) => return None,
+            Ok(Ok(n)) => {
+                let results = deframer.process(&buffer[..n]);
+                for result in results {
+                    if let DeframeResult::Frame(data) = result {
+                        if let Ok(pkt) = Packet::unpack(&data) {
+                            if pkt.flags.packet_type == packet_type {
+                                return Some(pkt);
+                            }
+                        }
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+    None
+}
+
+/// Wait for a proof packet for a specific link ID.
+pub async fn receive_proof_for_link(
+    stream: &mut TcpStream,
+    deframer: &mut Deframer,
+    link_id: &[u8; 16],
+    timeout_duration: Duration,
+) -> Option<Packet> {
+    let mut buffer = [0u8; 2048];
+    let start = std::time::Instant::now();
+
+    while start.elapsed() < timeout_duration {
+        match timeout(Duration::from_millis(100), stream.read(&mut buffer)).await {
+            Ok(Ok(0)) => return None,
+            Ok(Ok(n)) => {
+                let results = deframer.process(&buffer[..n]);
+                for result in results {
+                    if let DeframeResult::Frame(data) = result {
+                        if let Ok(pkt) = Packet::unpack(&data) {
+                            if pkt.flags.packet_type == PacketType::Proof
+                                && pkt.destination_hash == *link_id
+                            {
+                                return Some(pkt);
+                            }
+                        }
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+    None
+}
+
+/// Receive a data packet on a link and decrypt it.
+/// Returns the decrypted data if successful.
+pub async fn receive_link_data(
+    stream: &mut TcpStream,
+    deframer: &mut Deframer,
+    link: &reticulum_core::link::Link,
+    timeout_duration: Duration,
+) -> Option<Vec<u8>> {
+    let mut buffer = [0u8; 2048];
+    let start = std::time::Instant::now();
+
+    while start.elapsed() < timeout_duration {
+        match timeout(Duration::from_millis(100), stream.read(&mut buffer)).await {
+            Ok(Ok(0)) => return None,
+            Ok(Ok(n)) => {
+                let results = deframer.process(&buffer[..n]);
+                for result in results {
+                    if let DeframeResult::Frame(data) = result {
+                        if let Ok(pkt) = Packet::unpack(&data) {
+                            if pkt.flags.packet_type == PacketType::Data
+                                && pkt.destination_hash == *link.id()
+                                && pkt.context == PacketContext::None
+                            {
+                                let mut decrypted = vec![0u8; pkt.data.len()];
+                                if let Ok(len) = link.decrypt(pkt.data.as_slice(), &mut decrypted)
+                                {
+                                    decrypted.truncate(len);
+                                    return Some(decrypted);
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+    None
+}
