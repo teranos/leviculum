@@ -488,6 +488,73 @@ impl TestDaemon {
 
         Ok(packets)
     }
+
+    /// Create a link from Python daemon to an external destination.
+    ///
+    /// This allows testing Rust as the link responder (server) side.
+    ///
+    /// # Arguments
+    /// * `dest_hash` - The destination hash to connect to (hex string)
+    /// * `dest_key` - The destination's 64-byte public key (hex string)
+    /// * `timeout` - Timeout in seconds for link establishment
+    ///
+    /// # Returns
+    /// Information about the established link, or error if failed.
+    pub async fn create_link(
+        &self,
+        dest_hash: &str,
+        dest_key: &str,
+        timeout: u32,
+    ) -> Result<CreatedLinkInfo, HarnessError> {
+        let result = self
+            .query(
+                "create_link",
+                serde_json::json!({
+                    "dest_hash": dest_hash,
+                    "dest_key": dest_key,
+                    "timeout": timeout,
+                }),
+            )
+            .await?;
+
+        let link_hash = result
+            .get("link_hash")
+            .and_then(|v| v.as_str())
+            .ok_or_else(|| HarnessError::ParseError("Missing link_hash".to_string()))?
+            .to_string();
+
+        let status = result
+            .get("status")
+            .and_then(|v| v.as_str())
+            .unwrap_or("unknown")
+            .to_string();
+
+        Ok(CreatedLinkInfo { link_hash, status })
+    }
+
+    /// Send data on an existing link (Python as sender).
+    ///
+    /// # Arguments
+    /// * `link_hash` - The link hash (from create_link)
+    /// * `data` - The data to send (will be hex-encoded)
+    pub async fn send_on_link(&self, link_hash: &str, data: &[u8]) -> Result<(), HarnessError> {
+        self.query(
+            "send_on_link",
+            serde_json::json!({
+                "link_hash": link_hash,
+                "data": hex::encode(data),
+            }),
+        )
+        .await?;
+        Ok(())
+    }
+}
+
+/// Information about a link created by the daemon (Python as initiator).
+#[derive(Debug, Clone)]
+pub struct CreatedLinkInfo {
+    pub link_hash: String,
+    pub status: String,
 }
 
 impl Drop for TestDaemon {

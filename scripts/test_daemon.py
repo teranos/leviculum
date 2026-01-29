@@ -293,6 +293,86 @@ class TestDaemon:
             dest.announce(app_data=app_data)
             return {"result": "announced"}
 
+        elif method == "create_link":
+            # Create a link to an external destination (Python as initiator)
+            dest_hash = params.get("dest_hash")
+            dest_key = params.get("dest_key")  # 64-byte public key hex
+            timeout = params.get("timeout", 10)
+
+            if not dest_hash or not dest_key:
+                return {"error": "dest_hash and dest_key required"}
+
+            try:
+                dest_hash_bytes = bytes.fromhex(dest_hash)
+                dest_key_bytes = bytes.fromhex(dest_key)
+
+                # Create identity from public key (no private key)
+                dest_identity = RNS.Identity(create_keys=False)
+                dest_identity.load_public_key(dest_key_bytes)
+
+                # Create outgoing destination
+                dest = RNS.Destination(
+                    dest_identity,
+                    RNS.Destination.OUT,
+                    RNS.Destination.SINGLE,
+                    "rust",
+                    "interop"
+                )
+
+                # Override the hash (for testing - destination was registered externally)
+                dest.hash = dest_hash_bytes
+
+                # Create link with timeout
+                link = RNS.Link(dest)
+
+                # Wait for link establishment
+                start = time.time()
+                while link.status != RNS.Link.ACTIVE and time.time() - start < timeout:
+                    time.sleep(0.1)
+                    if link.status == RNS.Link.CLOSED:
+                        return {"error": "Link closed before establishment"}
+
+                if link.status != RNS.Link.ACTIVE:
+                    return {"error": "Link establishment timeout"}
+
+                link_hash = link.hash.hex() if link.hash else "unknown"
+                self.links[link_hash] = link
+
+                # Set up callbacks
+                link.set_packet_callback(lambda msg, pkt, l=link: self._on_packet(l, msg, pkt))
+                link.set_link_closed_callback(lambda l: self._on_link_closed(l))
+
+                return {
+                    "result": {
+                        "link_hash": link_hash,
+                        "status": str(link.status),
+                    }
+                }
+
+            except Exception as e:
+                return {"error": f"Failed to create link: {str(e)}"}
+
+        elif method == "send_on_link":
+            # Send data on an existing link
+            link_hash = params.get("link_hash")
+            data = params.get("data")  # hex string
+
+            if not link_hash or not data:
+                return {"error": "link_hash and data required"}
+
+            if link_hash not in self.links:
+                return {"error": f"Link {link_hash} not found"}
+
+            link = self.links[link_hash]
+            data_bytes = bytes.fromhex(data)
+
+            try:
+                packet = RNS.Packet(link, data_bytes)
+                packet.send()
+                return {"result": "sent"}
+            except Exception as e:
+                return {"error": f"Send failed: {str(e)}"}
+
         elif method == "shutdown":
             self.running = False
             return {"result": "shutting_down"}

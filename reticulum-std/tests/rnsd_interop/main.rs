@@ -12,7 +12,8 @@
 //! 2. **Interop Tests** - Tests using the TestDaemon infrastructure:
 //!    - `daemon_tests` - Core announce/path tests
 //!    - `discovery_tests` - Bidirectional discovery tests
-//!    - `link_tests` - Link establishment tests
+//!    - `link_tests` - Link establishment tests (Rust as initiator)
+//!    - `responder_tests` - Link responder tests (Rust as responder)
 //!    - `flow_tests` - End-to-end flow tests
 //!
 //! ## Running Tests
@@ -26,6 +27,7 @@
 //!
 //! # Run specific test module
 //! cargo test --package reticulum-std --test rnsd_interop daemon_tests
+//! cargo test --package reticulum-std --test rnsd_interop responder_tests
 //! cargo test --package reticulum-std --test rnsd_interop protocol_tests
 //! ```
 
@@ -34,5 +36,6 @@ mod harness;
 mod daemon_tests;
 mod discovery_tests;
 mod link_tests;
+mod responder_tests;
 mod flow_tests;
 mod protocol_tests;

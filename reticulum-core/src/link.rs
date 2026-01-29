@@ -5,12 +5,31 @@
 //! - Perfect forward secrecy via ephemeral keys
 //! - Bidirectional data transfer
 //! - Keepalive and timeout management
+//!
+//! ## Link Establishment
+//!
+//! Links can be established in two directions:
+//!
+//! ### Initiator (client) side:
+//! 1. Create link with `Link::new_outgoing()`
+//! 2. Send LINK_REQUEST packet via `build_link_request_packet()`
+//! 3. Receive PROOF from destination
+//! 4. Verify proof with `process_proof()`
+//! 5. Send RTT packet via `build_rtt_packet()` to finalize
+//!
+//! ### Responder (server) side:
+//! 1. Receive LINK_REQUEST packet
+//! 2. Create link with `Link::new_incoming()`
+//! 3. Send PROOF via `build_proof_packet()`
+//! 4. Receive RTT packet
+//! 5. Finalize with `process_rtt()`
 
 use crate::constants::{
     ED25519_SIGNATURE_SIZE, LINK_KEEPALIVE_SECS, LINK_STALE_TIME_SECS, TRUNCATED_HASHBYTES,
     X25519_KEY_SIZE,
 };
 use crate::crypto::{derive_key, truncated_hash};
+use crate::identity::Identity;
 use crate::traits::Context;
 use rand_core::RngCore;
 
@@ -42,6 +61,12 @@ pub enum LinkError {
     KeyExchangeFailed,
     /// No destination
     NoDestination,
+    /// Invalid link request data
+    InvalidRequest,
+    /// No identity to sign with
+    NoIdentity,
+    /// Invalid RTT packet
+    InvalidRtt,
 }
 
 /// Link identifier (16 bytes - truncated hash)
@@ -127,6 +152,220 @@ impl Link {
             _last_outbound: 0,
             _established_at: None,
         }
+    }
+
+    /// Create a new incoming link (responder/server side) from a LINK_REQUEST packet.
+    ///
+    /// This is called when a destination receives a LINK_REQUEST packet.
+    /// The destination's identity is used for signing the proof.
+    ///
+    /// # Arguments
+    /// * `request_data` - The 64-byte payload from the LINK_REQUEST packet
+    ///   (32 bytes X25519 pub + 32 bytes Ed25519 pub)
+    /// * `link_id` - The pre-computed link ID (from `calculate_link_id()`)
+    /// * `destination_hash` - The hash of the destination receiving this request
+    /// * `ctx` - Platform context for RNG
+    ///
+    /// # Returns
+    /// A new Link in Pending state, ready for `build_proof_packet()` to be called.
+    pub fn new_incoming(
+        request_data: &[u8],
+        link_id: LinkId,
+        destination_hash: [u8; TRUNCATED_HASHBYTES],
+        ctx: &mut impl Context,
+    ) -> Result<Self, LinkError> {
+        Self::new_incoming_with_rng(request_data, link_id, destination_hash, ctx.rng())
+    }
+
+    /// Create a new incoming link with a provided RNG.
+    pub fn new_incoming_with_rng<R: rand_core::CryptoRngCore>(
+        request_data: &[u8],
+        link_id: LinkId,
+        destination_hash: [u8; TRUNCATED_HASHBYTES],
+        rng: &mut R,
+    ) -> Result<Self, LinkError> {
+        // LINK_REQUEST payload: [peer_x25519_pub (32)] [peer_ed25519_pub (32)]
+        // May have additional MTU signaling bytes (3 bytes) but we only need first 64
+        if request_data.len() < 64 {
+            return Err(LinkError::InvalidRequest);
+        }
+
+        // Extract peer's public keys
+        let peer_x25519_bytes: [u8; 32] = request_data[..32]
+            .try_into()
+            .map_err(|_| LinkError::InvalidRequest)?;
+        let peer_ed25519_bytes: [u8; 32] = request_data[32..64]
+            .try_into()
+            .map_err(|_| LinkError::InvalidRequest)?;
+
+        let peer_ephemeral_public = x25519_dalek::PublicKey::from(peer_x25519_bytes);
+        let peer_verifying_key = ed25519_dalek::VerifyingKey::from_bytes(&peer_ed25519_bytes)
+            .map_err(|_| LinkError::InvalidRequest)?;
+
+        // Generate our ephemeral X25519 key pair
+        let ephemeral_private = x25519_dalek::StaticSecret::random_from_rng(&mut *rng);
+        let ephemeral_public = x25519_dalek::PublicKey::from(&ephemeral_private);
+
+        // Generate Ed25519 key for future link authentication (not used for proof signing)
+        let mut ed25519_seed = [0u8; 32];
+        rng.fill_bytes(&mut ed25519_seed);
+        let signing_key = ed25519_dalek::SigningKey::from_bytes(&ed25519_seed);
+        let verifying_key = signing_key.verifying_key();
+
+        Ok(Self {
+            id: link_id,
+            state: LinkState::Pending,
+            ephemeral_private: Some(ephemeral_private),
+            ephemeral_public,
+            _signing_key: Some(signing_key),
+            verifying_key,
+            peer_ephemeral_public: Some(peer_ephemeral_public),
+            peer_verifying_key: Some(peer_verifying_key),
+            link_key: None,
+            destination_hash,
+            initiator: false, // We are the responder
+            hops: 0,
+            rtt_us: None,
+            _keepalive_secs: LINK_KEEPALIVE_SECS,
+            last_inbound: 0,
+            _last_outbound: 0,
+            _established_at: None,
+        })
+    }
+
+    /// Build the PROOF packet for responding to a LINK_REQUEST.
+    ///
+    /// This performs the DH key exchange and derives the link key.
+    /// Must be called on an incoming link in Pending state.
+    ///
+    /// # Arguments
+    /// * `identity` - The destination's identity (for signing the proof)
+    /// * `mtu` - The MTU value for signaling (typically 500)
+    /// * `mode` - The mode for signaling (typically 1 for AES-256-CBC)
+    ///
+    /// # Returns
+    /// The raw PROOF packet bytes ready for framing/transmission.
+    /// Link state transitions to Handshake.
+    pub fn build_proof_packet(
+        &mut self,
+        identity: &Identity,
+        mtu: u32,
+        mode: u8,
+    ) -> Result<alloc::vec::Vec<u8>, LinkError> {
+        use crate::destination::DestinationType;
+        use crate::packet::{HeaderType, PacketContext, PacketFlags, PacketType, TransportType};
+
+        if self.state != LinkState::Pending {
+            return Err(LinkError::InvalidState);
+        }
+
+        if self.initiator {
+            return Err(LinkError::InvalidState); // Only responder can build proof
+        }
+
+        // Get peer's public key (from the LINK_REQUEST)
+        let peer_ephemeral_public = self
+            .peer_ephemeral_public
+            .ok_or(LinkError::KeyExchangeFailed)?;
+
+        // Perform X25519 key exchange
+        let ephemeral_private = self
+            .ephemeral_private
+            .as_ref()
+            .ok_or(LinkError::KeyExchangeFailed)?;
+        let shared_secret = ephemeral_private.diffie_hellman(&peer_ephemeral_public);
+
+        // Derive link key using HKDF
+        let link_key = Self::derive_link_key(shared_secret.as_bytes(), &self.id);
+        self.link_key = Some(link_key);
+
+        // Build signaling bytes: 21-bit MTU + 3-bit mode
+        let signaling = (mtu & 0x1FFFFF) | ((mode as u32 & 0x07) << 21);
+        let signaling_be = signaling.to_be_bytes();
+        let signaling_bytes: [u8; 3] = [signaling_be[1], signaling_be[2], signaling_be[3]];
+
+        // Build signed data: link_id (16) + our_x25519_pub (32) + our_ed25519_pub (32) + signaling (3)
+        // Note: Python RNS uses the destination's Ed25519 signing key (not the link's ephemeral one)
+        let mut signed_data = [0u8; 83];
+        signed_data[..TRUNCATED_HASHBYTES].copy_from_slice(&self.id);
+        signed_data[TRUNCATED_HASHBYTES..TRUNCATED_HASHBYTES + 32]
+            .copy_from_slice(self.ephemeral_public.as_bytes());
+        // Use the destination identity's Ed25519 verifying key (not the link's ephemeral one)
+        signed_data[TRUNCATED_HASHBYTES + 32..TRUNCATED_HASHBYTES + 64]
+            .copy_from_slice(identity.ed25519_verifying().as_bytes());
+        signed_data[TRUNCATED_HASHBYTES + 64..].copy_from_slice(&signaling_bytes);
+
+        // Sign with destination's identity
+        let signature = identity.sign(&signed_data).map_err(|_| LinkError::NoIdentity)?;
+
+        // Build proof data: [signature (64)] [our_x25519_pub (32)] [signaling (3)]
+        let mut proof_data = alloc::vec![0u8; 99];
+        proof_data[..64].copy_from_slice(&signature);
+        proof_data[64..96].copy_from_slice(self.ephemeral_public.as_bytes());
+        proof_data[96..99].copy_from_slice(&signaling_bytes);
+
+        // Build packet: PROOF packet addressed to the link_id
+        let flags = PacketFlags {
+            header_type: HeaderType::Type1,
+            context_flag: false,
+            transport_type: TransportType::Broadcast,
+            dest_type: DestinationType::Link,
+            packet_type: PacketType::Proof,
+        };
+
+        let mut packet = alloc::vec::Vec::with_capacity(1 + 1 + TRUNCATED_HASHBYTES + 1 + 99);
+        packet.push(flags.to_byte());
+        packet.push(0); // hops = 0
+        packet.extend_from_slice(&self.id); // destination = link_id
+        packet.push(PacketContext::Lrproof as u8);
+        packet.extend_from_slice(&proof_data);
+
+        // Transition to Handshake state (waiting for RTT from initiator)
+        self.state = LinkState::Handshake;
+
+        Ok(packet)
+    }
+
+    /// Process the RTT packet from the initiator to finalize link establishment.
+    ///
+    /// This is called on the responder side after sending the PROOF.
+    /// The RTT packet contains an encrypted msgpack float64 value.
+    ///
+    /// # Arguments
+    /// * `encrypted_data` - The encrypted payload from the RTT packet
+    ///
+    /// # Returns
+    /// Ok(rtt_seconds) if the link is now active, Err otherwise.
+    pub fn process_rtt(&mut self, encrypted_data: &[u8]) -> Result<f64, LinkError> {
+        if self.state != LinkState::Handshake {
+            return Err(LinkError::InvalidState);
+        }
+
+        if self.initiator {
+            return Err(LinkError::InvalidState); // Only responder processes RTT
+        }
+
+        // Decrypt the RTT data
+        let mut plaintext = alloc::vec![0u8; encrypted_data.len()];
+        let plaintext_len = self.decrypt(encrypted_data, &mut plaintext)?;
+
+        // RTT is msgpack-encoded float64: 0xCB + 8 bytes big-endian IEEE 754
+        if plaintext_len < 9 || plaintext[0] != 0xCB {
+            return Err(LinkError::InvalidRtt);
+        }
+
+        let rtt_bytes: [u8; 8] = plaintext[1..9]
+            .try_into()
+            .map_err(|_| LinkError::InvalidRtt)?;
+        let rtt_seconds = f64::from_be_bytes(rtt_bytes);
+
+        // Store RTT (convert to microseconds for internal storage)
+        self.rtt_us = Some((rtt_seconds * 1_000_000.0) as u64);
+
+        // Link is now active
+        self.state = LinkState::Active;
+
+        Ok(rtt_seconds)
     }
 
     /// Get the link ID
@@ -1002,5 +1241,311 @@ mod tests {
         // Link is in Pending state, not Active
         let result = link.build_data_packet(b"Hello", &mut ctx);
         assert!(matches!(result, Err(LinkError::InvalidState)));
+    }
+
+    // ==================== RESPONDER-SIDE TESTS ====================
+
+    #[test]
+    fn test_new_incoming_link() {
+        let dest_hash = [0x42; TRUNCATED_HASHBYTES];
+
+        // Create initiator's link request
+        let initiator = Link::new_outgoing_with_rng(dest_hash, &mut OsRng);
+        let request_data = initiator.create_link_request();
+
+        // Calculate link ID (as if from raw packet)
+        let mut raw_packet = Vec::new();
+        raw_packet.push(0x02); // flags
+        raw_packet.push(0x00); // hops
+        raw_packet.extend_from_slice(&dest_hash);
+        raw_packet.push(0x00); // context
+        raw_packet.extend_from_slice(&request_data);
+        let link_id = Link::calculate_link_id(&raw_packet);
+
+        // Create responder's link
+        let responder = Link::new_incoming_with_rng(
+            &request_data,
+            link_id,
+            dest_hash,
+            &mut OsRng,
+        ).unwrap();
+
+        assert_eq!(responder.state(), LinkState::Pending);
+        assert!(!responder.is_initiator());
+        assert_eq!(responder.id(), &link_id);
+        assert_eq!(responder.destination_hash(), &dest_hash);
+        // Responder should have peer's public keys set
+        assert!(responder.peer_ephemeral_public.is_some());
+        assert!(responder.peer_verifying_key.is_some());
+    }
+
+    #[test]
+    fn test_new_incoming_link_invalid_request() {
+        let dest_hash = [0x42; TRUNCATED_HASHBYTES];
+        let link_id = [0xAB; TRUNCATED_HASHBYTES];
+
+        // Too short request data
+        let short_data = [0u8; 63];
+        let result = Link::new_incoming_with_rng(&short_data, link_id, dest_hash, &mut OsRng);
+        assert!(matches!(result, Err(LinkError::InvalidRequest)));
+    }
+
+    #[test]
+    fn test_build_proof_packet() {
+        use crate::identity::Identity;
+
+        let dest_hash = [0x42; TRUNCATED_HASHBYTES];
+
+        // Create destination identity
+        let identity = Identity::generate_with_rng(&mut OsRng);
+
+        // Create initiator's link request
+        let initiator = Link::new_outgoing_with_rng(dest_hash, &mut OsRng);
+        let request_data = initiator.create_link_request();
+
+        // Calculate link ID
+        let mut raw_packet = Vec::new();
+        raw_packet.push(0x02);
+        raw_packet.push(0x00);
+        raw_packet.extend_from_slice(&dest_hash);
+        raw_packet.push(0x00);
+        raw_packet.extend_from_slice(&request_data);
+        let link_id = Link::calculate_link_id(&raw_packet);
+
+        // Create responder's link
+        let mut responder = Link::new_incoming_with_rng(
+            &request_data,
+            link_id,
+            dest_hash,
+            &mut OsRng,
+        ).unwrap();
+
+        // Build proof packet
+        let proof_packet = responder.build_proof_packet(&identity, 500, 1).unwrap();
+
+        // Verify responder state
+        assert_eq!(responder.state(), LinkState::Handshake);
+        assert!(responder.link_key().is_some());
+
+        // Verify packet structure
+        // [flags (1)] [hops (1)] [link_id (16)] [context (1)] [proof_data (99)]
+        assert_eq!(proof_packet.len(), 1 + 1 + TRUNCATED_HASHBYTES + 1 + 99);
+
+        // Context should be LRPROOF
+        use crate::packet::PacketContext;
+        assert_eq!(proof_packet[18], PacketContext::Lrproof as u8);
+
+        // Link ID in packet should match
+        assert_eq!(&proof_packet[2..18], &link_id);
+    }
+
+    #[test]
+    fn test_build_proof_packet_wrong_state() {
+        use crate::identity::Identity;
+
+        let dest_hash = [0x42; TRUNCATED_HASHBYTES];
+        let identity = Identity::generate_with_rng(&mut OsRng);
+
+        let initiator = Link::new_outgoing_with_rng(dest_hash, &mut OsRng);
+        let request_data = initiator.create_link_request();
+        let link_id = [0xAB; TRUNCATED_HASHBYTES];
+
+        let mut responder = Link::new_incoming_with_rng(
+            &request_data, link_id, dest_hash, &mut OsRng
+        ).unwrap();
+
+        // Build proof once (transitions to Handshake)
+        responder.build_proof_packet(&identity, 500, 1).unwrap();
+
+        // Second call should fail (wrong state)
+        let result = responder.build_proof_packet(&identity, 500, 1);
+        assert!(matches!(result, Err(LinkError::InvalidState)));
+    }
+
+    #[test]
+    fn test_build_proof_packet_from_initiator() {
+        use crate::identity::Identity;
+
+        let dest_hash = [0x42; TRUNCATED_HASHBYTES];
+        let identity = Identity::generate_with_rng(&mut OsRng);
+
+        // Initiator should not be able to build proof
+        let mut initiator = Link::new_outgoing_with_rng(dest_hash, &mut OsRng);
+
+        let result = initiator.build_proof_packet(&identity, 500, 1);
+        assert!(matches!(result, Err(LinkError::InvalidState)));
+    }
+
+    #[test]
+    fn test_full_handshake_responder_side() {
+        use crate::identity::Identity;
+
+        let dest_hash = [0x42; TRUNCATED_HASHBYTES];
+
+        // --- Destination setup ---
+        let dest_identity = Identity::generate_with_rng(&mut OsRng);
+
+        // --- Initiator side ---
+        let mut initiator = Link::new_outgoing_with_rng(dest_hash, &mut OsRng);
+        let request_data = initiator.create_link_request();
+
+        // Calculate link ID from raw packet
+        let mut raw_packet = Vec::new();
+        raw_packet.push(0x02);
+        raw_packet.push(0x00);
+        raw_packet.extend_from_slice(&dest_hash);
+        raw_packet.push(0x00);
+        raw_packet.extend_from_slice(&request_data);
+        let link_id = Link::calculate_link_id(&raw_packet);
+        initiator.set_link_id(link_id);
+
+        // --- Responder side ---
+        let mut responder = Link::new_incoming_with_rng(
+            &request_data, link_id, dest_hash, &mut OsRng
+        ).unwrap();
+
+        // Build proof packet
+        let proof_packet = responder.build_proof_packet(&dest_identity, 500, 1).unwrap();
+
+        // --- Back to initiator ---
+        // Set destination's verifying key
+        initiator.set_destination_keys(dest_identity.ed25519_verifying().as_bytes()).unwrap();
+
+        // Extract proof data from packet (skip header)
+        let proof_data = &proof_packet[19..]; // Skip flags(1) + hops(1) + link_id(16) + context(1)
+
+        // Process proof
+        initiator.process_proof(proof_data).unwrap();
+        assert_eq!(initiator.state(), LinkState::Active);
+
+        // Both links should have the same derived key
+        assert_eq!(initiator.link_key().unwrap(), responder.link_key().unwrap());
+    }
+
+    #[test]
+    fn test_process_rtt() {
+        use crate::identity::Identity;
+
+        let dest_hash = [0x42; TRUNCATED_HASHBYTES];
+        let dest_identity = Identity::generate_with_rng(&mut OsRng);
+
+        // Set up links
+        let mut initiator = Link::new_outgoing_with_rng(dest_hash, &mut OsRng);
+        let request_data = initiator.create_link_request();
+
+        let mut raw_packet = Vec::new();
+        raw_packet.push(0x02);
+        raw_packet.push(0x00);
+        raw_packet.extend_from_slice(&dest_hash);
+        raw_packet.push(0x00);
+        raw_packet.extend_from_slice(&request_data);
+        let link_id = Link::calculate_link_id(&raw_packet);
+        initiator.set_link_id(link_id);
+
+        let mut responder = Link::new_incoming_with_rng(
+            &request_data, link_id, dest_hash, &mut OsRng
+        ).unwrap();
+
+        // Build and process proof
+        let proof_packet = responder.build_proof_packet(&dest_identity, 500, 1).unwrap();
+        initiator.set_destination_keys(dest_identity.ed25519_verifying().as_bytes()).unwrap();
+        initiator.process_proof(&proof_packet[19..]).unwrap();
+
+        // Initiator builds RTT packet
+        let mut ctx = PlatformContext {
+            rng: OsRng,
+            clock: TestClock,
+            storage: NoStorage,
+        };
+        let rtt_seconds = 0.05; // 50ms
+        let rtt_packet = initiator.build_rtt_packet(rtt_seconds, &mut ctx).unwrap();
+
+        // Extract encrypted data from RTT packet
+        let encrypted_data = &rtt_packet[19..];
+
+        // Responder processes RTT
+        let received_rtt = responder.process_rtt(encrypted_data).unwrap();
+
+        // Responder should now be active
+        assert_eq!(responder.state(), LinkState::Active);
+        assert!((received_rtt - rtt_seconds).abs() < 0.001);
+        assert!(responder.rtt_us().is_some());
+    }
+
+    #[test]
+    fn test_process_rtt_wrong_state() {
+        let dest_hash = [0x42; TRUNCATED_HASHBYTES];
+        let link_id = [0xAB; TRUNCATED_HASHBYTES];
+
+        let initiator = Link::new_outgoing_with_rng(dest_hash, &mut OsRng);
+        let request_data = initiator.create_link_request();
+
+        let mut responder = Link::new_incoming_with_rng(
+            &request_data, link_id, dest_hash, &mut OsRng
+        ).unwrap();
+
+        // Responder is still in Pending state (no proof built yet)
+        let fake_data = [0u8; 64];
+        let result = responder.process_rtt(&fake_data);
+        assert!(matches!(result, Err(LinkError::InvalidState)));
+    }
+
+    #[test]
+    fn test_bidirectional_data_after_handshake() {
+        use crate::identity::Identity;
+
+        let dest_hash = [0x42; TRUNCATED_HASHBYTES];
+        let dest_identity = Identity::generate_with_rng(&mut OsRng);
+
+        // Full handshake
+        let mut initiator = Link::new_outgoing_with_rng(dest_hash, &mut OsRng);
+        let request_data = initiator.create_link_request();
+
+        let mut raw_packet = Vec::new();
+        raw_packet.push(0x02);
+        raw_packet.push(0x00);
+        raw_packet.extend_from_slice(&dest_hash);
+        raw_packet.push(0x00);
+        raw_packet.extend_from_slice(&request_data);
+        let link_id = Link::calculate_link_id(&raw_packet);
+        initiator.set_link_id(link_id);
+
+        let mut responder = Link::new_incoming_with_rng(
+            &request_data, link_id, dest_hash, &mut OsRng
+        ).unwrap();
+
+        let proof_packet = responder.build_proof_packet(&dest_identity, 500, 1).unwrap();
+        initiator.set_destination_keys(dest_identity.ed25519_verifying().as_bytes()).unwrap();
+        initiator.process_proof(&proof_packet[19..]).unwrap();
+
+        let mut ctx = PlatformContext {
+            rng: OsRng,
+            clock: TestClock,
+            storage: NoStorage,
+        };
+        let rtt_packet = initiator.build_rtt_packet(0.05, &mut ctx).unwrap();
+        responder.process_rtt(&rtt_packet[19..]).unwrap();
+
+        // Both sides active
+        assert_eq!(initiator.state(), LinkState::Active);
+        assert_eq!(responder.state(), LinkState::Active);
+
+        // Test initiator -> responder
+        let message1 = b"Hello from initiator!";
+        let mut encrypted1 = vec![0u8; Link::encrypted_size(message1.len())];
+        let enc_len1 = initiator.encrypt(message1, &mut encrypted1, &mut ctx).unwrap();
+
+        let mut decrypted1 = vec![0u8; message1.len() + 16];
+        let dec_len1 = responder.decrypt(&encrypted1[..enc_len1], &mut decrypted1).unwrap();
+        assert_eq!(&decrypted1[..dec_len1], message1);
+
+        // Test responder -> initiator
+        let message2 = b"Hello from responder!";
+        let mut encrypted2 = vec![0u8; Link::encrypted_size(message2.len())];
+        let enc_len2 = responder.encrypt(message2, &mut encrypted2, &mut ctx).unwrap();
+
+        let mut decrypted2 = vec![0u8; message2.len() + 16];
+        let dec_len2 = initiator.decrypt(&encrypted2[..enc_len2], &mut decrypted2).unwrap();
+        assert_eq!(&decrypted2[..dec_len2], message2);
     }
 }
