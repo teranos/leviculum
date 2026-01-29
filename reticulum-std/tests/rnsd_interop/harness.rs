@@ -1,0 +1,471 @@
+//! Test harness for spawning and managing the Python test daemon.
+//!
+//! This module provides infrastructure for running interop tests without
+//! requiring a manually-started rnsd instance. Instead, it spawns a custom
+//! Python test daemon that provides:
+//!
+//! 1. A Reticulum TCPServerInterface for packet exchange
+//! 2. A JSON-RPC command interface for querying internal state
+//!
+//! # Example
+//!
+//! ```ignore
+//! #[tokio::test]
+//! async fn test_announce_creates_path() {
+//!     let daemon = TestDaemon::start().await.expect("Failed to start daemon");
+//!
+//!     // Connect to Reticulum interface
+//!     let mut stream = TcpStream::connect(daemon.rns_addr()).await.unwrap();
+//!
+//!     // Send announce
+//!     let (raw, dest_hash, _) = build_announce_raw("test", &["echo"], b"data");
+//!     send_framed(&mut stream, &raw).await;
+//!
+//!     // Query state directly
+//!     tokio::time::sleep(Duration::from_millis(100)).await;
+//!     assert!(daemon.has_path(&dest_hash).await);
+//! }
+//! ```
+
+use std::collections::HashMap;
+use std::io::{BufRead, BufReader};
+use std::net::{SocketAddr, TcpListener, TcpStream as StdTcpStream};
+use std::process::{Child, Command, Stdio};
+use std::time::Duration;
+
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
+use tokio::net::TcpStream;
+use tokio::time::timeout;
+
+/// Error type for test harness operations
+#[derive(Debug)]
+pub enum HarnessError {
+    /// Failed to spawn the daemon process
+    SpawnFailed(std::io::Error),
+    /// Daemon did not become ready in time
+    StartupTimeout,
+    /// Failed to parse daemon output
+    ParseError(String),
+    /// Port is not available (reserved for future use)
+    #[allow(dead_code)]
+    PortUnavailable(u16),
+    /// JSON-RPC command failed
+    CommandFailed(String),
+    /// Connection to daemon failed
+    ConnectionFailed(std::io::Error),
+}
+
+impl std::fmt::Display for HarnessError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            HarnessError::SpawnFailed(e) => write!(f, "Failed to spawn daemon: {}", e),
+            HarnessError::StartupTimeout => write!(f, "Daemon did not become ready in time"),
+            HarnessError::ParseError(s) => write!(f, "Failed to parse daemon output: {}", s),
+            HarnessError::PortUnavailable(p) => write!(f, "Port {} is not available", p),
+            HarnessError::CommandFailed(s) => write!(f, "JSON-RPC command failed: {}", s),
+            HarnessError::ConnectionFailed(e) => write!(f, "Connection to daemon failed: {}", e),
+        }
+    }
+}
+
+impl std::error::Error for HarnessError {}
+
+/// A handle to a running test daemon.
+///
+/// The daemon is automatically killed when this handle is dropped.
+pub struct TestDaemon {
+    process: Child,
+    rns_port: u16,
+    cmd_port: u16,
+}
+
+impl TestDaemon {
+    /// Path to the test daemon script
+    const DAEMON_SCRIPT: &'static str = concat!(env!("CARGO_MANIFEST_DIR"), "/../scripts/test_daemon.py");
+
+    /// Timeout for daemon startup
+    const STARTUP_TIMEOUT: Duration = Duration::from_secs(10);
+
+    /// Start a new test daemon instance.
+    ///
+    /// This spawns the Python test daemon with dynamically allocated ports,
+    /// waits for it to signal readiness, and returns a handle for interaction.
+    pub async fn start() -> Result<Self, HarnessError> {
+        let rns_port = find_available_port()?;
+        let cmd_port = find_available_port()?;
+
+        Self::start_with_ports(rns_port, cmd_port).await
+    }
+
+    /// Start a daemon with specific ports (useful for debugging).
+    pub async fn start_with_ports(rns_port: u16, cmd_port: u16) -> Result<Self, HarnessError> {
+        let mut process = Command::new("python3")
+            .args([
+                Self::DAEMON_SCRIPT,
+                "--rns-port",
+                &rns_port.to_string(),
+                "--cmd-port",
+                &cmd_port.to_string(),
+            ])
+            .stdout(Stdio::piped())
+            .stderr(Stdio::inherit())
+            .spawn()
+            .map_err(HarnessError::SpawnFailed)?;
+
+        // Wait for "READY <rns_port> <cmd_port>" line
+        let stdout = process.stdout.take().expect("stdout should be captured");
+        let reader = BufReader::new(stdout);
+
+        let ready_result = tokio::task::spawn_blocking(move || {
+            for line in reader.lines() {
+                match line {
+                    Ok(line) if line.starts_with("READY ") => {
+                        return Ok(line);
+                    }
+                    Ok(_) => continue,
+                    Err(e) => return Err(HarnessError::ParseError(e.to_string())),
+                }
+            }
+            Err(HarnessError::StartupTimeout)
+        });
+
+        let ready_line = timeout(Self::STARTUP_TIMEOUT, ready_result)
+            .await
+            .map_err(|_| HarnessError::StartupTimeout)?
+            .map_err(|_| HarnessError::StartupTimeout)??;
+
+        // Parse the READY line to verify ports
+        let parts: Vec<&str> = ready_line.split_whitespace().collect();
+        if parts.len() < 3 {
+            return Err(HarnessError::ParseError(format!(
+                "Invalid READY line: {}",
+                ready_line
+            )));
+        }
+
+        // Wait briefly for interfaces to fully initialize
+        tokio::time::sleep(Duration::from_millis(200)).await;
+
+        // Verify we can connect to the command port
+        let daemon = Self {
+            process,
+            rns_port,
+            cmd_port,
+        };
+
+        // Ping to verify daemon is responsive
+        match daemon.ping().await {
+            Ok(_) => Ok(daemon),
+            Err(e) => {
+                // Daemon didn't respond, clean up
+                drop(daemon);
+                Err(e)
+            }
+        }
+    }
+
+    /// Get the address for the Reticulum TCP interface.
+    pub fn rns_addr(&self) -> SocketAddr {
+        SocketAddr::from(([127, 0, 0, 1], self.rns_port))
+    }
+
+    /// Get the address for the JSON-RPC command interface.
+    pub fn cmd_addr(&self) -> SocketAddr {
+        SocketAddr::from(([127, 0, 0, 1], self.cmd_port))
+    }
+
+    /// Get the RNS port number.
+    pub fn rns_port(&self) -> u16 {
+        self.rns_port
+    }
+
+    /// Get the command port number.
+    #[allow(dead_code)]
+    pub fn cmd_port(&self) -> u16 {
+        self.cmd_port
+    }
+
+    /// Send a JSON-RPC command to the daemon and return the result.
+    async fn query(&self, method: &str, params: serde_json::Value) -> Result<serde_json::Value, HarnessError> {
+        let mut stream = TcpStream::connect(self.cmd_addr())
+            .await
+            .map_err(HarnessError::ConnectionFailed)?;
+
+        let cmd = serde_json::json!({
+            "method": method,
+            "params": params
+        });
+
+        stream
+            .write_all(cmd.to_string().as_bytes())
+            .await
+            .map_err(|e| HarnessError::ConnectionFailed(e))?;
+
+        stream
+            .shutdown()
+            .await
+            .map_err(|e| HarnessError::ConnectionFailed(e))?;
+
+        let mut response = Vec::new();
+        stream
+            .read_to_end(&mut response)
+            .await
+            .map_err(|e| HarnessError::ConnectionFailed(e))?;
+
+        let response: serde_json::Value = serde_json::from_slice(&response)
+            .map_err(|e| HarnessError::ParseError(e.to_string()))?;
+
+        if let Some(error) = response.get("error") {
+            return Err(HarnessError::CommandFailed(error.to_string()));
+        }
+
+        Ok(response.get("result").cloned().unwrap_or(serde_json::Value::Null))
+    }
+
+    /// Ping the daemon to verify it's responsive.
+    pub async fn ping(&self) -> Result<(), HarnessError> {
+        let result = self.query("ping", serde_json::json!({})).await?;
+        if result == "pong" {
+            Ok(())
+        } else {
+            Err(HarnessError::CommandFailed(format!(
+                "Unexpected ping response: {}",
+                result
+            )))
+        }
+    }
+
+    /// Check if a path exists to a destination.
+    pub async fn has_path(&self, dest_hash: &[u8]) -> bool {
+        let hex_hash = hex::encode(dest_hash);
+        match self.query("has_path", serde_json::json!({"hash": hex_hash})).await {
+            Ok(serde_json::Value::Bool(b)) => b,
+            _ => false,
+        }
+    }
+
+    /// Get the path table from the daemon.
+    pub async fn get_path_table(&self) -> Result<HashMap<String, PathEntry>, HarnessError> {
+        let result = self.query("get_path_table", serde_json::json!({})).await?;
+        let mut paths = HashMap::new();
+
+        if let serde_json::Value::Object(map) = result {
+            for (hash, entry) in map {
+                let timestamp = entry.get("timestamp").and_then(|v| v.as_f64());
+                let hops = entry.get("hops").and_then(|v| v.as_u64()).map(|v| v as u8);
+                let expires = entry.get("expires").and_then(|v| v.as_f64());
+
+                paths.insert(hash, PathEntry {
+                    timestamp,
+                    hops,
+                    expires,
+                });
+            }
+        }
+
+        Ok(paths)
+    }
+
+    /// Get pending announces from the daemon.
+    #[allow(dead_code)]
+    pub async fn get_announces(&self) -> Result<HashMap<String, AnnounceEntry>, HarnessError> {
+        let result = self.query("get_announces", serde_json::json!({})).await?;
+        let mut announces = HashMap::new();
+
+        if let serde_json::Value::Object(map) = result {
+            for (hash, entry) in map {
+                let timestamp = entry.get("timestamp").and_then(|v| v.as_f64());
+                announces.insert(hash, AnnounceEntry { timestamp });
+            }
+        }
+
+        Ok(announces)
+    }
+
+    /// Get interface information from the daemon.
+    pub async fn get_interfaces(&self) -> Result<Vec<InterfaceInfo>, HarnessError> {
+        let result = self.query("get_interfaces", serde_json::json!({})).await?;
+        let mut interfaces = Vec::new();
+
+        if let serde_json::Value::Array(arr) = result {
+            for entry in arr {
+                let name = entry.get("name").and_then(|v| v.as_str()).unwrap_or("").to_string();
+                let online = entry.get("online").and_then(|v| v.as_bool());
+                let in_enabled = entry.get("IN").and_then(|v| v.as_bool());
+                let out_enabled = entry.get("OUT").and_then(|v| v.as_bool());
+
+                interfaces.push(InterfaceInfo {
+                    name,
+                    online,
+                    in_enabled,
+                    out_enabled,
+                });
+            }
+        }
+
+        Ok(interfaces)
+    }
+
+    /// Register a destination in the daemon that accepts links.
+    ///
+    /// Returns the destination hash and signing key.
+    pub async fn register_destination(
+        &self,
+        app_name: &str,
+        aspects: &[&str],
+    ) -> Result<DestinationInfo, HarnessError> {
+        let result = self
+            .query(
+                "register_destination",
+                serde_json::json!({
+                    "app_name": app_name,
+                    "aspects": aspects,
+                }),
+            )
+            .await?;
+
+        let hash = result
+            .get("hash")
+            .and_then(|v| v.as_str())
+            .ok_or_else(|| HarnessError::ParseError("Missing hash".to_string()))?
+            .to_string();
+
+        let public_key = result
+            .get("public_key")
+            .and_then(|v| v.as_str())
+            .ok_or_else(|| HarnessError::ParseError("Missing public_key".to_string()))?
+            .to_string();
+
+        let signing_key = result
+            .get("signing_key")
+            .and_then(|v| v.as_str())
+            .ok_or_else(|| HarnessError::ParseError("Missing signing_key".to_string()))?
+            .to_string();
+
+        Ok(DestinationInfo {
+            hash,
+            public_key,
+            signing_key,
+        })
+    }
+
+    /// Announce a registered destination.
+    pub async fn announce_destination(&self, dest_hash: &str, app_data: &[u8]) -> Result<(), HarnessError> {
+        self.query(
+            "announce_destination",
+            serde_json::json!({
+                "hash": dest_hash,
+                "app_data": hex::encode(app_data),
+            }),
+        )
+        .await?;
+        Ok(())
+    }
+
+    /// Request the daemon to shut down gracefully.
+    #[allow(dead_code)]
+    pub async fn shutdown(&self) -> Result<(), HarnessError> {
+        let _ = self.query("shutdown", serde_json::json!({})).await;
+        Ok(())
+    }
+}
+
+impl Drop for TestDaemon {
+    fn drop(&mut self) {
+        // Try graceful shutdown first
+        if let Ok(mut stream) = StdTcpStream::connect(self.cmd_addr()) {
+            let cmd = r#"{"method":"shutdown"}"#;
+            let _ = std::io::Write::write_all(&mut stream, cmd.as_bytes());
+        }
+
+        // Give it a moment to shut down
+        std::thread::sleep(Duration::from_millis(100));
+
+        // Force kill if still running
+        let _ = self.process.kill();
+        let _ = self.process.wait();
+    }
+}
+
+/// Entry in the path table.
+#[derive(Debug, Clone)]
+pub struct PathEntry {
+    pub timestamp: Option<f64>,
+    pub hops: Option<u8>,
+    #[allow(dead_code)]
+    pub expires: Option<f64>,
+}
+
+/// Entry in the announce table.
+#[derive(Debug, Clone)]
+#[allow(dead_code)]
+pub struct AnnounceEntry {
+    pub timestamp: Option<f64>,
+}
+
+/// Information about a Reticulum interface.
+#[derive(Debug, Clone)]
+pub struct InterfaceInfo {
+    pub name: String,
+    pub online: Option<bool>,
+    pub in_enabled: Option<bool>,
+    pub out_enabled: Option<bool>,
+}
+
+/// Information about a registered destination.
+#[derive(Debug, Clone)]
+pub struct DestinationInfo {
+    pub hash: String,
+    /// Full 64-byte public key (X25519 + Ed25519)
+    pub public_key: String,
+    /// Ed25519 signing key (last 32 bytes of public_key)
+    #[allow(dead_code)]
+    pub signing_key: String,
+}
+
+/// Find an available TCP port.
+fn find_available_port() -> Result<u16, HarnessError> {
+    let listener = TcpListener::bind("127.0.0.1:0").map_err(|e| HarnessError::SpawnFailed(e))?;
+    let port = listener.local_addr().map_err(|e| HarnessError::SpawnFailed(e))?.port();
+    // Listener is dropped here, freeing the port
+    Ok(port)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn test_daemon_starts_and_responds() {
+        let daemon = TestDaemon::start().await.expect("Failed to start daemon");
+
+        // Verify ping works
+        daemon.ping().await.expect("Ping failed");
+
+        // Verify we can get interfaces
+        let interfaces = daemon.get_interfaces().await.expect("Failed to get interfaces");
+        assert!(!interfaces.is_empty(), "Should have at least one interface");
+
+        // Verify the TCP server interface is present and online
+        let tcp_interface = interfaces
+            .iter()
+            .find(|i| i.name.contains("Test TCP Server"))
+            .expect("TCP server interface not found");
+        assert_eq!(tcp_interface.online, Some(true));
+        assert_eq!(tcp_interface.in_enabled, Some(true));
+        assert_eq!(tcp_interface.out_enabled, Some(true));
+    }
+
+    #[tokio::test]
+    async fn test_register_destination() {
+        let daemon = TestDaemon::start().await.expect("Failed to start daemon");
+
+        let dest = daemon
+            .register_destination("test", &["echo"])
+            .await
+            .expect("Failed to register destination");
+
+        assert_eq!(dest.hash.len(), 32, "Hash should be 16 bytes hex-encoded");
+        assert_eq!(dest.signing_key.len(), 64, "Signing key should be 32 bytes hex-encoded");
+    }
+}

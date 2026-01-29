@@ -35,6 +35,8 @@
 //! - `transport`  - Transport + TcpClientInterface integration
 
 mod common;
+mod harness;
+mod daemon_tests;
 mod basic;
 mod crypto;
 mod announce;

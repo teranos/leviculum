@@ -411,3 +411,66 @@ pub async fn connection_alive(stream: &mut TcpStream) -> bool {
         _ => true,           // Timeout or got data = alive
     }
 }
+
+// =========================================================================
+// Test daemon helpers
+// =========================================================================
+
+use crate::harness::TestDaemon;
+
+/// Time to wait after connecting to daemon before sending data.
+/// The daemon's TCPServerInterface needs time to initialize client connections.
+pub const DAEMON_SETTLE_TIME: Duration = Duration::from_millis(500);
+
+/// Time to wait for daemon to process a packet and update its state.
+pub const DAEMON_PROCESS_TIME: Duration = Duration::from_millis(200);
+
+/// Build and send a valid announce to a daemon, returning the destination hash.
+/// This is a convenience wrapper that handles stream creation and timing.
+pub async fn send_announce_to_daemon(
+    daemon: &TestDaemon,
+    app_name: &str,
+    aspects: &[&str],
+    app_data: &[u8],
+) -> [u8; TRUNCATED_HASHBYTES] {
+    let mut stream = TcpStream::connect(daemon.rns_addr())
+        .await
+        .expect("Failed to connect to daemon");
+
+    // Wait for interface to settle
+    tokio::time::sleep(DAEMON_SETTLE_TIME).await;
+
+    let (dest_hash, _dest) = build_and_send_announce(&mut stream, app_name, aspects, app_data).await;
+
+    // Wait for daemon to process the announce
+    tokio::time::sleep(DAEMON_PROCESS_TIME).await;
+
+    dest_hash
+}
+
+/// Build and send raw announce bytes to a daemon.
+pub async fn send_raw_to_daemon(daemon: &TestDaemon, raw: &[u8]) {
+    let mut stream = TcpStream::connect(daemon.rns_addr())
+        .await
+        .expect("Failed to connect to daemon");
+
+    // Wait for interface to settle
+    tokio::time::sleep(DAEMON_SETTLE_TIME).await;
+
+    send_framed(&mut stream, raw).await;
+
+    // Wait for daemon to process
+    tokio::time::sleep(DAEMON_PROCESS_TIME).await;
+}
+
+/// Connect to daemon and wait for interface to settle.
+pub async fn connect_to_daemon(daemon: &TestDaemon) -> TcpStream {
+    let stream = TcpStream::connect(daemon.rns_addr())
+        .await
+        .expect("Failed to connect to daemon");
+
+    // Wait for interface to settle
+    tokio::time::sleep(DAEMON_SETTLE_TIME).await;
+
+    stream
+}

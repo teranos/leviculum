@@ -906,10 +906,12 @@ name = "reticulum-std"
 version = "0.1.0"
 dependencies = [
  "bytes",
+ "hex",
  "rand_core 0.6.4",
  "reticulum-core",
  "rmp-serde",
  "serde",
+ "serde_json",
  "thiserror",
  "tokio",
  "tokio-serial",
