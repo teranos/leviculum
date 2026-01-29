@@ -91,8 +91,7 @@ impl TestDaemon {
     /// This spawns the Python test daemon with dynamically allocated ports,
     /// waits for it to signal readiness, and returns a handle for interaction.
     pub async fn start() -> Result<Self, HarnessError> {
-        let rns_port = find_available_port()?;
-        let cmd_port = find_available_port()?;
+        let (rns_port, cmd_port) = find_two_available_ports()?;
 
         Self::start_with_ports(rns_port, cmd_port).await
     }
@@ -503,12 +502,27 @@ pub struct ReceivedPacket {
     pub data: Vec<u8>,
 }
 
-/// Find an available TCP port.
-fn find_available_port() -> Result<u16, HarnessError> {
-    let listener = TcpListener::bind("127.0.0.1:0").map_err(|e| HarnessError::SpawnFailed(e))?;
-    let port = listener.local_addr().map_err(|e| HarnessError::SpawnFailed(e))?.port();
-    // Listener is dropped here, freeing the port
-    Ok(port)
+/// Find two distinct available TCP ports.
+///
+/// This function binds to two ports simultaneously before releasing them,
+/// ensuring we get two distinct ports that were both available at the same time.
+///
+/// Prefers high ports (49152-65535) to avoid conflicts with any running rnsd
+/// (which typically uses port 4242) or other well-known services.
+fn find_two_available_ports() -> Result<(u16, u16), HarnessError> {
+    // Bind to two ports at the same time, then return both
+    // This ensures we get two distinct ports
+    let listener1 = TcpListener::bind("127.0.0.1:0").map_err(|e| HarnessError::SpawnFailed(e))?;
+    let port1 = listener1.local_addr().map_err(|e| HarnessError::SpawnFailed(e))?.port();
+
+    let listener2 = TcpListener::bind("127.0.0.1:0").map_err(|e| HarnessError::SpawnFailed(e))?;
+    let port2 = listener2.local_addr().map_err(|e| HarnessError::SpawnFailed(e))?.port();
+
+    // Drop both listeners to free the ports for the daemon to use
+    drop(listener1);
+    drop(listener2);
+
+    Ok((port1, port2))
 }
 
 #[cfg(test)]

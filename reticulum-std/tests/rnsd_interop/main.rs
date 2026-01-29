@@ -1,38 +1,33 @@
-//! Live interoperability tests with Python rnsd
+//! Interoperability tests with Python Reticulum.
 //!
-//! These tests require a running rnsd instance on localhost:4242.
-//! Run with: cargo test --package reticulum-std --test rnsd_interop -- --ignored
+//! These tests verify that our Rust implementation correctly interoperates
+//! with the Python Reticulum reference implementation. Tests are organized
+//! into two categories:
 //!
-//! To enable: start rnsd with a TCPServerInterface on 127.0.0.1:4242
+//! ## Test Categories
 //!
-//! ## Testing Strategy
+//! 1. **Unit Tests** - Pure logic tests that don't require a daemon:
+//!    - `protocol_tests` - Flag encoding, hash derivation, packet layout
 //!
-//! Interop tests must verify EXTERNAL compatibility, not just internal consistency.
-//! Key principles:
+//! 2. **Interop Tests** - Tests using the TestDaemon infrastructure:
+//!    - `daemon_tests` - Core announce/path tests
+//!    - `discovery_tests` - Bidirectional discovery tests
+//!    - `link_tests` - Link establishment tests
+//!    - `flow_tests` - End-to-end flow tests
 //!
-//! 1. **Never rely on self-verification alone** - If we sign with our code and verify
-//!    with our code, bugs in format won't be caught. Always verify against rnsd.
+//! ## Running Tests
 //!
-//! 2. **Monitor rnsd logs for errors** - rnsd logs validation failures. Check logs
-//!    after each test to catch format mismatches.
+//! ```sh
+//! # Run all interop tests (includes daemon tests that auto-spawn Python daemon)
+//! cargo test --package reticulum-std --test rnsd_interop
 //!
-//! 3. **Verify round-trip propagation** - An announce isn't "accepted" just because
-//!    the connection stays open. Verify rnsd actually propagates it.
+//! # Run with verbose output
+//! cargo test --package reticulum-std --test rnsd_interop -- --nocapture
 //!
-//! 4. **Use multiple connections** - Send on one connection, receive on another.
-//!    This proves rnsd processed the packet, not just buffered it.
-//!
-//! ## Module Organization
-//!
-//! - `common`     - Shared helpers, constants, test infrastructure
-//! - `basic`      - Basic connectivity and packet format tests
-//! - `crypto`     - Cryptographic verification of real network announces
-//! - `announce`   - Announce creation, propagation, and adversarial tests
-//! - `protocol`   - Protocol correctness: byte layouts, known vectors, flags
-//! - `link`       - Link establishment and data exchange
-//! - `stress`     - Concurrency, rate limiting, burst handling
-//! - `resilience` - Error recovery, reconnection, malformed packet tolerance
-//! - `transport`  - Transport + TcpClientInterface integration
+//! # Run specific test module
+//! cargo test --package reticulum-std --test rnsd_interop daemon_tests
+//! cargo test --package reticulum-std --test rnsd_interop protocol_tests
+//! ```
 
 mod common;
 mod harness;
@@ -40,11 +35,4 @@ mod daemon_tests;
 mod discovery_tests;
 mod link_tests;
 mod flow_tests;
-mod basic;
-mod crypto;
-mod announce;
-mod protocol;
-mod link;
-mod stress;
-mod resilience;
-mod transport;
+mod protocol_tests;

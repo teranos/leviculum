@@ -453,3 +453,255 @@ async fn test_daemon_isolation_b() {
     // This daemon is completely independent
     println!("Daemon B test completed on port {}", daemon.rns_port());
 }
+
+// =========================================================================
+// Resilience tests (migrated from resilience.rs)
+// =========================================================================
+
+/// Verify connection survives multiple malformed packets.
+///
+/// This test sends various types of malformed packets and verifies that:
+/// 1. The connection stays open
+/// 2. Valid announces can still be processed after the malformed packets
+#[tokio::test]
+async fn test_connection_survives_malformed_packets() {
+    let daemon = TestDaemon::start().await.expect("Failed to start daemon");
+
+    // Connect to the daemon
+    let mut stream = connect_to_daemon(&daemon).await;
+
+    // Send a valid announce first to verify initial state
+    let (dest_pre, _) = build_and_send_announce(
+        &mut stream,
+        "leviculum",
+        &["resilience", "pre"],
+        b"pre-invalid",
+    )
+    .await;
+
+    tokio::time::sleep(Duration::from_millis(500)).await;
+    assert!(daemon.has_path(&dest_pre).await, "Pre-test announce should create path");
+    println!("Pre-test announce accepted");
+
+    // 1. Truncated packet (just a few bytes)
+    let truncated = vec![0x01, 0x00, 0xAA, 0xBB];
+    send_framed(&mut stream, &truncated).await;
+    println!("Sent truncated packet (4 bytes)");
+    tokio::time::sleep(Duration::from_millis(100)).await;
+
+    // 2. Announce with bad signature
+    let (mut bad_sig, _, _) = build_announce_raw("leviculum", &["resilience", "badsig"], b"bad-sig");
+    bad_sig[103] ^= 0xFF; // corrupt signature
+    send_framed(&mut stream, &bad_sig).await;
+    println!("Sent bad-signature announce");
+    tokio::time::sleep(Duration::from_millis(100)).await;
+
+    // 3. Announce with wrong hash
+    let (mut bad_hash, _, _) = build_announce_raw("leviculum", &["resilience", "badhash"], b"bad-hash");
+    bad_hash[2] ^= 0xFF; // corrupt dest hash in header
+    send_framed(&mut stream, &bad_hash).await;
+    println!("Sent wrong-hash announce");
+    tokio::time::sleep(Duration::from_millis(100)).await;
+
+    // 4. Announce with zeroed signature
+    let (mut zeroed, _, _) = build_announce_raw("leviculum", &["resilience", "zero"], b"zeroed");
+    for i in 103..103 + 64 {
+        zeroed[i] = 0;
+    }
+    send_framed(&mut stream, &zeroed).await;
+    println!("Sent zeroed-signature announce");
+    tokio::time::sleep(Duration::from_millis(100)).await;
+
+    // 5. Random garbage bytes
+    let garbage = vec![
+        0xDE, 0xAD, 0xBE, 0xEF, 0xCA, 0xFE, 0xBA, 0xBE, 0x11, 0x22, 0x33, 0x44, 0x55, 0x66, 0x77,
+        0x88, 0x99, 0xAA, 0xBB,
+    ];
+    send_framed(&mut stream, &garbage).await;
+    println!("Sent random garbage bytes");
+    tokio::time::sleep(Duration::from_millis(100)).await;
+
+    // Verify connection is still alive
+    assert!(
+        connection_alive(&mut stream).await,
+        "Connection should survive all invalid packets"
+    );
+
+    // Now send a valid announce and verify it creates a path
+    let (dest_post, _) = build_and_send_announce(
+        &mut stream,
+        "leviculum",
+        &["resilience", "post"],
+        b"post-invalid",
+    )
+    .await;
+
+    tokio::time::sleep(Duration::from_millis(500)).await;
+    assert!(
+        daemon.has_path(&dest_post).await,
+        "Post-invalid announce should create path (connection should be functional)"
+    );
+
+    println!("SUCCESS: Connection survived 5 invalid packets and still works");
+}
+
+/// Verify reconnection after disconnect works properly.
+#[tokio::test]
+async fn test_reconnect_after_disconnect() {
+    let daemon = TestDaemon::start().await.expect("Failed to start daemon");
+
+    // First connection
+    let mut stream1 = connect_to_daemon(&daemon).await;
+
+    // Send first announce
+    let (dest1, _) = build_and_send_announce(
+        &mut stream1,
+        "leviculum",
+        &["reconnect", "first"],
+        b"first",
+    )
+    .await;
+
+    tokio::time::sleep(Duration::from_millis(500)).await;
+    assert!(daemon.has_path(&dest1).await, "First announce should create path");
+    println!("First announce accepted, dest: {:02x?}...", &dest1[..4]);
+
+    // Drop connection
+    drop(stream1);
+    println!("First connection dropped");
+
+    // Wait for daemon to clean up
+    tokio::time::sleep(Duration::from_millis(500)).await;
+
+    // Reconnect
+    let mut stream2 = connect_to_daemon(&daemon).await;
+    println!("Reconnected");
+
+    // Send second announce (new identity)
+    let (dest2, _) = build_and_send_announce(
+        &mut stream2,
+        "leviculum",
+        &["reconnect", "second"],
+        b"second",
+    )
+    .await;
+
+    tokio::time::sleep(Duration::from_millis(500)).await;
+    assert!(
+        daemon.has_path(&dest2).await,
+        "Second announce should create path after reconnect"
+    );
+
+    println!("SUCCESS: Clean disconnect/reconnect handling verified");
+}
+
+// =========================================================================
+// Stress tests (migrated from stress.rs)
+// =========================================================================
+
+/// Verify multiple simultaneous connections work correctly.
+#[tokio::test]
+async fn test_multiple_connections_concurrent() {
+    let daemon = TestDaemon::start().await.expect("Failed to start daemon");
+
+    let num_connections = 5;
+    let mut streams: Vec<tokio::net::TcpStream> = Vec::new();
+    let mut expected_hashes = Vec::new();
+
+    // Open multiple connections
+    for i in 0..num_connections {
+        let stream = connect_to_daemon(&daemon).await;
+        streams.push(stream);
+        println!("Opened connection {}", i + 1);
+    }
+
+    // Each connection sends a unique announce
+    for (i, stream) in streams.iter_mut().enumerate() {
+        let aspect = format!("concurrent_{}", i);
+        let (dest_hash, _) = build_and_send_announce(
+            stream,
+            "leviculum",
+            &[&aspect],
+            format!("connection-{}", i).as_bytes(),
+        )
+        .await;
+        expected_hashes.push(dest_hash);
+        println!("Connection {} sent announce: {:02x?}...", i + 1, &dest_hash[..4]);
+
+        // Small delay between sends
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+
+    // Wait for processing
+    tokio::time::sleep(Duration::from_millis(1000)).await;
+
+    // Verify all announces created paths
+    let mut found_count = 0;
+    for (i, hash) in expected_hashes.iter().enumerate() {
+        if daemon.has_path(hash).await {
+            found_count += 1;
+            println!("Connection {} path found", i + 1);
+        } else {
+            println!("Connection {} path NOT found", i + 1);
+        }
+    }
+
+    println!("Found {}/{} paths", found_count, num_connections);
+    assert!(
+        found_count >= num_connections / 2,
+        "Should have at least half of the paths (got {}/{})",
+        found_count,
+        num_connections
+    );
+
+    println!("SUCCESS: Multiple simultaneous connections handled correctly");
+}
+
+/// Verify fragmented HDLC delivery is handled correctly.
+///
+/// This tests TCP stream fragmentation - packets delivered in small chunks
+/// rather than complete frames.
+#[tokio::test]
+async fn test_fragmented_hdlc_delivery() {
+    use reticulum_std::interfaces::hdlc::frame;
+    use tokio::io::AsyncWriteExt;
+
+    let daemon = TestDaemon::start().await.expect("Failed to start daemon");
+
+    let mut stream = connect_to_daemon(&daemon).await;
+
+    // Build a valid announce
+    let (raw, dest_hash, _) = build_announce_raw("leviculum", &["fragmented", "test"], b"frag-test");
+
+    // Frame it
+    let mut framed = Vec::new();
+    frame(&raw, &mut framed);
+
+    println!("Sending {} byte framed packet in 5-byte chunks", framed.len());
+
+    // Send in small chunks (5 bytes at a time)
+    for chunk in framed.chunks(5) {
+        stream.write_all(chunk).await.expect("Failed to send chunk");
+        stream.flush().await.expect("Failed to flush");
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+
+    println!("All chunks sent");
+
+    // Wait for processing
+    tokio::time::sleep(Duration::from_millis(500)).await;
+
+    // Verify the announce was correctly reassembled and processed
+    assert!(
+        daemon.has_path(&dest_hash).await,
+        "Fragmented announce should be reassembled and create path"
+    );
+
+    // Verify connection is still alive
+    assert!(
+        connection_alive(&mut stream).await,
+        "Connection should survive fragmented delivery"
+    );
+
+    println!("SUCCESS: Fragmented HDLC delivery handled correctly");
+}
