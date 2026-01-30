@@ -154,8 +154,7 @@ impl Config {
     }
 }
 
-// Note: dirs crate would be needed, but keeping minimal deps
-// For now, use home dir from env
+// Minimal home_dir implementation to avoid dirs crate dependency
 mod dirs {
     use std::path::PathBuf;
 

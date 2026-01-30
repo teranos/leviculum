@@ -251,19 +251,6 @@ impl AnnounceRouteInfo {
     }
 }
 
-/// Wait for any announce packet on the given stream.
-/// Returns the Packet if found within the timeout, allowing the caller to extract
-/// the signing key and other data from the announce.
-pub async fn wait_for_any_announce_packet(
-    stream: &mut TcpStream,
-    deframer: &mut Deframer,
-    timeout_duration: Duration,
-) -> Option<Packet> {
-    wait_for_any_announce_with_route_info(stream, deframer, timeout_duration)
-        .await
-        .map(|info| info.packet)
-}
-
 /// Wait for any announce packet and return full routing information.
 /// This includes the transport_id and hops needed for multi-hop link establishment.
 pub async fn wait_for_any_announce_with_route_info(
@@ -316,10 +303,6 @@ pub async fn connection_alive(stream: &mut TcpStream) -> bool {
         _ => true,           // Timeout or got data = alive
     }
 }
-
-// =========================================================================
-// Test daemon helpers
-// =========================================================================
 
 use crate::harness::TestDaemon;
 
@@ -379,10 +362,6 @@ pub async fn connect_to_daemon(daemon: &TestDaemon) -> TcpStream {
 
     stream
 }
-
-// =========================================================================
-// Link test helpers
-// =========================================================================
 
 use reticulum_core::packet::PacketContext;
 

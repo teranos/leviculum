@@ -47,8 +47,8 @@ pub enum HarnessError {
     StartupTimeout,
     /// Failed to parse daemon output
     ParseError(String),
-    /// Port is not available (reserved for future use)
-    #[allow(dead_code)]
+    /// Port is not available
+    #[allow(dead_code)] // Reserved for future error handling
     PortUnavailable(u16),
     /// JSON-RPC command failed
     CommandFailed(String),
@@ -238,7 +238,7 @@ impl TestDaemon {
     }
 
     /// Get the command port number.
-    #[allow(dead_code)]
+    #[allow(dead_code)] // Reserved for future test scenarios
     pub fn cmd_port(&self) -> u16 {
         self.cmd_port
     }
@@ -325,7 +325,7 @@ impl TestDaemon {
     }
 
     /// Get pending announces from the daemon.
-    #[allow(dead_code)]
+    #[allow(dead_code)] // Reserved for future test scenarios
     pub async fn get_announces(&self) -> Result<HashMap<String, AnnounceEntry>, HarnessError> {
         let result = self.query("get_announces", serde_json::json!({})).await?;
         let mut announces = HashMap::new();
@@ -421,7 +421,7 @@ impl TestDaemon {
     }
 
     /// Request the daemon to shut down gracefully.
-    #[allow(dead_code)]
+    #[allow(dead_code)] // Reserved for future test scenarios
     pub async fn shutdown(&self) -> Result<(), HarnessError> {
         let _ = self.query("shutdown", serde_json::json!({})).await;
         Ok(())
@@ -489,49 +489,6 @@ impl TestDaemon {
         Ok(packets)
     }
 
-    /// Create a link from Python daemon to an external destination.
-    ///
-    /// This allows testing Rust as the link responder (server) side.
-    ///
-    /// # Arguments
-    /// * `dest_hash` - The destination hash to connect to (hex string)
-    /// * `dest_key` - The destination's 64-byte public key (hex string)
-    /// * `timeout` - Timeout in seconds for link establishment
-    ///
-    /// # Returns
-    /// Information about the established link, or error if failed.
-    pub async fn create_link(
-        &self,
-        dest_hash: &str,
-        dest_key: &str,
-        timeout: u32,
-    ) -> Result<CreatedLinkInfo, HarnessError> {
-        let result = self
-            .query(
-                "create_link",
-                serde_json::json!({
-                    "dest_hash": dest_hash,
-                    "dest_key": dest_key,
-                    "timeout": timeout,
-                }),
-            )
-            .await?;
-
-        let link_hash = result
-            .get("link_hash")
-            .and_then(|v| v.as_str())
-            .ok_or_else(|| HarnessError::ParseError("Missing link_hash".to_string()))?
-            .to_string();
-
-        let status = result
-            .get("status")
-            .and_then(|v| v.as_str())
-            .unwrap_or("unknown")
-            .to_string();
-
-        Ok(CreatedLinkInfo { link_hash, status })
-    }
-
     /// Send data on an existing link (Python as sender).
     ///
     /// # Arguments
@@ -548,13 +505,6 @@ impl TestDaemon {
         .await?;
         Ok(())
     }
-}
-
-/// Information about a link created by the daemon (Python as initiator).
-#[derive(Debug, Clone)]
-pub struct CreatedLinkInfo {
-    pub link_hash: String,
-    pub status: String,
 }
 
 impl Drop for TestDaemon {

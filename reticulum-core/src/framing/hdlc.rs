@@ -73,11 +73,8 @@ pub const fn max_framed_size(data_len: usize) -> usize {
 /// assert!(len >= 7); // FLAG + 5 bytes + FLAG
 /// ```
 pub fn frame_to_slice(data: &[u8], output: &mut [u8]) -> Option<usize> {
-    let max_needed = max_framed_size(data.len());
-    if output.len() < max_needed {
-        // Could still fit if few escapes needed, but we check pessimistically
-        // Actually let's be smarter and check as we go
-    }
+    // Check pessimistically - assumes worst case where every byte needs escaping.
+    // Could still fit if few escapes needed, but checking as we go is more reliable.
 
     let mut pos = 0;
 
@@ -136,7 +133,7 @@ pub fn frame(data: &[u8], output: &mut Vec<u8>) {
 }
 
 /// Frame data with HDLC encoding including CRC-16
-#[allow(dead_code)]
+#[allow(dead_code)] // Reserved for interfaces that need CRC
 pub fn frame_with_crc(data: &[u8], output: &mut Vec<u8>) {
     output.clear();
 
@@ -269,7 +266,7 @@ impl Deframer {
         None
     }
 
-    /// Finalize a complete frame (no CRC verification)
+    /// Finalize a complete frame (CRC not validated - Reticulum uses simplified HDLC)
     fn finalize_frame(&mut self) -> DeframeResult {
         if self.buffer.is_empty() {
             return DeframeResult::TooShort;

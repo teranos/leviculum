@@ -113,8 +113,6 @@ impl Storage {
     }
 }
 
-// ─── Core Trait Implementation ──────────────────────────────────────────────
-
 fn hex_encode(bytes: &[u8]) -> String {
     bytes.iter().map(|b| format!("{:02x}", b)).collect()
 }
@@ -164,8 +162,6 @@ impl reticulum_core::traits::Storage for Storage {
             .collect()
     }
 }
-
-// ─── Storage Categories ─────────────────────────────────────────────────────
 
 /// Storage categories used by Reticulum
 pub mod categories {

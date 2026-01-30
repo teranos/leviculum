@@ -279,11 +279,9 @@ impl Packet {
 
         let mut pos = 0;
 
-        // Flags
         output[pos] = self.flags.to_byte();
         pos += 1;
 
-        // Hops
         output[pos] = self.hops;
         pos += 1;
 

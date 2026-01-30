@@ -46,6 +46,7 @@ pub fn encrypt_token(
         return Err(TokenError::InvalidKeyLength);
     }
     if iv.len() != AES_BLOCK_SIZE {
+        // Invalid IV treated as decryption failure to avoid leaking information
         return Err(TokenError::DecryptionFailed);
     }
 
