@@ -191,11 +191,29 @@ impl Destination {
     /// * `SigningFailed` - Signature could not be created
     ///
     /// # Example
-    /// ```ignore
-    /// let dest = Destination::new(Some(identity), Direction::In,
-    ///                             DestinationType::Single, "app", &["echo"]);
-    /// let packet = dest.announce(Some(b"my-data"), &mut ctx)?;
-    /// transport.send_packet(packet)?;
+    /// ```
+    /// use reticulum_core::destination::{Destination, DestinationType, Direction};
+    /// use reticulum_core::identity::Identity;
+    /// use reticulum_core::traits::{PlatformContext, NoStorage};
+    /// use rand_core::OsRng;
+    ///
+    /// struct SimpleClock;
+    /// impl reticulum_core::traits::Clock for SimpleClock {
+    ///     fn now_ms(&self) -> u64 { 1704067200000 }
+    /// }
+    ///
+    /// let identity = Identity::generate_with_rng(&mut OsRng);
+    /// let dest = Destination::new(
+    ///     Some(identity),
+    ///     Direction::In,
+    ///     DestinationType::Single,
+    ///     "app",
+    ///     &["echo"],
+    /// );
+    ///
+    /// let mut ctx = PlatformContext { rng: OsRng, clock: SimpleClock, storage: NoStorage };
+    /// let packet = dest.announce(Some(b"my-data"), &mut ctx).unwrap();
+    /// assert_eq!(packet.destination_hash, *dest.hash());
     /// ```
     pub fn announce(
         &self,

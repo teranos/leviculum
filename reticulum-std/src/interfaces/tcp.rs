@@ -6,6 +6,7 @@
 //! Uses HDLC framing to delimit packets on the TCP stream,
 //! matching Python Reticulum's `TCPClientInterface`.
 
+use std::collections::VecDeque;
 use std::io::{self, Read, Write};
 use std::net::{TcpStream, ToSocketAddrs};
 use std::time::Duration;
@@ -26,7 +27,7 @@ pub struct TcpClientInterface {
     /// HDLC deframer for incoming data
     deframer: Deframer,
     /// Queue of complete deframed packets waiting to be returned by recv()
-    recv_queue: Vec<Vec<u8>>,
+    recv_queue: VecDeque<Vec<u8>>,
     /// Reusable buffer for framing outgoing data
     frame_buf: Vec<u8>,
     /// Reusable buffer for reading from socket
@@ -65,11 +66,22 @@ impl TcpClientInterface {
             hash,
             stream,
             deframer: Deframer::new(),
-            recv_queue: Vec::new(),
+            recv_queue: VecDeque::new(),
             frame_buf: Vec::with_capacity(MTU * 2),
             read_buf: vec![0u8; MTU * 4],
             online: true,
         })
+    }
+
+    /// Try to dequeue a packet from the receive queue into the provided buffer.
+    /// Returns Some(Ok(len)) if a packet was dequeued, Some(Err) on error, None if queue is empty.
+    fn try_dequeue(&mut self, buf: &mut [u8]) -> Option<Result<usize, InterfaceError>> {
+        let packet = self.recv_queue.pop_front()?;
+        if packet.len() > buf.len() {
+            return Some(Err(InterfaceError::BufferTooSmall));
+        }
+        buf[..packet.len()].copy_from_slice(&packet);
+        Some(Ok(packet.len()))
     }
 
     /// Try to read from the socket and deframe any complete packets
@@ -85,7 +97,7 @@ impl TcpClientInterface {
                     let results = self.deframer.process(&self.read_buf[..n]);
                     for result in results {
                         if let DeframeResult::Frame(data) = result {
-                            self.recv_queue.push(data);
+                            self.recv_queue.push_back(data);
                         }
                     }
                 }
@@ -137,29 +149,15 @@ impl Interface for TcpClientInterface {
         }
 
         // If we have queued packets, return the first one
-        if !self.recv_queue.is_empty() {
-            let packet = self.recv_queue.remove(0);
-            if packet.len() > buf.len() {
-                return Err(InterfaceError::BufferTooSmall);
-            }
-            buf[..packet.len()].copy_from_slice(&packet);
-            return Ok(packet.len());
+        if let Some(result) = self.try_dequeue(buf) {
+            return result;
         }
 
         // Try to read more from the socket
         self.poll_read();
 
         // Check again after reading
-        if !self.recv_queue.is_empty() {
-            let packet = self.recv_queue.remove(0);
-            if packet.len() > buf.len() {
-                return Err(InterfaceError::BufferTooSmall);
-            }
-            buf[..packet.len()].copy_from_slice(&packet);
-            return Ok(packet.len());
-        }
-
-        Err(InterfaceError::WouldBlock)
+        self.try_dequeue(buf).unwrap_or(Err(InterfaceError::WouldBlock))
     }
 
     fn is_online(&self) -> bool {

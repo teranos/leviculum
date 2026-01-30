@@ -63,9 +63,20 @@ impl Identity {
     /// Create a new identity with random keys from a Context
     ///
     /// # Example
-    /// ```ignore
-    /// let mut ctx = PlatformContext { rng: OsRng, clock: SystemClock, storage: NoStorage };
+    /// ```
+    /// use reticulum_core::identity::Identity;
+    /// use reticulum_core::traits::{PlatformContext, NoStorage};
+    /// use rand_core::OsRng;
+    ///
+    /// // Simple clock implementation for the example
+    /// struct SimpleClock;
+    /// impl reticulum_core::traits::Clock for SimpleClock {
+    ///     fn now_ms(&self) -> u64 { 0 }
+    /// }
+    ///
+    /// let mut ctx = PlatformContext { rng: OsRng, clock: SimpleClock, storage: NoStorage };
     /// let identity = Identity::generate(&mut ctx);
+    /// assert_eq!(identity.hash().len(), 16);
     /// ```
     pub fn generate(ctx: &mut impl crate::traits::Context) -> Self {
         Self::generate_with_rng(ctx.rng())

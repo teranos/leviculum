@@ -17,9 +17,14 @@ pub mod reticulum;
 pub mod runtime;
 pub mod storage;
 
-// Re-export core types
+// Re-export all core types and modules
 pub use reticulum_core::*;
 
-// Re-export main types
+// Re-export std-specific types at crate root for convenience
 pub use clock::SystemClock;
+pub use config::{Config, InterfaceConfig, ReticulumConfig};
+pub use error::{Error, Result};
+pub use interfaces::TcpClientInterface;
 pub use reticulum::Reticulum;
+pub use runtime::{StdTransport, TransportRunner};
+pub use storage::Storage;

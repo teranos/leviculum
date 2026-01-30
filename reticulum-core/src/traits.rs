@@ -222,30 +222,36 @@ pub trait Context {
 
 /// Standard implementation of [`Context`]
 ///
-/// # Example (std)
-/// ```ignore
+/// # Example
+/// ```
 /// use rand_core::OsRng;
-/// use reticulum_std::SystemClock;
-/// use reticulum_core::traits::{PlatformContext, NoStorage};
+/// use reticulum_core::identity::Identity;
+/// use reticulum_core::traits::{Clock, PlatformContext, NoStorage};
+///
+/// // Define a simple clock (in practice, use your platform's clock)
+/// struct SimpleClock;
+/// impl Clock for SimpleClock {
+///     fn now_ms(&self) -> u64 { 0 }
+/// }
 ///
 /// let mut ctx = PlatformContext {
 ///     rng: OsRng,
-///     clock: SystemClock,
+///     clock: SimpleClock,
 ///     storage: NoStorage,
 /// };
 /// let identity = Identity::generate(&mut ctx);
 /// ```
 ///
-/// # Example (embedded)
-/// ```ignore
-/// use reticulum_core::traits::{PlatformContext, NoStorage};
+/// # Embedded Example
 ///
+/// On embedded platforms, provide platform-specific implementations:
+///
+/// ```text
 /// let mut ctx = PlatformContext {
-///     rng: Stm32Rng::new(),
-///     clock: Tim2Clock::new(),
-///     storage: NoStorage,
+///     rng: Stm32Rng::new(),      // Hardware RNG
+///     clock: Tim2Clock::new(),   // Timer-based clock
+///     storage: FlashStorage::new(),
 /// };
-/// let identity = Identity::generate(&mut ctx);
 /// ```
 pub struct PlatformContext<R: CryptoRngCore, C: Clock, S: Storage> {
     pub rng: R,

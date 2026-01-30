@@ -8,25 +8,34 @@
 //!
 //! # Usage
 //!
-//! ```ignore
+//! ```
+//! use reticulum_core::link::{LinkManager, LinkEvent};
+//! use reticulum_core::traits::{PlatformContext, NoStorage};
+//! use rand_core::OsRng;
+//!
+//! struct SimpleClock;
+//! impl reticulum_core::traits::Clock for SimpleClock {
+//!     fn now_ms(&self) -> u64 { 1000000 }
+//! }
+//!
 //! let mut manager = LinkManager::new();
 //!
 //! // Register destination to accept incoming links
+//! let my_dest_hash = [0x42u8; 16];
 //! manager.register_destination(my_dest_hash);
 //!
 //! // Initiate outgoing link
+//! let dest_hash = [0x33u8; 16];
+//! let dest_signing_key = [0x11u8; 32];
+//! let mut ctx = PlatformContext { rng: OsRng, clock: SimpleClock, storage: NoStorage };
 //! let (link_id, packet) = manager.initiate(dest_hash, &dest_signing_key, &mut ctx);
-//! // Send packet on interface...
-//!
-//! // Process incoming packets
-//! manager.process_packet(&packet, raw_bytes, &mut ctx);
 //!
 //! // Handle events
 //! for event in manager.drain_events() {
 //!     match event {
 //!         LinkEvent::LinkEstablished { link_id, .. } => { /* ... */ }
 //!         LinkEvent::DataReceived { link_id, data } => { /* ... */ }
-//!         // ...
+//!         _ => {}
 //!     }
 //! }
 //! ```
@@ -129,10 +138,25 @@ impl LinkManager {
     /// * `ctx` - Platform context for RNG
     ///
     /// # Example
-    /// ```ignore
-    /// // For a destination 2+ hops away, extract transport_id from the announce
-    /// let transport_id = announce_packet.transport_id; // daemon's identity hash
-    /// let hops = announce_packet.hops;
+    /// ```
+    /// use reticulum_core::link::LinkManager;
+    /// use reticulum_core::traits::{PlatformContext, NoStorage};
+    /// use rand_core::OsRng;
+    ///
+    /// struct SimpleClock;
+    /// impl reticulum_core::traits::Clock for SimpleClock {
+    ///     fn now_ms(&self) -> u64 { 1000000 }
+    /// }
+    ///
+    /// let mut manager = LinkManager::new();
+    /// let mut ctx = PlatformContext { rng: OsRng, clock: SimpleClock, storage: NoStorage };
+    ///
+    /// // For a destination 2+ hops away, use the transport_id from the announce
+    /// let dest_hash = [0x42u8; 16];
+    /// let signing_key = [0x33u8; 32];
+    /// let transport_id = [0x11u8; 16]; // relay node's identity hash
+    /// let hops = 2;
+    ///
     /// let (link_id, packet) = manager.initiate_with_path(
     ///     dest_hash,
     ///     &signing_key,
@@ -140,6 +164,7 @@ impl LinkManager {
     ///     hops,
     ///     &mut ctx,
     /// );
+    /// assert!(!packet.is_empty());
     /// ```
     pub fn initiate_with_path(
         &mut self,
