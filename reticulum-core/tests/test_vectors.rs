@@ -6,7 +6,7 @@
 // Fields in vector structs are loaded from JSON; some are for future tests
 #![allow(dead_code)]
 
-use reticulum_core::crypto::{derive_key, encrypt_token, decrypt_token, truncated_hash, full_hash};
+use reticulum_core::crypto::{decrypt_token, derive_key, encrypt_token, full_hash, truncated_hash};
 use reticulum_core::identity::Identity;
 use serde::Deserialize;
 use std::fs;
@@ -204,7 +204,10 @@ struct LinkProofVectors {
 }
 
 fn load_vectors() -> TestVectors {
-    let path = concat!(env!("CARGO_MANIFEST_DIR"), "/../tests/vectors/test_vectors.json");
+    let path = concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../tests/vectors/test_vectors.json"
+    );
     let content = fs::read_to_string(path).expect("Failed to read test vectors");
     serde_json::from_str(&content).expect("Failed to parse test vectors")
 }
@@ -242,11 +245,7 @@ fn test_identity_signing() {
     let identity = Identity::from_private_key_bytes(&private_key).unwrap();
     let signature = identity.sign(&message).unwrap();
 
-    assert_eq!(
-        signature.to_vec(),
-        expected_signature,
-        "Signature mismatch"
-    );
+    assert_eq!(signature.to_vec(), expected_signature, "Signature mismatch");
 
     // Verify signature works
     assert!(identity.verify(&message, &signature).unwrap());
@@ -378,7 +377,11 @@ fn test_destination_hash() {
 
     let dest_hash = truncated_hash(&hash_material);
 
-    assert_eq!(dest_hash.to_vec(), expected_dest_hash, "Destination hash mismatch");
+    assert_eq!(
+        dest_hash.to_vec(),
+        expected_dest_hash,
+        "Destination hash mismatch"
+    );
 }
 
 #[test]
@@ -399,15 +402,18 @@ fn test_encrypt_decrypt_roundtrip() {
 // Packet serialization tests
 // ==========================================================
 
-use reticulum_core::packet::{
-    HeaderType, PacketContext, PacketFlags, PacketType, TransportType, Packet, PacketData,
-};
+use reticulum_core::constants::TRUNCATED_HASHBYTES;
 use reticulum_core::destination::DestinationType;
 use reticulum_core::link::Link;
-use reticulum_core::constants::TRUNCATED_HASHBYTES;
+use reticulum_core::packet::{
+    HeaderType, Packet, PacketContext, PacketData, PacketFlags, PacketType, TransportType,
+};
 
 fn load_all_vectors() -> TestVectors {
-    let path = concat!(env!("CARGO_MANIFEST_DIR"), "/../tests/vectors/test_vectors.json");
+    let path = concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../tests/vectors/test_vectors.json"
+    );
     let content = fs::read_to_string(path).expect("Failed to read test vectors");
     serde_json::from_str(&content).expect("Failed to parse test vectors")
 }
@@ -419,21 +425,26 @@ fn test_packet_flags_encoding() {
     for test in &vectors.packet_flags {
         let flags = PacketFlags {
             ifac_flag: false, // Test vectors don't use IFAC
-            header_type: if test.header_type == 0 { HeaderType::Type1 } else { HeaderType::Type2 },
+            header_type: if test.header_type == 0 {
+                HeaderType::Type1
+            } else {
+                HeaderType::Type2
+            },
             context_flag: test.context_flag != 0,
-            transport_type: if test.transport_type == 0 { TransportType::Broadcast } else { TransportType::Transport },
+            transport_type: if test.transport_type == 0 {
+                TransportType::Broadcast
+            } else {
+                TransportType::Transport
+            },
             dest_type: DestinationType::try_from(test.dest_type).unwrap(),
             packet_type: PacketType::try_from(test.packet_type).unwrap(),
         };
 
         let encoded = flags.to_byte();
         assert_eq!(
-            encoded,
-            test.expected_flags,
+            encoded, test.expected_flags,
             "Flags encoding mismatch for '{}': expected 0x{:02x}, got 0x{:02x}",
-            test.name,
-            test.expected_flags,
-            encoded
+            test.name, test.expected_flags, encoded
         );
     }
 }
@@ -446,36 +457,27 @@ fn test_packet_flags_decoding() {
         let decoded = PacketFlags::from_byte(test.expected_flags).unwrap();
 
         assert_eq!(
-            decoded.header_type as u8,
-            test.header_type,
+            decoded.header_type as u8, test.header_type,
             "Header type mismatch for '{}': expected {}, got {}",
-            test.name,
-            test.header_type,
-            decoded.header_type as u8
+            test.name, test.header_type, decoded.header_type as u8
         );
         assert_eq!(
-            decoded.context_flag as u8,
-            test.context_flag,
+            decoded.context_flag as u8, test.context_flag,
             "Context flag mismatch for '{}'",
             test.name
         );
         assert_eq!(
-            decoded.transport_type as u8,
-            test.transport_type,
+            decoded.transport_type as u8, test.transport_type,
             "Transport type mismatch for '{}'",
             test.name
         );
         assert_eq!(
-            decoded.dest_type as u8,
-            test.dest_type,
+            decoded.dest_type as u8, test.dest_type,
             "Dest type mismatch for '{}': expected {}, got {}",
-            test.name,
-            test.dest_type,
-            decoded.dest_type as u8
+            test.name, test.dest_type, decoded.dest_type as u8
         );
         assert_eq!(
-            decoded.packet_type as u8,
-            test.packet_type,
+            decoded.packet_type as u8, test.packet_type,
             "Packet type mismatch for '{}'",
             test.name
         );
@@ -553,8 +555,7 @@ fn test_packet_deserialization() {
             test.name
         );
         assert_eq!(
-            packet.context as u8,
-            test.context,
+            packet.context as u8, test.context,
             "Context mismatch for '{}'",
             test.name
         );
@@ -567,7 +568,11 @@ fn test_packet_deserialization() {
 
         if let Some(ref expected_tid) = test.transport_id {
             let tid_bytes = hex::decode(expected_tid).unwrap();
-            assert!(packet.transport_id.is_some(), "Expected transport_id for '{}'", test.name);
+            assert!(
+                packet.transport_id.is_some(),
+                "Expected transport_id for '{}'",
+                test.name
+            );
             assert_eq!(
                 packet.transport_id.unwrap().to_vec(),
                 tid_bytes,
@@ -691,7 +696,11 @@ fn test_announce_payload_parsing() {
 
     assert_eq!(public_key, &expected_public_key[..], "Public key mismatch");
     assert_eq!(name_hash, &expected_name_hash[..], "Name hash mismatch");
-    assert_eq!(random_hash, &expected_random_hash[..], "Random hash mismatch");
+    assert_eq!(
+        random_hash,
+        &expected_random_hash[..],
+        "Random hash mismatch"
+    );
     assert_eq!(signature, &expected_signature[..], "Signature mismatch");
     assert_eq!(app_data, &expected_app_data[..], "App data mismatch");
 }
@@ -714,7 +723,11 @@ fn test_announce_no_app_data() {
 
     // Verify payload is exactly 148 bytes (no app_data)
     let payload = hex::decode(&vectors.announce_no_app_data.payload).unwrap();
-    assert_eq!(payload.len(), 148, "Announce without app_data should be exactly 148 bytes");
+    assert_eq!(
+        payload.len(),
+        148,
+        "Announce without app_data should be exactly 148 bytes"
+    );
 }
 
 // ==========================================================
@@ -756,8 +769,16 @@ fn test_link_proof_payload_structure() {
     let signalling = &proof_payload[96..99];
 
     assert_eq!(signature, &expected_signature[..], "Signature mismatch");
-    assert_eq!(responder_pub, &expected_responder_pub[..], "Responder public key mismatch");
-    assert_eq!(signalling, &expected_signalling[..], "Signalling bytes mismatch");
+    assert_eq!(
+        responder_pub,
+        &expected_responder_pub[..],
+        "Responder public key mismatch"
+    );
+    assert_eq!(
+        signalling,
+        &expected_signalling[..],
+        "Signalling bytes mismatch"
+    );
 }
 
 #[test]
@@ -773,10 +794,26 @@ fn test_link_proof_signed_data_structure() {
     // Signed data: link_id(16) + initiator_X25519_pub(32) + initiator_Ed25519_pub(32) + signalling(3) = 83 bytes
     assert_eq!(signed_data.len(), 83, "Signed data should be 83 bytes");
 
-    assert_eq!(&signed_data[0..16], &link_id[..], "Link ID mismatch in signed data");
-    assert_eq!(&signed_data[16..48], &initiator_x25519_pub[..], "Initiator X25519 pub mismatch");
-    assert_eq!(&signed_data[48..80], &initiator_ed25519_pub[..], "Initiator Ed25519 pub mismatch");
-    assert_eq!(&signed_data[80..83], &signalling[..], "Signalling mismatch in signed data");
+    assert_eq!(
+        &signed_data[0..16],
+        &link_id[..],
+        "Link ID mismatch in signed data"
+    );
+    assert_eq!(
+        &signed_data[16..48],
+        &initiator_x25519_pub[..],
+        "Initiator X25519 pub mismatch"
+    );
+    assert_eq!(
+        &signed_data[48..80],
+        &initiator_ed25519_pub[..],
+        "Initiator Ed25519 pub mismatch"
+    );
+    assert_eq!(
+        &signed_data[80..83],
+        &signalling[..],
+        "Signalling mismatch in signed data"
+    );
 }
 
 #[test]
@@ -807,12 +844,10 @@ fn test_link_ecdh_shared_key() {
     let expected_shared = hex::decode(&vectors.link_proof.shared_key).unwrap();
 
     // Perform ECDH: initiator_private * responder_public
-    let initiator_secret = x25519_dalek::StaticSecret::from(
-        <[u8; 32]>::try_from(&initiator_prv[..]).unwrap()
-    );
-    let responder_public = x25519_dalek::PublicKey::from(
-        <[u8; 32]>::try_from(&responder_pub[..]).unwrap()
-    );
+    let initiator_secret =
+        x25519_dalek::StaticSecret::from(<[u8; 32]>::try_from(&initiator_prv[..]).unwrap());
+    let responder_public =
+        x25519_dalek::PublicKey::from(<[u8; 32]>::try_from(&responder_pub[..]).unwrap());
 
     let shared = initiator_secret.diffie_hellman(&responder_public);
 
@@ -833,18 +868,14 @@ fn test_link_ecdh_symmetry() {
     let responder_pub = hex::decode(&vectors.link_proof.responder_x25519_public).unwrap();
 
     // Both sides should compute the same shared key
-    let initiator_secret = x25519_dalek::StaticSecret::from(
-        <[u8; 32]>::try_from(&initiator_prv[..]).unwrap()
-    );
-    let responder_secret = x25519_dalek::StaticSecret::from(
-        <[u8; 32]>::try_from(&responder_prv[..]).unwrap()
-    );
-    let initiator_public = x25519_dalek::PublicKey::from(
-        <[u8; 32]>::try_from(&initiator_pub[..]).unwrap()
-    );
-    let responder_public = x25519_dalek::PublicKey::from(
-        <[u8; 32]>::try_from(&responder_pub[..]).unwrap()
-    );
+    let initiator_secret =
+        x25519_dalek::StaticSecret::from(<[u8; 32]>::try_from(&initiator_prv[..]).unwrap());
+    let responder_secret =
+        x25519_dalek::StaticSecret::from(<[u8; 32]>::try_from(&responder_prv[..]).unwrap());
+    let initiator_public =
+        x25519_dalek::PublicKey::from(<[u8; 32]>::try_from(&initiator_pub[..]).unwrap());
+    let responder_public =
+        x25519_dalek::PublicKey::from(<[u8; 32]>::try_from(&responder_pub[..]).unwrap());
 
     let shared_from_initiator = initiator_secret.diffie_hellman(&responder_public);
     let shared_from_responder = responder_secret.diffie_hellman(&initiator_public);
@@ -871,7 +902,8 @@ fn test_ifac_key_derivation() {
         Some(&vectors.ifac.netname),
         Some(&vectors.ifac.netkey),
         vectors.ifac.ifac_size,
-    ).unwrap();
+    )
+    .unwrap();
 
     let expected_identity_hash = hex::decode(&vectors.ifac.ifac_identity_hash).unwrap();
 
@@ -887,20 +919,12 @@ fn test_ifac_key_derivation_netname_only() {
     let vectors = load_all_vectors();
 
     // Test with netname only
-    let config = IfacConfig::new(
-        Some(&vectors.ifac_netname_only.netname),
-        None,
-        16,
-    ).unwrap();
+    let config = IfacConfig::new(Some(&vectors.ifac_netname_only.netname), None, 16).unwrap();
 
     // The identity should be deterministic based on inputs
     // We can't directly compare ifac_key since it's private,
     // but we can verify the identity hash is consistent
-    let config2 = IfacConfig::new(
-        Some(&vectors.ifac_netname_only.netname),
-        None,
-        16,
-    ).unwrap();
+    let config2 = IfacConfig::new(Some(&vectors.ifac_netname_only.netname), None, 16).unwrap();
 
     assert_eq!(
         config.identity().hash(),
@@ -917,7 +941,8 @@ fn test_ifac_masking_matches_python() {
         Some(&vectors.ifac.netname),
         Some(&vectors.ifac.netkey),
         vectors.ifac.ifac_size,
-    ).unwrap();
+    )
+    .unwrap();
 
     let test_packet = hex::decode(&vectors.ifac.test_packet).unwrap();
     let expected_masked = hex::decode(&vectors.ifac.masked_packet).unwrap();
@@ -941,7 +966,8 @@ fn test_ifac_verification_matches_python() {
         Some(&vectors.ifac.netname),
         Some(&vectors.ifac.netkey),
         vectors.ifac.ifac_size,
-    ).unwrap();
+    )
+    .unwrap();
 
     let masked_packet = hex::decode(&vectors.ifac.masked_packet).unwrap();
     let expected_clean = hex::decode(&vectors.ifac.test_packet).unwrap();
@@ -965,7 +991,8 @@ fn test_ifac_roundtrip_with_python_vectors() {
         Some(&vectors.ifac.netname),
         Some(&vectors.ifac.netkey),
         vectors.ifac.ifac_size,
-    ).unwrap();
+    )
+    .unwrap();
 
     let test_packet = hex::decode(&vectors.ifac.test_packet).unwrap();
 
@@ -975,8 +1002,5 @@ fn test_ifac_roundtrip_with_python_vectors() {
     // Verify and unmask
     let clean = config.verify_ifac(&masked).unwrap();
 
-    assert_eq!(
-        clean, test_packet,
-        "IFAC roundtrip failed"
-    );
+    assert_eq!(clean, test_packet, "IFAC roundtrip failed");
 }

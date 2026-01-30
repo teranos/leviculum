@@ -121,6 +121,7 @@ fn test_packet_context_exact_byte_values() {
     // Also verify that packing a packet with context_flag=true places context at offset 18
     let packet = Packet {
         flags: PacketFlags {
+            ifac_flag: false,
             header_type: HeaderType::Type1,
             context_flag: true,
             transport_type: TransportType::Broadcast,
@@ -184,10 +185,7 @@ fn test_name_hash_known_vectors() {
             "Name hash mismatch for '{}'",
             full_name
         );
-        println!(
-            "  Name hash for '{}': {:02x?} - OK",
-            full_name, our_hash
-        );
+        println!("  Name hash for '{}': {:02x?} - OK", full_name, our_hash);
     }
 
     // The critical invariant: our compute_name_hash uses full_hash (SHA-256)
@@ -226,18 +224,9 @@ fn test_destination_hash_known_vector() {
     let expected = truncated_hash(&hash_material);
 
     assert_eq!(dest_hash, expected);
-    println!(
-        "  Identity hash: {:02x?}",
-        &identity_hash[..4]
-    );
-    println!(
-        "  Name hash: {:02x?}",
-        &name_hash
-    );
-    println!(
-        "  Destination hash: {:02x?}",
-        &dest_hash[..4]
-    );
+    println!("  Identity hash: {:02x?}", &identity_hash[..4]);
+    println!("  Name hash: {:02x?}", &name_hash);
+    println!("  Destination hash: {:02x?}", &dest_hash[..4]);
     println!("Destination hash pipeline verified");
 }
 
@@ -280,11 +269,19 @@ fn test_link_request_packet_byte_layout() {
 
     // Bytes 19..51: ephemeral X25519 public key (32 bytes)
     let ephemeral_pub = link.ephemeral_public_bytes();
-    assert_eq!(&raw[19..51], &ephemeral_pub, "Ephemeral X25519 pub mismatch");
+    assert_eq!(
+        &raw[19..51],
+        &ephemeral_pub,
+        "Ephemeral X25519 pub mismatch"
+    );
 
     // Bytes 51..83: Ed25519 verifying key (32 bytes)
     let verifying_key = link.verifying_key_bytes();
-    assert_eq!(&raw[51..83], &verifying_key, "Ed25519 verifying key mismatch");
+    assert_eq!(
+        &raw[51..83],
+        &verifying_key,
+        "Ed25519 verifying key mismatch"
+    );
 
     println!("Link request byte layout verified:");
     println!("  [0]:     0x{:02x} (flags)", raw[0]);

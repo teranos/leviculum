@@ -34,7 +34,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let args: Vec<String> = std::env::args().collect();
 
     if args.len() < 3 {
-        eprintln!("Usage: {} <dest_hash_hex> <signing_key_hex> [host:port]", args[0]);
+        eprintln!(
+            "Usage: {} <dest_hash_hex> <signing_key_hex> [host:port]",
+            args[0]
+        );
         eprintln!("");
         eprintln!("  dest_hash_hex:    16-byte destination hash (32 hex chars)");
         eprintln!("  signing_key_hex:  32-byte Ed25519 signing public key (64 hex chars)");
@@ -140,7 +143,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                                 println!("Hops: {}", hops);
                                 println!("Dest hash: {}", bytes_to_hex(dest_hash_recv));
                                 println!("Context: 0x{:02x}", context);
-                                println!("Payload ({} bytes): {}", payload.len(), bytes_to_hex(payload));
+                                println!(
+                                    "Payload ({} bytes): {}",
+                                    payload.len(),
+                                    bytes_to_hex(payload)
+                                );
 
                                 // Check if this is a link proof (context = 0xFF)
                                 if context == 0xFF {

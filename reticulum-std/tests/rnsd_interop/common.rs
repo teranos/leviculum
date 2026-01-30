@@ -1,10 +1,10 @@
 //! Shared test infrastructure for rnsd interop tests
 
+use rand_core::OsRng;
 use std::time::Duration;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpStream;
 use tokio::time::timeout;
-use rand_core::OsRng;
 
 use reticulum_core::constants::{MTU, TRUNCATED_HASHBYTES};
 use reticulum_core::crypto::truncated_hash;
@@ -298,7 +298,7 @@ pub async fn send_framed(stream: &mut TcpStream, raw: &[u8]) {
 pub async fn connection_alive(stream: &mut TcpStream) -> bool {
     let mut buffer = [0u8; 1];
     match timeout(Duration::from_millis(200), stream.read(&mut buffer)).await {
-        Ok(Ok(0)) => false, // Connection closed
+        Ok(Ok(0)) => false,  // Connection closed
         Ok(Err(_)) => false, // Error
         _ => true,           // Timeout or got data = alive
     }
@@ -328,7 +328,8 @@ pub async fn send_announce_to_daemon(
     // Wait for interface to settle
     tokio::time::sleep(DAEMON_SETTLE_TIME).await;
 
-    let (dest_hash, _dest) = build_and_send_announce(&mut stream, app_name, aspects, app_data).await;
+    let (dest_hash, _dest) =
+        build_and_send_announce(&mut stream, app_name, aspects, app_data).await;
 
     // Wait for daemon to process the announce
     tokio::time::sleep(DAEMON_PROCESS_TIME).await;
@@ -422,8 +423,7 @@ pub async fn receive_link_data(
                                 && pkt.context == PacketContext::None
                             {
                                 let mut decrypted = vec![0u8; pkt.data.len()];
-                                if let Ok(len) = link.decrypt(pkt.data.as_slice(), &mut decrypted)
-                                {
+                                if let Ok(len) = link.decrypt(pkt.data.as_slice(), &mut decrypted) {
                                     decrypted.truncate(len);
                                     return Some(decrypted);
                                 }

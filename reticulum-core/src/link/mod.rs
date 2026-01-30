@@ -37,7 +37,6 @@ mod manager;
 
 pub use manager::LinkManager;
 
-use alloc::vec::Vec;
 use crate::constants::{
     ED25519_SIGNATURE_SIZE, LINK_KEEPALIVE_SECS, LINK_STALE_TIME_SECS, TRUNCATED_HASHBYTES,
     X25519_KEY_SIZE,
@@ -45,6 +44,7 @@ use crate::constants::{
 use crate::crypto::{derive_key, truncated_hash};
 use crate::identity::Identity;
 use crate::traits::Context;
+use alloc::vec::Vec;
 use rand_core::RngCore;
 
 // Link request/proof size constants
@@ -228,7 +228,10 @@ pub struct Link {
 
 impl Link {
     /// Create a new outgoing link (initiator side) using a Context
-    pub fn new_outgoing(destination_hash: [u8; TRUNCATED_HASHBYTES], ctx: &mut impl Context) -> Self {
+    pub fn new_outgoing(
+        destination_hash: [u8; TRUNCATED_HASHBYTES],
+        ctx: &mut impl Context,
+    ) -> Self {
         Self::new_outgoing_with_rng(destination_hash, ctx.rng())
     }
 
@@ -403,7 +406,9 @@ impl Link {
         );
 
         // Sign with destination's identity
-        let signature = identity.sign(&signed_data).map_err(|_| LinkError::NoIdentity)?;
+        let signature = identity
+            .sign(&signed_data)
+            .map_err(|_| LinkError::NoIdentity)?;
 
         // Build proof data: [signature (64)] [our_x25519_pub (32)] [signaling (3)]
         let mut proof_data = alloc::vec![0u8; PROOF_DATA_SIZE];
@@ -414,6 +419,7 @@ impl Link {
 
         // Build packet: PROOF packet addressed to the link_id
         let flags = PacketFlags {
+            ifac_flag: false,
             header_type: HeaderType::Type1,
             context_flag: false,
             transport_type: TransportType::Broadcast,
@@ -421,7 +427,8 @@ impl Link {
             packet_type: PacketType::Proof,
         };
 
-        let mut packet = alloc::vec::Vec::with_capacity(1 + 1 + TRUNCATED_HASHBYTES + 1 + PROOF_DATA_SIZE);
+        let mut packet =
+            alloc::vec::Vec::with_capacity(1 + 1 + TRUNCATED_HASHBYTES + 1 + PROOF_DATA_SIZE);
         packet.push(flags.to_byte());
         packet.push(0); // hops = 0
         packet.extend_from_slice(&self.id); // destination = link_id
@@ -527,10 +534,15 @@ impl Link {
 
     /// Create the link request data with MTU signaling
     /// Format: [ephemeral_pub (32)] [sig_pub (32)] [mtu_signaling (3)]
-    pub fn create_link_request_with_mtu(&self, mtu: u32, mode: u8) -> [u8; LINK_REQUEST_SIGNALING_SIZE] {
+    pub fn create_link_request_with_mtu(
+        &self,
+        mtu: u32,
+        mode: u8,
+    ) -> [u8; LINK_REQUEST_SIGNALING_SIZE] {
         let mut data = [0u8; LINK_REQUEST_SIGNALING_SIZE];
         data[..X25519_KEY_SIZE].copy_from_slice(self.ephemeral_public.as_bytes());
-        data[X25519_KEY_SIZE..LINK_REQUEST_BASE_SIZE].copy_from_slice(&self.verifying_key.to_bytes());
+        data[X25519_KEY_SIZE..LINK_REQUEST_BASE_SIZE]
+            .copy_from_slice(&self.verifying_key.to_bytes());
         // MTU signaling: 21-bit MTU + 3-bit mode
         let signaling_bytes = encode_signaling_bytes(mtu, mode);
         data[LINK_REQUEST_BASE_SIZE..].copy_from_slice(&signaling_bytes);
@@ -761,6 +773,7 @@ impl Link {
 
         // Build flags
         let flags = PacketFlags {
+            ifac_flag: false,
             header_type: HeaderType::Type1,
             context_flag: false,
             transport_type: TransportType::Broadcast,
@@ -769,7 +782,9 @@ impl Link {
         };
 
         // Packet format: [flags (1)] [hops (1)] [dest_hash (16)] [context (1)] [data (64)]
-        let mut packet = alloc::vec::Vec::with_capacity(1 + 1 + TRUNCATED_HASHBYTES + 1 + LINK_REQUEST_BASE_SIZE);
+        let mut packet = alloc::vec::Vec::with_capacity(
+            1 + 1 + TRUNCATED_HASHBYTES + 1 + LINK_REQUEST_BASE_SIZE,
+        );
         packet.push(flags.to_byte());
         packet.push(0); // hops = 0
         packet.extend_from_slice(&self.destination_hash);
@@ -821,6 +836,7 @@ impl Link {
         // Build flags for HEADER_2 with transport routing
         // Type2=1 (bit 6), Transport=1 (bit 4), Single=1 (bits 3-2), LinkReq=2 (bits 1-0)
         let flags = PacketFlags {
+            ifac_flag: false,
             header_type: HeaderType::Type2,
             context_flag: false,
             transport_type: TransportType::Transport,
@@ -829,7 +845,9 @@ impl Link {
         };
 
         // Packet format: [flags (1)] [hops (1)] [transport_id (16)] [dest_hash (16)] [context (1)] [data (64)]
-        let mut packet = alloc::vec::Vec::with_capacity(1 + 1 + TRUNCATED_HASHBYTES + TRUNCATED_HASHBYTES + 1 + LINK_REQUEST_BASE_SIZE);
+        let mut packet = alloc::vec::Vec::with_capacity(
+            1 + 1 + TRUNCATED_HASHBYTES + TRUNCATED_HASHBYTES + 1 + LINK_REQUEST_BASE_SIZE,
+        );
         packet.push(flags.to_byte());
         packet.push(0); // hops = 0 (we're originating)
         packet.extend_from_slice(&transport_id);
@@ -859,10 +877,12 @@ impl Link {
     /// Encrypt data for transmission over this link (with provided RNG)
     ///
     /// Returns the encrypted token: [IV (16)][ciphertext][HMAC (32)]
-    pub fn encrypt(&self,
-                   plaintext: &[u8],
-                   output: &mut [u8],
-                   ctx: &mut impl Context) -> Result<usize, LinkError> {
+    pub fn encrypt(
+        &self,
+        plaintext: &[u8],
+        output: &mut [u8],
+        ctx: &mut impl Context,
+    ) -> Result<usize, LinkError> {
         use crate::crypto::encrypt_token;
 
         let token_key = self.token_key().ok_or(LinkError::InvalidState)?;
@@ -903,7 +923,11 @@ impl Link {
     ///
     /// The plaintext is encrypted and wrapped in a proper packet format.
     /// Returns the raw packet bytes ready for framing/transmission.
-    pub fn build_data_packet(&self, plaintext: &[u8], ctx: &mut impl Context) -> Result<alloc::vec::Vec<u8>, LinkError> {
+    pub fn build_data_packet(
+        &self,
+        plaintext: &[u8],
+        ctx: &mut impl Context,
+    ) -> Result<alloc::vec::Vec<u8>, LinkError> {
         use crate::destination::DestinationType;
         use crate::packet::{HeaderType, PacketContext, PacketFlags, PacketType, TransportType};
 
@@ -916,6 +940,7 @@ impl Link {
 
         // Build flags for link data packet
         let flags = PacketFlags {
+            ifac_flag: false,
             header_type: HeaderType::Type1,
             context_flag: false,
             transport_type: TransportType::Broadcast,
@@ -940,7 +965,11 @@ impl Link {
     /// The destination only considers the link "established" after receiving this.
     ///
     /// The RTT value is msgpack-encoded (float64 format).
-    pub fn build_rtt_packet(&self, rtt_seconds: f64, ctx: &mut impl Context) -> Result<alloc::vec::Vec<u8>, LinkError> {
+    pub fn build_rtt_packet(
+        &self,
+        rtt_seconds: f64,
+        ctx: &mut impl Context,
+    ) -> Result<alloc::vec::Vec<u8>, LinkError> {
         use crate::destination::DestinationType;
         use crate::packet::{HeaderType, PacketContext, PacketFlags, PacketType, TransportType};
 
@@ -958,6 +987,7 @@ impl Link {
 
         // Build flags for link RTT packet
         let flags = PacketFlags {
+            ifac_flag: false,
             header_type: HeaderType::Type1,
             context_flag: false,
             transport_type: TransportType::Broadcast,
@@ -985,7 +1015,7 @@ mod tests {
     extern crate std;
 
     use super::*;
-    use crate::traits::{Clock, PlatformContext, NoStorage};
+    use crate::traits::{Clock, NoStorage, PlatformContext};
     use alloc::vec;
     use alloc::vec::Vec;
     use rand_core::OsRng;
@@ -1025,7 +1055,7 @@ mod tests {
         assert_eq!(&request[32..64], &link.verifying_key.to_bytes());
     }
 
-        #[test]
+    #[test]
     fn test_link_request_with_mtu() {
         let dest_hash = [0x42; TRUNCATED_HASHBYTES];
         let link = Link::new_outgoing_with_rng(dest_hash, &mut OsRng);
@@ -1045,7 +1075,7 @@ mod tests {
         assert_eq!(request[66], 0xF4);
     }
 
-        #[test]
+    #[test]
     fn test_link_id_calculation() {
         let dest_hash = [0x42; TRUNCATED_HASHBYTES];
         let link = Link::new_outgoing_with_rng(dest_hash, &mut OsRng);
@@ -1067,7 +1097,7 @@ mod tests {
         assert_eq!(link_id, Link::calculate_link_id(&raw_packet));
     }
 
-        #[test]
+    #[test]
     fn test_set_link_id() {
         let dest_hash = [0x42; TRUNCATED_HASHBYTES];
         let mut link = Link::new_outgoing_with_rng(dest_hash, &mut OsRng);
@@ -1078,7 +1108,7 @@ mod tests {
         assert_eq!(link.id(), &new_id);
     }
 
-        #[test]
+    #[test]
     fn test_process_proof_invalid_state() {
         let dest_hash = [0x42; TRUNCATED_HASHBYTES];
         let mut link = Link::new_outgoing_with_rng(dest_hash, &mut OsRng);
@@ -1091,7 +1121,7 @@ mod tests {
         assert!(matches!(result, Err(LinkError::InvalidState)));
     }
 
-        #[test]
+    #[test]
     fn test_process_proof_too_short() {
         let dest_hash = [0x42; TRUNCATED_HASHBYTES];
         let mut link = Link::new_outgoing_with_rng(dest_hash, &mut OsRng);
@@ -1101,7 +1131,7 @@ mod tests {
         assert!(matches!(result, Err(LinkError::InvalidProof)));
     }
 
-        #[test]
+    #[test]
     fn test_process_proof_no_destination_key() {
         let dest_hash = [0x42; TRUNCATED_HASHBYTES];
         let mut link = Link::new_outgoing_with_rng(dest_hash, &mut OsRng);
@@ -1112,7 +1142,7 @@ mod tests {
         assert!(matches!(result, Err(LinkError::NoDestination)));
     }
 
-        #[test]
+    #[test]
     fn test_set_destination_keys() {
         let dest_hash = [0x42; TRUNCATED_HASHBYTES];
         let mut link = Link::new_outgoing_with_rng(dest_hash, &mut OsRng);
@@ -1125,7 +1155,7 @@ mod tests {
         assert!(result.is_ok());
     }
 
-        #[test]
+    #[test]
     fn test_key_derivation() {
         // Test that key derivation produces consistent results
         let shared_secret = [0x42; 32];
@@ -1143,7 +1173,7 @@ mod tests {
         assert_ne!(key1, key3);
     }
 
-        #[test]
+    #[test]
     fn test_full_handshake_simulation() {
         use ed25519_dalek::Signer;
 
@@ -1199,7 +1229,8 @@ mod tests {
 
         // --- Back to initiator ---
         // Set destination's verifying key (would come from announce)
-        link.set_destination_keys(&dest_verifying_key.to_bytes()).unwrap();
+        link.set_destination_keys(&dest_verifying_key.to_bytes())
+            .unwrap();
 
         // Process the proof
         let result = link.process_proof(&proof);
@@ -1212,7 +1243,7 @@ mod tests {
         assert!(link.hmac_key().is_some());
     }
 
-        #[test]
+    #[test]
     fn test_link_encrypt_decrypt() {
         use ed25519_dalek::Signer;
 
@@ -1254,7 +1285,8 @@ mod tests {
         proof[64..96].copy_from_slice(dest_ephemeral_public.as_bytes());
         proof[96..99].copy_from_slice(&signalling_bytes);
 
-        link.set_destination_keys(&dest_verifying_key.to_bytes()).unwrap();
+        link.set_destination_keys(&dest_verifying_key.to_bytes())
+            .unwrap();
         link.process_proof(&proof).unwrap();
 
         // Now test encrypt/decrypt
@@ -1277,7 +1309,7 @@ mod tests {
         assert_eq!(&decrypted[..dec_len], plaintext);
     }
 
-        #[test]
+    #[test]
     fn test_link_decrypt_tampered() {
         use ed25519_dalek::Signer;
 
@@ -1317,7 +1349,8 @@ mod tests {
         proof[64..96].copy_from_slice(dest_ephemeral_public.as_bytes());
         proof[96..99].copy_from_slice(&signalling_bytes);
 
-        link.set_destination_keys(&dest_verifying_key.to_bytes()).unwrap();
+        link.set_destination_keys(&dest_verifying_key.to_bytes())
+            .unwrap();
         link.process_proof(&proof).unwrap();
 
         // Encrypt some data
@@ -1339,7 +1372,7 @@ mod tests {
         assert!(result.is_err());
     }
 
-        #[test]
+    #[test]
     fn test_encrypted_size() {
         // 0 bytes -> 16 bytes padded -> 16 + 16 IV + 32 HMAC = 64
         assert_eq!(Link::encrypted_size(0), 64);
@@ -1357,7 +1390,7 @@ mod tests {
         assert_eq!(Link::encrypted_size(100), 160);
     }
 
-        #[test]
+    #[test]
     fn test_build_data_packet() {
         use ed25519_dalek::Signer;
 
@@ -1397,7 +1430,8 @@ mod tests {
         proof[64..96].copy_from_slice(dest_ephemeral_public.as_bytes());
         proof[96..99].copy_from_slice(&signalling_bytes);
 
-        link.set_destination_keys(&dest_verifying_key.to_bytes()).unwrap();
+        link.set_destination_keys(&dest_verifying_key.to_bytes())
+            .unwrap();
         link.process_proof(&proof).unwrap();
 
         // Now test build_data_packet
@@ -1470,12 +1504,8 @@ mod tests {
         let link_id = Link::calculate_link_id(&raw_packet);
 
         // Create responder's link
-        let responder = Link::new_incoming_with_rng(
-            &request_data,
-            link_id,
-            dest_hash,
-            &mut OsRng,
-        ).unwrap();
+        let responder =
+            Link::new_incoming_with_rng(&request_data, link_id, dest_hash, &mut OsRng).unwrap();
 
         assert_eq!(responder.state(), LinkState::Pending);
         assert!(!responder.is_initiator());
@@ -1520,12 +1550,8 @@ mod tests {
         let link_id = Link::calculate_link_id(&raw_packet);
 
         // Create responder's link
-        let mut responder = Link::new_incoming_with_rng(
-            &request_data,
-            link_id,
-            dest_hash,
-            &mut OsRng,
-        ).unwrap();
+        let mut responder =
+            Link::new_incoming_with_rng(&request_data, link_id, dest_hash, &mut OsRng).unwrap();
 
         // Build proof packet
         let proof_packet = responder.build_proof_packet(&identity, 500, 1).unwrap();
@@ -1557,9 +1583,8 @@ mod tests {
         let request_data = initiator.create_link_request();
         let link_id = [0xAB; TRUNCATED_HASHBYTES];
 
-        let mut responder = Link::new_incoming_with_rng(
-            &request_data, link_id, dest_hash, &mut OsRng
-        ).unwrap();
+        let mut responder =
+            Link::new_incoming_with_rng(&request_data, link_id, dest_hash, &mut OsRng).unwrap();
 
         // Build proof once (transitions to Handshake)
         responder.build_proof_packet(&identity, 500, 1).unwrap();
@@ -1607,16 +1632,19 @@ mod tests {
         initiator.set_link_id(link_id);
 
         // --- Responder side ---
-        let mut responder = Link::new_incoming_with_rng(
-            &request_data, link_id, dest_hash, &mut OsRng
-        ).unwrap();
+        let mut responder =
+            Link::new_incoming_with_rng(&request_data, link_id, dest_hash, &mut OsRng).unwrap();
 
         // Build proof packet
-        let proof_packet = responder.build_proof_packet(&dest_identity, 500, 1).unwrap();
+        let proof_packet = responder
+            .build_proof_packet(&dest_identity, 500, 1)
+            .unwrap();
 
         // --- Back to initiator ---
         // Set destination's verifying key
-        initiator.set_destination_keys(dest_identity.ed25519_verifying().as_bytes()).unwrap();
+        initiator
+            .set_destination_keys(dest_identity.ed25519_verifying().as_bytes())
+            .unwrap();
 
         // Extract proof data from packet (skip header)
         let proof_data = &proof_packet[19..]; // Skip flags(1) + hops(1) + link_id(16) + context(1)
@@ -1649,13 +1677,16 @@ mod tests {
         let link_id = Link::calculate_link_id(&raw_packet);
         initiator.set_link_id(link_id);
 
-        let mut responder = Link::new_incoming_with_rng(
-            &request_data, link_id, dest_hash, &mut OsRng
-        ).unwrap();
+        let mut responder =
+            Link::new_incoming_with_rng(&request_data, link_id, dest_hash, &mut OsRng).unwrap();
 
         // Build and process proof
-        let proof_packet = responder.build_proof_packet(&dest_identity, 500, 1).unwrap();
-        initiator.set_destination_keys(dest_identity.ed25519_verifying().as_bytes()).unwrap();
+        let proof_packet = responder
+            .build_proof_packet(&dest_identity, 500, 1)
+            .unwrap();
+        initiator
+            .set_destination_keys(dest_identity.ed25519_verifying().as_bytes())
+            .unwrap();
         initiator.process_proof(&proof_packet[19..]).unwrap();
 
         // Initiator builds RTT packet
@@ -1687,9 +1718,8 @@ mod tests {
         let initiator = Link::new_outgoing_with_rng(dest_hash, &mut OsRng);
         let request_data = initiator.create_link_request();
 
-        let mut responder = Link::new_incoming_with_rng(
-            &request_data, link_id, dest_hash, &mut OsRng
-        ).unwrap();
+        let mut responder =
+            Link::new_incoming_with_rng(&request_data, link_id, dest_hash, &mut OsRng).unwrap();
 
         // Responder is still in Pending state (no proof built yet)
         let fake_data = [0u8; 64];
@@ -1717,12 +1747,15 @@ mod tests {
         let link_id = Link::calculate_link_id(&raw_packet);
         initiator.set_link_id(link_id);
 
-        let mut responder = Link::new_incoming_with_rng(
-            &request_data, link_id, dest_hash, &mut OsRng
-        ).unwrap();
+        let mut responder =
+            Link::new_incoming_with_rng(&request_data, link_id, dest_hash, &mut OsRng).unwrap();
 
-        let proof_packet = responder.build_proof_packet(&dest_identity, 500, 1).unwrap();
-        initiator.set_destination_keys(dest_identity.ed25519_verifying().as_bytes()).unwrap();
+        let proof_packet = responder
+            .build_proof_packet(&dest_identity, 500, 1)
+            .unwrap();
+        initiator
+            .set_destination_keys(dest_identity.ed25519_verifying().as_bytes())
+            .unwrap();
         initiator.process_proof(&proof_packet[19..]).unwrap();
 
         let mut ctx = PlatformContext {
@@ -1740,19 +1773,27 @@ mod tests {
         // Test initiator -> responder
         let message1 = b"Hello from initiator!";
         let mut encrypted1 = vec![0u8; Link::encrypted_size(message1.len())];
-        let enc_len1 = initiator.encrypt(message1, &mut encrypted1, &mut ctx).unwrap();
+        let enc_len1 = initiator
+            .encrypt(message1, &mut encrypted1, &mut ctx)
+            .unwrap();
 
         let mut decrypted1 = vec![0u8; message1.len() + 16];
-        let dec_len1 = responder.decrypt(&encrypted1[..enc_len1], &mut decrypted1).unwrap();
+        let dec_len1 = responder
+            .decrypt(&encrypted1[..enc_len1], &mut decrypted1)
+            .unwrap();
         assert_eq!(&decrypted1[..dec_len1], message1);
 
         // Test responder -> initiator
         let message2 = b"Hello from responder!";
         let mut encrypted2 = vec![0u8; Link::encrypted_size(message2.len())];
-        let enc_len2 = responder.encrypt(message2, &mut encrypted2, &mut ctx).unwrap();
+        let enc_len2 = responder
+            .encrypt(message2, &mut encrypted2, &mut ctx)
+            .unwrap();
 
         let mut decrypted2 = vec![0u8; message2.len() + 16];
-        let dec_len2 = initiator.decrypt(&encrypted2[..enc_len2], &mut decrypted2).unwrap();
+        let dec_len2 = initiator
+            .decrypt(&encrypted2[..enc_len2], &mut decrypted2)
+            .unwrap();
         assert_eq!(&decrypted2[..dec_len2], message2);
     }
 
@@ -1817,7 +1858,10 @@ mod tests {
         // Bits 1-0: Packet Type = 10 (LinkRequest)
         // = 0b01010010 = 0x52
         let expected_flags = 0x52;
-        assert_eq!(packet[0], expected_flags, "Flags should be 0x52 for HEADER_2 transport link request");
+        assert_eq!(
+            packet[0], expected_flags,
+            "Flags should be 0x52 for HEADER_2 transport link request"
+        );
 
         // Hops should be 0 (we're originating)
         assert_eq!(packet[1], 0x00);

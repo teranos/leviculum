@@ -70,10 +70,17 @@ async fn test_announce_creates_path_entry() {
     let hash_hex = hex::encode(dest_hash);
     let path_entry = paths.get(&hash_hex);
 
-    assert!(path_entry.is_some(), "Path entry should exist in path_table");
+    assert!(
+        path_entry.is_some(),
+        "Path entry should exist in path_table"
+    );
     let entry = path_entry.unwrap();
     // Note: Reticulum increments hop count when receiving, so hops=0 in packet becomes hops=1 in path_table
-    assert_eq!(entry.hops, Some(1), "Announce received with hops=0 should be recorded as hops=1");
+    assert_eq!(
+        entry.hops,
+        Some(1),
+        "Announce received with hops=0 should be recorded as hops=1"
+    );
 
     println!("Path created successfully:");
     println!("  Hash: {}", hash_hex);
@@ -91,7 +98,8 @@ async fn test_announce_hop_count_recorded() {
     send_raw_to_daemon(&daemon, &raw0).await;
 
     // Send announce with hops=5
-    let (raw5, hash5, _) = build_announce_raw_with_hops("leviculum", &["hops", "five"], b"hops5", 5);
+    let (raw5, hash5, _) =
+        build_announce_raw_with_hops("leviculum", &["hops", "five"], b"hops5", 5);
     send_raw_to_daemon(&daemon, &raw5).await;
 
     // Wait for processing
@@ -103,11 +111,17 @@ async fn test_announce_hop_count_recorded() {
     let entry0 = paths.get(&hex::encode(hash0));
     assert!(entry0.is_some(), "Path for hops=0 should exist");
     // Note: The daemon may increment the hop count when recording
-    println!("Hops=0 announce recorded with hops={:?}", entry0.unwrap().hops);
+    println!(
+        "Hops=0 announce recorded with hops={:?}",
+        entry0.unwrap().hops
+    );
 
     let entry5 = paths.get(&hex::encode(hash5));
     assert!(entry5.is_some(), "Path for hops=5 should exist");
-    println!("Hops=5 announce recorded with hops={:?}", entry5.unwrap().hops);
+    println!(
+        "Hops=5 announce recorded with hops={:?}",
+        entry5.unwrap().hops
+    );
 }
 
 /// Verify that an invalid announce (bad signature) does NOT create a path.
@@ -116,7 +130,8 @@ async fn test_invalid_announce_no_path() {
     let daemon = TestDaemon::start().await.expect("Failed to start daemon");
 
     // Build a valid announce then corrupt the signature
-    let (mut raw, dest_hash, _) = build_announce_raw("leviculum", &["invalid", "sig"], b"bad-sig");
+    let (mut raw, dest_hash, _) =
+        build_announce_raw("leviculum", &["invalid", "sig"], b"bad-sig");
 
     // Corrupt the signature (at offset 103-167 in raw packet)
     raw[103] ^= 0xFF;
@@ -206,7 +221,10 @@ async fn test_announce_propagates_between_connections() {
     println!("Announce successfully propagated to conn2");
 
     // Verify path exists in daemon state
-    assert!(daemon.has_path(&dest_hash).await, "Path should exist in daemon");
+    assert!(
+        daemon.has_path(&dest_hash).await,
+        "Path should exist in daemon"
+    );
 }
 
 // =========================================================================
@@ -218,7 +236,10 @@ async fn test_announce_propagates_between_connections() {
 async fn test_interface_configuration() {
     let daemon = TestDaemon::start().await.expect("Failed to start daemon");
 
-    let interfaces = daemon.get_interfaces().await.expect("Failed to get interfaces");
+    let interfaces = daemon
+        .get_interfaces()
+        .await
+        .expect("Failed to get interfaces");
 
     // Should have exactly one interface (the TCP server)
     assert!(!interfaces.is_empty(), "Should have at least one interface");
@@ -229,8 +250,16 @@ async fn test_interface_configuration() {
         .expect("TCP interface should exist");
 
     assert_eq!(tcp_iface.online, Some(true), "Interface should be online");
-    assert_eq!(tcp_iface.in_enabled, Some(true), "Interface should accept incoming");
-    assert_eq!(tcp_iface.out_enabled, Some(true), "Interface should allow outgoing");
+    assert_eq!(
+        tcp_iface.in_enabled,
+        Some(true),
+        "Interface should accept incoming"
+    );
+    assert_eq!(
+        tcp_iface.out_enabled,
+        Some(true),
+        "Interface should allow outgoing"
+    );
 
     println!("Interface configuration verified:");
     for iface in &interfaces {
@@ -319,7 +348,8 @@ async fn test_large_app_data_creates_path() {
 
     // Use 200 bytes of app_data (well under MTU but substantial)
     let large_app_data = vec![0x42u8; 200];
-    let dest_hash = send_announce_to_daemon(&daemon, "leviculum", &["large"], &large_app_data).await;
+    let dest_hash =
+        send_announce_to_daemon(&daemon, "leviculum", &["large"], &large_app_data).await;
 
     tokio::time::sleep(Duration::from_millis(500)).await;
 
@@ -353,10 +383,17 @@ async fn test_hash_derivation_matches_daemon() {
         .await
         .expect("Failed to register destination");
 
-    println!("Daemon registered destination with hash: {}", dest_info.hash);
+    println!(
+        "Daemon registered destination with hash: {}",
+        dest_info.hash
+    );
 
     // Verify hash format (should be 16 bytes = 32 hex chars)
-    assert_eq!(dest_info.hash.len(), 32, "Hash should be 16 bytes hex-encoded");
+    assert_eq!(
+        dest_info.hash.len(),
+        32,
+        "Hash should be 16 bytes hex-encoded"
+    );
 
     // Verify the hash derivation formula:
     // destination_hash = truncated_hash(name_hash || identity_hash)
@@ -408,7 +445,13 @@ async fn test_non_ratcheted_32_byte_app_data() {
     // Create an announce with exactly 32 bytes of app_data (non-ratcheted)
     // This is the boundary case where payload size equals ratcheted minimum
     let app_data_32 = vec![0x42u8; 32];
-    let dest_hash = send_announce_to_daemon(&daemon, "leviculum", &["ratchet", "boundary"], &app_data_32).await;
+    let dest_hash = send_announce_to_daemon(
+        &daemon,
+        "leviculum",
+        &["ratchet", "boundary"],
+        &app_data_32,
+    )
+    .await;
 
     tokio::time::sleep(Duration::from_millis(500)).await;
 
@@ -424,7 +467,10 @@ async fn test_non_ratcheted_32_byte_app_data() {
     let (raw, _, _) = build_announce_raw("leviculum", &["ratchet", "test2"], &app_data_32);
     let flags_byte = raw[0];
     let context_flag = (flags_byte & 0x80) != 0;
-    assert!(!context_flag, "Non-ratcheted announce should have context_flag=false");
+    assert!(
+        !context_flag,
+        "Non-ratcheted announce should have context_flag=false"
+    );
 
     println!("Verified context_flag=false for non-ratcheted announce");
 }
@@ -439,7 +485,8 @@ async fn test_non_ratcheted_32_byte_app_data() {
 async fn test_daemon_isolation_a() {
     let daemon = TestDaemon::start().await.expect("Failed to start daemon A");
 
-    let dest_hash = send_announce_to_daemon(&daemon, "leviculum", &["isolation", "a"], b"test-a").await;
+    let dest_hash =
+        send_announce_to_daemon(&daemon, "leviculum", &["isolation", "a"], b"test-a").await;
 
     tokio::time::sleep(Duration::from_millis(500)).await;
     assert!(daemon.has_path(&dest_hash).await);
@@ -452,7 +499,8 @@ async fn test_daemon_isolation_a() {
 async fn test_daemon_isolation_b() {
     let daemon = TestDaemon::start().await.expect("Failed to start daemon B");
 
-    let dest_hash = send_announce_to_daemon(&daemon, "leviculum", &["isolation", "b"], b"test-b").await;
+    let dest_hash =
+        send_announce_to_daemon(&daemon, "leviculum", &["isolation", "b"], b"test-b").await;
 
     tokio::time::sleep(Duration::from_millis(500)).await;
     assert!(daemon.has_path(&dest_hash).await);
@@ -487,7 +535,10 @@ async fn test_connection_survives_malformed_packets() {
     .await;
 
     tokio::time::sleep(Duration::from_millis(500)).await;
-    assert!(daemon.has_path(&dest_pre).await, "Pre-test announce should create path");
+    assert!(
+        daemon.has_path(&dest_pre).await,
+        "Pre-test announce should create path"
+    );
     println!("Pre-test announce accepted");
 
     // 1. Truncated packet (just a few bytes)
@@ -497,14 +548,16 @@ async fn test_connection_survives_malformed_packets() {
     tokio::time::sleep(Duration::from_millis(100)).await;
 
     // 2. Announce with bad signature
-    let (mut bad_sig, _, _) = build_announce_raw("leviculum", &["resilience", "badsig"], b"bad-sig");
+    let (mut bad_sig, _, _) =
+        build_announce_raw("leviculum", &["resilience", "badsig"], b"bad-sig");
     bad_sig[103] ^= 0xFF; // corrupt signature
     send_framed(&mut stream, &bad_sig).await;
     println!("Sent bad-signature announce");
     tokio::time::sleep(Duration::from_millis(100)).await;
 
     // 3. Announce with wrong hash
-    let (mut bad_hash, _, _) = build_announce_raw("leviculum", &["resilience", "badhash"], b"bad-hash");
+    let (mut bad_hash, _, _) =
+        build_announce_raw("leviculum", &["resilience", "badhash"], b"bad-hash");
     bad_hash[2] ^= 0xFF; // corrupt dest hash in header
     send_framed(&mut stream, &bad_hash).await;
     println!("Sent wrong-hash announce");
@@ -570,7 +623,10 @@ async fn test_reconnect_after_disconnect() {
     .await;
 
     tokio::time::sleep(Duration::from_millis(500)).await;
-    assert!(daemon.has_path(&dest1).await, "First announce should create path");
+    assert!(
+        daemon.has_path(&dest1).await,
+        "First announce should create path"
+    );
     println!("First announce accepted, dest: {:02x?}...", &dest1[..4]);
 
     // Drop connection
@@ -633,7 +689,11 @@ async fn test_multiple_connections_concurrent() {
         )
         .await;
         expected_hashes.push(dest_hash);
-        println!("Connection {} sent announce: {:02x?}...", i + 1, &dest_hash[..4]);
+        println!(
+            "Connection {} sent announce: {:02x?}...",
+            i + 1,
+            &dest_hash[..4]
+        );
 
         // Small delay between sends
         tokio::time::sleep(Duration::from_millis(100)).await;
@@ -678,13 +738,17 @@ async fn test_fragmented_hdlc_delivery() {
     let mut stream = connect_to_daemon(&daemon).await;
 
     // Build a valid announce
-    let (raw, dest_hash, _) = build_announce_raw("leviculum", &["fragmented", "test"], b"frag-test");
+    let (raw, dest_hash, _) =
+        build_announce_raw("leviculum", &["fragmented", "test"], b"frag-test");
 
     // Frame it
     let mut framed = Vec::new();
     frame(&raw, &mut framed);
 
-    println!("Sending {} byte framed packet in 5-byte chunks", framed.len());
+    println!(
+        "Sending {} byte framed packet in 5-byte chunks",
+        framed.len()
+    );
 
     // Send in small chunks (5 bytes at a time)
     for chunk in framed.chunks(5) {

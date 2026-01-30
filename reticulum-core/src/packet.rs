@@ -10,8 +10,10 @@
 use crate::constants::{HEADER_MAXSIZE, HEADER_MINSIZE, MDU, MTU, TRUNCATED_HASHBYTES};
 
 // ─── Flag Byte Bit Masks ─────────────────────────────────────────────────────
-// Bit layout: [unused:1][header_type:1][context:1][transport:1][dest_type:2][packet_type:2]
+// Bit layout: [ifac:1][header_type:1][context:1][transport:1][dest_type:2][packet_type:2]
 
+/// Bit mask for IFAC (Interface Access Code) flag (bit 7)
+const FLAG_IFAC_MASK: u8 = 0x80;
 /// Bit mask for header type flag (bit 6)
 const FLAG_HEADER_TYPE_MASK: u8 = 0x40;
 /// Bit mask for context flag (bit 5)
@@ -131,14 +133,16 @@ impl TryFrom<u8> for PacketContext {
 }
 
 /// Packet flags byte layout (matching Python Reticulum):
+/// Bit 7: IFAC Flag (0=open/public interface, 1=authenticated interface)
 /// Bit 6: Header Type (0=H1, 1=H2)
 /// Bit 5: Context Flag (0=unset, 1=set)
 /// Bit 4: Transport Type (0=broadcast, 1=transport)
 /// Bits 3-2: Destination Type
 /// Bits 1-0: Packet Type
-/// Bit 7: Unused (always 0)
 #[derive(Debug, Clone, Copy)]
 pub struct PacketFlags {
+    /// IFAC (Interface Access Code) flag - indicates authenticated interface
+    pub ifac_flag: bool,
     pub header_type: HeaderType,
     pub context_flag: bool,
     pub transport_type: TransportType,
@@ -150,6 +154,7 @@ impl PacketFlags {
     /// Encode flags to a byte
     pub fn to_byte(&self) -> u8 {
         let mut flags = 0u8;
+        flags |= (self.ifac_flag as u8) << 7;
         flags |= (self.header_type as u8) << 6;
         flags |= (self.context_flag as u8) << 5;
         flags |= (self.transport_type as u8) << 4;
@@ -160,6 +165,7 @@ impl PacketFlags {
 
     /// Decode flags from a byte
     pub fn from_byte(byte: u8) -> Result<Self, PacketError> {
+        let ifac_flag = byte & FLAG_IFAC_MASK != 0;
         let header_type = if byte & FLAG_HEADER_TYPE_MASK != 0 {
             HeaderType::Type2
         } else {
@@ -177,6 +183,7 @@ impl PacketFlags {
             PacketType::try_from(byte & FLAG_TYPE_MASK).map_err(|_| PacketError::InvalidFlags)?;
 
         Ok(Self {
+            ifac_flag,
             header_type,
             context_flag,
             transport_type,
@@ -220,14 +227,12 @@ pub struct Packet {
 
 /// Packet data storage
 #[derive(Debug)]
+#[allow(clippy::large_enum_variant)] // Inline variant intentional for no_std embedded use
 pub enum PacketData {
     /// Borrowed data (for parsing)
     Owned(alloc::vec::Vec<u8>),
     /// Fixed-size inline buffer for no_std
-    Inline {
-        buffer: [u8; MDU],
-        len: usize,
-    },
+    Inline { buffer: [u8; MDU], len: usize },
 }
 
 impl PacketData {
@@ -348,8 +353,7 @@ impl Packet {
         pos += TRUNCATED_HASHBYTES;
 
         // Context
-        let context =
-            PacketContext::try_from(raw[pos]).map_err(|_| PacketError::InvalidContext)?;
+        let context = PacketContext::try_from(raw[pos]).map_err(|_| PacketError::InvalidContext)?;
         pos += 1;
 
         // Data
@@ -373,6 +377,7 @@ mod tests {
     #[test]
     fn test_flags_roundtrip() {
         let flags = PacketFlags {
+            ifac_flag: false,
             header_type: HeaderType::Type1,
             context_flag: false,
             transport_type: TransportType::Broadcast,
@@ -383,6 +388,7 @@ mod tests {
         let byte = flags.to_byte();
         let decoded = PacketFlags::from_byte(byte).unwrap();
 
+        assert_eq!(decoded.ifac_flag, flags.ifac_flag);
         assert_eq!(decoded.header_type as u8, flags.header_type as u8);
         assert_eq!(decoded.context_flag, flags.context_flag);
         assert_eq!(decoded.transport_type as u8, flags.transport_type as u8);
@@ -394,6 +400,7 @@ mod tests {
     fn test_packet_pack_unpack() {
         let packet = Packet {
             flags: PacketFlags {
+                ifac_flag: false,
                 header_type: HeaderType::Type1,
                 context_flag: false,
                 transport_type: TransportType::Broadcast,
@@ -414,5 +421,65 @@ mod tests {
         assert_eq!(unpacked.hops, packet.hops);
         assert_eq!(unpacked.destination_hash, packet.destination_hash);
         assert_eq!(unpacked.data.as_slice(), b"Hello");
+    }
+
+    #[test]
+    fn test_ifac_flag_roundtrip() {
+        // Test with IFAC flag set
+        let flags_with_ifac = PacketFlags {
+            ifac_flag: true,
+            header_type: HeaderType::Type1,
+            context_flag: false,
+            transport_type: TransportType::Broadcast,
+            dest_type: DestinationType::Single,
+            packet_type: PacketType::Data,
+        };
+
+        let byte = flags_with_ifac.to_byte();
+        assert_eq!(byte & 0x80, 0x80, "IFAC flag (bit 7) should be set");
+
+        let decoded = PacketFlags::from_byte(byte).unwrap();
+        assert!(decoded.ifac_flag, "IFAC flag should be true after decode");
+
+        // Test without IFAC flag
+        let flags_without_ifac = PacketFlags {
+            ifac_flag: false,
+            header_type: HeaderType::Type1,
+            context_flag: false,
+            transport_type: TransportType::Broadcast,
+            dest_type: DestinationType::Single,
+            packet_type: PacketType::Data,
+        };
+
+        let byte = flags_without_ifac.to_byte();
+        assert_eq!(byte & 0x80, 0x00, "IFAC flag (bit 7) should be unset");
+
+        let decoded = PacketFlags::from_byte(byte).unwrap();
+        assert!(!decoded.ifac_flag, "IFAC flag should be false after decode");
+    }
+
+    #[test]
+    fn test_flags_all_bits_set() {
+        // Test with all flags set to verify no bit interference
+        let flags = PacketFlags {
+            ifac_flag: true,
+            header_type: HeaderType::Type2,
+            context_flag: true,
+            transport_type: TransportType::Transport,
+            dest_type: DestinationType::Link,
+            packet_type: PacketType::Proof,
+        };
+
+        let byte = flags.to_byte();
+        // Expected: 1_1_1_1_11_11 = 0xFF
+        assert_eq!(byte, 0xFF, "All bits should be set");
+
+        let decoded = PacketFlags::from_byte(byte).unwrap();
+        assert!(decoded.ifac_flag);
+        assert_eq!(decoded.header_type as u8, HeaderType::Type2 as u8);
+        assert!(decoded.context_flag);
+        assert_eq!(decoded.transport_type as u8, TransportType::Transport as u8);
+        assert_eq!(decoded.dest_type as u8, DestinationType::Link as u8);
+        assert_eq!(decoded.packet_type as u8, PacketType::Proof as u8);
     }
 }

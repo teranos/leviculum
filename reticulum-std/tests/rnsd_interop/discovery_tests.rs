@@ -183,14 +183,13 @@ async fn test_daemon_announce_received() {
     println!("Daemon announced, waiting for packet...");
 
     // Wait for the announce packet
-    let result = receive_announce_from_daemon(
-        &mut stream,
-        &mut deframer,
-        Duration::from_secs(5),
-    )
-    .await;
+    let result =
+        receive_announce_from_daemon(&mut stream, &mut deframer, Duration::from_secs(5)).await;
 
-    assert!(result.is_some(), "Should receive announce packet from daemon");
+    assert!(
+        result.is_some(),
+        "Should receive announce packet from daemon"
+    );
     let (packet, _raw) = result.unwrap();
 
     // Parse the announce
@@ -248,12 +247,8 @@ async fn test_daemon_announce_signature_valid() {
         .await
         .expect("Failed to announce");
 
-    let result = receive_announce_from_daemon(
-        &mut stream,
-        &mut deframer,
-        Duration::from_secs(5),
-    )
-    .await;
+    let result =
+        receive_announce_from_daemon(&mut stream, &mut deframer, Duration::from_secs(5)).await;
 
     assert!(result.is_some(), "Should receive announce");
     let (packet, _raw) = result.unwrap();
@@ -262,7 +257,11 @@ async fn test_daemon_announce_signature_valid() {
 
     // Create an Identity from the public key to verify signature
     // Public key is 64 bytes: X25519 (32) + Ed25519 (32)
-    assert_eq!(announce.public_key.len(), 64, "Public key should be 64 bytes");
+    assert_eq!(
+        announce.public_key.len(),
+        64,
+        "Public key should be 64 bytes"
+    );
 
     let x25519_pub: [u8; X25519_KEY_SIZE] = announce.public_key[..X25519_KEY_SIZE]
         .try_into()
@@ -287,8 +286,7 @@ async fn test_daemon_announce_signature_valid() {
     // Verify computed destination hash matches
     let computed_hash = announce.computed_destination_hash();
     assert_eq!(
-        computed_hash,
-        announce.destination_hash,
+        computed_hash, announce.destination_hash,
         "Computed destination hash should match packet hash"
     );
 
@@ -327,7 +325,10 @@ async fn test_transport_path_from_daemon_announce() {
     let (mut transport, iface_idx) = create_test_transport();
 
     // Initial state: no path
-    assert!(!transport.has_path(&dest_hash), "Should not have path initially");
+    assert!(
+        !transport.has_path(&dest_hash),
+        "Should not have path initially"
+    );
 
     // Connect to daemon and receive announce
     let mut stream = connect_to_daemon(&daemon).await;
@@ -338,12 +339,8 @@ async fn test_transport_path_from_daemon_announce() {
         .await
         .expect("Failed to announce");
 
-    let result = receive_announce_from_daemon(
-        &mut stream,
-        &mut deframer,
-        Duration::from_secs(5),
-    )
-    .await;
+    let result =
+        receive_announce_from_daemon(&mut stream, &mut deframer, Duration::from_secs(5)).await;
 
     assert!(result.is_some(), "Should receive announce");
     let (_packet, raw) = result.unwrap();
@@ -352,10 +349,17 @@ async fn test_transport_path_from_daemon_announce() {
 
     // Feed raw packet to Transport
     let process_result = transport.process_incoming(iface_idx, &raw);
-    assert!(process_result.is_ok(), "Transport should process announce: {:?}", process_result);
+    assert!(
+        process_result.is_ok(),
+        "Transport should process announce: {:?}",
+        process_result
+    );
 
     // Verify path was created
-    assert!(transport.has_path(&dest_hash), "Should have path after announce");
+    assert!(
+        transport.has_path(&dest_hash),
+        "Should have path after announce"
+    );
 
     // Check hop count (daemon's announce comes with hops=0, but we received it so it should be 0)
     let hops = transport.hops_to(&dest_hash);
@@ -411,18 +415,9 @@ async fn test_multiple_daemon_announces() {
     println!("  B: {}", dest_b.hash);
     println!("  C: {}", dest_c.hash);
 
-    let hash_a: [u8; TRUNCATED_HASHBYTES] = hex::decode(&dest_a.hash)
-        .unwrap()
-        .try_into()
-        .unwrap();
-    let hash_b: [u8; TRUNCATED_HASHBYTES] = hex::decode(&dest_b.hash)
-        .unwrap()
-        .try_into()
-        .unwrap();
-    let hash_c: [u8; TRUNCATED_HASHBYTES] = hex::decode(&dest_c.hash)
-        .unwrap()
-        .try_into()
-        .unwrap();
+    let hash_a: [u8; TRUNCATED_HASHBYTES] = hex::decode(&dest_a.hash).unwrap().try_into().unwrap();
+    let hash_b: [u8; TRUNCATED_HASHBYTES] = hex::decode(&dest_b.hash).unwrap().try_into().unwrap();
+    let hash_c: [u8; TRUNCATED_HASHBYTES] = hex::decode(&dest_c.hash).unwrap().try_into().unwrap();
 
     // Create Transport
     let (mut transport, iface_idx) = create_test_transport();
@@ -453,12 +448,8 @@ async fn test_multiple_daemon_announces() {
     let timeout_duration = Duration::from_secs(10);
 
     while start.elapsed() < timeout_duration && announces_received < 3 {
-        if let Some((_packet, raw)) = receive_announce_from_daemon(
-            &mut stream,
-            &mut deframer,
-            Duration::from_secs(2),
-        )
-        .await
+        if let Some((_packet, raw)) =
+            receive_announce_from_daemon(&mut stream, &mut deframer, Duration::from_secs(2)).await
         {
             let result = transport.process_incoming(iface_idx, &raw);
             if result.is_ok() {
@@ -533,12 +524,8 @@ async fn test_announce_hash_derivation_match() {
         .await
         .expect("Failed to announce");
 
-    let result = receive_announce_from_daemon(
-        &mut stream,
-        &mut deframer,
-        Duration::from_secs(5),
-    )
-    .await;
+    let result =
+        receive_announce_from_daemon(&mut stream, &mut deframer, Duration::from_secs(5)).await;
 
     assert!(result.is_some(), "Should receive announce");
     let (packet, _raw) = result.unwrap();
@@ -548,18 +535,23 @@ async fn test_announce_hash_derivation_match() {
 
     // 1. Verify packet's destination_hash matches daemon's hash
     assert_eq!(
-        packet.destination_hash,
-        expected_hash,
+        packet.destination_hash, expected_hash,
         "Packet destination_hash should match daemon's hash"
     );
 
     // 2. Compute identity hash from public key
     let computed_identity_hash = announce.computed_identity_hash();
-    println!("Computed identity hash: {}", hex::encode(computed_identity_hash));
+    println!(
+        "Computed identity hash: {}",
+        hex::encode(computed_identity_hash)
+    );
 
     // 3. Compute destination hash
     let computed_dest_hash = announce.computed_destination_hash();
-    println!("Computed destination hash: {}", hex::encode(computed_dest_hash));
+    println!(
+        "Computed destination hash: {}",
+        hex::encode(computed_dest_hash)
+    );
 
     // 4. Verify all three hashes match
     assert_eq!(

@@ -351,14 +351,21 @@ async fn test_responder_basic_handshake() {
 
     // Wait for RTT packet from Python
     println!("Waiting for RTT...");
-    let rtt_data = wait_for_rtt_packet(&mut stream, &mut deframer, &link_id, Duration::from_secs(10))
-        .await;
+    let rtt_data = wait_for_rtt_packet(
+        &mut stream,
+        &mut deframer,
+        &link_id,
+        Duration::from_secs(10),
+    )
+    .await;
 
     assert!(rtt_data.is_some(), "Should receive RTT packet from Python");
     let rtt_encrypted = rtt_data.unwrap();
 
     // Process RTT
-    let rtt_seconds = link.process_rtt(&rtt_encrypted).expect("Failed to process RTT");
+    let rtt_seconds = link
+        .process_rtt(&rtt_encrypted)
+        .expect("Failed to process RTT");
 
     println!("Processed RTT: {:.3}s", rtt_seconds);
 
@@ -483,14 +490,10 @@ async fn test_responder_bidirectional_data() {
     println!("Python sent: {:?}", String::from_utf8_lossy(test_message));
 
     // Receive and decrypt data from Python
-    let encrypted_data = wait_for_data_packet(
-        &mut stream,
-        &mut deframer,
-        &link_id,
-        Duration::from_secs(5),
-    )
-    .await
-    .expect("Should receive data from Python");
+    let encrypted_data =
+        wait_for_data_packet(&mut stream, &mut deframer, &link_id, Duration::from_secs(5))
+            .await
+            .expect("Should receive data from Python");
 
     let mut decrypted = vec![0u8; encrypted_data.len()];
     let dec_len = link
@@ -593,9 +596,14 @@ async fn test_responder_key_derivation_match() {
     let proof = link.build_proof_packet(&identity, 500, 1).unwrap();
     send_packet(&mut stream, &proof).await;
 
-    let rtt = wait_for_rtt_packet(&mut stream, &mut deframer, &link_id, Duration::from_secs(10))
-        .await
-        .unwrap();
+    let rtt = wait_for_rtt_packet(
+        &mut stream,
+        &mut deframer,
+        &link_id,
+        Duration::from_secs(10),
+    )
+    .await
+    .unwrap();
     link.process_rtt(&rtt).unwrap();
 
     let resp = link_task.await.unwrap();
@@ -607,16 +615,15 @@ async fn test_responder_key_derivation_match() {
 
     // Test 1: Python encrypts, Rust decrypts
     let python_message = b"Python encrypted this with AES-256-CBC";
-    daemon.send_on_link(link_hash, python_message).await.unwrap();
+    daemon
+        .send_on_link(link_hash, python_message)
+        .await
+        .unwrap();
 
-    let encrypted1 = wait_for_data_packet(
-        &mut stream,
-        &mut deframer,
-        &link_id,
-        Duration::from_secs(5),
-    )
-    .await
-    .expect("Should receive Python's encrypted data");
+    let encrypted1 =
+        wait_for_data_packet(&mut stream, &mut deframer, &link_id, Duration::from_secs(5))
+            .await
+            .expect("Should receive Python's encrypted data");
 
     let mut decrypted1 = vec![0u8; encrypted1.len()];
     let len1 = link.decrypt(&encrypted1, &mut decrypted1).unwrap();
@@ -694,9 +701,14 @@ async fn test_responder_multiple_packets() {
     let proof = link.build_proof_packet(&identity, 500, 1).unwrap();
     send_packet(&mut stream, &proof).await;
 
-    let rtt = wait_for_rtt_packet(&mut stream, &mut deframer, &link_id, Duration::from_secs(10))
-        .await
-        .unwrap();
+    let rtt = wait_for_rtt_packet(
+        &mut stream,
+        &mut deframer,
+        &link_id,
+        Duration::from_secs(10),
+    )
+    .await
+    .unwrap();
     link.process_rtt(&rtt).unwrap();
 
     let _ = link_task.await.unwrap();

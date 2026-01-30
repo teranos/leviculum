@@ -38,7 +38,7 @@
 use alloc::vec;
 use alloc::vec::Vec;
 
-use crate::constants::{IFAC_MIN_SIZE, IFAC_SALT, IDENTITY_KEY_SIZE};
+use crate::constants::{IDENTITY_KEY_SIZE, IFAC_MIN_SIZE, IFAC_SALT};
 use crate::crypto::{derive_key, full_hash};
 use crate::identity::Identity;
 

@@ -13,8 +13,8 @@
 //! // - embedded: LoRaInterface, EmbassyClock, FlashStorage or NoStorage
 //! ```
 
-use rand_core::CryptoRngCore;
 use crate::constants::TRUNCATED_HASHBYTES;
+use rand_core::CryptoRngCore;
 
 extern crate alloc;
 
@@ -264,9 +264,15 @@ impl<R: CryptoRngCore, C: Clock, S: Storage> Context for PlatformContext<R, C, S
     type Clock = C;
     type Storage = S;
 
-    fn rng(&mut self) -> &mut Self::Rng { &mut self.rng }
-    fn clock(&self) -> &Self::Clock { &self.clock }
-    fn storage(&mut self) -> &mut Self::Storage { &mut self.storage }
+    fn rng(&mut self) -> &mut Self::Rng {
+        &mut self.rng
+    }
+    fn clock(&self) -> &Self::Clock {
+        &self.clock
+    }
+    fn storage(&mut self) -> &mut Self::Storage {
+        &mut self.storage
+    }
 }
 
 #[cfg(test)]

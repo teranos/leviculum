@@ -26,9 +26,7 @@ fn pkcs7_pad(data: &[u8], output: &mut [u8]) -> usize {
     let padding_len = AES_BLOCK_SIZE - (data.len() % AES_BLOCK_SIZE);
     let total_len = data.len() + padding_len;
     output[..data.len()].copy_from_slice(data);
-    for i in data.len()..total_len {
-        output[i] = padding_len as u8;
-    }
+    output[data.len()..total_len].fill(padding_len as u8);
     total_len
 }
 
@@ -315,11 +313,13 @@ mod tests {
         let mut decrypted = [0u8; 16];
         let result = aes256_cbc_decrypt(&key2, &iv, &encrypted[..enc_len], &mut decrypted);
         // This will likely produce invalid padding
-        assert!(result.is_err() || {
-            // Or if it happens to produce valid-looking padding, the data will be garbage
-            let len = result.unwrap();
-            &decrypted[..len] != plaintext
-        });
+        assert!(
+            result.is_err() || {
+                // Or if it happens to produce valid-looking padding, the data will be garbage
+                let len = result.unwrap();
+                &decrypted[..len] != plaintext
+            }
+        );
     }
 
     #[test]

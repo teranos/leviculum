@@ -11,7 +11,7 @@ use crate::constants::{
     AES_BLOCK_SIZE, ED25519_KEY_SIZE, ED25519_SIGNATURE_SIZE, IDENTITY_HASHBYTES,
     IDENTITY_KEY_SIZE, X25519_KEY_SIZE,
 };
-use crate::crypto::{derive_key, encrypt_token, decrypt_token, truncated_hash};
+use crate::crypto::{decrypt_token, derive_key, encrypt_token, truncated_hash};
 
 use alloc::vec::Vec;
 
@@ -181,8 +181,14 @@ impl Identity {
 
     /// Get the private key bytes (64 bytes) if available
     pub fn private_key_bytes(&self) -> Result<[u8; IDENTITY_KEY_SIZE], IdentityError> {
-        let x25519_prv = self.x25519_private.as_ref().ok_or(IdentityError::NoPrivateKey)?;
-        let ed25519_prv = self.ed25519_signing.as_ref().ok_or(IdentityError::NoPrivateKey)?;
+        let x25519_prv = self
+            .x25519_private
+            .as_ref()
+            .ok_or(IdentityError::NoPrivateKey)?;
+        let ed25519_prv = self
+            .ed25519_signing
+            .as_ref()
+            .ok_or(IdentityError::NoPrivateKey)?;
 
         let mut bytes = [0u8; IDENTITY_KEY_SIZE];
         bytes[..X25519_KEY_SIZE].copy_from_slice(x25519_prv.as_bytes());
@@ -199,7 +205,10 @@ impl Identity {
     pub fn sign(&self, message: &[u8]) -> Result<[u8; ED25519_SIGNATURE_SIZE], IdentityError> {
         use ed25519_dalek::Signer;
 
-        let signing_key = self.ed25519_signing.as_ref().ok_or(IdentityError::NoPrivateKey)?;
+        let signing_key = self
+            .ed25519_signing
+            .as_ref()
+            .ok_or(IdentityError::NoPrivateKey)?;
         let signature = signing_key.sign(message);
         Ok(signature.to_bytes())
     }
@@ -333,7 +342,10 @@ impl Identity {
     /// # Returns
     /// Decrypted plaintext, or error if decryption fails
     pub fn decrypt(&self, ciphertext: &[u8]) -> Result<Vec<u8>, IdentityError> {
-        let x25519_prv = self.x25519_private.as_ref().ok_or(IdentityError::NoPrivateKey)?;
+        let x25519_prv = self
+            .x25519_private
+            .as_ref()
+            .ok_or(IdentityError::NoPrivateKey)?;
 
         // Minimum size: ephemeral_pub (32) + IV (16) + one block (16) + HMAC (32) = 96
         if ciphertext.len() < X25519_KEY_SIZE + AES_BLOCK_SIZE + AES_BLOCK_SIZE + 32 {

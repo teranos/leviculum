@@ -31,12 +31,12 @@
 //! cargo test --package reticulum-std --test rnsd_interop protocol_tests
 //! ```
 
-mod common;
-mod harness;
 mod announce_interop_tests;
+mod common;
 mod discovery_tests;
-mod link_tests;
-mod responder_tests;
 mod flow_tests;
-mod protocol_tests;
+mod harness;
 mod link_manager_tests;
+mod link_tests;
+mod protocol_tests;
+mod responder_tests;

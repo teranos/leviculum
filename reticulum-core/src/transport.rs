@@ -50,7 +50,7 @@ use crate::announce::ReceivedAnnounce;
 use crate::crypto::truncated_hash;
 use crate::identity::Identity;
 use crate::packet::{Packet, PacketError, PacketType};
-use crate::traits::{Clock, InterfaceError, Interface, Storage};
+use crate::traits::{Clock, Interface, InterfaceError, Storage};
 
 // ─── Data Structures (always available) ─────────────────────────────────────
 
@@ -162,8 +162,8 @@ pub enum TransportEvent {
     PacketReceived {
         /// The destination hash
         destination_hash: [u8; TRUNCATED_HASHBYTES],
-        /// The parsed packet
-        packet: Packet,
+        /// The parsed packet (boxed to reduce enum size)
+        packet: Box<Packet>,
         /// Interface it arrived on
         interface_index: usize,
     },
@@ -382,7 +382,11 @@ impl<C: Clock, S: Storage> Transport<C, S> {
         self.packet_cache.insert(packet_hash, now);
 
         // Store reverse path for replies
-        if let Some(iface) = self.interfaces.get(interface_index).and_then(|i| i.as_ref()) {
+        if let Some(iface) = self
+            .interfaces
+            .get(interface_index)
+            .and_then(|i| i.as_ref())
+        {
             self.reverse_table.insert(
                 packet_hash,
                 ReverseEntry {
@@ -505,8 +509,8 @@ impl<C: Clock, S: Storage> Transport<C, S> {
         let now = self.clock.now_ms();
 
         // Parse announce
-        let announce = ReceivedAnnounce::from_packet(&packet)
-            .map_err(TransportError::AnnounceError)?;
+        let announce =
+            ReceivedAnnounce::from_packet(&packet).map_err(TransportError::AnnounceError)?;
 
         // Validate signature and destination hash
         announce.validate().map_err(TransportError::AnnounceError)?;
@@ -589,7 +593,7 @@ impl<C: Clock, S: Storage> Transport<C, S> {
                 // Emit event for application to handle
                 self.events.push(TransportEvent::PacketReceived {
                     destination_hash: dest_hash,
-                    packet,
+                    packet: Box::new(packet),
                     interface_index,
                 });
                 return Ok(());
@@ -615,7 +619,7 @@ impl<C: Clock, S: Storage> Transport<C, S> {
         if self.destinations.contains_key(&dest_hash) {
             self.events.push(TransportEvent::PacketReceived {
                 destination_hash: dest_hash,
-                packet,
+                packet: Box::new(packet),
                 interface_index,
             });
             return Ok(());
@@ -643,7 +647,7 @@ impl<C: Clock, S: Storage> Transport<C, S> {
         if self.destinations.contains_key(&dest_hash) {
             self.events.push(TransportEvent::PacketReceived {
                 destination_hash: dest_hash,
-                packet,
+                packet: Box::new(packet),
                 interface_index,
             });
             return Ok(());
@@ -967,6 +971,7 @@ mod tests {
 
             let packet = Packet {
                 flags: PacketFlags {
+                    ifac_flag: false,
                     header_type: HeaderType::Type1,
                     context_flag: false,
                     transport_type: TransportType::Broadcast,
@@ -1011,6 +1016,7 @@ mod tests {
 
             let packet = Packet {
                 flags: PacketFlags {
+                    ifac_flag: false,
                     header_type: HeaderType::Type1,
                     context_flag: false,
                     transport_type: TransportType::Broadcast,
@@ -1058,6 +1064,7 @@ mod tests {
 
             let packet = Packet {
                 flags: PacketFlags {
+                    ifac_flag: false,
                     header_type: HeaderType::Type1,
                     context_flag: false,
                     transport_type: TransportType::Broadcast,
@@ -1095,6 +1102,7 @@ mod tests {
 
             let packet = Packet {
                 flags: PacketFlags {
+                    ifac_flag: false,
                     header_type: HeaderType::Type1,
                     context_flag: false,
                     transport_type: TransportType::Broadcast,
@@ -1121,7 +1129,9 @@ mod tests {
             assert_eq!(transport.pending_events(), 0);
 
             // Advance past cache expiry and poll
-            transport.clock.advance(transport.config.packet_cache_expiry_ms + 1);
+            transport
+                .clock
+                .advance(transport.config.packet_cache_expiry_ms + 1);
             transport.poll();
 
             // Now the packet should be accepted again
@@ -1173,6 +1183,7 @@ mod tests {
 
             let packet = Packet {
                 flags: PacketFlags {
+                    ifac_flag: false,
                     header_type: HeaderType::Type1,
                     context_flag: false,
                     transport_type: TransportType::Broadcast,

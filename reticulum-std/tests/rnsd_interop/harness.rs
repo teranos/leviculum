@@ -135,7 +135,8 @@ pub struct TestDaemon {
 
 impl TestDaemon {
     /// Path to the test daemon script
-    const DAEMON_SCRIPT: &'static str = concat!(env!("CARGO_MANIFEST_DIR"), "/../scripts/test_daemon.py");
+    const DAEMON_SCRIPT: &'static str =
+        concat!(env!("CARGO_MANIFEST_DIR"), "/../scripts/test_daemon.py");
 
     /// Timeout for daemon startup
     const STARTUP_TIMEOUT: Duration = Duration::from_secs(10);
@@ -244,7 +245,11 @@ impl TestDaemon {
     }
 
     /// Send a JSON-RPC command to the daemon and return the result.
-    async fn query(&self, method: &str, params: serde_json::Value) -> Result<serde_json::Value, HarnessError> {
+    async fn query(
+        &self,
+        method: &str,
+        params: serde_json::Value,
+    ) -> Result<serde_json::Value, HarnessError> {
         let mut stream = TcpStream::connect(self.cmd_addr())
             .await
             .map_err(HarnessError::ConnectionFailed)?;
@@ -277,7 +282,10 @@ impl TestDaemon {
             return Err(HarnessError::CommandFailed(error.to_string()));
         }
 
-        Ok(response.get("result").cloned().unwrap_or(serde_json::Value::Null))
+        Ok(response
+            .get("result")
+            .cloned()
+            .unwrap_or(serde_json::Value::Null))
     }
 
     /// Ping the daemon to verify it's responsive.
@@ -296,7 +304,10 @@ impl TestDaemon {
     /// Check if a path exists to a destination.
     pub async fn has_path(&self, dest_hash: &[u8]) -> bool {
         let hex_hash = hex::encode(dest_hash);
-        match self.query("has_path", serde_json::json!({"hash": hex_hash})).await {
+        match self
+            .query("has_path", serde_json::json!({"hash": hex_hash}))
+            .await
+        {
             Ok(serde_json::Value::Bool(b)) => b,
             _ => false,
         }
@@ -313,11 +324,14 @@ impl TestDaemon {
                 let hops = entry.get("hops").and_then(|v| v.as_u64()).map(|v| v as u8);
                 let expires = entry.get("expires").and_then(|v| v.as_f64());
 
-                paths.insert(hash, PathEntry {
-                    timestamp,
-                    hops,
-                    expires,
-                });
+                paths.insert(
+                    hash,
+                    PathEntry {
+                        timestamp,
+                        hops,
+                        expires,
+                    },
+                );
             }
         }
 
@@ -347,7 +361,11 @@ impl TestDaemon {
 
         if let serde_json::Value::Array(arr) = result {
             for entry in arr {
-                let name = entry.get("name").and_then(|v| v.as_str()).unwrap_or("").to_string();
+                let name = entry
+                    .get("name")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("")
+                    .to_string();
                 let online = entry.get("online").and_then(|v| v.as_bool());
                 let in_enabled = entry.get("IN").and_then(|v| v.as_bool());
                 let out_enabled = entry.get("OUT").and_then(|v| v.as_bool());
@@ -408,7 +426,11 @@ impl TestDaemon {
     }
 
     /// Announce a registered destination.
-    pub async fn announce_destination(&self, dest_hash: &str, app_data: &[u8]) -> Result<(), HarnessError> {
+    pub async fn announce_destination(
+        &self,
+        dest_hash: &str,
+        app_data: &[u8],
+    ) -> Result<(), HarnessError> {
         self.query(
             "announce_destination",
             serde_json::json!({
@@ -462,7 +484,9 @@ impl TestDaemon {
 
     /// Get packets received over links from the daemon.
     pub async fn get_received_packets(&self) -> Result<Vec<ReceivedPacket>, HarnessError> {
-        let result = self.query("get_received_packets", serde_json::json!({})).await?;
+        let result = self
+            .query("get_received_packets", serde_json::json!({}))
+            .await?;
         let mut packets = Vec::new();
 
         if let serde_json::Value::Array(arr) = result {
@@ -589,10 +613,16 @@ fn find_two_available_ports() -> Result<(u16, u16), HarnessError> {
     // Bind to two ports at the same time, then return both
     // This ensures we get two distinct ports
     let listener1 = TcpListener::bind("127.0.0.1:0").map_err(|e| HarnessError::SpawnFailed(e))?;
-    let port1 = listener1.local_addr().map_err(|e| HarnessError::SpawnFailed(e))?.port();
+    let port1 = listener1
+        .local_addr()
+        .map_err(|e| HarnessError::SpawnFailed(e))?
+        .port();
 
     let listener2 = TcpListener::bind("127.0.0.1:0").map_err(|e| HarnessError::SpawnFailed(e))?;
-    let port2 = listener2.local_addr().map_err(|e| HarnessError::SpawnFailed(e))?.port();
+    let port2 = listener2
+        .local_addr()
+        .map_err(|e| HarnessError::SpawnFailed(e))?
+        .port();
 
     // Drop both listeners to free the ports for the daemon to use
     drop(listener1);
@@ -613,7 +643,10 @@ mod tests {
         daemon.ping().await.expect("Ping failed");
 
         // Verify we can get interfaces
-        let interfaces = daemon.get_interfaces().await.expect("Failed to get interfaces");
+        let interfaces = daemon
+            .get_interfaces()
+            .await
+            .expect("Failed to get interfaces");
         assert!(!interfaces.is_empty(), "Should have at least one interface");
 
         // Verify the TCP server interface is present and online
@@ -636,6 +669,10 @@ mod tests {
             .expect("Failed to register destination");
 
         assert_eq!(dest.hash.len(), 32, "Hash should be 16 bytes hex-encoded");
-        assert_eq!(dest.signing_key.len(), 64, "Signing key should be 32 bytes hex-encoded");
+        assert_eq!(
+            dest.signing_key.len(),
+            64,
+            "Signing key should be 32 bytes hex-encoded"
+        );
     }
 }

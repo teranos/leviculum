@@ -3,13 +3,13 @@
 //! These tests use proptest to verify that cryptographic operations
 //! behave correctly for arbitrary inputs.
 
-use reticulum_core::crypto::{
-    aes256_cbc_decrypt, aes256_cbc_encrypt, decrypt_token, derive_key, encrypt_token,
-    hmac_sha256, verify_hmac,
-};
-use reticulum_core::identity::Identity;
 use proptest::prelude::*;
 use rand_core::OsRng;
+use reticulum_core::crypto::{
+    aes256_cbc_decrypt, aes256_cbc_encrypt, decrypt_token, derive_key, encrypt_token, hmac_sha256,
+    verify_hmac,
+};
+use reticulum_core::identity::Identity;
 
 // Helper to create identity in tests
 fn new_identity() -> Identity {

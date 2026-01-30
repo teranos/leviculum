@@ -39,10 +39,7 @@ fn bytes_to_hex(bytes: &[u8]) -> String {
 
 #[derive(Debug)]
 enum TestResult {
-    Success {
-        link_id: String,
-        link_key: String,
-    },
+    Success { link_id: String, link_key: String },
     ConnectionFailed(String),
     ProofFailed(String),
     Timeout,
@@ -93,7 +90,7 @@ fn run_link_test(
     let mut packets_checked = 0;
 
     while start.elapsed() < Duration::from_secs(PROOF_TIMEOUT_SECS)
-          && packets_checked < MAX_PACKETS_TO_CHECK
+        && packets_checked < MAX_PACKETS_TO_CHECK
     {
         match stream.read(&mut recv_buffer) {
             Ok(0) => {
@@ -116,7 +113,8 @@ fn run_link_test(
                                 match link.process_proof(payload) {
                                     Ok(()) => {
                                         if link.state() == LinkState::Active {
-                                            let link_key = link.link_key()
+                                            let link_key = link
+                                                .link_key()
                                                 .map(|k| bytes_to_hex(k))
                                                 .unwrap_or_else(|| "none".to_string());
                                             return TestResult::Success {
@@ -152,7 +150,10 @@ fn main() {
     let args: Vec<String> = std::env::args().collect();
 
     if args.len() < 3 {
-        eprintln!("Usage: {} <dest_hash_hex> <signing_key_hex> [host:port]", args[0]);
+        eprintln!(
+            "Usage: {} <dest_hash_hex> <signing_key_hex> [host:port]",
+            args[0]
+        );
         eprintln!();
         eprintln!("  dest_hash_hex:    16-byte destination hash (32 hex chars)");
         eprintln!("  signing_key_hex:  32-byte Ed25519 signing public key (64 hex chars)");
@@ -166,7 +167,11 @@ fn main() {
     let dest_hash_bytes = match hex_to_bytes(&args[1]) {
         Ok(b) if b.len() == TRUNCATED_HASHBYTES => b,
         Ok(b) => {
-            eprintln!("[FAIL] Destination hash must be {} bytes, got {}", TRUNCATED_HASHBYTES, b.len());
+            eprintln!(
+                "[FAIL] Destination hash must be {} bytes, got {}",
+                TRUNCATED_HASHBYTES,
+                b.len()
+            );
             std::process::exit(1);
         }
         Err(e) => {
@@ -196,7 +201,10 @@ fn main() {
 
     println!("=== Link Integration Test ===");
     println!("Destination: {}", args[1]);
-    println!("Timeout: {}s, Max packets: {}", PROOF_TIMEOUT_SECS, MAX_PACKETS_TO_CHECK);
+    println!(
+        "Timeout: {}s, Max packets: {}",
+        PROOF_TIMEOUT_SECS, MAX_PACKETS_TO_CHECK
+    );
     println!();
 
     let result = run_link_test(dest_hash, signing_key, host_port);
@@ -217,7 +225,10 @@ fn main() {
             std::process::exit(3);
         }
         TestResult::Timeout => {
-            eprintln!("[FAIL] Timeout waiting for link proof ({}s)", PROOF_TIMEOUT_SECS);
+            eprintln!(
+                "[FAIL] Timeout waiting for link proof ({}s)",
+                PROOF_TIMEOUT_SECS
+            );
             std::process::exit(4);
         }
         TestResult::SetupError(msg) => {

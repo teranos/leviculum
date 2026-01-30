@@ -13,7 +13,7 @@ use std::time::Duration;
 
 use reticulum_core::constants::{MTU, TRUNCATED_HASHBYTES};
 use reticulum_core::crypto::truncated_hash;
-use reticulum_core::framing::hdlc::{frame, Deframer, DeframeResult};
+use reticulum_core::framing::hdlc::{frame, DeframeResult, Deframer};
 use reticulum_core::traits::{Interface, InterfaceError, InterfaceMode};
 
 /// TCP client interface connecting to a Reticulum TCP server
@@ -157,7 +157,8 @@ impl Interface for TcpClientInterface {
         self.poll_read();
 
         // Check again after reading
-        self.try_dequeue(buf).unwrap_or(Err(InterfaceError::WouldBlock))
+        self.try_dequeue(buf)
+            .unwrap_or(Err(InterfaceError::WouldBlock))
     }
 
     fn is_online(&self) -> bool {
@@ -182,11 +183,8 @@ mod tests {
     #[test]
     fn test_tcp_interface_connect_refused() {
         // Connecting to a port with nothing listening should fail
-        let result = TcpClientInterface::connect(
-            "test",
-            "127.0.0.1:19999",
-            Duration::from_millis(500),
-        );
+        let result =
+            TcpClientInterface::connect("test", "127.0.0.1:19999", Duration::from_millis(500));
         assert!(result.is_err());
     }
 

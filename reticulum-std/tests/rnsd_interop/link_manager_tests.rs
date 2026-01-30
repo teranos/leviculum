@@ -117,15 +117,15 @@ async fn establish_manager_initiator_link(
     let dest_info = daemon.register_destination("linktest", &["echo"]).await?;
 
     // Extract signing key
-    let pub_key_bytes = hex::decode(&dest_info.public_key)
-        .map_err(|e| HarnessError::ParseError(e.to_string()))?;
+    let pub_key_bytes =
+        hex::decode(&dest_info.public_key).map_err(|e| HarnessError::ParseError(e.to_string()))?;
     let signing_key_bytes: [u8; 32] = pub_key_bytes[32..64]
         .try_into()
         .map_err(|_| HarnessError::ParseError("Invalid signing key".to_string()))?;
 
     // Parse destination hash
-    let dest_hash_bytes = hex::decode(&dest_info.hash)
-        .map_err(|e| HarnessError::ParseError(e.to_string()))?;
+    let dest_hash_bytes =
+        hex::decode(&dest_info.hash).map_err(|e| HarnessError::ParseError(e.to_string()))?;
     let dest_hash: [u8; TRUNCATED_HASHBYTES] = dest_hash_bytes
         .try_into()
         .map_err(|_| HarnessError::ParseError("Invalid hash length".to_string()))?;
@@ -192,9 +192,9 @@ async fn establish_manager_responder_link(
 
     // Check for LinkRequestReceived event
     let events: Vec<_> = manager.drain_events().collect();
-    let request_event = events.iter().find(|e| {
-        matches!(e, LinkEvent::LinkRequestReceived { link_id: id, .. } if *id == link_id)
-    });
+    let request_event = events.iter().find(
+        |e| matches!(e, LinkEvent::LinkRequestReceived { link_id: id, .. } if *id == link_id),
+    );
 
     if request_event.is_none() {
         return Err(HarnessError::CommandFailed(
@@ -384,7 +384,12 @@ where
 
         // Try to receive more packets
         let remaining = deadline - tokio::time::Instant::now();
-        match timeout(remaining.min(Duration::from_millis(100)), stream.read(&mut buf)).await {
+        match timeout(
+            remaining.min(Duration::from_millis(100)),
+            stream.read(&mut buf),
+        )
+        .await
+        {
             Ok(Ok(0)) => break,
             Ok(Ok(n)) => {
                 let results = deframer.process(&buf[..n]);
@@ -468,10 +473,15 @@ async fn test_manager_initiator_basic_handshake() {
     let mut manager = LinkManager::new();
 
     // Establish link
-    let (link_id, _dest_info) =
-        establish_manager_initiator_link(&mut manager, &daemon, &mut stream, &mut deframer, &mut ctx)
-            .await
-            .expect("Failed to establish link");
+    let (link_id, _dest_info) = establish_manager_initiator_link(
+        &mut manager,
+        &daemon,
+        &mut stream,
+        &mut deframer,
+        &mut ctx,
+    )
+    .await
+    .expect("Failed to establish link");
 
     // Verify link is active
     assert!(
@@ -501,10 +511,15 @@ async fn test_manager_initiator_data_exchange() {
 
     let mut manager = LinkManager::new();
 
-    let (link_id, _dest_info) =
-        establish_manager_initiator_link(&mut manager, &daemon, &mut stream, &mut deframer, &mut ctx)
-            .await
-            .expect("Failed to establish link");
+    let (link_id, _dest_info) = establish_manager_initiator_link(
+        &mut manager,
+        &daemon,
+        &mut stream,
+        &mut deframer,
+        &mut ctx,
+    )
+    .await
+    .expect("Failed to establish link");
 
     // Send data via manager
     let test_data = b"Hello from LinkManager!";
@@ -549,10 +564,15 @@ async fn test_manager_initiator_sequential_links() {
     let mut stream1 = connect_to_daemon(&daemon).await;
     let mut deframer1 = Deframer::new();
 
-    let (link_id1, _) =
-        establish_manager_initiator_link(&mut manager, &daemon, &mut stream1, &mut deframer1, &mut ctx)
-            .await
-            .expect("Failed to establish first link");
+    let (link_id1, _) = establish_manager_initiator_link(
+        &mut manager,
+        &daemon,
+        &mut stream1,
+        &mut deframer1,
+        &mut ctx,
+    )
+    .await
+    .expect("Failed to establish first link");
 
     // Send data on first link
     let data1 = b"First link data";
@@ -565,17 +585,24 @@ async fn test_manager_initiator_sequential_links() {
 
     // Drain close event
     let events: Vec<_> = manager.drain_events().collect();
-    assert!(events.iter().any(|e| matches!(e, LinkEvent::LinkClosed { link_id, reason }
+    assert!(events
+        .iter()
+        .any(|e| matches!(e, LinkEvent::LinkClosed { link_id, reason }
         if *link_id == link_id1 && *reason == LinkCloseReason::Normal)));
 
     // Second link (new connection)
     let mut stream2 = connect_to_daemon(&daemon).await;
     let mut deframer2 = Deframer::new();
 
-    let (link_id2, _) =
-        establish_manager_initiator_link(&mut manager, &daemon, &mut stream2, &mut deframer2, &mut ctx)
-            .await
-            .expect("Failed to establish second link");
+    let (link_id2, _) = establish_manager_initiator_link(
+        &mut manager,
+        &daemon,
+        &mut stream2,
+        &mut deframer2,
+        &mut ctx,
+    )
+    .await
+    .expect("Failed to establish second link");
 
     assert_ne!(link_id1, link_id2);
     assert!(manager.is_active(&link_id2));
@@ -683,7 +710,10 @@ async fn test_manager_initiator_concurrent_links() {
     tokio::time::sleep(Duration::from_millis(300)).await;
 
     println!("Established {} links", established);
-    assert!(established >= 2, "Should establish at least 2 concurrent links");
+    assert!(
+        established >= 2,
+        "Should establish at least 2 concurrent links"
+    );
 
     println!("SUCCESS: LinkManager concurrent links");
 }
@@ -819,8 +849,13 @@ async fn test_manager_responder_reject_link() {
     });
 
     // Wait for link request
-    let result = wait_for_link_request(&mut stream, &mut deframer, &dest_hash, Duration::from_secs(10))
-        .await;
+    let result = wait_for_link_request(
+        &mut stream,
+        &mut deframer,
+        &dest_hash,
+        Duration::from_secs(10),
+    )
+    .await;
 
     assert!(result.is_some(), "Should receive link request");
     let (raw_packet, link_id) = result.unwrap();
@@ -831,11 +866,9 @@ async fn test_manager_responder_reject_link() {
 
     // Check for LinkRequestReceived
     let events: Vec<_> = manager.drain_events().collect();
-    assert!(
-        events
-            .iter()
-            .any(|e| matches!(e, LinkEvent::LinkRequestReceived { link_id: id, .. } if *id == link_id))
-    );
+    assert!(events.iter().any(
+        |e| matches!(e, LinkEvent::LinkRequestReceived { link_id: id, .. } if *id == link_id)
+    ));
 
     // Reject the link
     manager.reject_link(&link_id);
@@ -917,9 +950,10 @@ async fn test_manager_responder_data_exchange() {
         .expect("Failed to send from Python");
 
     // Wait for and process data packet
-    let data_raw = wait_for_data_packet(&mut stream, &mut deframer, &link_id, Duration::from_secs(5))
-        .await
-        .expect("Should receive data from Python");
+    let data_raw =
+        wait_for_data_packet(&mut stream, &mut deframer, &link_id, Duration::from_secs(5))
+            .await
+            .expect("Should receive data from Python");
 
     let data_pkt = Packet::unpack(&data_raw).unwrap();
     manager.process_packet(&data_pkt, &data_raw, &mut ctx);
@@ -1077,9 +1111,13 @@ async fn test_rust_to_rust_via_daemon() {
     // --- B receives A's announce over the wire with full routing info ---
     // This is the proper mesh discovery: B learns about A from the announce
     // forwarded by the daemon, including the transport_id for routing.
-    let announce_info = wait_for_any_announce_with_route_info(&mut stream_b, &mut deframer_b, Duration::from_secs(5))
-        .await
-        .expect("B should receive A's announce from daemon");
+    let announce_info = wait_for_any_announce_with_route_info(
+        &mut stream_b,
+        &mut deframer_b,
+        Duration::from_secs(5),
+    )
+    .await
+    .expect("B should receive A's announce from daemon");
 
     // Verify the announce is for A's destination
     assert_eq!(
@@ -1088,37 +1126,43 @@ async fn test_rust_to_rust_via_daemon() {
     );
 
     // Extract routing info from the announce
-    let signing_key_a = announce_info.signing_key()
+    let signing_key_a = announce_info
+        .signing_key()
         .expect("Failed to extract signing key from announce");
     let transport_id = announce_info.transport_id;
     let hops = announce_info.hops;
 
     // B initiates link to A using transport headers if announce came through relay
-    let (link_id_b, link_request_packet) = manager_b.initiate_with_path(
-        dest_hash_a,
-        &signing_key_a,
-        transport_id,
-        hops,
-        &mut ctx_b,
-    );
+    let (link_id_b, link_request_packet) =
+        manager_b.initiate_with_path(dest_hash_a, &signing_key_a, transport_id, hops, &mut ctx_b);
 
     // If transport_id is set, we should be using HEADER_2
     if transport_id.is_some() {
         let using_header_2 = link_request_packet[0] & 0x40 != 0;
-        assert!(using_header_2, "Should use HEADER_2 when transport_id is set");
+        assert!(
+            using_header_2,
+            "Should use HEADER_2 when transport_id is set"
+        );
     }
 
     // Send link request via B's stream (daemon will relay based on transport_id)
     send_framed(&mut stream_b, &link_request_packet).await;
 
     // A receives link request
-    let (raw_request, link_id_a) =
-        wait_for_link_request(&mut stream_a, &mut deframer_a, &dest_hash_a, Duration::from_secs(10))
-            .await
-            .expect("A should receive link request");
+    let (raw_request, link_id_a) = wait_for_link_request(
+        &mut stream_a,
+        &mut deframer_a,
+        &dest_hash_a,
+        Duration::from_secs(10),
+    )
+    .await
+    .expect("A should receive link request");
 
     // Verify link IDs match (important for transport routing to work)
-    assert_eq!(link_id_a, link_id_b, "Link IDs should match after transport unwrapping");
+    assert_eq!(
+        link_id_a, link_id_b,
+        "Link IDs should match after transport unwrapping"
+    );
 
     let request_pkt = Packet::unpack(&raw_request).unwrap();
     manager_a.process_packet(&request_pkt, &raw_request, &mut ctx_a);
@@ -1133,15 +1177,26 @@ async fn test_rust_to_rust_via_daemon() {
     send_framed(&mut stream_a, &proof_packet).await;
 
     // B receives proof
-    let proof_pkt = receive_proof_for_link(&mut stream_b, &mut deframer_b, &link_id_b, Duration::from_secs(10))
-        .await
-        .expect("B should receive proof");
+    let proof_pkt = receive_proof_for_link(
+        &mut stream_b,
+        &mut deframer_b,
+        &link_id_b,
+        Duration::from_secs(10),
+    )
+    .await
+    .expect("B should receive proof");
 
     manager_b.process_packet(&proof_pkt, &[], &mut ctx_b);
 
     // B should have LinkEstablished
     let events_b: Vec<_> = manager_b.drain_events().collect();
-    assert!(events_b.iter().any(|e| matches!(e, LinkEvent::LinkEstablished { is_initiator: true, .. })));
+    assert!(events_b.iter().any(|e| matches!(
+        e,
+        LinkEvent::LinkEstablished {
+            is_initiator: true,
+            ..
+        }
+    )));
 
     // B sends RTT
     let rtt_packet = manager_b
@@ -1150,9 +1205,14 @@ async fn test_rust_to_rust_via_daemon() {
     send_framed(&mut stream_b, &rtt_packet).await;
 
     // A receives RTT
-    let rtt_data = wait_for_rtt_packet(&mut stream_a, &mut deframer_a, &link_id_a, Duration::from_secs(10))
-        .await
-        .expect("A should receive RTT");
+    let rtt_data = wait_for_rtt_packet(
+        &mut stream_a,
+        &mut deframer_a,
+        &link_id_a,
+        Duration::from_secs(10),
+    )
+    .await
+    .expect("A should receive RTT");
 
     // Build RTT packet for processing
     let mut rtt_raw = Vec::new();
@@ -1167,7 +1227,13 @@ async fn test_rust_to_rust_via_daemon() {
 
     // A should have LinkEstablished
     let events_a: Vec<_> = manager_a.drain_events().collect();
-    assert!(events_a.iter().any(|e| matches!(e, LinkEvent::LinkEstablished { is_initiator: false, .. })));
+    assert!(events_a.iter().any(|e| matches!(
+        e,
+        LinkEvent::LinkEstablished {
+            is_initiator: false,
+            ..
+        }
+    )));
 
     // Both links should be active
     assert!(manager_a.is_active(&link_id_a));
@@ -1181,9 +1247,14 @@ async fn test_rust_to_rust_via_daemon() {
     send_framed(&mut stream_b, &data_b).await;
 
     // A receives
-    let data_raw_a = wait_for_data_packet(&mut stream_a, &mut deframer_a, &link_id_a, Duration::from_secs(5))
-        .await
-        .expect("A should receive data from B");
+    let data_raw_a = wait_for_data_packet(
+        &mut stream_a,
+        &mut deframer_a,
+        &link_id_a,
+        Duration::from_secs(5),
+    )
+    .await
+    .expect("A should receive data from B");
 
     let data_pkt_a = Packet::unpack(&data_raw_a).unwrap();
     manager_a.process_packet(&data_pkt_a, &data_raw_a, &mut ctx_a);
@@ -1205,9 +1276,14 @@ async fn test_rust_to_rust_via_daemon() {
     send_framed(&mut stream_a, &data_a).await;
 
     // B receives
-    let data_raw_b = wait_for_data_packet(&mut stream_b, &mut deframer_b, &link_id_b, Duration::from_secs(5))
-        .await
-        .expect("B should receive data from A");
+    let data_raw_b = wait_for_data_packet(
+        &mut stream_b,
+        &mut deframer_b,
+        &link_id_b,
+        Duration::from_secs(5),
+    )
+    .await
+    .expect("B should receive data from A");
 
     let data_pkt_b = Packet::unpack(&data_raw_b).unwrap();
     manager_b.process_packet(&data_pkt_b, &data_raw_b, &mut ctx_b);
@@ -1257,59 +1333,82 @@ async fn test_rust_to_rust_multiple_messages() {
     tokio::time::sleep(Duration::from_millis(500)).await;
 
     // --- B receives A's announce with routing info ---
-    let announce_info = wait_for_any_announce_with_route_info(&mut stream_b, &mut deframer_b, Duration::from_secs(5))
-        .await
-        .expect("B should receive A's announce from daemon");
+    let announce_info = wait_for_any_announce_with_route_info(
+        &mut stream_b,
+        &mut deframer_b,
+        Duration::from_secs(5),
+    )
+    .await
+    .expect("B should receive A's announce from daemon");
 
     assert_eq!(announce_info.packet.destination_hash, dest_hash_a);
 
-    let signing_key_a = announce_info.signing_key()
+    let signing_key_a = announce_info
+        .signing_key()
         .expect("Failed to extract signing key from announce");
     let transport_id = announce_info.transport_id;
     let hops = announce_info.hops;
 
-    println!("B discovered A via announce, transport_id={:?}, hops={}", transport_id.map(hex::encode), hops);
+    println!(
+        "B discovered A via announce, transport_id={:?}, hops={}",
+        transport_id.map(hex::encode),
+        hops
+    );
 
     // Establish link with transport headers
-    let (link_id_b, link_request_packet) = manager_b.initiate_with_path(
-        dest_hash_a,
-        &signing_key_a,
-        transport_id,
-        hops,
-        &mut ctx_b,
-    );
+    let (link_id_b, link_request_packet) =
+        manager_b.initiate_with_path(dest_hash_a, &signing_key_a, transport_id, hops, &mut ctx_b);
 
     // Verify HEADER_2 is used when transport_id is set
     if transport_id.is_some() {
-        assert!(link_request_packet[0] & 0x40 != 0, "Should use HEADER_2 when transport_id is set");
+        assert!(
+            link_request_packet[0] & 0x40 != 0,
+            "Should use HEADER_2 when transport_id is set"
+        );
     }
 
     send_framed(&mut stream_b, &link_request_packet).await;
 
-    let (raw_request, link_id_a) =
-        wait_for_link_request(&mut stream_a, &mut deframer_a, &dest_hash_a, Duration::from_secs(10))
-            .await
-            .unwrap();
+    let (raw_request, link_id_a) = wait_for_link_request(
+        &mut stream_a,
+        &mut deframer_a,
+        &dest_hash_a,
+        Duration::from_secs(10),
+    )
+    .await
+    .unwrap();
 
     let request_pkt = Packet::unpack(&raw_request).unwrap();
     manager_a.process_packet(&request_pkt, &raw_request, &mut ctx_a);
     let _: Vec<_> = manager_a.drain_events().collect();
 
-    let proof_packet = manager_a.accept_link(&link_id_a, &identity_a, &mut ctx_a).unwrap();
+    let proof_packet = manager_a
+        .accept_link(&link_id_a, &identity_a, &mut ctx_a)
+        .unwrap();
     send_framed(&mut stream_a, &proof_packet).await;
 
-    let proof_pkt = receive_proof_for_link(&mut stream_b, &mut deframer_b, &link_id_b, Duration::from_secs(10))
-        .await
-        .unwrap();
+    let proof_pkt = receive_proof_for_link(
+        &mut stream_b,
+        &mut deframer_b,
+        &link_id_b,
+        Duration::from_secs(10),
+    )
+    .await
+    .unwrap();
     manager_b.process_packet(&proof_pkt, &[], &mut ctx_b);
     let _: Vec<_> = manager_b.drain_events().collect();
 
     let rtt_packet = manager_b.take_pending_rtt_packet(&link_id_b).unwrap();
     send_framed(&mut stream_b, &rtt_packet).await;
 
-    let rtt_data = wait_for_rtt_packet(&mut stream_a, &mut deframer_a, &link_id_a, Duration::from_secs(10))
-        .await
-        .unwrap();
+    let rtt_data = wait_for_rtt_packet(
+        &mut stream_a,
+        &mut deframer_a,
+        &link_id_a,
+        Duration::from_secs(10),
+    )
+    .await
+    .unwrap();
 
     let mut rtt_raw = Vec::new();
     rtt_raw.push(0x0C);
@@ -1329,12 +1428,16 @@ async fn test_rust_to_rust_multiple_messages() {
     for i in 0..10 {
         // B -> A
         let msg = format!("Message {} from B", i);
-        let data = manager_b.send(&link_id_b, msg.as_bytes(), &mut ctx_b).unwrap();
+        let data = manager_b
+            .send(&link_id_b, msg.as_bytes(), &mut ctx_b)
+            .unwrap();
         send_framed(&mut stream_b, &data).await;
 
         // A -> B
         let msg = format!("Message {} from A", i);
-        let data = manager_a.send(&link_id_a, msg.as_bytes(), &mut ctx_a).unwrap();
+        let data = manager_a
+            .send(&link_id_a, msg.as_bytes(), &mut ctx_a)
+            .unwrap();
         send_framed(&mut stream_a, &data).await;
 
         tokio::time::sleep(Duration::from_millis(50)).await;
@@ -1352,7 +1455,9 @@ async fn test_rust_to_rust_multiple_messages() {
                 for result in deframer_a.process(&buf_a[..n]) {
                     if let DeframeResult::Frame(data) = result {
                         if let Ok(pkt) = Packet::unpack(&data) {
-                            if pkt.flags.packet_type == PacketType::Data && pkt.context == PacketContext::None {
+                            if pkt.flags.packet_type == PacketType::Data
+                                && pkt.context == PacketContext::None
+                            {
                                 manager_a.process_packet(&pkt, &data, &mut ctx_a);
                             }
                         }
@@ -1367,7 +1472,9 @@ async fn test_rust_to_rust_multiple_messages() {
                 for result in deframer_b.process(&buf_b[..n]) {
                     if let DeframeResult::Frame(data) = result {
                         if let Ok(pkt) = Packet::unpack(&data) {
-                            if pkt.flags.packet_type == PacketType::Data && pkt.context == PacketContext::None {
+                            if pkt.flags.packet_type == PacketType::Data
+                                && pkt.context == PacketContext::None
+                            {
                                 manager_b.process_packet(&pkt, &data, &mut ctx_b);
                             }
                         }
@@ -1389,7 +1496,10 @@ async fn test_rust_to_rust_multiple_messages() {
         }
     }
 
-    println!("A received {} messages, B received {} messages", received_by_a, received_by_b);
+    println!(
+        "A received {} messages, B received {} messages",
+        received_by_a, received_by_b
+    );
     assert!(received_by_a >= 5, "A should receive at least 5 messages");
     assert!(received_by_b >= 5, "B should receive at least 5 messages");
 
@@ -1637,10 +1747,15 @@ async fn test_manager_rapid_data_exchange() {
 
     let mut manager = LinkManager::new();
 
-    let (link_id, _) =
-        establish_manager_initiator_link(&mut manager, &daemon, &mut stream, &mut deframer, &mut ctx)
-            .await
-            .expect("Failed to establish link");
+    let (link_id, _) = establish_manager_initiator_link(
+        &mut manager,
+        &daemon,
+        &mut stream,
+        &mut deframer,
+        &mut ctx,
+    )
+    .await
+    .expect("Failed to establish link");
 
     // Send 50 packets rapidly
     for i in 0..50 {
@@ -1656,7 +1771,10 @@ async fn test_manager_rapid_data_exchange() {
 
     let received = daemon.get_received_packets().await.unwrap();
     println!("Daemon received {} of 50 packets", received.len());
-    assert!(received.len() >= 25, "Should receive at least half the packets");
+    assert!(
+        received.len() >= 25,
+        "Should receive at least half the packets"
+    );
 
     println!("SUCCESS: LinkManager rapid data exchange");
 }
@@ -1672,10 +1790,15 @@ async fn test_manager_large_payloads() {
 
     let mut manager = LinkManager::new();
 
-    let (link_id, _) =
-        establish_manager_initiator_link(&mut manager, &daemon, &mut stream, &mut deframer, &mut ctx)
-            .await
-            .expect("Failed to establish link");
+    let (link_id, _) = establish_manager_initiator_link(
+        &mut manager,
+        &daemon,
+        &mut stream,
+        &mut deframer,
+        &mut ctx,
+    )
+    .await
+    .expect("Failed to establish link");
 
     // Test various payload sizes
     let sizes = [100, 250, 400];
@@ -1733,8 +1856,8 @@ async fn test_manager_interleaved_operations() {
 
     // Helper to initiate
     let initiate = |manager: &mut LinkManager,
-                        dest: &DestinationInfo,
-                        ctx: &mut PlatformContext<OsRng, RealClock, NoStorage>|
+                    dest: &DestinationInfo,
+                    ctx: &mut PlatformContext<OsRng, RealClock, NoStorage>|
      -> (LinkId, Vec<u8>) {
         let pub_key_bytes = hex::decode(&dest.public_key).unwrap();
         let signing_key: [u8; 32] = pub_key_bytes[32..64].try_into().unwrap();

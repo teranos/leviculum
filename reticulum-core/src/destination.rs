@@ -234,6 +234,7 @@ impl Destination {
         // Create the packet
         let packet = Packet {
             flags: PacketFlags {
+                ifac_flag: false,
                 header_type: HeaderType::Type1,
                 context_flag: false, // No ratchet (for now)
                 transport_type: TransportType::Broadcast,

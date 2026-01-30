@@ -101,7 +101,11 @@ pub(crate) fn build_announce_payload(
     // Build signed data: dest_hash + public_key + name_hash + random_hash + app_data
     let app_data_bytes = app_data.unwrap_or(&[]);
     let mut signed_data = Vec::with_capacity(
-        TRUNCATED_HASHBYTES + IDENTITY_KEY_SIZE + NAME_HASHBYTES + RANDOM_HASHBYTES + app_data_bytes.len(),
+        TRUNCATED_HASHBYTES
+            + IDENTITY_KEY_SIZE
+            + NAME_HASHBYTES
+            + RANDOM_HASHBYTES
+            + app_data_bytes.len(),
     );
     signed_data.extend_from_slice(destination_hash);
     signed_data.extend_from_slice(&public_key);
@@ -451,6 +455,7 @@ mod tests {
 
         let packet = Packet {
             flags: PacketFlags {
+                ifac_flag: false,
                 header_type: HeaderType::Type1,
                 context_flag: false,
                 transport_type: TransportType::Broadcast,
@@ -481,6 +486,7 @@ mod tests {
 
         let packet = Packet {
             flags: PacketFlags {
+                ifac_flag: false,
                 header_type: HeaderType::Type1,
                 context_flag: false,
                 transport_type: TransportType::Broadcast,
@@ -505,6 +511,7 @@ mod tests {
     fn test_not_announce_packet() {
         let packet = Packet {
             flags: PacketFlags {
+                ifac_flag: false,
                 header_type: HeaderType::Type1,
                 context_flag: false,
                 transport_type: TransportType::Broadcast,
@@ -526,6 +533,7 @@ mod tests {
     fn test_payload_too_short() {
         let packet = Packet {
             flags: PacketFlags {
+                ifac_flag: false,
                 header_type: HeaderType::Type1,
                 context_flag: false,
                 transport_type: TransportType::Broadcast,
@@ -550,6 +558,7 @@ mod tests {
 
         let packet = Packet {
             flags: PacketFlags {
+                ifac_flag: false,
                 header_type: HeaderType::Type1,
                 context_flag: false,
                 transport_type: TransportType::Broadcast,
@@ -623,6 +632,7 @@ mod tests {
         // Create packet
         let packet = Packet {
             flags: PacketFlags {
+                ifac_flag: false,
                 header_type: HeaderType::Type1,
                 context_flag: false,
                 transport_type: TransportType::Broadcast,

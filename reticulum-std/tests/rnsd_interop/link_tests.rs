@@ -90,9 +90,8 @@ async fn test_link_establishment_basic() {
 
     // Parse destination hash
     let dest_hash_bytes = hex::decode(&dest_info.hash).expect("Invalid hash hex");
-    let dest_hash: [u8; TRUNCATED_HASHBYTES] = dest_hash_bytes
-        .try_into()
-        .expect("Invalid hash length");
+    let dest_hash: [u8; TRUNCATED_HASHBYTES] =
+        dest_hash_bytes.try_into().expect("Invalid hash length");
 
     // Create outgoing link
     let mut link = Link::new_outgoing_with_rng(dest_hash, &mut OsRng);
@@ -101,10 +100,7 @@ async fn test_link_establishment_basic() {
 
     // Build and send link request
     let raw_packet = link.build_link_request_packet();
-    println!(
-        "Sending link request, link_id: {}",
-        hex::encode(link.id())
-    );
+    println!("Sending link request, link_id: {}", hex::encode(link.id()));
 
     let mut stream = connect_to_daemon(&daemon).await;
     let mut framed = Vec::new();
@@ -125,14 +121,15 @@ async fn test_link_establishment_basic() {
     assert!(proof_packet.is_some(), "Should receive proof packet");
     let proof_packet = proof_packet.unwrap();
 
-    println!(
-        "Received proof, {} bytes",
-        proof_packet.data.len()
-    );
+    println!("Received proof, {} bytes", proof_packet.data.len());
 
     // Process the proof
     let result = link.process_proof(proof_packet.data.as_slice());
-    assert!(result.is_ok(), "Proof verification should succeed: {:?}", result);
+    assert!(
+        result.is_ok(),
+        "Proof verification should succeed: {:?}",
+        result
+    );
 
     // Verify link is now active
     assert_eq!(link.state(), LinkState::Active);
@@ -142,7 +139,9 @@ async fn test_link_establishment_basic() {
 
     // Send RTT packet to finalize link establishment on daemon side
     let mut ctx = make_context();
-    let rtt_packet = link.build_rtt_packet(0.05, &mut ctx).expect("Failed to build RTT packet");
+    let rtt_packet = link
+        .build_rtt_packet(0.05, &mut ctx)
+        .expect("Failed to build RTT packet");
     framed.clear();
     frame(&rtt_packet, &mut framed);
     stream.write_all(&framed).await.expect("Failed to send RTT");
@@ -184,10 +183,8 @@ async fn test_link_encrypted_data() {
 
     let pub_key_bytes = hex::decode(&dest_info.public_key).unwrap();
     let signing_key_bytes: [u8; 32] = pub_key_bytes[32..64].try_into().unwrap();
-    let dest_hash: [u8; TRUNCATED_HASHBYTES] = hex::decode(&dest_info.hash)
-        .unwrap()
-        .try_into()
-        .unwrap();
+    let dest_hash: [u8; TRUNCATED_HASHBYTES] =
+        hex::decode(&dest_info.hash).unwrap().try_into().unwrap();
 
     // Establish link
     let mut link = Link::new_outgoing_with_rng(dest_hash, &mut OsRng);
@@ -249,14 +246,20 @@ async fn test_link_encrypted_data() {
     println!("Daemon received {} packets", received.len());
 
     // The daemon should have received our data
-    assert!(!received.is_empty(), "Daemon should receive at least one packet");
+    assert!(
+        !received.is_empty(),
+        "Daemon should receive at least one packet"
+    );
 
     // Check if our data was correctly decrypted by the daemon
     let found_our_data = received.iter().any(|p| p.data == test_data);
     assert!(
         found_our_data,
         "Daemon should have decrypted our message correctly. Received data: {:?}",
-        received.iter().map(|p| String::from_utf8_lossy(&p.data)).collect::<Vec<_>>()
+        received
+            .iter()
+            .map(|p| String::from_utf8_lossy(&p.data))
+            .collect::<Vec<_>>()
     );
 
     println!("SUCCESS: Daemon correctly decrypted our message!");
@@ -285,10 +288,8 @@ async fn test_link_echo() {
 
     let pub_key_bytes = hex::decode(&dest_info.public_key).unwrap();
     let signing_key_bytes: [u8; 32] = pub_key_bytes[32..64].try_into().unwrap();
-    let dest_hash: [u8; TRUNCATED_HASHBYTES] = hex::decode(&dest_info.hash)
-        .unwrap()
-        .try_into()
-        .unwrap();
+    let dest_hash: [u8; TRUNCATED_HASHBYTES] =
+        hex::decode(&dest_info.hash).unwrap().try_into().unwrap();
 
     // Establish link
     let mut link = Link::new_outgoing_with_rng(dest_hash, &mut OsRng);
@@ -337,8 +338,8 @@ async fn test_link_echo() {
     stream.flush().await.unwrap();
 
     // Wait for echo response
-    let echo_data = receive_link_data(&mut stream, &mut deframer, &link, Duration::from_secs(10))
-        .await;
+    let echo_data =
+        receive_link_data(&mut stream, &mut deframer, &link, Duration::from_secs(10)).await;
 
     if let Some(data) = echo_data {
         println!("Received echo: {:?}", String::from_utf8_lossy(&data));
@@ -403,7 +404,10 @@ async fn test_link_request_nonexistent_destination() {
     );
 
     // Verify connection is still open (daemon didn't crash)
-    assert!(connection_alive(&mut stream).await, "Connection should still be alive");
+    assert!(
+        connection_alive(&mut stream).await,
+        "Connection should still be alive"
+    );
 
     // Verify daemon is still responsive
     daemon.ping().await.expect("Daemon should still respond");
@@ -430,10 +434,8 @@ async fn test_link_multiple_data_packets() {
 
     let pub_key_bytes = hex::decode(&dest_info.public_key).unwrap();
     let signing_key_bytes: [u8; 32] = pub_key_bytes[32..64].try_into().unwrap();
-    let dest_hash: [u8; TRUNCATED_HASHBYTES] = hex::decode(&dest_info.hash)
-        .unwrap()
-        .try_into()
-        .unwrap();
+    let dest_hash: [u8; TRUNCATED_HASHBYTES] =
+        hex::decode(&dest_info.hash).unwrap().try_into().unwrap();
 
     // Establish link
     let mut link = Link::new_outgoing_with_rng(dest_hash, &mut OsRng);
@@ -535,10 +537,8 @@ async fn test_link_request_with_mtu_signaling() {
 
     let pub_key_bytes = hex::decode(&dest_info.public_key).unwrap();
     let signing_key_bytes: [u8; 32] = pub_key_bytes[32..64].try_into().unwrap();
-    let dest_hash: [u8; TRUNCATED_HASHBYTES] = hex::decode(&dest_info.hash)
-        .unwrap()
-        .try_into()
-        .unwrap();
+    let dest_hash: [u8; TRUNCATED_HASHBYTES] =
+        hex::decode(&dest_info.hash).unwrap().try_into().unwrap();
 
     // Create link
     let mut link = Link::new_outgoing_with_rng(dest_hash, &mut OsRng);
@@ -553,6 +553,7 @@ async fn test_link_request_with_mtu_signaling() {
     use reticulum_core::packet::{HeaderType, PacketContext, PacketFlags, TransportType};
 
     let flags = PacketFlags {
+        ifac_flag: false,
         header_type: HeaderType::Type1,
         context_flag: false,
         transport_type: TransportType::Broadcast,
@@ -592,7 +593,10 @@ async fn test_link_request_with_mtu_signaling() {
     )
     .await;
 
-    assert!(proof_packet.is_some(), "Should receive proof for MTU-signaled request");
+    assert!(
+        proof_packet.is_some(),
+        "Should receive proof for MTU-signaled request"
+    );
     let proof_packet = proof_packet.unwrap();
 
     // Process proof
@@ -628,10 +632,8 @@ async fn test_link_proof_validation() {
 
     let pub_key_bytes = hex::decode(&dest_info.public_key).unwrap();
     let signing_key_bytes: [u8; 32] = pub_key_bytes[32..64].try_into().unwrap();
-    let dest_hash: [u8; TRUNCATED_HASHBYTES] = hex::decode(&dest_info.hash)
-        .unwrap()
-        .try_into()
-        .unwrap();
+    let dest_hash: [u8; TRUNCATED_HASHBYTES] =
+        hex::decode(&dest_info.hash).unwrap().try_into().unwrap();
 
     // Create link
     let mut link = Link::new_outgoing_with_rng(dest_hash, &mut OsRng);
@@ -670,8 +672,14 @@ async fn test_link_proof_validation() {
     assert!(result.is_ok(), "Proof should validate: {:?}", result);
 
     // Verify we now have derived keys
-    assert!(link.link_key().is_some(), "Should have link key after proof");
-    assert!(link.encryption_key().is_some(), "Should have encryption key");
+    assert!(
+        link.link_key().is_some(),
+        "Should have link key after proof"
+    );
+    assert!(
+        link.encryption_key().is_some(),
+        "Should have encryption key"
+    );
     assert!(link.hmac_key().is_some(), "Should have HMAC key");
 
     // The link key should be 64 bytes (32 HMAC + 32 encryption)

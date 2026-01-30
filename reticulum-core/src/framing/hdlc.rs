@@ -460,7 +460,10 @@ mod tests {
 
         let mut framed = Vec::new();
         frame(&data, &mut framed);
-        assert_eq!(framed, expected, "Frame with FLAG byte mismatch with Python");
+        assert_eq!(
+            framed, expected,
+            "Frame with FLAG byte mismatch with Python"
+        );
 
         let mut deframer = Deframer::new();
         let results = deframer.process(&framed);
