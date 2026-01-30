@@ -141,6 +141,9 @@ impl TestDaemon {
     /// Timeout for daemon startup
     const STARTUP_TIMEOUT: Duration = Duration::from_secs(10);
 
+    /// Maximum retries for daemon startup (handles port race conditions)
+    const MAX_STARTUP_RETRIES: u32 = 3;
+
     /// Start a new test daemon instance.
     ///
     /// This spawns the Python test daemon with dynamically allocated ports,
@@ -148,12 +151,36 @@ impl TestDaemon {
     ///
     /// If the Reticulum submodule exists but is not initialized, this will
     /// automatically run `git submodule update --init` first.
+    ///
+    /// Note: This includes retry logic to handle TOCTOU race conditions where
+    /// ports allocated by `find_two_available_ports()` might be grabbed by
+    /// another parallel test before the daemon can bind to them.
     pub async fn start() -> Result<Self, HarnessError> {
         ensure_reticulum_submodule()?;
 
-        let (rns_port, cmd_port) = find_two_available_ports()?;
+        let mut last_error = HarnessError::StartupTimeout;
 
-        Self::start_with_ports(rns_port, cmd_port).await
+        for attempt in 0..Self::MAX_STARTUP_RETRIES {
+            let (rns_port, cmd_port) = find_two_available_ports()?;
+
+            match Self::start_with_ports(rns_port, cmd_port).await {
+                Ok(daemon) => return Ok(daemon),
+                Err(HarnessError::StartupTimeout) => {
+                    // Port conflict likely - retry with new ports
+                    if attempt + 1 < Self::MAX_STARTUP_RETRIES {
+                        // Small delay before retry to let other tests settle
+                        tokio::time::sleep(Duration::from_millis(100)).await;
+                    }
+                    last_error = HarnessError::StartupTimeout;
+                }
+                Err(e) => {
+                    // Non-retryable error
+                    return Err(e);
+                }
+            }
+        }
+
+        Err(last_error)
     }
 
     /// Start a daemon with specific ports (useful for debugging).
