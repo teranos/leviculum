@@ -1157,7 +1157,8 @@ mod tests {
                 DestinationType::Single,
                 "testapp",
                 &["echo"],
-            );
+            )
+            .expect("Failed to create destination");
 
             let id = dest.identity().unwrap();
             let random_hash = [0x42u8; crate::constants::RANDOM_HASHBYTES];

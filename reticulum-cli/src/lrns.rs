@@ -11,10 +11,12 @@ use tracing_subscriber::FmtSubscriber;
 
 fn hex_encode(bytes: &[u8]) -> String {
     use std::fmt::Write;
-    bytes.iter().fold(String::with_capacity(bytes.len() * 2), |mut s, b| {
-        let _ = write!(s, "{b:02x}");
-        s
-    })
+    bytes
+        .iter()
+        .fold(String::with_capacity(bytes.len() * 2), |mut s, b| {
+            let _ = write!(s, "{b:02x}");
+            s
+        })
 }
 
 #[derive(Parser, Debug)]
@@ -127,7 +129,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 println!("Hash: {hash_hex}");
 
                 if let Some(path) = output {
-                    let key_bytes = identity.private_key_bytes()?;
+                    let key_bytes = identity
+                        .private_key_bytes()
+                        .map_err(|e| e.to_string())?;
                     std::fs::write(&path, key_bytes)?;
                     println!("Saved to: {}", path.display());
                 } else {
@@ -141,7 +145,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 use reticulum_core::Identity;
 
                 let key_bytes = std::fs::read(&path)?;
-                let identity = Identity::from_private_key_bytes(&key_bytes)?;
+                let identity =
+                    Identity::from_private_key_bytes(&key_bytes).map_err(|e| e.to_string())?;
                 let hash = identity.hash();
                 let hash_hex = hex_encode(hash);
                 let pub_key = identity.public_key_bytes();

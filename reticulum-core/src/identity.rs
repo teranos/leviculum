@@ -39,12 +39,6 @@ impl core::fmt::Display for IdentityError {
     }
 }
 
-#[cfg(feature = "std")]
-extern crate std;
-
-#[cfg(feature = "std")]
-impl std::error::Error for IdentityError {}
-
 /// A cryptographic identity with X25519 and Ed25519 key pairs
 pub struct Identity {
     /// X25519 private key for ECDH (None for public-only identities)

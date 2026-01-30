@@ -212,7 +212,8 @@ async fn setup_rust_destination(
         DestinationType::Single,
         app_name,
         aspects,
-    );
+    )
+    .expect("Failed to create destination");
 
     // Create and send announce
     let packet = destination

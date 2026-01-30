@@ -26,12 +26,10 @@
 //! - `transport`: Routing and path discovery (data structures)
 //! - `resource`: Large data transfer protocol
 //!
-//! # Features
+//! # no_std
 //!
-//! - `std` (default): Enable optimized crypto and OS RNG
-//!
-//! The crate is always `no_std` compatible with `alloc`. The `std` feature
-//! only enables optimized crypto implementations and access to `OsRng`.
+//! This crate is fully `no_std` compatible with `alloc`. It has no optional
+//! `std` feature - all functionality works on embedded systems without an OS.
 
 #![no_std]
 

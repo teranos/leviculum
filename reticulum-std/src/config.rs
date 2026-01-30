@@ -112,7 +112,6 @@ fn default_bitrate() -> u64 {
     62500 // Default Reticulum bitrate
 }
 
-
 impl Config {
     /// Load configuration from a file
     pub fn load<P: AsRef<Path>>(path: P) -> Result<Self> {
@@ -120,8 +119,7 @@ impl Config {
             .map_err(|e| Error::Config(format!("Failed to read config: {e}")))?;
 
         // Try TOML format
-        toml::from_str(&content)
-            .map_err(|e| Error::Config(format!("Failed to parse config: {e}")))
+        toml::from_str(&content).map_err(|e| Error::Config(format!("Failed to parse config: {e}")))
     }
 
     /// Save configuration to a file

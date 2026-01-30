@@ -7,10 +7,8 @@ license.workspace = true
 description = "Core library for reticulum - no_std compatible"
 
 [features]
-default = ["std"]
-# std activates optimized crypto implementations and OS RNG
-# alloc is always available - no separate feature needed
-std = ["sha2/std", "hmac/std", "hkdf/std", "rand_core/std", "rand_core/getrandom", "ed25519-dalek/std"]
+default = []
+# No std feature - reticulum-core is always no_std
 
 [dependencies]
 curve25519-dalek.workspace = true
@@ -29,3 +27,5 @@ proptest.workspace = true
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 hex = "0.4"
+# OsRng is needed for tests (only available with getrandom feature)
+rand_core = { version = "0.6", features = ["getrandom"] }

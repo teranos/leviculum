@@ -17,6 +17,28 @@ use crate::traits::Context;
 
 use alloc::string::String;
 
+/// Error type for destination operations
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DestinationError {
+    /// PLAIN destination type cannot have an identity
+    PlainCannotHaveIdentity,
+    /// Outbound SINGLE/GROUP destinations require an identity
+    OutboundRequiresIdentity,
+}
+
+impl core::fmt::Display for DestinationError {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        match self {
+            DestinationError::PlainCannotHaveIdentity => {
+                write!(f, "PLAIN destination type cannot hold an identity")
+            }
+            DestinationError::OutboundRequiresIdentity => {
+                write!(f, "Outbound SINGLE/GROUP destinations require an identity")
+            }
+        }
+    }
+}
+
 /// Destination type determining encryption behavior
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[repr(u8)]
@@ -83,13 +105,28 @@ impl Destination {
     /// * `dest_type` - The encryption type
     /// * `app_name` - Application name
     /// * `aspects` - Additional name components
+    ///
+    /// # Errors
+    /// * `PlainCannotHaveIdentity` - PLAIN destinations cannot have an identity
+    /// * `OutboundRequiresIdentity` - SINGLE/GROUP OUT destinations require an identity
     pub fn new(
         identity: Option<Identity>,
         direction: Direction,
         dest_type: DestinationType,
         app_name: &str,
         aspects: &[&str],
-    ) -> Self {
+    ) -> Result<Self, DestinationError> {
+        // PLAIN destinations cannot have an identity (per Python Reticulum spec)
+        if dest_type == DestinationType::Plain && identity.is_some() {
+            return Err(DestinationError::PlainCannotHaveIdentity);
+        }
+
+        // SINGLE/GROUP OUT destinations require an identity for encryption
+        if direction == Direction::Out && dest_type != DestinationType::Plain && identity.is_none()
+        {
+            return Err(DestinationError::OutboundRequiresIdentity);
+        }
+
         let name_hash = Self::compute_name_hash(app_name, aspects);
 
         let hash = match &identity {
@@ -102,14 +139,14 @@ impl Destination {
             }
         };
 
-        Self {
+        Ok(Self {
             hash,
             name_hash,
             identity,
             dest_type,
             direction,
             accepts_links: false,
-        }
+        })
     }
 
     /// Get the destination hash
@@ -186,8 +223,9 @@ impl Destination {
     /// * `ctx` - Platform context for RNG and clock
     ///
     /// # Errors
-    /// * `NoIdentity` - Destination has no identity (PLAIN type)
+    /// * `OnlySingleCanAnnounce` - Only SINGLE destinations can announce
     /// * `WrongDirection` - OUT destinations cannot announce
+    /// * `NoIdentity` - Destination has no identity
     /// * `SigningFailed` - Signature could not be created
     ///
     /// # Example
@@ -209,7 +247,7 @@ impl Destination {
     ///     DestinationType::Single,
     ///     "app",
     ///     &["echo"],
-    /// );
+    /// ).unwrap();
     ///
     /// let mut ctx = PlatformContext { rng: OsRng, clock: SimpleClock, storage: NoStorage };
     /// let packet = dest.announce(Some(b"my-data"), &mut ctx).unwrap();
@@ -220,6 +258,11 @@ impl Destination {
         app_data: Option<&[u8]>,
         ctx: &mut impl Context,
     ) -> Result<Packet, AnnounceError> {
+        // Only SINGLE destinations can announce (per Python Reticulum spec)
+        if self.dest_type != DestinationType::Single {
+            return Err(AnnounceError::OnlySingleCanAnnounce);
+        }
+
         // Only IN destinations can announce
         if self.direction != Direction::In {
             return Err(AnnounceError::WrongDirection);
@@ -287,7 +330,8 @@ mod tests {
             DestinationType::Single,
             "test",
             &["echo"],
-        );
+        )
+        .unwrap();
 
         assert_eq!(dest.dest_type(), DestinationType::Single);
         assert_eq!(dest.direction(), Direction::In);
@@ -322,7 +366,8 @@ mod tests {
             DestinationType::Single,
             "testapp",
             &["echo"],
-        );
+        )
+        .unwrap();
 
         let mut ctx = make_context();
         let packet = dest.announce(Some(b"hello"), &mut ctx).unwrap();
@@ -352,7 +397,8 @@ mod tests {
             DestinationType::Single,
             "testapp",
             &["echo"],
-        );
+        )
+        .unwrap();
 
         let mut ctx = make_context();
         let result = dest.announce(None, &mut ctx);
@@ -361,19 +407,22 @@ mod tests {
     }
 
     #[test]
-    fn test_destination_announce_no_identity_fails() {
+    fn test_destination_announce_plain_type_fails() {
+        // PLAIN destinations cannot announce (only SINGLE can)
         let dest = Destination::new(
-            None, // No identity
+            None, // No identity (valid for PLAIN)
             Direction::In,
             DestinationType::Plain,
             "testapp",
             &["echo"],
-        );
+        )
+        .unwrap();
 
         let mut ctx = make_context();
         let result = dest.announce(None, &mut ctx);
 
-        assert!(matches!(result, Err(AnnounceError::NoIdentity)));
+        // PLAIN destinations can't announce - OnlySingleCanAnnounce takes priority
+        assert!(matches!(result, Err(AnnounceError::OnlySingleCanAnnounce)));
     }
 
     #[test]
@@ -385,7 +434,8 @@ mod tests {
             DestinationType::Single,
             "testapp",
             &["echo"],
-        );
+        )
+        .unwrap();
 
         let mut ctx = make_context();
         let packet = dest.announce(None, &mut ctx).unwrap();
@@ -405,7 +455,8 @@ mod tests {
             DestinationType::Single,
             "myapp",
             &["service", "v1"],
-        );
+        )
+        .unwrap();
 
         let mut ctx = make_context();
         let packet = dest.announce(Some(b"app-data"), &mut ctx).unwrap();
@@ -416,5 +467,154 @@ mod tests {
 
         // Computed hashes should match
         assert_eq!(announce.computed_destination_hash(), *dest.hash());
+    }
+
+    // ─── Spec Compliance Tests ─────────────────────────────────────────────────
+
+    #[test]
+    fn test_plain_destination_cannot_have_identity() {
+        let identity = Identity::generate_with_rng(&mut OsRng);
+        let result = Destination::new(
+            Some(identity),
+            Direction::In,
+            DestinationType::Plain,
+            "test",
+            &["echo"],
+        );
+        assert!(matches!(
+            result,
+            Err(DestinationError::PlainCannotHaveIdentity)
+        ));
+    }
+
+    #[test]
+    fn test_plain_destination_without_identity_succeeds() {
+        let result = Destination::new(
+            None,
+            Direction::In,
+            DestinationType::Plain,
+            "test",
+            &["echo"],
+        );
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn test_single_out_requires_identity() {
+        let result = Destination::new(
+            None,
+            Direction::Out,
+            DestinationType::Single,
+            "test",
+            &["echo"],
+        );
+        assert!(matches!(
+            result,
+            Err(DestinationError::OutboundRequiresIdentity)
+        ));
+    }
+
+    #[test]
+    fn test_group_out_requires_identity() {
+        let result = Destination::new(
+            None,
+            Direction::Out,
+            DestinationType::Group,
+            "test",
+            &["echo"],
+        );
+        assert!(matches!(
+            result,
+            Err(DestinationError::OutboundRequiresIdentity)
+        ));
+    }
+
+    #[test]
+    fn test_only_single_can_announce() {
+        let identity = Identity::generate_with_rng(&mut OsRng);
+
+        // GROUP destination cannot announce
+        let group_dest = Destination::new(
+            Some(identity),
+            Direction::In,
+            DestinationType::Group,
+            "test",
+            &["echo"],
+        )
+        .unwrap();
+
+        let mut ctx = make_context();
+        let result = group_dest.announce(None, &mut ctx);
+        assert!(matches!(result, Err(AnnounceError::OnlySingleCanAnnounce)));
+    }
+
+    #[test]
+    fn test_single_in_can_announce() {
+        let identity = Identity::generate_with_rng(&mut OsRng);
+        let dest = Destination::new(
+            Some(identity),
+            Direction::In,
+            DestinationType::Single,
+            "test",
+            &["echo"],
+        )
+        .unwrap();
+
+        let mut ctx = make_context();
+        let result = dest.announce(None, &mut ctx);
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn test_plain_out_allowed_without_identity() {
+        // PLAIN OUT is valid without identity (for local broadcast)
+        let result = Destination::new(
+            None,
+            Direction::Out,
+            DestinationType::Plain,
+            "test",
+            &["broadcast"],
+        );
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn test_single_in_without_identity_allowed() {
+        // SINGLE IN can exist without identity initially
+        // (auto-creation would happen in a full implementation)
+        let result = Destination::new(
+            None,
+            Direction::In,
+            DestinationType::Single,
+            "test",
+            &["echo"],
+        );
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn test_group_in_allowed_with_identity() {
+        let identity = Identity::generate_with_rng(&mut OsRng);
+        let result = Destination::new(
+            Some(identity),
+            Direction::In,
+            DestinationType::Group,
+            "test",
+            &["broadcast"],
+        );
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn test_link_type_allowed_without_identity() {
+        // LINK type is internal use, allowing various configs
+        let result = Destination::new(
+            None,
+            Direction::In,
+            DestinationType::Link,
+            "test",
+            &["link"],
+        );
+        assert!(result.is_ok());
     }
 }

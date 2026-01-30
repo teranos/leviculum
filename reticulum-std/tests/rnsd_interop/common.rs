@@ -130,7 +130,8 @@ pub async fn build_and_send_announce(
         DestinationType::Single,
         app_name,
         aspects,
-    );
+    )
+    .expect("Failed to create destination");
 
     let mut ctx = make_context();
     let packet = dest
@@ -163,7 +164,8 @@ pub fn build_announce_raw(
         DestinationType::Single,
         app_name,
         aspects,
-    );
+    )
+    .expect("Failed to create destination");
 
     let mut ctx = make_context();
     let packet = dest

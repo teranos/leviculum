@@ -147,6 +147,8 @@ pub enum AnnounceError {
     NoIdentity,
     /// OUT destinations cannot announce (only IN)
     WrongDirection,
+    /// Only SINGLE destinations can announce
+    OnlySingleCanAnnounce,
 }
 
 impl core::fmt::Display for AnnounceError {
@@ -160,15 +162,12 @@ impl core::fmt::Display for AnnounceError {
             AnnounceError::SigningFailed => write!(f, "Failed to sign announce"),
             AnnounceError::NoIdentity => write!(f, "Destination has no identity"),
             AnnounceError::WrongDirection => write!(f, "OUT destinations cannot announce"),
+            AnnounceError::OnlySingleCanAnnounce => {
+                write!(f, "Only SINGLE destinations can announce")
+            }
         }
     }
 }
-
-#[cfg(feature = "std")]
-extern crate std;
-
-#[cfg(feature = "std")]
-impl std::error::Error for AnnounceError {}
 
 /// A received announce message parsed from a packet
 ///
@@ -599,7 +598,8 @@ mod tests {
             DestinationType::Single,
             "testapp",
             &["echo"],
-        );
+        )
+        .expect("Failed to create destination");
 
         // Get the identity from the destination for signing
         let identity = dest.identity().expect("destination should have identity");

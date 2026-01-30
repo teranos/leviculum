@@ -1012,21 +1012,28 @@ impl Link {
 
 #[cfg(test)]
 mod tests {
-    extern crate std;
-
     use super::*;
     use crate::traits::{Clock, NoStorage, PlatformContext};
     use alloc::vec;
     use alloc::vec::Vec;
+    use core::cell::Cell;
     use rand_core::OsRng;
 
-    struct TestClock;
+    struct TestClock(Cell<u64>);
+    impl TestClock {
+        fn new(start_ms: u64) -> Self {
+            Self(Cell::new(start_ms))
+        }
+    }
+    impl Default for TestClock {
+        fn default() -> Self {
+            // Use a fixed timestamp for deterministic tests
+            Self::new(1_700_000_000_000) // ~2023-11-14
+        }
+    }
     impl Clock for TestClock {
         fn now_ms(&self) -> u64 {
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap()
-                .as_millis() as u64
+            self.0.get()
         }
     }
 
@@ -1296,7 +1303,7 @@ mod tests {
 
         let mut ctx = PlatformContext {
             rng: OsRng,
-            clock: TestClock,
+            clock: TestClock::default(),
             storage: NoStorage,
         };
         let enc_len = link.encrypt(plaintext, &mut encrypted, &mut ctx).unwrap();
@@ -1358,7 +1365,7 @@ mod tests {
         let mut encrypted = vec![0u8; Link::encrypted_size(plaintext.len())];
         let mut ctx = PlatformContext {
             rng: OsRng,
-            clock: TestClock,
+            clock: TestClock::default(),
             storage: NoStorage,
         };
         let enc_len = link.encrypt(plaintext, &mut encrypted, &mut ctx).unwrap();
@@ -1438,7 +1445,7 @@ mod tests {
         let message = b"Hello, link!";
         let mut ctx = PlatformContext {
             rng: OsRng,
-            clock: TestClock,
+            clock: TestClock::default(),
             storage: NoStorage,
         };
         let packet = link.build_data_packet(message, &mut ctx).unwrap();
@@ -1476,7 +1483,7 @@ mod tests {
 
         let mut ctx = PlatformContext {
             rng: OsRng,
-            clock: TestClock,
+            clock: TestClock::default(),
             storage: NoStorage,
         };
         // Link is in Pending state, not Active
@@ -1692,7 +1699,7 @@ mod tests {
         // Initiator builds RTT packet
         let mut ctx = PlatformContext {
             rng: OsRng,
-            clock: TestClock,
+            clock: TestClock::default(),
             storage: NoStorage,
         };
         let rtt_seconds = 0.05; // 50ms
@@ -1760,7 +1767,7 @@ mod tests {
 
         let mut ctx = PlatformContext {
             rng: OsRng,
-            clock: TestClock,
+            clock: TestClock::default(),
             storage: NoStorage,
         };
         let rtt_packet = initiator.build_rtt_packet(0.05, &mut ctx).unwrap();

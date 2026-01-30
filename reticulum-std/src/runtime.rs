@@ -122,9 +122,7 @@ impl TransportRunner {
                         let data = recv_buf[..len].to_vec();
                         // Feed to transport
                         if let Err(e) = transport.process_incoming(idx, &data) {
-                            tracing::debug!(
-                                "Error processing packet from interface {idx}: {e:?}"
-                            );
+                            tracing::debug!("Error processing packet from interface {idx}: {e:?}");
                         }
                     }
                     Ok(_) | Err(InterfaceError::WouldBlock) => break, // No data available

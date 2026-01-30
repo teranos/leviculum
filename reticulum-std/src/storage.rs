@@ -85,9 +85,8 @@ impl Storage {
     pub fn delete(&self, category: &str, name: &str) -> Result<()> {
         let path = self.category_path(category).join(name);
         if path.exists() {
-            std::fs::remove_file(&path).map_err(|e| {
-                Error::Storage(format!("Failed to delete {}: {e}", path.display()))
-            })?;
+            std::fs::remove_file(&path)
+                .map_err(|e| Error::Storage(format!("Failed to delete {}: {e}", path.display())))?;
         }
         Ok(())
     }
@@ -104,8 +103,7 @@ impl Storage {
 
         let mut names = Vec::new();
         for entry in entries {
-            let entry =
-                entry.map_err(|e| Error::Storage(format!("Failed to read entry: {e}")))?;
+            let entry = entry.map_err(|e| Error::Storage(format!("Failed to read entry: {e}")))?;
             if let Some(name) = entry.file_name().to_str() {
                 names.push(name.to_string());
             }
@@ -117,10 +115,12 @@ impl Storage {
 
 fn hex_encode(bytes: &[u8]) -> String {
     use std::fmt::Write;
-    bytes.iter().fold(String::with_capacity(bytes.len() * 2), |mut s, b| {
-        let _ = write!(s, "{b:02x}");
-        s
-    })
+    bytes
+        .iter()
+        .fold(String::with_capacity(bytes.len() * 2), |mut s, b| {
+            let _ = write!(s, "{b:02x}");
+            s
+        })
 }
 
 fn hex_decode(s: &str) -> Option<Vec<u8>> {
