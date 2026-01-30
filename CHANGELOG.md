@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- `ifac_flag` field in `PacketFlags` for Interface Access Code support at packet level
+
+### Changed
+- Box `Packet` in `TransportEvent::PacketReceived` to reduce enum size
+- Remove unnecessary `async` from `Reticulum::new()` and `Reticulum::with_config()`
+
+### Fixed
+- Clippy pedantic warnings: uninlined format args, match same arms, manual let-else, unused async
+
 ## [0.2.1] - 2026-01-30
 
 ### Added
