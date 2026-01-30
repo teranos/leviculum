@@ -56,6 +56,40 @@ use crate::traits::{Clock, Context};
 use alloc::vec::Vec;
 use rand_core::RngCore;
 
+/// Build the signed data for announce signature creation and verification.
+///
+/// The signature covers: `destination_hash + public_key + name_hash + random_hash + [ratchet] + app_data`
+///
+/// This is used both when creating announces (in `build_announce_payload`) and
+/// when verifying them (in `ReceivedAnnounce::verify_signature`).
+fn build_signed_data(
+    destination_hash: &[u8; TRUNCATED_HASHBYTES],
+    public_key: &[u8; IDENTITY_KEY_SIZE],
+    name_hash: &[u8; NAME_HASHBYTES],
+    random_hash: &[u8; RANDOM_HASHBYTES],
+    ratchet: Option<&[u8; RATCHET_SIZE]>,
+    app_data: &[u8],
+) -> Vec<u8> {
+    let ratchet_len = if ratchet.is_some() { RATCHET_SIZE } else { 0 };
+    let mut data = Vec::with_capacity(
+        TRUNCATED_HASHBYTES
+            + IDENTITY_KEY_SIZE
+            + NAME_HASHBYTES
+            + RANDOM_HASHBYTES
+            + ratchet_len
+            + app_data.len(),
+    );
+    data.extend_from_slice(destination_hash);
+    data.extend_from_slice(public_key);
+    data.extend_from_slice(name_hash);
+    data.extend_from_slice(random_hash);
+    if let Some(r) = ratchet {
+        data.extend_from_slice(r);
+    }
+    data.extend_from_slice(app_data);
+    data
+}
+
 /// Minimum announce payload size (without ratchet, without app_data)
 /// public_key(64) + name_hash(10) + random_hash(10) + signature(64) = 148
 pub const ANNOUNCE_MIN_SIZE: usize =
@@ -85,43 +119,53 @@ pub fn generate_random_hash(ctx: &mut impl Context) -> [u8; RANDOM_HASHBYTES] {
 
 /// Build an announce payload (internal helper for Destination::announce).
 ///
-/// Payload format: public_key(64) + name_hash(10) + random_hash(10) + signature(64) + app_data
+/// # Payload format (without ratchet)
+/// `public_key(64) + name_hash(10) + random_hash(10) + signature(64) + app_data`
 ///
-/// The signature covers: destination_hash + public_key + name_hash + random_hash + app_data
+/// # Payload format (with ratchet)
+/// `public_key(64) + name_hash(10) + random_hash(10) + ratchet(32) + signature(64) + app_data`
+///
+/// # Signature
+/// The signature covers: `destination_hash + public_key + name_hash + random_hash + [ratchet] + app_data`
 pub(crate) fn build_announce_payload(
     identity: &Identity,
     destination_hash: &[u8; TRUNCATED_HASHBYTES],
     name_hash: &[u8; NAME_HASHBYTES],
+    ratchet: Option<&[u8; RATCHET_SIZE]>,
     app_data: Option<&[u8]>,
     ctx: &mut impl Context,
 ) -> Result<Vec<u8>, AnnounceError> {
     let public_key = identity.public_key_bytes();
     let random_hash = generate_random_hash(ctx);
-
-    // Build signed data: dest_hash + public_key + name_hash + random_hash + app_data
     let app_data_bytes = app_data.unwrap_or(&[]);
-    let mut signed_data = Vec::with_capacity(
-        TRUNCATED_HASHBYTES
-            + IDENTITY_KEY_SIZE
-            + NAME_HASHBYTES
-            + RANDOM_HASHBYTES
-            + app_data_bytes.len(),
+
+    // Build signed data using helper
+    let signed_data = build_signed_data(
+        destination_hash,
+        &public_key,
+        name_hash,
+        &random_hash,
+        ratchet,
+        app_data_bytes,
     );
-    signed_data.extend_from_slice(destination_hash);
-    signed_data.extend_from_slice(&public_key);
-    signed_data.extend_from_slice(name_hash);
-    signed_data.extend_from_slice(&random_hash);
-    signed_data.extend_from_slice(app_data_bytes);
 
     let signature = identity
         .sign(&signed_data)
         .map_err(|_| AnnounceError::SigningFailed)?;
 
-    // Build payload: public_key + name_hash + random_hash + signature + app_data
-    let mut payload = Vec::with_capacity(ANNOUNCE_MIN_SIZE + app_data_bytes.len());
+    // Build payload: public_key + name_hash + random_hash + [ratchet] + signature + app_data
+    let payload_size = if ratchet.is_some() {
+        ANNOUNCE_RATCHETED_MIN_SIZE + app_data_bytes.len()
+    } else {
+        ANNOUNCE_MIN_SIZE + app_data_bytes.len()
+    };
+    let mut payload = Vec::with_capacity(payload_size);
     payload.extend_from_slice(&public_key);
     payload.extend_from_slice(name_hash);
     payload.extend_from_slice(&random_hash);
+    if let Some(r) = ratchet {
+        payload.extend_from_slice(r);
+    }
     payload.extend_from_slice(&signature);
     payload.extend_from_slice(app_data_bytes);
 
@@ -195,9 +239,10 @@ impl ReceivedAnnounce {
     ///
     /// Returns an error if the packet is not an announce or the payload is malformed.
     ///
-    /// Note: Ratchet detection is currently based on payload length heuristics.
-    /// A payload >= 180 bytes is assumed to be ratcheted. This matches the
-    /// Python Reticulum implementation behavior observed in interop testing.
+    /// # Ratchet Detection
+    ///
+    /// The `context_flag` in the packet header indicates whether a ratchet is present.
+    /// This is the authoritative indicator per the Reticulum protocol specification.
     pub fn from_packet(packet: &Packet) -> Result<Self, AnnounceError> {
         if packet.flags.packet_type != PacketType::Announce {
             return Err(AnnounceError::NotAnnounce);
@@ -205,9 +250,8 @@ impl ReceivedAnnounce {
 
         let payload = packet.data.as_slice();
 
-        // Determine if this is a ratcheted announce based on payload length
-        // TODO: Verify this detection method against the Python implementation
-        let has_ratchet = payload.len() >= ANNOUNCE_RATCHETED_MIN_SIZE;
+        // Use context_flag as the authoritative indicator for ratchet presence
+        let has_ratchet = packet.flags.context_flag;
 
         // Check minimum size based on announce type
         let min_size = if has_ratchet {
@@ -322,28 +366,14 @@ impl ReceivedAnnounce {
     ///
     /// Python RNS signs: destination_hash + public_key + name_hash + random_hash + [ratchet] + app_data
     fn signed_data(&self) -> Vec<u8> {
-        let ratchet_len = if self.ratchet.is_some() {
-            RATCHET_SIZE
-        } else {
-            0
-        };
-        let mut data = Vec::with_capacity(
-            TRUNCATED_HASHBYTES
-                + IDENTITY_KEY_SIZE
-                + NAME_HASHBYTES
-                + RANDOM_HASHBYTES
-                + ratchet_len
-                + self.app_data.len(),
-        );
-        data.extend_from_slice(&self.destination_hash);
-        data.extend_from_slice(&self.public_key);
-        data.extend_from_slice(&self.name_hash);
-        data.extend_from_slice(&self.random_hash);
-        if let Some(ratchet) = &self.ratchet {
-            data.extend_from_slice(ratchet);
-        }
-        data.extend_from_slice(&self.app_data);
-        data
+        build_signed_data(
+            &self.destination_hash,
+            &self.public_key,
+            &self.name_hash,
+            &self.random_hash,
+            self.ratchet.as_ref(),
+            &self.app_data,
+        )
     }
 
     /// Verify the announce signature
@@ -487,7 +517,7 @@ mod tests {
             flags: PacketFlags {
                 ifac_flag: false,
                 header_type: HeaderType::Type1,
-                context_flag: false,
+                context_flag: true, // Indicates ratchet is present
                 transport_type: TransportType::Broadcast,
                 dest_type: DestinationType::Single,
                 packet_type: PacketType::Announce,

@@ -374,7 +374,178 @@ impl Identity {
         Ok(plaintext)
     }
 
-    // TODO: Implement ratcheting support
+    // ─── Ratchet Encryption Support ────────────────────────────────────────────
+
+    /// Encrypt data for a destination using an optional ratchet for forward secrecy
+    ///
+    /// If a ratchet public key is provided, ECDH is performed with the ratchet
+    /// instead of the identity's X25519 public key, providing forward secrecy.
+    ///
+    /// # Arguments
+    /// * `plaintext` - Data to encrypt
+    /// * `ratchet_public` - Optional ratchet public key (32 bytes)
+    /// * `ctx` - Platform context providing RNG
+    ///
+    /// # Returns
+    /// Ciphertext that can be decrypted by the destination
+    ///
+    /// # Format
+    /// `[ephemeral_pub (32)] [token (variable)]`
+    ///
+    /// The token contains: `[IV (16)] [ciphertext (variable)] [HMAC (32)]`
+    pub fn encrypt_for_destination(
+        &self,
+        plaintext: &[u8],
+        ratchet_public: Option<&[u8; crate::constants::RATCHET_SIZE]>,
+        ctx: &mut impl crate::traits::Context,
+    ) -> Vec<u8> {
+        self.encrypt_for_destination_with_rng(plaintext, ratchet_public, ctx.rng())
+    }
+
+    /// Encrypt data for a destination with a provided RNG
+    pub fn encrypt_for_destination_with_rng<R: rand_core::CryptoRngCore>(
+        &self,
+        plaintext: &[u8],
+        ratchet_public: Option<&[u8; crate::constants::RATCHET_SIZE]>,
+        rng: &mut R,
+    ) -> Vec<u8> {
+        // Generate ephemeral X25519 key pair
+        let ephemeral_private = x25519_dalek::StaticSecret::random_from_rng(&mut *rng);
+
+        // Generate random IV
+        let mut iv = [0u8; AES_BLOCK_SIZE];
+        rng.fill_bytes(&mut iv);
+
+        self.encrypt_for_destination_impl(&ephemeral_private, plaintext, ratchet_public, &iv)
+    }
+
+    /// Internal implementation for ratchet encryption
+    fn encrypt_for_destination_impl(
+        &self,
+        ephemeral_private: &x25519_dalek::StaticSecret,
+        plaintext: &[u8],
+        ratchet_public: Option<&[u8; crate::constants::RATCHET_SIZE]>,
+        iv: &[u8; AES_BLOCK_SIZE],
+    ) -> Vec<u8> {
+        let ephemeral_public = x25519_dalek::PublicKey::from(ephemeral_private);
+
+        // Perform ECDH with ratchet or identity key
+        let target_public = match ratchet_public {
+            Some(ratchet) => x25519_dalek::PublicKey::from(*ratchet),
+            None => self.x25519_public,
+        };
+        let shared_key = ephemeral_private.diffie_hellman(&target_public);
+
+        // Derive encryption key using HKDF (salt = identity hash, context = None)
+        let mut derived_key = [0u8; Self::DERIVED_KEY_LENGTH];
+        derive_key(
+            shared_key.as_bytes(),
+            Some(&self.hash),
+            None,
+            &mut derived_key,
+        );
+
+        // Calculate token size: IV + padded ciphertext + HMAC
+        let padded_len = ((plaintext.len() / AES_BLOCK_SIZE) + 1) * AES_BLOCK_SIZE;
+        let token_len = AES_BLOCK_SIZE + padded_len + 32; // IV + ciphertext + HMAC
+
+        // Allocate output: ephemeral_pub + token
+        let mut output = alloc::vec![0u8; X25519_KEY_SIZE + token_len];
+
+        // Write ephemeral public key
+        output[..X25519_KEY_SIZE].copy_from_slice(ephemeral_public.as_bytes());
+
+        // Encrypt with token
+        let token_size = encrypt_token(&derived_key, iv, plaintext, &mut output[X25519_KEY_SIZE..])
+            .expect("token encryption should succeed with valid parameters");
+
+        output.truncate(X25519_KEY_SIZE + token_size);
+        output
+    }
+
+    /// Decrypt data that may have been encrypted with a ratchet
+    ///
+    /// Tries decryption with each provided ratchet in order, falling back
+    /// to the identity's X25519 key if no ratchet succeeds (and fallback is enabled).
+    ///
+    /// # Arguments
+    /// * `ciphertext` - Data to decrypt
+    /// * `ratchets` - List of ratchets to try (newest first recommended)
+    /// * `allow_identity_fallback` - If true, try identity key after all ratchets fail
+    ///
+    /// # Returns
+    /// Tuple of (plaintext, ratchet_id_used) on success.
+    /// `ratchet_id_used` is None if decrypted with identity key.
+    ///
+    /// # Errors
+    /// Returns `DecryptionFailed` if no ratchet or identity key can decrypt.
+    pub fn decrypt_with_ratchets(
+        &self,
+        ciphertext: &[u8],
+        ratchets: &[crate::ratchet::Ratchet],
+        allow_identity_fallback: bool,
+    ) -> Result<(Vec<u8>, Option<[u8; crate::ratchet::RATCHET_ID_SIZE]>), IdentityError> {
+        // Minimum size: ephemeral_pub (32) + IV (16) + one block (16) + HMAC (32) = 96
+        if ciphertext.len() < X25519_KEY_SIZE + AES_BLOCK_SIZE + AES_BLOCK_SIZE + 32 {
+            return Err(IdentityError::DecryptionFailed);
+        }
+
+        // Extract ephemeral public key
+        let mut peer_pub_bytes = [0u8; X25519_KEY_SIZE];
+        peer_pub_bytes.copy_from_slice(&ciphertext[..X25519_KEY_SIZE]);
+        let peer_public = x25519_dalek::PublicKey::from(peer_pub_bytes);
+
+        let token = &ciphertext[X25519_KEY_SIZE..];
+
+        // Try each ratchet
+        for ratchet in ratchets {
+            if let Ok(plaintext) =
+                self.try_decrypt_with_key(ratchet.private_key(), &peer_public, token)
+            {
+                return Ok((plaintext, Some(ratchet.id())));
+            }
+        }
+
+        // Try identity key as fallback
+        if allow_identity_fallback {
+            if let Some(x25519_prv) = &self.x25519_private {
+                if let Ok(plaintext) = self.try_decrypt_with_key(x25519_prv, &peer_public, token) {
+                    return Ok((plaintext, None));
+                }
+            }
+        }
+
+        Err(IdentityError::DecryptionFailed)
+    }
+
+    /// Try decryption with a specific private key
+    fn try_decrypt_with_key(
+        &self,
+        private_key: &x25519_dalek::StaticSecret,
+        peer_public: &x25519_dalek::PublicKey,
+        token: &[u8],
+    ) -> Result<Vec<u8>, IdentityError> {
+        // Perform ECDH
+        let shared_key = private_key.diffie_hellman(peer_public);
+
+        // Derive decryption key
+        let mut derived_key = [0u8; Self::DERIVED_KEY_LENGTH];
+        derive_key(
+            shared_key.as_bytes(),
+            Some(&self.hash),
+            None,
+            &mut derived_key,
+        );
+
+        // Decrypt token
+        let mut plaintext = alloc::vec![0u8; token.len()];
+
+        let plaintext_len = decrypt_token(&derived_key, token, &mut plaintext)
+            .map_err(|_| IdentityError::DecryptionFailed)?;
+
+        plaintext.truncate(plaintext_len);
+        Ok(plaintext)
+    }
 }
 
 // Note: No Default impl - use Identity::generate(ctx) instead
@@ -731,6 +902,255 @@ mod tests {
         let too_short = [0u8; 95];
 
         let result = identity.decrypt(&too_short);
+        assert_eq!(result, Err(IdentityError::DecryptionFailed));
+    }
+
+    // ─── Ratchet Encryption Tests ─────────────────────────────────────────────
+
+    #[test]
+    fn test_encrypt_for_destination_without_ratchet() {
+        // Without a ratchet, should work the same as regular encrypt
+        let identity = new_identity();
+        let plaintext = b"Hello without ratchet";
+
+        let ciphertext = identity.encrypt_for_destination_with_rng(plaintext, None, &mut OsRng);
+
+        // Should be decryptable with normal decrypt
+        let decrypted = identity.decrypt(&ciphertext).unwrap();
+        assert_eq!(&decrypted[..], plaintext);
+    }
+
+    #[test]
+    fn test_encrypt_for_destination_with_ratchet() {
+        use crate::ratchet::Ratchet;
+        use crate::traits::{NoStorage, PlatformContext};
+
+        // Mock clock for ratchet
+        struct MockClock;
+        impl crate::traits::Clock for MockClock {
+            fn now_ms(&self) -> u64 {
+                1704067200000
+            }
+        }
+
+        let mut ctx = PlatformContext {
+            rng: OsRng,
+            clock: MockClock,
+            storage: NoStorage,
+        };
+
+        // Create identity and ratchet
+        let identity = Identity::generate(&mut ctx);
+        let ratchet = Ratchet::generate(&mut ctx);
+
+        let plaintext = b"Hello with ratchet!";
+        let ratchet_pub = ratchet.public_key_bytes();
+
+        // Encrypt with ratchet
+        let ciphertext =
+            identity.encrypt_for_destination_with_rng(plaintext, Some(&ratchet_pub), &mut OsRng);
+
+        // Should NOT be decryptable with normal decrypt (uses identity key)
+        let result = identity.decrypt(&ciphertext);
+        assert!(result.is_err());
+
+        // Should be decryptable with decrypt_with_ratchets
+        let ratchets = [ratchet];
+        let (decrypted, ratchet_id) = identity
+            .decrypt_with_ratchets(&ciphertext, &ratchets, false)
+            .unwrap();
+
+        assert_eq!(&decrypted[..], plaintext);
+        assert!(ratchet_id.is_some());
+        assert_eq!(ratchet_id.unwrap(), ratchets[0].id());
+    }
+
+    #[test]
+    fn test_decrypt_with_multiple_ratchets() {
+        use crate::ratchet::Ratchet;
+        use crate::traits::{NoStorage, PlatformContext};
+
+        struct MockClock;
+        impl crate::traits::Clock for MockClock {
+            fn now_ms(&self) -> u64 {
+                1704067200000
+            }
+        }
+
+        let mut ctx = PlatformContext {
+            rng: OsRng,
+            clock: MockClock,
+            storage: NoStorage,
+        };
+
+        let identity = Identity::generate(&mut ctx);
+
+        // Create multiple ratchets
+        let ratchet1 = Ratchet::generate(&mut ctx);
+        let ratchet2 = Ratchet::generate(&mut ctx);
+        let ratchet3 = Ratchet::generate(&mut ctx);
+
+        // Encrypt with ratchet2
+        let plaintext = b"Encrypted with ratchet 2";
+        let ciphertext = identity.encrypt_for_destination_with_rng(
+            plaintext,
+            Some(&ratchet2.public_key_bytes()),
+            &mut OsRng,
+        );
+
+        // Try decrypting with all ratchets (ratchet2 should succeed)
+        let ratchets = [ratchet1, ratchet2, ratchet3];
+        let (decrypted, ratchet_id) = identity
+            .decrypt_with_ratchets(&ciphertext, &ratchets, false)
+            .unwrap();
+
+        assert_eq!(&decrypted[..], plaintext);
+        assert_eq!(ratchet_id.unwrap(), ratchets[1].id());
+    }
+
+    #[test]
+    fn test_decrypt_with_identity_fallback() {
+        use crate::ratchet::Ratchet;
+        use crate::traits::{NoStorage, PlatformContext};
+
+        struct MockClock;
+        impl crate::traits::Clock for MockClock {
+            fn now_ms(&self) -> u64 {
+                1704067200000
+            }
+        }
+
+        let mut ctx = PlatformContext {
+            rng: OsRng,
+            clock: MockClock,
+            storage: NoStorage,
+        };
+
+        let identity = Identity::generate(&mut ctx);
+        let ratchet = Ratchet::generate(&mut ctx);
+
+        // Encrypt WITHOUT ratchet (uses identity key)
+        let plaintext = b"Encrypted with identity key";
+        let ciphertext = identity.encrypt_for_destination_with_rng(plaintext, None, &mut OsRng);
+
+        // Try decrypting with ratchet (will fail) then fallback to identity
+        let ratchets = [ratchet];
+
+        // Without fallback - should fail
+        let result = identity.decrypt_with_ratchets(&ciphertext, &ratchets, false);
+        assert!(result.is_err());
+
+        // With fallback - should succeed using identity key
+        let (decrypted, ratchet_id) = identity
+            .decrypt_with_ratchets(&ciphertext, &ratchets, true)
+            .unwrap();
+
+        assert_eq!(&decrypted[..], plaintext);
+        assert!(ratchet_id.is_none()); // Decrypted with identity, not ratchet
+    }
+
+    #[test]
+    fn test_decrypt_with_empty_ratchets_and_fallback() {
+        let identity = new_identity();
+        let plaintext = b"Encrypted with identity";
+
+        // Encrypt with identity
+        let ciphertext = identity.encrypt_for_destination_with_rng(plaintext, None, &mut OsRng);
+
+        // Empty ratchets list with fallback
+        let (decrypted, ratchet_id) = identity
+            .decrypt_with_ratchets(&ciphertext, &[], true)
+            .unwrap();
+
+        assert_eq!(&decrypted[..], plaintext);
+        assert!(ratchet_id.is_none());
+    }
+
+    #[test]
+    fn test_decrypt_with_ratchets_wrong_identity() {
+        use crate::ratchet::Ratchet;
+        use crate::traits::{NoStorage, PlatformContext};
+
+        struct MockClock;
+        impl crate::traits::Clock for MockClock {
+            fn now_ms(&self) -> u64 {
+                1704067200000
+            }
+        }
+
+        let mut ctx = PlatformContext {
+            rng: OsRng,
+            clock: MockClock,
+            storage: NoStorage,
+        };
+
+        let alice = Identity::generate(&mut ctx);
+        let bob = Identity::generate(&mut ctx);
+        let ratchet = Ratchet::generate(&mut ctx);
+
+        // Encrypt for Alice's identity using ratchet
+        let plaintext = b"Secret for Alice";
+        let ciphertext = alice.encrypt_for_destination_with_rng(
+            plaintext,
+            Some(&ratchet.public_key_bytes()),
+            &mut OsRng,
+        );
+
+        // Bob cannot decrypt even with the same ratchet (different identity hash used in HKDF)
+        let ratchets = [ratchet];
+        let result = bob.decrypt_with_ratchets(&ciphertext, &ratchets, true);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_encrypt_for_destination_public_only_identity() {
+        use crate::ratchet::Ratchet;
+        use crate::traits::{NoStorage, PlatformContext};
+
+        struct MockClock;
+        impl crate::traits::Clock for MockClock {
+            fn now_ms(&self) -> u64 {
+                1704067200000
+            }
+        }
+
+        let mut ctx = PlatformContext {
+            rng: OsRng,
+            clock: MockClock,
+            storage: NoStorage,
+        };
+
+        // Create identity with private keys
+        let full_identity = Identity::generate(&mut ctx);
+        let ratchet = Ratchet::generate(&mut ctx);
+
+        // Create public-only identity
+        let pub_bytes = full_identity.public_key_bytes();
+        let pub_only = Identity::from_public_key_bytes(&pub_bytes).unwrap();
+
+        // Encrypt using public-only identity with ratchet
+        let plaintext = b"Encrypted by sender using public identity";
+        let ciphertext = pub_only.encrypt_for_destination_with_rng(
+            plaintext,
+            Some(&ratchet.public_key_bytes()),
+            &mut OsRng,
+        );
+
+        // Full identity can decrypt with ratchet
+        let ratchets = [ratchet];
+        let (decrypted, _) = full_identity
+            .decrypt_with_ratchets(&ciphertext, &ratchets, false)
+            .unwrap();
+
+        assert_eq!(&decrypted[..], plaintext);
+    }
+
+    #[test]
+    fn test_decrypt_with_ratchets_too_short() {
+        let identity = new_identity();
+        let too_short = [0u8; 50];
+
+        let result = identity.decrypt_with_ratchets(&too_short, &[], true);
         assert_eq!(result, Err(IdentityError::DecryptionFailed));
     }
 }

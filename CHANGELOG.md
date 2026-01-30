@@ -12,13 +12,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Embedded target documentation (`doc/EMBEDDED_TARGETS.md`) with Meshtastic device reference
 - Build infrastructure for embedded targets (`rust-toolchain.toml`, `.cargo/config.toml`)
 - `scripts/check-embedded.sh` for verifying `reticulum-core` compiles on ARM targets
+- `ratchet` module for forward secrecy key management
+- `Ratchet` struct with X25519 key pair generation and ECDH
+- `KnownRatchets` for tracking remote destination ratchets
+- `Identity::encrypt_for_destination()` with optional ratchet support
+- `Identity::decrypt_with_ratchets()` for trying multiple ratchets
+- `Destination::enable_ratchets()` for forward secrecy on IN destinations
+- `Destination::encrypt()` and `Destination::decrypt()` with ratchet support
+- New interop test modules: `edge_case_tests`, `multihop_tests`, `ratchet_tests`, `ratchet_rotation_tests`, `stress_tests`
+- Shared `TestClock` and `make_context()` in test common module
 
 ### Changed
 - Box `Packet` in `TransportEvent::PacketReceived` to reduce enum size
 - Remove unnecessary `async` from `Reticulum::new()` and `Reticulum::with_config()`
+- Extract `build_signed_data()` helper in `announce.rs` to reduce code duplication
+- Consolidate `wait_for_link_request()`, `wait_for_rtt_packet()`, `wait_for_data_packet()` helpers into `common.rs`
+- Standardize test infrastructure naming (`TestClock`, `make_context()`)
 
 ### Fixed
 - Clippy pedantic warnings: uninlined format args, match same arms, manual let-else, unused async
+- Inefficient ratchet trimming using while-loop replaced with `truncate()`
+- Add bounds validation for `set_retained_ratchets()` (minimum 1) and `set_ratchet_interval()` (minimum 1000ms)
+- `wait_for_data_packet()` now correctly returns raw packet for callers needing full packet structure
 
 ## [0.2.1] - 2026-01-30
 

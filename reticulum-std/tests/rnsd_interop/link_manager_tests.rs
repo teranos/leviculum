@@ -41,24 +41,15 @@ use reticulum_core::packet::{Packet, PacketContext, PacketType};
 use reticulum_core::traits::{Clock, NoStorage, PlatformContext};
 use reticulum_std::interfaces::hdlc::{frame, DeframeResult, Deframer};
 
-use crate::common::*;
+use crate::common::{
+    connect_to_daemon, receive_proof_for_link, send_framed, wait_for_any_announce_with_route_info,
+    wait_for_data_packet, wait_for_link_request, wait_for_rtt_packet, TestClock,
+};
 use crate::harness::{DestinationInfo, HarnessError, TestDaemon};
 
 // =========================================================================
 // Test context helpers
 // =========================================================================
-
-/// Real-time clock for tests
-struct RealClock;
-
-impl Clock for RealClock {
-    fn now_ms(&self) -> u64 {
-        std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap()
-            .as_millis() as u64
-    }
-}
 
 /// Mock clock that can be advanced for timeout testing
 struct MockClock {
@@ -83,10 +74,10 @@ impl Clock for MockClock {
     }
 }
 
-fn real_context() -> PlatformContext<OsRng, RealClock, NoStorage> {
+fn make_context() -> PlatformContext<OsRng, TestClock, NoStorage> {
     PlatformContext {
         rng: OsRng,
-        clock: RealClock,
+        clock: TestClock,
         storage: NoStorage,
     }
 }
@@ -111,7 +102,7 @@ async fn establish_manager_initiator_link(
     daemon: &TestDaemon,
     stream: &mut TcpStream,
     deframer: &mut Deframer,
-    ctx: &mut PlatformContext<OsRng, RealClock, NoStorage>,
+    ctx: &mut PlatformContext<OsRng, TestClock, NoStorage>,
 ) -> Result<(LinkId, DestinationInfo), HarnessError> {
     // Register a destination in daemon
     let dest_info = daemon.register_destination("linktest", &["echo"]).await?;
@@ -177,7 +168,7 @@ async fn establish_manager_responder_link(
     deframer: &mut Deframer,
     identity: &Identity,
     dest_hash: [u8; 16],
-    ctx: &mut PlatformContext<OsRng, RealClock, NoStorage>,
+    ctx: &mut PlatformContext<OsRng, TestClock, NoStorage>,
 ) -> Result<LinkId, HarnessError> {
     // Wait for link request
     let (raw_packet, link_id) =
@@ -242,126 +233,13 @@ async fn establish_manager_responder_link(
     Ok(link_id)
 }
 
-/// Wait for a LINK_REQUEST packet addressed to our destination.
-async fn wait_for_link_request(
-    stream: &mut TcpStream,
-    deframer: &mut Deframer,
-    dest_hash: &[u8; TRUNCATED_HASHBYTES],
-    timeout_duration: Duration,
-) -> Option<(Vec<u8>, [u8; TRUNCATED_HASHBYTES])> {
-    use reticulum_core::link::Link;
-
-    let mut buf = [0u8; 2048];
-    let deadline = tokio::time::Instant::now() + timeout_duration;
-
-    while tokio::time::Instant::now() < deadline {
-        let remaining = deadline - tokio::time::Instant::now();
-
-        match timeout(remaining, stream.read(&mut buf)).await {
-            Ok(Ok(0)) => return None,
-            Ok(Ok(n)) => {
-                let results = deframer.process(&buf[..n]);
-                for result in results {
-                    if let DeframeResult::Frame(data) = result {
-                        if let Ok(pkt) = Packet::unpack(&data) {
-                            if pkt.flags.packet_type == PacketType::LinkRequest
-                                && pkt.destination_hash == *dest_hash
-                            {
-                                let link_id = Link::calculate_link_id(&data);
-                                return Some((data, link_id));
-                            }
-                        }
-                    }
-                }
-            }
-            Ok(Err(_)) | Err(_) => continue,
-        }
-    }
-
-    None
-}
-
-/// Wait for an RTT packet on a link.
-async fn wait_for_rtt_packet(
-    stream: &mut TcpStream,
-    deframer: &mut Deframer,
-    link_id: &[u8; TRUNCATED_HASHBYTES],
-    timeout_duration: Duration,
-) -> Option<Vec<u8>> {
-    let mut buf = [0u8; 2048];
-    let deadline = tokio::time::Instant::now() + timeout_duration;
-
-    while tokio::time::Instant::now() < deadline {
-        let remaining = deadline - tokio::time::Instant::now();
-
-        match timeout(remaining, stream.read(&mut buf)).await {
-            Ok(Ok(0)) => return None,
-            Ok(Ok(n)) => {
-                let results = deframer.process(&buf[..n]);
-                for result in results {
-                    if let DeframeResult::Frame(data) = result {
-                        if let Ok(pkt) = Packet::unpack(&data) {
-                            if pkt.flags.packet_type == PacketType::Data
-                                && pkt.destination_hash == *link_id
-                                && pkt.context == PacketContext::Lrrtt
-                            {
-                                return Some(pkt.data.as_slice().to_vec());
-                            }
-                        }
-                    }
-                }
-            }
-            Ok(Err(_)) | Err(_) => continue,
-        }
-    }
-
-    None
-}
-
-/// Wait for a DATA packet on a link (context = None).
-async fn wait_for_data_packet(
-    stream: &mut TcpStream,
-    deframer: &mut Deframer,
-    link_id: &[u8; TRUNCATED_HASHBYTES],
-    timeout_duration: Duration,
-) -> Option<Vec<u8>> {
-    let mut buf = [0u8; 2048];
-    let deadline = tokio::time::Instant::now() + timeout_duration;
-
-    while tokio::time::Instant::now() < deadline {
-        let remaining = deadline - tokio::time::Instant::now();
-
-        match timeout(remaining, stream.read(&mut buf)).await {
-            Ok(Ok(0)) => return None,
-            Ok(Ok(n)) => {
-                let results = deframer.process(&buf[..n]);
-                for result in results {
-                    if let DeframeResult::Frame(data) = result {
-                        if let Ok(pkt) = Packet::unpack(&data) {
-                            if pkt.flags.packet_type == PacketType::Data
-                                && pkt.destination_hash == *link_id
-                                && pkt.context == PacketContext::None
-                            {
-                                return Some(data);
-                            }
-                        }
-                    }
-                }
-            }
-            Ok(Err(_)) | Err(_) => continue,
-        }
-    }
-
-    None
-}
-
 /// Wait for a specific LinkEvent with a predicate
 #[allow(dead_code)]
 async fn wait_for_link_event<F>(
     manager: &mut LinkManager,
     stream: &mut TcpStream,
     deframer: &mut Deframer,
-    ctx: &mut PlatformContext<OsRng, RealClock, NoStorage>,
+    ctx: &mut PlatformContext<OsRng, TestClock, NoStorage>,
     predicate: F,
     timeout_duration: Duration,
 ) -> Option<LinkEvent>
@@ -424,11 +302,11 @@ async fn setup_rust_destination(
     aspects: &[&str],
     app_data: &[u8],
 ) -> (Destination, String) {
-    let mut ctx = real_context();
+    let mut ctx = make_context();
     let identity = Identity::generate(&mut ctx);
     let public_key_hex = hex::encode(identity.public_key_bytes());
 
-    let destination = Destination::new(
+    let mut destination = Destination::new(
         Some(identity),
         Direction::In,
         DestinationType::Single,
@@ -466,7 +344,7 @@ async fn setup_rust_destination(
 #[tokio::test]
 async fn test_manager_initiator_basic_handshake() {
     let daemon = TestDaemon::start().await.expect("Failed to start daemon");
-    let mut ctx = real_context();
+    let mut ctx = make_context();
 
     let mut stream = connect_to_daemon(&daemon).await;
     let mut deframer = Deframer::new();
@@ -505,7 +383,7 @@ async fn test_manager_initiator_basic_handshake() {
 #[tokio::test]
 async fn test_manager_initiator_data_exchange() {
     let daemon = TestDaemon::start().await.expect("Failed to start daemon");
-    let mut ctx = real_context();
+    let mut ctx = make_context();
 
     let mut stream = connect_to_daemon(&daemon).await;
     let mut deframer = Deframer::new();
@@ -557,7 +435,7 @@ async fn test_manager_initiator_data_exchange() {
 #[tokio::test]
 async fn test_manager_initiator_sequential_links() {
     let daemon = TestDaemon::start().await.expect("Failed to start daemon");
-    let mut ctx = real_context();
+    let mut ctx = make_context();
 
     let mut manager = LinkManager::new();
 
@@ -627,7 +505,7 @@ async fn test_manager_initiator_sequential_links() {
 #[tokio::test]
 async fn test_manager_initiator_concurrent_links() {
     let daemon = TestDaemon::start().await.expect("Failed to start daemon");
-    let mut ctx = real_context();
+    let mut ctx = make_context();
 
     // Register multiple destinations
     let dest1 = daemon
@@ -648,7 +526,7 @@ async fn test_manager_initiator_concurrent_links() {
     // Helper to initiate link
     let initiate_link = |manager: &mut LinkManager,
                          dest_info: &DestinationInfo,
-                         ctx: &mut PlatformContext<OsRng, RealClock, NoStorage>|
+                         ctx: &mut PlatformContext<OsRng, TestClock, NoStorage>|
      -> (LinkId, Vec<u8>) {
         let pub_key_bytes = hex::decode(&dest_info.public_key).unwrap();
         let signing_key: [u8; 32] = pub_key_bytes[32..64].try_into().unwrap();
@@ -732,7 +610,7 @@ async fn test_manager_initiator_concurrent_links() {
 #[tokio::test]
 async fn test_manager_responder_accept_link() {
     let daemon = TestDaemon::start().await.expect("Failed to start daemon");
-    let mut ctx = real_context();
+    let mut ctx = make_context();
 
     let mut stream = connect_to_daemon(&daemon).await;
     let mut deframer = Deframer::new();
@@ -811,7 +689,7 @@ async fn test_manager_responder_accept_link() {
 #[tokio::test]
 async fn test_manager_responder_reject_link() {
     let daemon = TestDaemon::start().await.expect("Failed to start daemon");
-    let mut ctx = real_context();
+    let mut ctx = make_context();
 
     let mut stream = connect_to_daemon(&daemon).await;
     let mut deframer = Deframer::new();
@@ -885,7 +763,7 @@ async fn test_manager_responder_reject_link() {
 #[tokio::test]
 async fn test_manager_responder_data_exchange() {
     let daemon = TestDaemon::start().await.expect("Failed to start daemon");
-    let mut ctx = real_context();
+    let mut ctx = make_context();
 
     let mut stream = connect_to_daemon(&daemon).await;
     let mut deframer = Deframer::new();
@@ -997,7 +875,7 @@ async fn test_manager_responder_data_exchange() {
 #[tokio::test]
 async fn test_manager_responder_multiple_incoming() {
     let daemon = TestDaemon::start().await.expect("Failed to start daemon");
-    let mut ctx = real_context();
+    let mut ctx = make_context();
 
     let mut stream = connect_to_daemon(&daemon).await;
     let mut deframer = Deframer::new();
@@ -1079,8 +957,8 @@ async fn test_manager_responder_multiple_incoming() {
 #[tokio::test]
 async fn test_rust_to_rust_via_daemon() {
     let daemon = TestDaemon::start().await.expect("Failed to start daemon");
-    let mut ctx_a = real_context();
-    let mut ctx_b = real_context();
+    let mut ctx_a = make_context();
+    let mut ctx_b = make_context();
 
     // --- Manager B connects first to receive announces ---
     let mut stream_b = connect_to_daemon(&daemon).await;
@@ -1310,8 +1188,8 @@ async fn test_rust_to_rust_via_daemon() {
 #[tokio::test]
 async fn test_rust_to_rust_multiple_messages() {
     let daemon = TestDaemon::start().await.expect("Failed to start daemon");
-    let mut ctx_a = real_context();
-    let mut ctx_b = real_context();
+    let mut ctx_a = make_context();
+    let mut ctx_b = make_context();
 
     // --- B connects first to receive announces ---
     let mut stream_b = connect_to_daemon(&daemon).await;
@@ -1551,7 +1429,7 @@ async fn test_manager_handshake_timeout() {
 /// Test sending on inactive link returns error.
 #[tokio::test]
 async fn test_manager_send_on_inactive_link() {
-    let mut ctx = real_context();
+    let mut ctx = make_context();
     let mut manager = LinkManager::new();
 
     let dest_hash = [0x42; 16];
@@ -1573,7 +1451,7 @@ async fn test_manager_send_on_inactive_link() {
 /// Test operations on unknown link ID.
 #[tokio::test]
 async fn test_manager_operations_on_unknown_link() {
-    let mut ctx = real_context();
+    let mut ctx = make_context();
     let mut manager = LinkManager::new();
     let identity = Identity::generate(&mut ctx);
 
@@ -1660,7 +1538,7 @@ async fn test_manager_responder_timeout() {
 #[tokio::test]
 async fn test_manager_many_simultaneous_links() {
     let daemon = TestDaemon::start().await.expect("Failed to start daemon");
-    let mut ctx = real_context();
+    let mut ctx = make_context();
 
     // Register 10 destinations
     let mut destinations = Vec::new();
@@ -1741,7 +1619,7 @@ async fn test_manager_many_simultaneous_links() {
 #[tokio::test]
 async fn test_manager_rapid_data_exchange() {
     let daemon = TestDaemon::start().await.expect("Failed to start daemon");
-    let mut ctx = real_context();
+    let mut ctx = make_context();
 
     let mut stream = connect_to_daemon(&daemon).await;
     let mut deframer = Deframer::new();
@@ -1784,7 +1662,7 @@ async fn test_manager_rapid_data_exchange() {
 #[tokio::test]
 async fn test_manager_large_payloads() {
     let daemon = TestDaemon::start().await.expect("Failed to start daemon");
-    let mut ctx = real_context();
+    let mut ctx = make_context();
 
     let mut stream = connect_to_daemon(&daemon).await;
     let mut deframer = Deframer::new();
@@ -1835,7 +1713,7 @@ async fn test_manager_large_payloads() {
 #[tokio::test]
 async fn test_manager_interleaved_operations() {
     let daemon = TestDaemon::start().await.expect("Failed to start daemon");
-    let mut ctx = real_context();
+    let mut ctx = make_context();
 
     // Register 3 destinations
     let dest1 = daemon
@@ -1858,7 +1736,7 @@ async fn test_manager_interleaved_operations() {
     // Helper to initiate
     let initiate = |manager: &mut LinkManager,
                     dest: &DestinationInfo,
-                    ctx: &mut PlatformContext<OsRng, RealClock, NoStorage>|
+                    ctx: &mut PlatformContext<OsRng, TestClock, NoStorage>|
      -> (LinkId, Vec<u8>) {
         let pub_key_bytes = hex::decode(&dest.public_key).unwrap();
         let signing_key: [u8; 32] = pub_key_bytes[32..64].try_into().unwrap();

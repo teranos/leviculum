@@ -22,6 +22,12 @@ JSON-RPC methods:
 - get_interfaces: List active interfaces
 - register_destination: Create a destination that accepts links
 - get_destinations: List registered destinations
+- enable_ratchets: Enable ratchets for a destination
+- get_ratchet_info: Get ratchet state for a destination
+- add_client_interface: Connect to another daemon's TCPServerInterface
+- get_transport_status: Get transport/routing status
+- get_link_table: Get link table for relay verification
+- rotate_ratchet: Force ratchet rotation for a destination
 - shutdown: Gracefully stop the daemon
 """
 
@@ -59,6 +65,7 @@ if RETICULUM_PATH:
 try:
     import RNS
     from RNS import Transport
+    from RNS.Interfaces.TCPInterface import TCPClientInterface
 except ImportError:
     print("ERROR: Reticulum (RNS) not found.")
     print("Options:")
@@ -77,6 +84,7 @@ class TestDaemon:
         self.destinations = {}  # hash -> (identity, destination)
         self.links = {}  # link_hash -> link
         self.received_packets = []  # [(timestamp, link, data)]
+        self.client_interfaces = {}  # name -> TCPClientInterface
 
         # Create temp config directory
         self.config_dir = tempfile.mkdtemp(prefix="rns_test_")
@@ -293,6 +301,55 @@ class TestDaemon:
             dest.announce(app_data=app_data)
             return {"result": "announced"}
 
+        elif method == "enable_ratchets":
+            # Enable ratchets for a destination (forward secrecy)
+            dest_hash = params.get("hash")
+
+            if dest_hash not in self.destinations:
+                return {"error": f"Destination {dest_hash} not registered"}
+
+            _, dest = self.destinations[dest_hash]
+
+            # Create ratchet storage path - RNS expects this to be a file path
+            # (it writes to <path> and creates <path>.tmp during writes)
+            ratchet_dir = os.path.join(self.config_dir, "ratchets")
+            os.makedirs(ratchet_dir, exist_ok=True)
+            ratchet_path = os.path.join(ratchet_dir, dest_hash)
+
+            try:
+                dest.enable_ratchets(ratchet_path)
+                return {"result": {
+                    "enabled": True,
+                    "ratchet_dir": ratchet_path,
+                }}
+            except Exception as e:
+                return {"error": f"Failed to enable ratchets: {str(e)}"}
+
+        elif method == "get_ratchet_info":
+            # Get ratchet state for a destination
+            dest_hash = params.get("hash")
+
+            if dest_hash not in self.destinations:
+                return {"error": f"Destination {dest_hash} not registered"}
+
+            _, dest = self.destinations[dest_hash]
+
+            # Check if ratchets are enabled
+            ratchets_enabled = hasattr(dest, 'ratchets') and dest.ratchets is not None
+
+            result = {
+                "enabled": ratchets_enabled,
+            }
+
+            if ratchets_enabled:
+                # Get ratchet count and latest ID
+                ratchet_count = len(dest.ratchets) if hasattr(dest.ratchets, '__len__') else 0
+                latest_id = dest.latest_ratchet_id.hex() if hasattr(dest, 'latest_ratchet_id') and dest.latest_ratchet_id else None
+                result["count"] = ratchet_count
+                result["latest_id"] = latest_id
+
+            return {"result": result}
+
         elif method == "create_link":
             # Create a link to an external destination (Python as initiator)
             dest_hash = params.get("dest_hash")
@@ -372,6 +429,115 @@ class TestDaemon:
                 return {"result": "sent"}
             except Exception as e:
                 return {"error": f"Send failed: {str(e)}"}
+
+        elif method == "add_client_interface":
+            # Connect this daemon to another daemon's TCPServerInterface
+            target_ip = params.get("target_ip", "127.0.0.1")
+            target_port = params.get("target_port")
+            name = params.get("name")
+
+            if not target_port:
+                return {"error": "target_port is required"}
+
+            if not name:
+                name = f"TCPClient_{target_ip}_{target_port}"
+
+            try:
+                # Create TCPClientInterface using configuration dict
+                # The new RNS API expects a configuration object
+                config = {
+                    "name": name,
+                    "target_host": target_ip,
+                    "target_port": target_port,
+                }
+
+                client_iface = TCPClientInterface(
+                    RNS.Transport,
+                    config,
+                )
+
+                # Register with Transport
+                RNS.Transport.interfaces.append(client_iface)
+
+                # Store reference
+                self.client_interfaces[name] = client_iface
+
+                # Wait briefly for connection
+                time.sleep(0.5)
+
+                return {
+                    "result": {
+                        "name": name,
+                        "online": getattr(client_iface, 'online', False),
+                        "target_ip": target_ip,
+                        "target_port": target_port,
+                    }
+                }
+
+            except Exception as e:
+                return {"error": f"Failed to create client interface: {str(e)}"}
+
+        elif method == "get_transport_status":
+            # Get transport/routing status
+            try:
+                result = {
+                    "enabled": RNS.Reticulum.transport_enabled(),
+                    "identity_hash": Transport.identity.hash.hex() if Transport.identity else None,
+                    "path_table_size": len(Transport.path_table),
+                    "link_table_size": len(Transport.link_table) if hasattr(Transport, 'link_table') else 0,
+                    "announce_table_size": len(Transport.announce_table),
+                    "interface_count": len(Transport.interfaces),
+                }
+                return {"result": result}
+            except Exception as e:
+                return {"error": f"Failed to get transport status: {str(e)}"}
+
+        elif method == "get_link_table":
+            # Get link table for relay verification
+            try:
+                link_table = {}
+                if hasattr(Transport, 'link_table'):
+                    for link_id, entry in Transport.link_table.items():
+                        # link_table entry format: [timestamp, next_hop, outbound_interface, remaining_hops, ...]
+                        link_table[link_id.hex()] = {
+                            "timestamp": entry[0] if len(entry) > 0 else None,
+                            "interface": str(entry[2]) if len(entry) > 2 else None,
+                            "hops": entry[3] if len(entry) > 3 else None,
+                        }
+                return {"result": link_table}
+            except Exception as e:
+                return {"error": f"Failed to get link table: {str(e)}"}
+
+        elif method == "rotate_ratchet":
+            # Force ratchet rotation for a destination
+            dest_hash = params.get("hash")
+
+            if dest_hash not in self.destinations:
+                return {"error": f"Destination {dest_hash} not registered"}
+
+            _, dest = self.destinations[dest_hash]
+
+            # Check if ratchets are enabled
+            if not hasattr(dest, 'ratchets') or dest.ratchets is None:
+                return {"error": "Ratchets not enabled for this destination"}
+
+            try:
+                # Rotate ratchet - this generates a new ratchet key pair
+                dest.rotate_ratchets()
+
+                # Get new state
+                ratchet_count = len(dest.ratchets) if hasattr(dest.ratchets, '__len__') else 0
+                latest_id = dest.latest_ratchet_id.hex() if hasattr(dest, 'latest_ratchet_id') and dest.latest_ratchet_id else None
+
+                return {
+                    "result": {
+                        "rotated": True,
+                        "ratchet_count": ratchet_count,
+                        "new_ratchet_id": latest_id,
+                    }
+                }
+            except Exception as e:
+                return {"error": f"Failed to rotate ratchet: {str(e)}"}
 
         elif method == "shutdown":
             self.running = False

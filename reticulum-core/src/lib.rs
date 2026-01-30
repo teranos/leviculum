@@ -44,6 +44,7 @@ pub mod identity;
 pub mod ifac;
 pub mod link;
 pub mod packet;
+pub mod ratchet;
 pub mod resource;
 pub mod traits;
 pub mod transport;
@@ -57,6 +58,7 @@ pub use link::{
     Link, LinkCloseReason, LinkError, LinkEvent, LinkId, LinkManager, LinkState, PeerKeys,
 };
 pub use packet::Packet;
+pub use ratchet::{KnownRatchets, Ratchet, RatchetError};
 
 // Re-export traits
 pub use traits::{

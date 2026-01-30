@@ -5,17 +5,28 @@
 //! - A unique hash derived from application name, aspects, and identity
 //! - A type (SINGLE, GROUP, PLAIN, LINK) determining encryption behavior
 //! - A direction (IN, OUT) determining receive/send capability
+//!
+//! # Ratchet Support
+//!
+//! Destinations can enable ratchets for forward secrecy. When enabled:
+//! - The destination rotates X25519 key pairs periodically
+//! - Announces include the current ratchet public key
+//! - Incoming packets are decrypted by trying retained ratchets
+//!
+//! See [`Destination::enable_ratchets`] for more details.
 
 use crate::announce::{build_announce_payload, AnnounceError};
-use crate::constants::{IDENTITY_HASHBYTES, NAME_HASHBYTES, TRUNCATED_HASHBYTES};
+use crate::constants::{IDENTITY_HASHBYTES, NAME_HASHBYTES, RATCHET_SIZE, TRUNCATED_HASHBYTES};
 use crate::crypto::{sha256, truncated_hash};
-use crate::identity::Identity;
+use crate::identity::{Identity, IdentityError};
 use crate::packet::{
     HeaderType, Packet, PacketContext, PacketData, PacketFlags, PacketType, TransportType,
 };
-use crate::traits::Context;
+use crate::ratchet::{Ratchet, DEFAULT_INTERVAL_MS, DEFAULT_RETAINED_RATCHETS};
+use crate::traits::{Clock, Context};
 
 use alloc::string::String;
+use alloc::vec::Vec;
 
 /// Error type for destination operations
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -24,6 +35,14 @@ pub enum DestinationError {
     PlainCannotHaveIdentity,
     /// Outbound SINGLE/GROUP destinations require an identity
     OutboundRequiresIdentity,
+    /// Operation requires an identity
+    NoIdentity,
+    /// Ratchets are required but no ratchet was used
+    RatchetRequired,
+    /// Decryption failed
+    DecryptionFailed,
+    /// Cannot enable ratchets on OUT destination
+    CannotEnableRatchetsOnOut,
 }
 
 impl core::fmt::Display for DestinationError {
@@ -35,6 +54,28 @@ impl core::fmt::Display for DestinationError {
             DestinationError::OutboundRequiresIdentity => {
                 write!(f, "Outbound SINGLE/GROUP destinations require an identity")
             }
+            DestinationError::NoIdentity => {
+                write!(f, "Operation requires an identity")
+            }
+            DestinationError::RatchetRequired => {
+                write!(f, "Ratchets are required but no ratchet was used")
+            }
+            DestinationError::DecryptionFailed => {
+                write!(f, "Decryption failed")
+            }
+            DestinationError::CannotEnableRatchetsOnOut => {
+                write!(f, "Cannot enable ratchets on OUT destination")
+            }
+        }
+    }
+}
+
+impl From<IdentityError> for DestinationError {
+    fn from(e: IdentityError) -> Self {
+        match e {
+            IdentityError::NoPrivateKey => DestinationError::NoIdentity,
+            IdentityError::DecryptionFailed => DestinationError::DecryptionFailed,
+            _ => DestinationError::DecryptionFailed,
         }
     }
 }
@@ -91,9 +132,20 @@ pub struct Destination {
     direction: Direction,
     /// Whether to accept incoming links
     accepts_links: bool,
-    // TODO: Add callback handlers
-    // TODO: Add ratchet support
-    // TODO: Add request handlers
+
+    // ─── Ratchet State (for IN destinations) ─────────────────────────────────
+    /// Retained ratchets for decryption (newest first)
+    ratchets: Vec<Ratchet>,
+    /// Ratchet rotation interval in milliseconds
+    ratchet_interval_ms: u64,
+    /// Maximum number of ratchets to retain
+    retained_ratchet_count: usize,
+    /// Timestamp of last ratchet rotation
+    last_ratchet_time_ms: u64,
+    /// If true, reject packets not encrypted with a ratchet
+    enforce_ratchets: bool,
+    /// If true, ratchets are enabled for this destination
+    ratchets_enabled: bool,
 }
 
 impl Destination {
@@ -146,6 +198,13 @@ impl Destination {
             dest_type,
             direction,
             accepts_links: false,
+            // Ratchet fields - not enabled by default
+            ratchets: Vec::new(),
+            ratchet_interval_ms: DEFAULT_INTERVAL_MS,
+            retained_ratchet_count: DEFAULT_RETAINED_RATCHETS,
+            last_ratchet_time_ms: 0,
+            enforce_ratchets: false,
+            ratchets_enabled: false,
         })
     }
 
@@ -184,6 +243,216 @@ impl Destination {
         self.accepts_links = accept;
     }
 
+    // ─── Ratchet Management ──────────────────────────────────────────────────
+
+    /// Enable ratchets for forward secrecy on this destination
+    ///
+    /// Ratchets provide forward secrecy by rotating X25519 key pairs
+    /// periodically. When enabled, announces will include the current
+    /// ratchet public key, and packets must be encrypted with that ratchet.
+    ///
+    /// # Arguments
+    /// * `ctx` - Platform context providing RNG and clock
+    ///
+    /// # Errors
+    /// Returns error if called on an OUT destination.
+    ///
+    /// # Example
+    /// ```
+    /// use reticulum_core::destination::{Destination, DestinationType, Direction};
+    /// use reticulum_core::identity::Identity;
+    /// use reticulum_core::traits::{PlatformContext, NoStorage, Clock};
+    /// use rand_core::OsRng;
+    ///
+    /// struct SimpleClock;
+    /// impl Clock for SimpleClock {
+    ///     fn now_ms(&self) -> u64 { 1704067200000 }
+    /// }
+    ///
+    /// let identity = Identity::generate_with_rng(&mut OsRng);
+    /// let mut dest = Destination::new(
+    ///     Some(identity),
+    ///     Direction::In,
+    ///     DestinationType::Single,
+    ///     "app",
+    ///     &["echo"],
+    /// ).unwrap();
+    ///
+    /// let mut ctx = PlatformContext { rng: OsRng, clock: SimpleClock, storage: NoStorage };
+    /// dest.enable_ratchets(&mut ctx).unwrap();
+    /// assert!(dest.ratchets_enabled());
+    /// ```
+    pub fn enable_ratchets(&mut self, ctx: &mut impl Context) -> Result<(), DestinationError> {
+        if self.direction == Direction::Out {
+            return Err(DestinationError::CannotEnableRatchetsOnOut);
+        }
+
+        // Generate initial ratchet
+        let ratchet = Ratchet::generate(ctx);
+        self.last_ratchet_time_ms = ctx.clock().now_ms();
+        self.ratchets.insert(0, ratchet);
+        self.ratchets_enabled = true;
+
+        Ok(())
+    }
+
+    /// Check if ratchets are enabled for this destination
+    pub fn ratchets_enabled(&self) -> bool {
+        self.ratchets_enabled
+    }
+
+    /// Get the current ratchet public key (for announces)
+    ///
+    /// Returns None if ratchets are not enabled.
+    pub fn current_ratchet_public(&self) -> Option<[u8; RATCHET_SIZE]> {
+        if !self.ratchets_enabled {
+            return None;
+        }
+        self.ratchets.first().map(|r| r.public_key_bytes())
+    }
+
+    /// Rotate ratchet if the interval has passed
+    ///
+    /// Call this before creating an announce to ensure the ratchet is current.
+    ///
+    /// # Returns
+    /// True if a new ratchet was generated.
+    pub fn rotate_ratchet_if_needed(&mut self, ctx: &mut impl Context) -> bool {
+        if !self.ratchets_enabled {
+            return false;
+        }
+
+        let current_time = ctx.clock().now_ms();
+        let elapsed = current_time.saturating_sub(self.last_ratchet_time_ms);
+
+        if elapsed < self.ratchet_interval_ms {
+            return false;
+        }
+
+        // Generate new ratchet and add to front
+        let ratchet = Ratchet::generate(ctx);
+        self.ratchets.insert(0, ratchet);
+        self.last_ratchet_time_ms = current_time;
+
+        // Trim old ratchets if exceeding limit
+        if self.ratchets.len() > self.retained_ratchet_count {
+            self.ratchets.truncate(self.retained_ratchet_count);
+        }
+
+        true
+    }
+
+    /// Minimum ratchet interval in milliseconds (1 second)
+    const MIN_RATCHET_INTERVAL_MS: u64 = 1000;
+
+    /// Set the ratchet rotation interval
+    ///
+    /// # Arguments
+    /// * `interval_ms` - Rotation interval in milliseconds (default: 30 minutes, minimum: 1 second)
+    pub fn set_ratchet_interval(&mut self, interval_ms: u64) {
+        self.ratchet_interval_ms = interval_ms.max(Self::MIN_RATCHET_INTERVAL_MS);
+    }
+
+    /// Get the current ratchet rotation interval in milliseconds
+    pub fn ratchet_interval(&self) -> u64 {
+        self.ratchet_interval_ms
+    }
+
+    /// Set the maximum number of ratchets to retain
+    ///
+    /// # Arguments
+    /// * `count` - Maximum retained ratchets (default: 512, minimum: 1)
+    pub fn set_retained_ratchets(&mut self, count: usize) {
+        // Ensure at least 1 ratchet is retained
+        self.retained_ratchet_count = count.max(1);
+
+        // Trim if needed
+        if self.ratchets.len() > self.retained_ratchet_count {
+            self.ratchets.truncate(self.retained_ratchet_count);
+        }
+    }
+
+    /// Get the number of retained ratchets
+    pub fn retained_ratchet_count(&self) -> usize {
+        self.retained_ratchet_count
+    }
+
+    /// Get the current number of ratchets stored
+    pub fn ratchet_count(&self) -> usize {
+        self.ratchets.len()
+    }
+
+    /// Enforce ratchet-only decryption
+    ///
+    /// When enabled, packets not encrypted with a ratchet will be rejected
+    /// even if they could be decrypted with the identity key.
+    pub fn set_enforce_ratchets(&mut self, enforce: bool) {
+        self.enforce_ratchets = enforce;
+    }
+
+    /// Check if ratchet enforcement is enabled
+    pub fn enforces_ratchets(&self) -> bool {
+        self.enforce_ratchets
+    }
+
+    // ─── Encryption/Decryption ───────────────────────────────────────────────
+
+    /// Decrypt data received at this destination
+    ///
+    /// Tries decryption with each retained ratchet, then falls back to
+    /// the identity key (unless ratchets are enforced).
+    ///
+    /// # Arguments
+    /// * `ciphertext` - Encrypted data from an incoming packet
+    ///
+    /// # Returns
+    /// Decrypted plaintext on success.
+    ///
+    /// # Errors
+    /// * `NoIdentity` - Destination has no identity
+    /// * `DecryptionFailed` - No ratchet or identity key could decrypt
+    /// * `RatchetRequired` - Ratchets enforced but decrypted with identity key
+    pub fn decrypt(&self, ciphertext: &[u8]) -> Result<Vec<u8>, DestinationError> {
+        let identity = self.identity.as_ref().ok_or(DestinationError::NoIdentity)?;
+
+        // Always try with identity fallback to know if ratchet was used
+        let (plaintext, ratchet_id) =
+            identity.decrypt_with_ratchets(ciphertext, &self.ratchets, true)?;
+
+        // If ratchets are enforced and we decrypted without a ratchet, reject
+        if self.enforce_ratchets && ratchet_id.is_none() {
+            return Err(DestinationError::RatchetRequired);
+        }
+
+        Ok(plaintext)
+    }
+
+    /// Encrypt data for sending to another destination
+    ///
+    /// For OUT destinations, encrypts using the target identity and
+    /// optionally a known ratchet public key.
+    ///
+    /// # Arguments
+    /// * `plaintext` - Data to encrypt
+    /// * `ratchet_public` - Optional ratchet public key from target's announce
+    /// * `ctx` - Platform context providing RNG
+    ///
+    /// # Returns
+    /// Ciphertext that can be decrypted by the target destination.
+    ///
+    /// # Errors
+    /// * `NoIdentity` - Destination has no identity to encrypt for
+    pub fn encrypt(
+        &self,
+        plaintext: &[u8],
+        ratchet_public: Option<&[u8; RATCHET_SIZE]>,
+        ctx: &mut impl Context,
+    ) -> Result<Vec<u8>, DestinationError> {
+        let identity = self.identity.as_ref().ok_or(DestinationError::NoIdentity)?;
+
+        Ok(identity.encrypt_for_destination(plaintext, ratchet_public, ctx))
+    }
+
     /// Compute the name hash from app_name and aspects.
     ///
     /// The name hash is the first 10 bytes of SHA256(app_name.aspect1.aspect2...).
@@ -218,6 +487,10 @@ impl Destination {
     /// Announces inform the network about this destination's presence.
     /// Only IN destinations can announce (they receive traffic).
     ///
+    /// If ratchets are enabled, the announce will include the current ratchet
+    /// public key and the context_flag will be set. The ratchet will be rotated
+    /// if the rotation interval has passed.
+    ///
     /// # Arguments
     /// * `app_data` - Optional application-specific data (max ~350 bytes)
     /// * `ctx` - Platform context for RNG and clock
@@ -241,7 +514,7 @@ impl Destination {
     /// }
     ///
     /// let identity = Identity::generate_with_rng(&mut OsRng);
-    /// let dest = Destination::new(
+    /// let mut dest = Destination::new(
     ///     Some(identity),
     ///     Direction::In,
     ///     DestinationType::Single,
@@ -254,7 +527,7 @@ impl Destination {
     /// assert_eq!(packet.destination_hash, *dest.hash());
     /// ```
     pub fn announce(
-        &self,
+        &mut self,
         app_data: Option<&[u8]>,
         ctx: &mut impl Context,
     ) -> Result<Packet, AnnounceError> {
@@ -268,18 +541,37 @@ impl Destination {
             return Err(AnnounceError::WrongDirection);
         }
 
-        // Must have an identity to sign the announce
-        let identity = self.identity.as_ref().ok_or(AnnounceError::NoIdentity)?;
+        // Check identity exists early
+        if self.identity.is_none() {
+            return Err(AnnounceError::NoIdentity);
+        }
 
-        // Build the signed payload
-        let payload = build_announce_payload(identity, &self.hash, &self.name_hash, app_data, ctx)?;
+        // Rotate ratchet if needed
+        self.rotate_ratchet_if_needed(ctx);
+
+        // Get current ratchet (if enabled)
+        let ratchet = self.current_ratchet_public();
+        let has_ratchet = ratchet.is_some();
+
+        // Get identity (safe because we checked above)
+        let identity = self.identity.as_ref().unwrap();
+
+        // Build the signed payload with optional ratchet
+        let payload = build_announce_payload(
+            identity,
+            &self.hash,
+            &self.name_hash,
+            ratchet.as_ref(),
+            app_data,
+            ctx,
+        )?;
 
         // Create the packet
         let packet = Packet {
             flags: PacketFlags {
                 ifac_flag: false,
                 header_type: HeaderType::Type1,
-                context_flag: false, // No ratchet (for now)
+                context_flag: has_ratchet, // Set if ratchet is present
                 transport_type: TransportType::Broadcast,
                 dest_type: self.dest_type,
                 packet_type: PacketType::Announce,
@@ -293,9 +585,6 @@ impl Destination {
 
         Ok(packet)
     }
-
-    // TODO: Implement encrypt/decrypt methods
-    // TODO: Implement callback registration
 }
 
 #[cfg(test)]
@@ -360,7 +649,7 @@ mod tests {
     #[test]
     fn test_destination_announce_creates_valid_packet() {
         let identity = Identity::generate_with_rng(&mut OsRng);
-        let dest = Destination::new(
+        let mut dest = Destination::new(
             Some(identity),
             Direction::In,
             DestinationType::Single,
@@ -391,7 +680,7 @@ mod tests {
     #[test]
     fn test_destination_announce_out_direction_fails() {
         let identity = Identity::generate_with_rng(&mut OsRng);
-        let dest = Destination::new(
+        let mut dest = Destination::new(
             Some(identity),
             Direction::Out, // OUT cannot announce
             DestinationType::Single,
@@ -409,7 +698,7 @@ mod tests {
     #[test]
     fn test_destination_announce_plain_type_fails() {
         // PLAIN destinations cannot announce (only SINGLE can)
-        let dest = Destination::new(
+        let mut dest = Destination::new(
             None, // No identity (valid for PLAIN)
             Direction::In,
             DestinationType::Plain,
@@ -428,7 +717,7 @@ mod tests {
     #[test]
     fn test_destination_announce_without_app_data() {
         let identity = Identity::generate_with_rng(&mut OsRng);
-        let dest = Destination::new(
+        let mut dest = Destination::new(
             Some(identity),
             Direction::In,
             DestinationType::Single,
@@ -449,7 +738,7 @@ mod tests {
     fn test_destination_announce_validates_correctly() {
         // Create destination and announce
         let identity = Identity::generate_with_rng(&mut OsRng);
-        let dest = Destination::new(
+        let mut dest = Destination::new(
             Some(identity),
             Direction::In,
             DestinationType::Single,
@@ -534,7 +823,7 @@ mod tests {
         let identity = Identity::generate_with_rng(&mut OsRng);
 
         // GROUP destination cannot announce
-        let group_dest = Destination::new(
+        let mut group_dest = Destination::new(
             Some(identity),
             Direction::In,
             DestinationType::Group,
@@ -551,7 +840,7 @@ mod tests {
     #[test]
     fn test_single_in_can_announce() {
         let identity = Identity::generate_with_rng(&mut OsRng);
-        let dest = Destination::new(
+        let mut dest = Destination::new(
             Some(identity),
             Direction::In,
             DestinationType::Single,
@@ -616,5 +905,373 @@ mod tests {
             &["link"],
         );
         assert!(result.is_ok());
+    }
+
+    // ─── Ratchet Tests ─────────────────────────────────────────────────────────
+
+    #[test]
+    fn test_enable_ratchets() {
+        let identity = Identity::generate_with_rng(&mut OsRng);
+        let mut dest = Destination::new(
+            Some(identity),
+            Direction::In,
+            DestinationType::Single,
+            "test",
+            &["ratchet"],
+        )
+        .unwrap();
+
+        assert!(!dest.ratchets_enabled());
+        assert!(dest.current_ratchet_public().is_none());
+        assert_eq!(dest.ratchet_count(), 0);
+
+        let mut ctx = make_context();
+        dest.enable_ratchets(&mut ctx).unwrap();
+
+        assert!(dest.ratchets_enabled());
+        assert!(dest.current_ratchet_public().is_some());
+        assert_eq!(dest.ratchet_count(), 1);
+    }
+
+    #[test]
+    fn test_enable_ratchets_on_out_fails() {
+        let identity = Identity::generate_with_rng(&mut OsRng);
+        let mut dest = Destination::new(
+            Some(identity),
+            Direction::Out,
+            DestinationType::Single,
+            "test",
+            &["ratchet"],
+        )
+        .unwrap();
+
+        let mut ctx = make_context();
+        let result = dest.enable_ratchets(&mut ctx);
+
+        assert!(matches!(
+            result,
+            Err(DestinationError::CannotEnableRatchetsOnOut)
+        ));
+    }
+
+    #[test]
+    fn test_ratchet_rotation() {
+        let identity = Identity::generate_with_rng(&mut OsRng);
+        let mut dest = Destination::new(
+            Some(identity),
+            Direction::In,
+            DestinationType::Single,
+            "test",
+            &["ratchet"],
+        )
+        .unwrap();
+
+        // Use a shorter interval for testing
+        dest.set_ratchet_interval(1000); // 1 second
+
+        let mut ctx = make_context();
+        dest.enable_ratchets(&mut ctx).unwrap();
+
+        let first_ratchet = dest.current_ratchet_public().unwrap();
+
+        // No rotation needed yet
+        assert!(!dest.rotate_ratchet_if_needed(&mut ctx));
+        assert_eq!(dest.current_ratchet_public().unwrap(), first_ratchet);
+
+        // Advance time past interval
+        ctx.clock.0 += 2000; // 2 seconds later
+
+        // Rotation should happen
+        assert!(dest.rotate_ratchet_if_needed(&mut ctx));
+        let second_ratchet = dest.current_ratchet_public().unwrap();
+        assert_ne!(first_ratchet, second_ratchet);
+
+        // Old ratchet should still be retained
+        assert_eq!(dest.ratchet_count(), 2);
+    }
+
+    #[test]
+    fn test_retained_ratchet_limit() {
+        let identity = Identity::generate_with_rng(&mut OsRng);
+        let mut dest = Destination::new(
+            Some(identity),
+            Direction::In,
+            DestinationType::Single,
+            "test",
+            &["ratchet"],
+        )
+        .unwrap();
+
+        // Set small limit for testing
+        dest.set_retained_ratchets(3);
+        dest.set_ratchet_interval(1000);
+
+        let mut ctx = make_context();
+        dest.enable_ratchets(&mut ctx).unwrap();
+        assert_eq!(dest.ratchet_count(), 1);
+
+        // Rotate 5 times
+        for _ in 1..=5 {
+            ctx.clock.0 += 2000;
+            dest.rotate_ratchet_if_needed(&mut ctx);
+        }
+
+        // Should only have 3 ratchets (limit enforced)
+        assert_eq!(dest.ratchet_count(), 3);
+    }
+
+    #[test]
+    fn test_encrypt_decrypt_with_ratchet() {
+        let identity = Identity::generate_with_rng(&mut OsRng);
+        let mut dest = Destination::new(
+            Some(identity),
+            Direction::In,
+            DestinationType::Single,
+            "test",
+            &["ratchet"],
+        )
+        .unwrap();
+
+        let mut ctx = make_context();
+        dest.enable_ratchets(&mut ctx).unwrap();
+
+        // Get ratchet public key (simulating what a sender would get from announce)
+        let ratchet_pub = dest.current_ratchet_public().unwrap();
+
+        // Encrypt using the destination's identity and ratchet
+        let plaintext = b"Hello with forward secrecy!";
+        let ciphertext = dest
+            .encrypt(plaintext, Some(&ratchet_pub), &mut ctx)
+            .unwrap();
+
+        // Decrypt
+        let decrypted = dest.decrypt(&ciphertext).unwrap();
+        assert_eq!(&decrypted[..], plaintext);
+    }
+
+    #[test]
+    fn test_decrypt_with_old_ratchet() {
+        let identity = Identity::generate_with_rng(&mut OsRng);
+        let mut dest = Destination::new(
+            Some(identity),
+            Direction::In,
+            DestinationType::Single,
+            "test",
+            &["ratchet"],
+        )
+        .unwrap();
+
+        dest.set_ratchet_interval(1000);
+
+        let mut ctx = make_context();
+        dest.enable_ratchets(&mut ctx).unwrap();
+
+        // Encrypt with current ratchet
+        let first_ratchet = dest.current_ratchet_public().unwrap();
+        let plaintext = b"Message encrypted with first ratchet";
+        let ciphertext = dest
+            .encrypt(plaintext, Some(&first_ratchet), &mut ctx)
+            .unwrap();
+
+        // Rotate ratchet
+        ctx.clock.0 += 2000;
+        dest.rotate_ratchet_if_needed(&mut ctx);
+
+        // Should still be able to decrypt with old ratchet
+        let decrypted = dest.decrypt(&ciphertext).unwrap();
+        assert_eq!(&decrypted[..], plaintext);
+    }
+
+    #[test]
+    fn test_enforce_ratchets() {
+        let identity = Identity::generate_with_rng(&mut OsRng);
+        let mut dest = Destination::new(
+            Some(identity),
+            Direction::In,
+            DestinationType::Single,
+            "test",
+            &["ratchet"],
+        )
+        .unwrap();
+
+        let mut ctx = make_context();
+        dest.enable_ratchets(&mut ctx).unwrap();
+        dest.set_enforce_ratchets(true);
+
+        // Encrypt WITHOUT ratchet (using identity key)
+        let plaintext = b"No ratchet used";
+        let ciphertext = dest.encrypt(plaintext, None, &mut ctx).unwrap();
+
+        // Should fail because ratchets are enforced
+        let result = dest.decrypt(&ciphertext);
+        assert!(matches!(result, Err(DestinationError::RatchetRequired)));
+    }
+
+    #[test]
+    fn test_decrypt_without_ratchet_when_not_enforced() {
+        let identity = Identity::generate_with_rng(&mut OsRng);
+        let mut dest = Destination::new(
+            Some(identity),
+            Direction::In,
+            DestinationType::Single,
+            "test",
+            &["ratchet"],
+        )
+        .unwrap();
+
+        let mut ctx = make_context();
+        dest.enable_ratchets(&mut ctx).unwrap();
+
+        // Encrypt WITHOUT ratchet (using identity key)
+        let plaintext = b"No ratchet used";
+        let ciphertext = dest.encrypt(plaintext, None, &mut ctx).unwrap();
+
+        // Should succeed because ratchets are not enforced
+        let decrypted = dest.decrypt(&ciphertext).unwrap();
+        assert_eq!(&decrypted[..], plaintext);
+    }
+
+    #[test]
+    fn test_ratchet_settings() {
+        let identity = Identity::generate_with_rng(&mut OsRng);
+        let mut dest = Destination::new(
+            Some(identity),
+            Direction::In,
+            DestinationType::Single,
+            "test",
+            &["ratchet"],
+        )
+        .unwrap();
+
+        // Test default settings
+        assert_eq!(dest.ratchet_interval(), DEFAULT_INTERVAL_MS);
+        assert_eq!(dest.retained_ratchet_count(), DEFAULT_RETAINED_RATCHETS);
+        assert!(!dest.enforces_ratchets());
+
+        // Change settings
+        dest.set_ratchet_interval(60000);
+        dest.set_retained_ratchets(100);
+        dest.set_enforce_ratchets(true);
+
+        assert_eq!(dest.ratchet_interval(), 60000);
+        assert_eq!(dest.retained_ratchet_count(), 100);
+        assert!(dest.enforces_ratchets());
+    }
+
+    #[test]
+    fn test_no_rotation_when_ratchets_disabled() {
+        let identity = Identity::generate_with_rng(&mut OsRng);
+        let mut dest = Destination::new(
+            Some(identity),
+            Direction::In,
+            DestinationType::Single,
+            "test",
+            &["ratchet"],
+        )
+        .unwrap();
+
+        let mut ctx = make_context();
+
+        // Don't enable ratchets
+        ctx.clock.0 += 100000000; // Far in future
+        assert!(!dest.rotate_ratchet_if_needed(&mut ctx));
+    }
+
+    // ─── Ratcheted Announce Tests ──────────────────────────────────────────────
+
+    #[test]
+    fn test_announce_with_ratchet() {
+        let identity = Identity::generate_with_rng(&mut OsRng);
+        let mut dest = Destination::new(
+            Some(identity),
+            Direction::In,
+            DestinationType::Single,
+            "test",
+            &["ratchet"],
+        )
+        .unwrap();
+
+        let mut ctx = make_context();
+        dest.enable_ratchets(&mut ctx).unwrap();
+
+        let packet = dest.announce(Some(b"test-data"), &mut ctx).unwrap();
+
+        // context_flag should be set
+        assert!(packet.flags.context_flag);
+
+        // Parse and verify
+        let announce = ReceivedAnnounce::from_packet(&packet).unwrap();
+        assert!(announce.has_ratchet());
+        assert!(announce.validate().is_ok());
+        assert_eq!(announce.app_data(), b"test-data");
+
+        // Ratchet in announce should match destination's current ratchet
+        assert_eq!(
+            announce.ratchet().unwrap(),
+            &dest.current_ratchet_public().unwrap()
+        );
+    }
+
+    #[test]
+    fn test_announce_without_ratchet_when_disabled() {
+        let identity = Identity::generate_with_rng(&mut OsRng);
+        let mut dest = Destination::new(
+            Some(identity),
+            Direction::In,
+            DestinationType::Single,
+            "test",
+            &["noratchet"],
+        )
+        .unwrap();
+
+        let mut ctx = make_context();
+        // Don't enable ratchets
+
+        let packet = dest.announce(Some(b"test-data"), &mut ctx).unwrap();
+
+        // context_flag should NOT be set
+        assert!(!packet.flags.context_flag);
+
+        // Parse and verify
+        let announce = ReceivedAnnounce::from_packet(&packet).unwrap();
+        assert!(!announce.has_ratchet());
+        assert!(announce.ratchet().is_none());
+        assert!(announce.validate().is_ok());
+    }
+
+    #[test]
+    fn test_announce_rotates_ratchet() {
+        let identity = Identity::generate_with_rng(&mut OsRng);
+        let mut dest = Destination::new(
+            Some(identity),
+            Direction::In,
+            DestinationType::Single,
+            "test",
+            &["ratchet"],
+        )
+        .unwrap();
+
+        dest.set_ratchet_interval(1000);
+
+        let mut ctx = make_context();
+        dest.enable_ratchets(&mut ctx).unwrap();
+
+        let first_ratchet = dest.current_ratchet_public().unwrap();
+
+        // First announce - uses first ratchet
+        let packet1 = dest.announce(None, &mut ctx).unwrap();
+        let announce1 = ReceivedAnnounce::from_packet(&packet1).unwrap();
+        assert_eq!(announce1.ratchet().unwrap(), &first_ratchet);
+
+        // Advance time to trigger rotation
+        ctx.clock.0 += 2000;
+
+        // Second announce - should rotate and use new ratchet
+        let packet2 = dest.announce(None, &mut ctx).unwrap();
+        let announce2 = ReceivedAnnounce::from_packet(&packet2).unwrap();
+
+        let second_ratchet = dest.current_ratchet_public().unwrap();
+        assert_ne!(first_ratchet, second_ratchet);
+        assert_eq!(announce2.ratchet().unwrap(), &second_ratchet);
     }
 }

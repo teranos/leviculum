@@ -1,6 +1,6 @@
 //! Shared test infrastructure for rnsd interop tests
 
-use rand_core::OsRng;
+pub use rand_core::OsRng;
 use std::time::Duration;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpStream;
@@ -10,13 +10,39 @@ use reticulum_core::constants::{MTU, TRUNCATED_HASHBYTES};
 use reticulum_core::crypto::truncated_hash;
 use reticulum_core::destination::{Destination, DestinationType, Direction};
 use reticulum_core::identity::Identity;
-use reticulum_core::packet::{Packet, PacketType};
-use reticulum_core::traits::{NoStorage, PlatformContext};
+use reticulum_core::link::Link;
+use reticulum_core::packet::{Packet, PacketContext, PacketType};
+use reticulum_core::traits::{Clock, NoStorage, PlatformContext};
 use reticulum_std::interfaces::hdlc::{frame, DeframeResult, Deframer};
 use reticulum_std::SystemClock;
 
-/// Create a platform context for tests
-fn make_context() -> PlatformContext<OsRng, SystemClock, NoStorage> {
+// =========================================================================
+// Shared test context helpers
+// =========================================================================
+
+/// Real-time clock for tests that need actual time
+pub struct TestClock;
+
+impl Clock for TestClock {
+    fn now_ms(&self) -> u64 {
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_millis() as u64
+    }
+}
+
+/// Create a platform context using TestClock for tests
+pub fn make_context() -> PlatformContext<OsRng, TestClock, NoStorage> {
+    PlatformContext {
+        rng: OsRng,
+        clock: TestClock,
+        storage: NoStorage,
+    }
+}
+
+/// Create a platform context for internal helpers that use SystemClock
+fn make_system_context() -> PlatformContext<OsRng, SystemClock, NoStorage> {
     PlatformContext {
         rng: OsRng,
         clock: SystemClock::new(),
@@ -124,7 +150,7 @@ pub async fn build_and_send_announce(
     app_data: &[u8],
 ) -> ([u8; TRUNCATED_HASHBYTES], Destination) {
     let identity = Identity::generate_with_rng(&mut OsRng);
-    let dest = Destination::new(
+    let mut dest = Destination::new(
         Some(identity),
         Direction::In,
         DestinationType::Single,
@@ -133,7 +159,7 @@ pub async fn build_and_send_announce(
     )
     .expect("Failed to create destination");
 
-    let mut ctx = make_context();
+    let mut ctx = make_system_context();
     let packet = dest
         .announce(Some(app_data), &mut ctx)
         .expect("Failed to create announce");
@@ -158,7 +184,7 @@ pub fn build_announce_raw(
     app_data: &[u8],
 ) -> (Vec<u8>, [u8; TRUNCATED_HASHBYTES], Destination) {
     let identity = Identity::generate_with_rng(&mut OsRng);
-    let dest = Destination::new(
+    let mut dest = Destination::new(
         Some(identity),
         Direction::In,
         DestinationType::Single,
@@ -167,7 +193,7 @@ pub fn build_announce_raw(
     )
     .expect("Failed to create destination");
 
-    let mut ctx = make_context();
+    let mut ctx = make_system_context();
     let packet = dest
         .announce(Some(app_data), &mut ctx)
         .expect("Failed to create announce");
@@ -366,8 +392,6 @@ pub async fn connect_to_daemon(daemon: &TestDaemon) -> TcpStream {
     stream
 }
 
-use reticulum_core::packet::PacketContext;
-
 /// Wait for a proof packet for a specific link ID.
 pub async fn receive_proof_for_link(
     stream: &mut TcpStream,
@@ -437,5 +461,122 @@ pub async fn receive_link_data(
             _ => {}
         }
     }
+    None
+}
+
+// =========================================================================
+// Link establishment helpers
+// =========================================================================
+
+/// Wait for a LINK_REQUEST packet addressed to our destination.
+///
+/// Returns the raw packet bytes and calculated link_id if found.
+pub async fn wait_for_link_request(
+    stream: &mut TcpStream,
+    deframer: &mut Deframer,
+    dest_hash: &[u8; TRUNCATED_HASHBYTES],
+    timeout_duration: Duration,
+) -> Option<(Vec<u8>, [u8; TRUNCATED_HASHBYTES])> {
+    let mut buf = [0u8; 2048];
+    let deadline = tokio::time::Instant::now() + timeout_duration;
+
+    while tokio::time::Instant::now() < deadline {
+        let remaining = deadline - tokio::time::Instant::now();
+
+        match timeout(remaining, stream.read(&mut buf)).await {
+            Ok(Ok(0)) => return None,
+            Ok(Ok(n)) => {
+                let results = deframer.process(&buf[..n]);
+                for result in results {
+                    if let DeframeResult::Frame(data) = result {
+                        if let Ok(pkt) = Packet::unpack(&data) {
+                            if pkt.flags.packet_type == PacketType::LinkRequest
+                                && pkt.destination_hash == *dest_hash
+                            {
+                                let link_id = Link::calculate_link_id(&data);
+                                return Some((data, link_id));
+                            }
+                        }
+                    }
+                }
+            }
+            Ok(Err(_)) | Err(_) => continue,
+        }
+    }
+
+    None
+}
+
+/// Wait for an RTT packet on a link.
+pub async fn wait_for_rtt_packet(
+    stream: &mut TcpStream,
+    deframer: &mut Deframer,
+    link_id: &[u8; TRUNCATED_HASHBYTES],
+    timeout_duration: Duration,
+) -> Option<Vec<u8>> {
+    let mut buf = [0u8; 2048];
+    let deadline = tokio::time::Instant::now() + timeout_duration;
+
+    while tokio::time::Instant::now() < deadline {
+        let remaining = deadline - tokio::time::Instant::now();
+
+        match timeout(remaining, stream.read(&mut buf)).await {
+            Ok(Ok(0)) => return None,
+            Ok(Ok(n)) => {
+                let results = deframer.process(&buf[..n]);
+                for result in results {
+                    if let DeframeResult::Frame(data) = result {
+                        if let Ok(pkt) = Packet::unpack(&data) {
+                            if pkt.flags.packet_type == PacketType::Data
+                                && pkt.destination_hash == *link_id
+                                && pkt.context == PacketContext::Lrrtt
+                            {
+                                return Some(pkt.data.as_slice().to_vec());
+                            }
+                        }
+                    }
+                }
+            }
+            Ok(Err(_)) | Err(_) => continue,
+        }
+    }
+
+    None
+}
+
+/// Wait for a DATA packet on a link (context = None).
+pub async fn wait_for_data_packet(
+    stream: &mut TcpStream,
+    deframer: &mut Deframer,
+    link_id: &[u8; TRUNCATED_HASHBYTES],
+    timeout_duration: Duration,
+) -> Option<Vec<u8>> {
+    let mut buf = [0u8; 2048];
+    let deadline = tokio::time::Instant::now() + timeout_duration;
+
+    while tokio::time::Instant::now() < deadline {
+        let remaining = deadline - tokio::time::Instant::now();
+
+        match timeout(remaining, stream.read(&mut buf)).await {
+            Ok(Ok(0)) => return None,
+            Ok(Ok(n)) => {
+                let results = deframer.process(&buf[..n]);
+                for result in results {
+                    if let DeframeResult::Frame(data) = result {
+                        if let Ok(pkt) = Packet::unpack(&data) {
+                            if pkt.flags.packet_type == PacketType::Data
+                                && pkt.destination_hash == *link_id
+                                && pkt.context == PacketContext::None
+                            {
+                                return Some(data);
+                            }
+                        }
+                    }
+                }
+            }
+            Ok(Err(_)) | Err(_) => continue,
+        }
+    }
+
     None
 }

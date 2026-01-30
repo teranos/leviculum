@@ -529,6 +529,228 @@ impl TestDaemon {
         .await?;
         Ok(())
     }
+
+    /// Enable ratchets for a destination (forward secrecy).
+    ///
+    /// # Arguments
+    /// * `dest_hash` - The destination hash to enable ratchets for
+    pub async fn enable_ratchets(&self, dest_hash: &str) -> Result<RatchetInfo, HarnessError> {
+        let result = self
+            .query(
+                "enable_ratchets",
+                serde_json::json!({
+                    "hash": dest_hash,
+                }),
+            )
+            .await?;
+
+        let enabled = result
+            .get("enabled")
+            .and_then(|v| v.as_bool())
+            .unwrap_or(false);
+        let ratchet_dir = result
+            .get("ratchet_dir")
+            .and_then(|v| v.as_str())
+            .map(|s| s.to_string());
+
+        Ok(RatchetInfo {
+            enabled,
+            count: None,
+            latest_id: None,
+            ratchet_dir,
+        })
+    }
+
+    /// Get ratchet state for a destination.
+    ///
+    /// # Arguments
+    /// * `dest_hash` - The destination hash to query
+    pub async fn get_ratchet_info(&self, dest_hash: &str) -> Result<RatchetInfo, HarnessError> {
+        let result = self
+            .query(
+                "get_ratchet_info",
+                serde_json::json!({
+                    "hash": dest_hash,
+                }),
+            )
+            .await?;
+
+        let enabled = result
+            .get("enabled")
+            .and_then(|v| v.as_bool())
+            .unwrap_or(false);
+        let count = result
+            .get("count")
+            .and_then(|v| v.as_u64())
+            .map(|v| v as usize);
+        let latest_id = result
+            .get("latest_id")
+            .and_then(|v| v.as_str())
+            .map(|s| s.to_string());
+
+        Ok(RatchetInfo {
+            enabled,
+            count,
+            latest_id,
+            ratchet_dir: None,
+        })
+    }
+
+    /// Add a TCPClientInterface to connect to another daemon.
+    ///
+    /// # Arguments
+    /// * `target_ip` - The IP address to connect to
+    /// * `target_port` - The port to connect to
+    /// * `name` - Optional name for the interface
+    pub async fn add_client_interface(
+        &self,
+        target_ip: &str,
+        target_port: u16,
+        name: Option<&str>,
+    ) -> Result<ClientInterfaceInfo, HarnessError> {
+        let mut params = serde_json::json!({
+            "target_ip": target_ip,
+            "target_port": target_port,
+        });
+
+        if let Some(n) = name {
+            params["name"] = serde_json::json!(n);
+        }
+
+        let result = self.query("add_client_interface", params).await?;
+
+        let iface_name = result
+            .get("name")
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .to_string();
+        let online = result
+            .get("online")
+            .and_then(|v| v.as_bool())
+            .unwrap_or(false);
+        let ip = result
+            .get("target_ip")
+            .and_then(|v| v.as_str())
+            .unwrap_or(target_ip)
+            .to_string();
+        let port = result
+            .get("target_port")
+            .and_then(|v| v.as_u64())
+            .unwrap_or(target_port as u64) as u16;
+
+        Ok(ClientInterfaceInfo {
+            name: iface_name,
+            online,
+            target_ip: ip,
+            target_port: port,
+        })
+    }
+
+    /// Get transport/routing status.
+    pub async fn get_transport_status(&self) -> Result<TransportStatus, HarnessError> {
+        let result = self
+            .query("get_transport_status", serde_json::json!({}))
+            .await?;
+
+        let enabled = result
+            .get("enabled")
+            .and_then(|v| v.as_bool())
+            .unwrap_or(false);
+        let identity_hash = result
+            .get("identity_hash")
+            .and_then(|v| v.as_str())
+            .map(|s| s.to_string());
+        let path_table_size = result
+            .get("path_table_size")
+            .and_then(|v| v.as_u64())
+            .unwrap_or(0) as usize;
+        let link_table_size = result
+            .get("link_table_size")
+            .and_then(|v| v.as_u64())
+            .unwrap_or(0) as usize;
+        let announce_table_size = result
+            .get("announce_table_size")
+            .and_then(|v| v.as_u64())
+            .unwrap_or(0) as usize;
+        let interface_count = result
+            .get("interface_count")
+            .and_then(|v| v.as_u64())
+            .unwrap_or(0) as usize;
+
+        Ok(TransportStatus {
+            enabled,
+            identity_hash,
+            path_table_size,
+            link_table_size,
+            announce_table_size,
+            interface_count,
+        })
+    }
+
+    /// Get the link table from the daemon.
+    pub async fn get_link_table(&self) -> Result<HashMap<String, LinkTableEntry>, HarnessError> {
+        let result = self.query("get_link_table", serde_json::json!({})).await?;
+        let mut link_table = HashMap::new();
+
+        if let serde_json::Value::Object(map) = result {
+            for (link_id, entry) in map {
+                let timestamp = entry.get("timestamp").and_then(|v| v.as_f64());
+                let interface = entry
+                    .get("interface")
+                    .and_then(|v| v.as_str())
+                    .map(|s| s.to_string());
+                let hops = entry.get("hops").and_then(|v| v.as_u64()).map(|v| v as u8);
+
+                link_table.insert(
+                    link_id,
+                    LinkTableEntry {
+                        timestamp,
+                        interface,
+                        hops,
+                    },
+                );
+            }
+        }
+
+        Ok(link_table)
+    }
+
+    /// Rotate the ratchet for a destination.
+    ///
+    /// # Arguments
+    /// * `dest_hash` - The destination hash to rotate ratchets for
+    pub async fn rotate_ratchet(
+        &self,
+        dest_hash: &str,
+    ) -> Result<RatchetRotationResult, HarnessError> {
+        let result = self
+            .query(
+                "rotate_ratchet",
+                serde_json::json!({
+                    "hash": dest_hash,
+                }),
+            )
+            .await?;
+
+        let rotated = result
+            .get("rotated")
+            .and_then(|v| v.as_bool())
+            .unwrap_or(false);
+        let ratchet_count = result
+            .get("ratchet_count")
+            .and_then(|v| v.as_u64())
+            .unwrap_or(0) as usize;
+        let new_ratchet_id = result
+            .get("new_ratchet_id")
+            .and_then(|v| v.as_str())
+            .map(|s| s.to_string());
+
+        Ok(RatchetRotationResult {
+            rotated,
+            ratchet_count,
+            new_ratchet_id,
+        })
+    }
 }
 
 impl Drop for TestDaemon {
@@ -602,6 +824,56 @@ pub struct ReceivedPacket {
     pub data: Vec<u8>,
 }
 
+/// Information about ratchet state for a destination.
+#[derive(Debug, Clone)]
+#[allow(dead_code)]
+pub struct RatchetInfo {
+    pub enabled: bool,
+    pub count: Option<usize>,
+    pub latest_id: Option<String>,
+    pub ratchet_dir: Option<String>,
+}
+
+/// Information about transport status.
+#[derive(Debug, Clone)]
+#[allow(dead_code)]
+pub struct TransportStatus {
+    pub enabled: bool,
+    pub identity_hash: Option<String>,
+    pub path_table_size: usize,
+    pub link_table_size: usize,
+    pub announce_table_size: usize,
+    pub interface_count: usize,
+}
+
+/// Information about a link table entry.
+#[derive(Debug, Clone)]
+#[allow(dead_code)]
+pub struct LinkTableEntry {
+    pub timestamp: Option<f64>,
+    pub interface: Option<String>,
+    pub hops: Option<u8>,
+}
+
+/// Information about a client interface.
+#[derive(Debug, Clone)]
+#[allow(dead_code)]
+pub struct ClientInterfaceInfo {
+    pub name: String,
+    pub online: bool,
+    pub target_ip: String,
+    pub target_port: u16,
+}
+
+/// Result from rotating a ratchet.
+#[derive(Debug, Clone)]
+#[allow(dead_code)]
+pub struct RatchetRotationResult {
+    pub rotated: bool,
+    pub ratchet_count: usize,
+    pub new_ratchet_id: Option<String>,
+}
+
 /// Find two distinct available TCP ports.
 ///
 /// This function binds to two ports simultaneously before releasing them,
@@ -629,6 +901,110 @@ fn find_two_available_ports() -> Result<(u16, u16), HarnessError> {
     drop(listener2);
 
     Ok((port1, port2))
+}
+
+// =========================================================================
+// DaemonTopology - Manages multiple connected Python daemons
+// =========================================================================
+
+/// Manages multiple connected Python daemons for multi-hop testing.
+///
+/// This struct creates a topology of daemons where each daemon connects
+/// to the previous one via TCPClientInterface, forming a linear chain.
+///
+/// # Example Topology
+///
+/// For a 3-daemon topology: D0 <- D1 <- D2
+/// - D0 is the entry point (only TCPServerInterface)
+/// - D1 connects to D0 (TCPClientInterface -> D0's TCPServerInterface)
+/// - D2 connects to D1 (TCPClientInterface -> D1's TCPServerInterface)
+///
+/// # Usage
+///
+/// ```ignore
+/// let topology = DaemonTopology::linear(3).await?;
+/// let entry = topology.entry_daemon();  // D0
+/// let exit = topology.exit_daemon();    // D2 (or D1 for 2-daemon)
+/// ```
+pub struct DaemonTopology {
+    daemons: Vec<TestDaemon>,
+}
+
+impl DaemonTopology {
+    /// Create a linear topology with the specified number of daemons.
+    ///
+    /// The topology forms a chain: D0 <- D1 <- D2 <- ... <- D(n-1)
+    /// where each daemon (except D0) connects to the previous daemon's TCPServerInterface.
+    ///
+    /// # Arguments
+    /// * `count` - Number of daemons to create (must be >= 2)
+    ///
+    /// # Returns
+    /// A DaemonTopology with all daemons connected in a linear chain.
+    pub async fn linear(count: usize) -> Result<Self, HarnessError> {
+        if count < 2 {
+            return Err(HarnessError::ParseError(
+                "DaemonTopology requires at least 2 daemons".to_string(),
+            ));
+        }
+
+        let mut daemons = Vec::with_capacity(count);
+
+        // Start the first daemon (entry point)
+        let entry_daemon = TestDaemon::start().await?;
+        daemons.push(entry_daemon);
+
+        // Start subsequent daemons and connect them to the previous one
+        for i in 1..count {
+            let daemon = TestDaemon::start().await?;
+
+            // Get the RNS port of the previous daemon
+            let prev_rns_port = daemons[i - 1].rns_port();
+
+            // Connect this daemon to the previous daemon's TCPServerInterface
+            let interface_name = format!("LinkTo_D{}", i - 1);
+            daemon
+                .add_client_interface("127.0.0.1", prev_rns_port, Some(&interface_name))
+                .await?;
+
+            daemons.push(daemon);
+        }
+
+        // Wait for connections to stabilize
+        tokio::time::sleep(Duration::from_millis(500)).await;
+
+        Ok(Self { daemons })
+    }
+
+    /// Get the entry daemon (first in the chain).
+    ///
+    /// This is where Rust A would connect to inject packets into the network.
+    pub fn entry_daemon(&self) -> &TestDaemon {
+        &self.daemons[0]
+    }
+
+    /// Get the exit daemon (last in the chain).
+    ///
+    /// This is where Rust B would connect to receive packets from the network.
+    pub fn exit_daemon(&self) -> &TestDaemon {
+        &self.daemons[self.daemons.len() - 1]
+    }
+
+    /// Get a daemon by index.
+    pub fn daemon(&self, index: usize) -> Option<&TestDaemon> {
+        self.daemons.get(index)
+    }
+
+    /// Get the number of daemons in the topology.
+    pub fn len(&self) -> usize {
+        self.daemons.len()
+    }
+
+    /// Check if the topology is empty.
+    #[allow(dead_code)]
+    pub fn is_empty(&self) -> bool {
+        self.daemons.is_empty()
+    }
 }
 
 #[cfg(test)]

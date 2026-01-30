@@ -129,9 +129,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 println!("Hash: {hash_hex}");
 
                 if let Some(path) = output {
-                    let key_bytes = identity
-                        .private_key_bytes()
-                        .map_err(|e| e.to_string())?;
+                    let key_bytes = identity.private_key_bytes().map_err(|e| e.to_string())?;
                     std::fs::write(&path, key_bytes)?;
                     println!("Saved to: {}", path.display());
                 } else {

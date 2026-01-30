@@ -34,9 +34,14 @@
 mod announce_interop_tests;
 mod common;
 mod discovery_tests;
+mod edge_case_tests;
 mod flow_tests;
 mod harness;
 mod link_manager_tests;
 mod link_tests;
+mod multihop_tests;
 mod protocol_tests;
+mod ratchet_rotation_tests;
+mod ratchet_tests;
 mod responder_tests;
+mod stress_tests;
