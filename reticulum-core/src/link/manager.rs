@@ -109,11 +109,51 @@ impl LinkManager {
         dest_signing_key: &[u8; 32],
         ctx: &mut impl Context,
     ) -> (LinkId, Vec<u8>) {
+        self.initiate_with_path(dest_hash, dest_signing_key, None, 1, ctx)
+    }
+
+    /// Start establishing a link to a destination with explicit path information.
+    ///
+    /// Use this method when the destination is reachable through an intermediate
+    /// transport node (more than 1 hop away). The `next_hop` should be the identity
+    /// hash of the transport node that will forward packets to the destination.
+    ///
+    /// Returns (link_id, raw_packet) where raw_packet is the LINK_REQUEST
+    /// packet that should be sent on the interface.
+    ///
+    /// # Arguments
+    /// * `dest_hash` - The destination hash to connect to
+    /// * `dest_signing_key` - The destination's Ed25519 signing key (from announce)
+    /// * `next_hop` - The transport_id (identity hash) of the next hop node, if routing through a relay
+    /// * `hops` - Number of hops to the destination
+    /// * `ctx` - Platform context for RNG
+    ///
+    /// # Example
+    /// ```ignore
+    /// // For a destination 2+ hops away, extract transport_id from the announce
+    /// let transport_id = announce_packet.transport_id; // daemon's identity hash
+    /// let hops = announce_packet.hops;
+    /// let (link_id, packet) = manager.initiate_with_path(
+    ///     dest_hash,
+    ///     &signing_key,
+    ///     Some(transport_id),
+    ///     hops,
+    ///     &mut ctx,
+    /// );
+    /// ```
+    pub fn initiate_with_path(
+        &mut self,
+        dest_hash: [u8; TRUNCATED_HASHBYTES],
+        dest_signing_key: &[u8; 32],
+        next_hop: Option<[u8; TRUNCATED_HASHBYTES]>,
+        hops: u8,
+        ctx: &mut impl Context,
+    ) -> (LinkId, Vec<u8>) {
         // Create new outgoing link
         let mut link = Link::new_outgoing(dest_hash, ctx);
 
-        // Build the LINK_REQUEST packet (also sets the link_id)
-        let packet = link.build_link_request_packet();
+        // Build the LINK_REQUEST packet with transport headers if needed
+        let packet = link.build_link_request_packet_with_transport(next_hop, hops);
         let link_id = *link.id();
 
         // Set the destination's signing key for proof verification

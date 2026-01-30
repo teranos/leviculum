@@ -530,25 +530,47 @@ impl Link {
     ///
     /// Python RNS calculates link_id as:
     /// ```python
-    /// hashable_part = bytes([raw[0] & 0x0F]) + raw[2:]
+    /// hashable_part = bytes([raw[0] & 0x0F])
+    /// if header_type == HEADER_2:
+    ///     hashable_part += raw[(TRUNCATED_HASHBYTES//8)+2:]  # Skip transport_id
+    /// else:
+    ///     hashable_part += raw[2:]
     /// # Remove signalling bytes if present (payload > 64 bytes)
     /// link_id = truncated_hash(hashable_part)
     /// ```
     ///
-    /// The raw_packet is: [flags (1)] [hops (1)] [dest_hash (16)] [context (1)] [payload (64-67)]
+    /// For HEADER_1: [flags (1)] [hops (1)] [dest_hash (16)] [context (1)] [payload (64-67)]
+    /// For HEADER_2: [flags (1)] [hops (1)] [transport_id (16)] [dest_hash (16)] [context (1)] [payload (64-67)]
+    ///
+    /// The hashable part always includes: (flags & 0x0F) + dest_hash + context + payload
+    /// This ensures the link_id is the same regardless of whether transport headers are present.
     pub fn calculate_link_id(raw_packet: &[u8]) -> LinkId {
-        // Build hashable part: (flags & 0x0F) + raw[2:]
-        let mut hashable = alloc::vec::Vec::with_capacity(raw_packet.len() - 1);
-        hashable.push(raw_packet[0] & 0x0F);
-        hashable.extend_from_slice(&raw_packet[2..]);
+        use crate::packet::HeaderType;
 
-        // If payload has signalling bytes (packet > 83 bytes), remove them
-        // Packet structure: flags(1) + hops(1) + dest_hash(16) + context(1) + payload(64+)
-        // Minimum packet size with 64-byte payload = 83 bytes
-        let payload_offset = 1 + 1 + TRUNCATED_HASHBYTES + 1; // 19 bytes
-        let payload_len = raw_packet.len() - payload_offset;
-        if payload_len > 64 {
-            let diff = payload_len - 64;
+        let flags = raw_packet[0];
+        let header_type = if flags & 0x40 != 0 {
+            HeaderType::Type2
+        } else {
+            HeaderType::Type1
+        };
+
+        // Build hashable part: (flags & 0x0F) + [dest_hash + context + payload]
+        // For HEADER_2, skip the transport_id (16 bytes after flags+hops)
+        let mut hashable = alloc::vec::Vec::with_capacity(raw_packet.len() - 1);
+        hashable.push(flags & 0x0F);
+
+        let data_start = match header_type {
+            HeaderType::Type2 => 2 + TRUNCATED_HASHBYTES, // Skip flags, hops, transport_id
+            HeaderType::Type1 => 2,                       // Skip flags, hops only
+        };
+        hashable.extend_from_slice(&raw_packet[data_start..]);
+
+        // If payload has signalling bytes (payload > 64 bytes), remove them
+        // After stripping header: dest_hash(16) + context(1) + payload(64+) = 81+ bytes
+        // Minimum hashable with 64-byte payload = 1 + 16 + 1 + 64 = 82 bytes
+        let payload_offset = 1 + TRUNCATED_HASHBYTES + 1; // (flags&0x0F) + dest_hash + context = 18 bytes
+        if hashable.len() > payload_offset + 64 {
+            let diff = hashable.len() - (payload_offset + 64);
             hashable.truncate(hashable.len() - diff);
         }
 
@@ -708,6 +730,71 @@ impl Link {
         // Calculate and set link ID from the complete packet
         let link_id = Self::calculate_link_id(&packet);
         self.set_link_id(link_id);
+
+        packet
+    }
+
+    /// Build link request packet with transport headers for multi-hop routing.
+    ///
+    /// When the packet needs to be routed through a transport node (indicated by
+    /// having a transport_id from an announce), we use HEADER_2 format with the
+    /// transport_id so intermediate nodes can route the packet.
+    ///
+    /// # Arguments
+    /// * `next_hop` - The transport_id (identity hash of the next hop node that will forward this packet)
+    /// * `hops_to_dest` - Number of hops to the destination (from path info, stored for reference)
+    ///
+    /// # Returns
+    /// The raw packet bytes ready for framing/transmission.
+    /// Also sets the link_id on this Link.
+    ///
+    /// # Note
+    /// If `next_hop` is None, falls back to HEADER_1 (direct/broadcast).
+    /// If `next_hop` is Some, uses HEADER_2 with transport routing regardless of hop count,
+    /// because the presence of transport_id in an announce indicates the packet must be
+    /// routed through that transport node.
+    pub fn build_link_request_packet_with_transport(
+        &mut self,
+        next_hop: Option<[u8; TRUNCATED_HASHBYTES]>,
+        hops_to_dest: u8,
+    ) -> alloc::vec::Vec<u8> {
+        use crate::destination::DestinationType;
+        use crate::packet::{HeaderType, PacketContext, PacketFlags, PacketType, TransportType};
+
+        // If no transport_id provided, use HEADER_1 (direct/broadcast)
+        if next_hop.is_none() {
+            return self.build_link_request_packet();
+        }
+
+        let transport_id = next_hop.unwrap();
+        let request_data = self.create_link_request();
+
+        // Build flags for HEADER_2 with transport routing
+        // Type2=1 (bit 6), Transport=1 (bit 4), Single=1 (bits 3-2), LinkReq=2 (bits 1-0)
+        let flags = PacketFlags {
+            header_type: HeaderType::Type2,
+            context_flag: false,
+            transport_type: TransportType::Transport,
+            dest_type: DestinationType::Single,
+            packet_type: PacketType::LinkRequest,
+        };
+
+        // Packet format: [flags (1)] [hops (1)] [transport_id (16)] [dest_hash (16)] [context (1)] [data (64)]
+        let mut packet = alloc::vec::Vec::with_capacity(1 + 1 + TRUNCATED_HASHBYTES + TRUNCATED_HASHBYTES + 1 + 64);
+        packet.push(flags.to_byte());
+        packet.push(0); // hops = 0 (we're originating)
+        packet.extend_from_slice(&transport_id);
+        packet.extend_from_slice(&self.destination_hash);
+        packet.push(PacketContext::None as u8);
+        packet.extend_from_slice(&request_data);
+
+        // Calculate and set link ID from the complete packet
+        // Note: Link ID calculation uses the same algorithm regardless of header type
+        let link_id = Self::calculate_link_id(&packet);
+        self.set_link_id(link_id);
+
+        // Store hop count
+        self.hops = hops_to_dest;
 
         packet
     }
@@ -1622,5 +1709,134 @@ mod tests {
         let mut decrypted2 = vec![0u8; message2.len() + 16];
         let dec_len2 = initiator.decrypt(&encrypted2[..enc_len2], &mut decrypted2).unwrap();
         assert_eq!(&decrypted2[..dec_len2], message2);
+    }
+
+    #[test]
+    fn test_build_link_request_with_transport() {
+        use crate::packet::{HeaderType, Packet, TransportType};
+
+        let dest_hash = [0x42; TRUNCATED_HASHBYTES];
+        let transport_id = [0xAB; TRUNCATED_HASHBYTES];
+
+        // Test with transport_id and hops=1 (should still use HEADER_2 because transport_id is set)
+        let mut link1 = Link::new_outgoing_with_rng(dest_hash, &mut OsRng);
+        let packet1 = link1.build_link_request_packet_with_transport(Some(transport_id), 1);
+
+        // Should be HEADER_2 (transport_id is set, even with hops=1)
+        let parsed1 = Packet::unpack(&packet1).unwrap();
+        assert_eq!(parsed1.flags.header_type, HeaderType::Type2);
+        assert_eq!(parsed1.flags.transport_type, TransportType::Transport);
+        assert_eq!(parsed1.transport_id, Some(transport_id));
+        assert_eq!(parsed1.destination_hash, dest_hash);
+        assert_eq!(link1.hops(), 1);
+
+        // Test with hops > 1 and transport_id (should use HEADER_2)
+        let mut link2 = Link::new_outgoing_with_rng(dest_hash, &mut OsRng);
+        let packet2 = link2.build_link_request_packet_with_transport(Some(transport_id), 2);
+
+        // Should be HEADER_2 with transport_id
+        let parsed2 = Packet::unpack(&packet2).unwrap();
+        assert_eq!(parsed2.flags.header_type, HeaderType::Type2);
+        assert_eq!(parsed2.flags.transport_type, TransportType::Transport);
+        assert_eq!(parsed2.transport_id, Some(transport_id));
+        assert_eq!(parsed2.destination_hash, dest_hash);
+        assert_eq!(link2.hops(), 2);
+
+        // Test with no transport_id (should use HEADER_1)
+        let mut link3 = Link::new_outgoing_with_rng(dest_hash, &mut OsRng);
+        let packet3 = link3.build_link_request_packet_with_transport(None, 5);
+
+        let parsed3 = Packet::unpack(&packet3).unwrap();
+        assert_eq!(parsed3.flags.header_type, HeaderType::Type1);
+        assert!(parsed3.transport_id.is_none());
+    }
+
+    #[test]
+    fn test_build_link_request_with_transport_flags() {
+        use crate::packet::Packet;
+
+        let dest_hash = [0x42; TRUNCATED_HASHBYTES];
+        let transport_id = [0xCD; TRUNCATED_HASHBYTES];
+
+        let mut link = Link::new_outgoing_with_rng(dest_hash, &mut OsRng);
+        let packet = link.build_link_request_packet_with_transport(Some(transport_id), 3);
+
+        // Parse and verify flags byte
+        let parsed = Packet::unpack(&packet).unwrap();
+
+        // Expected flags for HEADER_2 link request:
+        // Bit 6: Header Type = 1 (Type2)
+        // Bit 5: Context Flag = 0
+        // Bit 4: Transport Type = 1 (Transport)
+        // Bits 3-2: Dest Type = 00 (Single = 0x00)
+        // Bits 1-0: Packet Type = 10 (LinkRequest)
+        // = 0b01010010 = 0x52
+        let expected_flags = 0x52;
+        assert_eq!(packet[0], expected_flags, "Flags should be 0x52 for HEADER_2 transport link request");
+
+        // Hops should be 0 (we're originating)
+        assert_eq!(packet[1], 0x00);
+
+        // Transport ID should be at bytes 2-17
+        assert_eq!(&packet[2..18], &transport_id);
+
+        // Destination hash should be at bytes 18-33
+        assert_eq!(&packet[18..34], &dest_hash);
+
+        // Verify parsed packet matches
+        assert_eq!(parsed.hops, 0);
+        assert_eq!(parsed.transport_id, Some(transport_id));
+        assert_eq!(parsed.destination_hash, dest_hash);
+    }
+
+    #[test]
+    fn test_link_id_same_for_header1_and_header2() {
+        // This test verifies that the link_id calculation is the same
+        // regardless of whether HEADER_1 or HEADER_2 is used.
+        // This is critical for transport routing to work correctly.
+
+        let dest_hash = [0x42; TRUNCATED_HASHBYTES];
+        let transport_id = [0xAB; TRUNCATED_HASHBYTES];
+
+        // Create two links with the same ephemeral keys by using the same seed
+        // We need to ensure the request data is identical for fair comparison
+        let seed = [0x55; 32];
+        let signing_key = ed25519_dalek::SigningKey::from_bytes(&seed);
+        let verifying_key = signing_key.verifying_key();
+
+        let x25519_secret = x25519_dalek::StaticSecret::from([0x66; 32]);
+        let x25519_public = x25519_dalek::PublicKey::from(&x25519_secret);
+
+        // Manually create the link request data (same for both)
+        let mut request_data = [0u8; 64];
+        request_data[..32].copy_from_slice(x25519_public.as_bytes());
+        request_data[32..64].copy_from_slice(&verifying_key.to_bytes());
+
+        // Build HEADER_1 packet manually
+        let mut header1_packet = Vec::new();
+        header1_packet.push(0x02); // flags: Type1, Broadcast, Single, LinkRequest
+        header1_packet.push(0x00); // hops
+        header1_packet.extend_from_slice(&dest_hash);
+        header1_packet.push(0x00); // context
+        header1_packet.extend_from_slice(&request_data);
+
+        // Build HEADER_2 packet manually
+        let mut header2_packet = Vec::new();
+        header2_packet.push(0x52); // flags: Type2, Transport, Single, LinkRequest
+        header2_packet.push(0x00); // hops
+        header2_packet.extend_from_slice(&transport_id);
+        header2_packet.extend_from_slice(&dest_hash);
+        header2_packet.push(0x00); // context
+        header2_packet.extend_from_slice(&request_data);
+
+        // Calculate link_id for both
+        let link_id_h1 = Link::calculate_link_id(&header1_packet);
+        let link_id_h2 = Link::calculate_link_id(&header2_packet);
+
+        // They should be identical
+        assert_eq!(
+            link_id_h1, link_id_h2,
+            "Link ID should be the same for HEADER_1 and HEADER_2 packets with same content"
+        );
     }
 }

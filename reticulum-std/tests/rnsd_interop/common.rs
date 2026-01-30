@@ -224,6 +224,81 @@ pub async fn wait_for_announce(
     false
 }
 
+/// Transport routing information extracted from an announce packet.
+/// This contains the information needed to route link requests through intermediate nodes.
+#[derive(Debug)]
+pub struct AnnounceRouteInfo {
+    /// The announce packet
+    pub packet: Packet,
+    /// The transport_id from HEADER_2 announces, or None for direct announces
+    pub transport_id: Option<[u8; 16]>,
+    /// The hop count from the announce
+    pub hops: u8,
+}
+
+impl AnnounceRouteInfo {
+    /// Extract the destination's signing key from the announce payload.
+    /// The signing key is bytes 32-64 of the public key in the announce data.
+    pub fn signing_key(&self) -> Option<[u8; 32]> {
+        let data = self.packet.data.as_slice();
+        if data.len() >= 64 {
+            let mut key = [0u8; 32];
+            key.copy_from_slice(&data[32..64]);
+            Some(key)
+        } else {
+            None
+        }
+    }
+}
+
+/// Wait for any announce packet on the given stream.
+/// Returns the Packet if found within the timeout, allowing the caller to extract
+/// the signing key and other data from the announce.
+pub async fn wait_for_any_announce_packet(
+    stream: &mut TcpStream,
+    deframer: &mut Deframer,
+    timeout_duration: Duration,
+) -> Option<Packet> {
+    wait_for_any_announce_with_route_info(stream, deframer, timeout_duration)
+        .await
+        .map(|info| info.packet)
+}
+
+/// Wait for any announce packet and return full routing information.
+/// This includes the transport_id and hops needed for multi-hop link establishment.
+pub async fn wait_for_any_announce_with_route_info(
+    stream: &mut TcpStream,
+    deframer: &mut Deframer,
+    timeout_duration: Duration,
+) -> Option<AnnounceRouteInfo> {
+    let mut buffer = [0u8; 2048];
+    let start = std::time::Instant::now();
+
+    while start.elapsed() < timeout_duration {
+        match timeout(Duration::from_millis(100), stream.read(&mut buffer)).await {
+            Ok(Ok(0)) => break,
+            Ok(Ok(n)) => {
+                let results = deframer.process(&buffer[..n]);
+                for result in results {
+                    if let DeframeResult::Frame(data) = result {
+                        if let Ok(pkt) = Packet::unpack(&data) {
+                            if pkt.flags.packet_type == PacketType::Announce {
+                                return Some(AnnounceRouteInfo {
+                                    transport_id: pkt.transport_id,
+                                    hops: pkt.hops,
+                                    packet: pkt,
+                                });
+                            }
+                        }
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+    None
+}
+
 /// Send raw bytes (already packed, not framed) over a stream with HDLC framing
 pub async fn send_framed(stream: &mut TcpStream, raw: &[u8]) {
     let mut framed = Vec::new();

@@ -39,3 +39,4 @@ mod link_tests;
 mod responder_tests;
 mod flow_tests;
 mod protocol_tests;
+mod link_manager_tests;
