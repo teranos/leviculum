@@ -94,7 +94,7 @@ impl TransportRunner {
         loop {
             tokio::select! {
                 _ = interval.tick() => {
-                    self.tick().await;
+                    self.tick();
                 }
                 _ = shutdown.changed() => {
                     if *shutdown.borrow() {
@@ -107,7 +107,7 @@ impl TransportRunner {
     }
 
     /// Run a single tick: poll interfaces, process packets, emit events
-    async fn tick(&self) {
+    fn tick(&self) {
         let mut transport = self.transport.lock().unwrap();
 
         // Poll all interfaces for incoming data
@@ -116,28 +116,26 @@ impl TransportRunner {
 
         for idx in 0..iface_count {
             // Try to receive from each interface
-            loop {
-                match transport.interface_mut(idx) {
-                    Some(iface) => match iface.recv(&mut recv_buf) {
-                        Ok(len) if len > 0 => {
-                            let data = recv_buf[..len].to_vec();
-                            // Feed to transport
-                            if let Err(e) = transport.process_incoming(idx, &data) {
-                                tracing::debug!("Error processing packet from interface {}: {:?}", idx, e);
-                            }
+            while let Some(iface) = transport.interface_mut(idx) {
+                match iface.recv(&mut recv_buf) {
+                    Ok(len) if len > 0 => {
+                        let data = recv_buf[..len].to_vec();
+                        // Feed to transport
+                        if let Err(e) = transport.process_incoming(idx, &data) {
+                            tracing::debug!(
+                                "Error processing packet from interface {idx}: {e:?}"
+                            );
                         }
-                        Ok(_) => break,                          // No data
-                        Err(InterfaceError::WouldBlock) => break, // Non-blocking, no data
-                        Err(InterfaceError::Disconnected) => {
-                            tracing::warn!("Interface {} disconnected", idx);
-                            break;
-                        }
-                        Err(e) => {
-                            tracing::debug!("Interface {} recv error: {:?}", idx, e);
-                            break;
-                        }
-                    },
-                    None => break, // Interface slot empty
+                    }
+                    Ok(_) | Err(InterfaceError::WouldBlock) => break, // No data available
+                    Err(InterfaceError::Disconnected) => {
+                        tracing::warn!("Interface {idx} disconnected");
+                        break;
+                    }
+                    Err(e) => {
+                        tracing::debug!("Interface {idx} recv error: {e:?}");
+                        break;
+                    }
                 }
             }
         }
@@ -166,10 +164,8 @@ mod tests {
     #[tokio::test]
     async fn test_transport_runner_creation() {
         let clock = SystemClock::new();
-        let storage_path = std::env::temp_dir().join(format!(
-            "reticulum_runner_test_{}",
-            std::process::id()
-        ));
+        let storage_path =
+            std::env::temp_dir().join(format!("reticulum_runner_test_{}", std::process::id()));
         let storage = Storage::new(&storage_path).unwrap();
         let identity = Identity::generate_with_rng(&mut rand_core::OsRng);
         let config = TransportConfig::default();
@@ -188,10 +184,8 @@ mod tests {
     #[tokio::test]
     async fn test_transport_runner_shutdown() {
         let clock = SystemClock::new();
-        let storage_path = std::env::temp_dir().join(format!(
-            "reticulum_runner_shutdown_{}",
-            std::process::id()
-        ));
+        let storage_path =
+            std::env::temp_dir().join(format!("reticulum_runner_shutdown_{}", std::process::id()));
         let storage = Storage::new(&storage_path).unwrap();
         let identity = Identity::generate_with_rng(&mut rand_core::OsRng);
         let config = TransportConfig::default();

@@ -32,7 +32,7 @@ pub struct Reticulum {
 
 impl Reticulum {
     /// Create a new Reticulum instance with default configuration
-    pub async fn new() -> Result<Self> {
+    pub fn new() -> Result<Self> {
         let config_path = Config::default_config_path();
         let config = if config_path.exists() {
             Config::load(&config_path)?
@@ -40,11 +40,11 @@ impl Reticulum {
             Config::default()
         };
 
-        Self::with_config(config).await
+        Self::with_config(config)
     }
 
     /// Create a new Reticulum instance with custom configuration
-    pub async fn with_config(config: Config) -> Result<Self> {
+    pub fn with_config(config: Config) -> Result<Self> {
         let storage_path = config
             .reticulum
             .storage_path
@@ -89,7 +89,7 @@ impl Reticulum {
         if let Some(handle) = self.runner_handle.take() {
             handle
                 .await
-                .map_err(|e| Error::Transport(format!("Runner panicked: {}", e)))?;
+                .map_err(|e| Error::Transport(format!("Runner panicked: {e}")))?;
         }
 
         tracing::info!("Reticulum stopped");
@@ -136,7 +136,7 @@ mod tests {
     #[tokio::test]
     async fn test_create_instance() {
         let config = Config::default();
-        let mut rns = Reticulum::with_config(config).await.unwrap();
+        let mut rns = Reticulum::with_config(config).unwrap();
         assert!(rns.is_running());
         assert!(!rns.is_transport_enabled());
 

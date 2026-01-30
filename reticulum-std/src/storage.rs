@@ -17,7 +17,7 @@ impl Storage {
 
         // Create directories if they don't exist
         std::fs::create_dir_all(&base_path)
-            .map_err(|e| Error::Storage(format!("Failed to create storage dir: {}", e)))?;
+            .map_err(|e| Error::Storage(format!("Failed to create storage dir: {e}")))?;
 
         Ok(Self { base_path })
     }
@@ -36,7 +36,7 @@ impl Storage {
     pub fn ensure_category(&self, category: &str) -> Result<PathBuf> {
         let path = self.category_path(category);
         std::fs::create_dir_all(&path)
-            .map_err(|e| Error::Storage(format!("Failed to create category dir: {}", e)))?;
+            .map_err(|e| Error::Storage(format!("Failed to create category dir: {e}")))?;
         Ok(path)
     }
 
@@ -44,7 +44,7 @@ impl Storage {
     pub fn read_raw(&self, category: &str, name: &str) -> Result<Vec<u8>> {
         let path = self.category_path(category).join(name);
         std::fs::read(&path)
-            .map_err(|e| Error::Storage(format!("Failed to read {}: {}", path.display(), e)))
+            .map_err(|e| Error::Storage(format!("Failed to read {}: {e}", path.display())))
     }
 
     /// Write raw bytes to storage
@@ -55,9 +55,9 @@ impl Storage {
         // Write to temp file first, then rename (atomic on most systems)
         let temp_path = path.with_extension("tmp");
         std::fs::write(&temp_path, data)
-            .map_err(|e| Error::Storage(format!("Failed to write temp file: {}", e)))?;
+            .map_err(|e| Error::Storage(format!("Failed to write temp file: {e}")))?;
         std::fs::rename(&temp_path, &path)
-            .map_err(|e| Error::Storage(format!("Failed to rename temp file: {}", e)))?;
+            .map_err(|e| Error::Storage(format!("Failed to rename temp file: {e}")))?;
 
         Ok(())
     }
@@ -66,13 +66,13 @@ impl Storage {
     pub fn read<T: serde::de::DeserializeOwned>(&self, category: &str, name: &str) -> Result<T> {
         let data = self.read_raw(category, name)?;
         rmp_serde::from_slice(&data)
-            .map_err(|e| Error::Serialization(format!("Failed to deserialize: {}", e)))
+            .map_err(|e| Error::Serialization(format!("Failed to deserialize: {e}")))
     }
 
     /// Write msgpack-serialized data
     pub fn write<T: serde::Serialize>(&self, category: &str, name: &str, value: &T) -> Result<()> {
         let data = rmp_serde::to_vec(value)
-            .map_err(|e| Error::Serialization(format!("Failed to serialize: {}", e)))?;
+            .map_err(|e| Error::Serialization(format!("Failed to serialize: {e}")))?;
         self.write_raw(category, name, &data)
     }
 
@@ -85,8 +85,9 @@ impl Storage {
     pub fn delete(&self, category: &str, name: &str) -> Result<()> {
         let path = self.category_path(category).join(name);
         if path.exists() {
-            std::fs::remove_file(&path)
-                .map_err(|e| Error::Storage(format!("Failed to delete {}: {}", path.display(), e)))?;
+            std::fs::remove_file(&path).map_err(|e| {
+                Error::Storage(format!("Failed to delete {}: {e}", path.display()))
+            })?;
         }
         Ok(())
     }
@@ -99,11 +100,12 @@ impl Storage {
         }
 
         let entries = std::fs::read_dir(&path)
-            .map_err(|e| Error::Storage(format!("Failed to read dir: {}", e)))?;
+            .map_err(|e| Error::Storage(format!("Failed to read dir: {e}")))?;
 
         let mut names = Vec::new();
         for entry in entries {
-            let entry = entry.map_err(|e| Error::Storage(format!("Failed to read entry: {}", e)))?;
+            let entry =
+                entry.map_err(|e| Error::Storage(format!("Failed to read entry: {e}")))?;
             if let Some(name) = entry.file_name().to_str() {
                 names.push(name.to_string());
             }
@@ -114,7 +116,11 @@ impl Storage {
 }
 
 fn hex_encode(bytes: &[u8]) -> String {
-    bytes.iter().map(|b| format!("{:02x}", b)).collect()
+    use std::fmt::Write;
+    bytes.iter().fold(String::with_capacity(bytes.len() * 2), |mut s, b| {
+        let _ = write!(s, "{b:02x}");
+        s
+    })
 }
 
 fn hex_decode(s: &str) -> Option<Vec<u8>> {

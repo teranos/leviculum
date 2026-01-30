@@ -9,6 +9,14 @@ use clap::{Parser, Subcommand};
 use tracing::Level;
 use tracing_subscriber::FmtSubscriber;
 
+fn hex_encode(bytes: &[u8]) -> String {
+    use std::fmt::Write;
+    bytes.iter().fold(String::with_capacity(bytes.len() * 2), |mut s, b| {
+        let _ = write!(s, "{b:02x}");
+        s
+    })
+}
+
 #[derive(Parser, Debug)]
 #[command(name = "lrns")]
 #[command(author, version, about = "Reticulum command-line utility")]
@@ -73,7 +81,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let args = Args::parse();
 
     // Initialize logging
-    let log_level = if args.verbose { Level::DEBUG } else { Level::INFO };
+    let log_level = if args.verbose {
+        Level::DEBUG
+    } else {
+        Level::INFO
+    };
     let subscriber = FmtSubscriber::builder()
         .with_max_level(log_level)
         .with_target(false)
@@ -91,7 +103,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
         Commands::Path { destination } => {
             if let Some(dest) = destination {
-                println!("Requesting path to: {}", dest);
+                println!("Requesting path to: {dest}");
                 // TODO: Request path via daemon
             } else {
                 println!("Known paths:");
@@ -104,15 +116,15 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
         Commands::Identity { action } => match action {
             IdentityAction::Generate { output } => {
-                use reticulum_core::Identity;
                 use rand_core::OsRng;
+                use reticulum_core::Identity;
 
                 let identity = Identity::generate_with_rng(&mut OsRng);
                 let hash = identity.hash();
-                let hash_hex: String = hash.iter().map(|b| format!("{:02x}", b)).collect();
+                let hash_hex = hex_encode(hash);
 
                 println!("Generated new identity");
-                println!("Hash: {}", hash_hex);
+                println!("Hash: {hash_hex}");
 
                 if let Some(path) = output {
                     let key_bytes = identity.private_key_bytes()?;
@@ -120,8 +132,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     println!("Saved to: {}", path.display());
                 } else {
                     let pub_key = identity.public_key_bytes();
-                    let pub_hex: String = pub_key.iter().map(|b| format!("{:02x}", b)).collect();
-                    println!("Public key: {}", pub_hex);
+                    let pub_hex = hex_encode(&pub_key);
+                    println!("Public key: {pub_hex}");
                 }
             }
 
@@ -131,18 +143,18 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 let key_bytes = std::fs::read(&path)?;
                 let identity = Identity::from_private_key_bytes(&key_bytes)?;
                 let hash = identity.hash();
-                let hash_hex: String = hash.iter().map(|b| format!("{:02x}", b)).collect();
+                let hash_hex = hex_encode(hash);
                 let pub_key = identity.public_key_bytes();
-                let pub_hex: String = pub_key.iter().map(|b| format!("{:02x}", b)).collect();
+                let pub_hex = hex_encode(&pub_key);
 
                 println!("Identity: {}", path.display());
-                println!("Hash: {}", hash_hex);
-                println!("Public key: {}", pub_hex);
+                println!("Hash: {hash_hex}");
+                println!("Public key: {pub_hex}");
             }
         },
 
         Commands::Probe { destination } => {
-            println!("Probing destination: {}", destination);
+            println!("Probing destination: {destination}");
             println!("Not implemented yet");
             // TODO: Send probe packet via daemon
         }

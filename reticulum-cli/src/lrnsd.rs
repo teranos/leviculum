@@ -38,10 +38,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let args = Args::parse();
 
     // Initialize logging
-    let log_level = if args.verbose { Level::DEBUG } else { Level::INFO };
-    let subscriber = FmtSubscriber::builder()
-        .with_max_level(log_level)
-        .finish();
+    let log_level = if args.verbose {
+        Level::DEBUG
+    } else {
+        Level::INFO
+    };
+    let subscriber = FmtSubscriber::builder().with_max_level(log_level).finish();
     tracing::subscriber::set_global_default(subscriber)?;
 
     info!("Starting lrnsd v{}", env!("CARGO_PKG_VERSION"));
@@ -63,7 +65,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     };
     config.reticulum.storage_path = Some(storage_path);
 
-    let mut rns = Reticulum::with_config(config).await?;
+    let mut rns = Reticulum::with_config(config)?;
 
     info!("Reticulum daemon running");
 

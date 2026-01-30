@@ -68,9 +68,8 @@ pub fn encrypt_token(
     let enc_len = aes256_cbc_encrypt(aes_key, iv, plaintext, &mut output[AES_BLOCK_SIZE..])
         .map_err(|e| match e {
             AesError::InvalidKeyLength => TokenError::InvalidKeyLength,
-            AesError::InvalidIvLength => TokenError::DecryptionFailed,
             AesError::BufferTooSmall => TokenError::BufferTooSmall,
-            AesError::DecryptionFailed => TokenError::DecryptionFailed,
+            AesError::InvalidIvLength | AesError::DecryptionFailed => TokenError::DecryptionFailed,
         })?;
 
     // Calculate HMAC over IV + ciphertext

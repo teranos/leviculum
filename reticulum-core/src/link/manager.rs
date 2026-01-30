@@ -317,12 +317,7 @@ impl LinkManager {
     /// * `packet` - The parsed packet
     /// * `raw_packet` - The raw packet bytes (needed for link ID calculation)
     /// * `ctx` - Platform context
-    pub fn process_packet(
-        &mut self,
-        packet: &Packet,
-        raw_packet: &[u8],
-        ctx: &mut impl Context,
-    ) {
+    pub fn process_packet(&mut self, packet: &Packet, raw_packet: &[u8], ctx: &mut impl Context) {
         match packet.flags.packet_type {
             PacketType::LinkRequest => {
                 self.handle_link_request(packet, raw_packet, ctx);
@@ -398,12 +393,7 @@ impl LinkManager {
 
     // --- Internal: Packet Handlers ---
 
-    fn handle_link_request(
-        &mut self,
-        packet: &Packet,
-        raw_packet: &[u8],
-        ctx: &mut impl Context,
-    ) {
+    fn handle_link_request(&mut self, packet: &Packet, raw_packet: &[u8], ctx: &mut impl Context) {
         let dest_hash = packet.destination_hash;
 
         // Check if we accept links for this destination
@@ -423,9 +413,8 @@ impl LinkManager {
         let request_data = packet.data.as_slice();
 
         // Create the incoming link
-        let link = match Link::new_incoming(request_data, link_id, dest_hash, ctx) {
-            Ok(l) => l,
-            Err(_) => return,
+        let Ok(link) = Link::new_incoming(request_data, link_id, dest_hash, ctx) else {
+            return;
         };
 
         // Extract peer keys for the event
@@ -454,9 +443,8 @@ impl LinkManager {
             return;
         }
 
-        let link = match self.links.get_mut(&link_id) {
-            Some(l) => l,
-            None => return,
+        let Some(link) = self.links.get_mut(&link_id) else {
+            return;
         };
 
         if link.state() != LinkState::Pending || !link.is_initiator() {
@@ -503,9 +491,8 @@ impl LinkManager {
         // DATA packets are addressed to link_id
         let link_id = packet.destination_hash;
 
-        let link = match self.links.get_mut(&link_id) {
-            Some(l) => l,
-            None => return,
+        let Some(link) = self.links.get_mut(&link_id) else {
+            return;
         };
 
         // Check if this is an RTT packet (context = Lrrtt)
@@ -557,11 +544,8 @@ impl LinkManager {
 
     fn check_timeouts(&mut self, now_ms: u64) {
         // Check pending outgoing links
-        let timed_out_outgoing = Self::collect_timed_out_ids(
-            &self.pending_outgoing,
-            |p| p.created_at_ms,
-            now_ms,
-        );
+        let timed_out_outgoing =
+            Self::collect_timed_out_ids(&self.pending_outgoing, |p| p.created_at_ms, now_ms);
         for link_id in timed_out_outgoing {
             self.links.remove(&link_id);
             self.pending_outgoing.remove(&link_id);
@@ -572,11 +556,8 @@ impl LinkManager {
         }
 
         // Check pending incoming links
-        let timed_out_incoming = Self::collect_timed_out_ids(
-            &self.pending_incoming,
-            |p| p.proof_sent_at_ms,
-            now_ms,
-        );
+        let timed_out_incoming =
+            Self::collect_timed_out_ids(&self.pending_incoming, |p| p.proof_sent_at_ms, now_ms);
         for link_id in timed_out_incoming {
             self.links.remove(&link_id);
             self.pending_incoming.remove(&link_id);
@@ -706,7 +687,10 @@ mod tests {
         let events: Vec<_> = manager.drain_events().collect();
         assert_eq!(events.len(), 1);
         match &events[0] {
-            LinkEvent::LinkClosed { link_id: id, reason } => {
+            LinkEvent::LinkClosed {
+                link_id: id,
+                reason,
+            } => {
                 assert_eq!(id, &link_id);
                 assert_eq!(*reason, LinkCloseReason::Timeout);
             }
@@ -784,7 +768,10 @@ mod tests {
         let events: Vec<_> = initiator_mgr.drain_events().collect();
         assert_eq!(events.len(), 1);
         match &events[0] {
-            LinkEvent::LinkEstablished { link_id: id, is_initiator } => {
+            LinkEvent::LinkEstablished {
+                link_id: id,
+                is_initiator,
+            } => {
                 assert_eq!(id, &link_id);
                 assert!(*is_initiator);
             }
@@ -800,7 +787,10 @@ mod tests {
         let events: Vec<_> = responder_mgr.drain_events().collect();
         assert_eq!(events.len(), 1);
         match &events[0] {
-            LinkEvent::LinkEstablished { link_id: id, is_initiator } => {
+            LinkEvent::LinkEstablished {
+                link_id: id,
+                is_initiator,
+            } => {
                 assert_eq!(id, &responder_link_id);
                 assert!(!*is_initiator);
             }

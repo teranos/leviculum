@@ -7,7 +7,7 @@ use std::path::{Path, PathBuf};
 use crate::error::{Error, Result};
 
 /// Main Reticulum configuration
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct Config {
     /// Core reticulum settings
     #[serde(default)]
@@ -112,33 +112,25 @@ fn default_bitrate() -> u64 {
     62500 // Default Reticulum bitrate
 }
 
-impl Default for Config {
-    fn default() -> Self {
-        Self {
-            reticulum: ReticulumConfig::default(),
-            interfaces: HashMap::new(),
-        }
-    }
-}
 
 impl Config {
     /// Load configuration from a file
     pub fn load<P: AsRef<Path>>(path: P) -> Result<Self> {
         let content = std::fs::read_to_string(path.as_ref())
-            .map_err(|e| Error::Config(format!("Failed to read config: {}", e)))?;
+            .map_err(|e| Error::Config(format!("Failed to read config: {e}")))?;
 
         // Try TOML format
         toml::from_str(&content)
-            .map_err(|e| Error::Config(format!("Failed to parse config: {}", e)))
+            .map_err(|e| Error::Config(format!("Failed to parse config: {e}")))
     }
 
     /// Save configuration to a file
     pub fn save<P: AsRef<Path>>(&self, path: P) -> Result<()> {
         let content = toml::to_string_pretty(self)
-            .map_err(|e| Error::Config(format!("Failed to serialize config: {}", e)))?;
+            .map_err(|e| Error::Config(format!("Failed to serialize config: {e}")))?;
 
         std::fs::write(path.as_ref(), content)
-            .map_err(|e| Error::Config(format!("Failed to write config: {}", e)))
+            .map_err(|e| Error::Config(format!("Failed to write config: {e}")))
     }
 
     /// Get the default config directory path
@@ -179,6 +171,9 @@ mod tests {
         let config = Config::default();
         let toml_str = toml::to_string(&config).unwrap();
         let parsed: Config = toml::from_str(&toml_str).unwrap();
-        assert_eq!(parsed.reticulum.enable_transport, config.reticulum.enable_transport);
+        assert_eq!(
+            parsed.reticulum.enable_transport,
+            config.reticulum.enable_transport
+        );
     }
 }

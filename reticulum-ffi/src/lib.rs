@@ -176,8 +176,7 @@ pub unsafe extern "C" fn lrns_identity_verify(
 
     match identity.verify(message, signature) {
         Ok(true) => LRNS_OK,
-        Ok(false) => LRNS_ERR_CRYPTO,
-        Err(_) => LRNS_ERR_CRYPTO,
+        Ok(false) | Err(_) => LRNS_ERR_CRYPTO,
     }
 }
 
@@ -254,7 +253,11 @@ pub unsafe extern "C" fn lrns_identity_has_private_keys(identity: *const LrnsIde
     if identity.is_null() {
         return 0;
     }
-    if (*identity).inner.has_private_keys() { 1 } else { 0 }
+    if (*identity).inner.has_private_keys() {
+        1
+    } else {
+        0
+    }
 }
 
 /// Encrypt data for an identity
