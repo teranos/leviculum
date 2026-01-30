@@ -44,7 +44,7 @@ use alloc::collections::BTreeMap;
 use alloc::collections::BTreeSet;
 use alloc::vec::Vec;
 
-use crate::constants::TRUNCATED_HASHBYTES;
+use crate::constants::{MS_PER_SECOND, TRUNCATED_HASHBYTES};
 use crate::identity::Identity;
 use crate::packet::{Packet, PacketContext, PacketType};
 use crate::traits::{Clock, Context};
@@ -68,6 +68,10 @@ pub struct LinkManager {
     events: Vec<LinkEvent>,
     /// Pending RTT packets to send (generated after processing proof)
     pending_rtt_packets: BTreeMap<LinkId, Vec<u8>>,
+    /// Pending keepalive packets to send
+    pending_keepalive_packets: Vec<(LinkId, Vec<u8>)>,
+    /// Pending close packets to send (with packet data)
+    pending_close_packets: Vec<(LinkId, Vec<u8>)>,
 }
 
 /// State for a pending outgoing link (initiator side, awaiting proof)
@@ -95,6 +99,8 @@ impl LinkManager {
             accepting: BTreeSet::new(),
             events: Vec::new(),
             pending_rtt_packets: BTreeMap::new(),
+            pending_keepalive_packets: Vec::new(),
+            pending_close_packets: Vec::new(),
         }
     }
 
@@ -293,15 +299,44 @@ impl LinkManager {
     }
 
     /// Close a link gracefully
-    pub fn close(&mut self, link_id: &LinkId) {
-        if let Some(_link) = self.links.remove(link_id) {
+    ///
+    /// This builds a LINKCLOSE packet that should be sent to the peer.
+    /// Call `drain_close_packets()` after this to get the packet to send.
+    pub fn close(&mut self, link_id: &LinkId, ctx: &mut impl Context) {
+        if let Some(link) = self.links.get_mut(link_id) {
+            // Try to build and queue the close packet
+            if let Ok(close_packet) = link.build_close_packet(ctx) {
+                self.pending_close_packets.push((*link_id, close_packet));
+            }
+            // Mark the link as closed
+            link.close();
+            // Remove from pending tracking
             self.pending_outgoing.remove(link_id);
             self.pending_incoming.remove(link_id);
+            // Emit event
             self.events.push(LinkEvent::LinkClosed {
                 link_id: *link_id,
                 reason: LinkCloseReason::Normal,
             });
         }
+    }
+
+    /// Close a link without sending a close packet (local only)
+    ///
+    /// Use this when the peer has already closed the link or when
+    /// we don't want/can't send a close packet.
+    pub fn close_local(&mut self, link_id: &LinkId, reason: LinkCloseReason) {
+        if let Some(link) = self.links.get_mut(link_id) {
+            link.close();
+        }
+        // Always remove from tracking regardless of link state
+        self.links.remove(link_id);
+        self.pending_outgoing.remove(link_id);
+        self.pending_incoming.remove(link_id);
+        self.events.push(LinkEvent::LinkClosed {
+            link_id: *link_id,
+            reason,
+        });
     }
 
     // --- Packet Processing ---
@@ -336,11 +371,22 @@ impl LinkManager {
 
     // --- Polling ---
 
-    /// Poll for timeouts and emit events
+    /// Poll for timeouts, keepalives, and stale links
     ///
-    /// Call this regularly (e.g. every 100ms).
-    pub fn poll(&mut self, now_ms: u64) {
+    /// Call this regularly (e.g. every 100ms). This method:
+    /// - Checks for handshake timeouts on pending links
+    /// - Checks if active links should send keepalives (initiator only)
+    /// - Checks if active links have become stale
+    /// - Checks if stale links should be closed
+    ///
+    /// # Arguments
+    /// * `now_ms` - Current time in milliseconds
+    /// * `ctx` - Context for building keepalive/close packets
+    pub fn poll(&mut self, now_ms: u64, ctx: &mut impl Context) {
         self.check_timeouts(now_ms);
+        let now_secs = now_ms / MS_PER_SECOND;
+        self.check_keepalives(now_secs, ctx);
+        self.check_stale_links(now_secs, ctx);
     }
 
     /// Drain pending events
@@ -389,6 +435,27 @@ impl LinkManager {
     /// Check if there's a pending RTT packet for a link
     pub fn has_pending_rtt_packet(&self, link_id: &LinkId) -> bool {
         self.pending_rtt_packets.contains_key(link_id)
+    }
+
+    /// Drain pending keepalive packets to send
+    ///
+    /// Returns an iterator over (link_id, packet_data) pairs.
+    /// Call this after poll() to get keepalive packets that need to be sent.
+    pub fn drain_keepalive_packets(&mut self) -> alloc::vec::Drain<'_, (LinkId, Vec<u8>)> {
+        self.pending_keepalive_packets.drain(..)
+    }
+
+    /// Drain pending close packets to send
+    ///
+    /// Returns an iterator over (link_id, packet_data) pairs.
+    /// Call this after poll() to get close packets that need to be sent.
+    pub fn drain_close_packets(&mut self) -> alloc::vec::Drain<'_, (LinkId, Vec<u8>)> {
+        self.pending_close_packets.drain(..)
+    }
+
+    /// Get a mutable reference to a link
+    pub fn link_mut(&mut self, link_id: &LinkId) -> Option<&mut Link> {
+        self.links.get_mut(link_id)
     }
 
     // --- Internal: Packet Handlers ---
@@ -467,12 +534,17 @@ impl LinkManager {
         }
 
         // Proof verified! Calculate RTT and build the RTT packet
-        let now = ctx.clock().now_ms();
+        let now_ms = ctx.clock().now_ms();
+        let now_secs = now_ms / MS_PER_SECOND;
         let pending = self.pending_outgoing.remove(&link_id);
         let rtt_ms = pending
-            .map(|p| now.saturating_sub(p.created_at_ms))
+            .map(|p| now_ms.saturating_sub(p.created_at_ms))
             .unwrap_or(0);
-        let rtt_seconds = rtt_ms as f64 / 1000.0;
+        let rtt_seconds = rtt_ms as f64 / MS_PER_SECOND as f64;
+
+        // Update keepalive timing based on RTT
+        link.update_keepalive_from_rtt(rtt_seconds);
+        link.mark_established(now_secs);
 
         // Build RTT packet - the caller retrieves it via take_pending_rtt_packet()
         if let Ok(rtt_packet) = link.build_rtt_packet(rtt_seconds, ctx) {
@@ -487,9 +559,10 @@ impl LinkManager {
         }
     }
 
-    fn handle_data(&mut self, packet: &Packet, _ctx: &mut impl Context) {
+    fn handle_data(&mut self, packet: &Packet, ctx: &mut impl Context) {
         // DATA packets are addressed to link_id
         let link_id = packet.destination_hash;
+        let now_secs = ctx.clock().now_ms() / MS_PER_SECOND;
 
         let Some(link) = self.links.get_mut(&link_id) else {
             return;
@@ -504,8 +577,10 @@ impl LinkManager {
 
             // Process RTT
             let encrypted_data = packet.data.as_slice();
-            if link.process_rtt(encrypted_data).is_ok() {
-                // Link is now active
+            if let Ok(rtt_secs) = link.process_rtt(encrypted_data) {
+                // Link is now active - update keepalive timing from RTT
+                link.update_keepalive_from_rtt(rtt_secs);
+                link.mark_established(now_secs);
                 self.pending_incoming.remove(&link_id);
                 self.events.push(LinkEvent::LinkEstablished {
                     link_id,
@@ -515,10 +590,51 @@ impl LinkManager {
             return;
         }
 
+        // Handle KEEPALIVE packets
+        if packet.context == PacketContext::Keepalive {
+            // Record inbound activity
+            link.record_inbound(now_secs);
+
+            let encrypted_data = packet.data.as_slice();
+            match link.process_keepalive(encrypted_data) {
+                Ok(should_echo) => {
+                    self.events
+                        .push(LinkEvent::KeepaliveReceived { link_id });
+
+                    // If we're responder and received valid keepalive, echo back
+                    if should_echo {
+                        if let Ok(echo_packet) = link.build_keepalive_packet(ctx) {
+                            self.pending_keepalive_packets.push((link_id, echo_packet));
+                        }
+                    }
+                }
+                Err(_) => {
+                    // Invalid keepalive - ignore
+                }
+            }
+            return;
+        }
+
+        // Handle LINKCLOSE packets
+        if packet.context == PacketContext::LinkClose {
+            let encrypted_data = packet.data.as_slice();
+            if link.process_close(encrypted_data).is_ok() {
+                // Link closed by peer
+                self.events.push(LinkEvent::LinkClosed {
+                    link_id,
+                    reason: LinkCloseReason::PeerClosed,
+                });
+            }
+            return;
+        }
+
         // Regular data packet
         if link.state() != LinkState::Active {
             return;
         }
+
+        // Record inbound activity for any data packet
+        link.record_inbound(now_secs);
 
         // Decrypt the data
         let encrypted_data = packet.data.as_slice();
@@ -582,6 +698,73 @@ impl LinkManager {
             .filter(|(_, entry)| now_ms.saturating_sub(get_timestamp(entry)) > LINK_TIMEOUT_MS)
             .map(|(id, _)| *id)
             .collect()
+    }
+
+    // --- Internal: Keepalive Handling ---
+
+    /// Check if any active links need to send keepalives (initiator only)
+    fn check_keepalives(&mut self, now_secs: u64, ctx: &mut impl Context) {
+        // Collect link IDs that need keepalives (only initiators send proactive keepalives)
+        let need_keepalive: Vec<LinkId> = self
+            .links
+            .iter()
+            .filter(|(_, link)| link.is_initiator() && link.should_send_keepalive(now_secs))
+            .map(|(id, _)| *id)
+            .collect();
+
+        // Build and queue keepalive packets
+        for link_id in need_keepalive {
+            if let Some(link) = self.links.get_mut(&link_id) {
+                if let Ok(packet) = link.build_keepalive_packet(ctx) {
+                    link.record_keepalive_sent(now_secs);
+                    self.pending_keepalive_packets.push((link_id, packet));
+                }
+            }
+        }
+    }
+
+    // --- Internal: Stale Link Handling ---
+
+    /// Check for stale links and close them if timeout expired
+    fn check_stale_links(&mut self, now_secs: u64, ctx: &mut impl Context) {
+        // First pass: Find links that are active but should become stale
+        let newly_stale: Vec<LinkId> = self
+            .links
+            .iter()
+            .filter(|(_, link)| link.state() == LinkState::Active && link.is_stale(now_secs))
+            .map(|(id, _)| *id)
+            .collect();
+
+        // Transition newly stale links
+        for link_id in newly_stale {
+            if let Some(link) = self.links.get_mut(&link_id) {
+                link.set_state(LinkState::Stale);
+                self.events.push(LinkEvent::LinkStale { link_id });
+            }
+        }
+
+        // Second pass: Find stale links that should be closed
+        let should_close: Vec<LinkId> = self
+            .links
+            .iter()
+            .filter(|(_, link)| link.state() == LinkState::Stale && link.should_close(now_secs))
+            .map(|(id, _)| *id)
+            .collect();
+
+        // Close stale links that have timed out
+        for link_id in should_close {
+            if let Some(link) = self.links.get_mut(&link_id) {
+                // Build close packet before closing
+                if let Ok(close_packet) = link.build_close_packet(ctx) {
+                    self.pending_close_packets.push((link_id, close_packet));
+                }
+                link.close();
+                self.events.push(LinkEvent::LinkClosed {
+                    link_id,
+                    reason: LinkCloseReason::Stale,
+                });
+            }
+        }
     }
 }
 
@@ -677,7 +860,7 @@ mod tests {
 
         // Advance time past timeout
         ctx.clock.advance(LINK_TIMEOUT_MS + 1);
-        manager.poll(ctx.clock.now_ms());
+        manager.poll(ctx.clock.now_ms(), &mut ctx);
 
         // Link should be removed
         assert_eq!(manager.pending_link_count(), 0);
@@ -707,8 +890,10 @@ mod tests {
 
         let (link_id, _) = manager.initiate(dest_hash, &dest_signing_key, &mut ctx);
 
-        manager.close(&link_id);
+        // Use close_local for this test (graceful close requires active link with encryption key)
+        manager.close_local(&link_id, LinkCloseReason::Normal);
 
+        // Link should be removed
         assert!(manager.link(&link_id).is_none());
 
         let events: Vec<_> = manager.drain_events().collect();

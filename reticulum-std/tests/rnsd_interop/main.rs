@@ -37,6 +37,7 @@ mod discovery_tests;
 mod edge_case_tests;
 mod flow_tests;
 mod harness;
+mod link_keepalive_close_tests;
 mod link_manager_tests;
 mod link_tests;
 mod multihop_tests;

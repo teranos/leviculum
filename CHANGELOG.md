@@ -21,6 +21,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `Destination::encrypt()` and `Destination::decrypt()` with ratchet support
 - New interop test modules: `edge_case_tests`, `multihop_tests`, `ratchet_tests`, `ratchet_rotation_tests`, `stress_tests`
 - Shared `TestClock` and `make_context()` in test common module
+- Link keepalive mechanism with initiator sending 0xFF and responder echoing 0xFE
+- `Link::build_keepalive_packet()` and `Link::process_keepalive()` for keepalive exchange
+- RTT-based keepalive interval calculation matching Python formula
+- Link stale detection with configurable timeout (`is_stale()`, `should_close()`)
+- `LinkEvent::LinkStale` and `LinkEvent::KeepaliveReceived` events
+- Graceful link close with encrypted LINKCLOSE packets (`build_close_packet()`, `process_close()`)
+- `LinkManager::close()` with packet generation and `close_local()` for local-only close
+- `LinkManager::drain_keepalive_packets()` and `drain_close_packets()` for pending packets
+- `LinkManager::poll()` now checks keepalives, stale links, and close timeouts
+- Test daemon RPC methods: `close_link`, `get_link_status`, `wait_for_link_state`
+- New test module `link_keepalive_close_tests` with 11 interop tests including multi-hop scenarios
 
 ### Changed
 - Box `Packet` in `TransportEvent::PacketReceived` to reduce enum size

@@ -751,6 +751,124 @@ impl TestDaemon {
             new_ratchet_id,
         })
     }
+
+    /// Close a link gracefully via RPC.
+    ///
+    /// # Arguments
+    /// * `link_hash` - The link hash (hex string)
+    pub async fn close_link(&self, link_hash: &str) -> Result<String, HarnessError> {
+        let result = self
+            .query(
+                "close_link",
+                serde_json::json!({
+                    "link_hash": link_hash,
+                }),
+            )
+            .await?;
+
+        let status = result
+            .get("status")
+            .and_then(|v| v.as_str())
+            .unwrap_or("unknown")
+            .to_string();
+
+        Ok(status)
+    }
+
+    /// Get detailed link status via RPC.
+    ///
+    /// # Arguments
+    /// * `link_hash` - The link hash (hex string)
+    pub async fn get_link_status(&self, link_hash: &str) -> Result<LinkStatusInfo, HarnessError> {
+        let result = self
+            .query(
+                "get_link_status",
+                serde_json::json!({
+                    "link_hash": link_hash,
+                }),
+            )
+            .await?;
+
+        let status = result
+            .get("status")
+            .and_then(|v| v.as_str())
+            .unwrap_or("unknown")
+            .to_string();
+        let link_hash_result = result
+            .get("link_hash")
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .to_string();
+        let state = result
+            .get("state")
+            .and_then(|v| v.as_str())
+            .map(|s| s.to_string());
+        let is_initiator = result.get("is_initiator").and_then(|v| v.as_bool());
+        let rtt = result.get("rtt").and_then(|v| v.as_f64());
+        let established_at = result.get("established_at").and_then(|v| v.as_f64());
+        let last_inbound = result.get("last_inbound").and_then(|v| v.as_f64());
+        let last_outbound = result.get("last_outbound").and_then(|v| v.as_f64());
+
+        Ok(LinkStatusInfo {
+            status,
+            link_hash: link_hash_result,
+            state,
+            is_initiator,
+            rtt,
+            established_at,
+            last_inbound,
+            last_outbound,
+        })
+    }
+
+    /// Wait for a link to reach a specific state.
+    ///
+    /// # Arguments
+    /// * `link_hash` - The link hash (hex string)
+    /// * `state` - The expected state (e.g., "ACTIVE", "CLOSED")
+    /// * `timeout_secs` - Maximum time to wait
+    pub async fn wait_for_link_state(
+        &self,
+        link_hash: &str,
+        state: &str,
+        timeout_secs: u64,
+    ) -> Result<WaitForLinkStateResult, HarnessError> {
+        let result = self
+            .query(
+                "wait_for_link_state",
+                serde_json::json!({
+                    "link_hash": link_hash,
+                    "state": state,
+                    "timeout": timeout_secs,
+                }),
+            )
+            .await?;
+
+        let status = result
+            .get("status")
+            .and_then(|v| v.as_str())
+            .unwrap_or("unknown")
+            .to_string();
+        let state_result = result
+            .get("state")
+            .and_then(|v| v.as_str())
+            .map(|s| s.to_string());
+        let expected = result
+            .get("expected")
+            .and_then(|v| v.as_str())
+            .map(|s| s.to_string());
+        let current = result
+            .get("current")
+            .and_then(|v| v.as_str())
+            .map(|s| s.to_string());
+
+        Ok(WaitForLinkStateResult {
+            status,
+            state: state_result,
+            expected,
+            current,
+        })
+    }
 }
 
 impl Drop for TestDaemon {
@@ -872,6 +990,30 @@ pub struct RatchetRotationResult {
     pub rotated: bool,
     pub ratchet_count: usize,
     pub new_ratchet_id: Option<String>,
+}
+
+/// Detailed status of a link.
+#[derive(Debug, Clone)]
+#[allow(dead_code)]
+pub struct LinkStatusInfo {
+    pub status: String,
+    pub link_hash: String,
+    pub state: Option<String>,
+    pub is_initiator: Option<bool>,
+    pub rtt: Option<f64>,
+    pub established_at: Option<f64>,
+    pub last_inbound: Option<f64>,
+    pub last_outbound: Option<f64>,
+}
+
+/// Result from waiting for a link state.
+#[derive(Debug, Clone)]
+#[allow(dead_code)]
+pub struct WaitForLinkStateResult {
+    pub status: String,
+    pub state: Option<String>,
+    pub expected: Option<String>,
+    pub current: Option<String>,
 }
 
 /// Find two distinct available TCP ports.

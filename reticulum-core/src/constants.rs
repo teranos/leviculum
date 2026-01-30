@@ -80,10 +80,23 @@ pub const PATHFINDER_EXPIRY_SECS: u64 = 60 * 60 * 24 * 7; // 7 days
 pub const PATH_REQUEST_GRACE_SECS: f64 = 0.4;
 
 /// Link constants
-pub const LINK_KEEPALIVE_SECS: u64 = 360; // 6 minutes
+pub const LINK_KEEPALIVE_SECS: u64 = 360; // 6 minutes (default/max)
+pub const LINK_KEEPALIVE_MIN_SECS: u64 = 5; // Minimum keepalive interval
+pub const LINK_KEEPALIVE_MAX_RTT: f64 = 1.75; // RTT at which max keepalive interval is reached
 pub const LINK_STALE_FACTOR: u64 = 2;
 pub const LINK_STALE_TIME_SECS: u64 = LINK_STALE_FACTOR * LINK_KEEPALIVE_SECS;
 pub const LINK_KEEPALIVE_TIMEOUT_FACTOR: u64 = 4;
+pub const LINK_STALE_GRACE_SECS: u64 = 5; // Grace period after stale before closing
+
+/// Keepalive packet payload byte sent by initiator
+pub const KEEPALIVE_INITIATOR_BYTE: u8 = 0xFF;
+/// Keepalive packet payload byte sent by responder (echo)
+pub const KEEPALIVE_RESPONDER_BYTE: u8 = 0xFE;
+/// Size of keepalive payload in bytes
+pub const KEEPALIVE_PAYLOAD_SIZE: usize = 1;
+
+/// Milliseconds per second (for time conversion)
+pub const MS_PER_SECOND: u64 = 1000;
 
 /// Resource constants
 pub const RESOURCE_WINDOW_INITIAL: usize = 4;

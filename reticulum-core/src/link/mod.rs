@@ -38,7 +38,9 @@ mod manager;
 pub use manager::LinkManager;
 
 use crate::constants::{
-    ED25519_SIGNATURE_SIZE, LINK_KEEPALIVE_SECS, LINK_STALE_TIME_SECS, TRUNCATED_HASHBYTES,
+    ED25519_SIGNATURE_SIZE, KEEPALIVE_INITIATOR_BYTE, KEEPALIVE_PAYLOAD_SIZE,
+    KEEPALIVE_RESPONDER_BYTE, LINK_KEEPALIVE_MAX_RTT, LINK_KEEPALIVE_MIN_SECS, LINK_KEEPALIVE_SECS,
+    LINK_KEEPALIVE_TIMEOUT_FACTOR, LINK_STALE_FACTOR, LINK_STALE_GRACE_SECS, TRUNCATED_HASHBYTES,
     X25519_KEY_SIZE,
 };
 use crate::crypto::{derive_key, truncated_hash};
@@ -176,6 +178,16 @@ pub enum LinkEvent {
         /// The decrypted data
         data: Vec<u8>,
     },
+    /// Link became stale (no inbound for too long)
+    LinkStale {
+        /// The link ID
+        link_id: LinkId,
+    },
+    /// Keepalive received on a link
+    KeepaliveReceived {
+        /// The link ID
+        link_id: LinkId,
+    },
     /// Link closed or failed
     LinkClosed {
         /// The link ID
@@ -216,14 +228,18 @@ pub struct Link {
     hops: u8,
     /// Round-trip time estimate (microseconds)
     rtt_us: Option<u64>,
-    /// Keepalive interval in seconds (for future keepalive management)
-    _keepalive_secs: u64,
-    /// Time of last inbound packet (timestamp)
+    /// Keepalive interval in seconds (calculated from RTT)
+    keepalive_secs: u64,
+    /// Stale time in seconds (keepalive_secs * STALE_FACTOR)
+    stale_time_secs: u64,
+    /// Time of last inbound packet (timestamp in seconds)
     last_inbound: u64,
-    /// Time of last outbound packet (timestamp, for future keepalive management)
-    _last_outbound: u64,
-    /// When the link was established (timestamp, for future timeout management)
-    _established_at: Option<u64>,
+    /// Time of last outbound packet (timestamp in seconds)
+    last_outbound: u64,
+    /// Last time we sent a keepalive (timestamp in seconds)
+    last_keepalive: u64,
+    /// When the link was established (timestamp in seconds)
+    established_at: Option<u64>,
 }
 
 impl Link {
@@ -266,10 +282,12 @@ impl Link {
             initiator: true,
             hops: 0,
             rtt_us: None,
-            _keepalive_secs: LINK_KEEPALIVE_SECS,
+            keepalive_secs: LINK_KEEPALIVE_SECS,
+            stale_time_secs: LINK_KEEPALIVE_SECS * LINK_STALE_FACTOR,
             last_inbound: 0,
-            _last_outbound: 0,
-            _established_at: None,
+            last_outbound: 0,
+            last_keepalive: 0,
+            established_at: None,
         }
     }
 
@@ -345,10 +363,12 @@ impl Link {
             initiator: false, // We are the responder
             hops: 0,
             rtt_us: None,
-            _keepalive_secs: LINK_KEEPALIVE_SECS,
+            keepalive_secs: LINK_KEEPALIVE_SECS,
+            stale_time_secs: LINK_KEEPALIVE_SECS * LINK_STALE_FACTOR,
             last_inbound: 0,
-            _last_outbound: 0,
-            _established_at: None,
+            last_outbound: 0,
+            last_keepalive: 0,
+            established_at: None,
         })
     }
 
@@ -554,13 +574,113 @@ impl Link {
         self.state == LinkState::Active
     }
 
-    /// Check if the link should be considered stale
-    pub fn is_stale(&self, current_time: u64) -> bool {
+    /// Check if the link should be considered stale (no inbound for stale_time)
+    ///
+    /// A link becomes stale when no packets have been received for stale_time_secs,
+    /// which is calculated as keepalive_secs * LINK_STALE_FACTOR.
+    pub fn is_stale(&self, current_time_secs: u64) -> bool {
         if self.state != LinkState::Active {
             return false;
         }
-        let elapsed = current_time.saturating_sub(self.last_inbound);
-        elapsed > LINK_STALE_TIME_SECS
+        if self.last_inbound == 0 {
+            return false; // No inbound recorded yet
+        }
+        let elapsed = current_time_secs.saturating_sub(self.last_inbound);
+        elapsed > self.stale_time_secs
+    }
+
+    /// Check if a stale link should be closed (timeout expired)
+    ///
+    /// After a link becomes stale, it should be closed after:
+    /// RTT * LINK_KEEPALIVE_TIMEOUT_FACTOR + LINK_STALE_GRACE_SECS
+    pub fn should_close(&self, current_time_secs: u64) -> bool {
+        if self.state != LinkState::Stale {
+            return false;
+        }
+        if self.last_inbound == 0 {
+            return false;
+        }
+        let elapsed = current_time_secs.saturating_sub(self.last_inbound);
+        let rtt_secs = self.rtt_secs().unwrap_or(0.0);
+        let timeout = self.stale_time_secs
+            + (rtt_secs * LINK_KEEPALIVE_TIMEOUT_FACTOR as f64) as u64
+            + LINK_STALE_GRACE_SECS;
+        elapsed > timeout
+    }
+
+    /// Calculate keepalive interval from RTT (matching Python formula)
+    ///
+    /// Python formula: max(min(rtt * (KEEPALIVE_MAX / KEEPALIVE_MAX_RTT), KEEPALIVE_MAX), KEEPALIVE_MIN)
+    /// Where KEEPALIVE_MAX=360, KEEPALIVE_MAX_RTT=1.75, KEEPALIVE_MIN=5
+    pub fn calculate_keepalive_from_rtt(rtt_secs: f64) -> u64 {
+        let interval = rtt_secs * (LINK_KEEPALIVE_SECS as f64 / LINK_KEEPALIVE_MAX_RTT);
+        let clamped = interval.clamp(LINK_KEEPALIVE_MIN_SECS as f64, LINK_KEEPALIVE_SECS as f64);
+        clamped as u64
+    }
+
+    /// Update keepalive timing after RTT is known
+    pub fn update_keepalive_from_rtt(&mut self, rtt_secs: f64) {
+        self.keepalive_secs = Self::calculate_keepalive_from_rtt(rtt_secs);
+        self.stale_time_secs = self.keepalive_secs * LINK_STALE_FACTOR;
+    }
+
+    /// Check if we should send a keepalive now (initiator only)
+    ///
+    /// Returns true if enough time has passed since our last keepalive
+    /// and we are the initiator (only initiators send keepalives proactively).
+    pub fn should_send_keepalive(&self, now_secs: u64) -> bool {
+        if !self.initiator || self.state != LinkState::Active {
+            return false;
+        }
+        if self.last_keepalive == 0 {
+            // First keepalive after establishment
+            if let Some(established) = self.established_at {
+                return now_secs.saturating_sub(established) >= self.keepalive_secs;
+            }
+            return false;
+        }
+        now_secs.saturating_sub(self.last_keepalive) >= self.keepalive_secs
+    }
+
+    /// Record an inbound packet timestamp
+    pub fn record_inbound(&mut self, now_secs: u64) {
+        self.last_inbound = now_secs;
+    }
+
+    /// Record an outbound packet timestamp
+    pub fn record_outbound(&mut self, now_secs: u64) {
+        self.last_outbound = now_secs;
+    }
+
+    /// Record that we sent a keepalive
+    pub fn record_keepalive_sent(&mut self, now_secs: u64) {
+        self.last_keepalive = now_secs;
+    }
+
+    /// Mark the link as established
+    pub fn mark_established(&mut self, now_secs: u64) {
+        self.established_at = Some(now_secs);
+        self.last_inbound = now_secs;
+    }
+
+    /// Get the keepalive interval in seconds
+    pub fn keepalive_secs(&self) -> u64 {
+        self.keepalive_secs
+    }
+
+    /// Get the stale time threshold in seconds
+    pub fn stale_time_secs(&self) -> u64 {
+        self.stale_time_secs
+    }
+
+    /// Set the link state
+    pub fn set_state(&mut self, state: LinkState) {
+        self.state = state;
+    }
+
+    /// Close the link (transition to Closed state)
+    pub fn close(&mut self) {
+        self.state = LinkState::Closed;
     }
 
     /// Require link to be in a specific state
@@ -1006,8 +1126,173 @@ impl Link {
         Ok(packet)
     }
 
-    // TODO: Implement keepalive sending
-    // TODO: Implement timeout checking
+    /// Build a keepalive packet
+    ///
+    /// Keepalive format: Single byte payload in KEEPALIVE context
+    /// - Initiator sends 0xFF
+    /// - Responder echoes 0xFE
+    ///
+    /// The packet is encrypted over the link.
+    pub fn build_keepalive_packet(
+        &self,
+        ctx: &mut impl Context,
+    ) -> Result<alloc::vec::Vec<u8>, LinkError> {
+        use crate::destination::DestinationType;
+        use crate::packet::{HeaderType, PacketContext, PacketFlags, PacketType, TransportType};
+
+        self.require_state(LinkState::Active)?;
+
+        // Keepalive payload: KEEPALIVE_INITIATOR_BYTE for initiator, KEEPALIVE_RESPONDER_BYTE for responder
+        let payload = if self.initiator {
+            [KEEPALIVE_INITIATOR_BYTE]
+        } else {
+            [KEEPALIVE_RESPONDER_BYTE]
+        };
+
+        // Encrypt the keepalive byte
+        let encrypted_len = Self::encrypted_size(payload.len());
+        let mut encrypted = alloc::vec![0u8; encrypted_len];
+        let enc_len = self.encrypt(&payload, &mut encrypted, ctx)?;
+
+        // Build flags for keepalive packet
+        let flags = PacketFlags {
+            ifac_flag: false,
+            header_type: HeaderType::Type1,
+            context_flag: false,
+            transport_type: TransportType::Broadcast,
+            dest_type: DestinationType::Link,
+            packet_type: PacketType::Data,
+        };
+
+        // Packet format: [flags (1)] [hops (1)] [link_id (16)] [context (1)] [encrypted_data]
+        let mut packet = alloc::vec::Vec::with_capacity(1 + 1 + TRUNCATED_HASHBYTES + 1 + enc_len);
+        packet.push(flags.to_byte());
+        packet.push(0); // hops = 0
+        packet.extend_from_slice(&self.id);
+        packet.push(PacketContext::Keepalive as u8);
+        packet.extend_from_slice(&encrypted[..enc_len]);
+
+        Ok(packet)
+    }
+
+    /// Build a graceful close packet
+    ///
+    /// Close packet format: Encrypted link_id as payload in LINKCLOSE context
+    /// Both sides can initiate close. Receiving a valid close packet transitions
+    /// the link to CLOSED state.
+    pub fn build_close_packet(
+        &self,
+        ctx: &mut impl Context,
+    ) -> Result<alloc::vec::Vec<u8>, LinkError> {
+        use crate::destination::DestinationType;
+        use crate::packet::{HeaderType, PacketContext, PacketFlags, PacketType, TransportType};
+
+        // Can close from Active or Stale state
+        if self.state != LinkState::Active && self.state != LinkState::Stale {
+            return Err(LinkError::InvalidState);
+        }
+
+        // Close payload is the encrypted link_id
+        let encrypted_len = Self::encrypted_size(self.id.len());
+        let mut encrypted = alloc::vec![0u8; encrypted_len];
+        let enc_len = self.encrypt(&self.id, &mut encrypted, ctx)?;
+
+        // Build flags for close packet
+        let flags = PacketFlags {
+            ifac_flag: false,
+            header_type: HeaderType::Type1,
+            context_flag: false,
+            transport_type: TransportType::Broadcast,
+            dest_type: DestinationType::Link,
+            packet_type: PacketType::Data,
+        };
+
+        // Packet format: [flags (1)] [hops (1)] [link_id (16)] [context (1)] [encrypted_data]
+        let mut packet = alloc::vec::Vec::with_capacity(1 + 1 + TRUNCATED_HASHBYTES + 1 + enc_len);
+        packet.push(flags.to_byte());
+        packet.push(0); // hops = 0
+        packet.extend_from_slice(&self.id);
+        packet.push(PacketContext::LinkClose as u8);
+        packet.extend_from_slice(&encrypted[..enc_len]);
+
+        Ok(packet)
+    }
+
+    /// Process an incoming close packet
+    ///
+    /// Verifies that the decrypted payload matches our link_id.
+    /// If valid, transitions the link to CLOSED state.
+    ///
+    /// # Arguments
+    /// * `encrypted_data` - The encrypted payload from the LINKCLOSE packet
+    ///
+    /// # Returns
+    /// Ok(()) if the close was valid and link is now closed, Err otherwise.
+    pub fn process_close(&mut self, encrypted_data: &[u8]) -> Result<(), LinkError> {
+        // Can receive close from Active or Stale state
+        if self.state != LinkState::Active && self.state != LinkState::Stale {
+            return Err(LinkError::InvalidState);
+        }
+
+        // Decrypt the close data
+        let mut plaintext = alloc::vec![0u8; encrypted_data.len()];
+        let plaintext_len = self.decrypt(encrypted_data, &mut plaintext)?;
+
+        // Close payload should be the link_id (16 bytes)
+        if plaintext_len != TRUNCATED_HASHBYTES {
+            return Err(LinkError::InvalidProof);
+        }
+
+        // Verify the decrypted payload matches our link_id
+        if plaintext[..plaintext_len] != self.id {
+            return Err(LinkError::InvalidProof);
+        }
+
+        // Valid close - transition to CLOSED
+        self.state = LinkState::Closed;
+
+        Ok(())
+    }
+
+    /// Process an incoming keepalive packet
+    ///
+    /// Decrypts and validates the keepalive byte.
+    /// - Initiator expects 0xFE from responder
+    /// - Responder expects 0xFF from initiator
+    ///
+    /// # Returns
+    /// Ok(true) if responder should echo back a keepalive, Ok(false) otherwise.
+    pub fn process_keepalive(&mut self, encrypted_data: &[u8]) -> Result<bool, LinkError> {
+        self.require_state(LinkState::Active)?;
+
+        // Decrypt the keepalive data
+        let mut plaintext = alloc::vec![0u8; encrypted_data.len()];
+        let plaintext_len = self.decrypt(encrypted_data, &mut plaintext)?;
+
+        // Keepalive payload should be KEEPALIVE_PAYLOAD_SIZE byte(s)
+        if plaintext_len != KEEPALIVE_PAYLOAD_SIZE {
+            return Err(LinkError::InvalidRtt);
+        }
+
+        let keepalive_byte = plaintext[0];
+
+        // Validate the keepalive byte
+        if self.initiator {
+            // We're initiator, expect KEEPALIVE_RESPONDER_BYTE from responder
+            if keepalive_byte != KEEPALIVE_RESPONDER_BYTE {
+                return Err(LinkError::InvalidRtt);
+            }
+            // Initiator doesn't echo back
+            Ok(false)
+        } else {
+            // We're responder, expect KEEPALIVE_INITIATOR_BYTE from initiator
+            if keepalive_byte != KEEPALIVE_INITIATOR_BYTE {
+                return Err(LinkError::InvalidRtt);
+            }
+            // Responder should echo back
+            Ok(true)
+        }
+    }
 }
 
 #[cfg(test)]
@@ -1934,5 +2219,323 @@ mod tests {
             link_id_h1, link_id_h2,
             "Link ID should be the same for HEADER_1 and HEADER_2 packets with same content"
         );
+    }
+
+    // ==================== KEEPALIVE TESTS ====================
+
+    #[test]
+    fn test_keepalive_calculation_from_rtt() {
+        // Test minimum clamping
+        assert_eq!(Link::calculate_keepalive_from_rtt(0.0), 5);
+        assert_eq!(Link::calculate_keepalive_from_rtt(0.01), 5);
+
+        // Test calculation at midpoint (RTT = 1.75 -> keepalive = 360)
+        // Formula: rtt * (360 / 1.75) = rtt * 205.71
+        // At RTT = 1.75: 1.75 * 205.71 = 360
+        assert_eq!(Link::calculate_keepalive_from_rtt(1.75), 360);
+
+        // Test maximum clamping
+        assert_eq!(Link::calculate_keepalive_from_rtt(2.0), 360);
+        assert_eq!(Link::calculate_keepalive_from_rtt(10.0), 360);
+
+        // Test intermediate values
+        // RTT = 0.1: 0.1 * (360/1.75) = 20.57 -> 20
+        let keepalive_01 = Link::calculate_keepalive_from_rtt(0.1);
+        assert!((20..=21).contains(&keepalive_01));
+
+        // RTT = 0.5: 0.5 * (360/1.75) = 102.86 -> 102
+        let keepalive_05 = Link::calculate_keepalive_from_rtt(0.5);
+        assert!((102..=103).contains(&keepalive_05));
+    }
+
+    #[test]
+    fn test_update_keepalive_from_rtt() {
+        let dest_hash = [0x42; TRUNCATED_HASHBYTES];
+        let mut link = Link::new_outgoing_with_rng(dest_hash, &mut OsRng);
+
+        // Default values
+        assert_eq!(link.keepalive_secs(), 360);
+        assert_eq!(link.stale_time_secs(), 720); // 360 * 2
+
+        // Update with low RTT
+        link.update_keepalive_from_rtt(0.05);
+        assert_eq!(link.keepalive_secs(), 10); // ~10.28, clamped
+        assert_eq!(link.stale_time_secs(), 20); // 10 * 2
+
+        // Update with high RTT
+        link.update_keepalive_from_rtt(2.0);
+        assert_eq!(link.keepalive_secs(), 360);
+        assert_eq!(link.stale_time_secs(), 720);
+    }
+
+    #[test]
+    fn test_should_send_keepalive() {
+        let dest_hash = [0x42; TRUNCATED_HASHBYTES];
+
+        // Create initiator and responder
+        let mut initiator = Link::new_outgoing_with_rng(dest_hash, &mut OsRng);
+        let request_data = initiator.create_link_request();
+        let link_id = [0xAB; TRUNCATED_HASHBYTES];
+
+        // Not active yet - should not send
+        assert!(!initiator.should_send_keepalive(1000));
+
+        // Manually set to active state for testing
+        initiator.state = LinkState::Active;
+        initiator.mark_established(1000);
+        initiator.keepalive_secs = 10;
+
+        // Just established - should not send yet
+        assert!(!initiator.should_send_keepalive(1005));
+
+        // After keepalive interval - should send
+        assert!(initiator.should_send_keepalive(1011));
+
+        // Responder should never proactively send keepalives
+        let mut responder =
+            Link::new_incoming_with_rng(&request_data, link_id, dest_hash, &mut OsRng).unwrap();
+        responder.state = LinkState::Active;
+        responder.mark_established(1000);
+        responder.keepalive_secs = 10;
+
+        // Even after interval, responder should not send
+        assert!(!responder.should_send_keepalive(2000));
+    }
+
+    #[test]
+    fn test_is_stale_and_should_close() {
+        let dest_hash = [0x42; TRUNCATED_HASHBYTES];
+        let mut link = Link::new_outgoing_with_rng(dest_hash, &mut OsRng);
+
+        // Configure for easier testing
+        link.keepalive_secs = 10;
+        link.stale_time_secs = 20; // stale after 20s of no inbound
+        link.state = LinkState::Active;
+        link.last_inbound = 1000;
+
+        // Not stale yet
+        assert!(!link.is_stale(1015));
+
+        // Becomes stale after stale_time_secs
+        assert!(link.is_stale(1021));
+
+        // is_stale only works for Active state
+        link.state = LinkState::Stale;
+        assert!(!link.is_stale(1021));
+
+        // should_close only works for Stale state
+        // With RTT of 0, timeout = stale_time (20) + RTT*4 (0) + grace (5) = 25
+        assert!(!link.should_close(1020)); // Not past stale_time yet from last_inbound
+        // Total elapsed needs to be > stale_time + RTT*4 + grace = 20 + 0 + 5 = 25
+        assert!(link.should_close(1026));
+    }
+
+    fn setup_active_link_pair() -> (Link, Link, PlatformContext<OsRng, TestClock, NoStorage>) {
+        use crate::identity::Identity;
+
+        let dest_hash = [0x42; TRUNCATED_HASHBYTES];
+        let dest_identity = Identity::generate_with_rng(&mut OsRng);
+
+        let mut initiator = Link::new_outgoing_with_rng(dest_hash, &mut OsRng);
+        let request_data = initiator.create_link_request();
+
+        let mut raw_packet = Vec::new();
+        raw_packet.push(0x02);
+        raw_packet.push(0x00);
+        raw_packet.extend_from_slice(&dest_hash);
+        raw_packet.push(0x00);
+        raw_packet.extend_from_slice(&request_data);
+        let link_id = Link::calculate_link_id(&raw_packet);
+        initiator.set_link_id(link_id);
+
+        let mut responder =
+            Link::new_incoming_with_rng(&request_data, link_id, dest_hash, &mut OsRng).unwrap();
+
+        let proof_packet = responder
+            .build_proof_packet(&dest_identity, 500, 1)
+            .unwrap();
+        initiator
+            .set_destination_keys(dest_identity.ed25519_verifying().as_bytes())
+            .unwrap();
+        initiator.process_proof(&proof_packet[19..]).unwrap();
+
+        let mut ctx = PlatformContext {
+            rng: OsRng,
+            clock: TestClock::default(),
+            storage: NoStorage,
+        };
+        let rtt_packet = initiator.build_rtt_packet(0.05, &mut ctx).unwrap();
+        responder.process_rtt(&rtt_packet[19..]).unwrap();
+
+        (initiator, responder, ctx)
+    }
+
+    #[test]
+    fn test_build_keepalive_packet() {
+        let (initiator, responder, mut ctx) = setup_active_link_pair();
+
+        // Initiator builds keepalive with 0xFF
+        let initiator_ka = initiator.build_keepalive_packet(&mut ctx).unwrap();
+        assert!(!initiator_ka.is_empty());
+
+        // Responder builds keepalive with 0xFE
+        let responder_ka = responder.build_keepalive_packet(&mut ctx).unwrap();
+        assert!(!responder_ka.is_empty());
+
+        // Both should have Keepalive context
+        use crate::packet::PacketContext;
+        assert_eq!(initiator_ka[18], PacketContext::Keepalive as u8);
+        assert_eq!(responder_ka[18], PacketContext::Keepalive as u8);
+    }
+
+    #[test]
+    fn test_process_keepalive() {
+        let (mut initiator, mut responder, mut ctx) = setup_active_link_pair();
+
+        // Initiator sends keepalive (0xFF)
+        let initiator_ka = initiator.build_keepalive_packet(&mut ctx).unwrap();
+        let encrypted_data = &initiator_ka[19..]; // Skip header
+
+        // Responder processes it - should indicate to echo back
+        let should_echo = responder.process_keepalive(encrypted_data).unwrap();
+        assert!(should_echo, "Responder should echo back keepalive");
+
+        // Responder sends echo (0xFE)
+        let responder_echo = responder.build_keepalive_packet(&mut ctx).unwrap();
+        let echo_data = &responder_echo[19..];
+
+        // Initiator processes echo - should NOT indicate to echo back
+        let should_echo = initiator.process_keepalive(echo_data).unwrap();
+        assert!(!should_echo, "Initiator should not echo back");
+    }
+
+    #[test]
+    fn test_process_keepalive_wrong_byte() {
+        let (mut initiator, mut responder, mut ctx) = setup_active_link_pair();
+
+        // Responder builds a keepalive (0xFE)
+        let responder_ka = responder.build_keepalive_packet(&mut ctx).unwrap();
+        let encrypted_data = &responder_ka[19..];
+
+        // Responder tries to process its own type of keepalive (expects 0xFF, gets 0xFE)
+        let result = responder.process_keepalive(encrypted_data);
+        assert!(result.is_err());
+
+        // Similarly, initiator sends 0xFF
+        let initiator_ka = initiator.build_keepalive_packet(&mut ctx).unwrap();
+        let encrypted_data = &initiator_ka[19..];
+
+        // Initiator tries to process its own type (expects 0xFE, gets 0xFF)
+        let result = initiator.process_keepalive(encrypted_data);
+        assert!(result.is_err());
+    }
+
+    // ==================== CLOSE PACKET TESTS ====================
+
+    #[test]
+    fn test_build_close_packet() {
+        let (initiator, _responder, mut ctx) = setup_active_link_pair();
+
+        let close_packet = initiator.build_close_packet(&mut ctx).unwrap();
+        assert!(!close_packet.is_empty());
+
+        // Should have LinkClose context
+        use crate::packet::PacketContext;
+        assert_eq!(close_packet[18], PacketContext::LinkClose as u8);
+    }
+
+    #[test]
+    fn test_process_close_valid() {
+        let (initiator, mut responder, mut ctx) = setup_active_link_pair();
+
+        // Initiator builds close packet
+        let close_packet = initiator.build_close_packet(&mut ctx).unwrap();
+        let encrypted_data = &close_packet[19..]; // Skip header
+
+        // Responder processes it
+        let result = responder.process_close(encrypted_data);
+        assert!(result.is_ok());
+        assert_eq!(responder.state(), LinkState::Closed);
+    }
+
+    #[test]
+    fn test_process_close_invalid_link_id() {
+        let (mut initiator, mut responder, mut ctx) = setup_active_link_pair();
+
+        // Manually change initiator's link_id to produce invalid close packet
+        let original_id = *initiator.id();
+        initiator.id = [0xFF; TRUNCATED_HASHBYTES];
+
+        // Build close packet with wrong link_id
+        let close_packet = initiator.build_close_packet(&mut ctx).unwrap();
+        let encrypted_data = &close_packet[19..];
+
+        // Restore for proper decryption (we want to test link_id mismatch)
+        initiator.id = original_id;
+
+        // Responder processes it - should fail due to link_id mismatch
+        let result = responder.process_close(encrypted_data);
+        assert!(result.is_err());
+        assert_eq!(responder.state(), LinkState::Active); // State unchanged
+    }
+
+    #[test]
+    fn test_close_from_stale_state() {
+        let (mut initiator, _responder, mut ctx) = setup_active_link_pair();
+
+        // Transition to Stale
+        initiator.set_state(LinkState::Stale);
+
+        // Should still be able to build close packet from Stale state
+        let result = initiator.build_close_packet(&mut ctx);
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn test_close_from_wrong_state() {
+        let dest_hash = [0x42; TRUNCATED_HASHBYTES];
+        let link = Link::new_outgoing_with_rng(dest_hash, &mut OsRng);
+
+        // Link is in Pending state
+        let mut ctx = PlatformContext {
+            rng: OsRng,
+            clock: TestClock::default(),
+            storage: NoStorage,
+        };
+        let result = link.build_close_packet(&mut ctx);
+        assert!(matches!(result, Err(LinkError::InvalidState)));
+    }
+
+    #[test]
+    fn test_link_state_transitions() {
+        let dest_hash = [0x42; TRUNCATED_HASHBYTES];
+        let mut link = Link::new_outgoing_with_rng(dest_hash, &mut OsRng);
+
+        assert_eq!(link.state(), LinkState::Pending);
+
+        link.set_state(LinkState::Active);
+        assert_eq!(link.state(), LinkState::Active);
+        assert!(link.is_active());
+
+        link.set_state(LinkState::Stale);
+        assert_eq!(link.state(), LinkState::Stale);
+        assert!(!link.is_active());
+
+        link.close();
+        assert_eq!(link.state(), LinkState::Closed);
+    }
+
+    #[test]
+    fn test_record_timestamps() {
+        let dest_hash = [0x42; TRUNCATED_HASHBYTES];
+        let mut link = Link::new_outgoing_with_rng(dest_hash, &mut OsRng);
+
+        link.record_inbound(12345);
+        link.record_outbound(12346);
+        link.record_keepalive_sent(12347);
+        link.mark_established(12340);
+
+        // Just verify no panic - internal fields not exposed
+        assert!(link.established_at.is_some());
     }
 }

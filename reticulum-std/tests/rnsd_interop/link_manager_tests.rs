@@ -258,7 +258,7 @@ where
         }
 
         // Poll manager
-        manager.poll(ctx.clock.now_ms());
+        manager.poll(ctx.clock.now_ms(), ctx);
 
         // Try to receive more packets
         let remaining = deadline - tokio::time::Instant::now();
@@ -459,7 +459,7 @@ async fn test_manager_initiator_sequential_links() {
     send_framed(&mut stream1, &packet1).await;
 
     // Close first link
-    manager.close(&link_id1);
+    manager.close(&link_id1, &mut ctx);
     assert!(!manager.is_active(&link_id1));
 
     // Drain close event
@@ -928,7 +928,7 @@ async fn test_manager_responder_multiple_incoming() {
         let _ = link_task.await;
 
         // Close the link before next iteration
-        manager.close(&link_id);
+        manager.close(&link_id, &mut ctx);
         let _: Vec<_> = manager.drain_events().collect();
 
         println!("Established and closed link {}", i + 1);
@@ -1407,7 +1407,7 @@ async fn test_manager_handshake_timeout() {
 
     // Advance time past 30s timeout
     ctx.clock.advance(31_000);
-    manager.poll(ctx.clock.now_ms());
+    manager.poll(ctx.clock.now_ms(), &mut ctx);
 
     // Link should be removed
     assert!(manager.link(&link_id).is_none());
@@ -1466,7 +1466,7 @@ async fn test_manager_operations_on_unknown_link() {
     assert!(accept_result.is_err());
 
     // close() on unknown link should not panic
-    manager.close(&unknown_link_id);
+    manager.close(&unknown_link_id, &mut ctx);
 
     // link() returns None
     assert!(manager.link(&unknown_link_id).is_none());
@@ -1513,7 +1513,7 @@ async fn test_manager_responder_timeout() {
 
     // Advance time past timeout (don't send RTT)
     ctx.clock.advance(31_000);
-    manager.poll(ctx.clock.now_ms());
+    manager.poll(ctx.clock.now_ms(), &mut ctx);
 
     // Link should be timed out
     assert!(manager.link(&link_id).is_none());
@@ -1596,7 +1596,7 @@ async fn test_manager_many_simultaneous_links() {
             }
         }
 
-        manager.poll(ctx.clock.now_ms());
+        manager.poll(ctx.clock.now_ms(), &mut ctx);
     }
 
     // Send RTT for all established links
@@ -1810,7 +1810,7 @@ async fn test_manager_interleaved_operations() {
 
     // Close one active link
     if manager.is_active(&link_id2) {
-        manager.close(&link_id2);
+        manager.close(&link_id2, &mut ctx);
     }
 
     tokio::time::sleep(Duration::from_millis(300)).await;

@@ -580,3 +580,79 @@ pub async fn wait_for_data_packet(
 
     None
 }
+
+/// Wait for a KEEPALIVE packet on a link.
+/// Returns the raw packet data if received.
+pub async fn wait_for_keepalive_packet(
+    stream: &mut TcpStream,
+    deframer: &mut Deframer,
+    link_id: &[u8; TRUNCATED_HASHBYTES],
+    timeout_duration: Duration,
+) -> Option<Vec<u8>> {
+    let mut buf = [0u8; 2048];
+    let deadline = tokio::time::Instant::now() + timeout_duration;
+
+    while tokio::time::Instant::now() < deadline {
+        let remaining = deadline - tokio::time::Instant::now();
+
+        match timeout(remaining, stream.read(&mut buf)).await {
+            Ok(Ok(0)) => return None,
+            Ok(Ok(n)) => {
+                let results = deframer.process(&buf[..n]);
+                for result in results {
+                    if let DeframeResult::Frame(data) = result {
+                        if let Ok(pkt) = Packet::unpack(&data) {
+                            if pkt.flags.packet_type == PacketType::Data
+                                && pkt.destination_hash == *link_id
+                                && pkt.context == PacketContext::Keepalive
+                            {
+                                return Some(data);
+                            }
+                        }
+                    }
+                }
+            }
+            Ok(Err(_)) | Err(_) => continue,
+        }
+    }
+
+    None
+}
+
+/// Wait for a LINKCLOSE packet on a link.
+/// Returns the raw packet data if received.
+pub async fn wait_for_close_packet(
+    stream: &mut TcpStream,
+    deframer: &mut Deframer,
+    link_id: &[u8; TRUNCATED_HASHBYTES],
+    timeout_duration: Duration,
+) -> Option<Vec<u8>> {
+    let mut buf = [0u8; 2048];
+    let deadline = tokio::time::Instant::now() + timeout_duration;
+
+    while tokio::time::Instant::now() < deadline {
+        let remaining = deadline - tokio::time::Instant::now();
+
+        match timeout(remaining, stream.read(&mut buf)).await {
+            Ok(Ok(0)) => return None,
+            Ok(Ok(n)) => {
+                let results = deframer.process(&buf[..n]);
+                for result in results {
+                    if let DeframeResult::Frame(data) = result {
+                        if let Ok(pkt) = Packet::unpack(&data) {
+                            if pkt.flags.packet_type == PacketType::Data
+                                && pkt.destination_hash == *link_id
+                                && pkt.context == PacketContext::LinkClose
+                            {
+                                return Some(data);
+                            }
+                        }
+                    }
+                }
+            }
+            Ok(Err(_)) | Err(_) => continue,
+        }
+    }
+
+    None
+}

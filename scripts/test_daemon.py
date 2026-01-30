@@ -28,6 +28,9 @@ JSON-RPC methods:
 - get_transport_status: Get transport/routing status
 - get_link_table: Get link table for relay verification
 - rotate_ratchet: Force ratchet rotation for a destination
+- close_link: Gracefully close a link by its hash
+- get_link_status: Get detailed status of a link
+- wait_for_link_state: Wait for a link to reach a specific state
 - shutdown: Gracefully stop the daemon
 """
 
@@ -538,6 +541,85 @@ class TestDaemon:
                 }
             except Exception as e:
                 return {"error": f"Failed to rotate ratchet: {str(e)}"}
+
+        elif method == "close_link":
+            # Gracefully close a link by its hash
+            link_hash = params.get("link_hash")
+            if not link_hash:
+                return {"error": "link_hash is required"}
+
+            if link_hash not in self.links:
+                return {"error": f"Link {link_hash} not found", "status": "not_found"}
+
+            link = self.links[link_hash]
+            try:
+                link.teardown()
+                return {"result": {"status": "closed", "link_hash": link_hash}}
+            except Exception as e:
+                return {"error": f"Failed to close link: {str(e)}"}
+
+        elif method == "get_link_status":
+            # Get detailed status of a link
+            link_hash = params.get("link_hash")
+            if not link_hash:
+                return {"error": "link_hash is required"}
+
+            if link_hash not in self.links:
+                return {"result": {"status": "not_found", "link_hash": link_hash}}
+
+            link = self.links[link_hash]
+            return {
+                "result": {
+                    "status": "found",
+                    "link_hash": link_hash,
+                    "state": str(link.status),
+                    "is_initiator": getattr(link, 'initiator', None),
+                    "rtt": getattr(link, 'rtt', None),
+                    "established_at": getattr(link, 'activated_at', None),
+                    "last_inbound": getattr(link, 'last_inbound', None),
+                    "last_outbound": getattr(link, 'last_outbound', None),
+                }
+            }
+
+        elif method == "wait_for_link_state":
+            # Wait for a link to reach a specific state
+            link_hash = params.get("link_hash")
+            expected_state = params.get("state")
+            timeout_secs = params.get("timeout", 10)
+
+            if not link_hash or not expected_state:
+                return {"error": "link_hash and state are required"}
+
+            deadline = time.time() + timeout_secs
+
+            while time.time() < deadline:
+                if link_hash in self.links:
+                    link = self.links[link_hash]
+                    current_state = str(link.status)
+                    if current_state == expected_state:
+                        return {"result": {"status": "reached", "state": expected_state}}
+                    # Also check for CLOSED state (link may be removed from dict)
+                    if link.status == RNS.Link.CLOSED and expected_state == "CLOSED":
+                        return {"result": {"status": "reached", "state": expected_state}}
+                else:
+                    # Link removed from dict means it's closed
+                    if expected_state == "CLOSED":
+                        return {"result": {"status": "reached", "state": expected_state}}
+
+                time.sleep(0.1)
+
+            # Timeout - return current state if available
+            current = None
+            if link_hash in self.links:
+                current = str(self.links[link_hash].status)
+
+            return {
+                "result": {
+                    "status": "timeout",
+                    "expected": expected_state,
+                    "current": current
+                }
+            }
 
         elif method == "shutdown":
             self.running = False
