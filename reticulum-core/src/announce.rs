@@ -411,7 +411,7 @@ mod tests {
         }
     }
 
-    fn test_context() -> PlatformContext<OsRng, MockClock, NoStorage> {
+    fn make_context() -> PlatformContext<OsRng, MockClock, NoStorage> {
         PlatformContext {
             rng: OsRng,
             clock: MockClock(1704067200000), // 2024-01-01 00:00:00 UTC
@@ -646,7 +646,7 @@ mod tests {
 
     #[test]
     fn test_generate_random_hash_format() {
-        let mut ctx = test_context();
+        let mut ctx = make_context();
         let hash = generate_random_hash(&mut ctx);
 
         // Should be 10 bytes
@@ -661,7 +661,7 @@ mod tests {
 
     #[test]
     fn test_generate_random_hash_different_each_call() {
-        let mut ctx = test_context();
+        let mut ctx = make_context();
         let hash1 = generate_random_hash(&mut ctx);
         let hash2 = generate_random_hash(&mut ctx);
 

@@ -16,7 +16,7 @@ use reticulum_std::interfaces::hdlc::{frame, DeframeResult, Deframer};
 use reticulum_std::SystemClock;
 
 /// Create a platform context for tests
-fn test_context() -> PlatformContext<OsRng, SystemClock, NoStorage> {
+fn make_context() -> PlatformContext<OsRng, SystemClock, NoStorage> {
     PlatformContext {
         rng: OsRng,
         clock: SystemClock::new(),
@@ -132,7 +132,7 @@ pub async fn build_and_send_announce(
         aspects,
     );
 
-    let mut ctx = test_context();
+    let mut ctx = make_context();
     let packet = dest
         .announce(Some(app_data), &mut ctx)
         .expect("Failed to create announce");
@@ -165,7 +165,7 @@ pub fn build_announce_raw(
         aspects,
     );
 
-    let mut ctx = test_context();
+    let mut ctx = make_context();
     let packet = dest
         .announce(Some(app_data), &mut ctx)
         .expect("Failed to create announce");

@@ -50,7 +50,7 @@ impl Clock for TestClock {
     }
 }
 
-fn test_context() -> PlatformContext<OsRng, TestClock, NoStorage> {
+fn make_context() -> PlatformContext<OsRng, TestClock, NoStorage> {
     PlatformContext {
         rng: OsRng,
         clock: TestClock,
@@ -141,7 +141,7 @@ async fn test_link_establishment_basic() {
     println!("Link established successfully!");
 
     // Send RTT packet to finalize link establishment on daemon side
-    let mut ctx = test_context();
+    let mut ctx = make_context();
     let rtt_packet = link.build_rtt_packet(0.05, &mut ctx).expect("Failed to build RTT packet");
     framed.clear();
     frame(&rtt_packet, &mut framed);
@@ -214,7 +214,7 @@ async fn test_link_encrypted_data() {
         .expect("Proof should validate");
 
     // Send RTT packet
-    let mut ctx = test_context();
+    let mut ctx = make_context();
     let rtt_packet = link.build_rtt_packet(0.05, &mut ctx).unwrap();
     framed.clear();
     frame(&rtt_packet, &mut framed);
@@ -315,7 +315,7 @@ async fn test_link_echo() {
         .expect("Proof should validate");
 
     // Send RTT packet
-    let mut ctx = test_context();
+    let mut ctx = make_context();
     let rtt_packet = link.build_rtt_packet(0.05, &mut ctx).unwrap();
     framed.clear();
     frame(&rtt_packet, &mut framed);
@@ -460,7 +460,7 @@ async fn test_link_multiple_data_packets() {
         .expect("Proof should validate");
 
     // Send RTT packet
-    let mut ctx = test_context();
+    let mut ctx = make_context();
     let rtt_packet = link.build_rtt_packet(0.05, &mut ctx).unwrap();
     framed.clear();
     frame(&rtt_packet, &mut framed);

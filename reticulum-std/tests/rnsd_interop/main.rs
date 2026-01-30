@@ -10,7 +10,7 @@
 //!    - `protocol_tests` - Flag encoding, hash derivation, packet layout
 //!
 //! 2. **Interop Tests** - Tests using the TestDaemon infrastructure:
-//!    - `daemon_tests` - Core announce/path tests
+//!    - `announce_interop_tests` - Core announce/path tests
 //!    - `discovery_tests` - Bidirectional discovery tests
 //!    - `link_tests` - Link establishment tests (Rust as initiator)
 //!    - `responder_tests` - Link responder tests (Rust as responder)
@@ -26,14 +26,14 @@
 //! cargo test --package reticulum-std --test rnsd_interop -- --nocapture
 //!
 //! # Run specific test module
-//! cargo test --package reticulum-std --test rnsd_interop daemon_tests
+//! cargo test --package reticulum-std --test rnsd_interop announce_interop_tests
 //! cargo test --package reticulum-std --test rnsd_interop responder_tests
 //! cargo test --package reticulum-std --test rnsd_interop protocol_tests
 //! ```
 
 mod common;
 mod harness;
-mod daemon_tests;
+mod announce_interop_tests;
 mod discovery_tests;
 mod link_tests;
 mod responder_tests;

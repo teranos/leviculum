@@ -67,7 +67,7 @@ impl Clock for TestClock {
     }
 }
 
-fn test_context() -> PlatformContext<OsRng, TestClock, NoStorage> {
+fn make_context() -> PlatformContext<OsRng, TestClock, NoStorage> {
     PlatformContext {
         rng: OsRng,
         clock: TestClock,
@@ -202,7 +202,7 @@ async fn setup_rust_destination(
     aspects: &[&str],
     app_data: &[u8],
 ) -> (Destination, String) {
-    let mut ctx = test_context();
+    let mut ctx = make_context();
     let identity = Identity::generate(&mut ctx);
     let public_key_hex = hex::encode(identity.public_key_bytes());
 
@@ -253,7 +253,7 @@ async fn send_packet(stream: &mut TcpStream, packet_bytes: &[u8]) {
 #[tokio::test]
 async fn test_responder_basic_handshake() {
     let daemon = TestDaemon::start().await.expect("Failed to start daemon");
-    let mut ctx = test_context();
+    let mut ctx = make_context();
 
     // Connect to daemon
     let mut stream = connect_to_daemon(&daemon).await;
@@ -401,7 +401,7 @@ async fn test_responder_basic_handshake() {
 #[tokio::test]
 async fn test_responder_bidirectional_data() {
     let daemon = TestDaemon::start().await.expect("Failed to start daemon");
-    let mut ctx = test_context();
+    let mut ctx = make_context();
 
     let mut stream = connect_to_daemon(&daemon).await;
     let mut deframer = Deframer::new();
@@ -548,7 +548,7 @@ async fn test_responder_bidirectional_data() {
 #[tokio::test]
 async fn test_responder_key_derivation_match() {
     let daemon = TestDaemon::start().await.expect("Failed to start daemon");
-    let mut ctx = test_context();
+    let mut ctx = make_context();
 
     let mut stream = connect_to_daemon(&daemon).await;
     let mut deframer = Deframer::new();
@@ -649,7 +649,7 @@ async fn test_responder_key_derivation_match() {
 #[tokio::test]
 async fn test_responder_multiple_packets() {
     let daemon = TestDaemon::start().await.expect("Failed to start daemon");
-    let mut ctx = test_context();
+    let mut ctx = make_context();
 
     let mut stream = connect_to_daemon(&daemon).await;
     let mut deframer = Deframer::new();

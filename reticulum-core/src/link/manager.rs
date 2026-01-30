@@ -331,7 +331,7 @@ impl LinkManager {
     // --- Queries ---
 
     /// Get a reference to a link
-    pub fn get_link(&self, link_id: &LinkId) -> Option<&Link> {
+    pub fn link(&self, link_id: &LinkId) -> Option<&Link> {
         self.links.get(link_id)
     }
 
@@ -652,7 +652,7 @@ mod tests {
 
         // Should have created a pending link
         assert_eq!(manager.pending_link_count(), 1);
-        assert!(manager.get_link(&link_id).is_some());
+        assert!(manager.link(&link_id).is_some());
         assert!(!manager.is_active(&link_id));
 
         // Packet should be a valid LINK_REQUEST
@@ -675,7 +675,7 @@ mod tests {
 
         // Link should be removed
         assert_eq!(manager.pending_link_count(), 0);
-        assert!(manager.get_link(&link_id).is_none());
+        assert!(manager.link(&link_id).is_none());
 
         // Should have emitted LinkClosed event
         let events: Vec<_> = manager.drain_events().collect();
@@ -700,7 +700,7 @@ mod tests {
 
         manager.close(&link_id);
 
-        assert!(manager.get_link(&link_id).is_none());
+        assert!(manager.link(&link_id).is_none());
 
         let events: Vec<_> = manager.drain_events().collect();
         assert_eq!(events.len(), 1);

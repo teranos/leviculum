@@ -1,8 +1,15 @@
-//! Tests using the daemon harness for direct state verification.
+//! Announce interoperability tests with Python Reticulum daemon.
 //!
 //! These tests spawn a fresh Python test daemon and verify behavior by
 //! querying the daemon's internal state directly via JSON-RPC, rather than
 //! relying on log file parsing or packet observation.
+//!
+//! ## What These Tests Cover
+//!
+//! - Announce propagation and path table creation
+//! - Hash derivation compatibility between Rust and Python
+//! - Connection resilience (malformed packets, reconnection)
+//! - HDLC framing edge cases
 //!
 //! ## Key Advantages
 //!
@@ -14,11 +21,11 @@
 //! ## Running These Tests
 //!
 //! ```sh
-//! # Run all daemon-based tests
-//! cargo test --package reticulum-std --test rnsd_interop daemon_tests
+//! # Run all announce interop tests
+//! cargo test --package reticulum-std --test rnsd_interop announce_interop_tests
 //!
 //! # Run with verbose output
-//! cargo test --package reticulum-std --test rnsd_interop daemon_tests -- --nocapture
+//! cargo test --package reticulum-std --test rnsd_interop announce_interop_tests -- --nocapture
 //! ```
 
 use std::time::Duration;

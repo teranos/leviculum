@@ -122,7 +122,7 @@ mod tests {
     use super::*;
     use alloc::vec;
 
-    fn test_key() -> [u8; 64] {
+    fn make_key() -> [u8; 64] {
         let mut key = [0u8; 64];
         for (i, byte) in key.iter_mut().enumerate() {
             *byte = i as u8;
@@ -132,7 +132,7 @@ mod tests {
 
     #[test]
     fn test_token_roundtrip() {
-        let key = test_key();
+        let key = make_key();
         let iv = [0x42u8; 16];
         let plaintext = b"Hello, Reticulum token!";
 
@@ -148,7 +148,7 @@ mod tests {
 
     #[test]
     fn test_token_tamper_detection() {
-        let key = test_key();
+        let key = make_key();
         let iv = [0x42u8; 16];
         let plaintext = b"Secret message";
 
@@ -176,7 +176,7 @@ mod tests {
 
     #[test]
     fn test_token_too_short() {
-        let key = test_key();
+        let key = make_key();
         let short_token = [0u8; 32]; // Less than MIN_TOKEN_SIZE
         let mut output = [0u8; 64];
 
@@ -189,7 +189,7 @@ mod tests {
     #[test]
     fn test_token_empty_plaintext() {
         // Empty plaintext should work (produces one padding block)
-        let key = test_key();
+        let key = make_key();
         let iv = [0x42u8; 16];
         let plaintext: &[u8] = b"";
 
@@ -205,7 +205,7 @@ mod tests {
     #[test]
     fn test_token_tamper_iv() {
         // Tampering with IV should be detected by HMAC
-        let key = test_key();
+        let key = make_key();
         let iv = [0x42u8; 16];
         let plaintext = b"Secret message";
 
@@ -223,7 +223,7 @@ mod tests {
     #[test]
     fn test_token_tamper_hmac() {
         // Tampering with HMAC should be detected
-        let key = test_key();
+        let key = make_key();
         let iv = [0x42u8; 16];
         let plaintext = b"Secret message";
 
@@ -240,8 +240,8 @@ mod tests {
 
     #[test]
     fn test_token_wrong_key() {
-        let key1 = test_key();
-        let mut key2 = test_key();
+        let key1 = make_key();
+        let mut key2 = make_key();
         key2[0] ^= 0x01; // Different key
 
         let iv = [0x42u8; 16];
@@ -258,7 +258,7 @@ mod tests {
 
     #[test]
     fn test_token_buffer_too_small_encrypt() {
-        let key = test_key();
+        let key = make_key();
         let iv = [0x42u8; 16];
         let plaintext = b"Hello!";
 
@@ -269,7 +269,7 @@ mod tests {
 
     #[test]
     fn test_token_invalid_iv_length() {
-        let key = test_key();
+        let key = make_key();
         let iv = [0x42u8; 8]; // Wrong IV size
         let plaintext = b"test";
         let mut output = [0u8; 128];
@@ -281,7 +281,7 @@ mod tests {
     #[test]
     fn test_token_minimum_size() {
         // Token exactly at minimum size (64 bytes)
-        let key = test_key();
+        let key = make_key();
         let token = [0u8; 64]; // Exactly MIN_TOKEN_SIZE
         let mut output = [0u8; 64];
 
@@ -292,7 +292,7 @@ mod tests {
 
     #[test]
     fn test_token_one_byte_below_minimum() {
-        let key = test_key();
+        let key = make_key();
         let token = [0u8; 63]; // One byte below minimum
         let mut output = [0u8; 64];
 
@@ -312,7 +312,7 @@ mod tests {
 
     #[test]
     fn test_token_large_plaintext() {
-        let key = test_key();
+        let key = make_key();
         let iv = [0x42u8; 16];
         let plaintext = [0xab; 10000]; // 10KB
 
@@ -331,7 +331,7 @@ mod tests {
 
     #[test]
     fn test_token_deterministic() {
-        let key = test_key();
+        let key = make_key();
         let iv = [0x42u8; 16];
         let plaintext = b"deterministic test";
 
@@ -347,7 +347,7 @@ mod tests {
 
     #[test]
     fn test_token_different_iv_different_output() {
-        let key = test_key();
+        let key = make_key();
         let iv1 = [0x42u8; 16];
         let iv2 = [0x43u8; 16];
         let plaintext = b"same plaintext";
@@ -366,7 +366,7 @@ mod tests {
     #[test]
     fn test_token_format() {
         // Verify token structure: IV (16) + ciphertext (variable) + HMAC (32)
-        let key = test_key();
+        let key = make_key();
         let iv = [0x42u8; 16];
         let plaintext = b"Hello!"; // 6 bytes -> 16 bytes ciphertext
 
@@ -383,7 +383,7 @@ mod tests {
     #[test]
     fn test_token_ciphertext_corruption_middle() {
         // Corrupt a byte in the middle of ciphertext
-        let key = test_key();
+        let key = make_key();
         let iv = [0x42u8; 16];
         let plaintext = [0xab; 48]; // 3 blocks of data
 
@@ -400,7 +400,7 @@ mod tests {
 
     #[test]
     fn test_token_single_byte_plaintext() {
-        let key = test_key();
+        let key = make_key();
         let iv = [0x42u8; 16];
         let plaintext = [0xaa; 1];
 
@@ -417,7 +417,7 @@ mod tests {
     #[test]
     fn test_token_block_aligned_plaintext() {
         // Exactly 16 bytes -> needs extra padding block
-        let key = test_key();
+        let key = make_key();
         let iv = [0x42u8; 16];
         let plaintext = [0xab; 16];
 
@@ -436,7 +436,7 @@ mod tests {
     fn test_authenticate_then_decrypt() {
         // Verify that HMAC is checked before decryption
         // If we tamper with ciphertext, we should get HMAC error, not decryption error
-        let key = test_key();
+        let key = make_key();
         let iv = [0x42u8; 16];
         let plaintext = b"test message";
 

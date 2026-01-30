@@ -770,7 +770,7 @@ async fn test_manager_responder_accept_link() {
     );
 
     // Verify link properties
-    let link = manager.get_link(&link_id).expect("Link should exist");
+    let link = manager.link(&link_id).expect("Link should exist");
     assert!(!link.is_initiator(), "We should be responder");
 
     println!("SUCCESS: LinkManager responder accept link");
@@ -841,7 +841,7 @@ async fn test_manager_responder_reject_link() {
     manager.reject_link(&link_id);
 
     // Verify link is removed
-    assert!(manager.get_link(&link_id).is_none());
+    assert!(manager.link(&link_id).is_none());
     assert_eq!(manager.pending_link_count(), 0);
 
     println!("SUCCESS: LinkManager responder reject link");
@@ -1414,14 +1414,14 @@ async fn test_manager_handshake_timeout() {
 
     // Verify pending
     assert_eq!(manager.pending_link_count(), 1);
-    assert!(manager.get_link(&link_id).is_some());
+    assert!(manager.link(&link_id).is_some());
 
     // Advance time past 30s timeout
     ctx.clock.advance(31_000);
     manager.poll(ctx.clock.now_ms());
 
     // Link should be removed
-    assert!(manager.get_link(&link_id).is_none());
+    assert!(manager.link(&link_id).is_none());
     assert_eq!(manager.pending_link_count(), 0);
 
     // Should have LinkClosed with Timeout
@@ -1479,8 +1479,8 @@ async fn test_manager_operations_on_unknown_link() {
     // close() on unknown link should not panic
     manager.close(&unknown_link_id);
 
-    // get_link() returns None
-    assert!(manager.get_link(&unknown_link_id).is_none());
+    // link() returns None
+    assert!(manager.link(&unknown_link_id).is_none());
 
     // is_active() returns false
     assert!(!manager.is_active(&unknown_link_id));
@@ -1527,7 +1527,7 @@ async fn test_manager_responder_timeout() {
     manager.poll(ctx.clock.now_ms());
 
     // Link should be timed out
-    assert!(manager.get_link(&link_id).is_none());
+    assert!(manager.link(&link_id).is_none());
 
     let events: Vec<_> = manager.drain_events().collect();
     assert!(events.iter().any(|e| matches!(

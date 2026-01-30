@@ -251,7 +251,7 @@ mod tests {
         }
     }
 
-    fn test_context() -> PlatformContext<OsRng, MockClock, NoStorage> {
+    fn make_context() -> PlatformContext<OsRng, MockClock, NoStorage> {
         PlatformContext {
             rng: OsRng,
             clock: MockClock(1704067200000), // 2024-01-01 00:00:00 UTC
@@ -305,7 +305,7 @@ mod tests {
             &["echo"],
         );
 
-        let mut ctx = test_context();
+        let mut ctx = make_context();
         let packet = dest.announce(Some(b"hello"), &mut ctx).unwrap();
 
         // Verify packet structure
@@ -335,7 +335,7 @@ mod tests {
             &["echo"],
         );
 
-        let mut ctx = test_context();
+        let mut ctx = make_context();
         let result = dest.announce(None, &mut ctx);
 
         assert!(matches!(result, Err(AnnounceError::WrongDirection)));
@@ -351,7 +351,7 @@ mod tests {
             &["echo"],
         );
 
-        let mut ctx = test_context();
+        let mut ctx = make_context();
         let result = dest.announce(None, &mut ctx);
 
         assert!(matches!(result, Err(AnnounceError::NoIdentity)));
@@ -368,7 +368,7 @@ mod tests {
             &["echo"],
         );
 
-        let mut ctx = test_context();
+        let mut ctx = make_context();
         let packet = dest.announce(None, &mut ctx).unwrap();
 
         let announce = ReceivedAnnounce::from_packet(&packet).unwrap();
@@ -388,7 +388,7 @@ mod tests {
             &["service", "v1"],
         );
 
-        let mut ctx = test_context();
+        let mut ctx = make_context();
         let packet = dest.announce(Some(b"app-data"), &mut ctx).unwrap();
 
         // Full validation should pass

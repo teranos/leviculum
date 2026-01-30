@@ -55,7 +55,7 @@ impl Clock for TestClock {
     }
 }
 
-fn test_context() -> PlatformContext<OsRng, TestClock, NoStorage> {
+fn make_context() -> PlatformContext<OsRng, TestClock, NoStorage> {
     PlatformContext {
         rng: OsRng,
         clock: TestClock,
@@ -347,7 +347,7 @@ async fn test_complete_roundtrip() {
     println!("Link established!");
 
     // 4. Send RTT packet to finalize link on daemon side
-    let mut ctx = test_context();
+    let mut ctx = make_context();
     let rtt_packet = link
         .build_rtt_packet(0.05, &mut ctx)
         .expect("Failed to build RTT");
@@ -543,7 +543,7 @@ async fn test_multiple_destinations_selective_link() {
     println!("Link to {} established!", target_name);
 
     // 6. Send data on the link
-    let mut ctx = test_context();
+    let mut ctx = make_context();
     let rtt_packet = link.build_rtt_packet(0.05, &mut ctx).unwrap();
     framed.clear();
     frame(&rtt_packet, &mut framed);
@@ -772,7 +772,7 @@ async fn test_discovery_link_multiple_messages() {
         .expect("Proof should validate");
 
     // Send RTT
-    let mut ctx = test_context();
+    let mut ctx = make_context();
     let rtt_packet = link.build_rtt_packet(0.05, &mut ctx).unwrap();
     framed.clear();
     frame(&rtt_packet, &mut framed);

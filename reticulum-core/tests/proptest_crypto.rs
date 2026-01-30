@@ -22,7 +22,7 @@ proptest! {
     #![proptest_config(ProptestConfig::with_cases(100))]
 
     #[test]
-    fn prop_aes_roundtrip(plaintext in prop::collection::vec(any::<u8>(), 0..1000)) {
+    fn test_aes_roundtrip(plaintext in prop::collection::vec(any::<u8>(), 0..1000)) {
         let key = [0x42u8; 32];
         let iv = [0x13u8; 16];
 
@@ -38,7 +38,7 @@ proptest! {
     }
 
     #[test]
-    fn prop_aes_ciphertext_length(plaintext_len in 0usize..1000) {
+    fn test_aes_ciphertext_length(plaintext_len in 0usize..1000) {
         let key = [0x42u8; 32];
         let iv = [0x13u8; 16];
         let plaintext = vec![0xab; plaintext_len];
@@ -58,7 +58,7 @@ proptest! {
     #![proptest_config(ProptestConfig::with_cases(100))]
 
     #[test]
-    fn prop_hmac_deterministic(
+    fn test_hmac_deterministic(
         key in prop::collection::vec(any::<u8>(), 0..100),
         data in prop::collection::vec(any::<u8>(), 0..1000)
     ) {
@@ -68,7 +68,7 @@ proptest! {
     }
 
     #[test]
-    fn prop_hmac_verify_correct(
+    fn test_hmac_verify_correct(
         key in prop::collection::vec(any::<u8>(), 1..100),
         data in prop::collection::vec(any::<u8>(), 0..1000)
     ) {
@@ -77,7 +77,7 @@ proptest! {
     }
 
     #[test]
-    fn prop_hmac_different_data_different_mac(
+    fn test_hmac_different_data_different_mac(
         key in prop::collection::vec(any::<u8>(), 1..100),
         data1 in prop::collection::vec(any::<u8>(), 1..100),
         data2 in prop::collection::vec(any::<u8>(), 1..100)
@@ -95,7 +95,7 @@ proptest! {
     #![proptest_config(ProptestConfig::with_cases(50))]
 
     #[test]
-    fn prop_hkdf_deterministic(
+    fn test_hkdf_deterministic(
         ikm in prop::collection::vec(any::<u8>(), 1..100),
         salt in prop::collection::vec(any::<u8>(), 0..100),
         info in prop::collection::vec(any::<u8>(), 0..100),
@@ -111,7 +111,7 @@ proptest! {
     }
 
     #[test]
-    fn prop_hkdf_prefix_property(
+    fn test_hkdf_prefix_property(
         ikm in prop::collection::vec(any::<u8>(), 1..100),
         short_len in 1usize..64,
         long_len in 64usize..128
@@ -134,7 +134,7 @@ proptest! {
     #![proptest_config(ProptestConfig::with_cases(50))]
 
     #[test]
-    fn prop_token_roundtrip(plaintext in prop::collection::vec(any::<u8>(), 0..500)) {
+    fn test_token_roundtrip(plaintext in prop::collection::vec(any::<u8>(), 0..500)) {
         let mut key = [0u8; 64];
         for (i, byte) in key.iter_mut().enumerate() {
             *byte = i as u8;
@@ -155,7 +155,7 @@ proptest! {
     }
 
     #[test]
-    fn prop_token_tamper_detection(
+    fn test_token_tamper_detection(
         plaintext in prop::collection::vec(any::<u8>(), 1..100),
         tamper_pos in 0usize..100
     ) {
@@ -189,7 +189,7 @@ proptest! {
     #![proptest_config(ProptestConfig::with_cases(20))]
 
     #[test]
-    fn prop_identity_encrypt_decrypt_roundtrip(
+    fn test_identity_encrypt_decrypt_roundtrip(
         plaintext in prop::collection::vec(any::<u8>(), 0..500)
     ) {
         let identity = new_identity();
@@ -201,7 +201,7 @@ proptest! {
     }
 
     #[test]
-    fn prop_identity_sign_verify_roundtrip(
+    fn test_identity_sign_verify_roundtrip(
         message in prop::collection::vec(any::<u8>(), 0..1000)
     ) {
         let identity = new_identity();
@@ -211,7 +211,7 @@ proptest! {
     }
 
     #[test]
-    fn prop_identity_different_identities_cannot_decrypt(
+    fn test_identity_different_identities_cannot_decrypt(
         plaintext in prop::collection::vec(any::<u8>(), 1..100)
     ) {
         let alice = new_identity();
@@ -224,7 +224,7 @@ proptest! {
     }
 
     #[test]
-    fn prop_identity_different_identities_cannot_verify(
+    fn test_identity_different_identities_cannot_verify(
         message in prop::collection::vec(any::<u8>(), 1..100)
     ) {
         let alice = new_identity();
@@ -237,7 +237,7 @@ proptest! {
     }
 
     #[test]
-    fn prop_identity_encryption_non_deterministic(
+    fn test_identity_encryption_non_deterministic(
         plaintext in prop::collection::vec(any::<u8>(), 1..100)
     ) {
         let identity = new_identity();
@@ -254,7 +254,7 @@ proptest! {
     }
 
     #[test]
-    fn prop_identity_signature_deterministic(
+    fn test_identity_signature_deterministic(
         message in prop::collection::vec(any::<u8>(), 0..100)
     ) {
         let identity = new_identity();
@@ -266,7 +266,7 @@ proptest! {
     }
 
     #[test]
-    fn prop_identity_wrong_message_fails_verify(
+    fn test_identity_wrong_message_fails_verify(
         message1 in prop::collection::vec(any::<u8>(), 1..100),
         message2 in prop::collection::vec(any::<u8>(), 1..100)
     ) {
@@ -285,7 +285,7 @@ proptest! {
     #![proptest_config(ProptestConfig::with_cases(20))]
 
     #[test]
-    fn prop_identity_public_key_roundtrip(_seed in any::<u64>()) {
+    fn test_identity_public_key_roundtrip(_seed in any::<u64>()) {
         let identity = new_identity();
         let pub_bytes = identity.public_key_bytes();
 
@@ -296,7 +296,7 @@ proptest! {
     }
 
     #[test]
-    fn prop_identity_private_key_roundtrip(_seed in any::<u64>()) {
+    fn test_identity_private_key_roundtrip(_seed in any::<u64>()) {
         let identity = new_identity();
         let prv_bytes = identity.private_key_bytes().unwrap();
 
