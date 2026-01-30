@@ -7,7 +7,7 @@
 //! - First 32 bytes: HMAC key
 //! - Last 32 bytes: AES key
 
-use crate::constants::{AES_BLOCK_SIZE, HMAC_SIZE};
+use crate::constants::{AES_BLOCK_SIZE, HMAC_SIZE, TOKEN_HMAC_KEY_SIZE, TOKEN_KEY_SIZE};
 
 use super::aes_cbc::{aes256_cbc_decrypt, aes256_cbc_encrypt, AesError};
 use super::hmac_impl::{hmac_sha256, verify_hmac};
@@ -42,7 +42,7 @@ pub fn encrypt_token(
     plaintext: &[u8],
     output: &mut [u8],
 ) -> Result<usize, TokenError> {
-    if key.len() != 64 {
+    if key.len() != TOKEN_KEY_SIZE {
         return Err(TokenError::InvalidKeyLength);
     }
     if iv.len() != AES_BLOCK_SIZE {
@@ -50,8 +50,8 @@ pub fn encrypt_token(
         return Err(TokenError::DecryptionFailed);
     }
 
-    let hmac_key = &key[..32];
-    let aes_key = &key[32..];
+    let hmac_key = &key[..TOKEN_HMAC_KEY_SIZE];
+    let aes_key = &key[TOKEN_HMAC_KEY_SIZE..];
 
     // Calculate required output size
     let padded_len = ((plaintext.len() / AES_BLOCK_SIZE) + 1) * AES_BLOCK_SIZE;
@@ -88,15 +88,15 @@ pub fn encrypt_token(
 ///
 /// Returns the plaintext length written to output.
 pub fn decrypt_token(key: &[u8], token: &[u8], output: &mut [u8]) -> Result<usize, TokenError> {
-    if key.len() != 64 {
+    if key.len() != TOKEN_KEY_SIZE {
         return Err(TokenError::InvalidKeyLength);
     }
     if token.len() < MIN_TOKEN_SIZE {
         return Err(TokenError::TokenTooShort);
     }
 
-    let hmac_key = &key[..32];
-    let aes_key = &key[32..];
+    let hmac_key = &key[..TOKEN_HMAC_KEY_SIZE];
+    let aes_key = &key[TOKEN_HMAC_KEY_SIZE..];
 
     // Extract components
     let iv = &token[..AES_BLOCK_SIZE];

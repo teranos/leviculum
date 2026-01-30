@@ -955,7 +955,7 @@ async fn test_python_initiator_sends_keepalive_rust_echoes() {
         setup_rust_destination(&mut stream, "rust", &["keepalive_resp"], b"ka-test").await;
 
     let dest_hash = *destination.hash();
-    let dest_hash_hex = hex::encode(&dest_hash);
+    let dest_hash_hex = hex::encode(dest_hash);
     let identity = destination.identity().expect("Should have identity");
 
     // Register destination in manager
@@ -996,7 +996,7 @@ async fn test_python_initiator_sends_keepalive_rust_echoes() {
     // Accept the link
     let _: Vec<_> = manager.drain_events().collect();
     let proof_packet = manager
-        .accept_link(&link_id, &identity, &mut ctx)
+        .accept_link(&link_id, identity, &mut ctx)
         .expect("Failed to accept link");
 
     send_framed(&mut stream, &proof_packet).await;

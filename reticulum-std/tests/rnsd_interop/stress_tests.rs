@@ -340,8 +340,8 @@ async fn test_concurrent_links_to_daemon() {
     let exit_addr = topology.exit_daemon().rns_addr();
 
     for i in 0..NUM_CONCURRENT {
-        let signing_key = signing_key_bytes.clone();
-        let dest_hash_clone = dest_hash.clone();
+        let signing_key = signing_key_bytes;
+        let dest_hash_clone = dest_hash;
 
         let handle = tokio::spawn(async move {
             // Create link

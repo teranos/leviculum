@@ -100,7 +100,7 @@ pub fn aes256_cbc_decrypt(
     if iv.len() != AES_BLOCK_SIZE {
         return Err(AesError::InvalidIvLength);
     }
-    if ciphertext.len() % AES_BLOCK_SIZE != 0 || ciphertext.is_empty() {
+    if !ciphertext.len().is_multiple_of(AES_BLOCK_SIZE) || ciphertext.is_empty() {
         return Err(AesError::DecryptionFailed);
     }
     if output.len() < ciphertext.len() {
@@ -140,9 +140,7 @@ mod tests {
     fn test_pkcs7_unpad() {
         let mut data = [0u8; 16];
         data[..5].copy_from_slice(b"hello");
-        for i in 5..16 {
-            data[i] = 11;
-        }
+        data[5..16].fill(11);
         let len = pkcs7_unpad(&data).unwrap();
         assert_eq!(len, 5);
     }

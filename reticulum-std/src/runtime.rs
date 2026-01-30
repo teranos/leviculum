@@ -43,6 +43,12 @@ use reticulum_core::transport::{Transport, TransportEvent};
 use crate::clock::SystemClock;
 use crate::storage::Storage;
 
+/// Default poll interval in milliseconds
+const DEFAULT_POLL_INTERVAL_MS: u64 = 50;
+
+/// Event channel capacity
+const EVENT_CHANNEL_CAPACITY: usize = 256;
+
 /// Type alias for the concrete Transport used by std platforms
 pub type StdTransport = Transport<SystemClock, Storage>;
 
@@ -60,7 +66,7 @@ impl TransportRunner {
     ///
     /// Returns the runner and a channel receiver for transport events.
     pub fn new(transport: StdTransport) -> (Self, mpsc::Receiver<TransportEvent>) {
-        Self::with_poll_interval(transport, Duration::from_millis(50))
+        Self::with_poll_interval(transport, Duration::from_millis(DEFAULT_POLL_INTERVAL_MS))
     }
 
     /// Create a new TransportRunner with custom poll interval
@@ -68,7 +74,7 @@ impl TransportRunner {
         transport: StdTransport,
         poll_interval: Duration,
     ) -> (Self, mpsc::Receiver<TransportEvent>) {
-        let (event_tx, event_rx) = mpsc::channel(256);
+        let (event_tx, event_rx) = mpsc::channel(EVENT_CHANNEL_CAPACITY);
 
         let runner = Self {
             transport: Arc::new(Mutex::new(transport)),

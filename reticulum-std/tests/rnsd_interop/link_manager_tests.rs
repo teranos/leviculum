@@ -620,7 +620,7 @@ async fn test_manager_responder_accept_link() {
         setup_rust_destination(&mut stream, "rust", &["responder"], b"responder-test").await;
 
     let dest_hash = *destination.hash();
-    let dest_hash_hex = hex::encode(&dest_hash);
+    let dest_hash_hex = hex::encode(dest_hash);
     let identity = destination.identity().expect("Should have identity");
 
     // Register destination in manager
@@ -661,7 +661,7 @@ async fn test_manager_responder_accept_link() {
         &daemon,
         &mut stream,
         &mut deframer,
-        &identity,
+        identity,
         dest_hash,
         &mut ctx,
     )
@@ -699,7 +699,7 @@ async fn test_manager_responder_reject_link() {
         setup_rust_destination(&mut stream, "rust", &["reject"], b"reject-test").await;
 
     let dest_hash = *destination.hash();
-    let dest_hash_hex = hex::encode(&dest_hash);
+    let dest_hash_hex = hex::encode(dest_hash);
 
     // Register destination in manager
     let mut manager = LinkManager::new();
@@ -773,7 +773,7 @@ async fn test_manager_responder_data_exchange() {
         setup_rust_destination(&mut stream, "rust", &["dataexchange"], b"data-test").await;
 
     let dest_hash = *destination.hash();
-    let dest_hash_hex = hex::encode(&dest_hash);
+    let dest_hash_hex = hex::encode(dest_hash);
     let identity = destination.identity().expect("Should have identity");
 
     let mut manager = LinkManager::new();
@@ -806,7 +806,7 @@ async fn test_manager_responder_data_exchange() {
         &daemon,
         &mut stream,
         &mut deframer,
-        &identity,
+        identity,
         dest_hash,
         &mut ctx,
     )
@@ -885,7 +885,7 @@ async fn test_manager_responder_multiple_incoming() {
         setup_rust_destination(&mut stream, "rust", &["multi"], b"multi-test").await;
 
     let dest_hash = *destination.hash();
-    let dest_hash_hex = hex::encode(&dest_hash);
+    let dest_hash_hex = hex::encode(dest_hash);
     let identity = destination.identity().expect("Should have identity");
 
     let mut manager = LinkManager::new();
@@ -918,12 +918,12 @@ async fn test_manager_responder_multiple_incoming() {
             &daemon,
             &mut stream,
             &mut deframer,
-            &identity,
+            identity,
             dest_hash,
             &mut ctx,
         )
         .await
-        .expect(&format!("Failed to establish link {}", i + 1));
+        .unwrap_or_else(|_| panic!("Failed to establish link {}", i + 1));
 
         let _ = link_task.await;
 
@@ -1049,7 +1049,7 @@ async fn test_rust_to_rust_via_daemon() {
     // A accepts the link
     let _: Vec<_> = manager_a.drain_events().collect();
     let proof_packet = manager_a
-        .accept_link(&link_id_a, &identity_a, &mut ctx_a)
+        .accept_link(&link_id_a, identity_a, &mut ctx_a)
         .expect("Failed to accept link");
 
     // Send proof via A's stream
@@ -1262,7 +1262,7 @@ async fn test_rust_to_rust_multiple_messages() {
     let _: Vec<_> = manager_a.drain_events().collect();
 
     let proof_packet = manager_a
-        .accept_link(&link_id_a, &identity_a, &mut ctx_a)
+        .accept_link(&link_id_a, identity_a, &mut ctx_a)
         .unwrap();
     send_framed(&mut stream_a, &proof_packet).await;
 
@@ -1686,7 +1686,7 @@ async fn test_manager_large_payloads() {
         let data: Vec<u8> = (0..size).map(|i| (i & 0xFF) as u8).collect();
         let packet = manager
             .send(&link_id, &data, &mut ctx)
-            .expect(&format!("Failed to build {} byte packet", size));
+            .unwrap_or_else(|_| panic!("Failed to build {} byte packet", size));
         send_framed(&mut stream, &packet).await;
         println!("Sent {} byte payload", size);
         tokio::time::sleep(Duration::from_millis(100)).await;

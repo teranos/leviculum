@@ -121,3 +121,47 @@ pub const IFAC_SALT: [u8; 32] = [
     0xad, 0xf5, 0x4d, 0x88, 0x2c, 0x9a, 0x9b, 0x80, 0x77, 0x1e, 0xb4, 0x99, 0x5d, 0x70, 0x2d, 0x4a,
     0x3e, 0x73, 0x33, 0x91, 0xb2, 0xa0, 0xf5, 0x3f, 0x41, 0x6d, 0x9f, 0x90, 0x7e, 0x55, 0xcf, 0xf8,
 ];
+
+// ─── CRC Constants ──────────────────────────────────────────────────────────
+
+/// CRC-16-CCITT initial value
+pub const CRC_INITIAL: u16 = 0xFFFF;
+
+/// CRC-16 high bit mask for polynomial division
+pub const CRC_HIGH_BIT: u16 = 0x8000;
+
+/// Bits in a byte (for CRC bit shifting)
+pub const BITS_PER_BYTE: usize = 8;
+
+// ─── Token Encryption Constants ─────────────────────────────────────────────
+
+/// Token key size (HMAC key + AES key)
+pub const TOKEN_KEY_SIZE: usize = 64;
+
+/// Token HMAC key size (first half of token key)
+pub const TOKEN_HMAC_KEY_SIZE: usize = 32;
+
+/// Token AES key size (second half of token key)
+pub const TOKEN_AES_KEY_SIZE: usize = 32;
+
+// ─── Link Signaling Constants ───────────────────────────────────────────────
+
+/// 21-bit mask for MTU in signaling bytes
+pub const SIGNALING_MTU_MASK: u32 = 0x1FFFFF;
+
+/// 3-bit mask for mode in signaling bytes
+pub const SIGNALING_MODE_MASK: u32 = 0x07;
+
+/// Bit shift for mode in signaling bytes (21 bits for MTU)
+pub const SIGNALING_MODE_SHIFT: u32 = 21;
+
+// ─── Random Hash Constants ──────────────────────────────────────────────────
+
+/// Size of random portion in random hash (bytes)
+pub const RANDOM_HASH_RANDOM_SIZE: usize = 5;
+
+/// Size of timestamp portion in random hash (bytes)
+pub const RANDOM_HASH_TIMESTAMP_SIZE: usize = 5;
+
+/// Offset into timestamp bytes (skip high bytes)
+pub const RANDOM_HASH_TIMESTAMP_OFFSET: usize = 3;

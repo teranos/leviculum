@@ -16,6 +16,12 @@ use reticulum_core::crypto::truncated_hash;
 use reticulum_core::framing::hdlc::{frame, DeframeResult, Deframer};
 use reticulum_core::traits::{Interface, InterfaceError, InterfaceMode};
 
+/// Frame buffer multiplier (accounts for HDLC escaping overhead)
+const FRAME_BUFFER_MULTIPLIER: usize = 2;
+
+/// Read buffer multiplier (handles multiple packets per read)
+const READ_BUFFER_MULTIPLIER: usize = 4;
+
 /// TCP client interface connecting to a Reticulum TCP server
 pub struct TcpClientInterface {
     /// Human-readable name
@@ -67,8 +73,8 @@ impl TcpClientInterface {
             stream,
             deframer: Deframer::new(),
             recv_queue: VecDeque::new(),
-            frame_buf: Vec::with_capacity(MTU * 2),
-            read_buf: vec![0u8; MTU * 4],
+            frame_buf: Vec::with_capacity(MTU * FRAME_BUFFER_MULTIPLIER),
+            read_buf: vec![0u8; MTU * READ_BUFFER_MULTIPLIER],
             online: true,
         })
     }

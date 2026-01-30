@@ -289,18 +289,18 @@ impl TestDaemon {
         stream
             .write_all(cmd.to_string().as_bytes())
             .await
-            .map_err(|e| HarnessError::ConnectionFailed(e))?;
+            .map_err(HarnessError::ConnectionFailed)?;
 
         stream
             .shutdown()
             .await
-            .map_err(|e| HarnessError::ConnectionFailed(e))?;
+            .map_err(HarnessError::ConnectionFailed)?;
 
         let mut response = Vec::new();
         stream
             .read_to_end(&mut response)
             .await
-            .map_err(|e| HarnessError::ConnectionFailed(e))?;
+            .map_err(HarnessError::ConnectionFailed)?;
 
         let response: serde_json::Value = serde_json::from_slice(&response)
             .map_err(|e| HarnessError::ParseError(e.to_string()))?;
@@ -1053,16 +1053,16 @@ pub struct WaitForLinkStateResult {
 fn find_two_available_ports() -> Result<(u16, u16), HarnessError> {
     // Bind to two ports at the same time, then return both
     // This ensures we get two distinct ports
-    let listener1 = TcpListener::bind("127.0.0.1:0").map_err(|e| HarnessError::SpawnFailed(e))?;
+    let listener1 = TcpListener::bind("127.0.0.1:0").map_err(HarnessError::SpawnFailed)?;
     let port1 = listener1
         .local_addr()
-        .map_err(|e| HarnessError::SpawnFailed(e))?
+        .map_err(HarnessError::SpawnFailed)?
         .port();
 
-    let listener2 = TcpListener::bind("127.0.0.1:0").map_err(|e| HarnessError::SpawnFailed(e))?;
+    let listener2 = TcpListener::bind("127.0.0.1:0").map_err(HarnessError::SpawnFailed)?;
     let port2 = listener2
         .local_addr()
-        .map_err(|e| HarnessError::SpawnFailed(e))?
+        .map_err(HarnessError::SpawnFailed)?
         .port();
 
     // Drop both listeners to free the ports for the daemon to use

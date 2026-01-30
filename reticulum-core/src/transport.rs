@@ -892,7 +892,7 @@ mod tests {
                     timestamp_ms: now,
                     received_from: [0; TRUNCATED_HASHBYTES],
                     hops: 3,
-                    expires_ms: now + 3600_000,
+                    expires_ms: now + 3_600_000,
                     interface_index: 0,
                 },
             );

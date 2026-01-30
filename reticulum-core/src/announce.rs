@@ -27,8 +27,9 @@
 //! The signature covers: destination_hash + public_key + name_hash + random_hash + [ratchet] + app_data
 
 use crate::constants::{
-    slice_to_array, ED25519_SIGNATURE_SIZE, IDENTITY_KEY_SIZE, NAME_HASHBYTES, RANDOM_HASHBYTES,
-    RATCHET_SIZE, TRUNCATED_HASHBYTES,
+    slice_to_array, ED25519_SIGNATURE_SIZE, IDENTITY_KEY_SIZE, NAME_HASHBYTES,
+    RANDOM_HASHBYTES, RANDOM_HASH_RANDOM_SIZE, RANDOM_HASH_TIMESTAMP_OFFSET,
+    RANDOM_HASH_TIMESTAMP_SIZE, RATCHET_SIZE, TRUNCATED_HASHBYTES,
 };
 
 // ─── Announce Format Offsets ─────────────────────────────────────────────────
@@ -112,8 +113,9 @@ pub fn generate_random_hash(ctx: &mut impl Context) -> [u8; RANDOM_HASHBYTES] {
     let timestamp_bytes = timestamp_ms.to_be_bytes();
 
     let mut result = [0u8; RANDOM_HASHBYTES]; // 10 bytes
-    result[0..5].copy_from_slice(&random_part[0..5]);
-    result[5..10].copy_from_slice(&timestamp_bytes[3..8]);
+    result[..RANDOM_HASH_RANDOM_SIZE].copy_from_slice(&random_part[..RANDOM_HASH_RANDOM_SIZE]);
+    let ts_end = RANDOM_HASH_TIMESTAMP_OFFSET + RANDOM_HASH_TIMESTAMP_SIZE;
+    result[RANDOM_HASH_RANDOM_SIZE..].copy_from_slice(&timestamp_bytes[RANDOM_HASH_TIMESTAMP_OFFSET..ts_end]);
     result
 }
 

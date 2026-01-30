@@ -597,7 +597,7 @@ fn test_link_id_calculation() {
         expected_link_id,
         "Link ID calculation mismatch\nExpected: {}\nGot:      {}",
         vectors.link_id.link_id,
-        hex::encode(&link_id)
+        hex::encode(link_id)
     );
 }
 

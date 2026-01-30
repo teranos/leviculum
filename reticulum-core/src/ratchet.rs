@@ -19,7 +19,7 @@
 //! secure because each ratchet is independently generated.
 
 use crate::constants::{
-    RATCHET_EXPIRY_SECS, RATCHET_INTERVAL_SECS, RATCHET_SIZE, TRUNCATED_HASHBYTES,
+    MS_PER_SECOND, RATCHET_EXPIRY_SECS, RATCHET_INTERVAL_SECS, RATCHET_SIZE, TRUNCATED_HASHBYTES,
 };
 use crate::crypto::sha256;
 use crate::traits::{Clock, Context, Storage, StorageError};
@@ -145,7 +145,7 @@ impl Ratchet {
     /// Ratchets expire after RATCHET_EXPIRY_SECS (30 days by default).
     pub fn is_expired(&self, current_time_ms: u64) -> bool {
         let age_ms = current_time_ms.saturating_sub(self.created_at_ms);
-        let age_secs = age_ms / 1000;
+        let age_secs = age_ms / MS_PER_SECOND;
         age_secs > RATCHET_EXPIRY_SECS
     }
 

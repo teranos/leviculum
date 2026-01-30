@@ -16,7 +16,7 @@ use reticulum_core::link::Link;
 use reticulum_std::interfaces::hdlc::{frame, DeframeResult, Deframer};
 
 fn hex_to_bytes(hex: &str) -> Result<Vec<u8>, String> {
-    if hex.len() % 2 != 0 {
+    if !hex.len().is_multiple_of(2) {
         return Err("Hex string must have even length".to_string());
     }
 
@@ -38,7 +38,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             "Usage: {} <dest_hash_hex> <signing_key_hex> [host:port]",
             args[0]
         );
-        eprintln!("");
+        eprintln!();
         eprintln!("  dest_hash_hex:    16-byte destination hash (32 hex chars)");
         eprintln!("  signing_key_hex:  32-byte Ed25519 signing public key (64 hex chars)");
         eprintln!("  host:port:        Optional, default 127.0.0.1:4242");

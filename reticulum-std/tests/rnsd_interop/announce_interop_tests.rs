@@ -565,9 +565,7 @@ async fn test_connection_survives_malformed_packets() {
 
     // 4. Announce with zeroed signature
     let (mut zeroed, _, _) = build_announce_raw("leviculum", &["resilience", "zero"], b"zeroed");
-    for i in 103..103 + 64 {
-        zeroed[i] = 0;
-    }
+    zeroed[103..103 + 64].fill(0);
     send_framed(&mut stream, &zeroed).await;
     println!("Sent zeroed-signature announce");
     tokio::time::sleep(Duration::from_millis(100)).await;

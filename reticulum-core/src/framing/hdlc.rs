@@ -12,6 +12,8 @@
 
 use alloc::vec::Vec;
 
+use crate::constants::{BITS_PER_BYTE, CRC_HIGH_BIT, CRC_INITIAL};
+
 /// HDLC flag byte
 pub const FLAG: u8 = 0x7E;
 
@@ -28,12 +30,12 @@ const CRC_POLY: u16 = 0x1021;
 ///
 /// This is a pure function with no allocation.
 pub fn crc16(data: &[u8]) -> u16 {
-    let mut crc: u16 = 0xFFFF;
+    let mut crc: u16 = CRC_INITIAL;
 
     for byte in data {
-        crc ^= (*byte as u16) << 8;
-        for _ in 0..8 {
-            if crc & 0x8000 != 0 {
+        crc ^= (*byte as u16) << BITS_PER_BYTE;
+        for _ in 0..BITS_PER_BYTE {
+            if crc & CRC_HIGH_BIT != 0 {
                 crc = (crc << 1) ^ CRC_POLY;
             } else {
                 crc <<= 1;

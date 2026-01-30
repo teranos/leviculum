@@ -24,7 +24,7 @@ const PROOF_TIMEOUT_SECS: u64 = 10;
 const MAX_PACKETS_TO_CHECK: usize = 50;
 
 fn hex_to_bytes(hex: &str) -> Result<Vec<u8>, String> {
-    if hex.len() % 2 != 0 {
+    if !hex.len().is_multiple_of(2) {
         return Err("Hex string must have even length".to_string());
     }
     (0..hex.len())

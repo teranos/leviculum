@@ -123,7 +123,7 @@ async fn test_responder_basic_handshake() {
         setup_rust_destination(&mut stream, "rust", &["interop"], b"rust-responder").await;
 
     let dest_hash = *destination.hash();
-    let dest_hash_hex = hex::encode(&dest_hash);
+    let dest_hash_hex = hex::encode(dest_hash);
     let identity = destination.identity().expect("Should have identity");
     println!("Rust destination hash: {}", dest_hash_hex);
 
@@ -186,7 +186,7 @@ async fn test_responder_basic_handshake() {
     );
     let (raw_packet, link_id) = request_result.unwrap();
 
-    println!("Received LINK_REQUEST, link_id: {}", hex::encode(&link_id));
+    println!("Received LINK_REQUEST, link_id: {}", hex::encode(link_id));
 
     // Extract request data (skip header: flags + hops + dest_hash + context = 19 bytes)
     let request_data = &raw_packet[19..];
@@ -200,7 +200,7 @@ async fn test_responder_basic_handshake() {
 
     // Build and send proof
     let proof_packet = link
-        .build_proof_packet(&identity, 500, 1)
+        .build_proof_packet(identity, 500, 1)
         .expect("Failed to build proof packet");
 
     assert_eq!(link.state(), LinkState::Handshake);
@@ -276,7 +276,7 @@ async fn test_responder_bidirectional_data() {
     let (destination, public_key_hex) =
         setup_rust_destination(&mut stream, "rust", &["echo"], b"echo-test").await;
     let dest_hash = *destination.hash();
-    let dest_hash_hex = hex::encode(&dest_hash);
+    let dest_hash_hex = hex::encode(dest_hash);
     let identity = destination.identity().expect("Should have identity");
 
     tokio::time::sleep(Duration::from_millis(500)).await;
@@ -313,7 +313,7 @@ async fn test_responder_bidirectional_data() {
     let mut link = Link::new_incoming(&raw_packet[19..], link_id, dest_hash, &mut ctx).unwrap();
 
     // Send proof
-    let proof_packet = link.build_proof_packet(&identity, 500, 1).unwrap();
+    let proof_packet = link.build_proof_packet(identity, 500, 1).unwrap();
     send_packet(&mut stream, &proof_packet).await;
 
     // Process RTT
@@ -420,7 +420,7 @@ async fn test_responder_key_derivation_match() {
     let (destination, public_key_hex) =
         setup_rust_destination(&mut stream, "rust", &["keytest"], b"key-test").await;
     let dest_hash = *destination.hash();
-    let dest_hash_hex = hex::encode(&dest_hash);
+    let dest_hash_hex = hex::encode(dest_hash);
     let identity = destination.identity().expect("Should have identity");
 
     tokio::time::sleep(Duration::from_millis(500)).await;
@@ -454,7 +454,7 @@ async fn test_responder_key_derivation_match() {
     .unwrap();
     let mut link = Link::new_incoming(&raw[19..], link_id, dest_hash, &mut ctx).unwrap();
 
-    let proof = link.build_proof_packet(&identity, 500, 1).unwrap();
+    let proof = link.build_proof_packet(identity, 500, 1).unwrap();
     send_packet(&mut stream, &proof).await;
 
     let rtt = wait_for_rtt_packet(
@@ -527,7 +527,7 @@ async fn test_responder_multiple_packets() {
     let (destination, public_key_hex) =
         setup_rust_destination(&mut stream, "rust", &["multi"], b"multi-packet").await;
     let dest_hash = *destination.hash();
-    let dest_hash_hex = hex::encode(&dest_hash);
+    let dest_hash_hex = hex::encode(dest_hash);
     let identity = destination.identity().expect("Should have identity");
 
     tokio::time::sleep(Duration::from_millis(500)).await;
@@ -561,7 +561,7 @@ async fn test_responder_multiple_packets() {
     .unwrap();
     let mut link = Link::new_incoming(&raw[19..], link_id, dest_hash, &mut ctx).unwrap();
 
-    let proof = link.build_proof_packet(&identity, 500, 1).unwrap();
+    let proof = link.build_proof_packet(identity, 500, 1).unwrap();
     send_packet(&mut stream, &proof).await;
 
     let rtt = wait_for_rtt_packet(

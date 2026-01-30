@@ -123,7 +123,7 @@ async fn test_better_path_replaces_worse() {
     tokio::time::sleep(Duration::from_millis(100)).await;
 
     // Now send same announce with hops=1 (better path)
-    let mut raw2 = raw1.clone();
+    let mut raw2 = raw1;
     raw2[1] = 1; // Set hops to 1
 
     send_raw_to_daemon(&daemon, &raw2[..size1]).await;
@@ -182,7 +182,7 @@ async fn test_worse_path_does_not_replace() {
     println!("Initial path hops: {:?}", initial_hops);
 
     // Send same announce with hops=5 (worse path)
-    let mut raw2 = raw1.clone();
+    let mut raw2 = raw1;
     raw2[1] = 5; // Set hops to 5
 
     send_raw_to_daemon(&daemon, &raw2[..size1]).await;

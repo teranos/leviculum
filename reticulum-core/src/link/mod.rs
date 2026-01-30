@@ -40,8 +40,8 @@ pub use manager::LinkManager;
 use crate::constants::{
     ED25519_SIGNATURE_SIZE, KEEPALIVE_INITIATOR_BYTE, KEEPALIVE_PAYLOAD_SIZE,
     KEEPALIVE_RESPONDER_BYTE, LINK_KEEPALIVE_MAX_RTT, LINK_KEEPALIVE_MIN_SECS, LINK_KEEPALIVE_SECS,
-    LINK_KEEPALIVE_TIMEOUT_FACTOR, LINK_STALE_FACTOR, LINK_STALE_GRACE_SECS, TRUNCATED_HASHBYTES,
-    X25519_KEY_SIZE,
+    LINK_KEEPALIVE_TIMEOUT_FACTOR, LINK_STALE_FACTOR, LINK_STALE_GRACE_SECS, SIGNALING_MODE_MASK,
+    SIGNALING_MODE_SHIFT, SIGNALING_MTU_MASK, TRUNCATED_HASHBYTES, X25519_KEY_SIZE,
 };
 use crate::crypto::{derive_key, truncated_hash};
 use crate::identity::Identity;
@@ -66,7 +66,8 @@ const SIGNALING_SIZE: usize = 3;
 /// Format: 21-bit MTU (bits 0-20) + 3-bit mode (bits 21-23)
 /// Returns the lower 3 bytes of the big-endian representation.
 fn encode_signaling_bytes(mtu: u32, mode: u8) -> [u8; SIGNALING_SIZE] {
-    let signaling = (mtu & 0x1FFFFF) | ((mode as u32 & 0x07) << 21);
+    let signaling =
+        (mtu & SIGNALING_MTU_MASK) | ((mode as u32 & SIGNALING_MODE_MASK) << SIGNALING_MODE_SHIFT);
     let bytes = signaling.to_be_bytes();
     [bytes[1], bytes[2], bytes[3]]
 }
@@ -1495,7 +1496,7 @@ mod tests {
 
         // Destination generates ephemeral X25519 key
         let dest_ephemeral_private =
-            x25519_dalek::StaticSecret::random_from_rng(&mut rand_core::OsRng);
+            x25519_dalek::StaticSecret::random_from_rng(rand_core::OsRng);
         let dest_ephemeral_public = x25519_dalek::PublicKey::from(&dest_ephemeral_private);
 
         // Python RNS signs: link_id (16) + pub_bytes (32) + sig_pub_bytes (32) + signalling (3)
@@ -1559,7 +1560,7 @@ mod tests {
         let dest_signing_key = ed25519_dalek::SigningKey::from_bytes(&[0x33; 32]);
         let dest_verifying_key = dest_signing_key.verifying_key();
         let dest_ephemeral_private =
-            x25519_dalek::StaticSecret::random_from_rng(&mut rand_core::OsRng);
+            x25519_dalek::StaticSecret::random_from_rng(rand_core::OsRng);
         let dest_ephemeral_public = x25519_dalek::PublicKey::from(&dest_ephemeral_private);
 
         let signalling_bytes: [u8; 3] = [0x43, 0x0f, 0x38];
@@ -1623,7 +1624,7 @@ mod tests {
         let dest_signing_key = ed25519_dalek::SigningKey::from_bytes(&[0x33; 32]);
         let dest_verifying_key = dest_signing_key.verifying_key();
         let dest_ephemeral_private =
-            x25519_dalek::StaticSecret::random_from_rng(&mut rand_core::OsRng);
+            x25519_dalek::StaticSecret::random_from_rng(rand_core::OsRng);
         let dest_ephemeral_public = x25519_dalek::PublicKey::from(&dest_ephemeral_private);
 
         let signalling_bytes: [u8; 3] = [0x43, 0x0f, 0x38];
@@ -1704,7 +1705,7 @@ mod tests {
         let dest_signing_key = ed25519_dalek::SigningKey::from_bytes(&[0x33; 32]);
         let dest_verifying_key = dest_signing_key.verifying_key();
         let dest_ephemeral_private =
-            x25519_dalek::StaticSecret::random_from_rng(&mut rand_core::OsRng);
+            x25519_dalek::StaticSecret::random_from_rng(rand_core::OsRng);
         let dest_ephemeral_public = x25519_dalek::PublicKey::from(&dest_ephemeral_private);
 
         let signalling_bytes: [u8; 3] = [0x43, 0x0f, 0x38];
