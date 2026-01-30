@@ -121,6 +121,62 @@ pub const RESOURCE_WINDOW_MAX_FAST: usize = 75;
 pub const RESOURCE_HASHMAP_LEN: usize = 4;
 pub const RESOURCE_AUTO_COMPRESS_MAX: usize = 64 * 1024 * 1024; // 64 MB
 
+// ─── Channel Constants ─────────────────────────────────────────────────────
+
+/// Channel envelope header size: msgtype(2) + sequence(2) + length(2)
+pub const CHANNEL_ENVELOPE_HEADER_SIZE: usize = 6;
+
+/// Sequence number modulus for wraparound (2^16)
+pub const CHANNEL_SEQ_MODULUS: u32 = 0x10000;
+
+/// Initial window size for channel
+pub const CHANNEL_WINDOW_INITIAL: usize = 2;
+
+/// Minimum window size for slow links
+pub const CHANNEL_WINDOW_MIN_SLOW: usize = 2;
+
+/// Minimum window size for fast links
+pub const CHANNEL_WINDOW_MIN_FAST: usize = 5;
+
+/// Maximum window size for slow links
+pub const CHANNEL_WINDOW_MAX_SLOW: usize = 5;
+
+/// Maximum window size for medium-speed links
+pub const CHANNEL_WINDOW_MAX_MEDIUM: usize = 12;
+
+/// Maximum window size for fast links
+pub const CHANNEL_WINDOW_MAX_FAST: usize = 48;
+
+/// Maximum transmission attempts before failure
+pub const CHANNEL_MAX_TRIES: u8 = 5;
+
+/// RTT threshold for fast links (180ms)
+pub const CHANNEL_RTT_FAST_MS: u64 = 180;
+
+/// RTT threshold for medium-speed links (750ms)
+pub const CHANNEL_RTT_MEDIUM_MS: u64 = 750;
+
+/// Default RTT when no measurement available (milliseconds)
+pub const CHANNEL_DEFAULT_RTT_MS: u64 = 500;
+
+/// Minimum timeout base for channel retransmission (milliseconds)
+pub const CHANNEL_MIN_TIMEOUT_BASE_MS: f64 = 25.0;
+
+/// RTT multiplier for channel timeout calculation
+pub const CHANNEL_RTT_TIMEOUT_MULTIPLIER: f64 = 2.5;
+
+/// Exponential backoff base for channel retries
+pub const CHANNEL_BACKOFF_BASE: f64 = 1.5;
+
+/// Queue length adjustment factor for timeout calculation
+pub const CHANNEL_QUEUE_LEN_ADJUSTMENT: f64 = 1.5;
+
+/// Microseconds per millisecond (for time conversion)
+pub const US_PER_MS: u64 = 1000;
+
+/// Reserved message type boundary (>= 0xf000 is reserved)
+pub const CHANNEL_MSGTYPE_RESERVED: u16 = 0xf000;
+
 /// Interface Access Code minimum size
 pub const IFAC_MIN_SIZE: usize = 1;
 

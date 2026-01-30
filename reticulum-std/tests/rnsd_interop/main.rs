@@ -32,6 +32,7 @@
 //! ```
 
 mod announce_interop_tests;
+mod channel_tests;
 mod common;
 mod discovery_tests;
 mod edge_case_tests;

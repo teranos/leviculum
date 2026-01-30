@@ -31,8 +31,16 @@
 //! - Processing incoming link packets
 //! - Emitting [`LinkEvent`]s for state changes
 //!
+//! ## Channel System
+//!
+//! For reliable message delivery, use the [`channel`] module which provides:
+//! - Automatic retries with exponential backoff
+//! - Message ordering via 16-bit sequence numbers
+//! - Flow control with adaptive window sizing
+//!
 //! [`LinkManager`]: manager::LinkManager
 
+pub mod channel;
 mod manager;
 
 pub use manager::LinkManager;
@@ -45,6 +53,7 @@ use crate::constants::{
 };
 use crate::crypto::{derive_key, truncated_hash};
 use crate::identity::Identity;
+use crate::packet::PacketContext;
 use crate::traits::Context;
 use alloc::vec::Vec;
 use rand_core::RngCore;
@@ -188,6 +197,17 @@ pub enum LinkEvent {
     KeepaliveReceived {
         /// The link ID
         link_id: LinkId,
+    },
+    /// Channel message received on a link
+    ChannelMessageReceived {
+        /// The link ID
+        link_id: LinkId,
+        /// Message type identifier
+        msgtype: u16,
+        /// Message sequence number
+        sequence: u16,
+        /// Deserialized message data
+        data: Vec<u8>,
     },
     /// Link closed or failed
     LinkClosed {
@@ -532,6 +552,28 @@ impl Link {
     /// Get the RTT estimate in seconds
     pub fn rtt_secs(&self) -> Option<f64> {
         self.rtt_us.map(|us| us as f64 / 1_000_000.0)
+    }
+
+    /// Get RTT in milliseconds with default fallback
+    ///
+    /// Returns the measured RTT or the default channel RTT if no measurement
+    /// is available yet.
+    pub fn rtt_ms(&self) -> u64 {
+        use crate::constants::{CHANNEL_DEFAULT_RTT_MS, US_PER_MS};
+        self.rtt_us
+            .map(|us| us / US_PER_MS)
+            .unwrap_or(CHANNEL_DEFAULT_RTT_MS)
+    }
+
+    /// Get the maximum data unit for this link
+    ///
+    /// This returns the maximum payload size that can be sent over the link
+    /// after encryption overhead. For channel messages, subtract the envelope
+    /// header size (6 bytes) from this value.
+    pub fn mdu(&self) -> usize {
+        // Use the default MDU from constants
+        // TODO: Store negotiated MTU from signaling and compute proper MDU
+        crate::constants::MDU
     }
 
     /// Get our ephemeral public key bytes for the link request
@@ -1049,8 +1091,26 @@ impl Link {
         plaintext: &[u8],
         ctx: &mut impl Context,
     ) -> Result<alloc::vec::Vec<u8>, LinkError> {
+        self.build_data_packet_with_context(plaintext, PacketContext::None, ctx)
+    }
+
+    /// Build a data packet with a specific context for transmission over this link
+    ///
+    /// The plaintext is encrypted and wrapped in a proper packet format.
+    /// Returns the raw packet bytes ready for framing/transmission.
+    ///
+    /// # Arguments
+    /// * `plaintext` - The data to encrypt and send
+    /// * `packet_context` - The packet context (e.g., Channel, Resource)
+    /// * `ctx` - Platform context
+    pub fn build_data_packet_with_context(
+        &self,
+        plaintext: &[u8],
+        packet_context: PacketContext,
+        ctx: &mut impl Context,
+    ) -> Result<alloc::vec::Vec<u8>, LinkError> {
         use crate::destination::DestinationType;
-        use crate::packet::{HeaderType, PacketContext, PacketFlags, PacketType, TransportType};
+        use crate::packet::{HeaderType, PacketFlags, PacketType, TransportType};
 
         self.require_state(LinkState::Active)?;
 
@@ -1063,7 +1123,7 @@ impl Link {
         let flags = PacketFlags {
             ifac_flag: false,
             header_type: HeaderType::Type1,
-            context_flag: false,
+            context_flag: packet_context != PacketContext::None,
             transport_type: TransportType::Broadcast,
             dest_type: DestinationType::Link,
             packet_type: PacketType::Data,
@@ -1074,7 +1134,7 @@ impl Link {
         packet.push(flags.to_byte());
         packet.push(0); // hops = 0
         packet.extend_from_slice(&self.id);
-        packet.push(PacketContext::None as u8);
+        packet.push(packet_context as u8);
         packet.extend_from_slice(&encrypted[..enc_len]);
 
         Ok(packet)

@@ -49,6 +49,7 @@ use crate::identity::Identity;
 use crate::packet::{Packet, PacketContext, PacketType};
 use crate::traits::{Clock, Context};
 
+use super::channel::{Channel, Message};
 use super::{Link, LinkCloseReason, LinkError, LinkEvent, LinkId, LinkState, PeerKeys};
 
 /// Default timeout for pending links (30 seconds)
@@ -58,6 +59,8 @@ const LINK_TIMEOUT_MS: u64 = 30_000;
 pub struct LinkManager {
     /// Active links by ID
     links: BTreeMap<LinkId, Link>,
+    /// Channels by link ID
+    channels: BTreeMap<LinkId, Channel>,
     /// Pending outgoing links (awaiting proof) - stores (link_id, created_at_ms)
     pending_outgoing: BTreeMap<LinkId, PendingOutgoing>,
     /// Pending incoming links (awaiting RTT) - stores (link_id, created_at_ms)
@@ -72,6 +75,8 @@ pub struct LinkManager {
     pending_keepalive_packets: Vec<(LinkId, Vec<u8>)>,
     /// Pending close packets to send (with packet data)
     pending_close_packets: Vec<(LinkId, Vec<u8>)>,
+    /// Pending channel packets to send (link_id, packet_data)
+    pending_channel_packets: Vec<(LinkId, Vec<u8>)>,
 }
 
 /// State for a pending outgoing link (initiator side, awaiting proof)
@@ -94,6 +99,7 @@ impl LinkManager {
     pub fn new() -> Self {
         Self {
             links: BTreeMap::new(),
+            channels: BTreeMap::new(),
             pending_outgoing: BTreeMap::new(),
             pending_incoming: BTreeMap::new(),
             accepting: BTreeSet::new(),
@@ -101,6 +107,7 @@ impl LinkManager {
             pending_rtt_packets: BTreeMap::new(),
             pending_keepalive_packets: Vec::new(),
             pending_close_packets: Vec::new(),
+            pending_channel_packets: Vec::new(),
         }
     }
 
@@ -331,12 +338,104 @@ impl LinkManager {
         }
         // Always remove from tracking regardless of link state
         self.links.remove(link_id);
+        self.channels.remove(link_id);
         self.pending_outgoing.remove(link_id);
         self.pending_incoming.remove(link_id);
         self.events.push(LinkEvent::LinkClosed {
             link_id: *link_id,
             reason,
         });
+    }
+
+    // --- Channel API ---
+
+    /// Get or create a channel for a link
+    ///
+    /// Channels provide reliable, ordered message delivery over links.
+    /// A channel is lazily created on first access.
+    ///
+    /// # Arguments
+    /// * `link_id` - The link ID to get the channel for
+    ///
+    /// # Returns
+    /// A mutable reference to the channel, or None if the link doesn't exist
+    /// or is not active.
+    pub fn get_channel(&mut self, link_id: &LinkId) -> Option<&mut Channel> {
+        // Check if link exists and is active
+        let link = self.links.get(link_id)?;
+        if link.state() != LinkState::Active {
+            return None;
+        }
+
+        // Get or create channel
+        if !self.channels.contains_key(link_id) {
+            let mut channel = Channel::new();
+            // Update window based on link RTT
+            channel.update_window_for_rtt(link.rtt_ms());
+            self.channels.insert(*link_id, channel);
+        }
+
+        self.channels.get_mut(link_id)
+    }
+
+    /// Check if a channel exists for a link
+    pub fn has_channel(&self, link_id: &LinkId) -> bool {
+        self.channels.contains_key(link_id)
+    }
+
+    /// Send a channel message on a link
+    ///
+    /// This creates an envelope, encrypts it, and returns the packet to send.
+    ///
+    /// # Arguments
+    /// * `link_id` - The link to send on
+    /// * `message` - The message to send
+    /// * `ctx` - Platform context
+    ///
+    /// # Errors
+    /// - `NotFound` if the link doesn't exist or isn't active
+    /// - Channel errors (TooLarge, WindowFull, etc.)
+    pub fn channel_send<M: Message>(
+        &mut self,
+        link_id: &LinkId,
+        message: &M,
+        ctx: &mut impl Context,
+    ) -> Result<Vec<u8>, LinkError> {
+        // First check if link exists and is active
+        let link = self.links.get(link_id).ok_or(LinkError::NotFound)?;
+        if link.state() != LinkState::Active {
+            return Err(LinkError::InvalidState);
+        }
+
+        // Get link MDU and RTT for channel
+        let link_mdu = link.mdu();
+        let rtt_ms = link.rtt_ms();
+        let now_ms = ctx.clock().now_ms();
+
+        // Get or create channel
+        if !self.channels.contains_key(link_id) {
+            let mut channel = Channel::new();
+            channel.update_window_for_rtt(rtt_ms);
+            self.channels.insert(*link_id, channel);
+        }
+
+        let channel = self.channels.get_mut(link_id).ok_or(LinkError::NotFound)?;
+
+        // Send through channel to get envelope data
+        let envelope_data = channel
+            .send(message, link_mdu, now_ms, rtt_ms)
+            .map_err(|_| LinkError::InvalidState)?;
+
+        // Build data packet with Channel context
+        let link = self.links.get(link_id).ok_or(LinkError::NotFound)?;
+        link.build_data_packet_with_context(&envelope_data, PacketContext::Channel, ctx)
+    }
+
+    /// Drain pending channel packets to send
+    ///
+    /// Returns an iterator over (link_id, packet_data) pairs.
+    pub fn drain_channel_packets(&mut self) -> alloc::vec::Drain<'_, (LinkId, Vec<u8>)> {
+        self.pending_channel_packets.drain(..)
     }
 
     // --- Packet Processing ---
@@ -387,6 +486,7 @@ impl LinkManager {
         let now_secs = now_ms / MS_PER_SECOND;
         self.check_keepalives(now_secs, ctx);
         self.check_stale_links(now_secs, ctx);
+        self.check_channel_timeouts(now_ms, ctx);
     }
 
     /// Drain pending events
@@ -628,6 +728,70 @@ impl LinkManager {
             return;
         }
 
+        // Handle CHANNEL packets
+        if packet.context == PacketContext::Channel {
+            if link.state() != LinkState::Active {
+                return;
+            }
+
+            // Record inbound activity
+            link.record_inbound(now_secs);
+
+            // Decrypt the envelope data
+            let encrypted_data = packet.data.as_slice();
+            let max_plaintext_len = encrypted_data.len();
+            let mut plaintext = alloc::vec![0u8; max_plaintext_len];
+
+            let decrypted_len = match link.decrypt(encrypted_data, &mut plaintext) {
+                Ok(len) => len,
+                Err(_) => return, // Decryption failed
+            };
+            plaintext.truncate(decrypted_len);
+
+            // Get or create channel for this link
+            let rtt_ms = link.rtt_ms();
+            let channel = self.channels.entry(link_id).or_insert_with(|| {
+                let mut channel = Channel::new();
+                channel.update_window_for_rtt(rtt_ms);
+                channel
+            });
+
+            // Process through channel
+            match channel.receive(&plaintext) {
+                Ok(Some(envelope)) => {
+                    // In-order message received
+                    self.events.push(LinkEvent::ChannelMessageReceived {
+                        link_id,
+                        msgtype: envelope.msgtype,
+                        sequence: envelope.sequence,
+                        data: envelope.data,
+                    });
+                }
+                Ok(None) => {
+                    // Out-of-order message buffered
+                }
+                Err(_) => {
+                    // Invalid envelope
+                }
+            }
+
+            // Drain any buffered messages that are now ready
+            let channel = match self.channels.get_mut(&link_id) {
+                Some(c) => c,
+                None => return,
+            };
+            for envelope in channel.drain_received() {
+                self.events.push(LinkEvent::ChannelMessageReceived {
+                    link_id,
+                    msgtype: envelope.msgtype,
+                    sequence: envelope.sequence,
+                    data: envelope.data,
+                });
+            }
+
+            return;
+        }
+
         // Regular data packet
         if link.state() != LinkState::Active {
             return;
@@ -763,6 +927,61 @@ impl LinkManager {
                     link_id,
                     reason: LinkCloseReason::Stale,
                 });
+            }
+        }
+    }
+
+    // --- Internal: Channel Timeout Handling ---
+
+    /// Check for channel envelope timeouts and queue retransmissions
+    fn check_channel_timeouts(&mut self, now_ms: u64, ctx: &mut impl Context) {
+        use super::channel::ChannelAction;
+
+        // Collect link IDs that have channels
+        let channel_link_ids: Vec<LinkId> = self.channels.keys().copied().collect();
+
+        for link_id in channel_link_ids {
+            // Get RTT for this link (use default if link not found)
+            let rtt_ms = self
+                .links
+                .get(&link_id)
+                .map(|link| link.rtt_ms())
+                .unwrap_or(crate::constants::CHANNEL_DEFAULT_RTT_MS);
+
+            // Get channel and poll for actions
+            let actions = match self.channels.get_mut(&link_id) {
+                Some(channel) => channel.poll(now_ms, rtt_ms),
+                None => continue,
+            };
+
+            // Process actions
+            for action in actions {
+                match action {
+                    ChannelAction::Retransmit { sequence: _, data } => {
+                        // Build and queue the retransmission packet
+                        if let Some(link) = self.links.get(&link_id) {
+                            if let Ok(packet) =
+                                link.build_data_packet_with_context(&data, PacketContext::Channel, ctx)
+                            {
+                                self.pending_channel_packets.push((link_id, packet));
+                            }
+                        }
+                    }
+                    ChannelAction::TearDownLink => {
+                        // Max retries exceeded - close the link
+                        if let Some(link) = self.links.get_mut(&link_id) {
+                            if let Ok(close_packet) = link.build_close_packet(ctx) {
+                                self.pending_close_packets.push((link_id, close_packet));
+                            }
+                            link.close();
+                        }
+                        self.channels.remove(&link_id);
+                        self.events.push(LinkEvent::LinkClosed {
+                            link_id,
+                            reason: LinkCloseReason::Timeout,
+                        });
+                    }
+                }
             }
         }
     }

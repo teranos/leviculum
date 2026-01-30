@@ -55,6 +55,7 @@ pub use announce::{generate_random_hash, AnnounceError, ReceivedAnnounce};
 pub use destination::{Destination, ProofStrategy};
 pub use identity::Identity;
 pub use ifac::{IfacConfig, IfacError};
+pub use link::channel::{Channel, ChannelAction, ChannelError, Envelope, Message, MessageState};
 pub use link::{
     Link, LinkCloseReason, LinkError, LinkEvent, LinkId, LinkManager, LinkState, PeerKeys,
 };

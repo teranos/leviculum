@@ -8,6 +8,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- Channel system for reliable, ordered message delivery over Links
+- `Channel` struct with window-based flow control and automatic retransmission
+- `Message` trait for typed channel messages with pack/unpack
+- `Envelope` for wire format (msgtype + sequence + length + data)
+- `ChannelAction` enum for retransmit and tear-down actions
+- `LinkManager::channel_send()` and `get_channel()` for channel access
+- `LinkEvent::ChannelMessageReceived` for incoming channel messages
+- `Link::rtt_ms()` helper for RTT in milliseconds with default fallback
+- Channel constants: window sizes, RTT thresholds, timeout parameters
 - Packet proof system for cryptographic delivery confirmation
 - `ProofStrategy` enum with `None`, `App`, `All` variants (0x21, 0x22, 0x23)
 - `Destination::proof_strategy()` getter and `set_proof_strategy()` setter
@@ -49,6 +58,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - New test module `link_keepalive_close_tests` with 11 interop tests including multi-hop scenarios
 
 ### Changed
+- Replace magic numbers with named constants in channel timeout calculation
+- Reduce code duplication in `LinkManager` by using `Link::rtt_ms()` helper
 - Box `Packet` in `TransportEvent::PacketReceived` to reduce enum size
 - Remove unnecessary `async` from `Reticulum::new()` and `Reticulum::with_config()`
 - Extract `build_signed_data()` helper in `announce.rs` to reduce code duplication
