@@ -8,6 +8,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- Packet proof system for cryptographic delivery confirmation
+- `ProofStrategy` enum with `None`, `App`, `All` variants (0x21, 0x22, 0x23)
+- `Destination::proof_strategy()` getter and `set_proof_strategy()` setter
+- `Identity::create_proof()` for generating proofs (packet hash + signature)
+- `Identity::verify_proof()` for validating incoming proofs
+- `PacketReceipt` module for tracking sent packets awaiting proof
+- `ReceiptStatus` enum (Sent, Delivered, Failed)
+- `TransportEvent::ProofRequested` for PROVE_APP callback
+- `TransportEvent::ProofReceived` when proof arrives
+- `TransportEvent::ReceiptTimeout` when receipt expires
+- `Transport::send_proof()` for app-driven proof generation
+- `build_proof_packet()` for constructing proof packets
+- Proof-related constants: `PROVE_NONE`, `PROVE_APP`, `PROVE_ALL`, `PROOF_DATA_SIZE`, `RECEIPT_TIMEOUT_DEFAULT_MS`
+- Test daemon RPC methods: `set_proof_strategy`, `get_proof_strategy`
+- New test module `proof_tests` with 9 interop tests
 - `ifac_flag` field in `PacketFlags` for Interface Access Code support at packet level
 - Embedded target documentation (`doc/EMBEDDED_TARGETS.md`) with Meshtastic device reference
 - Build infrastructure for embedded targets (`rust-toolchain.toml`, `.cargo/config.toml`)

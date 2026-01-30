@@ -848,6 +848,53 @@ impl TestDaemon {
         })
     }
 
+    /// Set proof strategy for a destination.
+    ///
+    /// # Arguments
+    /// * `dest_hash` - The destination hash (hex string)
+    /// * `strategy` - The proof strategy: "PROVE_NONE", "PROVE_APP", or "PROVE_ALL"
+    pub async fn set_proof_strategy(
+        &self,
+        dest_hash: &str,
+        strategy: &str,
+    ) -> Result<(), HarnessError> {
+        self.query(
+            "set_proof_strategy",
+            serde_json::json!({
+                "hash": dest_hash,
+                "strategy": strategy,
+            }),
+        )
+        .await?;
+        Ok(())
+    }
+
+    /// Get proof strategy for a destination.
+    ///
+    /// # Arguments
+    /// * `dest_hash` - The destination hash (hex string)
+    ///
+    /// # Returns
+    /// The proof strategy as a string: "PROVE_NONE", "PROVE_APP", or "PROVE_ALL"
+    pub async fn get_proof_strategy(&self, dest_hash: &str) -> Result<String, HarnessError> {
+        let result = self
+            .query(
+                "get_proof_strategy",
+                serde_json::json!({
+                    "hash": dest_hash,
+                }),
+            )
+            .await?;
+
+        let strategy = result
+            .get("strategy")
+            .and_then(|v| v.as_str())
+            .unwrap_or("PROVE_NONE")
+            .to_string();
+
+        Ok(strategy)
+    }
+
     /// Wait for a link to reach a specific state.
     ///
     /// # Arguments

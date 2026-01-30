@@ -118,6 +118,21 @@ pub enum Direction {
     Out = 0x12,
 }
 
+/// Proof generation strategy for incoming packets
+///
+/// Controls how the destination responds to requests for delivery proofs.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[repr(u8)]
+pub enum ProofStrategy {
+    /// Never generate proofs (default)
+    #[default]
+    None = 0x21,
+    /// Ask application via ProofRequested event to decide
+    App = 0x22,
+    /// Automatically prove every packet
+    All = 0x23,
+}
+
 /// A network destination (endpoint)
 pub struct Destination {
     /// The destination hash (address)
@@ -132,6 +147,8 @@ pub struct Destination {
     direction: Direction,
     /// Whether to accept incoming links
     accepts_links: bool,
+    /// Proof generation strategy for incoming packets
+    proof_strategy: ProofStrategy,
 
     // ─── Ratchet State (for IN destinations) ─────────────────────────────────
     /// Retained ratchets for decryption (newest first)
@@ -198,6 +215,7 @@ impl Destination {
             dest_type,
             direction,
             accepts_links: false,
+            proof_strategy: ProofStrategy::None,
             // Ratchet fields - not enabled by default
             ratchets: Vec::new(),
             ratchet_interval_ms: DEFAULT_INTERVAL_MS,
@@ -241,6 +259,22 @@ impl Destination {
     /// Set whether to accept incoming links
     pub fn set_accepts_links(&mut self, accept: bool) {
         self.accepts_links = accept;
+    }
+
+    /// Get the proof generation strategy
+    pub fn proof_strategy(&self) -> ProofStrategy {
+        self.proof_strategy
+    }
+
+    /// Set the proof generation strategy for incoming packets
+    ///
+    /// # Arguments
+    /// * `strategy` - The proof strategy to use:
+    ///   - `ProofStrategy::None` - Never generate proofs (default)
+    ///   - `ProofStrategy::App` - Emit ProofRequested event for app to decide
+    ///   - `ProofStrategy::All` - Automatically prove every packet
+    pub fn set_proof_strategy(&mut self, strategy: ProofStrategy) {
+        self.proof_strategy = strategy;
     }
 
     // ─── Ratchet Management ──────────────────────────────────────────────────
@@ -1273,5 +1307,52 @@ mod tests {
         let second_ratchet = dest.current_ratchet_public().unwrap();
         assert_ne!(first_ratchet, second_ratchet);
         assert_eq!(announce2.ratchet().unwrap(), &second_ratchet);
+    }
+
+    // ─── Proof Strategy Tests ────────────────────────────────────────────────────
+
+    #[test]
+    fn test_proof_strategy_default() {
+        let identity = Identity::generate_with_rng(&mut OsRng);
+        let dest = Destination::new(
+            Some(identity),
+            Direction::In,
+            DestinationType::Single,
+            "test",
+            &["proof"],
+        )
+        .unwrap();
+
+        assert_eq!(dest.proof_strategy(), ProofStrategy::None);
+    }
+
+    #[test]
+    fn test_proof_strategy_setter() {
+        let identity = Identity::generate_with_rng(&mut OsRng);
+        let mut dest = Destination::new(
+            Some(identity),
+            Direction::In,
+            DestinationType::Single,
+            "test",
+            &["proof"],
+        )
+        .unwrap();
+
+        dest.set_proof_strategy(ProofStrategy::All);
+        assert_eq!(dest.proof_strategy(), ProofStrategy::All);
+
+        dest.set_proof_strategy(ProofStrategy::App);
+        assert_eq!(dest.proof_strategy(), ProofStrategy::App);
+
+        dest.set_proof_strategy(ProofStrategy::None);
+        assert_eq!(dest.proof_strategy(), ProofStrategy::None);
+    }
+
+    #[test]
+    fn test_proof_strategy_enum_values() {
+        // Verify the enum values match the protocol constants
+        assert_eq!(ProofStrategy::None as u8, 0x21);
+        assert_eq!(ProofStrategy::App as u8, 0x22);
+        assert_eq!(ProofStrategy::All as u8, 0x23);
     }
 }

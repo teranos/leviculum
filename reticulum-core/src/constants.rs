@@ -98,6 +98,21 @@ pub const KEEPALIVE_PAYLOAD_SIZE: usize = 1;
 /// Milliseconds per second (for time conversion)
 pub const MS_PER_SECOND: u64 = 1000;
 
+// ─── Proof Constants ─────────────────────────────────────────────────────────
+
+/// Proof strategy: Never generate proofs (default)
+pub const PROVE_NONE: u8 = 0x21;
+/// Proof strategy: Ask application via callback to decide
+pub const PROVE_APP: u8 = 0x22;
+/// Proof strategy: Automatically prove every packet
+pub const PROVE_ALL: u8 = 0x23;
+
+/// Proof data size (explicit format): packet_hash (32) + signature (64)
+pub const PROOF_DATA_SIZE: usize = 32 + 64; // 96 bytes
+
+/// Default receipt timeout in milliseconds
+pub const RECEIPT_TIMEOUT_DEFAULT_MS: u64 = 30_000;
+
 /// Resource constants
 pub const RESOURCE_WINDOW_INITIAL: usize = 4;
 pub const RESOURCE_WINDOW_MIN: usize = 2;

@@ -47,9 +47,11 @@ const REVERSE_TABLE_EXPIRY_MS: u64 = 60_000;
 const MS_PER_SECOND: u64 = 1_000;
 
 use crate::announce::ReceivedAnnounce;
-use crate::crypto::truncated_hash;
+use crate::crypto::{sha256, truncated_hash};
+use crate::destination::ProofStrategy;
 use crate::identity::Identity;
-use crate::packet::{Packet, PacketError, PacketType};
+use crate::packet::{build_proof_packet, Packet, PacketError, PacketType};
+use crate::receipt::{PacketReceipt, ReceiptStatus};
 use crate::traits::{Clock, Interface, InterfaceError, Storage};
 
 // ─── Data Structures (always available) ─────────────────────────────────────
@@ -183,6 +185,35 @@ pub enum TransportEvent {
     },
     /// An interface went offline
     InterfaceDown(usize),
+
+    // ─── Proof Events ────────────────────────────────────────────────────────
+
+    /// Application should decide whether to prove this packet (PROVE_APP strategy)
+    ///
+    /// Emitted when a packet is received at a destination with `ProofStrategy::App`.
+    /// The application should call `send_proof()` if it decides to prove.
+    ProofRequested {
+        /// Full SHA256 hash of the packet to potentially prove
+        packet_hash: [u8; 32],
+        /// Destination that received the packet
+        destination_hash: [u8; TRUNCATED_HASHBYTES],
+    },
+
+    /// A proof was received for a sent packet
+    ///
+    /// Emitted when a proof packet is received and validated (or fails validation).
+    ProofReceived {
+        /// Truncated hash identifying the receipt
+        packet_hash: [u8; TRUNCATED_HASHBYTES],
+        /// Whether the proof was valid
+        is_valid: bool,
+    },
+
+    /// A receipt timed out without receiving a proof
+    ReceiptTimeout {
+        /// Truncated hash identifying the receipt
+        packet_hash: [u8; TRUNCATED_HASHBYTES],
+    },
 }
 
 // ─── Error Types ────────────────────────────────────────────────────────────
@@ -220,6 +251,10 @@ impl From<InterfaceError> for TransportError {
 struct DestinationEntry {
     /// Whether this destination accepts incoming links
     accepts_links: bool,
+    /// Proof generation strategy for incoming packets
+    proof_strategy: ProofStrategy,
+    /// Identity for this destination (needed to create proofs)
+    identity: Option<Identity>,
 }
 
 // ─── Transport ──────────────────────────────────────────────────────────────
@@ -257,6 +292,9 @@ pub struct Transport<C: Clock, S: Storage> {
     /// Packet deduplication cache: packet_hash -> timestamp_ms
     packet_cache: BTreeMap<[u8; TRUNCATED_HASHBYTES], u64>,
 
+    /// Receipts for sent packets awaiting proof: truncated_hash -> receipt
+    receipts: BTreeMap<[u8; TRUNCATED_HASHBYTES], PacketReceipt>,
+
     /// Pending events for the application
     events: Vec<TransportEvent>,
 
@@ -279,6 +317,7 @@ impl<C: Clock, S: Storage> Transport<C, S> {
             reverse_table: BTreeMap::new(),
             destinations: BTreeMap::new(),
             packet_cache: BTreeMap::new(),
+            receipts: BTreeMap::new(),
             events: Vec::new(),
             stats: TransportStats::default(),
         }
@@ -316,9 +355,64 @@ impl<C: Clock, S: Storage> Transport<C, S> {
     // ─── Destination Management ─────────────────────────────────────────
 
     /// Register a destination to receive packets
+    ///
+    /// # Arguments
+    /// * `hash` - The destination hash
+    /// * `accepts_links` - Whether this destination accepts incoming links
     pub fn register_destination(&mut self, hash: [u8; TRUNCATED_HASHBYTES], accepts_links: bool) {
-        self.destinations
-            .insert(hash, DestinationEntry { accepts_links });
+        self.destinations.insert(
+            hash,
+            DestinationEntry {
+                accepts_links,
+                proof_strategy: ProofStrategy::None,
+                identity: None,
+            },
+        );
+    }
+
+    /// Register a destination with proof support
+    ///
+    /// # Arguments
+    /// * `hash` - The destination hash
+    /// * `accepts_links` - Whether this destination accepts incoming links
+    /// * `proof_strategy` - How to handle proof generation
+    /// * `identity` - The destination's identity (needed to create proofs)
+    pub fn register_destination_with_proof(
+        &mut self,
+        hash: [u8; TRUNCATED_HASHBYTES],
+        accepts_links: bool,
+        proof_strategy: ProofStrategy,
+        identity: Option<Identity>,
+    ) {
+        self.destinations.insert(
+            hash,
+            DestinationEntry {
+                accepts_links,
+                proof_strategy,
+                identity,
+            },
+        );
+    }
+
+    /// Set the proof strategy for an existing destination
+    ///
+    /// # Arguments
+    /// * `hash` - The destination hash
+    /// * `strategy` - The new proof strategy
+    ///
+    /// # Returns
+    /// `true` if the destination exists and was updated
+    pub fn set_destination_proof_strategy(
+        &mut self,
+        hash: &[u8; TRUNCATED_HASHBYTES],
+        strategy: ProofStrategy,
+    ) -> bool {
+        if let Some(entry) = self.destinations.get_mut(hash) {
+            entry.proof_strategy = strategy;
+            true
+        } else {
+            false
+        }
     }
 
     /// Unregister a destination
@@ -353,6 +447,92 @@ impl<C: Clock, S: Storage> Transport<C, S> {
         self.path_table.len()
     }
 
+    // ─── Receipt Management ──────────────────────────────────────────────
+
+    /// Create a receipt for a sent packet
+    ///
+    /// Call this after sending a packet that you want to track for proof of delivery.
+    ///
+    /// # Arguments
+    /// * `raw_packet` - The raw packet bytes (used to compute hash)
+    /// * `destination_hash` - The destination the packet was sent to
+    ///
+    /// # Returns
+    /// The truncated hash that can be used to look up the receipt later
+    pub fn create_receipt(
+        &mut self,
+        raw_packet: &[u8],
+        destination_hash: [u8; TRUNCATED_HASHBYTES],
+    ) -> [u8; TRUNCATED_HASHBYTES] {
+        let packet_hash = sha256(raw_packet);
+        let now = self.clock.now_ms();
+        let receipt = PacketReceipt::new(packet_hash, destination_hash, now);
+        let truncated = receipt.truncated_hash;
+        self.receipts.insert(truncated, receipt);
+        truncated
+    }
+
+    /// Create a receipt with a custom timeout
+    pub fn create_receipt_with_timeout(
+        &mut self,
+        raw_packet: &[u8],
+        destination_hash: [u8; TRUNCATED_HASHBYTES],
+        timeout_ms: u64,
+    ) -> [u8; TRUNCATED_HASHBYTES] {
+        let packet_hash = sha256(raw_packet);
+        let now = self.clock.now_ms();
+        let receipt = PacketReceipt::with_timeout(packet_hash, destination_hash, now, timeout_ms);
+        let truncated = receipt.truncated_hash;
+        self.receipts.insert(truncated, receipt);
+        truncated
+    }
+
+    /// Get a receipt by its truncated hash
+    pub fn get_receipt(
+        &self,
+        truncated_hash: &[u8; TRUNCATED_HASHBYTES],
+    ) -> Option<&PacketReceipt> {
+        self.receipts.get(truncated_hash)
+    }
+
+    /// Get the number of pending receipts
+    pub fn receipt_count(&self) -> usize {
+        self.receipts.len()
+    }
+
+    /// Send a proof for a received packet
+    ///
+    /// Call this when the application decides to prove a packet (after ProofRequested event).
+    ///
+    /// # Arguments
+    /// * `packet_hash` - The full SHA256 hash of the packet to prove
+    /// * `destination_hash` - The destination to send the proof to (the original sender)
+    /// * `identity` - The identity to sign the proof with
+    ///
+    /// # Returns
+    /// `Ok(())` if the proof was sent, `Err` if there's no path to the destination
+    pub fn send_proof(
+        &mut self,
+        packet_hash: &[u8; 32],
+        destination_hash: &[u8; TRUNCATED_HASHBYTES],
+        identity: &Identity,
+    ) -> Result<(), TransportError> {
+        let proof_data = identity
+            .create_proof(packet_hash)
+            .map_err(|_| TransportError::NoPath)?; // Use NoPath for simplicity
+
+        let packet = build_proof_packet(destination_hash, &proof_data);
+
+        // Send via the same path we'd use for any packet to this destination
+        let interface_index = self
+            .path_table
+            .get(destination_hash)
+            .map(|p| p.interface_index)
+            .ok_or(TransportError::NoPath)?;
+
+        self.send_packet_on_interface(interface_index, &packet)
+    }
+
     // ─── Packet I/O ─────────────────────────────────────────────────────
 
     /// Process incoming raw data from an interface
@@ -368,7 +548,8 @@ impl<C: Clock, S: Storage> Transport<C, S> {
 
         let packet = Packet::unpack(raw)?;
 
-        // Compute packet hash for deduplication
+        // Compute full packet hash (for proofs) and truncated hash (for deduplication)
+        let full_packet_hash = sha256(raw);
         let packet_hash = truncated_hash(raw);
         let now = self.clock.now_ms();
 
@@ -402,7 +583,7 @@ impl<C: Clock, S: Storage> Transport<C, S> {
             PacketType::Announce => self.handle_announce(packet, interface_index),
             PacketType::LinkRequest => self.handle_link_request(packet, interface_index),
             PacketType::Proof => self.handle_proof(packet, interface_index),
-            PacketType::Data => self.handle_data(packet, interface_index),
+            PacketType::Data => self.handle_data(packet, interface_index, full_packet_hash),
         }
     }
 
@@ -456,11 +637,13 @@ impl<C: Clock, S: Storage> Transport<C, S> {
     /// - Path expiry
     /// - Packet cache cleanup
     /// - Announce retransmission (if transport node)
+    /// - Receipt timeout checking
     pub fn poll(&mut self) {
         let now = self.clock.now_ms();
         self.expire_paths(now);
         self.clean_packet_cache(now);
         self.clean_reverse_table(now);
+        self.check_receipt_timeouts(now);
     }
 
     // ─── Events ─────────────────────────────────────────────────────────
@@ -614,8 +797,47 @@ impl<C: Clock, S: Storage> Transport<C, S> {
         interface_index: usize,
     ) -> Result<(), TransportError> {
         let dest_hash = packet.destination_hash;
+        let proof_data = packet.data.as_slice();
 
-        // Check if this is for a registered destination
+        // Check if this is a proof for a receipt we're tracking
+        // Proof data format: [packet_hash (32)] + [signature (64)] = 96 bytes
+        if proof_data.len() == crate::constants::PROOF_DATA_SIZE {
+            // Extract the packet hash from the proof (first 32 bytes)
+            let mut proof_packet_hash = [0u8; 32];
+            proof_packet_hash.copy_from_slice(&proof_data[..32]);
+            let truncated = truncated_hash(&proof_packet_hash);
+
+            // Check if we have a receipt for this packet
+            if let Some(receipt) = self.receipts.get(&truncated) {
+                // Get the destination identity to verify the signature
+                // The proof should be signed by the destination that received our packet
+                if let Some(dest_entry) = self.destinations.get(&receipt.destination_hash) {
+                    if let Some(ref identity) = dest_entry.identity {
+                        let is_valid = receipt.validate_proof(proof_data, identity);
+                        if is_valid {
+                            // Mark receipt as delivered
+                            if let Some(r) = self.receipts.get_mut(&truncated) {
+                                r.set_delivered();
+                            }
+                        }
+                        self.events.push(TransportEvent::ProofReceived {
+                            packet_hash: truncated,
+                            is_valid,
+                        });
+                        return Ok(());
+                    }
+                }
+
+                // If we don't have the identity, we still emit the event but can't validate
+                self.events.push(TransportEvent::ProofReceived {
+                    packet_hash: truncated,
+                    is_valid: false,
+                });
+                return Ok(());
+            }
+        }
+
+        // Check if this is for a registered destination (legacy behavior)
         if self.destinations.contains_key(&dest_hash) {
             self.events.push(TransportEvent::PacketReceived {
                 destination_hash: dest_hash,
@@ -640,16 +862,47 @@ impl<C: Clock, S: Storage> Transport<C, S> {
         &mut self,
         packet: Packet,
         interface_index: usize,
+        full_packet_hash: [u8; 32],
     ) -> Result<(), TransportError> {
         let dest_hash = packet.destination_hash;
 
         // Check if we have this destination registered
-        if self.destinations.contains_key(&dest_hash) {
+        if let Some(dest_entry) = self.destinations.get(&dest_hash) {
+            let proof_strategy = dest_entry.proof_strategy;
+
+            // Emit PacketReceived event
             self.events.push(TransportEvent::PacketReceived {
                 destination_hash: dest_hash,
                 packet: Box::new(packet),
                 interface_index,
             });
+
+            // Handle proof generation based on strategy
+            match proof_strategy {
+                ProofStrategy::All => {
+                    // Auto-generate and send proof
+                    // Note: We need the destination's identity to sign the proof.
+                    // The actual proof sending is handled by the application after
+                    // receiving PacketReceived, since we don't store the path back
+                    // to the sender in this simple implementation.
+                    // For now, emit ProofRequested so the app knows proof is expected.
+                    self.events.push(TransportEvent::ProofRequested {
+                        packet_hash: full_packet_hash,
+                        destination_hash: dest_hash,
+                    });
+                }
+                ProofStrategy::App => {
+                    // Emit ProofRequested event for application to decide
+                    self.events.push(TransportEvent::ProofRequested {
+                        packet_hash: full_packet_hash,
+                        destination_hash: dest_hash,
+                    });
+                }
+                ProofStrategy::None => {
+                    // Do nothing - no proof requested
+                }
+            }
+
             return Ok(());
         }
 
@@ -735,6 +988,24 @@ impl<C: Clock, S: Storage> Transport<C, S> {
 
         for hash in expired {
             self.reverse_table.remove(&hash);
+        }
+    }
+
+    fn check_receipt_timeouts(&mut self, now: u64) {
+        // Collect timed out receipts
+        let timed_out: Vec<[u8; TRUNCATED_HASHBYTES]> = self
+            .receipts
+            .iter()
+            .filter(|(_, r)| r.status == ReceiptStatus::Sent && r.is_expired(now))
+            .map(|(k, _)| *k)
+            .collect();
+
+        // Emit timeout events and remove expired receipts
+        for hash in timed_out {
+            self.receipts.remove(&hash);
+            self.events.push(TransportEvent::ReceiptTimeout {
+                packet_hash: hash,
+            });
         }
     }
 

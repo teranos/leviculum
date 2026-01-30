@@ -621,6 +621,51 @@ class TestDaemon:
                 }
             }
 
+        elif method == "set_proof_strategy":
+            # Set proof strategy for a destination
+            dest_hash = params.get("hash")
+            strategy = params.get("strategy")
+
+            if dest_hash not in self.destinations:
+                return {"error": f"Destination {dest_hash} not registered"}
+
+            _, dest = self.destinations[dest_hash]
+
+            strategy_map = {
+                "PROVE_NONE": RNS.Destination.PROVE_NONE,
+                "PROVE_APP": RNS.Destination.PROVE_APP,
+                "PROVE_ALL": RNS.Destination.PROVE_ALL,
+            }
+
+            if strategy not in strategy_map:
+                return {"error": f"Unknown strategy: {strategy}. Use PROVE_NONE, PROVE_APP, or PROVE_ALL"}
+
+            try:
+                dest.set_proof_strategy(strategy_map[strategy])
+                return {"result": {"strategy": strategy, "dest_hash": dest_hash}}
+            except Exception as e:
+                return {"error": f"Failed to set proof strategy: {str(e)}"}
+
+        elif method == "get_proof_strategy":
+            # Get proof strategy for a destination
+            dest_hash = params.get("hash")
+
+            if dest_hash not in self.destinations:
+                return {"error": f"Destination {dest_hash} not registered"}
+
+            _, dest = self.destinations[dest_hash]
+
+            strategy_names = {
+                RNS.Destination.PROVE_NONE: "PROVE_NONE",
+                RNS.Destination.PROVE_APP: "PROVE_APP",
+                RNS.Destination.PROVE_ALL: "PROVE_ALL",
+            }
+
+            return {"result": {
+                "strategy": strategy_names.get(dest.proof_strategy, "unknown"),
+                "strategy_value": dest.proof_strategy,
+            }}
+
         elif method == "shutdown":
             self.running = False
             return {"result": "shutting_down"}

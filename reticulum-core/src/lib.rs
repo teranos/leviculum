@@ -45,13 +45,14 @@ pub mod ifac;
 pub mod link;
 pub mod packet;
 pub mod ratchet;
+pub mod receipt;
 pub mod resource;
 pub mod traits;
 pub mod transport;
 
 // Re-export key types
 pub use announce::{generate_random_hash, AnnounceError, ReceivedAnnounce};
-pub use destination::Destination;
+pub use destination::{Destination, ProofStrategy};
 pub use identity::Identity;
 pub use ifac::{IfacConfig, IfacError};
 pub use link::{
@@ -59,6 +60,7 @@ pub use link::{
 };
 pub use packet::Packet;
 pub use ratchet::{KnownRatchets, Ratchet, RatchetError};
+pub use receipt::{PacketReceipt, ReceiptStatus};
 
 // Re-export traits
 pub use traits::{

@@ -370,6 +370,48 @@ impl Packet {
     }
 }
 
+/// Build a PROOF packet for delivery confirmation
+///
+/// A proof packet is sent from the receiver back to the sender to confirm
+/// that a packet was received. The proof contains the packet hash and a
+/// signature by the receiver.
+///
+/// # Arguments
+/// * `destination_hash` - The destination to send the proof to (the original sender)
+/// * `proof_data` - The proof data (96 bytes: packet_hash + signature)
+///
+/// # Returns
+/// A `Packet` ready to be packed and sent
+///
+/// # Example
+/// ```
+/// use reticulum_core::packet::build_proof_packet;
+///
+/// let dest_hash = [0x01u8; 16];
+/// let proof_data = [0x42u8; 96]; // hash + signature
+/// let packet = build_proof_packet(&dest_hash, &proof_data);
+/// ```
+pub fn build_proof_packet(
+    destination_hash: &[u8; TRUNCATED_HASHBYTES],
+    proof_data: &[u8],
+) -> Packet {
+    Packet {
+        flags: PacketFlags {
+            ifac_flag: false,
+            header_type: HeaderType::Type1,
+            context_flag: false,
+            transport_type: TransportType::Broadcast,
+            dest_type: DestinationType::Single,
+            packet_type: PacketType::Proof,
+        },
+        hops: 0,
+        transport_id: None,
+        destination_hash: *destination_hash,
+        context: PacketContext::None,
+        data: PacketData::Owned(proof_data.to_vec()),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

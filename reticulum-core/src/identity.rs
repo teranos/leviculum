@@ -223,6 +223,64 @@ impl Identity {
         Ok(self.ed25519_verifying.verify(message, &sig).is_ok())
     }
 
+    /// Create proof data by signing a packet hash
+    ///
+    /// A proof is cryptographic evidence that a packet was received. It consists
+    /// of the packet hash followed by a signature of that hash.
+    ///
+    /// # Arguments
+    /// * `packet_hash` - The SHA256 hash of the received packet (32 bytes)
+    ///
+    /// # Returns
+    /// Explicit format proof data: `[packet_hash (32)] + [signature (64)]` = 96 bytes
+    ///
+    /// # Errors
+    /// Returns `NoPrivateKey` if this identity has no signing key.
+    ///
+    /// # Example
+    /// ```
+    /// use reticulum_core::identity::Identity;
+    /// use rand_core::OsRng;
+    ///
+    /// let identity = Identity::generate_with_rng(&mut OsRng);
+    /// let packet_hash = [0x42u8; 32];
+    /// let proof = identity.create_proof(&packet_hash).unwrap();
+    /// assert_eq!(proof.len(), 96);
+    /// ```
+    pub fn create_proof(
+        &self,
+        packet_hash: &[u8; 32],
+    ) -> Result<[u8; crate::constants::PROOF_DATA_SIZE], IdentityError> {
+        let signature = self.sign(packet_hash)?;
+        let mut proof = [0u8; crate::constants::PROOF_DATA_SIZE];
+        proof[..32].copy_from_slice(packet_hash);
+        proof[32..].copy_from_slice(&signature);
+        Ok(proof)
+    }
+
+    /// Verify a proof against a packet hash
+    ///
+    /// # Arguments
+    /// * `proof_data` - The proof data (96 bytes: hash + signature)
+    /// * `expected_hash` - The expected packet hash
+    ///
+    /// # Returns
+    /// `true` if the proof is valid (hash matches and signature verifies)
+    pub fn verify_proof(&self, proof_data: &[u8], expected_hash: &[u8; 32]) -> bool {
+        if proof_data.len() != crate::constants::PROOF_DATA_SIZE {
+            return false;
+        }
+
+        // Check that the hash in the proof matches the expected hash
+        if &proof_data[..32] != expected_hash {
+            return false;
+        }
+
+        // Verify the signature
+        self.verify(&proof_data[..32], &proof_data[32..])
+            .unwrap_or(false)
+    }
+
     /// Compute identity hash from public keys
     fn compute_hash(
         x25519_pub: &x25519_dalek::PublicKey,
@@ -1152,5 +1210,110 @@ mod tests {
 
         let result = identity.decrypt_with_ratchets(&too_short, &[], true);
         assert_eq!(result, Err(IdentityError::DecryptionFailed));
+    }
+
+    // ─── Proof Tests ─────────────────────────────────────────────────────────────
+
+    #[test]
+    fn test_create_proof() {
+        let identity = new_identity();
+        let packet_hash = [0x42u8; 32];
+
+        let proof = identity.create_proof(&packet_hash).unwrap();
+
+        // Proof should be 96 bytes (32 hash + 64 signature)
+        assert_eq!(proof.len(), 96);
+
+        // First 32 bytes should be the packet hash
+        assert_eq!(&proof[..32], &packet_hash);
+
+        // Signature should be valid
+        assert!(identity.verify(&packet_hash, &proof[32..]).unwrap());
+    }
+
+    #[test]
+    fn test_verify_proof() {
+        let identity = new_identity();
+        let packet_hash = [0x42u8; 32];
+
+        let proof = identity.create_proof(&packet_hash).unwrap();
+
+        // Valid proof should verify
+        assert!(identity.verify_proof(&proof, &packet_hash));
+    }
+
+    #[test]
+    fn test_verify_proof_wrong_hash() {
+        let identity = new_identity();
+        let packet_hash = [0x42u8; 32];
+        let wrong_hash = [0x43u8; 32];
+
+        let proof = identity.create_proof(&packet_hash).unwrap();
+
+        // Proof should not verify against a different hash
+        assert!(!identity.verify_proof(&proof, &wrong_hash));
+    }
+
+    #[test]
+    fn test_verify_proof_wrong_identity() {
+        let alice = new_identity();
+        let bob = new_identity();
+        let packet_hash = [0x42u8; 32];
+
+        // Alice creates a proof
+        let proof = alice.create_proof(&packet_hash).unwrap();
+
+        // Bob cannot verify Alice's proof (different signing key)
+        assert!(!bob.verify_proof(&proof, &packet_hash));
+    }
+
+    #[test]
+    fn test_verify_proof_invalid_length() {
+        let identity = new_identity();
+        let packet_hash = [0x42u8; 32];
+
+        // Too short
+        assert!(!identity.verify_proof(&[0u8; 50], &packet_hash));
+
+        // Too long
+        assert!(!identity.verify_proof(&[0u8; 100], &packet_hash));
+    }
+
+    #[test]
+    fn test_create_proof_public_only_fails() {
+        let identity = new_identity();
+        let pub_bytes = identity.public_key_bytes();
+        let pub_only = Identity::from_public_key_bytes(&pub_bytes).unwrap();
+
+        let packet_hash = [0x42u8; 32];
+        let result = pub_only.create_proof(&packet_hash);
+
+        assert_eq!(result, Err(IdentityError::NoPrivateKey));
+    }
+
+    #[test]
+    fn test_proof_deterministic() {
+        // Ed25519 signatures are deterministic, so proofs should be too
+        let identity = new_identity();
+        let packet_hash = [0x42u8; 32];
+
+        let proof1 = identity.create_proof(&packet_hash).unwrap();
+        let proof2 = identity.create_proof(&packet_hash).unwrap();
+
+        assert_eq!(proof1, proof2);
+    }
+
+    #[test]
+    fn test_proof_different_for_different_hashes() {
+        let identity = new_identity();
+        let hash1 = [0x42u8; 32];
+        let hash2 = [0x43u8; 32];
+
+        let proof1 = identity.create_proof(&hash1).unwrap();
+        let proof2 = identity.create_proof(&hash2).unwrap();
+
+        // Both hash and signature should differ
+        assert_ne!(&proof1[..32], &proof2[..32]);
+        assert_ne!(&proof1[32..], &proof2[32..]);
     }
 }
