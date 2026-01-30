@@ -43,6 +43,7 @@ pub mod crypto;
 pub mod destination;
 pub mod framing;
 pub mod identity;
+pub mod ifac;
 pub mod link;
 pub mod packet;
 pub mod resource;
@@ -53,6 +54,7 @@ pub mod transport;
 pub use announce::{generate_random_hash, AnnounceError, ReceivedAnnounce};
 pub use destination::Destination;
 pub use identity::Identity;
+pub use ifac::{IfacConfig, IfacError};
 pub use link::{Link, LinkCloseReason, LinkError, LinkEvent, LinkId, LinkManager, LinkState, PeerKeys};
 pub use packet::Packet;
 

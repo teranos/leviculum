@@ -41,8 +41,11 @@ pub const HEADER_MINSIZE: usize = 2 + 1 + TRUNCATED_HASHBYTES;
 /// flags(1) + hops(1) + transport_id(16) + destination_hash(16) + context(1) = 35
 pub const HEADER_MAXSIZE: usize = 2 + 1 + TRUNCATED_HASHBYTES * 2;
 
-/// Maximum data unit (payload after headers and encryption overhead)
-pub const MDU: usize = MTU - HEADER_MAXSIZE - 1;
+/// Maximum data unit (payload after headers)
+/// Formula: MTU - HEADER_MAXSIZE - IFAC_MIN_SIZE = 500 - 35 - 1 = 464 bytes
+/// The IFAC_MIN_SIZE accounts for the minimum Interface Access Code size that
+/// may be present in packets transmitted over authenticated interfaces.
+pub const MDU: usize = MTU - HEADER_MAXSIZE - IFAC_MIN_SIZE;
 
 /// Default per-hop timeout in seconds
 pub const DEFAULT_PER_HOP_TIMEOUT: u64 = 6;
@@ -92,3 +95,18 @@ pub const RESOURCE_AUTO_COMPRESS_MAX: usize = 64 * 1024 * 1024; // 64 MB
 
 /// Interface Access Code minimum size
 pub const IFAC_MIN_SIZE: usize = 1;
+
+/// Interface Access Code default size for serial interfaces (8 bytes)
+pub const IFAC_DEFAULT_SIZE_SERIAL: usize = 8;
+
+/// Interface Access Code default size for network interfaces (16 bytes)
+pub const IFAC_DEFAULT_SIZE_NETWORK: usize = 16;
+
+/// IFAC salt for HKDF key derivation (32 bytes)
+/// This is a fixed constant from Python Reticulum
+pub const IFAC_SALT: [u8; 32] = [
+    0xad, 0xf5, 0x4d, 0x88, 0x2c, 0x9a, 0x9b, 0x80,
+    0x77, 0x1e, 0xb4, 0x99, 0x5d, 0x70, 0x2d, 0x4a,
+    0x3e, 0x73, 0x33, 0x91, 0xb2, 0xa0, 0xf5, 0x3f,
+    0x41, 0x6d, 0x9f, 0x90, 0x7e, 0x55, 0xcf, 0xf8,
+];

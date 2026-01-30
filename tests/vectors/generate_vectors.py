@@ -652,6 +652,146 @@ def generate_vectors():
         },
     }
 
+    # ==========================================================
+    # IFAC (Interface Access Code) test vectors
+    # ==========================================================
+
+    # IFAC constants from Reticulum
+    IFAC_SALT = bytes.fromhex("adf54d882c9a9b80771eb4995d702d4a3e733391b2a0f53f416d9f907e55cff8")
+
+    # Test configuration: netname and netkey
+    ifac_netname = "testnet"
+    ifac_netkey = "secretkey123"
+    ifac_size = 16
+
+    # Key derivation process (matching Reticulum.py lines 808-829)
+    # 1. Hash netname and netkey separately
+    ifac_netname_hash = RNS.Identity.full_hash(ifac_netname.encode("utf-8"))
+    ifac_netkey_hash = RNS.Identity.full_hash(ifac_netkey.encode("utf-8"))
+
+    # 2. Concatenate hashes
+    ifac_origin = ifac_netname_hash + ifac_netkey_hash
+
+    # 3. Hash the combined origin
+    ifac_origin_hash = RNS.Identity.full_hash(ifac_origin)
+
+    # 4. Derive 64-byte key using HKDF
+    ifac_key = RNS.Cryptography.hkdf(
+        length=64,
+        derive_from=ifac_origin_hash,
+        salt=IFAC_SALT,
+        context=None
+    )
+
+    # 5. Create identity from derived key
+    ifac_identity = RNS.Identity.from_bytes(ifac_key)
+
+    # Test packet for IFAC masking
+    ifac_test_packet = bytes.fromhex("0001020304050607080910111213141516171819")
+
+    # Apply IFAC masking (matching Transport.py lines 895-930)
+    # Step 1: Sign packet and take last N bytes
+    ifac_signature = ifac_identity.sign(ifac_test_packet)
+    ifac_value = ifac_signature[-ifac_size:]
+
+    # Step 2: Generate mask
+    ifac_mask = RNS.Cryptography.hkdf(
+        length=len(ifac_test_packet) + ifac_size,
+        derive_from=ifac_value,
+        salt=ifac_key,
+        context=None
+    )
+
+    # Step 3: Build packet with IFAC flag and inserted IFAC bytes
+    # Structure: [flags(1) with bit 7 set][hops(1)][ifac(N)][rest of packet...]
+    ifac_new_header = bytes([ifac_test_packet[0] | 0x80, ifac_test_packet[1]])
+    ifac_new_raw = ifac_new_header + ifac_value + ifac_test_packet[2:]
+
+    # Step 4: Apply XOR mask (matching exact Python logic)
+    ifac_masked = b""
+    for i, byte in enumerate(ifac_new_raw):
+        if i == 0:
+            # Mask first byte but keep IFAC flag set
+            ifac_masked += bytes([byte ^ ifac_mask[i] | 0x80])
+        elif i == 1 or i > ifac_size + 1:
+            # Mask second header byte and payload (after IFAC)
+            ifac_masked += bytes([byte ^ ifac_mask[i]])
+        else:
+            # Don't mask IFAC bytes themselves
+            ifac_masked += bytes([byte])
+
+    # Verify by unmasking and checking signature
+    def verify_ifac(raw, ifac_identity, ifac_key, ifac_size):
+        """Verify IFAC on a packet (simplified version of Transport.inbound)"""
+        if raw[0] & 0x80 != 0x80:
+            return None  # No IFAC flag
+
+        # Extract IFAC
+        ifac = raw[2:2+ifac_size]
+
+        # Generate mask
+        mask = RNS.Cryptography.hkdf(
+            length=len(raw),
+            derive_from=ifac,
+            salt=ifac_key,
+            context=None
+        )
+
+        # Unmask
+        unmasked = b""
+        for i, byte in enumerate(raw):
+            if i <= 1 or i > ifac_size + 1:
+                unmasked += bytes([byte ^ mask[i]])
+            else:
+                unmasked += bytes([byte])
+
+        # Clear IFAC flag and remove IFAC bytes
+        clean = bytes([unmasked[0] & 0x7F, unmasked[1]]) + unmasked[2+ifac_size:]
+
+        # Verify signature
+        expected_ifac = ifac_identity.sign(clean)[-ifac_size:]
+        if ifac == expected_ifac:
+            return clean
+        return None
+
+    # Verify our masked packet
+    ifac_verified = verify_ifac(ifac_masked, ifac_identity, ifac_key, ifac_size)
+    assert ifac_verified == ifac_test_packet, f"IFAC verification failed! Got: {ifac_verified.hex() if ifac_verified else 'None'}"
+
+    vectors['ifac'] = {
+        'netname': ifac_netname,
+        'netkey': ifac_netkey,
+        'ifac_size': ifac_size,
+        'ifac_salt': IFAC_SALT.hex(),
+        'netname_hash': ifac_netname_hash.hex(),
+        'netkey_hash': ifac_netkey_hash.hex(),
+        'ifac_origin': ifac_origin.hex(),
+        'ifac_origin_hash': ifac_origin_hash.hex(),
+        'ifac_key': ifac_key.hex(),
+        'ifac_identity_hash': ifac_identity.hash.hex(),
+        'test_packet': ifac_test_packet.hex(),
+        'signature': ifac_signature.hex(),
+        'ifac_value': ifac_value.hex(),
+        'mask': ifac_mask.hex(),
+        'masked_packet': ifac_masked.hex(),
+    }
+
+    # Also test with netname only
+    ifac_netname_only_hash = RNS.Identity.full_hash("netonly".encode("utf-8"))
+    ifac_netname_only_origin_hash = RNS.Identity.full_hash(ifac_netname_only_hash)
+    ifac_netname_only_key = RNS.Cryptography.hkdf(
+        length=64,
+        derive_from=ifac_netname_only_origin_hash,
+        salt=IFAC_SALT,
+        context=None
+    )
+
+    vectors['ifac_netname_only'] = {
+        'netname': "netonly",
+        'ifac_origin_hash': ifac_netname_only_origin_hash.hex(),
+        'ifac_key': ifac_netname_only_key.hex(),
+    }
+
     return vectors
 
 

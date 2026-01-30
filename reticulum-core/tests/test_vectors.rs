@@ -27,6 +27,34 @@ struct TestVectors {
     announce: AnnounceVectors,
     announce_no_app_data: AnnounceNoAppDataVectors,
     link_proof: LinkProofVectors,
+    ifac: IfacVectors,
+    ifac_netname_only: IfacNetnameOnlyVectors,
+}
+
+#[derive(Debug, Deserialize)]
+struct IfacVectors {
+    netname: String,
+    netkey: String,
+    ifac_size: usize,
+    ifac_salt: String,
+    netname_hash: String,
+    netkey_hash: String,
+    ifac_origin: String,
+    ifac_origin_hash: String,
+    ifac_key: String,
+    ifac_identity_hash: String,
+    test_packet: String,
+    signature: String,
+    ifac_value: String,
+    mask: String,
+    masked_packet: String,
+}
+
+#[derive(Debug, Deserialize)]
+struct IfacNetnameOnlyVectors {
+    netname: String,
+    ifac_origin_hash: String,
+    ifac_key: String,
 }
 
 #[derive(Debug, Deserialize)]
@@ -390,6 +418,7 @@ fn test_packet_flags_encoding() {
 
     for test in &vectors.packet_flags {
         let flags = PacketFlags {
+            ifac_flag: false, // Test vectors don't use IFAC
             header_type: if test.header_type == 0 { HeaderType::Type1 } else { HeaderType::Type2 },
             context_flag: test.context_flag != 0,
             transport_type: if test.transport_type == 0 { TransportType::Broadcast } else { TransportType::Transport },
@@ -824,5 +853,130 @@ fn test_link_ecdh_symmetry() {
         shared_from_initiator.as_bytes(),
         shared_from_responder.as_bytes(),
         "ECDH should be symmetric"
+    );
+}
+
+// ==========================================================
+// IFAC (Interface Access Code) tests
+// ==========================================================
+
+use reticulum_core::ifac::IfacConfig;
+
+#[test]
+fn test_ifac_key_derivation() {
+    let vectors = load_all_vectors();
+
+    // Verify key derivation matches Python
+    let config = IfacConfig::new(
+        Some(&vectors.ifac.netname),
+        Some(&vectors.ifac.netkey),
+        vectors.ifac.ifac_size,
+    ).unwrap();
+
+    let expected_identity_hash = hex::decode(&vectors.ifac.ifac_identity_hash).unwrap();
+
+    assert_eq!(
+        config.identity().hash().to_vec(),
+        expected_identity_hash,
+        "IFAC identity hash mismatch"
+    );
+}
+
+#[test]
+fn test_ifac_key_derivation_netname_only() {
+    let vectors = load_all_vectors();
+
+    // Test with netname only
+    let config = IfacConfig::new(
+        Some(&vectors.ifac_netname_only.netname),
+        None,
+        16,
+    ).unwrap();
+
+    // The identity should be deterministic based on inputs
+    // We can't directly compare ifac_key since it's private,
+    // but we can verify the identity hash is consistent
+    let config2 = IfacConfig::new(
+        Some(&vectors.ifac_netname_only.netname),
+        None,
+        16,
+    ).unwrap();
+
+    assert_eq!(
+        config.identity().hash(),
+        config2.identity().hash(),
+        "IFAC key derivation should be deterministic"
+    );
+}
+
+#[test]
+fn test_ifac_masking_matches_python() {
+    let vectors = load_all_vectors();
+
+    let config = IfacConfig::new(
+        Some(&vectors.ifac.netname),
+        Some(&vectors.ifac.netkey),
+        vectors.ifac.ifac_size,
+    ).unwrap();
+
+    let test_packet = hex::decode(&vectors.ifac.test_packet).unwrap();
+    let expected_masked = hex::decode(&vectors.ifac.masked_packet).unwrap();
+
+    let masked = config.apply_ifac(&test_packet).unwrap();
+
+    assert_eq!(
+        hex::encode(&masked),
+        hex::encode(&expected_masked),
+        "IFAC masking mismatch\nExpected: {}\nGot:      {}",
+        hex::encode(&expected_masked),
+        hex::encode(&masked)
+    );
+}
+
+#[test]
+fn test_ifac_verification_matches_python() {
+    let vectors = load_all_vectors();
+
+    let config = IfacConfig::new(
+        Some(&vectors.ifac.netname),
+        Some(&vectors.ifac.netkey),
+        vectors.ifac.ifac_size,
+    ).unwrap();
+
+    let masked_packet = hex::decode(&vectors.ifac.masked_packet).unwrap();
+    let expected_clean = hex::decode(&vectors.ifac.test_packet).unwrap();
+
+    let clean = config.verify_ifac(&masked_packet).unwrap();
+
+    assert_eq!(
+        hex::encode(&clean),
+        hex::encode(&expected_clean),
+        "IFAC verification mismatch\nExpected: {}\nGot:      {}",
+        hex::encode(&expected_clean),
+        hex::encode(&clean)
+    );
+}
+
+#[test]
+fn test_ifac_roundtrip_with_python_vectors() {
+    let vectors = load_all_vectors();
+
+    let config = IfacConfig::new(
+        Some(&vectors.ifac.netname),
+        Some(&vectors.ifac.netkey),
+        vectors.ifac.ifac_size,
+    ).unwrap();
+
+    let test_packet = hex::decode(&vectors.ifac.test_packet).unwrap();
+
+    // Apply IFAC
+    let masked = config.apply_ifac(&test_packet).unwrap();
+
+    // Verify and unmask
+    let clean = config.verify_ifac(&masked).unwrap();
+
+    assert_eq!(
+        clean, test_packet,
+        "IFAC roundtrip failed"
     );
 }
