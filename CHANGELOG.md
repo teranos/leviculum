@@ -9,6 +9,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 - `ifac_flag` field in `PacketFlags` for Interface Access Code support at packet level
+- Embedded target documentation (`doc/EMBEDDED_TARGETS.md`) with Meshtastic device reference
+- Build infrastructure for embedded targets (`rust-toolchain.toml`, `.cargo/config.toml`)
+- `scripts/check-embedded.sh` for verifying `reticulum-core` compiles on ARM targets
 
 ### Changed
 - Box `Packet` in `TransportEvent::PacketReceived` to reduce enum size
