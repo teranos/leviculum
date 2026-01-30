@@ -8,6 +8,20 @@
 //! - Header Type 2: transport_id + destination_hash (32 bytes)
 
 use crate::constants::{HEADER_MAXSIZE, HEADER_MINSIZE, MDU, MTU, TRUNCATED_HASHBYTES};
+
+// ─── Flag Byte Bit Masks ─────────────────────────────────────────────────────
+// Bit layout: [unused:1][header_type:1][context:1][transport:1][dest_type:2][packet_type:2]
+
+/// Bit mask for header type flag (bit 6)
+const FLAG_HEADER_TYPE_MASK: u8 = 0x40;
+/// Bit mask for context flag (bit 5)
+const FLAG_CONTEXT_MASK: u8 = 0x20;
+/// Bit mask for transport type flag (bit 4)
+const FLAG_TRANSPORT_MASK: u8 = 0x10;
+/// Bit shift for destination type (bits 3-2)
+const FLAG_DEST_TYPE_SHIFT: u8 = 2;
+/// Bit mask for destination/packet type (2 bits)
+const FLAG_TYPE_MASK: u8 = 0x03;
 use crate::destination::DestinationType;
 
 /// Packet type
@@ -146,21 +160,21 @@ impl PacketFlags {
 
     /// Decode flags from a byte
     pub fn from_byte(byte: u8) -> Result<Self, PacketError> {
-        let header_type = if byte & 0x40 != 0 {
+        let header_type = if byte & FLAG_HEADER_TYPE_MASK != 0 {
             HeaderType::Type2
         } else {
             HeaderType::Type1
         };
-        let context_flag = byte & 0x20 != 0;
-        let transport_type = if byte & 0x10 != 0 {
+        let context_flag = byte & FLAG_CONTEXT_MASK != 0;
+        let transport_type = if byte & FLAG_TRANSPORT_MASK != 0 {
             TransportType::Transport
         } else {
             TransportType::Broadcast
         };
-        let dest_type =
-            DestinationType::try_from((byte >> 2) & 0x03).map_err(|_| PacketError::InvalidFlags)?;
+        let dest_type = DestinationType::try_from((byte >> FLAG_DEST_TYPE_SHIFT) & FLAG_TYPE_MASK)
+            .map_err(|_| PacketError::InvalidFlags)?;
         let packet_type =
-            PacketType::try_from(byte & 0x03).map_err(|_| PacketError::InvalidFlags)?;
+            PacketType::try_from(byte & FLAG_TYPE_MASK).map_err(|_| PacketError::InvalidFlags)?;
 
         Ok(Self {
             header_type,

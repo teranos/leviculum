@@ -249,16 +249,45 @@ impl Identity {
     }
 
     /// Encrypt data for this identity with a provided RNG
-    pub fn encrypt_with_rng<R: rand_core::CryptoRngCore>(&self, plaintext: &[u8], rng: &mut R) -> Vec<u8> {
+    pub fn encrypt_with_rng<R: rand_core::CryptoRngCore>(
+        &self,
+        plaintext: &[u8],
+        rng: &mut R,
+    ) -> Vec<u8> {
         // Generate ephemeral X25519 key pair
         let ephemeral_private = x25519_dalek::StaticSecret::random_from_rng(&mut *rng);
-        let ephemeral_public = x25519_dalek::PublicKey::from(&ephemeral_private);
+
+        // Generate random IV
+        let mut iv = [0u8; AES_BLOCK_SIZE];
+        rng.fill_bytes(&mut iv);
+
+        self.encrypt_impl(&ephemeral_private, plaintext, &iv)
+    }
+
+    /// Encrypt data for this identity with a specific ephemeral key and IV (for testing)
+    pub fn encrypt_with_keys(
+        &self,
+        plaintext: &[u8],
+        ephemeral_private_bytes: &[u8; X25519_KEY_SIZE],
+        iv: &[u8; AES_BLOCK_SIZE],
+    ) -> Vec<u8> {
+        let ephemeral_private = x25519_dalek::StaticSecret::from(*ephemeral_private_bytes);
+        self.encrypt_impl(&ephemeral_private, plaintext, iv)
+    }
+
+    /// Internal encryption implementation used by both encrypt_with_rng and encrypt_with_keys
+    fn encrypt_impl(
+        &self,
+        ephemeral_private: &x25519_dalek::StaticSecret,
+        plaintext: &[u8],
+        iv: &[u8; AES_BLOCK_SIZE],
+    ) -> Vec<u8> {
+        let ephemeral_public = x25519_dalek::PublicKey::from(ephemeral_private);
 
         // Perform ECDH
         let shared_key = ephemeral_private.diffie_hellman(&self.x25519_public);
 
-        // Derive encryption key using HKDF
-        // salt = identity hash, context = None (empty)
+        // Derive encryption key using HKDF (salt = identity hash, context = None)
         let mut derived_key = [0u8; Self::DERIVED_KEY_LENGTH];
         derive_key(
             shared_key.as_bytes(),
@@ -266,10 +295,6 @@ impl Identity {
             None,
             &mut derived_key,
         );
-
-        // Generate random IV
-        let mut iv = [0u8; AES_BLOCK_SIZE];
-        rng.fill_bytes(&mut iv);
 
         // Calculate token size: IV + padded ciphertext + HMAC
         let padded_len = ((plaintext.len() / AES_BLOCK_SIZE) + 1) * AES_BLOCK_SIZE;
@@ -282,59 +307,8 @@ impl Identity {
         output[..X25519_KEY_SIZE].copy_from_slice(ephemeral_public.as_bytes());
 
         // Encrypt with token
-        let token_size = encrypt_token(
-            &derived_key,
-            &iv,
-            plaintext,
-            &mut output[X25519_KEY_SIZE..],
-        )
-        .expect("token encryption should succeed with valid parameters");
-
-        output.truncate(X25519_KEY_SIZE + token_size);
-        output
-    }
-
-    /// Encrypt data for this identity with a specific ephemeral key and IV (for testing)
-    pub fn encrypt_with_keys(
-        &self,
-        plaintext: &[u8],
-        ephemeral_private_bytes: &[u8; X25519_KEY_SIZE],
-        iv: &[u8; AES_BLOCK_SIZE],
-    ) -> Vec<u8> {
-        // Create ephemeral key from bytes
-        let ephemeral_private = x25519_dalek::StaticSecret::from(*ephemeral_private_bytes);
-        let ephemeral_public = x25519_dalek::PublicKey::from(&ephemeral_private);
-
-        // Perform ECDH
-        let shared_key = ephemeral_private.diffie_hellman(&self.x25519_public);
-
-        // Derive encryption key using HKDF
-        let mut derived_key = [0u8; Self::DERIVED_KEY_LENGTH];
-        derive_key(
-            shared_key.as_bytes(),
-            Some(&self.hash),
-            None,
-            &mut derived_key,
-        );
-
-        // Calculate token size
-        let padded_len = ((plaintext.len() / AES_BLOCK_SIZE) + 1) * AES_BLOCK_SIZE;
-        let token_len = AES_BLOCK_SIZE + padded_len + 32;
-
-        // Allocate output
-        let mut output = alloc::vec![0u8; X25519_KEY_SIZE + token_len];
-
-        // Write ephemeral public key
-        output[..X25519_KEY_SIZE].copy_from_slice(ephemeral_public.as_bytes());
-
-        // Encrypt with token
-        let token_size = encrypt_token(
-            &derived_key,
-            iv,
-            plaintext,
-            &mut output[X25519_KEY_SIZE..],
-        )
-        .expect("token encryption should succeed");
+        let token_size = encrypt_token(&derived_key, iv, plaintext, &mut output[X25519_KEY_SIZE..])
+            .expect("token encryption should succeed with valid parameters");
 
         output.truncate(X25519_KEY_SIZE + token_size);
         output

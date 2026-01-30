@@ -57,4 +57,7 @@ pub use link::{Link, LinkCloseReason, LinkError, LinkEvent, LinkId, LinkManager,
 pub use packet::Packet;
 
 // Re-export traits
-pub use traits::{Clock, Interface, InterfaceError, InterfaceMode, NoStorage, Storage, StorageError};
+pub use traits::{
+    Clock, Context, Interface, InterfaceError, InterfaceMode, NoStorage, PlatformContext, Storage,
+    StorageError,
+};

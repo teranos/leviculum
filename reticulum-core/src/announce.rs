@@ -27,9 +27,27 @@
 //! The signature covers: destination_hash + public_key + name_hash + random_hash + [ratchet] + app_data
 
 use crate::constants::{
-    ED25519_SIGNATURE_SIZE, IDENTITY_KEY_SIZE, NAME_HASHBYTES, RANDOM_HASHBYTES, RATCHET_SIZE,
-    TRUNCATED_HASHBYTES,
+    slice_to_array, ED25519_SIGNATURE_SIZE, IDENTITY_KEY_SIZE, NAME_HASHBYTES, RANDOM_HASHBYTES,
+    RATCHET_SIZE, TRUNCATED_HASHBYTES,
 };
+
+// ─── Announce Format Offsets ─────────────────────────────────────────────────
+// These define the byte layout of announce payloads.
+
+/// Offset of public key in announce payload
+const OFFSET_PUBLIC_KEY: usize = 0;
+/// Offset of name hash in announce payload
+const OFFSET_NAME_HASH: usize = IDENTITY_KEY_SIZE; // 64
+/// Offset of random hash in announce payload
+const OFFSET_RANDOM_HASH: usize = OFFSET_NAME_HASH + NAME_HASHBYTES; // 74
+/// Offset of ratchet in ratcheted announces (or signature in non-ratcheted)
+const OFFSET_RATCHET_OR_SIG: usize = OFFSET_RANDOM_HASH + RANDOM_HASHBYTES; // 84
+/// Offset of signature in ratcheted announces
+const OFFSET_SIG_RATCHETED: usize = OFFSET_RATCHET_OR_SIG + RATCHET_SIZE; // 116
+/// Offset of app_data in non-ratcheted announces
+const OFFSET_APP_DATA: usize = OFFSET_RATCHET_OR_SIG + ED25519_SIGNATURE_SIZE; // 148
+/// Offset of app_data in ratcheted announces
+const OFFSET_APP_DATA_RATCHETED: usize = OFFSET_SIG_RATCHETED + ED25519_SIGNATURE_SIZE; // 180
 use crate::crypto::truncated_hash;
 use crate::identity::{Identity, IdentityError};
 use crate::packet::{Packet, PacketType};
@@ -188,57 +206,45 @@ impl ReceivedAnnounce {
         // TODO: Verify this detection method against the Python implementation
         let has_ratchet = payload.len() >= ANNOUNCE_RATCHETED_MIN_SIZE;
 
-        if has_ratchet {
-            if payload.len() < ANNOUNCE_RATCHETED_MIN_SIZE {
-                return Err(AnnounceError::PayloadTooShort);
-            }
-
-            let mut public_key = [0u8; IDENTITY_KEY_SIZE];
-            let mut name_hash = [0u8; NAME_HASHBYTES];
-            let mut random_hash = [0u8; RANDOM_HASHBYTES];
-            let mut ratchet = [0u8; RATCHET_SIZE];
-            let mut signature = [0u8; ED25519_SIGNATURE_SIZE];
-
-            public_key.copy_from_slice(&payload[0..64]);
-            name_hash.copy_from_slice(&payload[64..74]);
-            random_hash.copy_from_slice(&payload[74..84]);
-            ratchet.copy_from_slice(&payload[84..116]);
-            signature.copy_from_slice(&payload[116..180]);
-
-            Ok(Self {
-                destination_hash: packet.destination_hash,
-                public_key,
-                name_hash,
-                random_hash,
-                ratchet: Some(ratchet),
-                signature,
-                app_data: payload[180..].to_vec(),
-            })
+        // Check minimum size based on announce type
+        let min_size = if has_ratchet {
+            ANNOUNCE_RATCHETED_MIN_SIZE
         } else {
-            if payload.len() < ANNOUNCE_MIN_SIZE {
-                return Err(AnnounceError::PayloadTooShort);
-            }
-
-            let mut public_key = [0u8; IDENTITY_KEY_SIZE];
-            let mut name_hash = [0u8; NAME_HASHBYTES];
-            let mut random_hash = [0u8; RANDOM_HASHBYTES];
-            let mut signature = [0u8; ED25519_SIGNATURE_SIZE];
-
-            public_key.copy_from_slice(&payload[0..64]);
-            name_hash.copy_from_slice(&payload[64..74]);
-            random_hash.copy_from_slice(&payload[74..84]);
-            signature.copy_from_slice(&payload[84..148]);
-
-            Ok(Self {
-                destination_hash: packet.destination_hash,
-                public_key,
-                name_hash,
-                random_hash,
-                ratchet: None,
-                signature,
-                app_data: payload[148..].to_vec(),
-            })
+            ANNOUNCE_MIN_SIZE
+        };
+        if payload.len() < min_size {
+            return Err(AnnounceError::PayloadTooShort);
         }
+
+        // Parse common fields (same offsets for both formats)
+        let public_key = slice_to_array(payload, OFFSET_PUBLIC_KEY);
+        let name_hash = slice_to_array(payload, OFFSET_NAME_HASH);
+        let random_hash = slice_to_array(payload, OFFSET_RANDOM_HASH);
+
+        // Parse ratchet, signature, and app_data based on format
+        let (ratchet, signature, app_data_offset) = if has_ratchet {
+            (
+                Some(slice_to_array(payload, OFFSET_RATCHET_OR_SIG)),
+                slice_to_array(payload, OFFSET_SIG_RATCHETED),
+                OFFSET_APP_DATA_RATCHETED,
+            )
+        } else {
+            (
+                None,
+                slice_to_array(payload, OFFSET_RATCHET_OR_SIG),
+                OFFSET_APP_DATA,
+            )
+        };
+
+        Ok(Self {
+            destination_hash: packet.destination_hash,
+            public_key,
+            name_hash,
+            random_hash,
+            ratchet,
+            signature,
+            app_data: payload[app_data_offset..].to_vec(),
+        })
     }
 
     /// Get the destination hash from the packet header

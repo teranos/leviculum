@@ -35,6 +35,17 @@ use alloc::vec::Vec;
 
 use crate::constants::{PATHFINDER_EXPIRY_SECS, PATHFINDER_MAX_HOPS, TRUNCATED_HASHBYTES};
 
+// ─── Transport Time Constants ────────────────────────────────────────────────
+
+/// Default announce rate limit interval in milliseconds
+const ANNOUNCE_RATE_LIMIT_DEFAULT_MS: u64 = 2_000;
+/// Default packet cache expiry time in milliseconds
+const PACKET_CACHE_EXPIRY_DEFAULT_MS: u64 = 60_000;
+/// Reverse table entry expiry time in milliseconds
+const REVERSE_TABLE_EXPIRY_MS: u64 = 60_000;
+/// Milliseconds per second (for retransmit delay calculation)
+const MS_PER_SECOND: u64 = 1_000;
+
 use crate::announce::ReceivedAnnounce;
 use crate::crypto::truncated_hash;
 use crate::identity::Identity;
@@ -114,8 +125,8 @@ impl Default for TransportConfig {
             enable_transport: false,
             max_hops: PATHFINDER_MAX_HOPS,
             path_expiry_secs: PATHFINDER_EXPIRY_SECS,
-            announce_rate_limit_ms: 2000,
-            packet_cache_expiry_ms: 60_000,
+            announce_rate_limit_ms: ANNOUNCE_RATE_LIMIT_DEFAULT_MS,
+            packet_cache_expiry_ms: PACKET_CACHE_EXPIRY_DEFAULT_MS,
         }
     }
 }
@@ -711,11 +722,10 @@ impl<C: Clock, S: Storage> Transport<C, S> {
     }
 
     fn clean_reverse_table(&mut self, now: u64) {
-        // Reverse entries expire after 60 seconds
         let expired: Vec<[u8; TRUNCATED_HASHBYTES]> = self
             .reverse_table
             .iter()
-            .filter(|(_, e)| now.saturating_sub(e.timestamp_ms) > 60_000)
+            .filter(|(_, e)| now.saturating_sub(e.timestamp_ms) > REVERSE_TABLE_EXPIRY_MS)
             .map(|(k, _)| *k)
             .collect();
 
@@ -726,7 +736,7 @@ impl<C: Clock, S: Storage> Transport<C, S> {
 
     fn calculate_retransmit_delay(&self, hops: u8) -> u64 {
         // Longer delay for closer announces (they spread faster naturally)
-        ((hops as u64) + 1) * 1000
+        ((hops as u64) + 1) * MS_PER_SECOND
     }
 }
 
