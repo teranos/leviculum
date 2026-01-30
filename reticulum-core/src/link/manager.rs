@@ -532,13 +532,11 @@ impl LinkManager {
 
     fn check_timeouts(&mut self, now_ms: u64) {
         // Check pending outgoing links
-        let timed_out_outgoing: Vec<LinkId> = self
-            .pending_outgoing
-            .iter()
-            .filter(|(_, pending)| now_ms.saturating_sub(pending.created_at_ms) > LINK_TIMEOUT_MS)
-            .map(|(id, _)| *id)
-            .collect();
-
+        let timed_out_outgoing = Self::collect_timed_out_ids(
+            &self.pending_outgoing,
+            |p| p.created_at_ms,
+            now_ms,
+        );
         for link_id in timed_out_outgoing {
             self.links.remove(&link_id);
             self.pending_outgoing.remove(&link_id);
@@ -549,13 +547,11 @@ impl LinkManager {
         }
 
         // Check pending incoming links
-        let timed_out_incoming: Vec<LinkId> = self
-            .pending_incoming
-            .iter()
-            .filter(|(_, pending)| now_ms.saturating_sub(pending.proof_sent_at_ms) > LINK_TIMEOUT_MS)
-            .map(|(id, _)| *id)
-            .collect();
-
+        let timed_out_incoming = Self::collect_timed_out_ids(
+            &self.pending_incoming,
+            |p| p.proof_sent_at_ms,
+            now_ms,
+        );
         for link_id in timed_out_incoming {
             self.links.remove(&link_id);
             self.pending_incoming.remove(&link_id);
@@ -564,6 +560,22 @@ impl LinkManager {
                 reason: LinkCloseReason::Timeout,
             });
         }
+    }
+
+    /// Collect link IDs that have timed out from a pending map
+    fn collect_timed_out_ids<T, F>(
+        pending: &BTreeMap<LinkId, T>,
+        get_timestamp: F,
+        now_ms: u64,
+    ) -> Vec<LinkId>
+    where
+        F: Fn(&T) -> u64,
+    {
+        pending
+            .iter()
+            .filter(|(_, entry)| now_ms.saturating_sub(get_timestamp(entry)) > LINK_TIMEOUT_MS)
+            .map(|(id, _)| *id)
+            .collect()
     }
 }
 

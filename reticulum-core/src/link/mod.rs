@@ -47,6 +47,47 @@ use crate::identity::Identity;
 use crate::traits::Context;
 use rand_core::RngCore;
 
+// Link request/proof size constants
+/// Size of link request payload without signaling (X25519 pub + Ed25519 pub)
+const LINK_REQUEST_BASE_SIZE: usize = 64;
+/// Size of link request payload with MTU signaling
+const LINK_REQUEST_SIGNALING_SIZE: usize = 67;
+/// Size of signed data in proof (link_id + X25519 pub + Ed25519 pub + signaling)
+const PROOF_SIGNED_DATA_SIZE: usize = 83; // 16 + 32 + 32 + 3
+/// Size of proof data (signature + X25519 pub + signaling)
+const PROOF_DATA_SIZE: usize = 99; // 64 + 32 + 3
+/// Size of signaling bytes (21-bit MTU + 3-bit mode)
+const SIGNALING_SIZE: usize = 3;
+
+/// Encode MTU and mode into 3-byte signaling format
+///
+/// Format: 21-bit MTU (bits 0-20) + 3-bit mode (bits 21-23)
+/// Returns the lower 3 bytes of the big-endian representation.
+fn encode_signaling_bytes(mtu: u32, mode: u8) -> [u8; SIGNALING_SIZE] {
+    let signaling = (mtu & 0x1FFFFF) | ((mode as u32 & 0x07) << 21);
+    let bytes = signaling.to_be_bytes();
+    [bytes[1], bytes[2], bytes[3]]
+}
+
+/// Build the signed data for proof verification/generation
+///
+/// Format: [link_id (16)] [x25519_pub (32)] [ed25519_pub (32)] [signaling (3)]
+fn build_proof_signed_data(
+    link_id: &LinkId,
+    x25519_pub: &[u8; X25519_KEY_SIZE],
+    ed25519_pub: &[u8; X25519_KEY_SIZE],
+    signaling: &[u8; SIGNALING_SIZE],
+) -> [u8; PROOF_SIGNED_DATA_SIZE] {
+    let mut signed_data = [0u8; PROOF_SIGNED_DATA_SIZE];
+    signed_data[..TRUNCATED_HASHBYTES].copy_from_slice(link_id);
+    signed_data[TRUNCATED_HASHBYTES..TRUNCATED_HASHBYTES + X25519_KEY_SIZE]
+        .copy_from_slice(x25519_pub);
+    signed_data[TRUNCATED_HASHBYTES + X25519_KEY_SIZE..TRUNCATED_HASHBYTES + 2 * X25519_KEY_SIZE]
+        .copy_from_slice(ed25519_pub);
+    signed_data[TRUNCATED_HASHBYTES + 2 * X25519_KEY_SIZE..].copy_from_slice(signaling);
+    signed_data
+}
+
 /// Link state
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum LinkState {
@@ -260,8 +301,8 @@ impl Link {
         rng: &mut R,
     ) -> Result<Self, LinkError> {
         // LINK_REQUEST payload: [peer_x25519_pub (32)] [peer_ed25519_pub (32)]
-        // May have additional MTU signaling bytes (3 bytes) but we only need first 64
-        if request_data.len() < 64 {
+        // May have additional MTU signaling bytes but we only need first LINK_REQUEST_BASE_SIZE
+        if request_data.len() < LINK_REQUEST_BASE_SIZE {
             return Err(LinkError::InvalidRequest);
         }
 
@@ -330,13 +371,8 @@ impl Link {
         use crate::destination::DestinationType;
         use crate::packet::{HeaderType, PacketContext, PacketFlags, PacketType, TransportType};
 
-        if self.state != LinkState::Pending {
-            return Err(LinkError::InvalidState);
-        }
-
-        if self.initiator {
-            return Err(LinkError::InvalidState); // Only responder can build proof
-        }
+        self.require_state(LinkState::Pending)?;
+        self.require_responder()?;
 
         // Get peer's public key (from the LINK_REQUEST)
         let peer_ephemeral_public = self
@@ -355,29 +391,26 @@ impl Link {
         self.link_key = Some(link_key);
 
         // Build signaling bytes: 21-bit MTU + 3-bit mode
-        let signaling = (mtu & 0x1FFFFF) | ((mode as u32 & 0x07) << 21);
-        let signaling_be = signaling.to_be_bytes();
-        let signaling_bytes: [u8; 3] = [signaling_be[1], signaling_be[2], signaling_be[3]];
+        let signaling_bytes = encode_signaling_bytes(mtu, mode);
 
-        // Build signed data: link_id (16) + our_x25519_pub (32) + our_ed25519_pub (32) + signaling (3)
+        // Build signed data: link_id (16) + our_x25519_pub (32) + dest_ed25519_pub (32) + signaling (3)
         // Note: Python RNS uses the destination's Ed25519 signing key (not the link's ephemeral one)
-        let mut signed_data = [0u8; 83];
-        signed_data[..TRUNCATED_HASHBYTES].copy_from_slice(&self.id);
-        signed_data[TRUNCATED_HASHBYTES..TRUNCATED_HASHBYTES + 32]
-            .copy_from_slice(self.ephemeral_public.as_bytes());
-        // Use the destination identity's Ed25519 verifying key (not the link's ephemeral one)
-        signed_data[TRUNCATED_HASHBYTES + 32..TRUNCATED_HASHBYTES + 64]
-            .copy_from_slice(identity.ed25519_verifying().as_bytes());
-        signed_data[TRUNCATED_HASHBYTES + 64..].copy_from_slice(&signaling_bytes);
+        let signed_data = build_proof_signed_data(
+            &self.id,
+            self.ephemeral_public.as_bytes(),
+            &identity.ed25519_verifying().to_bytes(),
+            &signaling_bytes,
+        );
 
         // Sign with destination's identity
         let signature = identity.sign(&signed_data).map_err(|_| LinkError::NoIdentity)?;
 
         // Build proof data: [signature (64)] [our_x25519_pub (32)] [signaling (3)]
-        let mut proof_data = alloc::vec![0u8; 99];
-        proof_data[..64].copy_from_slice(&signature);
-        proof_data[64..96].copy_from_slice(self.ephemeral_public.as_bytes());
-        proof_data[96..99].copy_from_slice(&signaling_bytes);
+        let mut proof_data = alloc::vec![0u8; PROOF_DATA_SIZE];
+        proof_data[..ED25519_SIGNATURE_SIZE].copy_from_slice(&signature);
+        proof_data[ED25519_SIGNATURE_SIZE..ED25519_SIGNATURE_SIZE + X25519_KEY_SIZE]
+            .copy_from_slice(self.ephemeral_public.as_bytes());
+        proof_data[ED25519_SIGNATURE_SIZE + X25519_KEY_SIZE..].copy_from_slice(&signaling_bytes);
 
         // Build packet: PROOF packet addressed to the link_id
         let flags = PacketFlags {
@@ -388,7 +421,7 @@ impl Link {
             packet_type: PacketType::Proof,
         };
 
-        let mut packet = alloc::vec::Vec::with_capacity(1 + 1 + TRUNCATED_HASHBYTES + 1 + 99);
+        let mut packet = alloc::vec::Vec::with_capacity(1 + 1 + TRUNCATED_HASHBYTES + 1 + PROOF_DATA_SIZE);
         packet.push(flags.to_byte());
         packet.push(0); // hops = 0
         packet.extend_from_slice(&self.id); // destination = link_id
@@ -412,13 +445,8 @@ impl Link {
     /// # Returns
     /// Ok(rtt_seconds) if the link is now active, Err otherwise.
     pub fn process_rtt(&mut self, encrypted_data: &[u8]) -> Result<f64, LinkError> {
-        if self.state != LinkState::Handshake {
-            return Err(LinkError::InvalidState);
-        }
-
-        if self.initiator {
-            return Err(LinkError::InvalidState); // Only responder processes RTT
-        }
+        self.require_state(LinkState::Handshake)?;
+        self.require_responder()?;
 
         // Decrypt the RTT data
         let mut plaintext = alloc::vec![0u8; encrypted_data.len()];
@@ -490,25 +518,22 @@ impl Link {
 
     /// Create the link request data without MTU signaling
     /// Format: [ephemeral_pub (32)] [sig_pub (32)]
-    pub fn create_link_request(&self) -> [u8; 64] {
-        let mut data = [0u8; 64];
-        data[..32].copy_from_slice(self.ephemeral_public.as_bytes());
-        data[32..64].copy_from_slice(&self.verifying_key.to_bytes());
+    pub fn create_link_request(&self) -> [u8; LINK_REQUEST_BASE_SIZE] {
+        let mut data = [0u8; LINK_REQUEST_BASE_SIZE];
+        data[..X25519_KEY_SIZE].copy_from_slice(self.ephemeral_public.as_bytes());
+        data[X25519_KEY_SIZE..].copy_from_slice(&self.verifying_key.to_bytes());
         data
     }
 
     /// Create the link request data with MTU signaling
     /// Format: [ephemeral_pub (32)] [sig_pub (32)] [mtu_signaling (3)]
-    pub fn create_link_request_with_mtu(&self, mtu: u32, mode: u8) -> [u8; 67] {
-        let mut data = [0u8; 67];
-        data[..32].copy_from_slice(self.ephemeral_public.as_bytes());
-        data[32..64].copy_from_slice(&self.verifying_key.to_bytes());
+    pub fn create_link_request_with_mtu(&self, mtu: u32, mode: u8) -> [u8; LINK_REQUEST_SIGNALING_SIZE] {
+        let mut data = [0u8; LINK_REQUEST_SIGNALING_SIZE];
+        data[..X25519_KEY_SIZE].copy_from_slice(self.ephemeral_public.as_bytes());
+        data[X25519_KEY_SIZE..LINK_REQUEST_BASE_SIZE].copy_from_slice(&self.verifying_key.to_bytes());
         // MTU signaling: 21-bit MTU + 3-bit mode
-        let signaling = (mtu & 0x1FFFFF) | ((mode as u32 & 0x07) << 21);
-        let bytes = signaling.to_be_bytes();
-        data[64] = bytes[1];
-        data[65] = bytes[2];
-        data[66] = bytes[3];
+        let signaling_bytes = encode_signaling_bytes(mtu, mode);
+        data[LINK_REQUEST_BASE_SIZE..].copy_from_slice(&signaling_bytes);
         data
     }
 
@@ -524,6 +549,34 @@ impl Link {
         }
         let elapsed = current_time.saturating_sub(self.last_inbound);
         elapsed > LINK_STALE_TIME_SECS
+    }
+
+    /// Require link to be in a specific state
+    fn require_state(&self, expected: LinkState) -> Result<(), LinkError> {
+        if self.state == expected {
+            Ok(())
+        } else {
+            Err(LinkError::InvalidState)
+        }
+    }
+
+    /// Require that we are the initiator (client side)
+    #[allow(dead_code)]
+    fn require_initiator(&self) -> Result<(), LinkError> {
+        if self.initiator {
+            Ok(())
+        } else {
+            Err(LinkError::InvalidState)
+        }
+    }
+
+    /// Require that we are the responder (server side)
+    fn require_responder(&self) -> Result<(), LinkError> {
+        if !self.initiator {
+            Ok(())
+        } else {
+            Err(LinkError::InvalidState)
+        }
     }
 
     /// Calculate link ID from the raw packet bytes
@@ -565,12 +618,12 @@ impl Link {
         };
         hashable.extend_from_slice(&raw_packet[data_start..]);
 
-        // If payload has signalling bytes (payload > 64 bytes), remove them
+        // If payload has signalling bytes (payload > LINK_REQUEST_BASE_SIZE), remove them
         // After stripping header: dest_hash(16) + context(1) + payload(64+) = 81+ bytes
         // Minimum hashable with 64-byte payload = 1 + 16 + 1 + 64 = 82 bytes
         let payload_offset = 1 + TRUNCATED_HASHBYTES + 1; // (flags&0x0F) + dest_hash + context = 18 bytes
-        if hashable.len() > payload_offset + 64 {
-            let diff = hashable.len() - (payload_offset + 64);
+        if hashable.len() > payload_offset + LINK_REQUEST_BASE_SIZE {
+            let diff = hashable.len() - (payload_offset + LINK_REQUEST_BASE_SIZE);
             hashable.truncate(hashable.len() - diff);
         }
 
@@ -590,29 +643,29 @@ impl Link {
     pub fn process_proof(&mut self, proof_data: &[u8]) -> Result<(), LinkError> {
         use ed25519_dalek::Verifier;
 
-        if self.state != LinkState::Pending {
-            return Err(LinkError::InvalidState);
-        }
+        self.require_state(LinkState::Pending)?;
 
-        // Proof format: signature (64) + X25519_pub (32) + signalling (3) = 99 bytes
-        if proof_data.len() < 99 {
+        // Proof format: signature (64) + X25519_pub (32) + signalling (3) = PROOF_DATA_SIZE bytes
+        if proof_data.len() < PROOF_DATA_SIZE {
             return Err(LinkError::InvalidProof);
         }
 
-        // Extract signature (first 64 bytes)
-        let signature_bytes: [u8; ED25519_SIGNATURE_SIZE] = proof_data[..64]
+        // Extract signature (first ED25519_SIGNATURE_SIZE bytes)
+        let signature_bytes: [u8; ED25519_SIGNATURE_SIZE] = proof_data[..ED25519_SIGNATURE_SIZE]
             .try_into()
             .map_err(|_| LinkError::InvalidProof)?;
         let signature = ed25519_dalek::Signature::from_bytes(&signature_bytes);
 
-        // Extract peer's ephemeral X25519 public key (next 32 bytes)
-        let peer_pub_bytes: [u8; X25519_KEY_SIZE] = proof_data[64..96]
+        // Extract peer's ephemeral X25519 public key (next X25519_KEY_SIZE bytes)
+        let peer_pub_bytes: [u8; X25519_KEY_SIZE] = proof_data
+            [ED25519_SIGNATURE_SIZE..ED25519_SIGNATURE_SIZE + X25519_KEY_SIZE]
             .try_into()
             .map_err(|_| LinkError::InvalidProof)?;
         let peer_ephemeral_public = x25519_dalek::PublicKey::from(peer_pub_bytes);
 
-        // Extract signalling bytes (last 3 bytes)
-        let signalling_bytes: [u8; 3] = proof_data[96..99]
+        // Extract signalling bytes (last SIGNALING_SIZE bytes)
+        let signalling_bytes: [u8; SIGNALING_SIZE] = proof_data
+            [ED25519_SIGNATURE_SIZE + X25519_KEY_SIZE..PROOF_DATA_SIZE]
             .try_into()
             .map_err(|_| LinkError::InvalidProof)?;
 
@@ -621,26 +674,22 @@ impl Link {
         //   pub_bytes = responder's X25519 ephemeral public key (in proof bytes 64-96)
         //   sig_pub_bytes = responder's Ed25519 signing public key (destination's verifying key)
         //   signalling = MTU and mode bytes from the proof
-        //
-        // Total signed data = 83 bytes
-        if let Some(ref peer_verifying_key) = self.peer_verifying_key {
-            let mut signed_data = [0u8; 83];
-            signed_data[..TRUNCATED_HASHBYTES].copy_from_slice(&self.id);
-            signed_data[TRUNCATED_HASHBYTES..TRUNCATED_HASHBYTES + 32]
-                .copy_from_slice(&peer_pub_bytes); // Responder's X25519 pub from proof
-            signed_data[TRUNCATED_HASHBYTES + 32..TRUNCATED_HASHBYTES + 64]
-                .copy_from_slice(&peer_verifying_key.to_bytes()); // Responder's Ed25519 pub
-            signed_data[TRUNCATED_HASHBYTES + 64..].copy_from_slice(&signalling_bytes);
+        let peer_verifying_key = self
+            .peer_verifying_key
+            .as_ref()
+            .ok_or(LinkError::NoDestination)?;
 
-            // Verify the signature
-            peer_verifying_key
-                .verify(&signed_data, &signature)
-                .map_err(|_| LinkError::InvalidProof)?;
-        } else {
-            // If we don't have the destination's signing key, we can't verify
-            // This means set_destination_keys() must be called before process_proof()
-            return Err(LinkError::NoDestination);
-        }
+        let signed_data = build_proof_signed_data(
+            &self.id,
+            &peer_pub_bytes,
+            &peer_verifying_key.to_bytes(),
+            &signalling_bytes,
+        );
+
+        // Verify the signature
+        peer_verifying_key
+            .verify(&signed_data, &signature)
+            .map_err(|_| LinkError::InvalidProof)?;
 
         // Perform X25519 key exchange
         let ephemeral_private = self
@@ -720,7 +769,7 @@ impl Link {
         };
 
         // Packet format: [flags (1)] [hops (1)] [dest_hash (16)] [context (1)] [data (64)]
-        let mut packet = alloc::vec::Vec::with_capacity(1 + 1 + TRUNCATED_HASHBYTES + 1 + 64);
+        let mut packet = alloc::vec::Vec::with_capacity(1 + 1 + TRUNCATED_HASHBYTES + 1 + LINK_REQUEST_BASE_SIZE);
         packet.push(flags.to_byte());
         packet.push(0); // hops = 0
         packet.extend_from_slice(&self.destination_hash);
@@ -780,7 +829,7 @@ impl Link {
         };
 
         // Packet format: [flags (1)] [hops (1)] [transport_id (16)] [dest_hash (16)] [context (1)] [data (64)]
-        let mut packet = alloc::vec::Vec::with_capacity(1 + 1 + TRUNCATED_HASHBYTES + TRUNCATED_HASHBYTES + 1 + 64);
+        let mut packet = alloc::vec::Vec::with_capacity(1 + 1 + TRUNCATED_HASHBYTES + TRUNCATED_HASHBYTES + 1 + LINK_REQUEST_BASE_SIZE);
         packet.push(flags.to_byte());
         packet.push(0); // hops = 0 (we're originating)
         packet.extend_from_slice(&transport_id);
@@ -858,9 +907,7 @@ impl Link {
         use crate::destination::DestinationType;
         use crate::packet::{HeaderType, PacketContext, PacketFlags, PacketType, TransportType};
 
-        if self.state != LinkState::Active {
-            return Err(LinkError::InvalidState);
-        }
+        self.require_state(LinkState::Active)?;
 
         // Encrypt the data
         let encrypted_len = Self::encrypted_size(plaintext.len());
@@ -897,9 +944,7 @@ impl Link {
         use crate::destination::DestinationType;
         use crate::packet::{HeaderType, PacketContext, PacketFlags, PacketType, TransportType};
 
-        if self.state != LinkState::Active {
-            return Err(LinkError::InvalidState);
-        }
+        self.require_state(LinkState::Active)?;
 
         // Encode RTT as msgpack float64: 0xCB + 8 bytes big-endian IEEE 754
         let mut rtt_data = [0u8; 9];
