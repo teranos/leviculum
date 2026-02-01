@@ -9,7 +9,10 @@ description = "Standard library extensions for reticulum - networking, file I/O,
 [features]
 default = ["compression"]
 serial = ["dep:tokio-serial"]
+# Use std bzip2 crate (streaming API, more features)
 compression = ["dep:bzip2"]
+# Use no_std compatible compression from reticulum-core (buffer-to-buffer API)
+compression-nostd = ["reticulum-core/compression"]
 
 [dependencies]
 reticulum-core = { path = "../reticulum-core", default-features = true }

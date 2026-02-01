@@ -36,6 +36,8 @@
 extern crate alloc;
 
 pub mod announce;
+#[cfg(feature = "compression")]
+pub mod compression;
 pub mod constants;
 pub mod crypto;
 pub mod destination;
@@ -52,10 +54,14 @@ pub mod transport;
 
 // Re-export key types
 pub use announce::{generate_random_hash, AnnounceError, ReceivedAnnounce};
+#[cfg(feature = "compression")]
+pub use compression::{compress, decompress, decompress_auto, CompressionError};
 pub use destination::{Destination, ProofStrategy};
 pub use identity::Identity;
 pub use ifac::{IfacConfig, IfacError};
 pub use link::channel::{Channel, ChannelAction, ChannelError, Envelope, Message, MessageState};
+#[cfg(feature = "compression")]
+pub use link::channel::CompressingWriter;
 pub use link::{
     Link, LinkCloseReason, LinkError, LinkEvent, LinkId, LinkManager, LinkState, PeerKeys,
 };

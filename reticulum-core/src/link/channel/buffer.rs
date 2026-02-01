@@ -19,11 +19,14 @@
 //!
 //! # Compression
 //!
-//! This no_std implementation does not include compression. For BZ2 compression
-//! support, use `reticulum-std` which provides compression wrappers.
+//! When the `compression` feature is enabled, this module provides BZ2 compression
+//! support via the `compression` submodule. This enables:
 //!
-//! Data sent without compression (compressed=false) is fully wire-compatible
-//! with Python Reticulum, which accepts both compressed and uncompressed data.
+//! - `RawChannelReader::receive_decompress()` - Automatically decompress received messages
+//! - `CompressingWriter` - A writer that applies BZ2 compression to outgoing data
+//!
+//! Without the `compression` feature, data is sent uncompressed (compressed=false).
+//! Both modes are fully wire-compatible with Python Reticulum.
 //!
 //! # Example
 //!
@@ -458,6 +461,158 @@ impl BufferedChannelWriter {
     }
 }
 
+// ─── Compression Support ─────────────────────────────────────────────────────
+
+#[cfg(feature = "compression")]
+mod compression_support {
+    //! BZ2 compression extensions for the buffer system (no_std compatible)
+
+    use super::*;
+    use crate::compression::{compress, decompress_auto, CompressionError};
+
+    /// Minimum data size to attempt compression (smaller data often doesn't compress well)
+    pub const COMPRESSION_MIN_SIZE: usize = 32;
+
+    /// Number of compression attempts with decreasing chunk sizes
+    pub const COMPRESSION_TRIES: usize = 4;
+
+    /// Maximum decompressed size for safety (1 MB)
+    pub const MAX_DECOMPRESS_SIZE: usize = 1024 * 1024;
+
+    impl RawChannelReader {
+        /// Receive and decompress a StreamDataMessage
+        ///
+        /// If the message has the compressed flag set, the data is automatically
+        /// decompressed using BZ2 before being buffered.
+        ///
+        /// # Arguments
+        /// * `message` - The StreamDataMessage to process
+        ///
+        /// # Returns
+        /// - `Ok(true)` if the message was accepted (stream_id matched)
+        /// - `Ok(false)` if the message was for a different stream
+        /// - `Err(...)` if decompression failed
+        pub fn receive_decompress(
+            &mut self,
+            message: &StreamDataMessage,
+        ) -> Result<bool, CompressionError> {
+            if message.stream_id != self.stream_id {
+                return Ok(false);
+            }
+
+            if message.compressed {
+                let decompressed = decompress_auto(&message.data, MAX_DECOMPRESS_SIZE)?;
+                self.buffer.extend(&decompressed);
+            } else {
+                self.buffer.extend(&message.data);
+            }
+
+            if message.eof {
+                self.eof = true;
+            }
+
+            Ok(true)
+        }
+    }
+
+    /// Writer that applies BZ2 compression to data before sending
+    ///
+    /// This wrapper around `RawChannelWriter` tries to compress data and uses
+    /// compression if it results in smaller output that fits within the channel MDU.
+    #[derive(Debug, Clone)]
+    pub struct CompressingWriter {
+        inner: RawChannelWriter,
+    }
+
+    impl CompressingWriter {
+        /// Create a new compressing writer
+        ///
+        /// # Arguments
+        /// * `stream_id` - The stream identifier (0-16383)
+        /// * `channel_mdu` - The channel's maximum data unit
+        pub fn new(stream_id: u16, channel_mdu: usize) -> Self {
+            Self {
+                inner: RawChannelWriter::new(stream_id, channel_mdu),
+            }
+        }
+
+        /// Get the stream ID
+        pub fn stream_id(&self) -> u16 {
+            self.inner.stream_id()
+        }
+
+        /// Get the maximum data length per chunk
+        pub fn max_data_len(&self) -> usize {
+            self.inner.max_data_len()
+        }
+
+        /// Get the inner RawChannelWriter
+        pub fn inner(&self) -> &RawChannelWriter {
+            &self.inner
+        }
+
+        /// Prepare a chunk without compression
+        ///
+        /// Use this when you don't want compression for this chunk.
+        pub fn prepare_chunk(&self, data: &[u8], eof: bool) -> (StreamDataMessage, usize) {
+            self.inner.prepare_chunk(data, eof)
+        }
+
+        /// Prepare a chunk with optional compression
+        ///
+        /// Tries to compress the data using BZ2. If compression results in smaller
+        /// output that fits within max_data_len, the compressed data is used.
+        /// Otherwise, uncompressed data is sent.
+        ///
+        /// # Arguments
+        /// * `data` - Data to send
+        /// * `eof` - Whether this is the last chunk
+        ///
+        /// # Returns
+        /// A tuple of (StreamDataMessage, bytes_consumed)
+        pub fn prepare_chunk_compressed(
+            &self,
+            data: &[u8],
+            eof: bool,
+        ) -> Result<(StreamDataMessage, usize), CompressionError> {
+            let chunk_len = data.len().min(MAX_CHUNK_LEN);
+            let chunk_data = &data[..chunk_len];
+
+            // Try compression if data is large enough
+            if chunk_len > COMPRESSION_MIN_SIZE {
+                for try_num in 1..=COMPRESSION_TRIES {
+                    let segment_len = chunk_len / try_num;
+                    if segment_len <= COMPRESSION_MIN_SIZE {
+                        break;
+                    }
+
+                    if let Ok(compressed) = compress(&data[..segment_len]) {
+                        // Use compression if it's smaller and fits in max_data_len
+                        if compressed.len() < segment_len && compressed.len() <= self.max_data_len()
+                        {
+                            let msg = self.inner.prepare_compressed_chunk(compressed, eof);
+                            return Ok((msg, segment_len));
+                        }
+                    }
+                }
+            }
+
+            // No compression or compression didn't help
+            Ok(self.inner.prepare_chunk(chunk_data, eof))
+        }
+
+        /// Prepare an EOF marker message
+        pub fn prepare_eof(&self) -> StreamDataMessage {
+            self.inner.prepare_eof()
+        }
+    }
+}
+
+#[cfg(feature = "compression")]
+pub use compression_support::{
+    CompressingWriter, COMPRESSION_MIN_SIZE, COMPRESSION_TRIES, MAX_DECOMPRESS_SIZE,
+};
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -736,5 +891,127 @@ mod tests {
     fn test_stream_overhead() {
         // 2 bytes stream header + 6 bytes envelope header = 8
         assert_eq!(stream_overhead(), 8);
+    }
+}
+
+#[cfg(all(test, feature = "compression"))]
+mod compression_tests {
+    use super::*;
+    use crate::compression::compress;
+    use alloc::vec;
+    use alloc::vec::Vec;
+
+    #[test]
+    fn test_receive_decompress_uncompressed() {
+        let mut reader = RawChannelReader::new(0);
+
+        // Uncompressed message
+        let msg = StreamDataMessage::new(0, vec![1, 2, 3], false, false);
+        let accepted = reader.receive_decompress(&msg).unwrap();
+
+        assert!(accepted);
+        assert_eq!(reader.available(), 3);
+    }
+
+    #[test]
+    fn test_receive_decompress_compressed() {
+        let mut reader = RawChannelReader::new(0);
+
+        // Compress some data
+        let original = b"Test data for compression";
+        let compressed = compress(original).expect("compress failed");
+
+        let msg = StreamDataMessage::new(0, compressed, false, true);
+        let accepted = reader.receive_decompress(&msg).unwrap();
+
+        assert!(accepted);
+        assert_eq!(reader.available(), original.len());
+
+        let data = reader.read_all();
+        assert_eq!(data, original);
+    }
+
+    #[test]
+    fn test_receive_decompress_wrong_stream() {
+        let mut reader = RawChannelReader::new(0);
+
+        let msg = StreamDataMessage::new(1, vec![1, 2, 3], false, false);
+        let accepted = reader.receive_decompress(&msg).unwrap();
+
+        assert!(!accepted);
+        assert_eq!(reader.available(), 0);
+    }
+
+    #[test]
+    fn test_receive_decompress_eof() {
+        let mut reader = RawChannelReader::new(0);
+
+        let original = b"Last chunk";
+        let compressed = compress(original).expect("compress failed");
+
+        let msg = StreamDataMessage::new(0, compressed, true, true);
+        reader.receive_decompress(&msg).unwrap();
+
+        assert!(reader.is_eof());
+    }
+
+    #[test]
+    fn test_compressing_writer_new() {
+        let writer = CompressingWriter::new(5, 458);
+        assert_eq!(writer.stream_id(), 5);
+        assert_eq!(writer.max_data_len(), 456);
+    }
+
+    #[test]
+    fn test_compressing_writer_small_data() {
+        let writer = CompressingWriter::new(0, 500);
+
+        // Small data shouldn't be compressed
+        let data = vec![b'X'; 10];
+        let (msg, consumed) = writer.prepare_chunk_compressed(&data, false).unwrap();
+
+        assert!(!msg.compressed);
+        assert_eq!(consumed, 10);
+    }
+
+    #[test]
+    fn test_compressing_writer_compressible_data() {
+        let writer = CompressingWriter::new(0, 500);
+
+        // Highly compressible data
+        let data: Vec<u8> = (0..200).map(|_| b'A').collect();
+        let (msg, consumed) = writer.prepare_chunk_compressed(&data, false).unwrap();
+
+        // Should have compressed the data
+        if msg.compressed {
+            assert!(msg.data.len() < consumed);
+        }
+        assert!(consumed > 0);
+    }
+
+    #[test]
+    fn test_compressing_writer_roundtrip() {
+        let writer = CompressingWriter::new(0, 500);
+        let mut reader = RawChannelReader::new(0);
+
+        // Create data that compresses well
+        let original: Vec<u8> = (0..500).map(|_| b'A').collect();
+        let (msg, consumed) = writer.prepare_chunk_compressed(&original, true).unwrap();
+
+        // Receive and decompress
+        reader.receive_decompress(&msg).unwrap();
+
+        let decompressed = reader.read_all();
+        assert_eq!(decompressed, &original[..consumed]);
+    }
+
+    #[test]
+    fn test_compressing_writer_eof() {
+        let writer = CompressingWriter::new(0, 500);
+        let msg = writer.prepare_eof();
+
+        assert_eq!(msg.stream_id, 0);
+        assert!(msg.eof);
+        assert!(msg.data.is_empty());
     }
 }

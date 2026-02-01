@@ -40,6 +40,9 @@ thiserror = "2"
 bytes = "1"
 bzip2 = "0.5"
 
+# Compression (no_std compatible)
+libbz2-rs-sys = { version = "0.2", default-features = false, features = ["rust-allocator"] }
+
 # FFI
 libc = "0.2"
 

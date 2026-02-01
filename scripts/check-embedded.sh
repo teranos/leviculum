@@ -23,13 +23,25 @@ XTENSA_TARGETS=(
 
 FAILED=0
 
-# Check stock targets
+# Check stock targets - default features
 for target in "${STOCK_TARGETS[@]}"; do
-    echo "Building for $target..."
+    echo "Building for $target (default features)..."
     if cargo build -p reticulum-core --target "$target" 2>&1; then
         echo "  OK: $target"
     else
         echo "  FAILED: $target"
+        FAILED=1
+    fi
+    echo ""
+done
+
+# Check stock targets - with compression feature
+for target in "${STOCK_TARGETS[@]}"; do
+    echo "Building for $target (with compression)..."
+    if cargo build -p reticulum-core --target "$target" --features compression 2>&1; then
+        echo "  OK: $target + compression"
+    else
+        echo "  FAILED: $target + compression"
         FAILED=1
     fi
     echo ""

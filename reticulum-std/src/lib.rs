@@ -26,6 +26,11 @@ pub use reticulum_core::*;
 // Re-export buffer types (from core) and compression extensions
 #[cfg(feature = "compression")]
 pub use buffer::{compress_bz2, decompress_bz2, CompressingWriter, RawChannelReaderExt};
+#[cfg(feature = "compression-nostd")]
+pub use buffer::{
+    compress_core, decompress_auto_core, decompress_core, CoreCompressionError,
+    CoreCompressingWriter, CORE_COMPRESSION_MIN_SIZE, CORE_COMPRESSION_TRIES, MAX_DECOMPRESS_SIZE,
+};
 pub use buffer::{BufferedChannelWriter, RawChannelReader, RawChannelWriter};
 pub use clock::SystemClock;
 pub use config::{Config, InterfaceConfig, ReticulumConfig};

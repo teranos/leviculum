@@ -50,6 +50,18 @@ pub use reticulum_core::link::channel::{
     ReadResult, StreamDataMessage, MAX_CHUNK_LEN,
 };
 
+// Re-export core compression types when using compression-nostd feature
+#[cfg(feature = "compression-nostd")]
+pub use reticulum_core::compression::{
+    compress as compress_core, decompress as decompress_core,
+    decompress_auto as decompress_auto_core, CompressionError as CoreCompressionError,
+};
+#[cfg(feature = "compression-nostd")]
+pub use reticulum_core::link::channel::{
+    CompressingWriter as CoreCompressingWriter, COMPRESSION_MIN_SIZE as CORE_COMPRESSION_MIN_SIZE,
+    COMPRESSION_TRIES as CORE_COMPRESSION_TRIES, MAX_DECOMPRESS_SIZE,
+};
+
 /// Minimum data size to attempt compression (smaller data often doesn't compress well)
 #[cfg(feature = "compression")]
 pub const COMPRESSION_MIN_SIZE: usize = 32;
