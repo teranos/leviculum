@@ -19,6 +19,7 @@
 //! The compression format is standard BZ2, compatible with Python's bz2 module
 //! and the Python Reticulum implementation.
 
+use alloc::vec;
 use alloc::vec::Vec;
 use core::ffi::{c_char, c_int, c_uint};
 
@@ -102,9 +103,7 @@ pub fn compress(data: &[u8]) -> Result<Vec<u8>, CompressionError> {
 
 /// Compress data with a specific output buffer size
 fn compress_with_size(data: &[u8], dest_size: usize) -> Result<Vec<u8>, CompressionError> {
-    let mut dest = Vec::with_capacity(dest_size);
-    // SAFETY: We're extending to capacity with zeros, then passing to C
-    dest.resize(dest_size, 0);
+    let mut dest = vec![0u8; dest_size];
 
     let mut dest_len = dest_size as c_uint;
 
@@ -157,9 +156,7 @@ pub fn decompress(data: &[u8], max_size: usize) -> Result<Vec<u8>, CompressionEr
         return Ok(Vec::new());
     }
 
-    let mut dest = Vec::with_capacity(max_size);
-    // SAFETY: We're extending to capacity with zeros, then passing to C
-    dest.resize(max_size, 0);
+    let mut dest = vec![0u8; max_size];
 
     let mut dest_len = max_size as c_uint;
 

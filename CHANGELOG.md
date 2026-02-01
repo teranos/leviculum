@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+- Consolidate buffer module into reticulum-core, removing redundant reticulum-std/buffer.rs
+- Remove bzip2 crate dependency (now using no_std compatible libbz2-rs-sys exclusively)
+- Simplify reticulum-std compression feature to just enable reticulum-core/compression
+
+### Fixed
+- Inefficient vector initialization in compression module (clippy slow_vector_initialization)
+
 ## [0.2.2] - 2026-02-01
 
 ### Added

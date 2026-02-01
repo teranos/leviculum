@@ -9,10 +9,8 @@ description = "Standard library extensions for reticulum - networking, file I/O,
 [features]
 default = ["compression"]
 serial = ["dep:tokio-serial"]
-# Use std bzip2 crate (streaming API, more features)
-compression = ["dep:bzip2"]
-# Use no_std compatible compression from reticulum-core (buffer-to-buffer API)
-compression-nostd = ["reticulum-core/compression"]
+# Enable compression support (uses no_std compatible compression from reticulum-core)
+compression = ["reticulum-core/compression"]
 
 [dependencies]
 reticulum-core = { path = "../reticulum-core", default-features = true }
@@ -26,7 +24,6 @@ rmp-serde.workspace = true
 toml.workspace = true
 thiserror.workspace = true
 bytes.workspace = true
-bzip2 = { workspace = true, optional = true }
 
 [dev-dependencies]
 tracing-subscriber.workspace = true

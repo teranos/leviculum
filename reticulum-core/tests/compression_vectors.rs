@@ -10,11 +10,12 @@ use serde::Deserialize;
 
 #[derive(Debug, Deserialize)]
 struct TestVectors {
-    description: String,
-    #[serde(default)]
-    generator: String,
-    #[serde(default)]
-    note: String,
+    #[serde(rename = "description")]
+    _description: String,
+    #[serde(default, rename = "generator")]
+    _generator: String,
+    #[serde(default, rename = "note")]
+    _note: String,
     vectors: Vec<TestVector>,
 }
 
