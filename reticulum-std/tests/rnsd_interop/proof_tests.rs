@@ -285,7 +285,10 @@ async fn test_python_prove_all_sends_proof() {
     // In a full implementation, we'd need proper path announcement handling.
 
     // For now, just verify we don't crash and the daemon is functioning
-    daemon.ping().await.expect("Daemon should still be responsive");
+    daemon
+        .ping()
+        .await
+        .expect("Daemon should still be responsive");
 }
 
 /// Test that Python daemon with PROVE_NONE does not send proofs

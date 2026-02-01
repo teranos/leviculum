@@ -187,7 +187,6 @@ pub enum TransportEvent {
     InterfaceDown(usize),
 
     // ─── Proof Events ────────────────────────────────────────────────────────
-
     /// Application should decide whether to prove this packet (PROVE_APP strategy)
     ///
     /// Emitted when a packet is received at a destination with `ProofStrategy::App`.
@@ -1003,9 +1002,8 @@ impl<C: Clock, S: Storage> Transport<C, S> {
         // Emit timeout events and remove expired receipts
         for hash in timed_out {
             self.receipts.remove(&hash);
-            self.events.push(TransportEvent::ReceiptTimeout {
-                packet_hash: hash,
-            });
+            self.events
+                .push(TransportEvent::ReceiptTimeout { packet_hash: hash });
         }
     }
 

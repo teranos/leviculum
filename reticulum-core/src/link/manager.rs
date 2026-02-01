@@ -698,8 +698,7 @@ impl LinkManager {
             let encrypted_data = packet.data.as_slice();
             match link.process_keepalive(encrypted_data) {
                 Ok(should_echo) => {
-                    self.events
-                        .push(LinkEvent::KeepaliveReceived { link_id });
+                    self.events.push(LinkEvent::KeepaliveReceived { link_id });
 
                     // If we're responder and received valid keepalive, echo back
                     if should_echo {
@@ -960,9 +959,11 @@ impl LinkManager {
                     ChannelAction::Retransmit { sequence: _, data } => {
                         // Build and queue the retransmission packet
                         if let Some(link) = self.links.get(&link_id) {
-                            if let Ok(packet) =
-                                link.build_data_packet_with_context(&data, PacketContext::Channel, ctx)
-                            {
+                            if let Ok(packet) = link.build_data_packet_with_context(
+                                &data,
+                                PacketContext::Channel,
+                                ctx,
+                            ) {
                                 self.pending_channel_packets.push((link_id, packet));
                             }
                         }

@@ -15,10 +15,10 @@
 //! cargo test --package reticulum-std --test rnsd_interop channel_tests
 //! ```
 
-use reticulum_core::link::channel::{Channel, ChannelError, Envelope, Message};
 use reticulum_core::constants::{
     CHANNEL_ENVELOPE_HEADER_SIZE, CHANNEL_MSGTYPE_RESERVED, CHANNEL_WINDOW_INITIAL,
 };
+use reticulum_core::link::channel::{Channel, ChannelError, Envelope, Message};
 
 // =========================================================================
 // Test message types
@@ -281,8 +281,15 @@ fn test_initial_window_state() {
     let channel = Channel::new();
 
     assert_eq!(channel.window(), 2, "Initial window should be 2");
-    assert!(channel.is_ready_to_send(), "Should be ready to send initially");
-    assert_eq!(channel.outstanding(), 0, "No outstanding messages initially");
+    assert!(
+        channel.is_ready_to_send(),
+        "Should be ready to send initially"
+    );
+    assert_eq!(
+        channel.outstanding(),
+        0,
+        "No outstanding messages initially"
+    );
 }
 
 /// Verify window blocks sends when full
@@ -300,7 +307,10 @@ fn test_window_blocking() {
     }
 
     // Window should be full
-    assert!(!channel.is_ready_to_send(), "Should not be ready when window full");
+    assert!(
+        !channel.is_ready_to_send(),
+        "Should not be ready when window full"
+    );
 
     // Next send should fail
     let msg = TestMessage::new(vec![99]);

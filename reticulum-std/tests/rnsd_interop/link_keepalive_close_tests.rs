@@ -30,7 +30,8 @@ use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpStream;
 
 use reticulum_core::constants::{
-    LINK_KEEPALIVE_SECS, LINK_STALE_FACTOR, LINK_STALE_GRACE_SECS, MS_PER_SECOND, TRUNCATED_HASHBYTES,
+    LINK_KEEPALIVE_SECS, LINK_STALE_FACTOR, LINK_STALE_GRACE_SECS, MS_PER_SECOND,
+    TRUNCATED_HASHBYTES,
 };
 use reticulum_core::destination::{Destination, DestinationType, Direction};
 use reticulum_core::identity::Identity;
@@ -112,8 +113,8 @@ async fn establish_link_as_initiator(
         .map_err(|e| format!("Failed to register destination: {}", e))?;
 
     // Extract signing key
-    let pub_key_bytes = hex::decode(&dest_info.public_key)
-        .map_err(|e| format!("Invalid public key: {}", e))?;
+    let pub_key_bytes =
+        hex::decode(&dest_info.public_key).map_err(|e| format!("Invalid public key: {}", e))?;
     let signing_key: [u8; 32] = pub_key_bytes[32..64]
         .try_into()
         .map_err(|_| "Invalid signing key length")?;
@@ -138,7 +139,10 @@ async fn establish_link_as_initiator(
 
     // Check for LinkEstablished
     let events: Vec<_> = manager.drain_events().collect();
-    if !events.iter().any(|e| matches!(e, LinkEvent::LinkEstablished { .. })) {
+    if !events
+        .iter()
+        .any(|e| matches!(e, LinkEvent::LinkEstablished { .. }))
+    {
         return Err("LinkEstablished not received".to_string());
     }
 
@@ -298,7 +302,8 @@ async fn establish_rust_to_rust_link(daemon: &TestDaemon) -> Result<RustToRustLi
         ));
     }
 
-    let request_pkt = Packet::unpack(&raw_request).map_err(|e| format!("Failed to unpack: {:?}", e))?;
+    let request_pkt =
+        Packet::unpack(&raw_request).map_err(|e| format!("Failed to unpack: {:?}", e))?;
     manager_a.process_packet(&request_pkt, &raw_request, &mut ctx_a);
 
     // A accepts the link
@@ -324,7 +329,15 @@ async fn establish_rust_to_rust_link(daemon: &TestDaemon) -> Result<RustToRustLi
 
     // B should have LinkEstablished
     let events_b: Vec<_> = manager_b.drain_events().collect();
-    if !events_b.iter().any(|e| matches!(e, LinkEvent::LinkEstablished { is_initiator: true, .. })) {
+    if !events_b.iter().any(|e| {
+        matches!(
+            e,
+            LinkEvent::LinkEstablished {
+                is_initiator: true,
+                ..
+            }
+        )
+    }) {
         return Err("B should have LinkEstablished event".to_string());
     }
 
@@ -357,7 +370,15 @@ async fn establish_rust_to_rust_link(daemon: &TestDaemon) -> Result<RustToRustLi
 
     // A should have LinkEstablished
     let events_a: Vec<_> = manager_a.drain_events().collect();
-    if !events_a.iter().any(|e| matches!(e, LinkEvent::LinkEstablished { is_initiator: false, .. })) {
+    if !events_a.iter().any(|e| {
+        matches!(
+            e,
+            LinkEvent::LinkEstablished {
+                is_initiator: false,
+                ..
+            }
+        )
+    }) {
         return Err("A should have LinkEstablished event".to_string());
     }
 
@@ -404,15 +425,10 @@ async fn test_rust_graceful_close_received_by_python() {
     let mut manager = LinkManager::new();
 
     // Establish link
-    let (link_id, link_hash_hex) = establish_link_as_initiator(
-        &mut manager,
-        &daemon,
-        &mut stream,
-        &mut deframer,
-        &mut ctx,
-    )
-    .await
-    .expect("Failed to establish link");
+    let (link_id, link_hash_hex) =
+        establish_link_as_initiator(&mut manager, &daemon, &mut stream, &mut deframer, &mut ctx)
+            .await
+            .expect("Failed to establish link");
 
     assert!(manager.is_active(&link_id), "Link should be active");
 
@@ -426,12 +442,17 @@ async fn test_rust_graceful_close_received_by_python() {
 
     // Check for LinkClosed event
     let events: Vec<_> = manager.drain_events().collect();
-    let close_event = events.iter().find(|e| matches!(
-        e,
-        LinkEvent::LinkClosed { link_id: id, reason: LinkCloseReason::Normal }
-        if *id == link_id
-    ));
-    assert!(close_event.is_some(), "Should emit LinkClosed with reason Normal");
+    let close_event = events.iter().find(|e| {
+        matches!(
+            e,
+            LinkEvent::LinkClosed { link_id: id, reason: LinkCloseReason::Normal }
+            if *id == link_id
+        )
+    });
+    assert!(
+        close_event.is_some(),
+        "Should emit LinkClosed with reason Normal"
+    );
 
     // Wait for Python to process the close
     let wait_result = daemon
@@ -472,15 +493,10 @@ async fn test_python_graceful_close_received_by_rust() {
     let mut manager = LinkManager::new();
 
     // Establish link
-    let (link_id, link_hash_hex) = establish_link_as_initiator(
-        &mut manager,
-        &daemon,
-        &mut stream,
-        &mut deframer,
-        &mut ctx,
-    )
-    .await
-    .expect("Failed to establish link");
+    let (link_id, link_hash_hex) =
+        establish_link_as_initiator(&mut manager, &daemon, &mut stream, &mut deframer, &mut ctx)
+            .await
+            .expect("Failed to establish link");
 
     assert!(manager.is_active(&link_id), "Link should be active");
 
@@ -492,20 +508,23 @@ async fn test_python_graceful_close_received_by_rust() {
     println!("Python close_link result: {}", close_result);
 
     // Wait for and process the close packet
-    let close_raw = wait_for_close_packet(&mut stream, &mut deframer, &link_id, Duration::from_secs(5))
-        .await
-        .expect("Should receive LINKCLOSE packet from Python");
+    let close_raw =
+        wait_for_close_packet(&mut stream, &mut deframer, &link_id, Duration::from_secs(5))
+            .await
+            .expect("Should receive LINKCLOSE packet from Python");
 
     let close_pkt = Packet::unpack(&close_raw).expect("Failed to unpack close packet");
     manager.process_packet(&close_pkt, &close_raw, &mut ctx);
 
     // Check for LinkClosed event with PeerClosed reason
     let events: Vec<_> = manager.drain_events().collect();
-    let close_event = events.iter().find(|e| matches!(
-        e,
-        LinkEvent::LinkClosed { link_id: id, reason: LinkCloseReason::PeerClosed }
-        if *id == link_id
-    ));
+    let close_event = events.iter().find(|e| {
+        matches!(
+            e,
+            LinkEvent::LinkClosed { link_id: id, reason: LinkCloseReason::PeerClosed }
+            if *id == link_id
+        )
+    });
 
     assert!(
         close_event.is_some(),
@@ -888,15 +907,10 @@ async fn test_rust_initiator_sends_keepalive_python_echoes() {
     let mut manager = LinkManager::new();
 
     // Establish link
-    let (link_id, _link_hash_hex) = establish_link_as_initiator(
-        &mut manager,
-        &daemon,
-        &mut stream,
-        &mut deframer,
-        &mut ctx,
-    )
-    .await
-    .expect("Failed to establish link");
+    let (link_id, _link_hash_hex) =
+        establish_link_as_initiator(&mut manager, &daemon, &mut stream, &mut deframer, &mut ctx)
+            .await
+            .expect("Failed to establish link");
 
     // Get the link and manually build a keepalive packet
     // (In real usage, this is triggered by poll() after keepalive interval)
@@ -910,8 +924,9 @@ async fn test_rust_initiator_sends_keepalive_python_echoes() {
     send_framed(&mut stream, &keepalive_packet).await;
 
     // Wait for echo from Python
-    let echo_raw = wait_for_keepalive_packet(&mut stream, &mut deframer, &link_id, Duration::from_secs(5))
-        .await;
+    let echo_raw =
+        wait_for_keepalive_packet(&mut stream, &mut deframer, &link_id, Duration::from_secs(5))
+            .await;
 
     if let Some(echo_data) = echo_raw {
         let echo_pkt = Packet::unpack(&echo_data).expect("Failed to unpack echo");
@@ -921,10 +936,12 @@ async fn test_rust_initiator_sends_keepalive_python_echoes() {
 
         // Check for KeepaliveReceived event
         let events: Vec<_> = manager.drain_events().collect();
-        let ka_event = events.iter().find(|e| matches!(
-            e,
-            LinkEvent::KeepaliveReceived { link_id: id } if *id == link_id
-        ));
+        let ka_event = events.iter().find(|e| {
+            matches!(
+                e,
+                LinkEvent::KeepaliveReceived { link_id: id } if *id == link_id
+            )
+        });
 
         assert!(ka_event.is_some(), "Should receive KeepaliveReceived event");
         println!("SUCCESS: Rust initiator keepalive echo received from Python");
@@ -984,10 +1001,14 @@ async fn test_python_initiator_sends_keepalive_rust_echoes() {
     });
 
     // Wait for link request
-    let (raw_packet, link_id) =
-        wait_for_link_request(&mut stream, &mut deframer, &dest_hash, Duration::from_secs(10))
-            .await
-            .expect("Should receive link request");
+    let (raw_packet, link_id) = wait_for_link_request(
+        &mut stream,
+        &mut deframer,
+        &dest_hash,
+        Duration::from_secs(10),
+    )
+    .await
+    .expect("Should receive link request");
 
     // Process link request
     let packet = Packet::unpack(&raw_packet).expect("Failed to unpack");
@@ -1002,9 +1023,14 @@ async fn test_python_initiator_sends_keepalive_rust_echoes() {
     send_framed(&mut stream, &proof_packet).await;
 
     // Wait for RTT
-    let rtt_data = wait_for_rtt_packet(&mut stream, &mut deframer, &link_id, Duration::from_secs(10))
-        .await
-        .expect("Should receive RTT");
+    let rtt_data = wait_for_rtt_packet(
+        &mut stream,
+        &mut deframer,
+        &link_id,
+        Duration::from_secs(10),
+    )
+    .await
+    .expect("Should receive RTT");
 
     // Process RTT
     let mut rtt_raw = Vec::new();
@@ -1054,15 +1080,10 @@ async fn test_get_link_status_rpc() {
     let mut manager = LinkManager::new();
 
     // Establish link
-    let (link_id, link_hash_hex) = establish_link_as_initiator(
-        &mut manager,
-        &daemon,
-        &mut stream,
-        &mut deframer,
-        &mut ctx,
-    )
-    .await
-    .expect("Failed to establish link");
+    let (link_id, link_hash_hex) =
+        establish_link_as_initiator(&mut manager, &daemon, &mut stream, &mut deframer, &mut ctx)
+            .await
+            .expect("Failed to establish link");
 
     // Get link status from Python
     let status = daemon
@@ -1075,7 +1096,11 @@ async fn test_get_link_status_rpc() {
     // Python link states: PENDING=0, HANDSHAKE=1, ACTIVE=2, STALE=3, CLOSED=4
     // After RTT exchange, the link should be ACTIVE (2)
     assert!(
-        status.state.as_ref().map(|s| s.contains("ACTIVE") || s == "2").unwrap_or(false),
+        status
+            .state
+            .as_ref()
+            .map(|s| s.contains("ACTIVE") || s == "2")
+            .unwrap_or(false),
         "Link state should indicate ACTIVE. Got: {:?}",
         status.state
     );
@@ -1103,7 +1128,11 @@ async fn test_get_link_status_rpc() {
             .map(|s| s.contains("CLOSED") || s == "4")
             .unwrap_or(false);
 
-    assert!(is_closed, "Link should be closed. Status: {:?}", status_after);
+    assert!(
+        is_closed,
+        "Link should be closed. Status: {:?}",
+        status_after
+    );
 
     println!("SUCCESS: Get link status RPC works");
 }
@@ -1126,15 +1155,10 @@ async fn test_close_packet_payload_verification() {
     let mut manager = LinkManager::new();
 
     // Establish link
-    let (link_id, link_hash_hex) = establish_link_as_initiator(
-        &mut manager,
-        &daemon,
-        &mut stream,
-        &mut deframer,
-        &mut ctx,
-    )
-    .await
-    .expect("Failed to establish link");
+    let (link_id, link_hash_hex) =
+        establish_link_as_initiator(&mut manager, &daemon, &mut stream, &mut deframer, &mut ctx)
+            .await
+            .expect("Failed to establish link");
 
     // Build close packet
     let close_packet = {
@@ -1205,7 +1229,8 @@ async fn test_multi_hop_keepalive_through_python_relay() {
     // 2. B (initiator) builds and sends keepalive packet
     let keepalive_packet = {
         let link_b = link.manager_b.link(&link_id).expect("B should have link");
-        link_b.build_keepalive_packet(&mut ctx_b)
+        link_b
+            .build_keepalive_packet(&mut ctx_b)
             .expect("Failed to build keepalive")
     };
 
@@ -1254,14 +1279,17 @@ async fn test_multi_hop_keepalive_through_python_relay() {
 
     // 7. B processes echo
     let echo_pkt = Packet::unpack(&echo_raw).expect("Failed to unpack echo");
-    link.manager_b.process_packet(&echo_pkt, &echo_raw, &mut ctx_b);
+    link.manager_b
+        .process_packet(&echo_pkt, &echo_raw, &mut ctx_b);
 
     // 8. Verify KeepaliveReceived event on B
     let events: Vec<_> = link.manager_b.drain_events().collect();
-    let ka_event = events.iter().find(|e| matches!(
-        e,
-        LinkEvent::KeepaliveReceived { link_id: id } if *id == link_id
-    ));
+    let ka_event = events.iter().find(|e| {
+        matches!(
+            e,
+            LinkEvent::KeepaliveReceived { link_id: id } if *id == link_id
+        )
+    });
 
     assert!(
         ka_event.is_some(),
@@ -1301,8 +1329,14 @@ async fn test_multi_hop_graceful_close_through_relay() {
     println!("Link established: {}", hex::encode(link_id));
 
     // Verify both sides are active
-    assert!(link.manager_a.is_active(&link_id), "A should have active link");
-    assert!(link.manager_b.is_active(&link_id), "B should have active link");
+    assert!(
+        link.manager_a.is_active(&link_id),
+        "A should have active link"
+    );
+    assert!(
+        link.manager_b.is_active(&link_id),
+        "B should have active link"
+    );
 
     // 2. B (initiator) closes the link
     link.manager_b.close(&link_id, &mut ctx_b);
@@ -1310,10 +1344,7 @@ async fn test_multi_hop_graceful_close_through_relay() {
 
     // 3. Drain and send close packets from B
     let close_packets: Vec<_> = link.manager_b.drain_close_packets().collect();
-    assert!(
-        !close_packets.is_empty(),
-        "B should generate close packet"
-    );
+    assert!(!close_packets.is_empty(), "B should generate close packet");
 
     for (_, close_packet) in close_packets {
         send_framed(&mut link.stream_b, &close_packet).await;
@@ -1322,11 +1353,13 @@ async fn test_multi_hop_graceful_close_through_relay() {
 
     // 4. Verify B emits LinkClosed with Normal reason
     let events_b: Vec<_> = link.manager_b.drain_events().collect();
-    let close_event_b = events_b.iter().find(|e| matches!(
-        e,
-        LinkEvent::LinkClosed { link_id: id, reason: LinkCloseReason::Normal }
-        if *id == link_id
-    ));
+    let close_event_b = events_b.iter().find(|e| {
+        matches!(
+            e,
+            LinkEvent::LinkClosed { link_id: id, reason: LinkCloseReason::Normal }
+            if *id == link_id
+        )
+    });
 
     assert!(
         close_event_b.is_some(),
@@ -1348,15 +1381,18 @@ async fn test_multi_hop_graceful_close_through_relay() {
 
     // 6. A processes close packet
     let close_pkt = Packet::unpack(&close_raw).expect("Failed to unpack close packet");
-    link.manager_a.process_packet(&close_pkt, &close_raw, &mut ctx_a);
+    link.manager_a
+        .process_packet(&close_pkt, &close_raw, &mut ctx_a);
 
     // 7. Verify A emits LinkClosed with PeerClosed reason
     let events_a: Vec<_> = link.manager_a.drain_events().collect();
-    let close_event_a = events_a.iter().find(|e| matches!(
-        e,
-        LinkEvent::LinkClosed { link_id: id, reason: LinkCloseReason::PeerClosed }
-        if *id == link_id
-    ));
+    let close_event_a = events_a.iter().find(|e| {
+        matches!(
+            e,
+            LinkEvent::LinkClosed { link_id: id, reason: LinkCloseReason::PeerClosed }
+            if *id == link_id
+        )
+    });
 
     assert!(
         close_event_a.is_some(),

@@ -1555,8 +1555,7 @@ mod tests {
         let dest_verifying_key = dest_signing_key.verifying_key();
 
         // Destination generates ephemeral X25519 key
-        let dest_ephemeral_private =
-            x25519_dalek::StaticSecret::random_from_rng(rand_core::OsRng);
+        let dest_ephemeral_private = x25519_dalek::StaticSecret::random_from_rng(rand_core::OsRng);
         let dest_ephemeral_public = x25519_dalek::PublicKey::from(&dest_ephemeral_private);
 
         // Python RNS signs: link_id (16) + pub_bytes (32) + sig_pub_bytes (32) + signalling (3)
@@ -1619,8 +1618,7 @@ mod tests {
         // Simulate destination side
         let dest_signing_key = ed25519_dalek::SigningKey::from_bytes(&[0x33; 32]);
         let dest_verifying_key = dest_signing_key.verifying_key();
-        let dest_ephemeral_private =
-            x25519_dalek::StaticSecret::random_from_rng(rand_core::OsRng);
+        let dest_ephemeral_private = x25519_dalek::StaticSecret::random_from_rng(rand_core::OsRng);
         let dest_ephemeral_public = x25519_dalek::PublicKey::from(&dest_ephemeral_private);
 
         let signalling_bytes: [u8; 3] = [0x43, 0x0f, 0x38];
@@ -1683,8 +1681,7 @@ mod tests {
 
         let dest_signing_key = ed25519_dalek::SigningKey::from_bytes(&[0x33; 32]);
         let dest_verifying_key = dest_signing_key.verifying_key();
-        let dest_ephemeral_private =
-            x25519_dalek::StaticSecret::random_from_rng(rand_core::OsRng);
+        let dest_ephemeral_private = x25519_dalek::StaticSecret::random_from_rng(rand_core::OsRng);
         let dest_ephemeral_public = x25519_dalek::PublicKey::from(&dest_ephemeral_private);
 
         let signalling_bytes: [u8; 3] = [0x43, 0x0f, 0x38];
@@ -1764,8 +1761,7 @@ mod tests {
 
         let dest_signing_key = ed25519_dalek::SigningKey::from_bytes(&[0x33; 32]);
         let dest_verifying_key = dest_signing_key.verifying_key();
-        let dest_ephemeral_private =
-            x25519_dalek::StaticSecret::random_from_rng(rand_core::OsRng);
+        let dest_ephemeral_private = x25519_dalek::StaticSecret::random_from_rng(rand_core::OsRng);
         let dest_ephemeral_public = x25519_dalek::PublicKey::from(&dest_ephemeral_private);
 
         let signalling_bytes: [u8; 3] = [0x43, 0x0f, 0x38];
@@ -2387,7 +2383,7 @@ mod tests {
         // should_close only works for Stale state
         // With RTT of 0, timeout = stale_time (20) + RTT*4 (0) + grace (5) = 25
         assert!(!link.should_close(1020)); // Not past stale_time yet from last_inbound
-        // Total elapsed needs to be > stale_time + RTT*4 + grace = 20 + 0 + 5 = 25
+                                           // Total elapsed needs to be > stale_time + RTT*4 + grace = 20 + 0 + 5 = 25
         assert!(link.should_close(1026));
     }
 

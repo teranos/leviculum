@@ -6,9 +6,10 @@
 //! - Configuration loading and persistence
 //! - File-based storage
 //! - Async runtime integration (tokio)
-//! - Buffer system for binary stream transfer
+//! - BZ2 compression for buffer system (via `compression` feature)
 //!
-//! Use reticulum-core for the no_std compatible core functionality.
+//! Use reticulum-core for the no_std compatible core functionality,
+//! including the buffer system types (RawChannelReader, RawChannelWriter).
 
 pub mod buffer;
 pub mod clock;
@@ -22,7 +23,9 @@ pub mod storage;
 // Re-export all core types and modules
 pub use reticulum_core::*;
 
-// Re-export std-specific types at crate root for convenience
+// Re-export buffer types (from core) and compression extensions
+#[cfg(feature = "compression")]
+pub use buffer::{compress_bz2, decompress_bz2, CompressingWriter, RawChannelReaderExt};
 pub use buffer::{BufferedChannelWriter, RawChannelReader, RawChannelWriter};
 pub use clock::SystemClock;
 pub use config::{Config, InterfaceConfig, ReticulumConfig};

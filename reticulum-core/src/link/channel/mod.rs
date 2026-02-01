@@ -34,10 +34,15 @@
 //! let packet_data = channel.send(&msg, link_mdu, now_ms, rtt_ms)?;
 //! ```
 
+mod buffer;
 mod envelope;
 mod error;
 mod stream;
 
+pub use buffer::{
+    max_data_len, stream_overhead, BufferedChannelWriter, RawChannelReader, RawChannelWriter,
+    ReadResult, MAX_CHUNK_LEN,
+};
 pub use envelope::Envelope;
 pub use error::ChannelError;
 pub use stream::StreamDataMessage;
