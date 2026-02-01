@@ -6,9 +6,11 @@
 //! - Configuration loading and persistence
 //! - File-based storage
 //! - Async runtime integration (tokio)
+//! - Buffer system for binary stream transfer
 //!
 //! Use reticulum-core for the no_std compatible core functionality.
 
+pub mod buffer;
 pub mod clock;
 pub mod config;
 pub mod error;
@@ -21,6 +23,7 @@ pub mod storage;
 pub use reticulum_core::*;
 
 // Re-export std-specific types at crate root for convenience
+pub use buffer::{BufferedChannelWriter, RawChannelReader, RawChannelWriter};
 pub use clock::SystemClock;
 pub use config::{Config, InterfaceConfig, ReticulumConfig};
 pub use error::{Error, Result};

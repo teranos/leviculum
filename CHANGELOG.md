@@ -7,7 +7,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.2.2] - 2026-02-01
+
 ### Added
+- StreamDataMessage (MSGTYPE 0xff00) for binary stream transfer over channels
+- `StreamDataMessage` struct with wire-compatible format matching Python Reticulum
+- Stream header encoding: 14-bit stream_id + compressed flag + EOF flag
+- `Channel::send_system()` method for sending system messages (bypasses MSGTYPE validation)
+- Buffer system in reticulum-std for stream I/O over channels
+- `RawChannelReader` for receiving and buffering StreamDataMessage data
+- `RawChannelWriter` for sending data as StreamDataMessage chunks
+- `BufferedChannelWriter` implementing `std::io::Write` for convenient buffered sending
+- BZ2 compression support via optional `compression` feature (enabled by default)
+- Stream constants: `STREAM_DATA_MSGTYPE`, `STREAM_ID_MAX`, `STREAM_FLAG_COMPRESSED`, `STREAM_FLAG_EOF`
 - Channel system for reliable, ordered message delivery over Links
 - `Channel` struct with window-based flow control and automatic retransmission
 - `Message` trait for typed channel messages with pack/unpack
@@ -109,7 +121,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Transport layer (routing, paths, deduplication)
 - Full interoperability with Python rnsd
 
-[Unreleased]: https://codeberg.org/Lew_Palm/leviculum/compare/v0.2.1...HEAD
+[Unreleased]: https://codeberg.org/Lew_Palm/leviculum/compare/v0.2.2...HEAD
+[0.2.2]: https://codeberg.org/Lew_Palm/leviculum/compare/v0.2.1...v0.2.2
 [0.2.1]: https://codeberg.org/Lew_Palm/leviculum/compare/v0.2.0...v0.2.1
 [0.2.0]: https://codeberg.org/Lew_Palm/leviculum/compare/v0.1.0...v0.2.0
 [0.1.0]: https://codeberg.org/Lew_Palm/leviculum/releases/tag/v0.1.0

@@ -36,9 +36,11 @@
 
 mod envelope;
 mod error;
+mod stream;
 
 pub use envelope::Envelope;
 pub use error::ChannelError;
+pub use stream::StreamDataMessage;
 
 use alloc::collections::VecDeque;
 use alloc::vec::Vec;
@@ -258,8 +260,42 @@ impl Channel {
         rtt_ms: u64,
     ) -> Result<Vec<u8>, ChannelError> {
         Self::validate_msgtype(M::MSGTYPE)?;
+        self.send_internal(M::MSGTYPE, &message.pack(), link_mdu, now_ms, rtt_ms)
+    }
 
-        let data = message.pack();
+    /// Send a system message on the channel (bypasses MSGTYPE validation)
+    ///
+    /// This method is for system messages (MSGTYPE >= 0xf000) like StreamDataMessage.
+    /// Unlike `send()`, it does not validate that the message type is in the user range.
+    ///
+    /// # Arguments
+    /// * `message` - The system message to send
+    /// * `link_mdu` - Maximum data unit for the link
+    /// * `now_ms` - Current time in milliseconds
+    /// * `rtt_ms` - Round-trip time in milliseconds
+    ///
+    /// # Errors
+    /// - `TooLarge` if the message exceeds the channel MDU
+    /// - `WindowFull` if the send window is full
+    pub fn send_system<M: Message>(
+        &mut self,
+        message: &M,
+        link_mdu: usize,
+        now_ms: u64,
+        rtt_ms: u64,
+    ) -> Result<Vec<u8>, ChannelError> {
+        self.send_internal(M::MSGTYPE, &message.pack(), link_mdu, now_ms, rtt_ms)
+    }
+
+    /// Internal send implementation used by both send() and send_system()
+    fn send_internal(
+        &mut self,
+        msgtype: u16,
+        data: &[u8],
+        link_mdu: usize,
+        now_ms: u64,
+        rtt_ms: u64,
+    ) -> Result<Vec<u8>, ChannelError> {
         let mdu = self.mdu(link_mdu);
 
         if data.len() > mdu {
@@ -271,7 +307,7 @@ impl Channel {
         }
 
         let sequence = self.next_sequence();
-        let envelope = Envelope::new(M::MSGTYPE, sequence, data);
+        let envelope = Envelope::new(msgtype, sequence, data.to_vec());
         let packed = envelope.pack();
 
         let queue_len = self.tx_ring.len();
@@ -734,5 +770,61 @@ mod tests {
         // With retries: 250 * 1.5^1 * 1.5 = 562.5
         let timeout = channel.calculate_timeout_ms(2, 100, 0);
         assert_eq!(timeout, 562);
+    }
+
+    #[test]
+    fn test_send_system_allows_reserved_msgtype() {
+        // send_system should allow system message types (>= 0xf000)
+        let msg = StreamDataMessage::new(0, vec![1, 2, 3], false, false);
+
+        let mut channel = Channel::new();
+        let result = channel.send_system(&msg, 464, 1000, 100);
+        assert!(result.is_ok(), "send_system should allow reserved MSGTYPE");
+
+        let packed = result.unwrap();
+        let envelope = Envelope::unpack(&packed).unwrap();
+        assert_eq!(envelope.msgtype, StreamDataMessage::MSGTYPE);
+        assert_eq!(envelope.msgtype, 0xff00);
+    }
+
+    #[test]
+    fn test_send_rejects_system_msgtype() {
+        // Regular send() should reject system message types
+        let msg = StreamDataMessage::new(0, vec![1, 2, 3], false, false);
+
+        let mut channel = Channel::new();
+        let result = channel.send(&msg, 464, 1000, 100);
+        assert_eq!(
+            result,
+            Err(ChannelError::InvalidMsgType),
+            "send should reject reserved MSGTYPE"
+        );
+    }
+
+    #[test]
+    fn test_send_system_respects_window() {
+        let mut channel = Channel::new();
+        channel.window = 1;
+
+        let msg = StreamDataMessage::new(0, vec![1], false, false);
+
+        // First send should succeed
+        assert!(channel.send_system(&msg, 464, 1000, 100).is_ok());
+
+        // Second send should fail (window full)
+        assert_eq!(
+            channel.send_system(&msg, 464, 1000, 100),
+            Err(ChannelError::WindowFull)
+        );
+    }
+
+    #[test]
+    fn test_send_system_respects_mdu() {
+        let mut channel = Channel::new();
+        let msg = StreamDataMessage::new(0, vec![0; 1000], false, false);
+
+        // With small MDU, should fail
+        let result = channel.send_system(&msg, 100, 1000, 100);
+        assert_eq!(result, Err(ChannelError::TooLarge));
     }
 }

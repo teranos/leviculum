@@ -177,6 +177,23 @@ pub const US_PER_MS: u64 = 1000;
 /// Reserved message type boundary (>= 0xf000 is reserved)
 pub const CHANNEL_MSGTYPE_RESERVED: u16 = 0xf000;
 
+// ─── Stream Data Constants ──────────────────────────────────────────────────
+
+/// StreamDataMessage type (system-reserved: 0xff00)
+pub const STREAM_DATA_MSGTYPE: u16 = 0xff00;
+
+/// Maximum stream ID (14 bits: 0-16383)
+pub const STREAM_ID_MAX: u16 = 0x3fff;
+
+/// Stream data header size (2 bytes for stream_id + flags)
+pub const STREAM_DATA_HEADER_SIZE: usize = 2;
+
+/// Compressed flag in stream header (bit 14)
+pub const STREAM_FLAG_COMPRESSED: u16 = 0x4000;
+
+/// EOF flag in stream header (bit 15)
+pub const STREAM_FLAG_EOF: u16 = 0x8000;
+
 /// Interface Access Code minimum size
 pub const IFAC_MIN_SIZE: usize = 1;
 
