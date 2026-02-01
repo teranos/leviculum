@@ -7,8 +7,12 @@ pub enum ChannelError {
     InvalidMsgType,
     /// Message too large for link MDU
     TooLarge,
-    /// Invalid envelope format
-    InvalidEnvelope,
+    /// Envelope header is incomplete (< 6 bytes)
+    EnvelopeTooShort,
+    /// Envelope data is shorter than the declared length
+    EnvelopeTruncated,
+    /// Invalid stream_id (> STREAM_ID_MAX)
+    InvalidStreamId,
     /// Channel window is full
     WindowFull,
 }

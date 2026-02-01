@@ -24,7 +24,7 @@
 //! | 116    | 64   | signature      |
 //! | 180    | var  | app_data       | (optional)
 //!
-//! The signature covers: destination_hash + public_key + name_hash + random_hash + [ratchet] + app_data
+//! The signature covers: destination_hash + public_key + name_hash + random_hash + \[ratchet\] + app_data
 
 use crate::constants::{
     slice_to_array, ED25519_SIGNATURE_SIZE, IDENTITY_KEY_SIZE, NAME_HASHBYTES, RANDOM_HASHBYTES,

@@ -1,13 +1,28 @@
 //! StreamDataMessage for binary stream transfer over channels
 //!
-//! Wire format (must match Python exactly):
+//! # Wire Format
+//!
+//! The complete wire format (must match Python exactly):
 //! ```text
 //! Envelope: [0xff00:2 BE][seq:2 BE][len:2 BE][stream_header + data]
-//! Stream header (2 bytes BE):
-//!   - bits 0-13: stream_id (0-16383)
-//!   - bit 14: compressed flag (0x4000)
-//!   - bit 15: EOF flag (0x8000)
 //! ```
+//!
+//! ## Stream Header (2 bytes, big-endian)
+//!
+//! ```text
+//! MSB                             LSB
+//! ┌─────┬────────┬─────────────────┐
+//! │ EOF │ COMP   │    STREAM_ID    │
+//! │ b15 │  b14   │   b13 ... b0    │
+//! └─────┴────────┴─────────────────┘
+//! ```
+//!
+//! - Bits 0-13 (0x3FFF): stream_id (0-16383)
+//! - Bit 14 (0x4000): compressed flag
+//! - Bit 15 (0x8000): EOF flag
+//!
+//! The header is packed as big-endian u16, so the EOF/compressed flags
+//! appear in the first byte when serialized.
 //!
 //! This is a system message type (MSGTYPE >= 0xf000) used by the Buffer system
 //! to transfer binary data streams over channels.
@@ -63,19 +78,37 @@ impl StreamDataMessage {
     /// * `compressed` - Whether the data is BZ2 compressed
     ///
     /// # Panics
-    /// Panics if stream_id > STREAM_ID_MAX (16383)
+    /// Panics if stream_id > STREAM_ID_MAX (16383).
+    /// Use [`try_new`](Self::try_new) for a fallible version.
     pub fn new(stream_id: u16, data: Vec<u8>, eof: bool, compressed: bool) -> Self {
-        assert!(
-            stream_id <= STREAM_ID_MAX,
-            "stream_id must be 0-{}",
-            STREAM_ID_MAX
-        );
-        Self {
+        Self::try_new(stream_id, data, eof, compressed).expect("stream_id exceeds STREAM_ID_MAX")
+    }
+
+    /// Create a new StreamDataMessage, returning an error if stream_id is invalid
+    ///
+    /// # Arguments
+    /// * `stream_id` - Stream identifier (0-16383)
+    /// * `data` - Binary data payload
+    /// * `eof` - Whether this marks end of stream
+    /// * `compressed` - Whether the data is BZ2 compressed
+    ///
+    /// # Errors
+    /// Returns `InvalidStreamId` if stream_id > STREAM_ID_MAX (16383)
+    pub fn try_new(
+        stream_id: u16,
+        data: Vec<u8>,
+        eof: bool,
+        compressed: bool,
+    ) -> Result<Self, ChannelError> {
+        if stream_id > STREAM_ID_MAX {
+            return Err(ChannelError::InvalidStreamId);
+        }
+        Ok(Self {
             stream_id,
             compressed,
             eof,
             data,
-        }
+        })
     }
 
     /// Create a new StreamDataMessage with just data (no EOF, no compression)
@@ -117,7 +150,7 @@ impl Message for StreamDataMessage {
 
     fn unpack(data: &[u8]) -> Result<Self, ChannelError> {
         if data.len() < STREAM_DATA_HEADER_SIZE {
-            return Err(ChannelError::InvalidEnvelope);
+            return Err(ChannelError::EnvelopeTooShort);
         }
 
         let header = u16::from_be_bytes([data[0], data[1]]);
@@ -174,9 +207,23 @@ mod tests {
     }
 
     #[test]
-    #[should_panic(expected = "stream_id must be")]
+    #[should_panic(expected = "stream_id exceeds")]
     fn test_stream_data_message_invalid_stream_id() {
         StreamDataMessage::new(STREAM_ID_MAX + 1, vec![], false, false);
+    }
+
+    #[test]
+    fn test_stream_data_message_try_new_valid() {
+        let msg = StreamDataMessage::try_new(123, vec![1, 2, 3], false, false);
+        assert!(msg.is_ok());
+        let msg = msg.unwrap();
+        assert_eq!(msg.stream_id, 123);
+    }
+
+    #[test]
+    fn test_stream_data_message_try_new_invalid() {
+        let msg = StreamDataMessage::try_new(STREAM_ID_MAX + 1, vec![], false, false);
+        assert_eq!(msg, Err(ChannelError::InvalidStreamId));
     }
 
     #[test]
@@ -276,14 +323,14 @@ mod tests {
     fn test_stream_data_message_unpack_too_short() {
         let data = vec![0x00]; // Only 1 byte, need 2
         let result = StreamDataMessage::unpack(&data);
-        assert_eq!(result, Err(ChannelError::InvalidEnvelope));
+        assert_eq!(result, Err(ChannelError::EnvelopeTooShort));
     }
 
     #[test]
     fn test_stream_data_message_unpack_empty() {
         let data: Vec<u8> = vec![];
         let result = StreamDataMessage::unpack(&data);
-        assert_eq!(result, Err(ChannelError::InvalidEnvelope));
+        assert_eq!(result, Err(ChannelError::EnvelopeTooShort));
     }
 
     #[test]

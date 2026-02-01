@@ -7,10 +7,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.2.3] - 2026-02-01
+
+### Added
+- High-level Node API in reticulum-core (`NodeCore`, `NodeCoreBuilder`)
+- Unified event handling via `NodeEvent` enum
+- `SendOptions` for controlling delivery (reliable/unreliable, compression)
+- `Connection` abstraction wrapping Link + Channel
+- Smart routing: automatic selection of single-packet vs Link/Channel
+- `ReticulumNode` async wrapper in reticulum-std
+- `ReticulumNodeBuilder` with TCP interface configuration
+- `ConnectionStream` with async send/recv methods
+- Three examples: `simple_send.rs`, `echo_server.rs`, `chat.rs`
+- Integration tests for Node API (`node_api_tests.rs`) with 8 interop tests
+- Symmetric Channel API: `Channel::receive_message<M: Message>()` for typed message reception
+- `Envelope::unpack_body()` for extracting typed messages from envelopes
+
 ### Changed
 - Consolidate buffer module into reticulum-core, removing redundant reticulum-std/buffer.rs
 - Remove bzip2 crate dependency (now using no_std compatible libbz2-rs-sys exclusively)
 - Simplify reticulum-std compression feature to just enable reticulum-core/compression
+- Channel now tracks pending messages for symmetric send/receive pattern
 
 ### Fixed
 - Inefficient vector initialization in compression module (clippy slow_vector_initialization)
@@ -129,7 +146,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Transport layer (routing, paths, deduplication)
 - Full interoperability with Python rnsd
 
-[Unreleased]: https://codeberg.org/Lew_Palm/leviculum/compare/v0.2.2...HEAD
+[Unreleased]: https://codeberg.org/Lew_Palm/leviculum/compare/v0.2.3...HEAD
+[0.2.3]: https://codeberg.org/Lew_Palm/leviculum/compare/v0.2.2...v0.2.3
 [0.2.2]: https://codeberg.org/Lew_Palm/leviculum/compare/v0.2.1...v0.2.2
 [0.2.1]: https://codeberg.org/Lew_Palm/leviculum/compare/v0.2.0...v0.2.1
 [0.2.0]: https://codeberg.org/Lew_Palm/leviculum/compare/v0.1.0...v0.2.0

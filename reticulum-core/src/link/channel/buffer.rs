@@ -228,12 +228,21 @@ impl RawChannelReader {
         len
     }
 
-    /// Clear the internal buffer
-    pub fn clear(&mut self) {
+    /// Clear buffered data without resetting EOF state
+    ///
+    /// Use this to discard unread data while preserving the EOF flag.
+    /// For example, if you want to ignore remaining data after an error
+    /// but still respect that the stream has ended.
+    ///
+    /// To fully reset the reader (clear buffer AND reset EOF), use [`reset`](Self::reset).
+    pub fn clear_buffer(&mut self) {
         self.buffer.clear();
     }
 
     /// Reset the reader to initial state
+    ///
+    /// Clears all buffered data AND resets the EOF flag, allowing the reader
+    /// to accept new data for a new stream on the same stream_id.
     pub fn reset(&mut self) {
         self.buffer.clear();
         self.eof = false;
@@ -748,6 +757,22 @@ mod tests {
     }
 
     #[test]
+    fn test_raw_channel_reader_clear_buffer() {
+        let mut reader = RawChannelReader::new(0);
+
+        let msg = StreamDataMessage::new(0, vec![1, 2, 3], true, false);
+        reader.receive(&msg);
+
+        assert!(reader.is_eof());
+        assert_eq!(reader.available(), 3);
+
+        // clear_buffer should clear data but preserve EOF
+        reader.clear_buffer();
+        assert!(reader.is_eof()); // EOF preserved
+        assert_eq!(reader.available(), 0); // Data cleared
+    }
+
+    #[test]
     fn test_raw_channel_writer_new() {
         let writer = RawChannelWriter::new(5, 458);
         assert_eq!(writer.stream_id(), 5);
@@ -891,6 +916,55 @@ mod tests {
     fn test_stream_overhead() {
         // 2 bytes stream header + 6 bytes envelope header = 8
         assert_eq!(stream_overhead(), 8);
+    }
+
+    #[test]
+    fn test_buffered_channel_writer_take_pending_twice() {
+        let mut writer = BufferedChannelWriter::new(0, 50);
+
+        writer.write(b"hello");
+        writer.finish();
+
+        // First take_pending should return the message with EOF
+        let messages = writer.take_pending();
+        assert_eq!(messages.len(), 1);
+        assert!(messages[0].eof);
+        assert_eq!(messages[0].data, b"hello");
+
+        // Second take_pending should return empty (EOF already sent)
+        let messages = writer.take_pending();
+        assert!(messages.is_empty());
+    }
+
+    #[test]
+    fn test_buffered_channel_writer_write_clear_take_pending() {
+        let mut writer = BufferedChannelWriter::new(0, 50);
+
+        writer.write(b"hello world");
+        assert_eq!(writer.buffered(), 11);
+
+        // Clear without finish
+        writer.clear();
+        assert_eq!(writer.buffered(), 0);
+        assert!(!writer.is_finished());
+
+        // take_pending should return empty since buffer is clear and not finished
+        let messages = writer.take_pending();
+        assert!(messages.is_empty());
+    }
+
+    #[test]
+    fn test_buffered_channel_writer_finish_without_data() {
+        let mut writer = BufferedChannelWriter::new(0, 50);
+
+        // Finish without writing any data
+        writer.finish();
+
+        // Should get an EOF marker message
+        let messages = writer.take_pending();
+        assert_eq!(messages.len(), 1);
+        assert!(messages[0].eof);
+        assert!(messages[0].data.is_empty());
     }
 }
 

@@ -63,7 +63,26 @@ use crate::constants::{
     CHANNEL_WINDOW_MIN_SLOW,
 };
 
-/// Calculate f64 power for small non-negative integer exponents (no_std compatible)
+/// Calculate f64 power for small non-negative integer exponents
+///
+/// This is a no_std compatible implementation of `f64::powf()`. In no_std
+/// environments, the standard library's `f64::powf()` is not available
+/// because it relies on the system's math library (libm).
+///
+/// For the channel timeout formula, exponents are always small non-negative
+/// integers (typically 0-5), so simple iterative multiplication is sufficient
+/// and more efficient than a general power function.
+///
+/// # Arguments
+/// * `base` - The base value
+/// * `exp` - The exponent (must be a small non-negative integer)
+///
+/// # Example
+/// ```ignore
+/// assert_eq!(pow_f64(1.5, 0), 1.0);
+/// assert_eq!(pow_f64(1.5, 1), 1.5);
+/// assert_eq!(pow_f64(1.5, 2), 2.25);
+/// ```
 fn pow_f64(base: f64, exp: u32) -> f64 {
     let mut result = 1.0;
     for _ in 0..exp {
@@ -386,6 +405,49 @@ impl Channel {
         }
     }
 
+    /// Receive and unpack a typed message from the channel
+    ///
+    /// This is the symmetric counterpart to `send<M>()`. It receives an envelope
+    /// and unpacks it into the specified message type.
+    ///
+    /// # Arguments
+    /// * `data` - Decrypted envelope data from the link
+    ///
+    /// # Returns
+    /// - `Ok(Some(msg))` if a message was received and unpacked in sequence
+    /// - `Ok(None)` if the message was buffered (out of order) or invalid type
+    /// - `Err(...)` if unpacking failed
+    ///
+    /// # Example
+    ///
+    /// ```ignore
+    /// // Send a message
+    /// let packet_data = channel.send(&my_message, link_mdu, now_ms, rtt_ms)?;
+    ///
+    /// // On the receiving end, use the symmetric API
+    /// if let Some(msg) = channel.receive_message::<MyMessage>(&decrypted_data)? {
+    ///     println!("Received: {:?}", msg);
+    /// }
+    /// ```
+    pub fn receive_message<M: Message>(&mut self, data: &[u8]) -> Result<Option<M>, ChannelError> {
+        // First receive the envelope
+        let envelope = match self.receive(data)? {
+            Some(env) => env,
+            None => return Ok(None), // Buffered or invalid
+        };
+
+        // Check message type
+        if envelope.msgtype != M::MSGTYPE {
+            // Wrong type - this could be a different message type
+            // We've already consumed it from the sequence, so return None
+            return Ok(None);
+        }
+
+        // Unpack the message
+        let msg = M::unpack(&envelope.data)?;
+        Ok(Some(msg))
+    }
+
     /// Drain received messages that are ready (in sequence order)
     ///
     /// Call this after `receive()` to get any buffered messages that
@@ -423,7 +485,11 @@ impl Channel {
     /// # Arguments
     /// * `sequence` - Sequence number of the delivered envelope
     /// * `rtt_ms` - Current RTT in milliseconds (for window adjustment)
-    pub fn mark_delivered(&mut self, sequence: u16, rtt_ms: u64) {
+    ///
+    /// # Returns
+    /// `true` if the ACK was for a known pending envelope, `false` otherwise
+    /// (e.g., duplicate ACK or ACK for unknown sequence).
+    pub fn mark_delivered(&mut self, sequence: u16, rtt_ms: u64) -> bool {
         if let Some(pos) = self
             .tx_ring
             .iter()
@@ -431,6 +497,9 @@ impl Channel {
         {
             self.tx_ring.remove(pos);
             self.adjust_window(true, rtt_ms);
+            true
+        } else {
+            false
         }
     }
 
@@ -705,8 +774,13 @@ mod tests {
         channel.send(&msg, 464, 1000, 100).unwrap();
         assert_eq!(channel.outstanding(), 1);
 
-        channel.mark_delivered(0, 100);
+        // Should return true for known sequence
+        assert!(channel.mark_delivered(0, 100));
         assert_eq!(channel.outstanding(), 0);
+
+        // Should return false for unknown sequence
+        assert!(!channel.mark_delivered(0, 100));
+        assert!(!channel.mark_delivered(999, 100));
     }
 
     #[test]
@@ -835,5 +909,110 @@ mod tests {
         // With small MDU, should fail
         let result = channel.send_system(&msg, 100, 1000, 100);
         assert_eq!(result, Err(ChannelError::TooLarge));
+    }
+
+    #[test]
+    fn test_channel_receive_message_typed() {
+        let mut sender = Channel::new();
+        let mut receiver = Channel::new();
+
+        let msg = TestMessage {
+            data: vec![1, 2, 3, 4],
+        };
+
+        // Send message
+        let packed = sender.send(&msg, 464, 1000, 100).unwrap();
+
+        // Receive using typed API
+        let received: Option<TestMessage> = receiver.receive_message(&packed).unwrap();
+        assert!(received.is_some());
+        assert_eq!(received.unwrap().data, vec![1, 2, 3, 4]);
+    }
+
+    #[test]
+    fn test_channel_send_receive_symmetric() {
+        // Test the complete symmetric workflow: send<M> -> receive_message<M>
+        let mut sender = Channel::new();
+        let mut receiver = Channel::new();
+
+        // Send multiple messages
+        let msg1 = TestMessage {
+            data: vec![10, 20, 30],
+        };
+        let msg2 = TestMessage {
+            data: vec![40, 50, 60],
+        };
+
+        let packed1 = sender.send(&msg1, 464, 1000, 100).unwrap();
+        let packed2 = sender.send(&msg2, 464, 2000, 100).unwrap();
+
+        // Receive in order
+        let r1: Option<TestMessage> = receiver.receive_message(&packed1).unwrap();
+        assert!(r1.is_some());
+        assert_eq!(r1.unwrap().data, vec![10, 20, 30]);
+
+        let r2: Option<TestMessage> = receiver.receive_message(&packed2).unwrap();
+        assert!(r2.is_some());
+        assert_eq!(r2.unwrap().data, vec![40, 50, 60]);
+    }
+
+    #[test]
+    fn test_channel_receive_message_wrong_type() {
+        // Define a different message type
+        struct OtherMessage {
+            value: u8,
+        }
+
+        impl Message for OtherMessage {
+            const MSGTYPE: u16 = 0x9999;
+
+            fn pack(&self) -> Vec<u8> {
+                vec![self.value]
+            }
+
+            fn unpack(data: &[u8]) -> Result<Self, ChannelError> {
+                if data.is_empty() {
+                    return Err(ChannelError::EnvelopeTruncated);
+                }
+                Ok(Self { value: data[0] })
+            }
+        }
+
+        let mut sender = Channel::new();
+        let mut receiver = Channel::new();
+
+        // Send OtherMessage
+        let msg = OtherMessage { value: 42 };
+        let packed = sender.send(&msg, 464, 1000, 100).unwrap();
+
+        // Try to receive as TestMessage - should return None (type mismatch)
+        let result: Option<TestMessage> = receiver.receive_message(&packed).unwrap();
+        assert!(result.is_none());
+    }
+
+    #[test]
+    fn test_channel_receive_message_out_of_order() {
+        let mut sender = Channel::new();
+        let mut receiver = Channel::new();
+
+        let msg0 = TestMessage { data: vec![0] };
+        let msg1 = TestMessage { data: vec![1] };
+
+        let packed0 = sender.send(&msg0, 464, 1000, 100).unwrap();
+        let packed1 = sender.send(&msg1, 464, 2000, 100).unwrap();
+
+        // Receive out of order (msg1 first)
+        let r1: Option<TestMessage> = receiver.receive_message(&packed1).unwrap();
+        assert!(r1.is_none()); // Should be buffered
+
+        // Now receive msg0
+        let r0: Option<TestMessage> = receiver.receive_message(&packed0).unwrap();
+        assert!(r0.is_some());
+        assert_eq!(r0.unwrap().data, vec![0]);
+
+        // Drain should give us msg1
+        let drained = receiver.drain_received();
+        assert_eq!(drained.len(), 1);
+        assert_eq!(drained[0].data, vec![1]);
     }
 }

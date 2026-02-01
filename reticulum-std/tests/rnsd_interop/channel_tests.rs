@@ -99,7 +99,7 @@ fn test_envelope_unpack_python_format() {
 
     assert_eq!(envelope.msgtype, 0x0001);
     assert_eq!(envelope.sequence, 0xFFFE);
-    assert_eq!(envelope.length, 5);
+    assert_eq!(envelope.length(), 5);
     assert_eq!(envelope.data, b"hello");
 }
 
@@ -316,4 +316,142 @@ fn test_window_blocking() {
     let msg = TestMessage::new(vec![99]);
     let result = channel.send(&msg, 464, 0, 100);
     assert_eq!(result, Err(ChannelError::WindowFull));
+}
+
+// =========================================================================
+// Test 8: Symmetric send/receive API
+// =========================================================================
+
+/// Verify symmetric send<M>/receive_message<M> API works correctly
+#[test]
+fn test_symmetric_send_receive_api() {
+    let mut sender = Channel::new();
+    let mut receiver = Channel::new();
+
+    // Send a typed message
+    let msg = TestMessage::new(vec![10, 20, 30, 40]);
+    let packed = sender
+        .send(&msg, 464, 1000, 100)
+        .expect("Send should succeed");
+
+    // Receive using symmetric typed API
+    let received: Option<TestMessage> = receiver
+        .receive_message(&packed)
+        .expect("Receive should succeed");
+
+    assert!(received.is_some(), "Should receive the message");
+    let received_msg = received.unwrap();
+    assert_eq!(received_msg.data, vec![10, 20, 30, 40]);
+}
+
+/// Verify receive_message returns None for type mismatch
+#[test]
+fn test_receive_message_type_mismatch() {
+    struct OtherMessage {
+        value: u16,
+    }
+
+    impl Message for OtherMessage {
+        const MSGTYPE: u16 = 0x9999;
+
+        fn pack(&self) -> Vec<u8> {
+            self.value.to_be_bytes().to_vec()
+        }
+
+        fn unpack(data: &[u8]) -> Result<Self, ChannelError> {
+            if data.len() < 2 {
+                return Err(ChannelError::EnvelopeTruncated);
+            }
+            Ok(Self {
+                value: u16::from_be_bytes([data[0], data[1]]),
+            })
+        }
+    }
+
+    let mut sender = Channel::new();
+    let mut receiver = Channel::new();
+
+    // Send OtherMessage
+    let msg = OtherMessage { value: 1234 };
+    let packed = sender
+        .send(&msg, 464, 1000, 100)
+        .expect("Send should succeed");
+
+    // Try to receive as TestMessage - should return None
+    let result: Option<TestMessage> = receiver
+        .receive_message(&packed)
+        .expect("Receive should not error");
+
+    assert!(result.is_none(), "Should return None for type mismatch");
+}
+
+/// Verify envelope unpack_message works correctly
+#[test]
+fn test_envelope_unpack_message() {
+    // Create an envelope with TestMessage data
+    let msg = TestMessage::new(vec![1, 2, 3]);
+    let envelope = Envelope::new(TestMessage::MSGTYPE, 0, msg.pack());
+
+    // Unpack using typed API
+    let unpacked: TestMessage = envelope.unpack_message().expect("Should unpack successfully");
+    assert_eq!(unpacked.data, vec![1, 2, 3]);
+}
+
+// =========================================================================
+// Test 9: Buffer system integration
+// =========================================================================
+
+use reticulum_core::link::channel::{
+    BufferedChannelWriter, RawChannelReader, RawChannelWriter, ReadResult, StreamDataMessage,
+};
+
+/// Verify Buffer system integrates with Channel for binary stream transfer
+#[test]
+fn test_buffer_channel_integration() {
+    let channel_mdu = 458; // Typical channel MDU
+
+    // Create writer and reader for stream 0
+    let writer = RawChannelWriter::new(0, channel_mdu);
+    let mut reader = RawChannelReader::new(0);
+
+    // Prepare a chunk to send
+    let test_data = b"Hello, Buffer system!";
+    let (msg, consumed) = writer.prepare_chunk(test_data, false);
+
+    assert_eq!(consumed, test_data.len());
+    assert_eq!(msg.stream_id, 0);
+    assert!(!msg.eof);
+
+    // Simulate sending through channel (just pack/unpack the message)
+    let packed = msg.pack();
+    let received_msg = StreamDataMessage::unpack(&packed).expect("Should unpack");
+
+    // Receive into reader
+    reader.receive(&received_msg);
+
+    // Read the data
+    let mut buf = [0u8; 64];
+    let result = reader.read(&mut buf);
+    assert_eq!(result, ReadResult::Read(test_data.len()));
+    assert_eq!(&buf[..test_data.len()], test_data);
+}
+
+/// Verify BufferedChannelWriter accumulates data correctly
+#[test]
+fn test_buffered_channel_writer_integration() {
+    let channel_mdu = 458;
+    let mut writer = BufferedChannelWriter::new(0, channel_mdu);
+
+    // Write some data
+    writer.write(b"First chunk ");
+    writer.write(b"Second chunk ");
+    writer.write(b"Third chunk");
+
+    // Take pending - should get messages with all data
+    let messages = writer.take_pending();
+    assert!(!messages.is_empty());
+
+    let msg = &messages[0];
+    let expected = b"First chunk Second chunk Third chunk";
+    assert_eq!(msg.data, expected);
 }

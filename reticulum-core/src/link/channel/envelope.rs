@@ -17,8 +17,6 @@ pub struct Envelope {
     pub msgtype: u16,
     /// 16-bit sequence number with wraparound
     pub sequence: u16,
-    /// Data payload length
-    pub length: u16,
     /// Serialized message data
     pub data: Vec<u8>,
 }
@@ -30,12 +28,21 @@ impl Envelope {
     /// * `msgtype` - Message type identifier
     /// * `sequence` - Sequence number
     /// * `data` - Serialized message data
+    ///
+    /// # Panics
+    /// Panics if `data.len()` exceeds 65535 bytes (u16::MAX).
+    /// In practice, this is protected by the channel MDU (~458 bytes),
+    /// but this check guards against accidental misuse.
     pub fn new(msgtype: u16, sequence: u16, data: Vec<u8>) -> Self {
-        let length = data.len() as u16;
+        assert!(
+            data.len() <= u16::MAX as usize,
+            "envelope data length {} exceeds maximum {}",
+            data.len(),
+            u16::MAX
+        );
         Self {
             msgtype,
             sequence,
-            length,
             data,
         }
     }
@@ -44,10 +51,11 @@ impl Envelope {
     ///
     /// Format: [MSGTYPE: 2 BE] [SEQUENCE: 2 BE] [LENGTH: 2 BE] [DATA: variable]
     pub fn pack(&self) -> Vec<u8> {
+        let length = self.data.len() as u16;
         let mut buf = Vec::with_capacity(CHANNEL_ENVELOPE_HEADER_SIZE + self.data.len());
         buf.extend_from_slice(&self.msgtype.to_be_bytes());
         buf.extend_from_slice(&self.sequence.to_be_bytes());
-        buf.extend_from_slice(&self.length.to_be_bytes());
+        buf.extend_from_slice(&length.to_be_bytes());
         buf.extend_from_slice(&self.data);
         buf
     }
@@ -58,10 +66,11 @@ impl Envelope {
     /// * `raw` - Raw bytes containing the envelope
     ///
     /// # Errors
-    /// Returns `InvalidEnvelope` if the data is too short or length doesn't match
+    /// - `EnvelopeTooShort` if the header is incomplete (< 6 bytes)
+    /// - `EnvelopeTruncated` if the data is shorter than the declared length
     pub fn unpack(raw: &[u8]) -> Result<Self, ChannelError> {
         if raw.len() < CHANNEL_ENVELOPE_HEADER_SIZE {
-            return Err(ChannelError::InvalidEnvelope);
+            return Err(ChannelError::EnvelopeTooShort);
         }
 
         let msgtype = u16::from_be_bytes([raw[0], raw[1]]);
@@ -70,7 +79,7 @@ impl Envelope {
 
         let expected_len = CHANNEL_ENVELOPE_HEADER_SIZE + length as usize;
         if raw.len() < expected_len {
-            return Err(ChannelError::InvalidEnvelope);
+            return Err(ChannelError::EnvelopeTruncated);
         }
 
         let data = raw[CHANNEL_ENVELOPE_HEADER_SIZE..expected_len].to_vec();
@@ -78,7 +87,6 @@ impl Envelope {
         Ok(Self {
             msgtype,
             sequence,
-            length,
             data,
         })
     }
@@ -87,12 +95,82 @@ impl Envelope {
     pub fn packed_size(&self) -> usize {
         CHANNEL_ENVELOPE_HEADER_SIZE + self.data.len()
     }
+
+    /// Get the data payload length
+    ///
+    /// This is equivalent to `self.data.len()` but provided for API consistency.
+    pub fn length(&self) -> usize {
+        self.data.len()
+    }
+
+    /// Unpack the data as a typed message
+    ///
+    /// # Type Parameters
+    /// * `M` - The message type to unpack
+    ///
+    /// # Returns
+    /// The unpacked message if the message type matches and unpacking succeeds.
+    ///
+    /// # Errors
+    /// - `InvalidMsgType` if the envelope's msgtype doesn't match `M::MSGTYPE`
+    /// - Any error from `M::unpack()`
+    ///
+    /// # Example
+    ///
+    /// ```ignore
+    /// let envelope = channel.receive(&data)?.unwrap();
+    /// let msg: MyMessage = envelope.unpack_message()?;
+    /// ```
+    pub fn unpack_message<M: super::Message>(&self) -> Result<M, ChannelError> {
+        if self.msgtype != M::MSGTYPE {
+            return Err(ChannelError::InvalidMsgType);
+        }
+        M::unpack(&self.data)
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::link::channel::{ChannelError, Message};
     use alloc::vec;
+
+    /// Test message type
+    #[derive(Debug, PartialEq)]
+    struct TestMessage {
+        value: u32,
+    }
+
+    impl Message for TestMessage {
+        const MSGTYPE: u16 = 0x1234;
+
+        fn pack(&self) -> Vec<u8> {
+            self.value.to_be_bytes().to_vec()
+        }
+
+        fn unpack(data: &[u8]) -> Result<Self, ChannelError> {
+            if data.len() < 4 {
+                return Err(ChannelError::EnvelopeTruncated);
+            }
+            let value = u32::from_be_bytes([data[0], data[1], data[2], data[3]]);
+            Ok(Self { value })
+        }
+    }
+
+    /// Different message type for mismatch testing
+    struct OtherMessage;
+
+    impl Message for OtherMessage {
+        const MSGTYPE: u16 = 0x5678;
+
+        fn pack(&self) -> Vec<u8> {
+            Vec::new()
+        }
+
+        fn unpack(_data: &[u8]) -> Result<Self, ChannelError> {
+            Ok(Self)
+        }
+    }
 
     #[test]
     fn test_envelope_pack_unpack_roundtrip() {
@@ -111,7 +189,6 @@ mod tests {
         let unpacked = Envelope::unpack(&packed).unwrap();
         assert_eq!(unpacked.msgtype, 0x1234);
         assert_eq!(unpacked.sequence, 0x5678);
-        assert_eq!(unpacked.length, 4);
         assert_eq!(unpacked.data, data);
     }
 
@@ -124,7 +201,6 @@ mod tests {
         let unpacked = Envelope::unpack(&packed).unwrap();
         assert_eq!(unpacked.msgtype, 0x0001);
         assert_eq!(unpacked.sequence, 0x0000);
-        assert_eq!(unpacked.length, 0);
         assert!(unpacked.data.is_empty());
     }
 
@@ -141,7 +217,7 @@ mod tests {
     #[test]
     fn test_envelope_unpack_too_short() {
         let short = [0x00, 0x01, 0x00];
-        assert_eq!(Envelope::unpack(&short), Err(ChannelError::InvalidEnvelope));
+        assert_eq!(Envelope::unpack(&short), Err(ChannelError::EnvelopeTooShort));
     }
 
     #[test]
@@ -150,7 +226,7 @@ mod tests {
         let header_only = [0x00, 0x01, 0x00, 0x02, 0x00, 0x04];
         assert_eq!(
             Envelope::unpack(&header_only),
-            Err(ChannelError::InvalidEnvelope)
+            Err(ChannelError::EnvelopeTruncated)
         );
     }
 
@@ -160,13 +236,62 @@ mod tests {
         let truncated = [0x00, 0x01, 0x00, 0x02, 0x00, 0x04, 0xAA, 0xBB];
         assert_eq!(
             Envelope::unpack(&truncated),
-            Err(ChannelError::InvalidEnvelope)
+            Err(ChannelError::EnvelopeTruncated)
         );
+    }
+
+    #[test]
+    #[should_panic(expected = "envelope data length")]
+    fn test_envelope_data_too_large() {
+        // Creating envelope with data > u16::MAX should panic
+        let large_data = vec![0; 65536];
+        Envelope::new(0x0001, 0x0000, large_data);
     }
 
     #[test]
     fn test_envelope_packed_size() {
         let envelope = Envelope::new(0x0001, 0x0000, vec![0; 100]);
         assert_eq!(envelope.packed_size(), CHANNEL_ENVELOPE_HEADER_SIZE + 100);
+    }
+
+    #[test]
+    fn test_envelope_unpack_message_success() {
+        // Create an envelope with TestMessage data
+        let msg = TestMessage { value: 0x12345678 };
+        let envelope = Envelope::new(TestMessage::MSGTYPE, 0, msg.pack());
+
+        // Unpack the message
+        let unpacked: TestMessage = envelope.unpack_message().unwrap();
+        assert_eq!(unpacked.value, 0x12345678);
+    }
+
+    #[test]
+    fn test_envelope_unpack_message_type_mismatch() {
+        // Create an envelope with TestMessage data but wrong msgtype
+        let msg = TestMessage { value: 42 };
+        let envelope = Envelope::new(OtherMessage::MSGTYPE, 0, msg.pack());
+
+        // Trying to unpack as TestMessage should fail
+        let result: Result<TestMessage, _> = envelope.unpack_message();
+        assert_eq!(result, Err(ChannelError::InvalidMsgType));
+    }
+
+    #[test]
+    fn test_envelope_unpack_message_invalid_data() {
+        // Create an envelope with too-short data for TestMessage
+        let envelope = Envelope::new(TestMessage::MSGTYPE, 0, vec![0x01, 0x02]);
+
+        // Trying to unpack should fail due to insufficient data
+        let result: Result<TestMessage, _> = envelope.unpack_message();
+        assert_eq!(result, Err(ChannelError::EnvelopeTruncated));
+    }
+
+    #[test]
+    fn test_envelope_unpack_message_empty_message() {
+        // OtherMessage accepts any data including empty
+        let envelope = Envelope::new(OtherMessage::MSGTYPE, 0, Vec::new());
+
+        let result: Result<OtherMessage, _> = envelope.unpack_message();
+        assert!(result.is_ok());
     }
 }

@@ -45,6 +45,7 @@ pub mod framing;
 pub mod identity;
 pub mod ifac;
 pub mod link;
+pub mod node;
 pub mod packet;
 pub mod ratchet;
 pub mod receipt;
@@ -64,6 +65,10 @@ pub use link::channel::{Channel, ChannelAction, ChannelError, Envelope, Message,
 pub use link::channel::CompressingWriter;
 pub use link::{
     Link, LinkCloseReason, LinkError, LinkEvent, LinkId, LinkManager, LinkState, PeerKeys,
+};
+pub use node::{
+    BuildError, CloseReason, Connection, ConnectionError, DeliveryError, NodeCore, NodeCoreBuilder,
+    NodeEvent, RoutingDecision, SendError, SendHandle, SendMethod, SendOptions, SendResult,
 };
 pub use packet::Packet;
 pub use ratchet::{KnownRatchets, Ratchet, RatchetError};

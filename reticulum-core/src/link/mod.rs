@@ -1039,7 +1039,7 @@ impl Link {
 
     /// Encrypt data for transmission over this link (with provided RNG)
     ///
-    /// Returns the encrypted token: [IV (16)][ciphertext][HMAC (32)]
+    /// Returns the encrypted token: \[IV (16)\]\[ciphertext\]\[HMAC (32)\]
     pub fn encrypt(
         &self,
         plaintext: &[u8],
@@ -1057,7 +1057,7 @@ impl Link {
 
     /// Decrypt data received over this link
     ///
-    /// The token format is: [IV (16)][ciphertext][HMAC (32)]
+    /// The token format is: \[IV (16)\]\[ciphertext\]\[HMAC (32)\]
     ///
     /// Returns the plaintext length written to output.
     pub fn decrypt(&self, token: &[u8], output: &mut [u8]) -> Result<usize, LinkError> {
