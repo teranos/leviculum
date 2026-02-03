@@ -370,6 +370,86 @@ impl Packet {
     }
 }
 
+/// Compute the hashable part of a raw packet (matching Python Reticulum)
+///
+/// The hashable part strips routing-specific information so that the hash
+/// remains consistent regardless of whether the packet was forwarded:
+/// - Flags byte with upper nibble masked out (removes ifac, header_type, context, transport bits)
+/// - Everything after transport_id (destination_hash + context + data)
+///
+/// This matches Python's `Packet.get_hashable_part()`.
+///
+/// # Arguments
+/// * `raw` - The raw packet bytes
+///
+/// # Returns
+/// The hashable portion of the packet
+pub fn get_hashable_part(raw: &[u8]) -> alloc::vec::Vec<u8> {
+    if raw.len() < 2 {
+        return alloc::vec::Vec::new();
+    }
+
+    let flags = raw[0];
+    let is_header_type_2 = (flags & FLAG_HEADER_TYPE_MASK) != 0;
+
+    // Data starts after: flags(1) + hops(1) + [transport_id(16) if HEADER_2]
+    let data_start = if is_header_type_2 {
+        2 + TRUNCATED_HASHBYTES // Skip transport_id
+    } else {
+        2
+    };
+
+    if raw.len() < data_start {
+        return alloc::vec::Vec::new();
+    }
+
+    let mut hashable = alloc::vec::Vec::with_capacity(1 + raw.len() - data_start);
+    // First byte: flags with upper nibble masked out
+    hashable.push(flags & 0x0F);
+    // Everything after transport_id (or after hops for HEADER_1)
+    hashable.extend_from_slice(&raw[data_start..]);
+    hashable
+}
+
+/// Compute the packet hash (matching Python Reticulum)
+///
+/// This computes SHA256 of the hashable part of the packet. The hash is
+/// consistent regardless of forwarding because it excludes routing information.
+///
+/// Use this instead of `sha256(raw_packet)` for:
+/// - Packet receipts
+/// - Proof generation and validation
+/// - Packet deduplication
+///
+/// # Arguments
+/// * `raw` - The raw packet bytes
+///
+/// # Returns
+/// The 32-byte SHA256 hash
+///
+/// # Example
+/// ```
+/// use reticulum_core::packet::packet_hash;
+///
+/// let raw_packet = [0x00, 0x01, /* ... destination, context, data ... */];
+/// let hash = packet_hash(&raw_packet);
+/// ```
+pub fn packet_hash(raw: &[u8]) -> [u8; 32] {
+    use crate::crypto::sha256;
+    let hashable = get_hashable_part(raw);
+    sha256(&hashable)
+}
+
+/// Compute the truncated packet hash (16 bytes)
+///
+/// Returns the first 16 bytes of the packet hash, used for deduplication.
+pub fn truncated_packet_hash(raw: &[u8]) -> [u8; TRUNCATED_HASHBYTES] {
+    let hash = packet_hash(raw);
+    let mut truncated = [0u8; TRUNCATED_HASHBYTES];
+    truncated.copy_from_slice(&hash[..TRUNCATED_HASHBYTES]);
+    truncated
+}
+
 /// Build a PROOF packet for delivery confirmation
 ///
 /// A proof packet is sent from the receiver back to the sender to confirm

@@ -589,12 +589,13 @@ async fn test_manager_initiator_concurrent_links() {
     tokio::time::sleep(Duration::from_millis(300)).await;
 
     println!("Established {} links", established);
-    assert!(
-        established >= 2,
-        "Should establish at least 2 concurrent links"
+    assert_eq!(
+        established, 3,
+        "All 3 links must be established. Got {}",
+        established
     );
 
-    println!("SUCCESS: LinkManager concurrent links");
+    println!("All 3 concurrent links established");
 }
 
 // =========================================================================
@@ -1379,10 +1380,18 @@ async fn test_rust_to_rust_multiple_messages() {
         "A received {} messages, B received {} messages",
         received_by_a, received_by_b
     );
-    assert!(received_by_a >= 5, "A should receive at least 5 messages");
-    assert!(received_by_b >= 5, "B should receive at least 5 messages");
+    assert_eq!(
+        received_by_a, 10,
+        "A must receive all 10 messages. Got {}",
+        received_by_a
+    );
+    assert_eq!(
+        received_by_b, 10,
+        "B must receive all 10 messages. Got {}",
+        received_by_b
+    );
 
-    println!("SUCCESS: Rust-to-Rust multiple messages");
+    println!("All 20 messages exchanged");
 }
 
 // =========================================================================
@@ -1610,9 +1619,13 @@ async fn test_manager_many_simultaneous_links() {
 
     let active = manager.active_link_count();
     println!("Established {} of 10 links", active);
-    assert!(active >= 5, "Should establish at least 5 links");
+    assert_eq!(
+        active, 10,
+        "All 10 links must be established. Got {}",
+        active
+    );
 
-    println!("SUCCESS: LinkManager many simultaneous links");
+    println!("All 10 simultaneous links established");
 }
 
 /// Test rapid data exchange on a single link.
@@ -1650,12 +1663,14 @@ async fn test_manager_rapid_data_exchange() {
 
     let received = daemon.get_received_packets().await.unwrap();
     println!("Daemon received {} of 50 packets", received.len());
-    assert!(
-        received.len() >= 25,
-        "Should receive at least half the packets"
+    assert_eq!(
+        received.len(),
+        50,
+        "All packets must be received. Got {}/50",
+        received.len()
     );
 
-    println!("SUCCESS: LinkManager rapid data exchange");
+    println!("All rapid exchange packets verified");
 }
 
 /// Test sending large payloads.
@@ -1697,16 +1712,27 @@ async fn test_manager_large_payloads() {
     let received = daemon.get_received_packets().await.unwrap();
     println!("Daemon received {} packets", received.len());
 
-    // Check we received the large payloads
+    // Check we received all large payloads
     let received_sizes: Vec<_> = received.iter().map(|p| p.data.len()).collect();
     println!("Received payload sizes: {:?}", received_sizes);
 
-    assert!(
-        received_sizes.iter().any(|&s| s >= 100),
-        "Should receive at least one large payload"
+    // All 3 payloads must be received (100, 250, 400 bytes)
+    assert_eq!(
+        received.len(),
+        3,
+        "All 3 payloads must be received. Got {}",
+        received.len()
     );
+    for expected_size in sizes {
+        assert!(
+            received_sizes.contains(&expected_size),
+            "Must receive {} byte payload. Got sizes: {:?}",
+            expected_size,
+            received_sizes
+        );
+    }
 
-    println!("SUCCESS: LinkManager large payloads");
+    println!("All 3 large payloads verified");
 }
 
 /// Test interleaved operations across multiple links.
@@ -1822,8 +1848,16 @@ async fn test_manager_interleaved_operations() {
         manager.active_link_count()
     );
 
-    assert!(established >= 2, "Should establish at least 2 links");
-    assert!(sent_count >= 1, "Should send on at least 1 link");
+    assert_eq!(
+        established, 3,
+        "All 3 links must be established. Got {}",
+        established
+    );
+    assert_eq!(
+        sent_count, 3,
+        "Must send on all 3 links. Got {}",
+        sent_count
+    );
 
-    println!("SUCCESS: LinkManager interleaved operations");
+    println!("All 3 interleaved links verified");
 }

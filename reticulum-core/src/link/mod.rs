@@ -48,8 +48,9 @@ pub use manager::LinkManager;
 use crate::constants::{
     ED25519_SIGNATURE_SIZE, KEEPALIVE_INITIATOR_BYTE, KEEPALIVE_PAYLOAD_SIZE,
     KEEPALIVE_RESPONDER_BYTE, LINK_KEEPALIVE_MAX_RTT, LINK_KEEPALIVE_MIN_SECS, LINK_KEEPALIVE_SECS,
-    LINK_KEEPALIVE_TIMEOUT_FACTOR, LINK_STALE_FACTOR, LINK_STALE_GRACE_SECS, SIGNALING_MODE_MASK,
-    SIGNALING_MODE_SHIFT, SIGNALING_MTU_MASK, TRUNCATED_HASHBYTES, X25519_KEY_SIZE,
+    LINK_KEEPALIVE_TIMEOUT_FACTOR, LINK_STALE_FACTOR, LINK_STALE_GRACE_SECS, PROOF_DATA_SIZE,
+    SIGNALING_MODE_MASK, SIGNALING_MODE_SHIFT, SIGNALING_MTU_MASK, TRUNCATED_HASHBYTES,
+    X25519_KEY_SIZE,
 };
 use crate::crypto::{derive_key, truncated_hash};
 use crate::identity::Identity;
@@ -65,8 +66,8 @@ const LINK_REQUEST_BASE_SIZE: usize = 64;
 const LINK_REQUEST_SIGNALING_SIZE: usize = 67;
 /// Size of signed data in proof (link_id + X25519 pub + Ed25519 pub + signaling)
 const PROOF_SIGNED_DATA_SIZE: usize = 83; // 16 + 32 + 32 + 3
-/// Size of proof data (signature + X25519 pub + signaling)
-const PROOF_DATA_SIZE: usize = 99; // 64 + 32 + 3
+/// Size of link establishment proof data (signature + X25519 pub + signaling)
+const LINK_PROOF_SIZE: usize = 99; // 64 + 32 + 3
 /// Size of signaling bytes (21-bit MTU + 3-bit mode)
 const SIGNALING_SIZE: usize = 3;
 
@@ -216,6 +217,25 @@ pub enum LinkEvent {
         /// Why the link was closed
         reason: LinkCloseReason,
     },
+    /// Proof received confirming data delivery (PROVE_ALL)
+    ///
+    /// Emitted when a valid proof is received for a data packet we sent.
+    DataDelivered {
+        /// The link ID
+        link_id: LinkId,
+        /// The full packet hash that was proven
+        packet_hash: [u8; 32],
+    },
+    /// Proof requested for received data (PROVE_APP)
+    ///
+    /// Emitted when data is received on a link with `ProofStrategy::App`.
+    /// The application should call `send_data_proof()` if it decides to prove.
+    ProofRequested {
+        /// The link ID
+        link_id: LinkId,
+        /// The full packet hash to potentially prove
+        packet_hash: [u8; 32],
+    },
 }
 
 /// Link identifier (16 bytes - truncated hash)
@@ -231,8 +251,9 @@ pub struct Link {
     ephemeral_private: Option<x25519_dalek::StaticSecret>,
     /// Our ephemeral X25519 public key
     ephemeral_public: x25519_dalek::PublicKey,
-    /// Our ephemeral Ed25519 signing key (for future link authentication)
-    _signing_key: Option<ed25519_dalek::SigningKey>,
+    /// Our ephemeral Ed25519 signing key (retained for future link-level authentication)
+    #[allow(dead_code)]
+    signing_key: Option<ed25519_dalek::SigningKey>,
     /// Our ephemeral Ed25519 verifying key
     verifying_key: ed25519_dalek::VerifyingKey,
     /// Peer's ephemeral public key (after handshake)
@@ -294,7 +315,7 @@ impl Link {
             state: LinkState::Pending,
             ephemeral_private: Some(ephemeral_private),
             ephemeral_public,
-            _signing_key: Some(signing_key),
+            signing_key: Some(signing_key),
             verifying_key,
             peer_ephemeral_public: None,
             peer_verifying_key: None,
@@ -375,7 +396,7 @@ impl Link {
             state: LinkState::Pending,
             ephemeral_private: Some(ephemeral_private),
             ephemeral_public,
-            _signing_key: Some(signing_key),
+            signing_key: Some(signing_key),
             verifying_key,
             peer_ephemeral_public: Some(peer_ephemeral_public),
             peer_verifying_key: Some(peer_verifying_key),
@@ -452,7 +473,7 @@ impl Link {
             .map_err(|_| LinkError::NoIdentity)?;
 
         // Build proof data: [signature (64)] [our_x25519_pub (32)] [signaling (3)]
-        let mut proof_data = alloc::vec![0u8; PROOF_DATA_SIZE];
+        let mut proof_data = alloc::vec![0u8; LINK_PROOF_SIZE];
         proof_data[..ED25519_SIGNATURE_SIZE].copy_from_slice(&signature);
         proof_data[ED25519_SIGNATURE_SIZE..ED25519_SIGNATURE_SIZE + X25519_KEY_SIZE]
             .copy_from_slice(self.ephemeral_public.as_bytes());
@@ -469,7 +490,7 @@ impl Link {
         };
 
         let mut packet =
-            alloc::vec::Vec::with_capacity(1 + 1 + TRUNCATED_HASHBYTES + 1 + PROOF_DATA_SIZE);
+            alloc::vec::Vec::with_capacity(1 + 1 + TRUNCATED_HASHBYTES + 1 + LINK_PROOF_SIZE);
         packet.push(flags.to_byte());
         packet.push(0); // hops = 0
         packet.extend_from_slice(&self.id); // destination = link_id
@@ -615,6 +636,99 @@ impl Link {
     /// Check if the link is active
     pub fn is_active(&self) -> bool {
         self.state == LinkState::Active
+    }
+
+    /// Verify a signature from the peer using their Ed25519 verifying key
+    ///
+    /// This is used to verify data packet proofs sent by the peer.
+    /// Returns false if no peer verifying key is available (link not established)
+    /// or if the signature is invalid.
+    ///
+    /// # Arguments
+    /// * `message` - The message that was signed (e.g., packet hash)
+    /// * `signature` - The Ed25519 signature (64 bytes)
+    pub fn verify_peer_signature(&self, message: &[u8], signature: &[u8]) -> bool {
+        use ed25519_dalek::Verifier;
+
+        let Some(peer_key) = &self.peer_verifying_key else {
+            return false;
+        };
+
+        if signature.len() != ED25519_SIGNATURE_SIZE {
+            return false;
+        }
+
+        let Ok(sig_bytes): Result<[u8; ED25519_SIGNATURE_SIZE], _> = signature.try_into() else {
+            return false;
+        };
+
+        let sig = ed25519_dalek::Signature::from_bytes(&sig_bytes);
+        peer_key.verify(message, &sig).is_ok()
+    }
+
+    /// Validate a link proof (PROVE_ALL format)
+    ///
+    /// This matches Python Reticulum's `validate_data_proof` behavior:
+    /// 1. Check proof length (PROOF_DATA_SIZE bytes: hash + signature)
+    /// 2. Verify hash in proof matches expected packet hash
+    /// 3. Verify signature over the hash
+    ///
+    /// **Note:** Proof validation is directional. The initiator can validate proofs
+    /// from the responder (destination owner) because `peer_verifying_key` is set to
+    /// the destination's identity key. The reverse direction is not supported — the
+    /// responder's `peer_verifying_key` is the initiator's ephemeral key, not their
+    /// identity key.
+    ///
+    /// # Arguments
+    /// * `proof_data` - The proof data (PROOF_DATA_SIZE bytes: packet_hash + signature)
+    /// * `expected_hash` - The expected packet hash (32 bytes)
+    ///
+    /// # Returns
+    /// `true` if hash matches and signature is valid
+    pub fn validate_data_proof(&self, proof_data: &[u8], expected_hash: &[u8; 32]) -> bool {
+        if proof_data.len() != PROOF_DATA_SIZE {
+            return false;
+        }
+
+        // Extract hash from proof
+        let proof_hash = &proof_data[..32];
+
+        // Compare hash to expected
+        if proof_hash != expected_hash {
+            return false;
+        }
+
+        // Verify signature over the hash
+        let signature = &proof_data[32..];
+        self.verify_peer_signature(proof_hash, signature)
+    }
+
+    /// Create a proof for a received data packet using an Ed25519 signing key
+    ///
+    /// This variant takes a raw signing key instead of a full Identity,
+    /// which is useful when the signing key has been extracted and stored
+    /// separately (e.g., in LinkManager's DestinationEntry).
+    ///
+    /// # Arguments
+    /// * `packet_hash` - The hash of the received packet
+    /// * `signing_key` - The Ed25519 signing key to sign with
+    ///
+    /// # Returns
+    /// The proof data (PROOF_DATA_SIZE bytes)
+    pub fn create_data_proof_with_signing_key(
+        &self,
+        packet_hash: &[u8; 32],
+        signing_key: &ed25519_dalek::SigningKey,
+    ) -> [u8; PROOF_DATA_SIZE] {
+        use ed25519_dalek::Signer;
+
+        let signature = signing_key.sign(packet_hash);
+
+        let mut proof = [0u8; PROOF_DATA_SIZE];
+        proof[..32].copy_from_slice(packet_hash);
+        proof[32..].copy_from_slice(&signature.to_bytes());
+
+        proof
     }
 
     /// Check if the link should be considered stale (no inbound for stale_time)
@@ -820,8 +934,8 @@ impl Link {
 
         self.require_state(LinkState::Pending)?;
 
-        // Proof format: signature (64) + X25519_pub (32) + signalling (3) = PROOF_DATA_SIZE bytes
-        if proof_data.len() < PROOF_DATA_SIZE {
+        // Proof format: signature (64) + X25519_pub (32) + signalling (3) = LINK_PROOF_SIZE bytes
+        if proof_data.len() < LINK_PROOF_SIZE {
             return Err(LinkError::InvalidProof);
         }
 
@@ -840,7 +954,7 @@ impl Link {
 
         // Extract signalling bytes (last SIGNALING_SIZE bytes)
         let signalling_bytes: [u8; SIGNALING_SIZE] = proof_data
-            [ED25519_SIGNATURE_SIZE + X25519_KEY_SIZE..PROOF_DATA_SIZE]
+            [ED25519_SIGNATURE_SIZE + X25519_KEY_SIZE..LINK_PROOF_SIZE]
             .try_into()
             .map_err(|_| LinkError::InvalidProof)?;
 
@@ -1136,6 +1250,58 @@ impl Link {
         packet.extend_from_slice(&self.id);
         packet.push(packet_context as u8);
         packet.extend_from_slice(&encrypted[..enc_len]);
+
+        Ok(packet)
+    }
+
+    /// Build a data proof packet using an Ed25519 signing key
+    ///
+    /// Creates a PROOF packet that confirms receipt of a data packet.
+    /// The proof is signed with the provided signing key, which should be
+    /// the destination's identity signing key (the sender can verify it
+    /// using the verifying key from the announce).
+    ///
+    /// # Arguments
+    /// * `packet_hash` - The hash of the received packet
+    /// * `signing_key` - The Ed25519 signing key to sign with
+    ///
+    /// # Returns
+    /// The raw proof packet bytes ready for transmission.
+    pub fn build_data_proof_packet_with_signing_key(
+        &self,
+        packet_hash: &[u8; 32],
+        signing_key: &ed25519_dalek::SigningKey,
+    ) -> Result<alloc::vec::Vec<u8>, LinkError> {
+        let proof_data = self.create_data_proof_with_signing_key(packet_hash, signing_key);
+        self.assemble_data_proof_packet(&proof_data)
+    }
+
+    /// Assemble a data proof into a complete PROOF packet
+    fn assemble_data_proof_packet(
+        &self,
+        proof_data: &[u8; PROOF_DATA_SIZE],
+    ) -> Result<alloc::vec::Vec<u8>, LinkError> {
+        use crate::destination::DestinationType;
+        use crate::packet::{HeaderType, PacketContext, PacketFlags, PacketType, TransportType};
+
+        self.require_state(LinkState::Active)?;
+
+        let flags = PacketFlags {
+            ifac_flag: false,
+            header_type: HeaderType::Type1,
+            context_flag: false,
+            transport_type: TransportType::Broadcast,
+            dest_type: DestinationType::Link,
+            packet_type: PacketType::Proof,
+        };
+
+        // Packet format: [flags (1)] [hops (1)] [link_id (16)] [context (1)] [proof_data]
+        let mut packet = alloc::vec::Vec::with_capacity(1 + 1 + TRUNCATED_HASHBYTES + 1 + PROOF_DATA_SIZE);
+        packet.push(flags.to_byte());
+        packet.push(0); // hops = 0
+        packet.extend_from_slice(&self.id);
+        packet.push(PacketContext::None as u8);
+        packet.extend_from_slice(proof_data);
 
         Ok(packet)
     }
@@ -1469,7 +1635,7 @@ mod tests {
         // Manually set state to Active
         link.state = LinkState::Active;
 
-        let fake_proof = [0u8; 96];
+        let fake_proof = [0u8; PROOF_DATA_SIZE];
         let result = link.process_proof(&fake_proof);
         assert!(matches!(result, Err(LinkError::InvalidState)));
     }

@@ -302,6 +302,11 @@ impl Identity {
         &self.ed25519_verifying
     }
 
+    /// Get the Ed25519 signing key (if this is a full identity with private keys)
+    pub fn ed25519_signing_key(&self) -> Option<&ed25519_dalek::SigningKey> {
+        self.ed25519_signing.as_ref()
+    }
+
     /// Derived key length for encryption (64 bytes: 32 signing + 32 encryption)
     const DERIVED_KEY_LENGTH: usize = 64;
 

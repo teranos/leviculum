@@ -7,6 +7,32 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.2.4] - 2026-02-03
+
+### Added
+- Link-level data proof system with `ProofStrategy` support in `LinkManager`
+- `LinkManager::register_destination_with_strategy()` for PROVE_ALL/PROVE_APP/PROVE_NONE
+- `LinkManager::send_with_receipt()` for tracked data delivery with proof confirmation
+- `LinkManager::send_data_proof()` for application-driven proof generation (PROVE_APP)
+- `LinkEvent::DataDelivered` and `LinkEvent::ProofRequested` events
+- `NodeEvent::LinkDeliveryConfirmed` and `NodeEvent::LinkProofRequested` events
+- `Link::validate_data_proof()` and `Link::verify_peer_signature()` for proof validation
+- `Link::create_data_proof_with_signing_key()` for proof generation
+- `Identity::ed25519_signing_key()` getter for accessing the signing key
+- `packet::packet_hash()` and `packet::truncated_packet_hash()` using correct hashable part
+- `packet::get_hashable_part()` matching Python Reticulum's packet hash computation
+- New interop tests for link-level data proofs (PROVE_ALL and PROVE_APP)
+- Comprehensive network test module
+
+### Changed
+- Consolidate duplicate constants: remove `DATA_PROOF_SIZE` (use `PROOF_DATA_SIZE` from constants), remove local `MS_PER_SECOND` from transport
+- Rename shadowing `PROOF_DATA_SIZE` (99 bytes, link establishment) to `LINK_PROOF_SIZE` to avoid confusion with `PROOF_DATA_SIZE` (96 bytes, data proof) in constants
+- `LinkManager` destination tracking uses `BTreeMap` with `DestinationEntry` instead of `BTreeSet`
+
+### Fixed
+- Packet hash computation now uses hashable part (stripping routing info) instead of raw SHA256, matching Python Reticulum behavior
+- Stricter test assertions: exact counts instead of minimum thresholds in link manager tests
+
 ## [0.2.3] - 2026-02-01
 
 ### Added
@@ -146,7 +172,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Transport layer (routing, paths, deduplication)
 - Full interoperability with Python rnsd
 
-[Unreleased]: https://codeberg.org/Lew_Palm/leviculum/compare/v0.2.3...HEAD
+[Unreleased]: https://codeberg.org/Lew_Palm/leviculum/compare/v0.2.4...HEAD
+[0.2.4]: https://codeberg.org/Lew_Palm/leviculum/compare/v0.2.3...v0.2.4
 [0.2.3]: https://codeberg.org/Lew_Palm/leviculum/compare/v0.2.2...v0.2.3
 [0.2.2]: https://codeberg.org/Lew_Palm/leviculum/compare/v0.2.1...v0.2.2
 [0.2.1]: https://codeberg.org/Lew_Palm/leviculum/compare/v0.2.0...v0.2.1

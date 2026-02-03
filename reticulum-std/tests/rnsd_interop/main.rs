@@ -34,6 +34,7 @@
 mod announce_interop_tests;
 mod channel_tests;
 mod common;
+mod comprehensive_network_test;
 mod discovery_tests;
 mod edge_case_tests;
 mod flow_tests;

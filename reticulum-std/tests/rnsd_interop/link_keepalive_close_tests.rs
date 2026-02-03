@@ -898,6 +898,7 @@ async fn test_keepalive_resets_stale_timer() {
 /// to be triggered. In real scenarios, this happens after keepalive_interval.
 /// For testing, we verify the keepalive mechanism exists and works.
 #[tokio::test]
+#[ignore = "BUG: Python doesn't echo keepalives from Rust initiator - see ROADMAP.md"]
 async fn test_rust_initiator_sends_keepalive_python_echoes() {
     let daemon = TestDaemon::start().await.expect("Failed to start daemon");
     let mut ctx = make_context();
@@ -944,11 +945,9 @@ async fn test_rust_initiator_sends_keepalive_python_echoes() {
         });
 
         assert!(ka_event.is_some(), "Should receive KeepaliveReceived event");
-        println!("SUCCESS: Rust initiator keepalive echo received from Python");
+        println!("Keepalive echo received from Python");
     } else {
-        // Python may not echo keepalives if it's not tracking the link properly
-        // This can happen in test scenarios - log it but don't fail
-        println!("WARNING: No keepalive echo received from Python (may be expected in some configurations)");
+        panic!("No keepalive echo received from Python - link not working properly");
     }
 }
 

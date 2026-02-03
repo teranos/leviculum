@@ -823,6 +823,29 @@ impl<C: Clock, S: Storage> NodeCore<C, S> {
                     reason: reason.into(),
                 });
             }
+
+            LinkEvent::DataDelivered {
+                link_id,
+                packet_hash,
+            } => {
+                // A proof was received confirming delivery of a data packet
+                self.events.push(NodeEvent::LinkDeliveryConfirmed {
+                    link_id,
+                    packet_hash,
+                });
+            }
+
+            LinkEvent::ProofRequested {
+                link_id,
+                packet_hash,
+            } => {
+                // App-level proof request from link layer (PROVE_APP strategy)
+                // For now we expose this as a link-level ProofRequested event
+                self.events.push(NodeEvent::LinkProofRequested {
+                    link_id,
+                    packet_hash,
+                });
+            }
         }
     }
 
@@ -859,6 +882,15 @@ impl<C: Clock, S: Storage> NodeCore<C, S> {
         // Collect channel packets first to avoid borrow issues
         let channel_packets: Vec<_> = self.link_manager.drain_channel_packets().collect();
         for (link_id, packet) in channel_packets {
+            if let Some(link) = self.link_manager.link(&link_id) {
+                let dest_hash = *link.destination_hash();
+                let _ = self.transport.send_to_destination(&dest_hash, &packet);
+            }
+        }
+
+        // Send pending proof packets (PROVE_ALL responses)
+        let proof_packets: Vec<_> = self.link_manager.drain_proof_packets().collect();
+        for (link_id, packet) in proof_packets {
             if let Some(link) = self.link_manager.link(&link_id) {
                 let dest_hash = *link.destination_hash();
                 let _ = self.transport.send_to_destination(&dest_hash, &packet);

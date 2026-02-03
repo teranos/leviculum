@@ -134,6 +134,28 @@ pub enum NodeEvent {
         destination_hash: [u8; TRUNCATED_HASHBYTES],
     },
 
+    /// Application should decide whether to prove this link data packet
+    ///
+    /// Emitted when data is received on a link whose destination has
+    /// `ProofStrategy::App`. Call `send_data_proof()` to confirm delivery.
+    LinkProofRequested {
+        /// The link that received the data
+        link_id: LinkId,
+        /// Full SHA256 hash of the packet to potentially prove
+        packet_hash: [u8; 32],
+    },
+
+    /// Delivery confirmation for a link data packet (PROVE_ALL)
+    ///
+    /// Emitted when a proof is received for a data packet sent on a link.
+    /// This confirms the peer received and decrypted the data.
+    LinkDeliveryConfirmed {
+        /// The link that sent the data
+        link_id: LinkId,
+        /// Full SHA256 hash of the delivered packet
+        packet_hash: [u8; 32],
+    },
+
     // ─── Interface Events ──────────────────────────────────────────────────────
 
     /// An interface went offline

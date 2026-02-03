@@ -826,13 +826,14 @@ async fn test_discovery_link_multiple_messages() {
 
     println!("Found {}/{} messages", found_count, messages.len());
 
-    // We should find at least most of the messages
-    assert!(
-        found_count >= messages.len() / 2,
-        "Should receive at least half of messages. Got {}/{}",
+    // All messages must be received - no packet loss acceptable
+    assert_eq!(
+        found_count,
+        messages.len(),
+        "All messages must be received. Got {}/{}",
         found_count,
         messages.len()
     );
 
-    println!("SUCCESS: Multiple messages sent over discovered link");
+    println!("All messages verified");
 }

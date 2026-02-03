@@ -41,12 +41,12 @@
 //! ```
 
 use alloc::collections::BTreeMap;
-use alloc::collections::BTreeSet;
 use alloc::vec::Vec;
 
-use crate::constants::{MS_PER_SECOND, TRUNCATED_HASHBYTES};
+use crate::constants::{MS_PER_SECOND, PROOF_DATA_SIZE, TRUNCATED_HASHBYTES};
+use crate::destination::ProofStrategy;
 use crate::identity::Identity;
-use crate::packet::{Packet, PacketContext, PacketType};
+use crate::packet::{packet_hash, Packet, PacketContext, PacketType};
 use crate::traits::{Clock, Context};
 
 use super::channel::{Channel, Message};
@@ -54,6 +54,9 @@ use super::{Link, LinkCloseReason, LinkError, LinkEvent, LinkId, LinkState, Peer
 
 /// Default timeout for pending links (30 seconds)
 const LINK_TIMEOUT_MS: u64 = 30_000;
+
+/// Timeout for data receipts awaiting proofs (30 seconds)
+const DATA_RECEIPT_TIMEOUT_MS: u64 = 30_000;
 
 /// Manages all link state and handshakes
 pub struct LinkManager {
@@ -65,8 +68,8 @@ pub struct LinkManager {
     pending_outgoing: BTreeMap<LinkId, PendingOutgoing>,
     /// Pending incoming links (awaiting RTT) - stores (link_id, created_at_ms)
     pending_incoming: BTreeMap<LinkId, PendingIncoming>,
-    /// Destinations that accept links (dest_hash -> identity for signing proofs)
-    accepting: BTreeSet<[u8; TRUNCATED_HASHBYTES]>,
+    /// Destinations that accept links (dest_hash -> proof_strategy)
+    destinations: BTreeMap<[u8; TRUNCATED_HASHBYTES], DestinationEntry>,
     /// Pending events
     events: Vec<LinkEvent>,
     /// Pending RTT packets to send (generated after processing proof)
@@ -77,15 +80,34 @@ pub struct LinkManager {
     pending_close_packets: Vec<(LinkId, Vec<u8>)>,
     /// Pending channel packets to send (link_id, packet_data)
     pending_channel_packets: Vec<(LinkId, Vec<u8>)>,
+    /// Pending proof packets to send (generated on data receive with PROVE_ALL)
+    pending_proof_packets: Vec<(LinkId, Vec<u8>)>,
+    /// Receipts for sent data packets awaiting proofs (truncated_hash -> receipt)
+    data_receipts: BTreeMap<[u8; TRUNCATED_HASHBYTES], DataReceipt>,
 }
 
 /// State for a pending outgoing link (initiator side, awaiting proof)
 struct PendingOutgoing {
     /// When this link request was created
     created_at_ms: u64,
-    /// Destination's signing key (from announce) for proof verification
-    #[allow(dead_code)]
-    dest_signing_key: [u8; 32],
+}
+
+/// Receipt for a sent data packet awaiting proof (PROVE_ALL)
+struct DataReceipt {
+    /// Full SHA256 hash of the packet
+    full_hash: [u8; 32],
+    /// Link ID the packet was sent on
+    link_id: LinkId,
+    /// When the packet was sent (ms since epoch)
+    sent_at_ms: u64,
+}
+
+/// Destination registration info
+struct DestinationEntry {
+    /// Proof strategy for this destination
+    proof_strategy: ProofStrategy,
+    /// Signing key for data proofs (stored when accept_link is called with PROVE_ALL or PROVE_APP)
+    signing_key: Option<ed25519_dalek::SigningKey>,
 }
 
 /// State for a pending incoming link (responder side, awaiting RTT)
@@ -102,12 +124,14 @@ impl LinkManager {
             channels: BTreeMap::new(),
             pending_outgoing: BTreeMap::new(),
             pending_incoming: BTreeMap::new(),
-            accepting: BTreeSet::new(),
+            destinations: BTreeMap::new(),
             events: Vec::new(),
             pending_rtt_packets: BTreeMap::new(),
             pending_keepalive_packets: Vec::new(),
             pending_close_packets: Vec::new(),
             pending_channel_packets: Vec::new(),
+            pending_proof_packets: Vec::new(),
+            data_receipts: BTreeMap::new(),
         }
     }
 
@@ -203,7 +227,6 @@ impl LinkManager {
             link_id,
             PendingOutgoing {
                 created_at_ms: now,
-                dest_signing_key: *dest_signing_key,
             },
         );
 
@@ -219,18 +242,51 @@ impl LinkManager {
     ///
     /// When a LINK_REQUEST arrives for this destination, a `LinkRequestReceived`
     /// event will be emitted. Call `accept_link()` or `reject_link()` to respond.
+    ///
+    /// # Arguments
+    /// * `dest_hash` - The destination hash to register
     pub fn register_destination(&mut self, dest_hash: [u8; TRUNCATED_HASHBYTES]) {
-        self.accepting.insert(dest_hash);
+        self.register_destination_with_strategy(dest_hash, ProofStrategy::None);
+    }
+
+    /// Register a destination to accept incoming links with a specific proof strategy
+    ///
+    /// # Arguments
+    /// * `dest_hash` - The destination hash to register
+    /// * `proof_strategy` - The proof strategy for received data packets:
+    ///   - `ProofStrategy::None` - Never generate proofs
+    ///   - `ProofStrategy::App` - Emit `ProofRequested` event for application to decide
+    ///   - `ProofStrategy::All` - Automatically generate and queue proofs
+    pub fn register_destination_with_strategy(
+        &mut self,
+        dest_hash: [u8; TRUNCATED_HASHBYTES],
+        proof_strategy: ProofStrategy,
+    ) {
+        self.destinations.insert(
+            dest_hash,
+            DestinationEntry {
+                proof_strategy,
+                signing_key: None,
+            },
+        );
     }
 
     /// Unregister a destination from accepting links
     pub fn unregister_destination(&mut self, dest_hash: &[u8; TRUNCATED_HASHBYTES]) {
-        self.accepting.remove(dest_hash);
+        self.destinations.remove(dest_hash);
     }
 
     /// Check if a destination accepts links
     pub fn accepts_links(&self, dest_hash: &[u8; TRUNCATED_HASHBYTES]) -> bool {
-        self.accepting.contains(dest_hash)
+        self.destinations.contains_key(dest_hash)
+    }
+
+    /// Get the proof strategy for a registered destination
+    pub fn proof_strategy(
+        &self,
+        dest_hash: &[u8; TRUNCATED_HASHBYTES],
+    ) -> Option<ProofStrategy> {
+        self.destinations.get(dest_hash).map(|e| e.proof_strategy)
     }
 
     /// Accept a pending incoming link (after `LinkRequestReceived` event)
@@ -255,6 +311,16 @@ impl LinkManager {
 
         if link.is_initiator() {
             return Err(LinkError::InvalidState);
+        }
+
+        // Store the signing key for data proof generation (PROVE_ALL and PROVE_APP)
+        let dest_hash = *link.destination_hash();
+        if let Some(entry) = self.destinations.get_mut(&dest_hash) {
+            if entry.proof_strategy != ProofStrategy::None && entry.signing_key.is_none() {
+                if let Some(sk) = identity.ed25519_signing_key() {
+                    entry.signing_key = Some(sk.clone());
+                }
+            }
         }
 
         // Build the proof packet (this also derives the link key)
@@ -303,6 +369,82 @@ impl LinkManager {
         }
 
         link.build_data_packet(data, ctx)
+    }
+
+    /// Send data on an established link with receipt tracking
+    ///
+    /// Returns the encrypted packet and the packet hash for tracking delivery.
+    /// Use this when the peer has PROVE_ALL enabled and you want to receive
+    /// confirmation of delivery via the `DataDelivered` event.
+    ///
+    /// # Arguments
+    /// * `link_id` - The link to send on
+    /// * `data` - The plaintext data to send
+    /// * `ctx` - Platform context for RNG and clock
+    ///
+    /// # Returns
+    /// On success, returns (packet_data, packet_hash) where:
+    /// - `packet_data` is the encrypted packet to send
+    /// - `packet_hash` is the full SHA256 hash used to match incoming proofs
+    pub fn send_with_receipt(
+        &mut self,
+        link_id: &LinkId,
+        data: &[u8],
+        ctx: &mut impl Context,
+    ) -> Result<(Vec<u8>, [u8; 32]), LinkError> {
+        let link = self.links.get(link_id).ok_or(LinkError::NotFound)?;
+
+        if link.state() != LinkState::Active {
+            return Err(LinkError::InvalidState);
+        }
+
+        let packet_data = link.build_data_packet(data, ctx)?;
+        let full_hash = packet_hash(&packet_data);
+
+        // Compute truncated hash for receipt lookup
+        let mut truncated = [0u8; TRUNCATED_HASHBYTES];
+        truncated.copy_from_slice(&full_hash[..TRUNCATED_HASHBYTES]);
+
+        // Track the receipt
+        let now_ms = ctx.clock().now_ms();
+        self.data_receipts.insert(
+            truncated,
+            DataReceipt {
+                full_hash,
+                link_id: *link_id,
+                sent_at_ms: now_ms,
+            },
+        );
+
+        Ok((packet_data, full_hash))
+    }
+
+    /// Send a data proof for a received packet (PROVE_APP callback)
+    ///
+    /// Call this after receiving a `ProofRequested` event when your application
+    /// decides to prove delivery.
+    ///
+    /// # Arguments
+    /// * `link_id` - The link the data was received on
+    /// * `packet_hash` - The packet hash from the `ProofRequested` event
+    ///
+    /// # Returns
+    /// On success, returns the proof packet to send. On error, returns `LinkError`.
+    pub fn send_data_proof(
+        &mut self,
+        link_id: &LinkId,
+        packet_hash: &[u8; 32],
+    ) -> Result<Vec<u8>, LinkError> {
+        let link = self.links.get(link_id).ok_or(LinkError::NotFound)?;
+
+        if link.state() != LinkState::Active {
+            return Err(LinkError::InvalidState);
+        }
+
+        let dest_hash = *link.destination_hash();
+        let entry = self.destinations.get(&dest_hash).ok_or(LinkError::NotFound)?;
+        let signing_key = entry.signing_key.as_ref().ok_or(LinkError::NoIdentity)?;
+        link.build_data_proof_packet_with_signing_key(packet_hash, signing_key)
     }
 
     /// Close a link gracefully
@@ -460,7 +602,7 @@ impl LinkManager {
                 self.handle_proof(packet, ctx);
             }
             PacketType::Data => {
-                self.handle_data(packet, ctx);
+                self.handle_data(packet, raw_packet, ctx);
             }
             PacketType::Announce => {
                 // Announces are not link packets, ignore
@@ -553,6 +695,16 @@ impl LinkManager {
         self.pending_close_packets.drain(..)
     }
 
+    /// Drain pending proof packets to send
+    ///
+    /// Returns an iterator over (link_id, packet_data) pairs.
+    /// Call this after processing data packets to get proofs that need to be sent.
+    /// Proofs are generated automatically when data is received on links with
+    /// `ProofStrategy::All`.
+    pub fn drain_proof_packets(&mut self) -> alloc::vec::Drain<'_, (LinkId, Vec<u8>)> {
+        self.pending_proof_packets.drain(..)
+    }
+
     /// Get a mutable reference to a link
     pub fn link_mut(&mut self, link_id: &LinkId) -> Option<&mut Link> {
         self.links.get_mut(link_id)
@@ -564,7 +716,7 @@ impl LinkManager {
         let dest_hash = packet.destination_hash;
 
         // Check if we accept links for this destination
-        if !self.accepting.contains(&dest_hash) {
+        if !self.destinations.contains_key(&dest_hash) {
             return;
         }
 
@@ -605,7 +757,17 @@ impl LinkManager {
         // PROOF packets are addressed to link_id (not destination hash)
         let link_id = packet.destination_hash;
 
-        // Check if we have a pending outgoing link
+        // Extract proof data from packet payload
+        let proof_data = packet.data.as_slice();
+
+        // Check if this is a data proof (PROOF_DATA_SIZE bytes: 32-byte hash + 64-byte signature)
+        // Data proofs have context = None, while link establishment proofs have context = Lrproof
+        if proof_data.len() == PROOF_DATA_SIZE && packet.context == PacketContext::None {
+            self.handle_data_proof(&link_id, proof_data);
+            return;
+        }
+
+        // Check if we have a pending outgoing link (link establishment proof)
         if !self.pending_outgoing.contains_key(&link_id) {
             return;
         }
@@ -617,9 +779,6 @@ impl LinkManager {
         if link.state() != LinkState::Pending || !link.is_initiator() {
             return;
         }
-
-        // Extract proof data from packet payload (skip context byte handling)
-        let proof_data = packet.data.as_slice();
 
         // Process the proof
         if link.process_proof(proof_data).is_err() {
@@ -659,7 +818,54 @@ impl LinkManager {
         }
     }
 
-    fn handle_data(&mut self, packet: &Packet, ctx: &mut impl Context) {
+    /// Handle a data proof packet (PROVE_ALL response)
+    ///
+    /// Data proofs are PROOF_DATA_SIZE bytes: 32-byte packet hash + 64-byte Ed25519 signature.
+    /// We look up the receipt by truncated hash, then validate the full proof.
+    fn handle_data_proof(&mut self, link_id: &LinkId, proof_data: &[u8]) {
+        // Extract the packet hash from the proof (first 32 bytes)
+        if proof_data.len() != PROOF_DATA_SIZE {
+            return;
+        }
+        let proof_hash: [u8; 32] = match proof_data[..32].try_into() {
+            Ok(h) => h,
+            Err(_) => return,
+        };
+
+        // Compute truncated hash to look up receipt
+        let mut truncated = [0u8; TRUNCATED_HASHBYTES];
+        truncated.copy_from_slice(&proof_hash[..TRUNCATED_HASHBYTES]);
+
+        // Look up receipt by truncated hash
+        let receipt = match self.data_receipts.get(&truncated) {
+            Some(r) => r,
+            None => return, // No receipt for this hash
+        };
+
+        // Verify the receipt is for this link
+        if &receipt.link_id != link_id {
+            return;
+        }
+
+        // Get the link to validate the proof signature
+        let link = match self.links.get(link_id) {
+            Some(l) => l,
+            None => return,
+        };
+
+        // Validate the proof (checks hash match and signature)
+        if link.validate_data_proof(proof_data, &receipt.full_hash) {
+            // Proof is valid - emit DataDelivered event
+            let packet_hash = receipt.full_hash;
+            self.data_receipts.remove(&truncated);
+            self.events.push(LinkEvent::DataDelivered {
+                link_id: *link_id,
+                packet_hash,
+            });
+        }
+    }
+
+    fn handle_data(&mut self, packet: &Packet, raw_packet: &[u8], ctx: &mut impl Context) {
         // DATA packets are addressed to link_id
         let link_id = packet.destination_hash;
         let now_secs = ctx.clock().now_ms() / MS_PER_SECOND;
@@ -807,6 +1013,40 @@ impl LinkManager {
         match link.decrypt(encrypted_data, &mut plaintext) {
             Ok(len) => {
                 plaintext.truncate(len);
+
+                // Handle proof strategy for received data
+                let dest_hash = *link.destination_hash();
+                let full_packet_hash = packet_hash(raw_packet);
+
+                if let Some(entry) = self.destinations.get(&dest_hash) {
+                    match entry.proof_strategy {
+                        ProofStrategy::All => {
+                            // Automatically generate and queue proof using destination's signing key
+                            if let Some(ref signing_key) = entry.signing_key {
+                                if let Ok(proof_packet) = link
+                                    .build_data_proof_packet_with_signing_key(
+                                        &full_packet_hash,
+                                        signing_key,
+                                    )
+                                {
+                                    self.pending_proof_packets.push((link_id, proof_packet));
+                                }
+                            }
+                            // If no signing key is available, we can't generate proofs
+                        }
+                        ProofStrategy::App => {
+                            // Emit event for application to decide
+                            self.events.push(LinkEvent::ProofRequested {
+                                link_id,
+                                packet_hash: full_packet_hash,
+                            });
+                        }
+                        ProofStrategy::None => {
+                            // No proof needed
+                        }
+                    }
+                }
+
                 self.events.push(LinkEvent::DataReceived {
                     link_id,
                     data: plaintext,
@@ -845,6 +1085,10 @@ impl LinkManager {
                 reason: LinkCloseReason::Timeout,
             });
         }
+
+        // Clean up expired data receipts
+        self.data_receipts
+            .retain(|_, receipt| now_ms.saturating_sub(receipt.sent_at_ms) <= DATA_RECEIPT_TIMEOUT_MS);
     }
 
     /// Collect link IDs that have timed out from a pending map
@@ -1126,9 +1370,21 @@ mod tests {
         }
     }
 
-    #[test]
-    fn test_full_handshake() {
-        // This test simulates a full handshake between initiator and responder
+    /// Established link pair returned by the test helper
+    struct LinkPair {
+        initiator: LinkManager,
+        responder: LinkManager,
+        initiator_ctx: PlatformContext<OsRng, TestClock, NoStorage>,
+        responder_ctx: PlatformContext<OsRng, TestClock, NoStorage>,
+        initiator_link_id: LinkId,
+        responder_link_id: LinkId,
+    }
+
+    /// Create two LinkManagers with an established link between them.
+    ///
+    /// The responder destination is registered with the given proof strategy.
+    /// Both links will be Active after this returns.
+    fn establish_link_pair(proof_strategy: ProofStrategy) -> LinkPair {
         let mut initiator_mgr = LinkManager::new();
         let mut responder_mgr = LinkManager::new();
 
@@ -1139,28 +1395,24 @@ mod tests {
         let dest_hash = [0x42; 16];
         let dest_signing_key = dest_identity.ed25519_verifying().to_bytes();
 
-        // Register destination on responder
-        responder_mgr.register_destination(dest_hash);
+        // Register destination on responder with the given proof strategy
+        responder_mgr.register_destination_with_strategy(dest_hash, proof_strategy);
 
         // Initiator starts link
         let (link_id, link_request_packet) =
             initiator_mgr.initiate(dest_hash, &dest_signing_key, &mut initiator_ctx);
 
-        // Parse the packet and deliver to responder
+        // Deliver link request to responder
         let packet = Packet::unpack(&link_request_packet).unwrap();
         responder_mgr.process_packet(&packet, &link_request_packet, &mut responder_ctx);
 
-        // Responder should have received LinkRequestReceived event
+        // Accept on responder
         let events: Vec<_> = responder_mgr.drain_events().collect();
-        assert_eq!(events.len(), 1);
         let responder_link_id = match &events[0] {
             LinkEvent::LinkRequestReceived { link_id, .. } => *link_id,
-            _ => panic!("Expected LinkRequestReceived event"),
+            _ => panic!("Expected LinkRequestReceived"),
         };
 
-        assert_eq!(responder_link_id, link_id);
-
-        // Responder accepts the link
         let proof_packet = responder_mgr
             .accept_link(&responder_link_id, &dest_identity, &mut responder_ctx)
             .unwrap();
@@ -1168,42 +1420,272 @@ mod tests {
         // Deliver proof to initiator
         let proof = Packet::unpack(&proof_packet).unwrap();
         initiator_mgr.process_packet(&proof, &proof_packet, &mut initiator_ctx);
+        let _ = initiator_mgr.drain_events().collect::<Vec<_>>();
 
-        // Initiator should have received LinkEstablished event
-        let events: Vec<_> = initiator_mgr.drain_events().collect();
-        assert_eq!(events.len(), 1);
-        match &events[0] {
-            LinkEvent::LinkEstablished {
-                link_id: id,
-                is_initiator,
-            } => {
-                assert_eq!(id, &link_id);
-                assert!(*is_initiator);
-            }
-            _ => panic!("Expected LinkEstablished event"),
-        }
-
-        // Get RTT packet and deliver to responder
+        // Deliver RTT packet to responder
         let rtt_packet = initiator_mgr.take_pending_rtt_packet(&link_id).unwrap();
         let rtt = Packet::unpack(&rtt_packet).unwrap();
         responder_mgr.process_packet(&rtt, &rtt_packet, &mut responder_ctx);
+        let _ = responder_mgr.drain_events().collect::<Vec<_>>();
 
-        // Responder should have received LinkEstablished event
-        let events: Vec<_> = responder_mgr.drain_events().collect();
-        assert_eq!(events.len(), 1);
-        match &events[0] {
-            LinkEvent::LinkEstablished {
-                link_id: id,
-                is_initiator,
-            } => {
-                assert_eq!(id, &responder_link_id);
-                assert!(!*is_initiator);
-            }
-            _ => panic!("Expected LinkEstablished event"),
-        }
-
-        // Both sides should now be active
         assert!(initiator_mgr.is_active(&link_id));
         assert!(responder_mgr.is_active(&responder_link_id));
+
+        LinkPair {
+            initiator: initiator_mgr,
+            responder: responder_mgr,
+            initiator_ctx,
+            responder_ctx,
+            initiator_link_id: link_id,
+            responder_link_id,
+        }
+    }
+
+    #[test]
+    fn test_full_handshake() {
+        let pair = establish_link_pair(ProofStrategy::None);
+        assert!(pair.initiator.is_active(&pair.initiator_link_id));
+        assert!(pair.responder.is_active(&pair.responder_link_id));
+    }
+
+    #[test]
+    fn test_register_destination_with_proof_strategy() {
+        let mut manager = LinkManager::new();
+        let dest_hash = [0x42; 16];
+
+        // Register with PROVE_ALL strategy
+        manager.register_destination_with_strategy(dest_hash, ProofStrategy::All);
+        assert!(manager.accepts_links(&dest_hash));
+        assert_eq!(manager.proof_strategy(&dest_hash), Some(ProofStrategy::All));
+
+        // Unregister
+        manager.unregister_destination(&dest_hash);
+        assert!(!manager.accepts_links(&dest_hash));
+        assert_eq!(manager.proof_strategy(&dest_hash), None);
+
+        // Register with PROVE_APP strategy
+        manager.register_destination_with_strategy(dest_hash, ProofStrategy::App);
+        assert_eq!(manager.proof_strategy(&dest_hash), Some(ProofStrategy::App));
+
+        // Default registration uses PROVE_NONE
+        let other_hash = [0x33; 16];
+        manager.register_destination(other_hash);
+        assert_eq!(
+            manager.proof_strategy(&other_hash),
+            Some(ProofStrategy::None)
+        );
+    }
+
+    #[test]
+    fn test_prove_all_generates_proof_on_data_receive() {
+        let mut pair = establish_link_pair(ProofStrategy::All);
+
+        // Send data from initiator
+        let data_packet = pair
+            .initiator
+            .send(&pair.initiator_link_id, b"hello", &mut pair.initiator_ctx)
+            .unwrap();
+
+        // Process data on responder
+        let data = Packet::unpack(&data_packet).unwrap();
+        pair.responder
+            .process_packet(&data, &data_packet, &mut pair.responder_ctx);
+
+        // Should have generated a proof packet
+        let proof_packets: Vec<_> = pair.responder.drain_proof_packets().collect();
+        assert_eq!(proof_packets.len(), 1);
+        assert_eq!(proof_packets[0].0, pair.responder_link_id);
+
+        // Should have emitted DataReceived event
+        let events: Vec<_> = pair.responder.drain_events().collect();
+        let has_data_received = events.iter().any(|e| matches!(e, LinkEvent::DataReceived { .. }));
+        assert!(has_data_received, "Expected DataReceived event");
+    }
+
+    #[test]
+    fn test_prove_app_emits_proof_requested_event() {
+        let mut pair = establish_link_pair(ProofStrategy::App);
+
+        // Send data from initiator
+        let data_packet = pair
+            .initiator
+            .send(&pair.initiator_link_id, b"hello", &mut pair.initiator_ctx)
+            .unwrap();
+
+        // Process data on responder
+        let data = Packet::unpack(&data_packet).unwrap();
+        pair.responder
+            .process_packet(&data, &data_packet, &mut pair.responder_ctx);
+
+        // Should NOT have generated a proof packet (PROVE_APP waits for app decision)
+        let proof_packets: Vec<_> = pair.responder.drain_proof_packets().collect();
+        assert!(
+            proof_packets.is_empty(),
+            "PROVE_APP should not auto-generate proofs"
+        );
+
+        // Should have emitted ProofRequested event
+        let events: Vec<_> = pair.responder.drain_events().collect();
+        let has_proof_requested = events
+            .iter()
+            .any(|e| matches!(e, LinkEvent::ProofRequested { .. }));
+        assert!(has_proof_requested, "Expected ProofRequested event");
+    }
+
+    #[test]
+    fn test_send_with_receipt_tracks_packet() {
+        let mut pair = establish_link_pair(ProofStrategy::All);
+
+        // Send data with receipt tracking
+        let (data_packet, sent_hash) = pair
+            .initiator
+            .send_with_receipt(&pair.initiator_link_id, b"hello", &mut pair.initiator_ctx)
+            .unwrap();
+
+        // Should have created a receipt
+        assert_eq!(pair.initiator.data_receipts.len(), 1);
+
+        // Process data on responder - this generates the proof
+        let data = Packet::unpack(&data_packet).unwrap();
+        pair.responder
+            .process_packet(&data, &data_packet, &mut pair.responder_ctx);
+
+        // Get the proof packet
+        let proof_packets: Vec<_> = pair.responder.drain_proof_packets().collect();
+        assert_eq!(proof_packets.len(), 1);
+        let (_, data_proof_packet) = &proof_packets[0];
+
+        // Process proof on initiator
+        let data_proof = Packet::unpack(data_proof_packet).unwrap();
+
+        assert_eq!(
+            data_proof.flags.packet_type,
+            crate::packet::PacketType::Proof,
+            "Expected Proof packet type"
+        );
+        assert_eq!(
+            data_proof.context,
+            PacketContext::None,
+            "Expected None context for data proof"
+        );
+        assert_eq!(
+            data_proof.data.as_slice().len(),
+            crate::constants::PROOF_DATA_SIZE,
+            "Expected PROOF_DATA_SIZE-byte proof data"
+        );
+
+        pair.initiator
+            .process_packet(&data_proof, data_proof_packet, &mut pair.initiator_ctx);
+
+        // Should have emitted DataDelivered event
+        let events: Vec<_> = pair.initiator.drain_events().collect();
+        let data_delivered = events.iter().find_map(|e| match e {
+            LinkEvent::DataDelivered {
+                link_id: lid,
+                packet_hash,
+            } => Some((*lid, *packet_hash)),
+            _ => None,
+        });
+
+        assert!(data_delivered.is_some(), "Expected DataDelivered event");
+        let (delivered_link_id, delivered_hash) = data_delivered.unwrap();
+        assert_eq!(delivered_link_id, pair.initiator_link_id);
+        assert_eq!(delivered_hash, sent_hash);
+
+        // Receipt should have been removed
+        assert_eq!(pair.initiator.data_receipts.len(), 0);
+    }
+
+    #[test]
+    fn test_prove_app_responder_proof_verifiable_by_initiator() {
+        // Tests that send_data_proof() creates proofs verifiable by the initiator.
+        // The initiator verifies with the destination's identity key (from announce),
+        // so the proof must be signed with that same key.
+        let mut pair = establish_link_pair(ProofStrategy::App);
+
+        // Send data with receipt tracking from initiator
+        let (data_packet, sent_hash) = pair
+            .initiator
+            .send_with_receipt(
+                &pair.initiator_link_id,
+                b"prove_app_test",
+                &mut pair.initiator_ctx,
+            )
+            .unwrap();
+
+        // Process data on responder - should emit ProofRequested
+        let data = Packet::unpack(&data_packet).unwrap();
+        pair.responder
+            .process_packet(&data, &data_packet, &mut pair.responder_ctx);
+
+        // Find the ProofRequested event
+        let events: Vec<_> = pair.responder.drain_events().collect();
+        let proof_hash = events.iter().find_map(|e| match e {
+            LinkEvent::ProofRequested { packet_hash, .. } => Some(*packet_hash),
+            _ => None,
+        });
+        assert!(proof_hash.is_some(), "Expected ProofRequested event");
+        let proof_hash = proof_hash.unwrap();
+
+        // Application decides to prove - call send_data_proof
+        let proof_packet = pair
+            .responder
+            .send_data_proof(&pair.responder_link_id, &proof_hash)
+            .expect("send_data_proof should succeed");
+
+        // Deliver proof to initiator
+        let data_proof = Packet::unpack(&proof_packet).unwrap();
+        pair.initiator
+            .process_packet(&data_proof, &proof_packet, &mut pair.initiator_ctx);
+
+        // Initiator should receive DataDelivered event
+        let events: Vec<_> = pair.initiator.drain_events().collect();
+        let data_delivered = events.iter().find_map(|e| match e {
+            LinkEvent::DataDelivered {
+                link_id: lid,
+                packet_hash,
+            } => Some((*lid, *packet_hash)),
+            _ => None,
+        });
+        assert!(
+            data_delivered.is_some(),
+            "Expected DataDelivered event - proof must be signed with destination identity key"
+        );
+        let (delivered_link_id, delivered_hash) = data_delivered.unwrap();
+        assert_eq!(delivered_link_id, pair.initiator_link_id);
+        assert_eq!(delivered_hash, sent_hash);
+
+        // Receipt should have been removed
+        assert_eq!(pair.initiator.data_receipts.len(), 0);
+    }
+
+    #[test]
+    fn test_data_receipts_expire_after_timeout() {
+        let mut pair = establish_link_pair(ProofStrategy::All);
+
+        // Send data with receipt tracking (but don't deliver the proof)
+        let (_data_packet, _sent_hash) = pair
+            .initiator
+            .send_with_receipt(
+                &pair.initiator_link_id,
+                b"will expire",
+                &mut pair.initiator_ctx,
+            )
+            .unwrap();
+
+        // Receipt should exist
+        assert_eq!(pair.initiator.data_receipts.len(), 1);
+
+        // Advance time past the receipt timeout
+        pair.initiator_ctx.clock.advance(DATA_RECEIPT_TIMEOUT_MS + 1);
+        pair.initiator
+            .poll(pair.initiator_ctx.clock.now_ms(), &mut pair.initiator_ctx);
+
+        // Receipt should have been cleaned up
+        assert_eq!(
+            pair.initiator.data_receipts.len(),
+            0,
+            "Expired receipts should be removed during poll"
+        );
     }
 }

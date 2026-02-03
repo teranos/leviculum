@@ -568,13 +568,16 @@ async fn test_large_payload_variety() {
         unique_sizes
     );
 
-    // Should receive most of our varied-size packets
-    assert!(
-        received.len() >= test_sizes.len() / 2,
-        "Should receive at least half of the packets"
+    // All varied-size packets must be received
+    assert_eq!(
+        received.len(),
+        test_sizes.len(),
+        "All packets must be received. Got {}/{}",
+        received.len(),
+        test_sizes.len()
     );
 
-    println!("SUCCESS: Payload variety test completed");
+    println!("All payload sizes verified");
 }
 
 // =========================================================================

@@ -508,13 +508,16 @@ async fn test_link_multiple_data_packets() {
         test_sizes.len()
     );
 
-    // We should have received at least most of the packets
-    assert!(
-        received.len() >= test_sizes.len() / 2,
-        "Daemon should receive most packets"
+    // All packets must be received
+    assert_eq!(
+        received.len(),
+        test_sizes.len(),
+        "All packets must be received. Got {}/{}",
+        received.len(),
+        test_sizes.len()
     );
 
-    println!("SUCCESS: Multiple data packets sent and received");
+    println!("All data packets verified");
 }
 
 // =========================================================================

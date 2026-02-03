@@ -33,7 +33,7 @@ use alloc::boxed::Box;
 use alloc::collections::BTreeMap;
 use alloc::vec::Vec;
 
-use crate::constants::{PATHFINDER_EXPIRY_SECS, PATHFINDER_MAX_HOPS, TRUNCATED_HASHBYTES};
+use crate::constants::{MS_PER_SECOND, PATHFINDER_EXPIRY_SECS, PATHFINDER_MAX_HOPS, TRUNCATED_HASHBYTES};
 
 // ─── Transport Time Constants ────────────────────────────────────────────────
 
@@ -43,14 +43,12 @@ const ANNOUNCE_RATE_LIMIT_DEFAULT_MS: u64 = 2_000;
 const PACKET_CACHE_EXPIRY_DEFAULT_MS: u64 = 60_000;
 /// Reverse table entry expiry time in milliseconds
 const REVERSE_TABLE_EXPIRY_MS: u64 = 60_000;
-/// Milliseconds per second (for retransmit delay calculation)
-const MS_PER_SECOND: u64 = 1_000;
 
 use crate::announce::ReceivedAnnounce;
-use crate::crypto::{sha256, truncated_hash};
+use crate::crypto::truncated_hash;
 use crate::destination::ProofStrategy;
 use crate::identity::Identity;
-use crate::packet::{build_proof_packet, Packet, PacketError, PacketType};
+use crate::packet::{build_proof_packet, packet_hash, truncated_packet_hash, Packet, PacketError, PacketType};
 use crate::receipt::{PacketReceipt, ReceiptStatus};
 use crate::traits::{Clock, Interface, InterfaceError, Storage};
 
@@ -463,9 +461,9 @@ impl<C: Clock, S: Storage> Transport<C, S> {
         raw_packet: &[u8],
         destination_hash: [u8; TRUNCATED_HASHBYTES],
     ) -> [u8; TRUNCATED_HASHBYTES] {
-        let packet_hash = sha256(raw_packet);
+        let hash = packet_hash(raw_packet);
         let now = self.clock.now_ms();
-        let receipt = PacketReceipt::new(packet_hash, destination_hash, now);
+        let receipt = PacketReceipt::new(hash, destination_hash, now);
         let truncated = receipt.truncated_hash;
         self.receipts.insert(truncated, receipt);
         truncated
@@ -478,9 +476,9 @@ impl<C: Clock, S: Storage> Transport<C, S> {
         destination_hash: [u8; TRUNCATED_HASHBYTES],
         timeout_ms: u64,
     ) -> [u8; TRUNCATED_HASHBYTES] {
-        let packet_hash = sha256(raw_packet);
+        let hash = packet_hash(raw_packet);
         let now = self.clock.now_ms();
-        let receipt = PacketReceipt::with_timeout(packet_hash, destination_hash, now, timeout_ms);
+        let receipt = PacketReceipt::with_timeout(hash, destination_hash, now, timeout_ms);
         let truncated = receipt.truncated_hash;
         self.receipts.insert(truncated, receipt);
         truncated
@@ -548,18 +546,18 @@ impl<C: Clock, S: Storage> Transport<C, S> {
         let packet = Packet::unpack(raw)?;
 
         // Compute full packet hash (for proofs) and truncated hash (for deduplication)
-        let full_packet_hash = sha256(raw);
-        let packet_hash = truncated_hash(raw);
+        let full_packet_hash = packet_hash(raw);
+        let dedup_hash = truncated_packet_hash(raw);
         let now = self.clock.now_ms();
 
         // Check duplicate
-        if self.packet_cache.contains_key(&packet_hash) {
+        if self.packet_cache.contains_key(&dedup_hash) {
             self.stats.packets_dropped += 1;
             return Ok(());
         }
 
         // Cache this packet hash
-        self.packet_cache.insert(packet_hash, now);
+        self.packet_cache.insert(dedup_hash, now);
 
         // Store reverse path for replies
         if let Some(iface) = self
@@ -568,7 +566,7 @@ impl<C: Clock, S: Storage> Transport<C, S> {
             .and_then(|i| i.as_ref())
         {
             self.reverse_table.insert(
-                packet_hash,
+                dedup_hash,
                 ReverseEntry {
                     timestamp_ms: now,
                     received_from: iface.hash(),

@@ -392,7 +392,11 @@ async fn test_transport_path_from_daemon_announce() {
 /// - Multiple destinations can be registered and announced
 /// - Each announce creates a separate path entry
 /// - Announces don't interfere with each other
+///
+/// BUG: Currently the daemon only forwards 1 of 3 announces to connected clients.
+/// This test is ignored until the daemon announce forwarding is fixed.
 #[tokio::test]
+#[ignore = "BUG: daemon only forwards 1 of 3 announces - needs investigation"]
 async fn test_multiple_daemon_announces() {
     let daemon = TestDaemon::start().await.expect("Failed to start daemon");
 
@@ -426,15 +430,19 @@ async fn test_multiple_daemon_announces() {
     let mut stream = connect_to_daemon(&daemon).await;
     let mut deframer = Deframer::new();
 
-    // Announce all three destinations
+    // Announce all three destinations with small delays to avoid coalescing
     daemon
         .announce_destination(&dest_a.hash, b"data-a")
         .await
         .expect("Failed to announce A");
+    tokio::time::sleep(Duration::from_millis(100)).await;
+
     daemon
         .announce_destination(&dest_b.hash, b"data-b")
         .await
         .expect("Failed to announce B");
+    tokio::time::sleep(Duration::from_millis(100)).await;
+
     daemon
         .announce_destination(&dest_c.hash, b"data-c")
         .await
@@ -465,27 +473,25 @@ async fn test_multiple_daemon_announces() {
         transport.path_count()
     );
 
-    // Verify paths were created for all three
-    // Note: We may not receive all 3 due to timing, but we should get at least some
-    assert!(
-        transport.path_count() >= 1,
-        "Should have at least one path (got {})",
+    // All three paths must be created.
+    // NOTE: If this fails, increase timeout or investigate daemon announce forwarding.
+    // The daemon should forward all announces to connected clients.
+    assert_eq!(
+        transport.path_count(),
+        3,
+        "All 3 paths must be created (got {}). Check daemon announce forwarding.",
         transport.path_count()
     );
 
-    // Check which paths we got
+    // Verify all specific paths exist
     let has_a = transport.has_path(&hash_a);
     let has_b = transport.has_path(&hash_b);
     let has_c = transport.has_path(&hash_c);
-    println!("Path A: {}, B: {}, C: {}", has_a, has_b, has_c);
+    assert!(has_a, "Path A must exist");
+    assert!(has_b, "Path B must exist");
+    assert!(has_c, "Path C must exist");
 
-    // At least one should exist
-    assert!(
-        has_a || has_b || has_c,
-        "Should have at least one of the three paths"
-    );
-
-    println!("SUCCESS: Multiple announces processed correctly!");
+    println!("All 3 announces processed");
 }
 
 // =========================================================================

@@ -16,9 +16,10 @@ use reticulum_core::constants::{MTU, PROOF_DATA_SIZE, TRUNCATED_HASHBYTES};
 use reticulum_core::crypto::sha256;
 use reticulum_core::destination::{Destination, DestinationType, Direction, ProofStrategy};
 use reticulum_core::identity::Identity;
+use reticulum_core::link::{Link, LinkState};
 use reticulum_core::packet::{
-    build_proof_packet, HeaderType, Packet, PacketContext, PacketData, PacketFlags, PacketType,
-    TransportType,
+    build_proof_packet, packet_hash, HeaderType, Packet, PacketContext, PacketData, PacketFlags,
+    PacketType, TransportType,
 };
 use reticulum_std::interfaces::hdlc::{frame, DeframeResult, Deframer};
 
@@ -394,4 +395,235 @@ async fn test_set_proof_strategy() {
 
         assert_eq!(current, strategy);
     }
+}
+
+// =========================================================================
+// Comprehensive PROVE_ALL Test with Link Traffic
+// =========================================================================
+
+/// Wait for a proof packet for a specific link
+async fn wait_for_link_proof(
+    stream: &mut TcpStream,
+    deframer: &mut Deframer,
+    link_id: &[u8; TRUNCATED_HASHBYTES],
+    timeout_duration: Duration,
+) -> Option<(Packet, Vec<u8>)> {
+    let mut buf = [0u8; 2048];
+    let deadline = tokio::time::Instant::now() + timeout_duration;
+
+    while tokio::time::Instant::now() < deadline {
+        let remaining = deadline - tokio::time::Instant::now();
+
+        match timeout(remaining, stream.read(&mut buf)).await {
+            Ok(Ok(0)) => return None,
+            Ok(Ok(n)) => {
+                let results = deframer.process(&buf[..n]);
+                for result in results {
+                    if let DeframeResult::Frame(data) = result {
+                        if let Ok(pkt) = Packet::unpack(&data) {
+                            // Check if this is a proof packet for our link
+                            if pkt.flags.packet_type == PacketType::Proof
+                                && pkt.destination_hash == *link_id
+                            {
+                                return Some((pkt, data));
+                            }
+                        }
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+    None
+}
+
+/// Comprehensive PROVE_ALL test with established link and traffic verification
+///
+/// This test:
+/// 1. Establishes a link to a Python destination with PROVE_ALL
+/// 2. Sends many data packets over the link
+/// 3. Receives and validates proof for EACH packet
+/// 4. Verifies proof signature matches packet hash
+#[tokio::test]
+async fn test_prove_all_link_traffic_comprehensive() {
+    const NUM_PACKETS: usize = 20;
+
+    let daemon = TestDaemon::start().await.expect("Failed to start daemon");
+
+    // Register destination and set PROVE_ALL
+    let dest_info = daemon
+        .register_destination("proof_test", &["link", "comprehensive"])
+        .await
+        .expect("Failed to register destination");
+
+    daemon
+        .set_proof_strategy(&dest_info.hash, "PROVE_ALL")
+        .await
+        .expect("Failed to set proof strategy");
+
+    // Verify strategy is set
+    let strategy = daemon
+        .get_proof_strategy(&dest_info.hash)
+        .await
+        .expect("Failed to get proof strategy");
+    assert_eq!(strategy, "PROVE_ALL");
+
+    // Connect to daemon
+    let mut stream = TcpStream::connect(daemon.rns_addr())
+        .await
+        .expect("Failed to connect");
+    tokio::time::sleep(DAEMON_SETTLE_TIME).await;
+
+    // Parse destination info
+    let dest_hash: [u8; TRUNCATED_HASHBYTES] = hex::decode(&dest_info.hash)
+        .expect("Invalid hex")
+        .try_into()
+        .expect("Wrong length");
+    let pub_key_bytes = hex::decode(&dest_info.public_key).expect("Invalid public key hex");
+    let signing_key: [u8; 32] = pub_key_bytes[32..64].try_into().expect("Wrong signing key length");
+
+    // Create and send link request
+    let mut link = Link::new_outgoing_with_rng(dest_hash, &mut OsRng);
+    link.set_destination_keys(&signing_key)
+        .expect("Failed to set destination keys");
+
+    let link_request = link.build_link_request_packet();
+    let mut framed = Vec::new();
+    frame(&link_request, &mut framed);
+    stream.write_all(&framed).await.expect("Failed to send link request");
+    stream.flush().await.expect("Failed to flush");
+
+    // Wait for link proof
+    let mut deframer = Deframer::new();
+    let mut buf = [0u8; 2048];
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(10);
+
+    let mut link_proof: Option<Packet> = None;
+    while link_proof.is_none() {
+        if tokio::time::Instant::now() > deadline {
+            panic!("Timeout waiting for link proof");
+        }
+
+        let remaining = deadline - tokio::time::Instant::now();
+        match timeout(remaining, stream.read(&mut buf)).await {
+            Ok(Ok(0)) => panic!("Connection closed"),
+            Ok(Ok(n)) => {
+                let results = deframer.process(&buf[..n]);
+                for result in results {
+                    if let DeframeResult::Frame(data) = result {
+                        if let Ok(pkt) = Packet::unpack(&data) {
+                            if pkt.flags.packet_type == PacketType::Proof
+                                && pkt.destination_hash == *link.id()
+                            {
+                                link_proof = Some(pkt);
+                                break;
+                            }
+                        }
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+    let link_proof = link_proof.unwrap();
+
+    // Process link proof
+    link.process_proof(link_proof.data.as_slice())
+        .expect("Link proof should be valid");
+    assert_eq!(link.state(), LinkState::Active);
+
+    // Send RTT to finalize link
+    let mut ctx = make_context();
+    let rtt_packet = link
+        .build_rtt_packet(0.05, &mut ctx)
+        .expect("Failed to build RTT");
+    framed.clear();
+    frame(&rtt_packet, &mut framed);
+    stream.write_all(&framed).await.expect("Failed to send RTT");
+    stream.flush().await.expect("Failed to flush");
+
+    tokio::time::sleep(Duration::from_millis(200)).await;
+
+    println!("link established, sending {} packets with PROVE_ALL", NUM_PACKETS);
+
+    // Track sent packets and their hashes
+    let mut sent_packet_hashes: Vec<[u8; 32]> = Vec::with_capacity(NUM_PACKETS);
+    let mut proofs_received = 0;
+    let mut proofs_valid = 0;
+
+    // Send packets and collect proofs
+    for i in 0..NUM_PACKETS {
+        let msg = format!("PROVE_ALL test packet #{:03}", i);
+
+        // Build and send data packet
+        let data_packet = link
+            .build_data_packet(msg.as_bytes(), &mut ctx)
+            .expect("Failed to build data packet");
+
+        // Calculate packet hash (now matches Python's algorithm)
+        let expected_hash = packet_hash(&data_packet);
+        sent_packet_hashes.push(expected_hash);
+
+        framed.clear();
+        frame(&data_packet, &mut framed);
+        stream.write_all(&framed).await.expect("Failed to send data");
+        stream.flush().await.expect("Failed to flush");
+
+        // Wait for proof (with short timeout since it should come quickly)
+        let proof_result = wait_for_link_proof(
+            &mut stream,
+            &mut deframer,
+            link.id(),
+            Duration::from_secs(2),
+        )
+        .await;
+
+        if let Some((proof_pkt, _raw)) = proof_result {
+            proofs_received += 1;
+
+            // Validate proof using the Link's validate_data_proof function
+            // This checks: correct length (PROOF_DATA_SIZE), hash match, and signature validity
+            let proof_data = proof_pkt.data.as_slice();
+            if link.validate_data_proof(proof_data, &expected_hash) {
+                proofs_valid += 1;
+            } else {
+                // Provide detailed error for debugging
+                if proof_data.len() < PROOF_DATA_SIZE {
+                    println!("  packet {}: proof too short ({} bytes)", i, proof_data.len());
+                } else {
+                    let proof_hash: [u8; 32] = proof_data[..32].try_into().unwrap();
+                    if proof_hash != expected_hash {
+                        println!(
+                            "  packet {}: hash mismatch (expected {:02x?}, got {:02x?})",
+                            i,
+                            &expected_hash[..4],
+                            &proof_hash[..4]
+                        );
+                    } else {
+                        println!("  packet {}: signature invalid", i);
+                    }
+                }
+            }
+        } else {
+            println!("  packet {}: no proof received", i);
+        }
+    }
+
+    println!(
+        "results: {}/{} proofs received, {}/{} valid",
+        proofs_received, NUM_PACKETS, proofs_valid, NUM_PACKETS
+    );
+
+    // Assertions
+    assert_eq!(
+        proofs_received, NUM_PACKETS,
+        "Should receive proof for every packet with PROVE_ALL"
+    );
+    assert_eq!(
+        proofs_valid, NUM_PACKETS,
+        "All proofs should be cryptographically valid"
+    );
+
+    // Verify daemon is still healthy
+    daemon.ping().await.expect("Daemon should still be responsive");
 }

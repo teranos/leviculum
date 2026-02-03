@@ -712,14 +712,14 @@ async fn test_multiple_connections_concurrent() {
     }
 
     println!("Found {}/{} paths", found_count, num_connections);
-    assert!(
-        found_count >= num_connections / 2,
-        "Should have at least half of the paths (got {}/{})",
+    assert_eq!(
+        found_count, num_connections,
+        "All paths must be created. Got {}/{}",
         found_count,
         num_connections
     );
 
-    println!("SUCCESS: Multiple simultaneous connections handled correctly");
+    println!("All connections verified");
 }
 
 /// Verify fragmented HDLC delivery is handled correctly.
