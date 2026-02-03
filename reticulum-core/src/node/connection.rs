@@ -126,12 +126,11 @@ impl Connection {
     /// # Arguments
     /// * `rtt_ms` - The link's round-trip time in milliseconds (for window sizing)
     pub fn get_or_create_channel(&mut self, rtt_ms: u64) -> &mut Channel {
-        if self.channel.is_none() {
+        self.channel.get_or_insert_with(|| {
             let mut channel = Channel::new();
             channel.update_window_for_rtt(rtt_ms);
-            self.channel = Some(channel);
-        }
-        self.channel.as_mut().unwrap()
+            channel
+        })
     }
 
     /// Get a mutable reference to the channel if it exists
@@ -313,12 +312,12 @@ mod tests {
 
     #[test]
     fn test_connection_new() {
-        let link_id = [0x42; 16];
+        let link_id = LinkId::new([0x42; 16]);
         let dest_hash = [0x33; 16];
 
         let conn = Connection::new(link_id, dest_hash, true);
 
-        assert_eq!(conn.id(), &link_id);
+        assert_eq!(*conn.id(), link_id);
         assert_eq!(conn.destination_hash(), &dest_hash);
         assert!(conn.is_initiator());
         assert!(!conn.has_channel());
@@ -327,7 +326,7 @@ mod tests {
 
     #[test]
     fn test_connection_compression_toggle() {
-        let mut conn = Connection::new([0; 16], [0; 16], false);
+        let mut conn = Connection::new(LinkId::new([0; 16]), [0; 16], false);
 
         assert!(!conn.compression_enabled());
 
@@ -340,7 +339,7 @@ mod tests {
 
     #[test]
     fn test_connection_channel_creation() {
-        let mut conn = Connection::new([0; 16], [0; 16], false);
+        let mut conn = Connection::new(LinkId::new([0; 16]), [0; 16], false);
 
         assert!(!conn.has_channel());
         assert!(conn.is_ready_to_send());

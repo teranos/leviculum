@@ -175,7 +175,7 @@ mod tests {
 
     #[test]
     fn test_routing_unreliable_prefers_existing() {
-        let link_id = [0x42; 16];
+        let link_id = LinkId::new([0x42; 16]);
         let decision = decide_routing(
             100,             // data_len
             false,           // reliable
@@ -202,7 +202,7 @@ mod tests {
 
     #[test]
     fn test_routing_reliable_with_existing() {
-        let link_id = [0x42; 16];
+        let link_id = LinkId::new([0x42; 16]);
         let decision = decide_routing(
             100,           // data_len
             true,          // reliable
@@ -252,7 +252,7 @@ mod tests {
 
     #[test]
     fn test_send_method_variants() {
-        let link_id = [0x33; 16];
+        let link_id = LinkId::new([0x33; 16]);
 
         // Test all variants are distinct
         assert_ne!(SendMethod::SinglePacket, SendMethod::ExistingLink(link_id));

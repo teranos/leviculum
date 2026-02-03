@@ -217,7 +217,7 @@ mod tests {
         let (out_tx, mut out_rx) = mpsc::channel(16);
         let (in_tx, in_rx) = mpsc::channel(16);
 
-        let mut stream = ConnectionStream::new(link_id, out_tx, in_rx);
+        let mut stream = ConnectionStream::new(link_id.into(), out_tx, in_rx);
 
         // Test send
         stream.send(b"hello").await.unwrap();
@@ -236,7 +236,7 @@ mod tests {
         let (out_tx, _out_rx) = mpsc::channel(16);
         let (_in_tx, in_rx) = mpsc::channel(16);
 
-        let mut stream = ConnectionStream::new(link_id, out_tx, in_rx);
+        let mut stream = ConnectionStream::new(link_id.into(), out_tx, in_rx);
 
         assert!(!stream.is_closed());
         stream.close();
@@ -253,7 +253,7 @@ mod tests {
         let (out_tx, _out_rx) = mpsc::channel(16);
         let (in_tx, in_rx) = mpsc::channel(16);
 
-        let mut stream = ConnectionStream::new(link_id, out_tx, in_rx);
+        let mut stream = ConnectionStream::new(link_id.into(), out_tx, in_rx);
 
         // Drop sender to close channel
         drop(in_tx);

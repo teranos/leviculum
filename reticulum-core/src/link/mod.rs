@@ -92,7 +92,7 @@ fn build_proof_signed_data(
     signaling: &[u8; SIGNALING_SIZE],
 ) -> [u8; PROOF_SIGNED_DATA_SIZE] {
     let mut signed_data = [0u8; PROOF_SIGNED_DATA_SIZE];
-    signed_data[..TRUNCATED_HASHBYTES].copy_from_slice(link_id);
+    signed_data[..TRUNCATED_HASHBYTES].copy_from_slice(link_id.as_bytes());
     signed_data[TRUNCATED_HASHBYTES..TRUNCATED_HASHBYTES + X25519_KEY_SIZE]
         .copy_from_slice(x25519_pub);
     signed_data[TRUNCATED_HASHBYTES + X25519_KEY_SIZE..TRUNCATED_HASHBYTES + 2 * X25519_KEY_SIZE]
@@ -194,11 +194,6 @@ pub enum LinkEvent {
         /// The link ID
         link_id: LinkId,
     },
-    /// Keepalive received on a link
-    KeepaliveReceived {
-        /// The link ID
-        link_id: LinkId,
-    },
     /// Channel message received on a link
     ChannelMessageReceived {
         /// The link ID
@@ -238,8 +233,122 @@ pub enum LinkEvent {
     },
 }
 
-/// Link identifier (16 bytes - truncated hash)
-pub type LinkId = [u8; TRUNCATED_HASHBYTES];
+/// A 16-byte link identifier (truncated hash of link request)
+///
+/// In the Reticulum protocol, a link ID is derived from the SHA-256 hash of
+/// the raw LINK_REQUEST packet, truncated to 16 bytes. Packets addressed to
+/// a link use this value in the destination_hash field.
+#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct LinkId([u8; TRUNCATED_HASHBYTES]);
+
+impl LinkId {
+    /// Create a LinkId from raw bytes
+    pub const fn new(bytes: [u8; TRUNCATED_HASHBYTES]) -> Self {
+        Self(bytes)
+    }
+
+    /// Get the underlying bytes
+    pub const fn as_bytes(&self) -> &[u8; TRUNCATED_HASHBYTES] {
+        &self.0
+    }
+
+    /// Get the underlying bytes as a mutable reference
+    pub fn as_bytes_mut(&mut self) -> &mut [u8; TRUNCATED_HASHBYTES] {
+        &mut self.0
+    }
+
+    /// Convert to the raw byte array
+    pub const fn into_bytes(self) -> [u8; TRUNCATED_HASHBYTES] {
+        self.0
+    }
+}
+
+impl From<[u8; TRUNCATED_HASHBYTES]> for LinkId {
+    fn from(bytes: [u8; TRUNCATED_HASHBYTES]) -> Self {
+        Self(bytes)
+    }
+}
+
+impl From<LinkId> for [u8; TRUNCATED_HASHBYTES] {
+    fn from(id: LinkId) -> Self {
+        id.0
+    }
+}
+
+impl AsRef<[u8]> for LinkId {
+    fn as_ref(&self) -> &[u8] {
+        &self.0
+    }
+}
+
+impl AsRef<[u8; TRUNCATED_HASHBYTES]> for LinkId {
+    fn as_ref(&self) -> &[u8; TRUNCATED_HASHBYTES] {
+        &self.0
+    }
+}
+
+impl core::ops::Deref for LinkId {
+    type Target = [u8; TRUNCATED_HASHBYTES];
+    fn deref(&self) -> &Self::Target {
+        &self.0
+    }
+}
+
+impl core::borrow::Borrow<[u8; TRUNCATED_HASHBYTES]> for LinkId {
+    fn borrow(&self) -> &[u8; TRUNCATED_HASHBYTES] {
+        &self.0
+    }
+}
+
+impl PartialEq<[u8; TRUNCATED_HASHBYTES]> for LinkId {
+    fn eq(&self, other: &[u8; TRUNCATED_HASHBYTES]) -> bool {
+        self.0 == *other
+    }
+}
+
+impl PartialEq<LinkId> for [u8; TRUNCATED_HASHBYTES] {
+    fn eq(&self, other: &LinkId) -> bool {
+        *self == other.0
+    }
+}
+
+impl core::fmt::Debug for LinkId {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        write!(f, "LinkId(")?;
+        for byte in &self.0 {
+            write!(f, "{:02x}", byte)?;
+        }
+        write!(f, ")")
+    }
+}
+
+impl core::fmt::Display for LinkId {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        for byte in &self.0 {
+            write!(f, "{:02x}", byte)?;
+        }
+        Ok(())
+    }
+}
+
+/// A pending outbound packet queued by LinkManager
+///
+/// All link-level output (RTT, keepalive, close, channel, proof) flows through
+/// a single queue of these tagged packets. NodeCore drains the queue and routes
+/// each variant appropriately.
+#[derive(Debug)]
+pub(crate) enum PendingPacket {
+    /// RTT packet completing a handshake (broadcast on all interfaces)
+    Rtt { link_id: LinkId, data: Vec<u8> },
+    /// Keepalive packet (route to destination)
+    Keepalive { link_id: LinkId, data: Vec<u8> },
+    /// Close packet (broadcast on all interfaces)
+    Close { link_id: LinkId, data: Vec<u8> },
+    /// Channel data packet (route to destination)
+    Channel { link_id: LinkId, data: Vec<u8> },
+    /// Data proof packet (route to destination)
+    Proof { link_id: LinkId, data: Vec<u8> },
+}
 
 /// A verified point-to-point link
 pub struct Link {
@@ -308,7 +417,7 @@ impl Link {
         let verifying_key = signing_key.verifying_key();
 
         // Temporary link ID (will be set properly after receiving proof)
-        let id = [0u8; TRUNCATED_HASHBYTES];
+        let id = LinkId::new([0u8; TRUNCATED_HASHBYTES]);
 
         Self {
             id,
@@ -493,7 +602,7 @@ impl Link {
             alloc::vec::Vec::with_capacity(1 + 1 + TRUNCATED_HASHBYTES + 1 + LINK_PROOF_SIZE);
         packet.push(flags.to_byte());
         packet.push(0); // hops = 0
-        packet.extend_from_slice(&self.id); // destination = link_id
+        packet.extend_from_slice(self.id.as_bytes()); // destination = link_id
         packet.push(PacketContext::Lrproof as u8);
         packet.extend_from_slice(&proof_data);
 
@@ -916,7 +1025,7 @@ impl Link {
             hashable.truncate(hashable.len() - diff);
         }
 
-        truncated_hash(&hashable)
+        LinkId::new(truncated_hash(&hashable))
     }
 
     /// Set the link ID (called after calculating it from the sent packet)
@@ -1019,7 +1128,7 @@ impl Link {
     /// - key[32:] = encryption_key (for AES)
     fn derive_link_key(shared_secret: &[u8; 32], link_id: &LinkId) -> [u8; 64] {
         let mut key = [0u8; 64];
-        derive_key(shared_secret, Some(link_id), None, &mut key);
+        derive_key(shared_secret, Some(link_id.as_bytes()), None, &mut key);
         key
     }
 
@@ -1103,11 +1212,9 @@ impl Link {
         use crate::packet::{HeaderType, PacketContext, PacketFlags, PacketType, TransportType};
 
         // If no transport_id provided, use HEADER_1 (direct/broadcast)
-        if next_hop.is_none() {
+        let Some(transport_id) = next_hop else {
             return self.build_link_request_packet();
-        }
-
-        let transport_id = next_hop.unwrap();
+        };
         let request_data = self.create_link_request();
 
         // Build flags for HEADER_2 with transport routing
@@ -1247,7 +1354,7 @@ impl Link {
         let mut packet = alloc::vec::Vec::with_capacity(1 + 1 + TRUNCATED_HASHBYTES + 1 + enc_len);
         packet.push(flags.to_byte());
         packet.push(0); // hops = 0
-        packet.extend_from_slice(&self.id);
+        packet.extend_from_slice(self.id.as_bytes());
         packet.push(packet_context as u8);
         packet.extend_from_slice(&encrypted[..enc_len]);
 
@@ -1299,7 +1406,7 @@ impl Link {
         let mut packet = alloc::vec::Vec::with_capacity(1 + 1 + TRUNCATED_HASHBYTES + 1 + PROOF_DATA_SIZE);
         packet.push(flags.to_byte());
         packet.push(0); // hops = 0
-        packet.extend_from_slice(&self.id);
+        packet.extend_from_slice(self.id.as_bytes());
         packet.push(PacketContext::None as u8);
         packet.extend_from_slice(proof_data);
 
@@ -1346,7 +1453,7 @@ impl Link {
         let mut packet = alloc::vec::Vec::with_capacity(1 + 1 + TRUNCATED_HASHBYTES + 1 + enc_len);
         packet.push(flags.to_byte());
         packet.push(0); // hops = 0
-        packet.extend_from_slice(&self.id);
+        packet.extend_from_slice(self.id.as_bytes());
         packet.push(PacketContext::Lrrtt as u8);
         packet.extend_from_slice(&encrypted[..enc_len]);
 
@@ -1395,7 +1502,7 @@ impl Link {
         let mut packet = alloc::vec::Vec::with_capacity(1 + 1 + TRUNCATED_HASHBYTES + 1 + enc_len);
         packet.push(flags.to_byte());
         packet.push(0); // hops = 0
-        packet.extend_from_slice(&self.id);
+        packet.extend_from_slice(self.id.as_bytes());
         packet.push(PacketContext::Keepalive as u8);
         packet.extend_from_slice(&encrypted[..enc_len]);
 
@@ -1420,9 +1527,9 @@ impl Link {
         }
 
         // Close payload is the encrypted link_id
-        let encrypted_len = Self::encrypted_size(self.id.len());
+        let encrypted_len = Self::encrypted_size(TRUNCATED_HASHBYTES);
         let mut encrypted = alloc::vec![0u8; encrypted_len];
-        let enc_len = self.encrypt(&self.id, &mut encrypted, ctx)?;
+        let enc_len = self.encrypt(self.id.as_bytes(), &mut encrypted, ctx)?;
 
         // Build flags for close packet
         let flags = PacketFlags {
@@ -1438,7 +1545,7 @@ impl Link {
         let mut packet = alloc::vec::Vec::with_capacity(1 + 1 + TRUNCATED_HASHBYTES + 1 + enc_len);
         packet.push(flags.to_byte());
         packet.push(0); // hops = 0
-        packet.extend_from_slice(&self.id);
+        packet.extend_from_slice(self.id.as_bytes());
         packet.push(PacketContext::LinkClose as u8);
         packet.extend_from_slice(&encrypted[..enc_len]);
 
@@ -1471,7 +1578,7 @@ impl Link {
         }
 
         // Verify the decrypted payload matches our link_id
-        if plaintext[..plaintext_len] != self.id {
+        if plaintext[..plaintext_len] != *self.id.as_bytes() {
             return Err(LinkError::InvalidProof);
         }
 
@@ -1621,10 +1728,10 @@ mod tests {
         let dest_hash = [0x42; TRUNCATED_HASHBYTES];
         let mut link = Link::new_outgoing_with_rng(dest_hash, &mut OsRng);
 
-        let new_id = [0xAB; TRUNCATED_HASHBYTES];
+        let new_id = LinkId::new([0xAB; TRUNCATED_HASHBYTES]);
         link.set_link_id(new_id);
 
-        assert_eq!(link.id(), &new_id);
+        assert_eq!(*link.id(), new_id);
     }
 
     #[test]
@@ -1678,7 +1785,7 @@ mod tests {
     fn test_key_derivation() {
         // Test that key derivation produces consistent results
         let shared_secret = [0x42; 32];
-        let link_id = [0x13; TRUNCATED_HASHBYTES];
+        let link_id = LinkId::new([0x13; TRUNCATED_HASHBYTES]);
 
         let key1 = Link::derive_link_key(&shared_secret, &link_id);
         let key2 = Link::derive_link_key(&shared_secret, &link_id);
@@ -1687,7 +1794,7 @@ mod tests {
         assert_eq!(key1.len(), 64);
 
         // Different link_id should produce different key
-        let link_id2 = [0x14; TRUNCATED_HASHBYTES];
+        let link_id2 = LinkId::new([0x14; TRUNCATED_HASHBYTES]);
         let key3 = Link::derive_link_key(&shared_secret, &link_id2);
         assert_ne!(key1, key3);
     }
@@ -1731,7 +1838,7 @@ mod tests {
         //   signalling = MTU and mode bytes
         let signalling_bytes: [u8; 3] = [0x43, 0x0f, 0x38]; // Example signalling bytes
         let mut signed_data = [0u8; 83];
-        signed_data[..TRUNCATED_HASHBYTES].copy_from_slice(&link_id);
+        signed_data[..TRUNCATED_HASHBYTES].copy_from_slice(link_id.as_bytes());
         signed_data[TRUNCATED_HASHBYTES..TRUNCATED_HASHBYTES + 32]
             .copy_from_slice(dest_ephemeral_public.as_bytes()); // Responder's X25519 pub
         signed_data[TRUNCATED_HASHBYTES + 32..TRUNCATED_HASHBYTES + 64]
@@ -1789,7 +1896,7 @@ mod tests {
 
         let signalling_bytes: [u8; 3] = [0x43, 0x0f, 0x38];
         let mut signed_data = [0u8; 83];
-        signed_data[..TRUNCATED_HASHBYTES].copy_from_slice(&link_id);
+        signed_data[..TRUNCATED_HASHBYTES].copy_from_slice(link_id.as_bytes());
         signed_data[TRUNCATED_HASHBYTES..TRUNCATED_HASHBYTES + 32]
             .copy_from_slice(dest_ephemeral_public.as_bytes());
         signed_data[TRUNCATED_HASHBYTES + 32..TRUNCATED_HASHBYTES + 64]
@@ -1852,7 +1959,7 @@ mod tests {
 
         let signalling_bytes: [u8; 3] = [0x43, 0x0f, 0x38];
         let mut signed_data = [0u8; 83];
-        signed_data[..TRUNCATED_HASHBYTES].copy_from_slice(&link_id);
+        signed_data[..TRUNCATED_HASHBYTES].copy_from_slice(link_id.as_bytes());
         signed_data[TRUNCATED_HASHBYTES..TRUNCATED_HASHBYTES + 32]
             .copy_from_slice(dest_ephemeral_public.as_bytes());
         signed_data[TRUNCATED_HASHBYTES + 32..TRUNCATED_HASHBYTES + 64]
@@ -1932,7 +2039,7 @@ mod tests {
 
         let signalling_bytes: [u8; 3] = [0x43, 0x0f, 0x38];
         let mut signed_data = [0u8; 83];
-        signed_data[..TRUNCATED_HASHBYTES].copy_from_slice(&link_id);
+        signed_data[..TRUNCATED_HASHBYTES].copy_from_slice(link_id.as_bytes());
         signed_data[TRUNCATED_HASHBYTES..TRUNCATED_HASHBYTES + 32]
             .copy_from_slice(dest_ephemeral_public.as_bytes());
         signed_data[TRUNCATED_HASHBYTES + 32..TRUNCATED_HASHBYTES + 64]
@@ -1970,7 +2077,7 @@ mod tests {
         assert_eq!(packet[1], 0x00);
 
         // Link ID should be in bytes 2-17
-        assert_eq!(&packet[2..18], &link_id);
+        assert_eq!(&packet[2..18], link_id.as_bytes());
 
         // Context should be None (0x00)
         assert_eq!(packet[18], 0x00);
@@ -2034,7 +2141,7 @@ mod tests {
     #[test]
     fn test_new_incoming_link_invalid_request() {
         let dest_hash = [0x42; TRUNCATED_HASHBYTES];
-        let link_id = [0xAB; TRUNCATED_HASHBYTES];
+        let link_id = LinkId::new([0xAB; TRUNCATED_HASHBYTES]);
 
         // Too short request data
         let short_data = [0u8; 63];
@@ -2084,7 +2191,7 @@ mod tests {
         assert_eq!(proof_packet[18], PacketContext::Lrproof as u8);
 
         // Link ID in packet should match
-        assert_eq!(&proof_packet[2..18], &link_id);
+        assert_eq!(&proof_packet[2..18], link_id.as_bytes());
     }
 
     #[test]
@@ -2096,7 +2203,7 @@ mod tests {
 
         let initiator = Link::new_outgoing_with_rng(dest_hash, &mut OsRng);
         let request_data = initiator.create_link_request();
-        let link_id = [0xAB; TRUNCATED_HASHBYTES];
+        let link_id = LinkId::new([0xAB; TRUNCATED_HASHBYTES]);
 
         let mut responder =
             Link::new_incoming_with_rng(&request_data, link_id, dest_hash, &mut OsRng).unwrap();
@@ -2228,7 +2335,7 @@ mod tests {
     #[test]
     fn test_process_rtt_wrong_state() {
         let dest_hash = [0x42; TRUNCATED_HASHBYTES];
-        let link_id = [0xAB; TRUNCATED_HASHBYTES];
+        let link_id = LinkId::new([0xAB; TRUNCATED_HASHBYTES]);
 
         let initiator = Link::new_outgoing_with_rng(dest_hash, &mut OsRng);
         let request_data = initiator.create_link_request();
@@ -2498,7 +2605,7 @@ mod tests {
         // Create initiator and responder
         let mut initiator = Link::new_outgoing_with_rng(dest_hash, &mut OsRng);
         let request_data = initiator.create_link_request();
-        let link_id = [0xAB; TRUNCATED_HASHBYTES];
+        let link_id = LinkId::new([0xAB; TRUNCATED_HASHBYTES]);
 
         // Not active yet - should not send
         assert!(!initiator.should_send_keepalive(1000));
@@ -2687,7 +2794,7 @@ mod tests {
 
         // Manually change initiator's link_id to produce invalid close packet
         let original_id = *initiator.id();
-        initiator.id = [0xFF; TRUNCATED_HASHBYTES];
+        initiator.id = LinkId::new([0xFF; TRUNCATED_HASHBYTES]);
 
         // Build close packet with wrong link_id
         let close_packet = initiator.build_close_packet(&mut ctx).unwrap();

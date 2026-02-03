@@ -7,6 +7,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.2.5] - 2026-02-03
+
+### Changed
+- `LinkId` is now a newtype struct instead of a type alias for `[u8; 16]`, providing compile-time distinction between link IDs and destination hashes
+- Unified five separate packet queues in `LinkManager` into a single `PendingPacket` enum queue, simplifying `send_pending_packets()` from five separate drain loops into one match
+- Moved timeout constants (`LINK_PENDING_TIMEOUT_MS`, `DATA_RECEIPT_TIMEOUT_MS`, `ANNOUNCE_RATE_LIMIT_MS`, `PACKET_CACHE_EXPIRY_MS`, `REVERSE_TABLE_EXPIRY_MS`) from module-local definitions to centralized `constants.rs`
+- Replaced magic numbers `500` and `1` with `MTU` and `MODE_AES256_CBC` constants in proof packet construction
+- Removed dead `LinkManagerExt` trait that always returned an empty iterator
+- Improved code style: `get_or_insert_with` instead of manual `if/unwrap`, `let-else` instead of `if/unwrap`, clearer `expect` messages in AES-CBC
+- Test daemon bind retry logic to handle TOCTOU races with parallel tests
+
+### Removed
+- `KeepaliveReceived` event from `LinkEvent` (keepalives are internal bookkeeping, not application-visible)
+- `has_pending_rtt_packet()` from `LinkManager` (superseded by unified queue)
+- Module-local timeout constants from `manager.rs` and `transport.rs` (moved to `constants.rs`)
+
 ## [0.2.4] - 2026-02-03
 
 ### Added
@@ -172,7 +188,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Transport layer (routing, paths, deduplication)
 - Full interoperability with Python rnsd
 
-[Unreleased]: https://codeberg.org/Lew_Palm/leviculum/compare/v0.2.4...HEAD
+[Unreleased]: https://codeberg.org/Lew_Palm/leviculum/compare/v0.2.5...HEAD
+[0.2.5]: https://codeberg.org/Lew_Palm/leviculum/compare/v0.2.4...v0.2.5
 [0.2.4]: https://codeberg.org/Lew_Palm/leviculum/compare/v0.2.3...v0.2.4
 [0.2.3]: https://codeberg.org/Lew_Palm/leviculum/compare/v0.2.2...v0.2.3
 [0.2.2]: https://codeberg.org/Lew_Palm/leviculum/compare/v0.2.1...v0.2.2

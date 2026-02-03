@@ -171,10 +171,11 @@ async fn establish_manager_responder_link(
     ctx: &mut PlatformContext<OsRng, TestClock, NoStorage>,
 ) -> Result<LinkId, HarnessError> {
     // Wait for link request
-    let (raw_packet, link_id) =
+    let (raw_packet, link_id_bytes) =
         wait_for_link_request(stream, deframer, &dest_hash, Duration::from_secs(10))
             .await
             .ok_or_else(|| HarnessError::CommandFailed("No link request received".to_string()))?;
+    let link_id = LinkId::new(link_id_bytes);
 
     // Process the packet via manager
     let packet = Packet::unpack(&raw_packet)
@@ -210,7 +211,7 @@ async fn establish_manager_responder_link(
     let mut rtt_raw = Vec::new();
     rtt_raw.push(0x0C); // flags for Data packet to Link
     rtt_raw.push(0x00); // hops
-    rtt_raw.extend_from_slice(&link_id);
+    rtt_raw.extend_from_slice(link_id.as_bytes());
     rtt_raw.push(PacketContext::Lrrtt as u8);
     rtt_raw.extend_from_slice(&rtt_data);
 
@@ -738,7 +739,8 @@ async fn test_manager_responder_reject_link() {
     .await;
 
     assert!(result.is_some(), "Should receive link request");
-    let (raw_packet, link_id) = result.unwrap();
+    let (raw_packet, link_id_bytes) = result.unwrap();
+    let link_id = LinkId::new(link_id_bytes);
 
     // Process the packet
     let packet = Packet::unpack(&raw_packet).unwrap();
@@ -1029,7 +1031,7 @@ async fn test_rust_to_rust_via_daemon() {
     send_framed(&mut stream_b, &link_request_packet).await;
 
     // A receives link request
-    let (raw_request, link_id_a) = wait_for_link_request(
+    let (raw_request, link_id_a_bytes) = wait_for_link_request(
         &mut stream_a,
         &mut deframer_a,
         &dest_hash_a,
@@ -1037,6 +1039,7 @@ async fn test_rust_to_rust_via_daemon() {
     )
     .await
     .expect("A should receive link request");
+    let link_id_a = LinkId::new(link_id_a_bytes);
 
     // Verify link IDs match (important for transport routing to work)
     assert_eq!(
@@ -1098,7 +1101,7 @@ async fn test_rust_to_rust_via_daemon() {
     let mut rtt_raw = Vec::new();
     rtt_raw.push(0x0C);
     rtt_raw.push(0x00);
-    rtt_raw.extend_from_slice(&link_id_a);
+    rtt_raw.extend_from_slice(link_id_a.as_bytes());
     rtt_raw.push(PacketContext::Lrrtt as u8);
     rtt_raw.extend_from_slice(&rtt_data);
 
@@ -1249,7 +1252,7 @@ async fn test_rust_to_rust_multiple_messages() {
 
     send_framed(&mut stream_b, &link_request_packet).await;
 
-    let (raw_request, link_id_a) = wait_for_link_request(
+    let (raw_request, link_id_a_bytes) = wait_for_link_request(
         &mut stream_a,
         &mut deframer_a,
         &dest_hash_a,
@@ -1257,6 +1260,7 @@ async fn test_rust_to_rust_multiple_messages() {
     )
     .await
     .unwrap();
+    let link_id_a = LinkId::new(link_id_a_bytes);
 
     let request_pkt = Packet::unpack(&raw_request).unwrap();
     manager_a.process_packet(&request_pkt, &raw_request, &mut ctx_a);
@@ -1293,7 +1297,7 @@ async fn test_rust_to_rust_multiple_messages() {
     let mut rtt_raw = Vec::new();
     rtt_raw.push(0x0C);
     rtt_raw.push(0x00);
-    rtt_raw.extend_from_slice(&link_id_a);
+    rtt_raw.extend_from_slice(link_id_a.as_bytes());
     rtt_raw.push(PacketContext::Lrrtt as u8);
     rtt_raw.extend_from_slice(&rtt_data);
 
@@ -1464,7 +1468,7 @@ async fn test_manager_operations_on_unknown_link() {
     let mut manager = LinkManager::new();
     let identity = Identity::generate(&mut ctx);
 
-    let unknown_link_id = [0xFF; 16];
+    let unknown_link_id = LinkId::new([0xFF; 16]);
 
     // send() on unknown link
     let send_result = manager.send(&unknown_link_id, b"test", &mut ctx);

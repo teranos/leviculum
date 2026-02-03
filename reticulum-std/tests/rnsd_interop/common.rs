@@ -494,7 +494,7 @@ pub async fn wait_for_link_request(
                                 && pkt.destination_hash == *dest_hash
                             {
                                 let link_id = Link::calculate_link_id(&data);
-                                return Some((data, link_id));
+                                return Some((data, *link_id));
                             }
                         }
                     }

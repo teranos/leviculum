@@ -33,16 +33,7 @@ use alloc::boxed::Box;
 use alloc::collections::BTreeMap;
 use alloc::vec::Vec;
 
-use crate::constants::{MS_PER_SECOND, PATHFINDER_EXPIRY_SECS, PATHFINDER_MAX_HOPS, TRUNCATED_HASHBYTES};
-
-// ─── Transport Time Constants ────────────────────────────────────────────────
-
-/// Default announce rate limit interval in milliseconds
-const ANNOUNCE_RATE_LIMIT_DEFAULT_MS: u64 = 2_000;
-/// Default packet cache expiry time in milliseconds
-const PACKET_CACHE_EXPIRY_DEFAULT_MS: u64 = 60_000;
-/// Reverse table entry expiry time in milliseconds
-const REVERSE_TABLE_EXPIRY_MS: u64 = 60_000;
+use crate::constants::{ANNOUNCE_RATE_LIMIT_MS, MS_PER_SECOND, PACKET_CACHE_EXPIRY_MS, PATHFINDER_EXPIRY_SECS, PATHFINDER_MAX_HOPS, REVERSE_TABLE_EXPIRY_MS, TRUNCATED_HASHBYTES};
 
 use crate::announce::ReceivedAnnounce;
 use crate::crypto::truncated_hash;
@@ -125,8 +116,8 @@ impl Default for TransportConfig {
             enable_transport: false,
             max_hops: PATHFINDER_MAX_HOPS,
             path_expiry_secs: PATHFINDER_EXPIRY_SECS,
-            announce_rate_limit_ms: ANNOUNCE_RATE_LIMIT_DEFAULT_MS,
-            packet_cache_expiry_ms: PACKET_CACHE_EXPIRY_DEFAULT_MS,
+            announce_rate_limit_ms: ANNOUNCE_RATE_LIMIT_MS,
+            packet_cache_expiry_ms: PACKET_CACHE_EXPIRY_MS,
         }
     }
 }

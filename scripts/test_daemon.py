@@ -133,7 +133,16 @@ class TestDaemon:
         """Start the JSON-RPC command server in a separate thread."""
         self.cmd_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         self.cmd_socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-        self.cmd_socket.bind(('127.0.0.1', self.cmd_port))
+        # Retry bind to handle TOCTOU races with parallel tests
+        for attempt in range(5):
+            try:
+                self.cmd_socket.bind(('127.0.0.1', self.cmd_port))
+                break
+            except OSError as e:
+                if attempt < 4:
+                    time.sleep(0.2 * (attempt + 1))
+                else:
+                    raise
         self.cmd_socket.listen(5)
         self.cmd_socket.settimeout(1.0)
 

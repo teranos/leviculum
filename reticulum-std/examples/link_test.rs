@@ -89,7 +89,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let packet = link.build_link_request_packet();
     println!("\nLink request packet ({} bytes):", packet.len());
     println!("  Raw: {}", bytes_to_hex(&packet));
-    println!("  Link ID: {}", bytes_to_hex(link.id()));
+    println!("  Link ID: {}", bytes_to_hex(link.id().as_bytes()));
 
     // Frame with HDLC
     let mut framed = Vec::new();
@@ -156,7 +156,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                                         Ok(()) => {
                                             println!("Link established successfully!");
                                             println!("Link state: {:?}", link.state());
-                                            println!("Link ID: {}", bytes_to_hex(link.id()));
+                                            println!("Link ID: {}", bytes_to_hex(link.id().as_bytes()));
                                             if let Some(key) = link.link_key() {
                                                 println!("Link key: {}", bytes_to_hex(key));
                                             }

@@ -505,7 +505,7 @@ async fn phase2_link_establishment(network: &mut MultiNodeTestNetwork) {
             network.active_links.insert(
                 "L1".to_string(),
                 ActiveLink {
-                    link_id: *link.id(),
+                    link_id: *link.id().as_bytes(),
                     link,
                     channel: Channel::new(),
                     initiator_name: "Rust-A".to_string(),
@@ -579,7 +579,7 @@ async fn phase2_link_establishment(network: &mut MultiNodeTestNetwork) {
         let mut ctx = make_context();
         let mut incoming_link = Link::new_incoming(
             parsed_packet.data.as_slice(),
-            link_id,
+            link_id.into(),
             network.rust_b.dest_hash,
             &mut ctx,
         )
@@ -636,7 +636,7 @@ async fn phase2_link_establishment(network: &mut MultiNodeTestNetwork) {
                 network.active_links.insert(
                     "L3".to_string(),
                     ActiveLink {
-                        link_id: *link_ab.id(),
+                        link_id: *link_ab.id().as_bytes(),
                         link: link_ab,
                         channel: Channel::new(),
                         initiator_name: "Rust-A".to_string(),
@@ -709,7 +709,7 @@ async fn phase2_link_establishment(network: &mut MultiNodeTestNetwork) {
         let mut ctx = make_context();
         let mut incoming_link = Link::new_incoming(
             parsed_packet.data.as_slice(),
-            link_id,
+            link_id.into(),
             network.rust_d.dest_hash,
             &mut ctx,
         )
@@ -762,7 +762,7 @@ async fn phase2_link_establishment(network: &mut MultiNodeTestNetwork) {
                 network.active_links.insert(
                     "L5".to_string(),
                     ActiveLink {
-                        link_id: *link_cd.id(),
+                        link_id: *link_cd.id().as_bytes(),
                         link: link_cd,
                         channel: Channel::new(),
                         initiator_name: "Rust-C".to_string(),

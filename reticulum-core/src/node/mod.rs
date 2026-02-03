@@ -704,7 +704,7 @@ impl<C: Clock, S: Storage> NodeCore<C, S> {
                 if packet.flags.packet_type == crate::packet::PacketType::LinkRequest
                     || packet.flags.packet_type == crate::packet::PacketType::Proof
                     || (packet.flags.packet_type == crate::packet::PacketType::Data
-                        && self.link_manager.link(&destination_hash).is_some())
+                        && self.link_manager.link(&LinkId::new(destination_hash)).is_some())
                 {
                     // Route to link manager
                     let raw = self.repack_packet(&packet);
@@ -812,10 +812,6 @@ impl<C: Clock, S: Storage> NodeCore<C, S> {
                 self.events.push(NodeEvent::ConnectionStale { link_id });
             }
 
-            LinkEvent::KeepaliveReceived { .. } => {
-                // Keepalives are internal, don't expose
-            }
-
             LinkEvent::LinkClosed { link_id, reason } => {
                 self.connections.remove(&link_id);
                 self.events.push(NodeEvent::ConnectionClosed {
@@ -850,50 +846,24 @@ impl<C: Clock, S: Storage> NodeCore<C, S> {
     }
 
     fn send_pending_packets(&mut self) {
-        // Send pending RTT packets
-        let link_ids: Vec<LinkId> = self
-            .link_manager
-            .link_manager_link_ids_with_pending_rtt()
-            .collect();
+        use crate::link::PendingPacket;
 
-        for link_id in link_ids {
-            if let Some(rtt_packet) = self.link_manager.take_pending_rtt_packet(&link_id) {
-                // Send on the appropriate interface
-                // For now, send on all interfaces (broadcast)
-                self.transport.send_on_all_interfaces(&rtt_packet);
-            }
-        }
-
-        // Collect keepalive packets first to avoid borrow issues
-        let keepalive_packets: Vec<_> = self.link_manager.drain_keepalive_packets().collect();
-        for (link_id, packet) in keepalive_packets {
-            if let Some(link) = self.link_manager.link(&link_id) {
-                let dest_hash = *link.destination_hash();
-                let _ = self.transport.send_to_destination(&dest_hash, &packet);
-            }
-        }
-
-        // Send pending close packets
-        let close_packets: Vec<_> = self.link_manager.drain_close_packets().collect();
-        for (_link_id, packet) in close_packets {
-            self.transport.send_on_all_interfaces(&packet);
-        }
-
-        // Collect channel packets first to avoid borrow issues
-        let channel_packets: Vec<_> = self.link_manager.drain_channel_packets().collect();
-        for (link_id, packet) in channel_packets {
-            if let Some(link) = self.link_manager.link(&link_id) {
-                let dest_hash = *link.destination_hash();
-                let _ = self.transport.send_to_destination(&dest_hash, &packet);
-            }
-        }
-
-        // Send pending proof packets (PROVE_ALL responses)
-        let proof_packets: Vec<_> = self.link_manager.drain_proof_packets().collect();
-        for (link_id, packet) in proof_packets {
-            if let Some(link) = self.link_manager.link(&link_id) {
-                let dest_hash = *link.destination_hash();
-                let _ = self.transport.send_to_destination(&dest_hash, &packet);
+        let packets: Vec<_> = self.link_manager.drain_pending_packets().collect();
+        for packet in packets {
+            match packet {
+                PendingPacket::Rtt { data, .. } | PendingPacket::Close { data, .. } => {
+                    // RTT and Close packets are broadcast on all interfaces
+                    self.transport.send_on_all_interfaces(&data);
+                }
+                PendingPacket::Keepalive { link_id, data }
+                | PendingPacket::Channel { link_id, data }
+                | PendingPacket::Proof { link_id, data } => {
+                    // Route to destination via transport
+                    if let Some(link) = self.link_manager.link(&link_id) {
+                        let dest_hash = *link.destination_hash();
+                        let _ = self.transport.send_to_destination(&dest_hash, &data);
+                    }
+                }
             }
         }
     }
@@ -905,18 +875,6 @@ impl<C: Clock, S: Storage> NodeCore<C, S> {
     }
 }
 
-// Helper trait extension to get link IDs with pending RTT
-trait LinkManagerExt {
-    fn link_manager_link_ids_with_pending_rtt(&self) -> impl Iterator<Item = LinkId>;
-}
-
-impl LinkManagerExt for LinkManager {
-    fn link_manager_link_ids_with_pending_rtt(&self) -> impl Iterator<Item = LinkId> {
-        // We need to check all links - this is a limitation of the current API
-        // In practice, we'd track this internally
-        core::iter::empty()
-    }
-}
 
 #[cfg(test)]
 mod tests {
@@ -1056,12 +1014,12 @@ mod tests {
 
     #[test]
     fn test_connection_new() {
-        let link_id = [0x42; 16];
+        let link_id = LinkId::new([0x42; 16]);
         let dest_hash = [0x33; 16];
 
         let conn = Connection::new(link_id, dest_hash, true);
 
-        assert_eq!(conn.id(), &link_id);
+        assert_eq!(*conn.id(), link_id);
         assert_eq!(conn.destination_hash(), &dest_hash);
         assert!(conn.is_initiator());
     }

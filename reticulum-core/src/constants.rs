@@ -18,6 +18,9 @@ pub fn slice_to_array<const N: usize>(src: &[u8], offset: usize) -> [u8; N] {
 /// Physical layer MTU in bytes
 pub const MTU: usize = 500;
 
+/// Link encryption mode: AES-256-CBC (default)
+pub const MODE_AES256_CBC: u8 = 0x01;
+
 /// Truncated hash length in bits (for destination addresses)
 pub const TRUNCATED_HASHLENGTH: usize = 128;
 
@@ -87,6 +90,21 @@ pub const LINK_STALE_FACTOR: u64 = 2;
 pub const LINK_STALE_TIME_SECS: u64 = LINK_STALE_FACTOR * LINK_KEEPALIVE_SECS;
 pub const LINK_KEEPALIVE_TIMEOUT_FACTOR: u64 = 4;
 pub const LINK_STALE_GRACE_SECS: u64 = 5; // Grace period after stale before closing
+
+/// Timeout for pending link handshakes (milliseconds)
+pub const LINK_PENDING_TIMEOUT_MS: u64 = 30_000;
+
+/// Timeout for data receipts awaiting proofs (milliseconds)
+pub const DATA_RECEIPT_TIMEOUT_MS: u64 = 30_000;
+
+/// Default announce rate limit interval (milliseconds)
+pub const ANNOUNCE_RATE_LIMIT_MS: u64 = 2_000;
+
+/// Packet cache expiry time (milliseconds)
+pub const PACKET_CACHE_EXPIRY_MS: u64 = 60_000;
+
+/// Reverse table entry expiry time (milliseconds)
+pub const REVERSE_TABLE_EXPIRY_MS: u64 = 60_000;
 
 /// Keepalive packet payload byte sent by initiator
 pub const KEEPALIVE_INITIATOR_BYTE: u8 = 0xFF;

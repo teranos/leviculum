@@ -109,7 +109,7 @@ fn run_link_test(
                             let payload = &frame_data[19..];
 
                             // Check if this is addressed to our link_id and is a proof (context = 0xFF)
-                            if dest_hash_recv == link.id() && context == 0xFF {
+                            if dest_hash_recv == link.id().as_bytes() && context == 0xFF {
                                 match link.process_proof(payload) {
                                     Ok(()) => {
                                         if link.state() == LinkState::Active {
@@ -118,7 +118,7 @@ fn run_link_test(
                                                 .map(|k| bytes_to_hex(k))
                                                 .unwrap_or_else(|| "none".to_string());
                                             return TestResult::Success {
-                                                link_id: bytes_to_hex(link.id()),
+                                                link_id: bytes_to_hex(link.id().as_bytes()),
                                                 link_key,
                                             };
                                         }

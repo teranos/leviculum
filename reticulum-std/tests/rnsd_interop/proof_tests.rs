@@ -423,7 +423,7 @@ async fn wait_for_link_proof(
                         if let Ok(pkt) = Packet::unpack(&data) {
                             // Check if this is a proof packet for our link
                             if pkt.flags.packet_type == PacketType::Proof
-                                && pkt.destination_hash == *link_id
+                                && *link_id == pkt.destination_hash
                             {
                                 return Some((pkt, data));
                             }
@@ -513,7 +513,7 @@ async fn test_prove_all_link_traffic_comprehensive() {
                     if let DeframeResult::Frame(data) = result {
                         if let Ok(pkt) = Packet::unpack(&data) {
                             if pkt.flags.packet_type == PacketType::Proof
-                                && pkt.destination_hash == *link.id()
+                                && *link.id() == pkt.destination_hash
                             {
                                 link_proof = Some(pkt);
                                 break;

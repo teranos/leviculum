@@ -43,20 +43,39 @@
 use alloc::collections::BTreeMap;
 use alloc::vec::Vec;
 
-use crate::constants::{MS_PER_SECOND, PROOF_DATA_SIZE, TRUNCATED_HASHBYTES};
+use crate::constants::{DATA_RECEIPT_TIMEOUT_MS, LINK_PENDING_TIMEOUT_MS, MODE_AES256_CBC, MS_PER_SECOND, MTU, PROOF_DATA_SIZE, TRUNCATED_HASHBYTES};
 use crate::destination::ProofStrategy;
 use crate::identity::Identity;
 use crate::packet::{packet_hash, Packet, PacketContext, PacketType};
 use crate::traits::{Clock, Context};
 
 use super::channel::{Channel, Message};
-use super::{Link, LinkCloseReason, LinkError, LinkEvent, LinkId, LinkState, PeerKeys};
+use super::{Link, LinkCloseReason, LinkError, LinkEvent, LinkId, LinkState, PeerKeys, PendingPacket};
 
-/// Default timeout for pending links (30 seconds)
-const LINK_TIMEOUT_MS: u64 = 30_000;
-
-/// Timeout for data receipts awaiting proofs (30 seconds)
-const DATA_RECEIPT_TIMEOUT_MS: u64 = 30_000;
+/// Extract packets matching a predicate from the unified queue, returning (link_id, data) pairs.
+fn drain_packets_by_kind(
+    packets: &mut Vec<PendingPacket>,
+    pred: impl Fn(&PendingPacket) -> bool,
+) -> Vec<(LinkId, Vec<u8>)> {
+    let mut result = Vec::new();
+    let mut i = 0;
+    while i < packets.len() {
+        if pred(&packets[i]) {
+            match packets.remove(i) {
+                PendingPacket::Rtt { link_id, data }
+                | PendingPacket::Keepalive { link_id, data }
+                | PendingPacket::Close { link_id, data }
+                | PendingPacket::Channel { link_id, data }
+                | PendingPacket::Proof { link_id, data } => {
+                    result.push((link_id, data));
+                }
+            }
+        } else {
+            i += 1;
+        }
+    }
+    result
+}
 
 /// Manages all link state and handshakes
 pub struct LinkManager {
@@ -72,16 +91,8 @@ pub struct LinkManager {
     destinations: BTreeMap<[u8; TRUNCATED_HASHBYTES], DestinationEntry>,
     /// Pending events
     events: Vec<LinkEvent>,
-    /// Pending RTT packets to send (generated after processing proof)
-    pending_rtt_packets: BTreeMap<LinkId, Vec<u8>>,
-    /// Pending keepalive packets to send
-    pending_keepalive_packets: Vec<(LinkId, Vec<u8>)>,
-    /// Pending close packets to send (with packet data)
-    pending_close_packets: Vec<(LinkId, Vec<u8>)>,
-    /// Pending channel packets to send (link_id, packet_data)
-    pending_channel_packets: Vec<(LinkId, Vec<u8>)>,
-    /// Pending proof packets to send (generated on data receive with PROVE_ALL)
-    pending_proof_packets: Vec<(LinkId, Vec<u8>)>,
+    /// Unified queue for all outbound link packets
+    pending_packets: Vec<PendingPacket>,
     /// Receipts for sent data packets awaiting proofs (truncated_hash -> receipt)
     data_receipts: BTreeMap<[u8; TRUNCATED_HASHBYTES], DataReceipt>,
 }
@@ -126,11 +137,7 @@ impl LinkManager {
             pending_incoming: BTreeMap::new(),
             destinations: BTreeMap::new(),
             events: Vec::new(),
-            pending_rtt_packets: BTreeMap::new(),
-            pending_keepalive_packets: Vec::new(),
-            pending_close_packets: Vec::new(),
-            pending_channel_packets: Vec::new(),
-            pending_proof_packets: Vec::new(),
+            pending_packets: Vec::new(),
             data_receipts: BTreeMap::new(),
         }
     }
@@ -324,7 +331,7 @@ impl LinkManager {
         }
 
         // Build the proof packet (this also derives the link key)
-        let proof_packet = link.build_proof_packet(identity, 500, 1)?;
+        let proof_packet = link.build_proof_packet(identity, MTU as u32, MODE_AES256_CBC)?;
 
         // Track as pending incoming (awaiting RTT)
         let now = ctx.clock().now_ms();
@@ -450,12 +457,15 @@ impl LinkManager {
     /// Close a link gracefully
     ///
     /// This builds a LINKCLOSE packet that should be sent to the peer.
-    /// Call `drain_close_packets()` after this to get the packet to send.
+    /// Call `drain_pending_packets()` after this to get the packet to send.
     pub fn close(&mut self, link_id: &LinkId, ctx: &mut impl Context) {
         if let Some(link) = self.links.get_mut(link_id) {
             // Try to build and queue the close packet
             if let Ok(close_packet) = link.build_close_packet(ctx) {
-                self.pending_close_packets.push((*link_id, close_packet));
+                self.pending_packets.push(PendingPacket::Close {
+                    link_id: *link_id,
+                    data: close_packet,
+                });
             }
             // Mark the link as closed
             link.close();
@@ -573,11 +583,12 @@ impl LinkManager {
         link.build_data_packet_with_context(&envelope_data, PacketContext::Channel, ctx)
     }
 
-    /// Drain pending channel packets to send
+    /// Drain all pending outbound packets
     ///
-    /// Returns an iterator over (link_id, packet_data) pairs.
-    pub fn drain_channel_packets(&mut self) -> alloc::vec::Drain<'_, (LinkId, Vec<u8>)> {
-        self.pending_channel_packets.drain(..)
+    /// Returns all queued link-level packets (RTT, keepalive, close, channel, proof).
+    /// NodeCore calls this to route each packet appropriately.
+    pub(crate) fn drain_pending_packets(&mut self) -> alloc::vec::Drain<'_, PendingPacket> {
+        self.pending_packets.drain(..)
     }
 
     // --- Packet Processing ---
@@ -671,38 +682,44 @@ impl LinkManager {
     ///
     /// Returns None if there's no pending RTT packet for this link.
     pub fn take_pending_rtt_packet(&mut self, link_id: &LinkId) -> Option<Vec<u8>> {
-        self.pending_rtt_packets.remove(link_id)
-    }
-
-    /// Check if there's a pending RTT packet for a link
-    pub fn has_pending_rtt_packet(&self, link_id: &LinkId) -> bool {
-        self.pending_rtt_packets.contains_key(link_id)
-    }
-
-    /// Drain pending keepalive packets to send
-    ///
-    /// Returns an iterator over (link_id, packet_data) pairs.
-    /// Call this after poll() to get keepalive packets that need to be sent.
-    pub fn drain_keepalive_packets(&mut self) -> alloc::vec::Drain<'_, (LinkId, Vec<u8>)> {
-        self.pending_keepalive_packets.drain(..)
+        let pos = self.pending_packets.iter().position(|p| matches!(
+            p,
+            PendingPacket::Rtt { link_id: id, .. } if id == link_id
+        ))?;
+        match self.pending_packets.remove(pos) {
+            PendingPacket::Rtt { data, .. } => Some(data),
+            _ => unreachable!(),
+        }
     }
 
     /// Drain pending close packets to send
     ///
-    /// Returns an iterator over (link_id, packet_data) pairs.
-    /// Call this after poll() to get close packets that need to be sent.
-    pub fn drain_close_packets(&mut self) -> alloc::vec::Drain<'_, (LinkId, Vec<u8>)> {
-        self.pending_close_packets.drain(..)
+    /// Convenience method that extracts only Close packets from the unified queue.
+    /// Returns (link_id, packet_data) pairs.
+    pub fn drain_close_packets(&mut self) -> Vec<(LinkId, Vec<u8>)> {
+        drain_packets_by_kind(&mut self.pending_packets, |p| {
+            matches!(p, PendingPacket::Close { .. })
+        })
+    }
+
+    /// Drain pending keepalive packets to send
+    ///
+    /// Convenience method that extracts only Keepalive packets from the unified queue.
+    /// Returns (link_id, packet_data) pairs.
+    pub fn drain_keepalive_packets(&mut self) -> Vec<(LinkId, Vec<u8>)> {
+        drain_packets_by_kind(&mut self.pending_packets, |p| {
+            matches!(p, PendingPacket::Keepalive { .. })
+        })
     }
 
     /// Drain pending proof packets to send
     ///
-    /// Returns an iterator over (link_id, packet_data) pairs.
-    /// Call this after processing data packets to get proofs that need to be sent.
-    /// Proofs are generated automatically when data is received on links with
-    /// `ProofStrategy::All`.
-    pub fn drain_proof_packets(&mut self) -> alloc::vec::Drain<'_, (LinkId, Vec<u8>)> {
-        self.pending_proof_packets.drain(..)
+    /// Convenience method that extracts only Proof packets from the unified queue.
+    /// Returns (link_id, packet_data) pairs.
+    pub fn drain_proof_packets(&mut self) -> Vec<(LinkId, Vec<u8>)> {
+        drain_packets_by_kind(&mut self.pending_packets, |p| {
+            matches!(p, PendingPacket::Proof { .. })
+        })
     }
 
     /// Get a mutable reference to a link
@@ -755,7 +772,7 @@ impl LinkManager {
 
     fn handle_proof(&mut self, packet: &Packet, ctx: &mut impl Context) {
         // PROOF packets are addressed to link_id (not destination hash)
-        let link_id = packet.destination_hash;
+        let link_id = LinkId::new(packet.destination_hash);
 
         // Extract proof data from packet payload
         let proof_data = packet.data.as_slice();
@@ -814,7 +831,10 @@ impl LinkManager {
             });
 
             // Store RTT packet for caller to retrieve and send
-            self.pending_rtt_packets.insert(link_id, rtt_packet);
+            self.pending_packets.push(PendingPacket::Rtt {
+                link_id,
+                data: rtt_packet,
+            });
         }
     }
 
@@ -867,7 +887,7 @@ impl LinkManager {
 
     fn handle_data(&mut self, packet: &Packet, raw_packet: &[u8], ctx: &mut impl Context) {
         // DATA packets are addressed to link_id
-        let link_id = packet.destination_hash;
+        let link_id = LinkId::new(packet.destination_hash);
         let now_secs = ctx.clock().now_ms() / MS_PER_SECOND;
 
         let Some(link) = self.links.get_mut(&link_id) else {
@@ -904,12 +924,13 @@ impl LinkManager {
             let encrypted_data = packet.data.as_slice();
             match link.process_keepalive(encrypted_data) {
                 Ok(should_echo) => {
-                    self.events.push(LinkEvent::KeepaliveReceived { link_id });
-
                     // If we're responder and received valid keepalive, echo back
                     if should_echo {
                         if let Ok(echo_packet) = link.build_keepalive_packet(ctx) {
-                            self.pending_keepalive_packets.push((link_id, echo_packet));
+                            self.pending_packets.push(PendingPacket::Keepalive {
+                                link_id,
+                                data: echo_packet,
+                            });
                         }
                     }
                 }
@@ -1029,7 +1050,10 @@ impl LinkManager {
                                         signing_key,
                                     )
                                 {
-                                    self.pending_proof_packets.push((link_id, proof_packet));
+                                    self.pending_packets.push(PendingPacket::Proof {
+                                        link_id,
+                                        data: proof_packet,
+                                    });
                                 }
                             }
                             // If no signing key is available, we can't generate proofs
@@ -1102,7 +1126,7 @@ impl LinkManager {
     {
         pending
             .iter()
-            .filter(|(_, entry)| now_ms.saturating_sub(get_timestamp(entry)) > LINK_TIMEOUT_MS)
+            .filter(|(_, entry)| now_ms.saturating_sub(get_timestamp(entry)) > LINK_PENDING_TIMEOUT_MS)
             .map(|(id, _)| *id)
             .collect()
     }
@@ -1124,7 +1148,10 @@ impl LinkManager {
             if let Some(link) = self.links.get_mut(&link_id) {
                 if let Ok(packet) = link.build_keepalive_packet(ctx) {
                     link.record_keepalive_sent(now_secs);
-                    self.pending_keepalive_packets.push((link_id, packet));
+                    self.pending_packets.push(PendingPacket::Keepalive {
+                        link_id,
+                        data: packet,
+                    });
                 }
             }
         }
@@ -1163,7 +1190,10 @@ impl LinkManager {
             if let Some(link) = self.links.get_mut(&link_id) {
                 // Build close packet before closing
                 if let Ok(close_packet) = link.build_close_packet(ctx) {
-                    self.pending_close_packets.push((link_id, close_packet));
+                    self.pending_packets.push(PendingPacket::Close {
+                        link_id,
+                        data: close_packet,
+                    });
                 }
                 link.close();
                 self.events.push(LinkEvent::LinkClosed {
@@ -1208,7 +1238,10 @@ impl LinkManager {
                                 PacketContext::Channel,
                                 ctx,
                             ) {
-                                self.pending_channel_packets.push((link_id, packet));
+                                self.pending_packets.push(PendingPacket::Channel {
+                                    link_id,
+                                    data: packet,
+                                });
                             }
                         }
                     }
@@ -1216,7 +1249,10 @@ impl LinkManager {
                         // Max retries exceeded - close the link
                         if let Some(link) = self.links.get_mut(&link_id) {
                             if let Ok(close_packet) = link.build_close_packet(ctx) {
-                                self.pending_close_packets.push((link_id, close_packet));
+                                self.pending_packets.push(PendingPacket::Close {
+                                    link_id,
+                                    data: close_packet,
+                                });
                             }
                             link.close();
                         }
@@ -1323,7 +1359,7 @@ mod tests {
         assert_eq!(manager.pending_link_count(), 1);
 
         // Advance time past timeout
-        ctx.clock.advance(LINK_TIMEOUT_MS + 1);
+        ctx.clock.advance(LINK_PENDING_TIMEOUT_MS + 1);
         manager.poll(ctx.clock.now_ms(), &mut ctx);
 
         // Link should be removed
@@ -1492,7 +1528,7 @@ mod tests {
             .process_packet(&data, &data_packet, &mut pair.responder_ctx);
 
         // Should have generated a proof packet
-        let proof_packets: Vec<_> = pair.responder.drain_proof_packets().collect();
+        let proof_packets: Vec<_> = pair.responder.drain_proof_packets();
         assert_eq!(proof_packets.len(), 1);
         assert_eq!(proof_packets[0].0, pair.responder_link_id);
 
@@ -1518,7 +1554,7 @@ mod tests {
             .process_packet(&data, &data_packet, &mut pair.responder_ctx);
 
         // Should NOT have generated a proof packet (PROVE_APP waits for app decision)
-        let proof_packets: Vec<_> = pair.responder.drain_proof_packets().collect();
+        let proof_packets: Vec<_> = pair.responder.drain_proof_packets();
         assert!(
             proof_packets.is_empty(),
             "PROVE_APP should not auto-generate proofs"
@@ -1551,7 +1587,7 @@ mod tests {
             .process_packet(&data, &data_packet, &mut pair.responder_ctx);
 
         // Get the proof packet
-        let proof_packets: Vec<_> = pair.responder.drain_proof_packets().collect();
+        let proof_packets: Vec<_> = pair.responder.drain_proof_packets();
         assert_eq!(proof_packets.len(), 1);
         let (_, data_proof_packet) = &proof_packets[0];
 

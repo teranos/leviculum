@@ -284,7 +284,7 @@ async fn establish_rust_to_rust_link(daemon: &TestDaemon) -> Result<RustToRustLi
     send_framed(&mut stream_b, &link_request_packet).await;
 
     // A receives link request
-    let (raw_request, link_id_a) = wait_for_link_request(
+    let (raw_request, link_id_a_bytes) = wait_for_link_request(
         &mut stream_a,
         &mut deframer_a,
         &dest_hash_a,
@@ -292,6 +292,7 @@ async fn establish_rust_to_rust_link(daemon: &TestDaemon) -> Result<RustToRustLi
     )
     .await
     .ok_or("A should receive link request")?;
+    let link_id_a = LinkId::new(link_id_a_bytes);
 
     // Verify link IDs match
     if link_id_a != link_id_b {
@@ -361,7 +362,7 @@ async fn establish_rust_to_rust_link(daemon: &TestDaemon) -> Result<RustToRustLi
     let mut rtt_raw = Vec::new();
     rtt_raw.push(0x0C);
     rtt_raw.push(0x00);
-    rtt_raw.extend_from_slice(&link_id_a);
+    rtt_raw.extend_from_slice(link_id_a.as_bytes());
     rtt_raw.push(PacketContext::Lrrtt as u8);
     rtt_raw.extend_from_slice(&rtt_data);
 
@@ -751,7 +752,7 @@ async fn test_stale_link_closes_after_timeout() {
     initiator_mgr.poll(initiator_ctx.clock.now_ms(), &mut initiator_ctx);
 
     // Check for close packet
-    let close_packets: Vec<_> = initiator_mgr.drain_close_packets().collect();
+    let close_packets: Vec<_> = initiator_mgr.drain_close_packets();
     assert!(
         !close_packets.is_empty(),
         "Should generate close packet for stale link"
@@ -932,19 +933,13 @@ async fn test_rust_initiator_sends_keepalive_python_echoes() {
     if let Some(echo_data) = echo_raw {
         let echo_pkt = Packet::unpack(&echo_data).expect("Failed to unpack echo");
 
-        // Process the echo
+        // Process the echo (keepalive bookkeeping happens internally)
         manager.process_packet(&echo_pkt, &echo_data, &mut ctx);
 
-        // Check for KeepaliveReceived event
-        let events: Vec<_> = manager.drain_events().collect();
-        let ka_event = events.iter().find(|e| {
-            matches!(
-                e,
-                LinkEvent::KeepaliveReceived { link_id: id } if *id == link_id
-            )
-        });
+        // Drain any events (keepalives no longer emit events, but link should stay active)
+        let _: Vec<_> = manager.drain_events().collect();
 
-        assert!(ka_event.is_some(), "Should receive KeepaliveReceived event");
+        assert!(manager.is_active(&link_id), "Link should still be active after keepalive echo");
         println!("Keepalive echo received from Python");
     } else {
         panic!("No keepalive echo received from Python - link not working properly");
@@ -1000,7 +995,7 @@ async fn test_python_initiator_sends_keepalive_rust_echoes() {
     });
 
     // Wait for link request
-    let (raw_packet, link_id) = wait_for_link_request(
+    let (raw_packet, link_id_bytes) = wait_for_link_request(
         &mut stream,
         &mut deframer,
         &dest_hash,
@@ -1008,6 +1003,7 @@ async fn test_python_initiator_sends_keepalive_rust_echoes() {
     )
     .await
     .expect("Should receive link request");
+    let link_id = LinkId::new(link_id_bytes);
 
     // Process link request
     let packet = Packet::unpack(&raw_packet).expect("Failed to unpack");
@@ -1035,7 +1031,7 @@ async fn test_python_initiator_sends_keepalive_rust_echoes() {
     let mut rtt_raw = Vec::new();
     rtt_raw.push(0x0C);
     rtt_raw.push(0x00);
-    rtt_raw.extend_from_slice(&link_id);
+    rtt_raw.extend_from_slice(link_id.as_bytes());
     rtt_raw.push(PacketContext::Lrrtt as u8);
     rtt_raw.extend_from_slice(&rtt_data);
 
@@ -1253,7 +1249,7 @@ async fn test_multi_hop_keepalive_through_python_relay() {
     link.manager_a.process_packet(&ka_pkt, &ka_raw, &mut ctx_a);
 
     // 5. Drain echo packets from A and send them
-    let echo_packets: Vec<_> = link.manager_a.drain_keepalive_packets().collect();
+    let echo_packets: Vec<_> = link.manager_a.drain_keepalive_packets();
     assert!(
         !echo_packets.is_empty(),
         "A should generate echo packet for keepalive"
@@ -1276,24 +1272,17 @@ async fn test_multi_hop_keepalive_through_python_relay() {
 
     println!("B received keepalive echo packet");
 
-    // 7. B processes echo
+    // 7. B processes echo (keepalive bookkeeping happens internally)
     let echo_pkt = Packet::unpack(&echo_raw).expect("Failed to unpack echo");
     link.manager_b
         .process_packet(&echo_pkt, &echo_raw, &mut ctx_b);
 
-    // 8. Verify KeepaliveReceived event on B
-    let events: Vec<_> = link.manager_b.drain_events().collect();
-    let ka_event = events.iter().find(|e| {
-        matches!(
-            e,
-            LinkEvent::KeepaliveReceived { link_id: id } if *id == link_id
-        )
-    });
+    // 8. Verify link is still active after keepalive round-trip
+    let _: Vec<_> = link.manager_b.drain_events().collect();
 
     assert!(
-        ka_event.is_some(),
-        "B should have KeepaliveReceived event. Events: {:?}",
-        events
+        link.manager_b.is_active(&link_id),
+        "B's link should still be active after keepalive echo"
     );
 
     println!("SUCCESS: Multi-hop keepalive through Python relay");
@@ -1342,7 +1331,7 @@ async fn test_multi_hop_graceful_close_through_relay() {
     println!("B closed the link");
 
     // 3. Drain and send close packets from B
-    let close_packets: Vec<_> = link.manager_b.drain_close_packets().collect();
+    let close_packets: Vec<_> = link.manager_b.drain_close_packets();
     assert!(!close_packets.is_empty(), "B should generate close packet");
 
     for (_, close_packet) in close_packets {
