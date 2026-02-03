@@ -49,13 +49,17 @@ impl From<ChannelError> for ConnectionError {
 ///
 /// # Example
 ///
-/// ```ignore
-/// // Send a message on a connection
-/// let packet_data = connection.send(&mut ctx, b"Hello!")?;
-/// // Send packet_data over the network...
+/// ```
+/// use reticulum_core::node::Connection;
+/// use reticulum_core::link::LinkId;
+/// use reticulum_core::destination::DestinationHash;
 ///
-/// // Send a typed message via Channel
-/// let packet_data = connection.send_message(&mut ctx, &my_message)?;
+/// let link_id = LinkId::new([0x42; 16]);
+/// let dest_hash = DestinationHash::new([0x33; 16]);
+/// let connection = Connection::new(link_id, dest_hash, true);
+///
+/// assert!(connection.is_initiator());
+/// assert!(!connection.has_channel());
 /// ```
 pub struct Connection {
     /// The underlying link ID

@@ -13,14 +13,29 @@
 //!
 //! # Example
 //!
-//! ```ignore
-//! use reticulum_core::node::{NodeCore, NodeCoreBuilder, SendOptions};
+//! ```no_run
+//! use reticulum_core::node::{NodeCore, NodeCoreBuilder, NodeEvent, SendOptions};
 //! use reticulum_core::destination::{Destination, DestinationType, Direction};
+//! use reticulum_core::identity::Identity;
+//! use reticulum_core::traits::{Clock, NoStorage, PlatformContext};
+//! # use core::cell::Cell;
+//! # struct MyClock(Cell<u64>);
+//! # impl MyClock { fn new(ms: u64) -> Self { Self(Cell::new(ms)) } }
+//! # impl Clock for MyClock { fn now_ms(&self) -> u64 { self.0.get() } }
+//!
+//! # fn example() {
+//! let mut ctx = PlatformContext {
+//!     rng: rand_core::OsRng,
+//!     clock: MyClock::new(0),
+//!     storage: NoStorage,
+//! };
+//! let my_identity = Identity::generate(&mut ctx);
 //!
 //! // Build a node
 //! let mut node = NodeCoreBuilder::new()
 //!     .enable_transport(false)
-//!     .build(&mut ctx)?;
+//!     .build(&mut ctx, MyClock::new(0), NoStorage)
+//!     .unwrap();
 //!
 //! // Register a destination
 //! let dest = Destination::new(
@@ -29,22 +44,9 @@
 //!     DestinationType::Single,
 //!     "myapp",
 //!     &["echo"],
-//! )?;
+//! ).unwrap();
 //! node.register_destination(dest);
-//!
-//! // Poll for events
-//! while let Some(event) = node.poll(&mut ctx) {
-//!     match event {
-//!         NodeEvent::ConnectionRequest { link_id, .. } => {
-//!             node.accept_connection(&link_id, &my_identity, &mut ctx)?;
-//!         }
-//!         NodeEvent::MessageReceived { link_id, data, .. } => {
-//!             // Handle message
-//!         }
-//!         _ => {}
-//!     }
-//! }
-//! ```
+//! # }
 
 mod builder;
 mod connection;
@@ -373,17 +375,24 @@ impl<C: Clock, S: Storage> NodeCore<C, S> {
     ///
     /// # Example
     ///
-    /// ```ignore
+    /// ```no_run
+    /// # use reticulum_core::node::{NodeCoreBuilder, SendOptions};
+    /// # use reticulum_core::destination::DestinationHash;
+    /// # use reticulum_core::traits::{Clock, NoStorage, PlatformContext};
+    /// # use core::cell::Cell;
+    /// # struct MyClock(Cell<u64>);
+    /// # impl MyClock { fn new(ms: u64) -> Self { Self(Cell::new(ms)) } }
+    /// # impl Clock for MyClock { fn now_ms(&self) -> u64 { self.0.get() } }
+    /// # fn example() {
+    /// # let mut ctx = PlatformContext { rng: rand_core::OsRng, clock: MyClock::new(0), storage: NoStorage };
+    /// # let node = NodeCoreBuilder::new().build(&mut ctx, MyClock::new(0), NoStorage).unwrap();
+    /// # let dest_hash = DestinationHash::new([0x42; 16]);
     /// // Simple unreliable send (single-packet if possible)
-    /// let result = node.send(&dest_hash, b"Hello!", SendOptions::default())?;
+    /// let result = node.send(&dest_hash, b"Hello!", &SendOptions::default());
     ///
     /// // Reliable send (requires connection)
-    /// let result = node.send(&dest_hash, b"Important!", SendOptions::reliable())?;
-    /// if result.needs_connection {
-    ///     // Need to establish connection first
-    ///     let (link_id, packet) = node.connect(dest_hash, &signing_key, &mut ctx);
-    ///     // ... wait for connection established event ...
-    /// }
+    /// let result = node.send(&dest_hash, b"Important!", &SendOptions::reliable());
+    /// # }
     /// ```
     pub fn send(
         &self,

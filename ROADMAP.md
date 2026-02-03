@@ -64,7 +64,7 @@ Das Projekt hat Phase 1 vollständig abgeschlossen und Phase 2 ist zu ~90% ferti
 | reticulum-std | 1.146 | 10.418 |
 | reticulum-ffi | 361 | 404 |
 
-**Test-Abdeckung:** 671 Tests (440 Core-Unit + 18 Proptest + 38 Test-Vektoren + 14 Doctests + 20 Std-Lib + 1 FFI + 140 Interop gegen rnsd)
+**Test-Abdeckung:** 671 Tests (440 Core-Unit + 18 Proptest + 38 Test-Vektoren + 29 Doctests + 20 Std-Lib + 1 FFI + 140 Interop gegen rnsd)
 
 **Architektur:** Siehe [doc/ARCHITECTURE.md](doc/ARCHITECTURE.md) — no_std/embedded-freundlich, Protocol in Core, I/O via Traits.
 

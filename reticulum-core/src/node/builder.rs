@@ -23,15 +23,31 @@ pub enum BuildError {
 ///
 /// # Example
 ///
-/// ```ignore
+/// ```no_run
 /// use reticulum_core::node::NodeCoreBuilder;
 /// use reticulum_core::identity::Identity;
+/// use reticulum_core::destination::ProofStrategy;
+/// use reticulum_core::traits::{Clock, NoStorage, PlatformContext};
+/// # use core::cell::Cell;
+/// # struct MyClock(Cell<u64>);
+/// # impl MyClock { fn new(ms: u64) -> Self { Self(Cell::new(ms)) } }
+/// # impl Clock for MyClock { fn now_ms(&self) -> u64 { self.0.get() } }
+///
+/// # fn example() {
+/// let mut ctx = PlatformContext {
+///     rng: rand_core::OsRng,
+///     clock: MyClock::new(0),
+///     storage: NoStorage,
+/// };
+/// let my_identity = Identity::generate(&mut ctx);
 ///
 /// let node = NodeCoreBuilder::new()
 ///     .identity(my_identity)
 ///     .proof_strategy(ProofStrategy::All)
 ///     .enable_transport(true)
-///     .build(&mut ctx)?;
+///     .build(&mut ctx, MyClock::new(0), NoStorage)
+///     .unwrap();
+/// # }
 /// ```
 pub struct NodeCoreBuilder {
     identity: Option<Identity>,

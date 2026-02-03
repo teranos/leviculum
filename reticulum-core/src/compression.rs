@@ -5,13 +5,13 @@
 //!
 //! # Example
 //!
-//! ```ignore
-//! use reticulum_core::compression::{compress, decompress, CompressionError};
+//! ```
+//! use reticulum_core::compression::{compress, decompress};
 //!
 //! let data = b"Hello, world! This is some data to compress.";
-//! let compressed = compress(data)?;
-//! let decompressed = decompress(&compressed, 1024)?;
-//! assert_eq!(decompressed, data);
+//! let compressed = compress(data).unwrap();
+//! let decompressed = decompress(&compressed, 1024).unwrap();
+//! assert_eq!(&decompressed, data);
 //! ```
 //!
 //! # Wire Compatibility
@@ -89,8 +89,11 @@ fn max_compressed_size(source_len: usize) -> usize {
 ///
 /// # Example
 ///
-/// ```ignore
-/// let compressed = compress(b"Hello, world!")?;
+/// ```
+/// use reticulum_core::compression::compress;
+///
+/// let compressed = compress(b"Hello, world!").unwrap();
+/// assert!(!compressed.is_empty());
 /// ```
 pub fn compress(data: &[u8]) -> Result<Vec<u8>, CompressionError> {
     if data.is_empty() {
@@ -148,8 +151,12 @@ fn compress_with_size(data: &[u8], dest_size: usize) -> Result<Vec<u8>, Compress
 ///
 /// # Example
 ///
-/// ```ignore
-/// let decompressed = decompress(&compressed_data, 1024)?;
+/// ```
+/// use reticulum_core::compression::{compress, decompress};
+///
+/// let compressed = compress(b"Hello, world!").unwrap();
+/// let decompressed = decompress(&compressed, 1024).unwrap();
+/// assert_eq!(&decompressed, b"Hello, world!");
 /// ```
 pub fn decompress(data: &[u8], max_size: usize) -> Result<Vec<u8>, CompressionError> {
     if data.is_empty() {

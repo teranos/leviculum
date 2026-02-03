@@ -20,14 +20,16 @@ use super::ReticulumNode;
 ///
 /// # Example
 ///
-/// ```ignore
+/// ```no_run
 /// use reticulum_std::node::ReticulumNodeBuilder;
 ///
+/// # async fn example() -> Result<(), Box<dyn std::error::Error>> {
 /// let node = ReticulumNodeBuilder::new()
-///     .identity(my_identity)
 ///     .add_tcp_client("127.0.0.1:4242".parse().unwrap())
 ///     .build()
 ///     .await?;
+/// # Ok(())
+/// # }
 /// ```
 pub struct ReticulumNodeBuilder {
     identity: Option<Identity>,

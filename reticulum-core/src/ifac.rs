@@ -16,23 +16,23 @@
 //!
 //! # Example
 //!
-//! ```ignore
+//! ```
 //! use reticulum_core::ifac::IfacConfig;
 //!
 //! // Create IFAC config with network name and passphrase
 //! let config = IfacConfig::new(
-//!     Some("mynetwork".to_string()),
-//!     Some("secret123".to_string()),
+//!     Some("mynetwork"),
+//!     Some("secret123"),
 //!     16, // IFAC size in bytes
-//! );
+//! ).unwrap();
 //!
 //! // Apply IFAC to outgoing packet
-//! let masked = config.apply_ifac(&raw_packet);
+//! let raw_packet = vec![0x00, 0x01, 0x02, 0x03, 0x04, 0x05];
+//! let masked = config.apply_ifac(&raw_packet).unwrap();
 //!
 //! // Verify IFAC on incoming packet
-//! if let Some(clean_packet) = config.verify_ifac(&received_packet) {
-//!     // Packet is authenticated
-//! }
+//! let clean_packet = config.verify_ifac(&masked).unwrap();
+//! assert_eq!(clean_packet, raw_packet);
 //! ```
 
 use alloc::vec;

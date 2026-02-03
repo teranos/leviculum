@@ -14,7 +14,7 @@
 //!
 //! # Example
 //!
-//! ```ignore
+//! ```no_run
 //! use reticulum_std::node::ReticulumNodeBuilder;
 //!
 //! #[tokio::main]

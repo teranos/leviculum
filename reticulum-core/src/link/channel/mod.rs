@@ -14,8 +14,8 @@
 //!
 //! # Example
 //!
-//! ```ignore
-//! use reticulum_core::link::channel::{Channel, Message, Envelope};
+//! ```
+//! use reticulum_core::link::channel::{Channel, Message, ChannelError};
 //!
 //! // Define a custom message type
 //! struct MyMessage { data: Vec<u8> }
@@ -31,7 +31,8 @@
 //! // Create channel and send message
 //! let mut channel = Channel::new();
 //! let msg = MyMessage { data: vec![1, 2, 3] };
-//! let packet_data = channel.send(&msg, link_mdu, now_ms, rtt_ms)?;
+//! let packet_data = channel.send(&msg, 400, 1000, 100).unwrap();
+//! assert!(!packet_data.is_empty());
 //! ```
 
 mod buffer;
@@ -78,10 +79,10 @@ use crate::constants::{
 /// * `exp` - The exponent (must be a small non-negative integer)
 ///
 /// # Example
-/// ```ignore
-/// assert_eq!(pow_f64(1.5, 0), 1.0);
-/// assert_eq!(pow_f64(1.5, 1), 1.5);
-/// assert_eq!(pow_f64(1.5, 2), 2.25);
+/// ```text
+/// pow_f64(1.5, 0) == 1.0
+/// pow_f64(1.5, 1) == 1.5
+/// pow_f64(1.5, 2) == 2.25
 /// ```
 fn pow_f64(base: f64, exp: u32) -> f64 {
     let mut result = 1.0;
@@ -420,13 +421,26 @@ impl Channel {
     ///
     /// # Example
     ///
-    /// ```ignore
-    /// // Send a message
-    /// let packet_data = channel.send(&my_message, link_mdu, now_ms, rtt_ms)?;
+    /// ```
+    /// use reticulum_core::link::channel::{Channel, Message, ChannelError};
     ///
-    /// // On the receiving end, use the symmetric API
-    /// if let Some(msg) = channel.receive_message::<MyMessage>(&decrypted_data)? {
-    ///     println!("Received: {:?}", msg);
+    /// struct MyMessage { data: Vec<u8> }
+    /// impl Message for MyMessage {
+    ///     const MSGTYPE: u16 = 0x0001;
+    ///     fn pack(&self) -> Vec<u8> { self.data.clone() }
+    ///     fn unpack(data: &[u8]) -> Result<Self, ChannelError> {
+    ///         Ok(Self { data: data.to_vec() })
+    ///     }
+    /// }
+    ///
+    /// // Sender
+    /// let mut sender = Channel::new();
+    /// let packet_data = sender.send(&MyMessage { data: vec![1, 2, 3] }, 400, 1000, 100).unwrap();
+    ///
+    /// // Receiver
+    /// let mut receiver = Channel::new();
+    /// if let Some(msg) = receiver.receive_message::<MyMessage>(&packet_data).unwrap() {
+    ///     assert_eq!(msg.data, vec![1, 2, 3]);
     /// }
     /// ```
     pub fn receive_message<M: Message>(&mut self, data: &[u8]) -> Result<Option<M>, ChannelError> {

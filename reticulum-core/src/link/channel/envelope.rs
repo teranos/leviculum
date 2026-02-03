@@ -117,9 +117,27 @@ impl Envelope {
     ///
     /// # Example
     ///
-    /// ```ignore
-    /// let envelope = channel.receive(&data)?.unwrap();
-    /// let msg: MyMessage = envelope.unpack_message()?;
+    /// ```
+    /// use reticulum_core::link::channel::{Channel, Message, ChannelError, Envelope};
+    ///
+    /// struct MyMessage { data: Vec<u8> }
+    /// impl Message for MyMessage {
+    ///     const MSGTYPE: u16 = 0x0001;
+    ///     fn pack(&self) -> Vec<u8> { self.data.clone() }
+    ///     fn unpack(data: &[u8]) -> Result<Self, ChannelError> {
+    ///         Ok(Self { data: data.to_vec() })
+    ///     }
+    /// }
+    ///
+    /// // Build envelope data via Channel
+    /// let mut channel = Channel::new();
+    /// let packet_data = channel.send(&MyMessage { data: vec![42] }, 400, 1000, 100).unwrap();
+    ///
+    /// // Receive envelope and unpack
+    /// let mut receiver = Channel::new();
+    /// let envelope = receiver.receive(&packet_data).unwrap().unwrap();
+    /// let msg: MyMessage = envelope.unpack_message().unwrap();
+    /// assert_eq!(msg.data, vec![42]);
     /// ```
     pub fn unpack_message<M: super::Message>(&self) -> Result<M, ChannelError> {
         if self.msgtype != M::MSGTYPE {

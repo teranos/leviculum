@@ -50,11 +50,13 @@ use crate::constants::{
 ///
 /// # Example
 ///
-/// ```ignore
+/// ```
 /// use reticulum_core::link::channel::StreamDataMessage;
+/// use reticulum_core::Message;
 ///
 /// let msg = StreamDataMessage::new(0, vec![1, 2, 3], false, false);
 /// let packed = msg.pack();
+/// assert!(!packed.is_empty());
 /// ```
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct StreamDataMessage {

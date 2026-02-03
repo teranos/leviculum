@@ -18,15 +18,23 @@ use reticulum_core::link::LinkId;
 ///
 /// # Example
 ///
-/// ```ignore
-/// let mut stream = node.connect(&dest_hash).await?;
+/// ```no_run
+/// # use reticulum_std::node::{ReticulumNodeBuilder, ConnectionStream};
+/// # async fn example() -> Result<(), Box<dyn std::error::Error>> {
+/// # let node = ReticulumNodeBuilder::new().build().await?;
+/// # let dest_hash = reticulum_core::DestinationHash::new([0; 16]);
+/// # let signing_key = [0u8; 32];
+/// let (mut stream, packet) = node.connect(&dest_hash, &signing_key).await?;
 ///
 /// // Write data
-/// stream.write_all(b"Hello!").await?;
+/// stream.send(b"Hello!").await?;
 ///
 /// // Read response
-/// let mut buf = vec![0u8; 1024];
-/// let n = stream.read(&mut buf).await?;
+/// if let Some(data) = stream.recv().await? {
+///     println!("Received {} bytes", data.len());
+/// }
+/// # Ok(())
+/// # }
 /// ```
 pub struct ConnectionStream {
     /// Link ID for this connection

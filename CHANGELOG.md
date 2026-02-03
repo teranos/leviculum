@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+- Fix 16 ignored doc-tests across reticulum-core and reticulum-std: 9 made fully runnable, 5 converted to compile-only (`no_run`), 1 made runnable (was `ignore`), 1 converted to `text` block (private function)
+- Fix incorrect types in IFAC module doc example (`String` vs `&str`, missing `Result` handling)
+- Fix missing `Message` trait import in `StreamDataMessage` doc example
+- Add concrete values and self-contained examples to Channel/Envelope doc-tests
+
 ## [0.2.6] - 2026-02-03
 
 ### Fixed
