@@ -12,6 +12,7 @@ use std::net::TcpStream;
 use std::time::Duration;
 
 use reticulum_core::constants::TRUNCATED_HASHBYTES;
+use reticulum_core::destination::DestinationHash;
 use reticulum_core::link::Link;
 use reticulum_std::interfaces::hdlc::{frame, DeframeResult, Deframer};
 
@@ -81,7 +82,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("Connecting to: {}", host_port);
 
     // Create link
-    let mut link = Link::new_outgoing_with_rng(dest_hash, &mut rand_core::OsRng);
+    let mut link = Link::new_outgoing_with_rng(DestinationHash::new(dest_hash), &mut rand_core::OsRng);
     link.set_destination_keys(&signing_key)
         .map_err(|e| format!("Failed to set destination keys: {:?}", e))?;
 

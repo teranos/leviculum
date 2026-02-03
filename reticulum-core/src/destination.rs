@@ -133,10 +133,96 @@ pub enum ProofStrategy {
     All = 0x23,
 }
 
+/// A 16-byte destination hash (truncated hash of name_hash + identity_hash)
+///
+/// In the Reticulum protocol, destination hashes identify network endpoints.
+/// They are computed as `truncated_hash(name_hash + identity_hash)` and
+/// appear in packet headers and routing tables.
+#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct DestinationHash([u8; TRUNCATED_HASHBYTES]);
+
+impl DestinationHash {
+    /// Create a DestinationHash from raw bytes
+    pub const fn new(bytes: [u8; TRUNCATED_HASHBYTES]) -> Self {
+        Self(bytes)
+    }
+
+    /// Get the underlying bytes
+    pub const fn as_bytes(&self) -> &[u8; TRUNCATED_HASHBYTES] {
+        &self.0
+    }
+
+    /// Convert to the raw byte array
+    pub const fn into_bytes(self) -> [u8; TRUNCATED_HASHBYTES] {
+        self.0
+    }
+}
+
+impl From<[u8; TRUNCATED_HASHBYTES]> for DestinationHash {
+    fn from(bytes: [u8; TRUNCATED_HASHBYTES]) -> Self {
+        Self(bytes)
+    }
+}
+
+impl From<DestinationHash> for [u8; TRUNCATED_HASHBYTES] {
+    fn from(hash: DestinationHash) -> Self {
+        hash.0
+    }
+}
+
+impl AsRef<[u8]> for DestinationHash {
+    fn as_ref(&self) -> &[u8] {
+        &self.0
+    }
+}
+
+impl AsRef<[u8; TRUNCATED_HASHBYTES]> for DestinationHash {
+    fn as_ref(&self) -> &[u8; TRUNCATED_HASHBYTES] {
+        &self.0
+    }
+}
+
+impl core::borrow::Borrow<[u8; TRUNCATED_HASHBYTES]> for DestinationHash {
+    fn borrow(&self) -> &[u8; TRUNCATED_HASHBYTES] {
+        &self.0
+    }
+}
+
+impl PartialEq<[u8; TRUNCATED_HASHBYTES]> for DestinationHash {
+    fn eq(&self, other: &[u8; TRUNCATED_HASHBYTES]) -> bool {
+        self.0 == *other
+    }
+}
+
+impl PartialEq<DestinationHash> for [u8; TRUNCATED_HASHBYTES] {
+    fn eq(&self, other: &DestinationHash) -> bool {
+        *self == other.0
+    }
+}
+
+impl core::fmt::Debug for DestinationHash {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        write!(f, "DestinationHash(")?;
+        for byte in &self.0 {
+            write!(f, "{:02x}", byte)?;
+        }
+        write!(f, ")")
+    }
+}
+
+impl core::fmt::Display for DestinationHash {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        for byte in &self.0 {
+            write!(f, "{:02x}", byte)?;
+        }
+        Ok(())
+    }
+}
+
 /// A network destination (endpoint)
 pub struct Destination {
     /// The destination hash (address)
-    hash: [u8; TRUNCATED_HASHBYTES],
+    hash: DestinationHash,
     /// Name hash (truncated hash of app_name.aspects)
     name_hash: [u8; NAME_HASHBYTES],
     /// Associated identity (optional for PLAIN destinations)
@@ -204,7 +290,7 @@ impl Destination {
                 // For PLAIN destinations without identity, hash is just name_hash padded
                 let mut h = [0u8; TRUNCATED_HASHBYTES];
                 h[..NAME_HASHBYTES].copy_from_slice(&name_hash);
-                h
+                DestinationHash::new(h)
             }
         };
 
@@ -227,7 +313,7 @@ impl Destination {
     }
 
     /// Get the destination hash
-    pub fn hash(&self) -> &[u8; TRUNCATED_HASHBYTES] {
+    pub fn hash(&self) -> &DestinationHash {
         &self.hash
     }
 
@@ -509,11 +595,11 @@ impl Destination {
     pub fn compute_destination_hash(
         name_hash: &[u8; NAME_HASHBYTES],
         identity_hash: &[u8; IDENTITY_HASHBYTES],
-    ) -> [u8; TRUNCATED_HASHBYTES] {
+    ) -> DestinationHash {
         let mut combined = [0u8; NAME_HASHBYTES + IDENTITY_HASHBYTES];
         combined[..NAME_HASHBYTES].copy_from_slice(name_hash);
         combined[NAME_HASHBYTES..].copy_from_slice(identity_hash);
-        truncated_hash(&combined)
+        DestinationHash::new(truncated_hash(&combined))
     }
 
     /// Create a signed announce packet for this destination.
@@ -593,7 +679,7 @@ impl Destination {
         // Build the signed payload with optional ratchet
         let payload = build_announce_payload(
             identity,
-            &self.hash,
+            self.hash.as_bytes(),
             &self.name_hash,
             ratchet.as_ref(),
             app_data,
@@ -612,7 +698,7 @@ impl Destination {
             },
             hops: 0,
             transport_id: None,
-            destination_hash: self.hash,
+            destination_hash: self.hash.into_bytes(),
             context: PacketContext::None,
             data: PacketData::Owned(payload),
         };
@@ -658,7 +744,7 @@ mod tests {
 
         assert_eq!(dest.dest_type(), DestinationType::Single);
         assert_eq!(dest.direction(), Direction::In);
-        assert_eq!(dest.hash().len(), TRUNCATED_HASHBYTES);
+        assert_eq!(dest.hash().as_bytes().len(), TRUNCATED_HASHBYTES);
     }
 
     #[test]
@@ -1354,5 +1440,118 @@ mod tests {
         assert_eq!(ProofStrategy::None as u8, 0x21);
         assert_eq!(ProofStrategy::App as u8, 0x22);
         assert_eq!(ProofStrategy::All as u8, 0x23);
+    }
+
+    // ─── DestinationHash Tests ────────────────────────────────────────────────
+
+    #[test]
+    fn test_destination_hash_construction() {
+        let bytes = [0x42u8; 16];
+        let hash = DestinationHash::new(bytes);
+        assert_eq!(*hash.as_bytes(), bytes);
+    }
+
+    #[test]
+    fn test_destination_hash_into_bytes_roundtrip() {
+        let bytes = [0xAB; 16];
+        let hash = DestinationHash::new(bytes);
+        assert_eq!(hash.into_bytes(), bytes);
+    }
+
+    #[test]
+    fn test_destination_hash_from_array() {
+        let bytes = [0x01; 16];
+        let hash: DestinationHash = bytes.into();
+        assert_eq!(*hash.as_bytes(), bytes);
+
+        let back: [u8; 16] = hash.into();
+        assert_eq!(back, bytes);
+    }
+
+    #[test]
+    fn test_destination_hash_display() {
+        let hash = DestinationHash::new([
+            0x01, 0x23, 0x45, 0x67, 0x89, 0xab, 0xcd, 0xef, 0x01, 0x23, 0x45, 0x67, 0x89, 0xab,
+            0xcd, 0xef,
+        ]);
+        let display = alloc::format!("{}", hash);
+        assert_eq!(display, "0123456789abcdef0123456789abcdef");
+    }
+
+    #[test]
+    fn test_destination_hash_debug() {
+        let hash = DestinationHash::new([0xAA; 16]);
+        let debug = alloc::format!("{:?}", hash);
+        assert!(debug.starts_with("DestinationHash("));
+        assert!(debug.contains("aa"));
+    }
+
+    #[test]
+    fn test_destination_hash_equality_with_raw() {
+        let bytes = [0x42; 16];
+        let hash = DestinationHash::new(bytes);
+        assert_eq!(hash, bytes);
+        assert_eq!(bytes, hash);
+    }
+
+    #[test]
+    fn test_destination_hash_inequality() {
+        let hash1 = DestinationHash::new([0x01; 16]);
+        let hash2 = DestinationHash::new([0x02; 16]);
+        assert_ne!(hash1, hash2);
+    }
+
+    #[test]
+    fn test_destination_hash_as_ref() {
+        let hash = DestinationHash::new([0x42; 16]);
+        let slice: &[u8] = hash.as_ref();
+        assert_eq!(slice.len(), 16);
+        assert_eq!(slice[0], 0x42);
+
+        let arr_ref: &[u8; 16] = hash.as_ref();
+        assert_eq!(*arr_ref, [0x42; 16]);
+    }
+
+    #[test]
+    fn test_destination_hash_borrow() {
+        use core::borrow::Borrow;
+        let hash = DestinationHash::new([0x42; 16]);
+        let borrowed: &[u8; 16] = hash.borrow();
+        assert_eq!(*borrowed, [0x42; 16]);
+    }
+
+    #[test]
+    fn test_destination_hash_ord() {
+        let hash1 = DestinationHash::new([0x01; 16]);
+        let hash2 = DestinationHash::new([0x02; 16]);
+        assert!(hash1 < hash2);
+    }
+
+    #[test]
+    fn test_destination_hash_copy() {
+        let hash1 = DestinationHash::new([0x42; 16]);
+        let hash2 = hash1; // Copy
+        assert_eq!(hash1, hash2); // Original still usable
+    }
+
+    #[test]
+    fn test_destination_hash_is_different_type_from_link_id() {
+        use crate::link::LinkId;
+        let bytes = [0x42; 16];
+        let _dest_hash = DestinationHash::new(bytes);
+        let _link_id = LinkId::new(bytes);
+        // These are different types - compiler prevents mixing them
+        // (No PartialEq<LinkId> for DestinationHash or vice versa)
+    }
+
+    #[test]
+    fn test_destination_hash_btreemap_key() {
+        use alloc::collections::BTreeMap;
+        let mut map = BTreeMap::new();
+        let hash = DestinationHash::new([0x42; 16]);
+        map.insert(hash, "test");
+        assert_eq!(map.get(&hash), Some(&"test"));
+        // Lookup via raw bytes via Borrow
+        assert_eq!(map.get(&[0x42u8; 16]), Some(&"test"));
     }
 }

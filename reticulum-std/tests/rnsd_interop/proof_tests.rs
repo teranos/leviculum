@@ -67,8 +67,7 @@ async fn wait_for_proof_packet(
                     if let DeframeResult::Frame(data) = result {
                         if let Ok(pkt) = Packet::unpack(&data) {
                             if pkt.flags.packet_type == PacketType::Proof
-                                && pkt.destination_hash == *dest_hash
-                            {
+                                && pkt.destination_hash == *dest_hash {
                                 return Some(pkt);
                             }
                         }
@@ -80,6 +79,8 @@ async fn wait_for_proof_packet(
     }
     None
 }
+
+use reticulum_core::link::LinkId;
 
 /// Wait for any proof packet
 async fn wait_for_any_proof_packet(
@@ -405,7 +406,7 @@ async fn test_set_proof_strategy() {
 async fn wait_for_link_proof(
     stream: &mut TcpStream,
     deframer: &mut Deframer,
-    link_id: &[u8; TRUNCATED_HASHBYTES],
+    link_id: &LinkId,
     timeout_duration: Duration,
 ) -> Option<(Packet, Vec<u8>)> {
     let mut buf = [0u8; 2048];
@@ -423,7 +424,7 @@ async fn wait_for_link_proof(
                         if let Ok(pkt) = Packet::unpack(&data) {
                             // Check if this is a proof packet for our link
                             if pkt.flags.packet_type == PacketType::Proof
-                                && *link_id == pkt.destination_hash
+                                && *link_id.as_bytes() == pkt.destination_hash
                             {
                                 return Some((pkt, data));
                             }
@@ -483,7 +484,7 @@ async fn test_prove_all_link_traffic_comprehensive() {
     let signing_key: [u8; 32] = pub_key_bytes[32..64].try_into().expect("Wrong signing key length");
 
     // Create and send link request
-    let mut link = Link::new_outgoing_with_rng(dest_hash, &mut OsRng);
+    let mut link = Link::new_outgoing_with_rng(dest_hash.into(), &mut OsRng);
     link.set_destination_keys(&signing_key)
         .expect("Failed to set destination keys");
 
@@ -513,7 +514,7 @@ async fn test_prove_all_link_traffic_comprehensive() {
                     if let DeframeResult::Frame(data) = result {
                         if let Ok(pkt) = Packet::unpack(&data) {
                             if pkt.flags.packet_type == PacketType::Proof
-                                && *link.id() == pkt.destination_hash
+                                && *link.id().as_bytes() == pkt.destination_hash
                             {
                                 link_proof = Some(pkt);
                                 break;

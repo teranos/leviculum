@@ -94,7 +94,7 @@ async fn test_link_establishment_basic() {
         dest_hash_bytes.try_into().expect("Invalid hash length");
 
     // Create outgoing link
-    let mut link = Link::new_outgoing_with_rng(dest_hash, &mut OsRng);
+    let mut link = Link::new_outgoing_with_rng(dest_hash.into(), &mut OsRng);
     link.set_destination_keys(&signing_key_bytes)
         .expect("Failed to set destination keys");
 
@@ -187,7 +187,7 @@ async fn test_link_encrypted_data() {
         hex::decode(&dest_info.hash).unwrap().try_into().unwrap();
 
     // Establish link
-    let mut link = Link::new_outgoing_with_rng(dest_hash, &mut OsRng);
+    let mut link = Link::new_outgoing_with_rng(dest_hash.into(), &mut OsRng);
     link.set_destination_keys(&signing_key_bytes).unwrap();
 
     let raw_packet = link.build_link_request_packet();
@@ -292,7 +292,7 @@ async fn test_link_echo() {
         hex::decode(&dest_info.hash).unwrap().try_into().unwrap();
 
     // Establish link
-    let mut link = Link::new_outgoing_with_rng(dest_hash, &mut OsRng);
+    let mut link = Link::new_outgoing_with_rng(dest_hash.into(), &mut OsRng);
     link.set_destination_keys(&signing_key_bytes).unwrap();
 
     let raw_packet = link.build_link_request_packet();
@@ -369,7 +369,7 @@ async fn test_link_request_nonexistent_destination() {
     // Create a random destination hash (no destination registered)
     let random_dest_hash: [u8; TRUNCATED_HASHBYTES] = [0x42; TRUNCATED_HASHBYTES];
 
-    let mut link = Link::new_outgoing_with_rng(random_dest_hash, &mut OsRng);
+    let mut link = Link::new_outgoing_with_rng(random_dest_hash.into(), &mut OsRng);
 
     // We need to set some signing key, even though it won't matter
     // because there's no destination to respond
@@ -438,7 +438,7 @@ async fn test_link_multiple_data_packets() {
         hex::decode(&dest_info.hash).unwrap().try_into().unwrap();
 
     // Establish link
-    let mut link = Link::new_outgoing_with_rng(dest_hash, &mut OsRng);
+    let mut link = Link::new_outgoing_with_rng(dest_hash.into(), &mut OsRng);
     link.set_destination_keys(&signing_key_bytes).unwrap();
 
     let raw_packet = link.build_link_request_packet();
@@ -544,7 +544,7 @@ async fn test_link_request_with_mtu_signaling() {
         hex::decode(&dest_info.hash).unwrap().try_into().unwrap();
 
     // Create link
-    let mut link = Link::new_outgoing_with_rng(dest_hash, &mut OsRng);
+    let mut link = Link::new_outgoing_with_rng(dest_hash.into(), &mut OsRng);
     link.set_destination_keys(&signing_key_bytes).unwrap();
 
     // Create MTU-signaled request (67 bytes instead of 64)
@@ -639,7 +639,7 @@ async fn test_link_proof_validation() {
         hex::decode(&dest_info.hash).unwrap().try_into().unwrap();
 
     // Create link
-    let mut link = Link::new_outgoing_with_rng(dest_hash, &mut OsRng);
+    let mut link = Link::new_outgoing_with_rng(dest_hash.into(), &mut OsRng);
     link.set_destination_keys(&signing_key_bytes).unwrap();
 
     let raw_packet = link.build_link_request_packet();

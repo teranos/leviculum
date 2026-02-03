@@ -61,7 +61,7 @@ use alloc::collections::BTreeMap;
 use alloc::vec::Vec;
 
 use crate::constants::TRUNCATED_HASHBYTES;
-use crate::destination::{Destination, ProofStrategy};
+use crate::destination::{Destination, DestinationHash, ProofStrategy};
 use crate::identity::Identity;
 use crate::link::{LinkEvent, LinkId, LinkManager};
 use crate::packet::Packet;
@@ -134,7 +134,7 @@ pub struct NodeCore<C: Clock, S: Storage> {
     /// Link manager (connections, channels)
     link_manager: LinkManager,
     /// Registered destinations
-    destinations: BTreeMap<[u8; TRUNCATED_HASHBYTES], Destination>,
+    destinations: BTreeMap<DestinationHash, Destination>,
     /// Active connections
     connections: BTreeMap<LinkId, Connection>,
     /// Default proof strategy for new destinations
@@ -194,7 +194,7 @@ impl<C: Clock, S: Storage> NodeCore<C, S> {
         // Note: We pass None for identity since Identity doesn't implement Clone.
         // Proof handling is done at the NodeCore level using the destination's identity.
         self.transport.register_destination_with_proof(
-            hash,
+            hash.into_bytes(),
             dest.accepts_links(),
             dest.proof_strategy(),
             None, // Identity is stored in the destination
@@ -209,8 +209,8 @@ impl<C: Clock, S: Storage> NodeCore<C, S> {
     }
 
     /// Unregister a destination
-    pub fn unregister_destination(&mut self, hash: &[u8; TRUNCATED_HASHBYTES]) {
-        self.transport.unregister_destination(hash);
+    pub fn unregister_destination(&mut self, hash: &DestinationHash) {
+        self.transport.unregister_destination(hash.as_bytes());
         self.link_manager.unregister_destination(hash);
         self.destinations.remove(hash);
     }
@@ -218,7 +218,7 @@ impl<C: Clock, S: Storage> NodeCore<C, S> {
     /// Get a registered destination
     pub fn destination(
         &self,
-        hash: &[u8; TRUNCATED_HASHBYTES],
+        hash: &DestinationHash,
     ) -> Option<&Destination> {
         self.destinations.get(hash)
     }
@@ -226,7 +226,7 @@ impl<C: Clock, S: Storage> NodeCore<C, S> {
     /// Get a mutable reference to a registered destination
     pub fn destination_mut(
         &mut self,
-        hash: &[u8; TRUNCATED_HASHBYTES],
+        hash: &DestinationHash,
     ) -> Option<&mut Destination> {
         self.destinations.get_mut(hash)
     }
@@ -257,12 +257,12 @@ impl<C: Clock, S: Storage> NodeCore<C, S> {
     /// * `ctx` - Platform context
     pub fn connect(
         &mut self,
-        dest_hash: [u8; TRUNCATED_HASHBYTES],
+        dest_hash: DestinationHash,
         dest_signing_key: &[u8; 32],
         ctx: &mut impl Context,
     ) -> (LinkId, Vec<u8>) {
         // Check if we have path info for this destination
-        let (next_hop, hops) = if let Some(path) = self.transport.path(&dest_hash) {
+        let (next_hop, hops) = if let Some(path) = self.transport.path(dest_hash.as_bytes()) {
             // Multi-hop: need transport_id
             if path.hops > 1 {
                 // For multi-hop, we'd need the transport_id from the path
@@ -387,7 +387,7 @@ impl<C: Clock, S: Storage> NodeCore<C, S> {
     /// ```
     pub fn send(
         &self,
-        dest_hash: &[u8; TRUNCATED_HASHBYTES],
+        dest_hash: &DestinationHash,
         data: &[u8],
         opts: &SendOptions,
     ) -> Result<send::RoutingDecision, send::SendError> {
@@ -395,7 +395,7 @@ impl<C: Clock, S: Storage> NodeCore<C, S> {
         let existing_connection = self.find_connection_to(dest_hash);
 
         // Check if we have a path
-        let has_path = self.transport.has_path(dest_hash);
+        let has_path = self.transport.has_path(dest_hash.as_bytes());
 
         // Maximum size for single-packet delivery
         // This is the packet data portion minus some overhead
@@ -433,7 +433,7 @@ impl<C: Clock, S: Storage> NodeCore<C, S> {
     /// The packet hash for tracking delivery (if proofs are enabled)
     pub fn send_single_packet(
         &mut self,
-        dest_hash: &[u8; TRUNCATED_HASHBYTES],
+        dest_hash: &DestinationHash,
         data: &[u8],
     ) -> Result<[u8; TRUNCATED_HASHBYTES], send::SendError> {
         // Build a data packet
@@ -453,7 +453,7 @@ impl<C: Clock, S: Storage> NodeCore<C, S> {
             },
             hops: 0,
             transport_id: None,
-            destination_hash: *dest_hash,
+            destination_hash: dest_hash.into_bytes(),
             context: PacketContext::None,
             data: PacketData::Owned(data.to_vec()),
         };
@@ -464,13 +464,13 @@ impl<C: Clock, S: Storage> NodeCore<C, S> {
 
         // Send via transport
         self.transport
-            .send_to_destination(dest_hash, &buf[..len])
+            .send_to_destination(dest_hash.as_bytes(), &buf[..len])
             .map_err(|_| send::SendError::NoPath)?;
 
         // Create receipt and return hash
         let packet_hash = self
             .transport
-            .create_receipt(&buf[..len], *dest_hash);
+            .create_receipt(&buf[..len], dest_hash.into_bytes());
 
         Ok(packet_hash)
     }
@@ -519,7 +519,7 @@ impl<C: Clock, S: Storage> NodeCore<C, S> {
     }
 
     /// Find an existing connection to a destination
-    fn find_connection_to(&self, dest_hash: &[u8; TRUNCATED_HASHBYTES]) -> Option<LinkId> {
+    fn find_connection_to(&self, dest_hash: &DestinationHash) -> Option<LinkId> {
         for (link_id, conn) in &self.connections {
             if conn.destination_hash() == dest_hash {
                 // Check if the link is active
@@ -560,10 +560,10 @@ impl<C: Clock, S: Storage> NodeCore<C, S> {
     /// Send a packet to a destination via its known path
     pub fn send_to_destination(
         &mut self,
-        dest_hash: &[u8; TRUNCATED_HASHBYTES],
+        dest_hash: &DestinationHash,
         data: &[u8],
     ) -> Result<(), TransportError> {
-        self.transport.send_to_destination(dest_hash, data)
+        self.transport.send_to_destination(dest_hash.as_bytes(), data)
     }
 
     // ─── Polling ───────────────────────────────────────────────────────────────
@@ -635,13 +635,13 @@ impl<C: Clock, S: Storage> NodeCore<C, S> {
     }
 
     /// Check if we have a path to a destination
-    pub fn has_path(&self, dest_hash: &[u8; TRUNCATED_HASHBYTES]) -> bool {
-        self.transport.has_path(dest_hash)
+    pub fn has_path(&self, dest_hash: &DestinationHash) -> bool {
+        self.transport.has_path(dest_hash.as_bytes())
     }
 
     /// Get the hop count to a destination
-    pub fn hops_to(&self, dest_hash: &[u8; TRUNCATED_HASHBYTES]) -> Option<u8> {
-        self.transport.hops_to(dest_hash)
+    pub fn hops_to(&self, dest_hash: &DestinationHash) -> Option<u8> {
+        self.transport.hops_to(dest_hash.as_bytes())
     }
 
     /// Access the underlying transport (for advanced use cases)
@@ -684,7 +684,7 @@ impl<C: Clock, S: Storage> NodeCore<C, S> {
                 interface_index,
             } => {
                 self.events.push(NodeEvent::PathFound {
-                    destination_hash,
+                    destination_hash: DestinationHash::new(destination_hash),
                     hops,
                     interface_index,
                 });
@@ -692,7 +692,7 @@ impl<C: Clock, S: Storage> NodeCore<C, S> {
 
             TransportEvent::PathLost { destination_hash } => {
                 self.events
-                    .push(NodeEvent::PathLost { destination_hash });
+                    .push(NodeEvent::PathLost { destination_hash: DestinationHash::new(destination_hash) });
             }
 
             TransportEvent::PacketReceived {
@@ -712,7 +712,7 @@ impl<C: Clock, S: Storage> NodeCore<C, S> {
                 } else {
                     // Regular packet event
                     self.events.push(NodeEvent::PacketReceived {
-                        from: destination_hash,
+                        from: DestinationHash::new(destination_hash),
                         data: packet.data.as_slice().to_vec(),
                         interface_index,
                     });
@@ -729,7 +729,7 @@ impl<C: Clock, S: Storage> NodeCore<C, S> {
             } => {
                 self.events.push(NodeEvent::ProofRequested {
                     packet_hash,
-                    destination_hash,
+                    destination_hash: DestinationHash::new(destination_hash),
                 });
             }
 
@@ -861,7 +861,7 @@ impl<C: Clock, S: Storage> NodeCore<C, S> {
                     // Route to destination via transport
                     if let Some(link) = self.link_manager.link(&link_id) {
                         let dest_hash = *link.destination_hash();
-                        let _ = self.transport.send_to_destination(&dest_hash, &data);
+                        let _ = self.transport.send_to_destination(dest_hash.as_bytes(), &data);
                     }
                 }
             }
@@ -961,7 +961,7 @@ mod tests {
         node.register_destination(dest);
 
         assert!(node.destination(&hash).is_some());
-        assert!(node.transport.has_destination(&hash));
+        assert!(node.transport.has_destination(hash.as_bytes()));
     }
 
     #[test]
@@ -1007,7 +1007,7 @@ mod tests {
             .build(&mut ctx, clock, NoStorage)
             .unwrap();
 
-        let dest_hash = [0x42; 16];
+        let dest_hash = DestinationHash::new([0x42; 16]);
         assert!(!node.has_path(&dest_hash));
         assert!(node.hops_to(&dest_hash).is_none());
     }
@@ -1015,7 +1015,7 @@ mod tests {
     #[test]
     fn test_connection_new() {
         let link_id = LinkId::new([0x42; 16]);
-        let dest_hash = [0x33; 16];
+        let dest_hash = DestinationHash::new([0x33; 16]);
 
         let conn = Connection::new(link_id, dest_hash, true);
 
@@ -1032,7 +1032,7 @@ mod tests {
             .build(&mut ctx, clock, NoStorage)
             .unwrap();
 
-        let dest_hash = [0x42; 16];
+        let dest_hash = DestinationHash::new([0x42; 16]);
         let result = node.send(&dest_hash, b"Hello!", &SendOptions::default());
 
         // Should fail because no path exists
@@ -1048,7 +1048,7 @@ mod tests {
             .build(&mut ctx, clock, NoStorage)
             .unwrap();
 
-        let dest_hash = [0x42; 16];
+        let dest_hash = DestinationHash::new([0x42; 16]);
         let result = node.send(&dest_hash, b"Hello!", &SendOptions::reliable());
 
         // Should fail because no path exists for reliable send
@@ -1064,7 +1064,7 @@ mod tests {
             .build(&mut ctx, clock, NoStorage)
             .unwrap();
 
-        let dest_hash = [0x42; 16];
+        let dest_hash = DestinationHash::new([0x42; 16]);
         assert!(node.find_connection_to(&dest_hash).is_none());
     }
 }

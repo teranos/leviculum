@@ -15,7 +15,7 @@
 
 use reticulum_core::constants::{MTU, TRUNCATED_HASHBYTES};
 use reticulum_core::crypto::{full_hash, sha256, truncated_hash};
-use reticulum_core::destination::DestinationType;
+use reticulum_core::destination::{Destination, DestinationType};
 use reticulum_core::identity::Identity;
 use reticulum_core::link::Link;
 use reticulum_core::packet::{
@@ -215,7 +215,7 @@ fn test_destination_hash_known_vector() {
 
     let identity_hash = *identity.hash();
     let name_hash = compute_name_hash("testapp", &["echo"]);
-    let dest_hash = compute_destination_hash(&name_hash, &identity_hash);
+    let dest_hash = Destination::compute_destination_hash(&name_hash, &identity_hash).into_bytes();
 
     // Verify the pipeline: dest_hash = truncated_hash(name_hash + identity_hash)
     let mut hash_material = Vec::new();
@@ -230,14 +230,6 @@ fn test_destination_hash_known_vector() {
     println!("Destination hash pipeline verified");
 }
 
-/// Helper to compute destination_hash from name_hash and identity_hash
-fn compute_destination_hash(name_hash: &[u8; 10], identity_hash: &[u8; 16]) -> [u8; 16] {
-    let mut hash_material = Vec::with_capacity(26);
-    hash_material.extend_from_slice(name_hash);
-    hash_material.extend_from_slice(identity_hash);
-    truncated_hash(&hash_material)
-}
-
 // =========================================================================
 // Link request byte layout tests
 // =========================================================================
@@ -248,7 +240,7 @@ fn compute_destination_hash(name_hash: &[u8; 10], identity_hash: &[u8; 16]) -> [
 #[test]
 fn test_link_request_packet_byte_layout() {
     let dest_hash = [0x42u8; TRUNCATED_HASHBYTES];
-    let mut link = Link::new_outgoing_with_rng(dest_hash, &mut rand_core::OsRng);
+    let mut link = Link::new_outgoing_with_rng(dest_hash.into(), &mut rand_core::OsRng);
 
     let raw = link.build_link_request_packet();
 

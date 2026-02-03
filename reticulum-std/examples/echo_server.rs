@@ -50,42 +50,42 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             Some(event) = events.recv() => {
                 match event {
                     NodeEvent::ConnectionRequest { link_id, destination_hash, peer_keys } => {
-                        println!("Connection request from {:02x?}", &destination_hash[..4]);
-                        println!("  Link ID: {:02x?}", &link_id[..4]);
+                        println!("Connection request from {:02x?}", &destination_hash.as_bytes()[..4]);
+                        println!("  Link ID: {:02x?}", &link_id.as_bytes()[..4]);
                         println!("  Peer Ed25519 key: {:02x?}...", &peer_keys.ed25519_verifying[..8]);
                         // In a real application, you would accept the connection here
                         // by calling node.inner().lock().unwrap().accept_connection(...)
                     }
                     NodeEvent::ConnectionEstablished { link_id, is_initiator } => {
                         println!("Connection established!");
-                        println!("  Link ID: {:02x?}", &link_id[..4]);
+                        println!("  Link ID: {:02x?}", &link_id.as_bytes()[..4]);
                         println!("  We initiated: {}", is_initiator);
                     }
                     NodeEvent::DataReceived { link_id, data } => {
-                        println!("Data received on link {:02x?}", &link_id[..4]);
+                        println!("Data received on link {:02x?}", &link_id.as_bytes()[..4]);
                         println!("  {} bytes: {:?}", data.len(), String::from_utf8_lossy(&data));
                         // Echo the data back
                         // In a real application, you would send the data back here
                         println!("  (Would echo back in a real implementation)");
                     }
                     NodeEvent::MessageReceived { link_id, msgtype, sequence, data } => {
-                        println!("Message received on link {:02x?}", &link_id[..4]);
+                        println!("Message received on link {:02x?}", &link_id.as_bytes()[..4]);
                         println!("  Type: 0x{:04x}, Seq: {}", msgtype, sequence);
                         println!("  {} bytes: {:?}", data.len(), String::from_utf8_lossy(&data));
                     }
                     NodeEvent::ConnectionClosed { link_id, reason } => {
-                        println!("Connection closed: {:02x?}", &link_id[..4]);
+                        println!("Connection closed: {:02x?}", &link_id.as_bytes()[..4]);
                         println!("  Reason: {:?}", reason);
                     }
                     NodeEvent::AnnounceReceived { announce, interface_index } => {
                         println!("Announce received on interface {}", interface_index);
-                        println!("  From: {:02x?}", &announce.destination_hash()[..4]);
+                        println!("  From: {:02x?}", &announce.destination_hash().as_bytes()[..4]);
                         if let Some(app_data) = announce.app_data_string() {
                             println!("  App data: {}", app_data);
                         }
                     }
                     NodeEvent::PathFound { destination_hash, hops, interface_index } => {
-                        println!("Path found to {:02x?}", &destination_hash[..4]);
+                        println!("Path found to {:02x?}", &destination_hash.as_bytes()[..4]);
                         println!("  Hops: {}, Interface: {}", hops, interface_index);
                     }
                     other => {

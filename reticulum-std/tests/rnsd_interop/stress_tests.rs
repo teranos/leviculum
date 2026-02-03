@@ -70,7 +70,7 @@ async fn test_extended_exchange_100_messages() {
     let signing_key_bytes: [u8; 32] = pub_key_bytes[32..64].try_into().unwrap();
 
     // Establish link
-    let mut link = Link::new_outgoing_with_rng(dest_hash, &mut OsRng);
+    let mut link = Link::new_outgoing_with_rng(dest_hash.into(), &mut OsRng);
     link.set_destination_keys(&signing_key_bytes).unwrap();
 
     let mut stream = connect_to_daemon(&daemon).await;
@@ -206,7 +206,7 @@ async fn test_rapid_link_creation_teardown() {
 
     for i in 0..NUM_LINKS {
         // Create new link
-        let mut link = Link::new_outgoing_with_rng(dest_hash, &mut OsRng);
+        let mut link = Link::new_outgoing_with_rng(dest_hash.into(), &mut OsRng);
         link.set_destination_keys(&signing_key_bytes).unwrap();
 
         let raw_packet = link.build_link_request_packet();
@@ -345,7 +345,7 @@ async fn test_concurrent_links_to_daemon() {
 
         let handle = tokio::spawn(async move {
             // Create link
-            let mut link = Link::new_outgoing_with_rng(dest_hash_clone, &mut OsRng);
+            let mut link = Link::new_outgoing_with_rng(dest_hash_clone.into(), &mut OsRng);
             link.set_destination_keys(&signing_key).unwrap();
 
             // Connect directly to exit daemon
@@ -479,7 +479,7 @@ async fn test_large_payload_variety() {
     let signing_key_bytes: [u8; 32] = pub_key_bytes[32..64].try_into().unwrap();
 
     // Establish link
-    let mut link = Link::new_outgoing_with_rng(dest_hash, &mut OsRng);
+    let mut link = Link::new_outgoing_with_rng(dest_hash.into(), &mut OsRng);
     link.set_destination_keys(&signing_key_bytes).unwrap();
 
     let mut stream = connect_to_daemon(&daemon).await;
@@ -608,7 +608,7 @@ async fn test_extended_exchange_rapid_fire() {
     let signing_key_bytes: [u8; 32] = pub_key_bytes[32..64].try_into().unwrap();
 
     // Establish link
-    let mut link = Link::new_outgoing_with_rng(dest_hash, &mut OsRng);
+    let mut link = Link::new_outgoing_with_rng(dest_hash.into(), &mut OsRng);
     link.set_destination_keys(&signing_key_bytes).unwrap();
 
     let mut stream = connect_to_daemon(&daemon).await;

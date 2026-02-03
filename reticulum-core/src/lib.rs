@@ -57,7 +57,7 @@ pub mod transport;
 pub use announce::{generate_random_hash, AnnounceError, ReceivedAnnounce};
 #[cfg(feature = "compression")]
 pub use compression::{compress, decompress, decompress_auto, CompressionError};
-pub use destination::{Destination, ProofStrategy};
+pub use destination::{Destination, DestinationHash, ProofStrategy};
 pub use identity::Identity;
 pub use ifac::{IfacConfig, IfacError};
 pub use link::channel::{Channel, ChannelAction, ChannelError, Envelope, Message, MessageState};

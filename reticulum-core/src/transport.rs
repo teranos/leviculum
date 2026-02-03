@@ -37,7 +37,7 @@ use crate::constants::{ANNOUNCE_RATE_LIMIT_MS, MS_PER_SECOND, PACKET_CACHE_EXPIR
 
 use crate::announce::ReceivedAnnounce;
 use crate::crypto::truncated_hash;
-use crate::destination::ProofStrategy;
+use crate::destination::{DestinationHash, ProofStrategy};
 use crate::identity::Identity;
 use crate::packet::{build_proof_packet, packet_hash, truncated_packet_hash, Packet, PacketError, PacketType};
 use crate::receipt::{PacketReceipt, ReceiptStatus};
@@ -454,7 +454,7 @@ impl<C: Clock, S: Storage> Transport<C, S> {
     ) -> [u8; TRUNCATED_HASHBYTES] {
         let hash = packet_hash(raw_packet);
         let now = self.clock.now_ms();
-        let receipt = PacketReceipt::new(hash, destination_hash, now);
+        let receipt = PacketReceipt::new(hash, DestinationHash::new(destination_hash), now);
         let truncated = receipt.truncated_hash;
         self.receipts.insert(truncated, receipt);
         truncated
@@ -469,7 +469,7 @@ impl<C: Clock, S: Storage> Transport<C, S> {
     ) -> [u8; TRUNCATED_HASHBYTES] {
         let hash = packet_hash(raw_packet);
         let now = self.clock.now_ms();
-        let receipt = PacketReceipt::with_timeout(hash, destination_hash, now, timeout_ms);
+        let receipt = PacketReceipt::with_timeout(hash, DestinationHash::new(destination_hash), now, timeout_ms);
         let truncated = receipt.truncated_hash;
         self.receipts.insert(truncated, receipt);
         truncated
@@ -686,7 +686,7 @@ impl<C: Clock, S: Storage> Transport<C, S> {
         // Validate signature and destination hash
         announce.validate().map_err(TransportError::AnnounceError)?;
 
-        let dest_hash = *announce.destination_hash();
+        let dest_hash = announce.destination_hash().into_bytes();
 
         // Rate limiting: check if we've seen this destination recently
         if let Some(entry) = self.announce_table.get(&dest_hash) {
@@ -799,7 +799,7 @@ impl<C: Clock, S: Storage> Transport<C, S> {
             if let Some(receipt) = self.receipts.get(&truncated) {
                 // Get the destination identity to verify the signature
                 // The proof should be signed by the destination that received our packet
-                if let Some(dest_entry) = self.destinations.get(&receipt.destination_hash) {
+                if let Some(dest_entry) = self.destinations.get(receipt.destination_hash.as_bytes()) {
                     if let Some(ref identity) = dest_entry.identity {
                         let is_valid = receipt.validate_proof(proof_data, identity);
                         if is_valid {
@@ -1430,7 +1430,7 @@ mod tests {
 
             // Sign
             let mut signed_data = Vec::new();
-            signed_data.extend_from_slice(dest.hash());
+            signed_data.extend_from_slice(dest.hash().as_bytes());
             signed_data.extend_from_slice(&id.public_key_bytes());
             signed_data.extend_from_slice(dest.name_hash());
             signed_data.extend_from_slice(&random_hash);
@@ -1451,7 +1451,7 @@ mod tests {
                 },
                 hops: 2,
                 transport_id: None,
-                destination_hash: *dest.hash(),
+                destination_hash: dest.hash().into_bytes(),
                 context: PacketContext::None,
                 data: PacketData::Owned(payload),
             };
@@ -1462,8 +1462,8 @@ mod tests {
             transport.process_incoming(0, &buf[..len]).unwrap();
 
             // Should have path now
-            assert!(transport.has_path(dest.hash()));
-            assert_eq!(transport.hops_to(dest.hash()), Some(2));
+            assert!(transport.has_path(dest.hash().as_bytes()));
+            assert_eq!(transport.hops_to(dest.hash().as_bytes()), Some(2));
             assert_eq!(transport.stats().announces_processed, 1);
 
             // Should have emitted PathFound + AnnounceReceived

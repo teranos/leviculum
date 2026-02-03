@@ -22,6 +22,7 @@ use crate::constants::{
     MS_PER_SECOND, RATCHET_EXPIRY_SECS, RATCHET_INTERVAL_SECS, RATCHET_SIZE, TRUNCATED_HASHBYTES,
 };
 use crate::crypto::sha256;
+use crate::destination::DestinationHash;
 use crate::traits::{Clock, Context, Storage, StorageError};
 
 use alloc::collections::BTreeMap;
@@ -253,7 +254,7 @@ pub const EXPIRY_MS: u64 = RATCHET_EXPIRY_SECS * 1000;
 /// use it when sending encrypted packets to that destination.
 pub struct KnownRatchets {
     /// In-memory cache: destination_hash -> (ratchet_public, received_at_ms)
-    cache: BTreeMap<[u8; TRUNCATED_HASHBYTES], ([u8; RATCHET_SIZE], u64)>,
+    cache: BTreeMap<DestinationHash, ([u8; RATCHET_SIZE], u64)>,
 }
 
 impl KnownRatchets {
@@ -272,7 +273,7 @@ impl KnownRatchets {
     /// * `timestamp_ms` - When the ratchet was received
     pub fn remember(
         &mut self,
-        dest_hash: &[u8; TRUNCATED_HASHBYTES],
+        dest_hash: &DestinationHash,
         ratchet: &[u8; RATCHET_SIZE],
         timestamp_ms: u64,
     ) {
@@ -282,17 +283,17 @@ impl KnownRatchets {
     /// Get the ratchet for a destination
     ///
     /// Returns None if no ratchet is known for this destination.
-    pub fn get(&self, dest_hash: &[u8; TRUNCATED_HASHBYTES]) -> Option<&[u8; RATCHET_SIZE]> {
+    pub fn get(&self, dest_hash: &DestinationHash) -> Option<&[u8; RATCHET_SIZE]> {
         self.cache.get(dest_hash).map(|(ratchet, _)| ratchet)
     }
 
     /// Check if we have a ratchet for a destination
-    pub fn has(&self, dest_hash: &[u8; TRUNCATED_HASHBYTES]) -> bool {
+    pub fn has(&self, dest_hash: &DestinationHash) -> bool {
         self.cache.contains_key(dest_hash)
     }
 
     /// Remove a ratchet for a destination
-    pub fn remove(&mut self, dest_hash: &[u8; TRUNCATED_HASHBYTES]) {
+    pub fn remove(&mut self, dest_hash: &DestinationHash) {
         self.cache.remove(dest_hash);
     }
 
@@ -337,7 +338,7 @@ impl KnownRatchets {
             value[..RATCHET_SIZE].copy_from_slice(ratchet);
             value[RATCHET_SIZE..].copy_from_slice(&received_at.to_be_bytes());
 
-            storage.store(RATCHETS, dest_hash, &value)?;
+            storage.store(RATCHETS, dest_hash.as_bytes(), &value)?;
         }
 
         Ok(())
@@ -354,8 +355,9 @@ impl KnownRatchets {
                 continue;
             }
 
-            let mut dest_hash = [0u8; TRUNCATED_HASHBYTES];
-            dest_hash.copy_from_slice(&key);
+            let mut dest_bytes = [0u8; TRUNCATED_HASHBYTES];
+            dest_bytes.copy_from_slice(&key);
+            let dest_hash = DestinationHash::new(dest_bytes);
 
             if let Some(value) = storage.load(RATCHETS, &key) {
                 if value.len() == RATCHET_SIZE + 8 {
@@ -560,7 +562,7 @@ mod tests {
     fn test_known_ratchets_remember_get() {
         let mut known = KnownRatchets::new();
 
-        let dest_hash = [0xaa; TRUNCATED_HASHBYTES];
+        let dest_hash = DestinationHash::new([0xaa; TRUNCATED_HASHBYTES]);
         let ratchet = [0xbb; RATCHET_SIZE];
         let timestamp = 1704067200000u64;
 
@@ -581,7 +583,7 @@ mod tests {
     fn test_known_ratchets_update() {
         let mut known = KnownRatchets::new();
 
-        let dest_hash = [0xaa; TRUNCATED_HASHBYTES];
+        let dest_hash = DestinationHash::new([0xaa; TRUNCATED_HASHBYTES]);
         let ratchet1 = [0xbb; RATCHET_SIZE];
         let ratchet2 = [0xcc; RATCHET_SIZE];
 
@@ -601,7 +603,7 @@ mod tests {
     fn test_known_ratchets_remove() {
         let mut known = KnownRatchets::new();
 
-        let dest_hash = [0xaa; TRUNCATED_HASHBYTES];
+        let dest_hash = DestinationHash::new([0xaa; TRUNCATED_HASHBYTES]);
         let ratchet = [0xbb; RATCHET_SIZE];
 
         known.remember(&dest_hash, &ratchet, 1000);
@@ -616,9 +618,9 @@ mod tests {
     fn test_known_ratchets_clean_expired() {
         let mut known = KnownRatchets::new();
 
-        let dest1 = [0x01; TRUNCATED_HASHBYTES];
-        let dest2 = [0x02; TRUNCATED_HASHBYTES];
-        let dest3 = [0x03; TRUNCATED_HASHBYTES];
+        let dest1 = DestinationHash::new([0x01; TRUNCATED_HASHBYTES]);
+        let dest2 = DestinationHash::new([0x02; TRUNCATED_HASHBYTES]);
+        let dest3 = DestinationHash::new([0x03; TRUNCATED_HASHBYTES]);
         let ratchet = [0xaa; RATCHET_SIZE];
 
         // Add ratchets at different times
@@ -651,8 +653,9 @@ mod tests {
         let mut known = KnownRatchets::new();
 
         for i in 0..10 {
-            let mut dest_hash = [0u8; TRUNCATED_HASHBYTES];
-            dest_hash[0] = i;
+            let mut dest_bytes = [0u8; TRUNCATED_HASHBYTES];
+            dest_bytes[0] = i;
+            let dest_hash = DestinationHash::new(dest_bytes);
 
             let mut ratchet = [0u8; RATCHET_SIZE];
             ratchet[0] = i + 100;
@@ -664,8 +667,9 @@ mod tests {
 
         // Verify each one
         for i in 0..10 {
-            let mut dest_hash = [0u8; TRUNCATED_HASHBYTES];
-            dest_hash[0] = i;
+            let mut dest_bytes = [0u8; TRUNCATED_HASHBYTES];
+            dest_bytes[0] = i;
+            let dest_hash = DestinationHash::new(dest_bytes);
 
             let mut expected_ratchet = [0u8; RATCHET_SIZE];
             expected_ratchet[0] = i + 100;

@@ -593,11 +593,11 @@ fn test_link_id_calculation() {
     let link_id = Link::calculate_link_id(&raw_packet);
 
     assert_eq!(
-        link_id.to_vec(),
+        link_id.as_bytes().to_vec(),
         expected_link_id,
         "Link ID calculation mismatch\nExpected: {}\nGot:      {}",
         vectors.link_id.link_id,
-        hex::encode(link_id)
+        hex::encode(link_id.as_bytes())
     );
 }
 

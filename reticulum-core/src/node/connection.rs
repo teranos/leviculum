@@ -6,7 +6,7 @@
 
 use alloc::vec::Vec;
 
-use crate::constants::TRUNCATED_HASHBYTES;
+use crate::destination::DestinationHash;
 use crate::link::channel::{Channel, ChannelError, Message};
 use crate::link::{Link, LinkError, LinkId, LinkState};
 use crate::packet::PacketContext;
@@ -61,7 +61,7 @@ pub struct Connection {
     /// The underlying link ID
     link_id: LinkId,
     /// The destination hash this connection is to
-    destination_hash: [u8; TRUNCATED_HASHBYTES],
+    destination_hash: DestinationHash,
     /// Whether we initiated this connection
     is_initiator: bool,
     /// Optional channel for reliable messaging (lazily created)
@@ -79,7 +79,7 @@ impl Connection {
     /// * `is_initiator` - Whether we initiated this connection
     pub fn new(
         link_id: LinkId,
-        destination_hash: [u8; TRUNCATED_HASHBYTES],
+        destination_hash: DestinationHash,
         is_initiator: bool,
     ) -> Self {
         Self {
@@ -97,7 +97,7 @@ impl Connection {
     }
 
     /// Get the destination hash
-    pub fn destination_hash(&self) -> &[u8; TRUNCATED_HASHBYTES] {
+    pub fn destination_hash(&self) -> &DestinationHash {
         &self.destination_hash
     }
 
@@ -313,12 +313,12 @@ mod tests {
     #[test]
     fn test_connection_new() {
         let link_id = LinkId::new([0x42; 16]);
-        let dest_hash = [0x33; 16];
+        let dest_hash = DestinationHash::new([0x33; 16]);
 
         let conn = Connection::new(link_id, dest_hash, true);
 
         assert_eq!(*conn.id(), link_id);
-        assert_eq!(conn.destination_hash(), &dest_hash);
+        assert_eq!(*conn.destination_hash(), dest_hash);
         assert!(conn.is_initiator());
         assert!(!conn.has_channel());
         assert!(!conn.compression_enabled());
@@ -326,7 +326,7 @@ mod tests {
 
     #[test]
     fn test_connection_compression_toggle() {
-        let mut conn = Connection::new(LinkId::new([0; 16]), [0; 16], false);
+        let mut conn = Connection::new(LinkId::new([0; 16]), DestinationHash::new([0; 16]), false);
 
         assert!(!conn.compression_enabled());
 
@@ -339,7 +339,7 @@ mod tests {
 
     #[test]
     fn test_connection_channel_creation() {
-        let mut conn = Connection::new(LinkId::new([0; 16]), [0; 16], false);
+        let mut conn = Connection::new(LinkId::new([0; 16]), DestinationHash::new([0; 16]), false);
 
         assert!(!conn.has_channel());
         assert!(conn.is_ready_to_send());

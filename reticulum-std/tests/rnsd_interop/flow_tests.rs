@@ -231,7 +231,7 @@ async fn test_discovery_then_link_establishment() {
         .try_into()
         .expect("Invalid signing key");
 
-    let mut link = Link::new_outgoing_with_rng(dest_hash, &mut OsRng);
+    let mut link = Link::new_outgoing_with_rng(dest_hash.into(), &mut OsRng);
     link.set_destination_keys(&signing_key_bytes)
         .expect("Failed to set destination keys");
 
@@ -322,7 +322,7 @@ async fn test_complete_roundtrip() {
     let pub_key_bytes = hex::decode(&dest_info.public_key).unwrap();
     let signing_key_bytes: [u8; 32] = pub_key_bytes[32..64].try_into().unwrap();
 
-    let mut link = Link::new_outgoing_with_rng(dest_hash, &mut OsRng);
+    let mut link = Link::new_outgoing_with_rng(dest_hash.into(), &mut OsRng);
     link.set_destination_keys(&signing_key_bytes).unwrap();
 
     let raw_packet = link.build_link_request_packet();
@@ -516,7 +516,7 @@ async fn test_multiple_destinations_selective_link() {
     let pub_key_bytes = hex::decode(&target_dest_info.public_key).unwrap();
     let signing_key_bytes: [u8; 32] = pub_key_bytes[32..64].try_into().unwrap();
 
-    let mut link = Link::new_outgoing_with_rng(target_hash, &mut OsRng);
+    let mut link = Link::new_outgoing_with_rng(target_hash.into(), &mut OsRng);
     link.set_destination_keys(&signing_key_bytes).unwrap();
 
     let raw_packet = link.build_link_request_packet();
@@ -674,7 +674,7 @@ async fn test_discovery_path_update() {
     let pub_key_bytes = hex::decode(&dest_info.public_key).unwrap();
     let signing_key_bytes: [u8; 32] = pub_key_bytes[32..64].try_into().unwrap();
 
-    let mut link = Link::new_outgoing_with_rng(dest_hash, &mut OsRng);
+    let mut link = Link::new_outgoing_with_rng(dest_hash.into(), &mut OsRng);
     link.set_destination_keys(&signing_key_bytes).unwrap();
 
     let raw_packet = link.build_link_request_packet();
@@ -750,7 +750,7 @@ async fn test_discovery_link_multiple_messages() {
     let pub_key_bytes = hex::decode(&dest_info.public_key).unwrap();
     let signing_key_bytes: [u8; 32] = pub_key_bytes[32..64].try_into().unwrap();
 
-    let mut link = Link::new_outgoing_with_rng(dest_hash, &mut OsRng);
+    let mut link = Link::new_outgoing_with_rng(dest_hash.into(), &mut OsRng);
     link.set_destination_keys(&signing_key_bytes).unwrap();
 
     let raw_packet = link.build_link_request_packet();

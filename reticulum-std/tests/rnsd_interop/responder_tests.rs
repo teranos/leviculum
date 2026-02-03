@@ -43,7 +43,7 @@ use tokio::net::TcpStream;
 use reticulum_core::constants::MTU;
 use reticulum_core::destination::{Destination, DestinationType, Direction};
 use reticulum_core::identity::Identity;
-use reticulum_core::link::{Link, LinkState};
+use reticulum_core::link::{Link, LinkId, LinkState};
 use reticulum_core::packet::Packet;
 use reticulum_std::interfaces::hdlc::{frame, Deframer};
 
@@ -184,7 +184,8 @@ async fn test_responder_basic_handshake() {
         request_result.is_some(),
         "Should receive LINK_REQUEST from Python"
     );
-    let (raw_packet, link_id) = request_result.unwrap();
+    let (raw_packet, link_id_bytes) = request_result.unwrap();
+    let link_id = LinkId::new(link_id_bytes);
 
     println!("Received LINK_REQUEST, link_id: {}", hex::encode(link_id));
 
@@ -192,7 +193,7 @@ async fn test_responder_basic_handshake() {
     let request_data = &raw_packet[19..];
 
     // Create incoming link
-    let mut link = Link::new_incoming(request_data, link_id.into(), dest_hash, &mut ctx)
+    let mut link = Link::new_incoming(request_data, link_id, dest_hash, &mut ctx)
         .expect("Failed to create incoming link");
 
     assert_eq!(link.state(), LinkState::Pending);
@@ -301,7 +302,7 @@ async fn test_responder_bidirectional_data() {
     });
 
     // Accept incoming link
-    let (raw_packet, link_id) = wait_for_link_request(
+    let (raw_packet, link_id_bytes) = wait_for_link_request(
         &mut stream,
         &mut deframer,
         &dest_hash,
@@ -309,8 +310,9 @@ async fn test_responder_bidirectional_data() {
     )
     .await
     .expect("Should receive LINK_REQUEST");
+    let link_id = LinkId::new(link_id_bytes);
 
-    let mut link = Link::new_incoming(&raw_packet[19..], link_id.into(), dest_hash, &mut ctx).unwrap();
+    let mut link = Link::new_incoming(&raw_packet[19..], link_id, dest_hash, &mut ctx).unwrap();
 
     // Send proof
     let proof_packet = link.build_proof_packet(identity, 500, 1).unwrap();
@@ -444,7 +446,7 @@ async fn test_responder_key_derivation_match() {
         serde_json::from_slice::<serde_json::Value>(&r).unwrap()
     });
 
-    let (raw, link_id) = wait_for_link_request(
+    let (raw, link_id_bytes) = wait_for_link_request(
         &mut stream,
         &mut deframer,
         &dest_hash,
@@ -452,7 +454,8 @@ async fn test_responder_key_derivation_match() {
     )
     .await
     .unwrap();
-    let mut link = Link::new_incoming(&raw[19..], link_id.into(), dest_hash, &mut ctx).unwrap();
+    let link_id = LinkId::new(link_id_bytes);
+    let mut link = Link::new_incoming(&raw[19..], link_id, dest_hash, &mut ctx).unwrap();
 
     let proof = link.build_proof_packet(identity, 500, 1).unwrap();
     send_packet(&mut stream, &proof).await;
@@ -551,7 +554,7 @@ async fn test_responder_multiple_packets() {
         serde_json::from_slice::<serde_json::Value>(&r).unwrap()
     });
 
-    let (raw, link_id) = wait_for_link_request(
+    let (raw, link_id_bytes) = wait_for_link_request(
         &mut stream,
         &mut deframer,
         &dest_hash,
@@ -559,7 +562,8 @@ async fn test_responder_multiple_packets() {
     )
     .await
     .unwrap();
-    let mut link = Link::new_incoming(&raw[19..], link_id.into(), dest_hash, &mut ctx).unwrap();
+    let link_id = LinkId::new(link_id_bytes);
+    let mut link = Link::new_incoming(&raw[19..], link_id, dest_hash, &mut ctx).unwrap();
 
     let proof = link.build_proof_packet(identity, 500, 1).unwrap();
     send_packet(&mut stream, &proof).await;

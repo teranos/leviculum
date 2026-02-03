@@ -31,6 +31,7 @@ use crate::constants::{
     RANDOM_HASH_RANDOM_SIZE, RANDOM_HASH_TIMESTAMP_OFFSET, RANDOM_HASH_TIMESTAMP_SIZE,
     RATCHET_SIZE, TRUNCATED_HASHBYTES,
 };
+use crate::destination::DestinationHash;
 
 // ─── Announce Format Offsets ─────────────────────────────────────────────────
 // These define the byte layout of announce payloads.
@@ -222,7 +223,7 @@ impl core::fmt::Display for AnnounceError {
 /// methods to verify the signature and compute hashes.
 pub struct ReceivedAnnounce {
     /// Destination hash from packet header
-    destination_hash: [u8; TRUNCATED_HASHBYTES],
+    destination_hash: DestinationHash,
     /// Combined public key (32 bytes X25519 + 32 bytes Ed25519)
     public_key: [u8; IDENTITY_KEY_SIZE],
     /// Name hash (truncated hash of app_name.aspects)
@@ -287,7 +288,7 @@ impl ReceivedAnnounce {
         };
 
         Ok(Self {
-            destination_hash: packet.destination_hash,
+            destination_hash: DestinationHash::new(packet.destination_hash),
             public_key,
             name_hash,
             random_hash,
@@ -298,7 +299,7 @@ impl ReceivedAnnounce {
     }
 
     /// Get the destination hash from the packet header
-    pub fn destination_hash(&self) -> &[u8; TRUNCATED_HASHBYTES] {
+    pub fn destination_hash(&self) -> &DestinationHash {
         &self.destination_hash
     }
 
@@ -352,12 +353,12 @@ impl ReceivedAnnounce {
     /// Compute the destination hash from name_hash and identity_hash
     ///
     /// dest_hash = truncated_hash(name_hash + identity_hash)
-    pub fn computed_destination_hash(&self) -> [u8; TRUNCATED_HASHBYTES] {
+    pub fn computed_destination_hash(&self) -> DestinationHash {
         let identity_hash = self.computed_identity_hash();
         let mut hash_material = [0u8; NAME_HASHBYTES + TRUNCATED_HASHBYTES];
         hash_material[..NAME_HASHBYTES].copy_from_slice(&self.name_hash);
         hash_material[NAME_HASHBYTES..].copy_from_slice(&identity_hash);
-        truncated_hash(&hash_material)
+        DestinationHash::new(truncated_hash(&hash_material))
     }
 
     /// Verify that the destination hash in the packet matches the computed hash
@@ -370,7 +371,7 @@ impl ReceivedAnnounce {
     /// Python RNS signs: destination_hash + public_key + name_hash + random_hash + [ratchet] + app_data
     fn signed_data(&self) -> Vec<u8> {
         build_signed_data(
-            &self.destination_hash,
+            self.destination_hash.as_bytes(),
             &self.public_key,
             &self.name_hash,
             &self.random_hash,
@@ -422,7 +423,7 @@ impl core::fmt::Debug for ReceivedAnnounce {
         f.debug_struct("ReceivedAnnounce")
             .field(
                 "destination_hash",
-                &format_args!("{:02x?}", &self.destination_hash[..4]),
+                &format_args!("{:02x?}", &self.destination_hash.as_bytes()[..4]),
             )
             .field("has_ratchet", &self.has_ratchet())
             .field("app_data_len", &self.app_data.len())
@@ -612,7 +613,7 @@ mod tests {
 
         // Destination hash is truncated_hash(name_hash + identity_hash)
         let dest_hash = announce.computed_destination_hash();
-        assert_eq!(dest_hash.len(), TRUNCATED_HASHBYTES);
+        assert_eq!(dest_hash.as_bytes().len(), TRUNCATED_HASHBYTES);
 
         // These won't match because destination_hash in packet is fake
         assert!(!announce.verify_destination_hash());
@@ -651,7 +652,7 @@ mod tests {
 
         // Compute signed data
         let mut signed_data = Vec::new();
-        signed_data.extend_from_slice(dest.hash());
+        signed_data.extend_from_slice(dest.hash().as_bytes());
         signed_data.extend_from_slice(&identity.public_key_bytes());
         signed_data.extend_from_slice(dest.name_hash());
         signed_data.extend_from_slice(&random_hash);
@@ -674,7 +675,7 @@ mod tests {
             },
             hops: 0,
             transport_id: None,
-            destination_hash: *dest.hash(),
+            destination_hash: dest.hash().into_bytes(),
             context: PacketContext::None,
             data: PacketData::Owned(payload),
         };

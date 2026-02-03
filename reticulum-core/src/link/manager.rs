@@ -18,14 +18,16 @@
 //!     fn now_ms(&self) -> u64 { 1000000 }
 //! }
 //!
+//! use reticulum_core::destination::DestinationHash;
+//!
 //! let mut manager = LinkManager::new();
 //!
 //! // Register destination to accept incoming links
-//! let my_dest_hash = [0x42u8; 16];
+//! let my_dest_hash = DestinationHash::new([0x42u8; 16]);
 //! manager.register_destination(my_dest_hash);
 //!
 //! // Initiate outgoing link
-//! let dest_hash = [0x33u8; 16];
+//! let dest_hash = DestinationHash::new([0x33u8; 16]);
 //! let dest_signing_key = [0x11u8; 32];
 //! let mut ctx = PlatformContext { rng: OsRng, clock: SimpleClock, storage: NoStorage };
 //! let (link_id, packet) = manager.initiate(dest_hash, &dest_signing_key, &mut ctx);
@@ -49,6 +51,7 @@ use crate::identity::Identity;
 use crate::packet::{packet_hash, Packet, PacketContext, PacketType};
 use crate::traits::{Clock, Context};
 
+use crate::destination::DestinationHash;
 use super::channel::{Channel, Message};
 use super::{Link, LinkCloseReason, LinkError, LinkEvent, LinkId, LinkState, PeerKeys, PendingPacket};
 
@@ -88,7 +91,7 @@ pub struct LinkManager {
     /// Pending incoming links (awaiting RTT) - stores (link_id, created_at_ms)
     pending_incoming: BTreeMap<LinkId, PendingIncoming>,
     /// Destinations that accept links (dest_hash -> proof_strategy)
-    destinations: BTreeMap<[u8; TRUNCATED_HASHBYTES], DestinationEntry>,
+    destinations: BTreeMap<DestinationHash, DestinationEntry>,
     /// Pending events
     events: Vec<LinkEvent>,
     /// Unified queue for all outbound link packets
@@ -158,7 +161,7 @@ impl LinkManager {
     /// * `ctx` - Platform context for RNG
     pub fn initiate(
         &mut self,
-        dest_hash: [u8; TRUNCATED_HASHBYTES],
+        dest_hash: DestinationHash,
         dest_signing_key: &[u8; 32],
         ctx: &mut impl Context,
     ) -> (LinkId, Vec<u8>) {
@@ -184,6 +187,7 @@ impl LinkManager {
     /// # Example
     /// ```
     /// use reticulum_core::link::LinkManager;
+    /// use reticulum_core::destination::DestinationHash;
     /// use reticulum_core::traits::{PlatformContext, NoStorage};
     /// use rand_core::OsRng;
     ///
@@ -196,7 +200,7 @@ impl LinkManager {
     /// let mut ctx = PlatformContext { rng: OsRng, clock: SimpleClock, storage: NoStorage };
     ///
     /// // For a destination 2+ hops away, use the transport_id from the announce
-    /// let dest_hash = [0x42u8; 16];
+    /// let dest_hash = DestinationHash::new([0x42u8; 16]);
     /// let signing_key = [0x33u8; 32];
     /// let transport_id = [0x11u8; 16]; // relay node's identity hash
     /// let hops = 2;
@@ -212,7 +216,7 @@ impl LinkManager {
     /// ```
     pub fn initiate_with_path(
         &mut self,
-        dest_hash: [u8; TRUNCATED_HASHBYTES],
+        dest_hash: DestinationHash,
         dest_signing_key: &[u8; 32],
         next_hop: Option<[u8; TRUNCATED_HASHBYTES]>,
         hops: u8,
@@ -252,7 +256,7 @@ impl LinkManager {
     ///
     /// # Arguments
     /// * `dest_hash` - The destination hash to register
-    pub fn register_destination(&mut self, dest_hash: [u8; TRUNCATED_HASHBYTES]) {
+    pub fn register_destination(&mut self, dest_hash: DestinationHash) {
         self.register_destination_with_strategy(dest_hash, ProofStrategy::None);
     }
 
@@ -266,7 +270,7 @@ impl LinkManager {
     ///   - `ProofStrategy::All` - Automatically generate and queue proofs
     pub fn register_destination_with_strategy(
         &mut self,
-        dest_hash: [u8; TRUNCATED_HASHBYTES],
+        dest_hash: DestinationHash,
         proof_strategy: ProofStrategy,
     ) {
         self.destinations.insert(
@@ -279,19 +283,19 @@ impl LinkManager {
     }
 
     /// Unregister a destination from accepting links
-    pub fn unregister_destination(&mut self, dest_hash: &[u8; TRUNCATED_HASHBYTES]) {
+    pub fn unregister_destination(&mut self, dest_hash: &DestinationHash) {
         self.destinations.remove(dest_hash);
     }
 
     /// Check if a destination accepts links
-    pub fn accepts_links(&self, dest_hash: &[u8; TRUNCATED_HASHBYTES]) -> bool {
+    pub fn accepts_links(&self, dest_hash: &DestinationHash) -> bool {
         self.destinations.contains_key(dest_hash)
     }
 
     /// Get the proof strategy for a registered destination
     pub fn proof_strategy(
         &self,
-        dest_hash: &[u8; TRUNCATED_HASHBYTES],
+        dest_hash: &DestinationHash,
     ) -> Option<ProofStrategy> {
         self.destinations.get(dest_hash).map(|e| e.proof_strategy)
     }
@@ -730,7 +734,7 @@ impl LinkManager {
     // --- Internal: Packet Handlers ---
 
     fn handle_link_request(&mut self, packet: &Packet, raw_packet: &[u8], ctx: &mut impl Context) {
-        let dest_hash = packet.destination_hash;
+        let dest_hash = DestinationHash::new(packet.destination_hash);
 
         // Check if we accept links for this destination
         if !self.destinations.contains_key(&dest_hash) {
@@ -1321,7 +1325,7 @@ mod tests {
     #[test]
     fn test_register_destination() {
         let mut manager = LinkManager::new();
-        let dest_hash = [0x42; 16];
+        let dest_hash = DestinationHash::new([0x42; 16]);
 
         manager.register_destination(dest_hash);
         assert!(manager.accepts_links(&dest_hash));
@@ -1334,7 +1338,7 @@ mod tests {
     fn test_initiate_link() {
         let mut manager = LinkManager::new();
         let mut ctx = make_ctx();
-        let dest_hash = [0x42; 16];
+        let dest_hash = DestinationHash::new([0x42; 16]);
         let dest_signing_key = [0x33; 32];
 
         let (link_id, packet) = manager.initiate(dest_hash, &dest_signing_key, &mut ctx);
@@ -1352,7 +1356,7 @@ mod tests {
     fn test_link_timeout() {
         let mut manager = LinkManager::new();
         let mut ctx = make_ctx();
-        let dest_hash = [0x42; 16];
+        let dest_hash = DestinationHash::new([0x42; 16]);
         let dest_signing_key = [0x33; 32];
 
         let (link_id, _) = manager.initiate(dest_hash, &dest_signing_key, &mut ctx);
@@ -1385,7 +1389,7 @@ mod tests {
     fn test_close_link() {
         let mut manager = LinkManager::new();
         let mut ctx = make_ctx();
-        let dest_hash = [0x42; 16];
+        let dest_hash = DestinationHash::new([0x42; 16]);
         let dest_signing_key = [0x33; 32];
 
         let (link_id, _) = manager.initiate(dest_hash, &dest_signing_key, &mut ctx);
@@ -1428,7 +1432,7 @@ mod tests {
         let mut responder_ctx = make_ctx();
 
         let dest_identity = Identity::generate_with_rng(&mut OsRng);
-        let dest_hash = [0x42; 16];
+        let dest_hash = DestinationHash::new([0x42; 16]);
         let dest_signing_key = dest_identity.ed25519_verifying().to_bytes();
 
         // Register destination on responder with the given proof strategy
@@ -1487,7 +1491,7 @@ mod tests {
     #[test]
     fn test_register_destination_with_proof_strategy() {
         let mut manager = LinkManager::new();
-        let dest_hash = [0x42; 16];
+        let dest_hash = DestinationHash::new([0x42; 16]);
 
         // Register with PROVE_ALL strategy
         manager.register_destination_with_strategy(dest_hash, ProofStrategy::All);
@@ -1504,7 +1508,7 @@ mod tests {
         assert_eq!(manager.proof_strategy(&dest_hash), Some(ProofStrategy::App));
 
         // Default registration uses PROVE_NONE
-        let other_hash = [0x33; 16];
+        let other_hash = DestinationHash::new([0x33; 16]);
         manager.register_destination(other_hash);
         assert_eq!(
             manager.proof_strategy(&other_hash),

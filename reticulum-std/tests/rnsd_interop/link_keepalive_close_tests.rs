@@ -126,7 +126,7 @@ async fn establish_link_as_initiator(
         .map_err(|_| "Invalid hash length")?;
 
     // Initiate link
-    let (link_id, link_request_packet) = manager.initiate(dest_hash, &signing_key, ctx);
+    let (link_id, link_request_packet) = manager.initiate(dest_hash.into(), &signing_key, ctx);
     send_framed(stream, &link_request_packet).await;
 
     // Wait for proof
@@ -568,11 +568,11 @@ async fn test_link_stale_detection_no_inbound() {
     let dest_signing_key = dest_identity.ed25519_verifying().to_bytes();
 
     // Register destination on responder
-    responder_mgr.register_destination(dest_hash);
+    responder_mgr.register_destination(dest_hash.into());
 
     // Initiator starts link
     let (link_id, link_request_packet) =
-        initiator_mgr.initiate(dest_hash, &dest_signing_key, &mut initiator_ctx);
+        initiator_mgr.initiate(dest_hash.into(), &dest_signing_key, &mut initiator_ctx);
 
     // Deliver link request to responder
     let packet = Packet::unpack(&link_request_packet).unwrap();
@@ -684,11 +684,11 @@ async fn test_stale_link_closes_after_timeout() {
     let dest_signing_key = dest_identity.ed25519_verifying().to_bytes();
 
     // Register destination on responder
-    responder_mgr.register_destination(dest_hash);
+    responder_mgr.register_destination(dest_hash.into());
 
     // Initiator starts link
     let (link_id, link_request_packet) =
-        initiator_mgr.initiate(dest_hash, &dest_signing_key, &mut initiator_ctx);
+        initiator_mgr.initiate(dest_hash.into(), &dest_signing_key, &mut initiator_ctx);
 
     // Deliver link request to responder
     let packet = Packet::unpack(&link_request_packet).unwrap();
@@ -810,11 +810,11 @@ async fn test_keepalive_resets_stale_timer() {
     let dest_signing_key = dest_identity.ed25519_verifying().to_bytes();
 
     // Register destination on responder
-    responder_mgr.register_destination(dest_hash);
+    responder_mgr.register_destination(dest_hash.into());
 
     // Initiator starts link
     let (link_id, link_request_packet) =
-        initiator_mgr.initiate(dest_hash, &dest_signing_key, &mut initiator_ctx);
+        initiator_mgr.initiate(dest_hash.into(), &dest_signing_key, &mut initiator_ctx);
 
     // Deliver link request to responder
     let packet = Packet::unpack(&link_request_packet).unwrap();

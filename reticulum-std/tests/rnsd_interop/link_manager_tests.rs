@@ -39,6 +39,7 @@ use reticulum_core::identity::Identity;
 use reticulum_core::link::{LinkCloseReason, LinkEvent, LinkId, LinkManager};
 use reticulum_core::packet::{Packet, PacketContext, PacketType};
 use reticulum_core::traits::{Clock, NoStorage, PlatformContext};
+use reticulum_core::DestinationHash;
 use reticulum_std::interfaces::hdlc::{frame, DeframeResult, Deframer};
 
 use crate::common::{
@@ -122,7 +123,7 @@ async fn establish_manager_initiator_link(
         .map_err(|_| HarnessError::ParseError("Invalid hash length".to_string()))?;
 
     // Initiate link via manager
-    let (link_id, link_request_packet) = manager.initiate(dest_hash, &signing_key_bytes, ctx);
+    let (link_id, link_request_packet) = manager.initiate(dest_hash.into(), &signing_key_bytes, ctx);
 
     // Send link request
     send_framed(stream, &link_request_packet).await;
@@ -167,7 +168,7 @@ async fn establish_manager_responder_link(
     stream: &mut TcpStream,
     deframer: &mut Deframer,
     identity: &Identity,
-    dest_hash: [u8; 16],
+    dest_hash: DestinationHash,
     ctx: &mut PlatformContext<OsRng, TestClock, NoStorage>,
 ) -> Result<LinkId, HarnessError> {
     // Wait for link request
@@ -532,7 +533,7 @@ async fn test_manager_initiator_concurrent_links() {
         let pub_key_bytes = hex::decode(&dest_info.public_key).unwrap();
         let signing_key: [u8; 32] = pub_key_bytes[32..64].try_into().unwrap();
         let dest_hash: [u8; 16] = hex::decode(&dest_info.hash).unwrap().try_into().unwrap();
-        manager.initiate(dest_hash, &signing_key, ctx)
+        manager.initiate(dest_hash.into(), &signing_key, ctx)
     };
 
     // Initiate all three links
@@ -627,7 +628,7 @@ async fn test_manager_responder_accept_link() {
 
     // Register destination in manager
     let mut manager = LinkManager::new();
-    manager.register_destination(dest_hash);
+    manager.register_destination(dest_hash.into());
 
     // Wait for daemon to process announce
     tokio::time::sleep(Duration::from_millis(500)).await;
@@ -705,7 +706,7 @@ async fn test_manager_responder_reject_link() {
 
     // Register destination in manager
     let mut manager = LinkManager::new();
-    manager.register_destination(dest_hash);
+    manager.register_destination(dest_hash.into());
 
     tokio::time::sleep(Duration::from_millis(500)).await;
 
@@ -780,7 +781,7 @@ async fn test_manager_responder_data_exchange() {
     let identity = destination.identity().expect("Should have identity");
 
     let mut manager = LinkManager::new();
-    manager.register_destination(dest_hash);
+    manager.register_destination(dest_hash.into());
 
     tokio::time::sleep(Duration::from_millis(500)).await;
 
@@ -892,7 +893,7 @@ async fn test_manager_responder_multiple_incoming() {
     let identity = destination.identity().expect("Should have identity");
 
     let mut manager = LinkManager::new();
-    manager.register_destination(dest_hash);
+    manager.register_destination(dest_hash.into());
 
     tokio::time::sleep(Duration::from_millis(500)).await;
 
@@ -1412,7 +1413,7 @@ async fn test_manager_handshake_timeout() {
     let signing_key = [0x33; 32];
 
     // Initiate link to non-existent destination
-    let (link_id, _packet) = manager.initiate(dest_hash, &signing_key, &mut ctx);
+    let (link_id, _packet) = manager.initiate(dest_hash.into(), &signing_key, &mut ctx);
 
     // Verify pending
     assert_eq!(manager.pending_link_count(), 1);
@@ -1449,7 +1450,7 @@ async fn test_manager_send_on_inactive_link() {
     let signing_key = [0x33; 32];
 
     // Initiate link (pending, not active)
-    let (link_id, _packet) = manager.initiate(dest_hash, &signing_key, &mut ctx);
+    let (link_id, _packet) = manager.initiate(dest_hash.into(), &signing_key, &mut ctx);
 
     // Try to send - should fail
     let result = manager.send(&link_id, b"test data", &mut ctx);
@@ -1498,10 +1499,10 @@ async fn test_manager_responder_timeout() {
 
     let mut manager = LinkManager::new();
     let dest_hash = [0x42; 16];
-    manager.register_destination(dest_hash);
+    manager.register_destination(dest_hash.into());
 
     // Simulate receiving a link request
-    let initiator_link = reticulum_core::link::Link::new_outgoing(dest_hash, &mut ctx);
+    let initiator_link = reticulum_core::link::Link::new_outgoing(dest_hash.into(), &mut ctx);
     let request_data = initiator_link.create_link_request();
 
     // Build raw packet
@@ -1574,7 +1575,7 @@ async fn test_manager_many_simultaneous_links() {
         let signing_key: [u8; 32] = pub_key_bytes[32..64].try_into().unwrap();
         let dest_hash: [u8; 16] = hex::decode(&dest.hash).unwrap().try_into().unwrap();
 
-        let (link_id, packet) = manager.initiate(dest_hash, &signing_key, &mut ctx);
+        let (link_id, packet) = manager.initiate(dest_hash.into(), &signing_key, &mut ctx);
         link_ids.push(link_id);
         send_framed(&mut stream, &packet).await;
     }
@@ -1771,7 +1772,7 @@ async fn test_manager_interleaved_operations() {
         let pub_key_bytes = hex::decode(&dest.public_key).unwrap();
         let signing_key: [u8; 32] = pub_key_bytes[32..64].try_into().unwrap();
         let dest_hash: [u8; 16] = hex::decode(&dest.hash).unwrap().try_into().unwrap();
-        manager.initiate(dest_hash, &signing_key, ctx)
+        manager.initiate(dest_hash.into(), &signing_key, ctx)
     };
 
     // Interleave: initiate 1, initiate 2, wait for proof 1, initiate 3, etc.

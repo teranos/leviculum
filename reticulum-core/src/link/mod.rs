@@ -53,6 +53,7 @@ use crate::constants::{
     X25519_KEY_SIZE,
 };
 use crate::crypto::{derive_key, truncated_hash};
+use crate::destination::DestinationHash;
 use crate::identity::Identity;
 use crate::packet::PacketContext;
 use crate::traits::Context;
@@ -171,7 +172,7 @@ pub enum LinkEvent {
         /// The link ID for this request
         link_id: LinkId,
         /// Destination hash the request was sent to
-        dest_hash: [u8; 16],
+        dest_hash: DestinationHash,
         /// Peer's public keys
         peer_keys: PeerKeys,
     },
@@ -252,11 +253,6 @@ impl LinkId {
         &self.0
     }
 
-    /// Get the underlying bytes as a mutable reference
-    pub fn as_bytes_mut(&mut self) -> &mut [u8; TRUNCATED_HASHBYTES] {
-        &mut self.0
-    }
-
     /// Convert to the raw byte array
     pub const fn into_bytes(self) -> [u8; TRUNCATED_HASHBYTES] {
         self.0
@@ -283,13 +279,6 @@ impl AsRef<[u8]> for LinkId {
 
 impl AsRef<[u8; TRUNCATED_HASHBYTES]> for LinkId {
     fn as_ref(&self) -> &[u8; TRUNCATED_HASHBYTES] {
-        &self.0
-    }
-}
-
-impl core::ops::Deref for LinkId {
-    type Target = [u8; TRUNCATED_HASHBYTES];
-    fn deref(&self) -> &Self::Target {
         &self.0
     }
 }
@@ -372,7 +361,7 @@ pub struct Link {
     /// Derived link encryption key (64 bytes: 32 encrypt + 32 HMAC)
     link_key: Option<[u8; 64]>,
     /// Destination hash this link connects to
-    destination_hash: [u8; TRUNCATED_HASHBYTES],
+    destination_hash: DestinationHash,
     /// Whether we initiated this link
     initiator: bool,
     /// Hop count to destination
@@ -396,7 +385,7 @@ pub struct Link {
 impl Link {
     /// Create a new outgoing link (initiator side) using a Context
     pub fn new_outgoing(
-        destination_hash: [u8; TRUNCATED_HASHBYTES],
+        destination_hash: DestinationHash,
         ctx: &mut impl Context,
     ) -> Self {
         Self::new_outgoing_with_rng(destination_hash, ctx.rng())
@@ -404,7 +393,7 @@ impl Link {
 
     /// Create a new outgoing link with a provided RNG
     pub fn new_outgoing_with_rng<R: rand_core::CryptoRngCore>(
-        destination_hash: [u8; TRUNCATED_HASHBYTES],
+        destination_hash: DestinationHash,
         rng: &mut R,
     ) -> Self {
         let ephemeral_private = x25519_dalek::StaticSecret::random_from_rng(&mut *rng);
@@ -459,7 +448,7 @@ impl Link {
     pub fn new_incoming(
         request_data: &[u8],
         link_id: LinkId,
-        destination_hash: [u8; TRUNCATED_HASHBYTES],
+        destination_hash: DestinationHash,
         ctx: &mut impl Context,
     ) -> Result<Self, LinkError> {
         Self::new_incoming_with_rng(request_data, link_id, destination_hash, ctx.rng())
@@ -469,7 +458,7 @@ impl Link {
     pub fn new_incoming_with_rng<R: rand_core::CryptoRngCore>(
         request_data: &[u8],
         link_id: LinkId,
-        destination_hash: [u8; TRUNCATED_HASHBYTES],
+        destination_hash: DestinationHash,
         rng: &mut R,
     ) -> Result<Self, LinkError> {
         // LINK_REQUEST payload: [peer_x25519_pub (32)] [peer_ed25519_pub (32)]
@@ -660,7 +649,7 @@ impl Link {
     }
 
     /// Get the destination hash
-    pub fn destination_hash(&self) -> &[u8; TRUNCATED_HASHBYTES] {
+    pub fn destination_hash(&self) -> &DestinationHash {
         &self.destination_hash
     }
 
@@ -1173,7 +1162,7 @@ impl Link {
         );
         packet.push(flags.to_byte());
         packet.push(0); // hops = 0
-        packet.extend_from_slice(&self.destination_hash);
+        packet.extend_from_slice(self.destination_hash.as_bytes());
         packet.push(PacketContext::None as u8);
         packet.extend_from_slice(&request_data);
 
@@ -1235,7 +1224,7 @@ impl Link {
         packet.push(flags.to_byte());
         packet.push(0); // hops = 0 (we're originating)
         packet.extend_from_slice(&transport_id);
-        packet.extend_from_slice(&self.destination_hash);
+        packet.extend_from_slice(self.destination_hash.as_bytes());
         packet.push(PacketContext::None as u8);
         packet.extend_from_slice(&request_data);
 
@@ -1632,6 +1621,7 @@ impl Link {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::destination::DestinationHash;
     use crate::traits::{Clock, NoStorage, PlatformContext};
     use alloc::vec;
     use alloc::vec::Vec;
@@ -1658,7 +1648,7 @@ mod tests {
 
     #[test]
     fn test_link_creation() {
-        let dest_hash = [0x42; TRUNCATED_HASHBYTES];
+        let dest_hash = DestinationHash::new([0x42; TRUNCATED_HASHBYTES]);
         let link = Link::new_outgoing_with_rng(dest_hash, &mut OsRng);
 
         assert_eq!(link.state(), LinkState::Pending);
@@ -1670,7 +1660,7 @@ mod tests {
 
     #[test]
     fn test_link_request_data() {
-        let dest_hash = [0x42; TRUNCATED_HASHBYTES];
+        let dest_hash = DestinationHash::new([0x42; TRUNCATED_HASHBYTES]);
         let link = Link::new_outgoing_with_rng(dest_hash, &mut OsRng);
 
         let request = link.create_link_request();
@@ -1683,7 +1673,7 @@ mod tests {
 
     #[test]
     fn test_link_request_with_mtu() {
-        let dest_hash = [0x42; TRUNCATED_HASHBYTES];
+        let dest_hash = DestinationHash::new([0x42; TRUNCATED_HASHBYTES]);
         let link = Link::new_outgoing_with_rng(dest_hash, &mut OsRng);
 
         let request = link.create_link_request_with_mtu(500, 1);
@@ -1703,7 +1693,7 @@ mod tests {
 
     #[test]
     fn test_link_id_calculation() {
-        let dest_hash = [0x42; TRUNCATED_HASHBYTES];
+        let dest_hash = DestinationHash::new([0x42; TRUNCATED_HASHBYTES]);
         let link = Link::new_outgoing_with_rng(dest_hash, &mut OsRng);
 
         // Construct raw packet: [flags][hops][dest_hash][context][request_data]
@@ -1711,21 +1701,21 @@ mod tests {
         let mut raw_packet = Vec::new();
         raw_packet.push(0x02); // flags
         raw_packet.push(0x00); // hops
-        raw_packet.extend_from_slice(&dest_hash);
+        raw_packet.extend_from_slice(dest_hash.as_bytes());
         raw_packet.push(0x00); // context
         raw_packet.extend_from_slice(&request);
 
         let link_id = Link::calculate_link_id(&raw_packet);
 
         // Link ID should be 16 bytes
-        assert_eq!(link_id.len(), TRUNCATED_HASHBYTES);
+        assert_eq!(link_id.as_bytes().len(), TRUNCATED_HASHBYTES);
         // Should be deterministic
         assert_eq!(link_id, Link::calculate_link_id(&raw_packet));
     }
 
     #[test]
     fn test_set_link_id() {
-        let dest_hash = [0x42; TRUNCATED_HASHBYTES];
+        let dest_hash = DestinationHash::new([0x42; TRUNCATED_HASHBYTES]);
         let mut link = Link::new_outgoing_with_rng(dest_hash, &mut OsRng);
 
         let new_id = LinkId::new([0xAB; TRUNCATED_HASHBYTES]);
@@ -1736,7 +1726,7 @@ mod tests {
 
     #[test]
     fn test_process_proof_invalid_state() {
-        let dest_hash = [0x42; TRUNCATED_HASHBYTES];
+        let dest_hash = DestinationHash::new([0x42; TRUNCATED_HASHBYTES]);
         let mut link = Link::new_outgoing_with_rng(dest_hash, &mut OsRng);
 
         // Manually set state to Active
@@ -1749,7 +1739,7 @@ mod tests {
 
     #[test]
     fn test_process_proof_too_short() {
-        let dest_hash = [0x42; TRUNCATED_HASHBYTES];
+        let dest_hash = DestinationHash::new([0x42; TRUNCATED_HASHBYTES]);
         let mut link = Link::new_outgoing_with_rng(dest_hash, &mut OsRng);
 
         let short_proof = [0u8; 98]; // One byte short of required 99
@@ -1759,7 +1749,7 @@ mod tests {
 
     #[test]
     fn test_process_proof_no_destination_key() {
-        let dest_hash = [0x42; TRUNCATED_HASHBYTES];
+        let dest_hash = DestinationHash::new([0x42; TRUNCATED_HASHBYTES]);
         let mut link = Link::new_outgoing_with_rng(dest_hash, &mut OsRng);
 
         let fake_proof = [0u8; 99]; // 64 sig + 32 X25519 + 3 signalling
@@ -1770,7 +1760,7 @@ mod tests {
 
     #[test]
     fn test_set_destination_keys() {
-        let dest_hash = [0x42; TRUNCATED_HASHBYTES];
+        let dest_hash = DestinationHash::new([0x42; TRUNCATED_HASHBYTES]);
         let mut link = Link::new_outgoing_with_rng(dest_hash, &mut OsRng);
 
         // Create a valid Ed25519 verifying key
@@ -1804,7 +1794,7 @@ mod tests {
         use ed25519_dalek::Signer;
 
         // Simulate a full handshake between initiator and destination
-        let dest_hash = [0x42; TRUNCATED_HASHBYTES];
+        let dest_hash = DestinationHash::new([0x42; TRUNCATED_HASHBYTES]);
 
         // --- Initiator side ---
         let mut link = Link::new_outgoing_with_rng(dest_hash, &mut OsRng);
@@ -1814,7 +1804,7 @@ mod tests {
         let mut raw_packet = Vec::new();
         raw_packet.push(0x02); // flags
         raw_packet.push(0x00); // hops
-        raw_packet.extend_from_slice(&dest_hash);
+        raw_packet.extend_from_slice(dest_hash.as_bytes());
         raw_packet.push(0x00); // context
         raw_packet.extend_from_slice(&request);
 
@@ -1873,7 +1863,7 @@ mod tests {
         use ed25519_dalek::Signer;
 
         // Set up a link with completed handshake (reuse handshake simulation)
-        let dest_hash = [0x42; TRUNCATED_HASHBYTES];
+        let dest_hash = DestinationHash::new([0x42; TRUNCATED_HASHBYTES]);
         let mut link = Link::new_outgoing_with_rng(dest_hash, &mut OsRng);
         let request = link.create_link_request();
 
@@ -1881,7 +1871,7 @@ mod tests {
         let mut raw_packet = Vec::new();
         raw_packet.push(0x02);
         raw_packet.push(0x00);
-        raw_packet.extend_from_slice(&dest_hash);
+        raw_packet.extend_from_slice(dest_hash.as_bytes());
         raw_packet.push(0x00);
         raw_packet.extend_from_slice(&request);
 
@@ -1938,14 +1928,14 @@ mod tests {
         use ed25519_dalek::Signer;
 
         // Set up a link with completed handshake
-        let dest_hash = [0x42; TRUNCATED_HASHBYTES];
+        let dest_hash = DestinationHash::new([0x42; TRUNCATED_HASHBYTES]);
         let mut link = Link::new_outgoing_with_rng(dest_hash, &mut OsRng);
         let request = link.create_link_request();
 
         let mut raw_packet = Vec::new();
         raw_packet.push(0x02);
         raw_packet.push(0x00);
-        raw_packet.extend_from_slice(&dest_hash);
+        raw_packet.extend_from_slice(dest_hash.as_bytes());
         raw_packet.push(0x00);
         raw_packet.extend_from_slice(&request);
 
@@ -2018,14 +2008,14 @@ mod tests {
         use ed25519_dalek::Signer;
 
         // Set up a link with completed handshake
-        let dest_hash = [0x42; TRUNCATED_HASHBYTES];
+        let dest_hash = DestinationHash::new([0x42; TRUNCATED_HASHBYTES]);
         let mut link = Link::new_outgoing_with_rng(dest_hash, &mut OsRng);
         let request = link.create_link_request();
 
         let mut raw_packet = Vec::new();
         raw_packet.push(0x02);
         raw_packet.push(0x00);
-        raw_packet.extend_from_slice(&dest_hash);
+        raw_packet.extend_from_slice(dest_hash.as_bytes());
         raw_packet.push(0x00);
         raw_packet.extend_from_slice(&request);
 
@@ -2093,7 +2083,7 @@ mod tests {
 
     #[test]
     fn test_build_data_packet_not_active() {
-        let dest_hash = [0x42; TRUNCATED_HASHBYTES];
+        let dest_hash = DestinationHash::new([0x42; TRUNCATED_HASHBYTES]);
         let link = Link::new_outgoing_with_rng(dest_hash, &mut OsRng);
 
         let mut ctx = PlatformContext {
@@ -2110,7 +2100,7 @@ mod tests {
 
     #[test]
     fn test_new_incoming_link() {
-        let dest_hash = [0x42; TRUNCATED_HASHBYTES];
+        let dest_hash = DestinationHash::new([0x42; TRUNCATED_HASHBYTES]);
 
         // Create initiator's link request
         let initiator = Link::new_outgoing_with_rng(dest_hash, &mut OsRng);
@@ -2120,7 +2110,7 @@ mod tests {
         let mut raw_packet = Vec::new();
         raw_packet.push(0x02); // flags
         raw_packet.push(0x00); // hops
-        raw_packet.extend_from_slice(&dest_hash);
+        raw_packet.extend_from_slice(dest_hash.as_bytes());
         raw_packet.push(0x00); // context
         raw_packet.extend_from_slice(&request_data);
         let link_id = Link::calculate_link_id(&raw_packet);
@@ -2140,7 +2130,7 @@ mod tests {
 
     #[test]
     fn test_new_incoming_link_invalid_request() {
-        let dest_hash = [0x42; TRUNCATED_HASHBYTES];
+        let dest_hash = DestinationHash::new([0x42; TRUNCATED_HASHBYTES]);
         let link_id = LinkId::new([0xAB; TRUNCATED_HASHBYTES]);
 
         // Too short request data
@@ -2153,7 +2143,7 @@ mod tests {
     fn test_build_proof_packet() {
         use crate::identity::Identity;
 
-        let dest_hash = [0x42; TRUNCATED_HASHBYTES];
+        let dest_hash = DestinationHash::new([0x42; TRUNCATED_HASHBYTES]);
 
         // Create destination identity
         let identity = Identity::generate_with_rng(&mut OsRng);
@@ -2166,7 +2156,7 @@ mod tests {
         let mut raw_packet = Vec::new();
         raw_packet.push(0x02);
         raw_packet.push(0x00);
-        raw_packet.extend_from_slice(&dest_hash);
+        raw_packet.extend_from_slice(dest_hash.as_bytes());
         raw_packet.push(0x00);
         raw_packet.extend_from_slice(&request_data);
         let link_id = Link::calculate_link_id(&raw_packet);
@@ -2198,7 +2188,7 @@ mod tests {
     fn test_build_proof_packet_wrong_state() {
         use crate::identity::Identity;
 
-        let dest_hash = [0x42; TRUNCATED_HASHBYTES];
+        let dest_hash = DestinationHash::new([0x42; TRUNCATED_HASHBYTES]);
         let identity = Identity::generate_with_rng(&mut OsRng);
 
         let initiator = Link::new_outgoing_with_rng(dest_hash, &mut OsRng);
@@ -2220,7 +2210,7 @@ mod tests {
     fn test_build_proof_packet_from_initiator() {
         use crate::identity::Identity;
 
-        let dest_hash = [0x42; TRUNCATED_HASHBYTES];
+        let dest_hash = DestinationHash::new([0x42; TRUNCATED_HASHBYTES]);
         let identity = Identity::generate_with_rng(&mut OsRng);
 
         // Initiator should not be able to build proof
@@ -2234,7 +2224,7 @@ mod tests {
     fn test_full_handshake_responder_side() {
         use crate::identity::Identity;
 
-        let dest_hash = [0x42; TRUNCATED_HASHBYTES];
+        let dest_hash = DestinationHash::new([0x42; TRUNCATED_HASHBYTES]);
 
         // --- Destination setup ---
         let dest_identity = Identity::generate_with_rng(&mut OsRng);
@@ -2247,7 +2237,7 @@ mod tests {
         let mut raw_packet = Vec::new();
         raw_packet.push(0x02);
         raw_packet.push(0x00);
-        raw_packet.extend_from_slice(&dest_hash);
+        raw_packet.extend_from_slice(dest_hash.as_bytes());
         raw_packet.push(0x00);
         raw_packet.extend_from_slice(&request_data);
         let link_id = Link::calculate_link_id(&raw_packet);
@@ -2283,7 +2273,7 @@ mod tests {
     fn test_process_rtt() {
         use crate::identity::Identity;
 
-        let dest_hash = [0x42; TRUNCATED_HASHBYTES];
+        let dest_hash = DestinationHash::new([0x42; TRUNCATED_HASHBYTES]);
         let dest_identity = Identity::generate_with_rng(&mut OsRng);
 
         // Set up links
@@ -2293,7 +2283,7 @@ mod tests {
         let mut raw_packet = Vec::new();
         raw_packet.push(0x02);
         raw_packet.push(0x00);
-        raw_packet.extend_from_slice(&dest_hash);
+        raw_packet.extend_from_slice(dest_hash.as_bytes());
         raw_packet.push(0x00);
         raw_packet.extend_from_slice(&request_data);
         let link_id = Link::calculate_link_id(&raw_packet);
@@ -2334,7 +2324,7 @@ mod tests {
 
     #[test]
     fn test_process_rtt_wrong_state() {
-        let dest_hash = [0x42; TRUNCATED_HASHBYTES];
+        let dest_hash = DestinationHash::new([0x42; TRUNCATED_HASHBYTES]);
         let link_id = LinkId::new([0xAB; TRUNCATED_HASHBYTES]);
 
         let initiator = Link::new_outgoing_with_rng(dest_hash, &mut OsRng);
@@ -2353,7 +2343,7 @@ mod tests {
     fn test_bidirectional_data_after_handshake() {
         use crate::identity::Identity;
 
-        let dest_hash = [0x42; TRUNCATED_HASHBYTES];
+        let dest_hash = DestinationHash::new([0x42; TRUNCATED_HASHBYTES]);
         let dest_identity = Identity::generate_with_rng(&mut OsRng);
 
         // Full handshake
@@ -2363,7 +2353,7 @@ mod tests {
         let mut raw_packet = Vec::new();
         raw_packet.push(0x02);
         raw_packet.push(0x00);
-        raw_packet.extend_from_slice(&dest_hash);
+        raw_packet.extend_from_slice(dest_hash.as_bytes());
         raw_packet.push(0x00);
         raw_packet.extend_from_slice(&request_data);
         let link_id = Link::calculate_link_id(&raw_packet);
@@ -2423,7 +2413,7 @@ mod tests {
     fn test_build_link_request_with_transport() {
         use crate::packet::{HeaderType, Packet, TransportType};
 
-        let dest_hash = [0x42; TRUNCATED_HASHBYTES];
+        let dest_hash = DestinationHash::new([0x42; TRUNCATED_HASHBYTES]);
         let transport_id = [0xAB; TRUNCATED_HASHBYTES];
 
         // Test with transport_id and hops=1 (should still use HEADER_2 because transport_id is set)
@@ -2463,7 +2453,7 @@ mod tests {
     fn test_build_link_request_with_transport_flags() {
         use crate::packet::Packet;
 
-        let dest_hash = [0x42; TRUNCATED_HASHBYTES];
+        let dest_hash = DestinationHash::new([0x42; TRUNCATED_HASHBYTES]);
         let transport_id = [0xCD; TRUNCATED_HASHBYTES];
 
         let mut link = Link::new_outgoing_with_rng(dest_hash, &mut OsRng);
@@ -2492,7 +2482,7 @@ mod tests {
         assert_eq!(&packet[2..18], &transport_id);
 
         // Destination hash should be at bytes 18-33
-        assert_eq!(&packet[18..34], &dest_hash);
+        assert_eq!(&packet[18..34], dest_hash.as_bytes().as_slice());
 
         // Verify parsed packet matches
         assert_eq!(parsed.hops, 0);
@@ -2506,7 +2496,7 @@ mod tests {
         // regardless of whether HEADER_1 or HEADER_2 is used.
         // This is critical for transport routing to work correctly.
 
-        let dest_hash = [0x42; TRUNCATED_HASHBYTES];
+        let dest_hash = DestinationHash::new([0x42; TRUNCATED_HASHBYTES]);
         let transport_id = [0xAB; TRUNCATED_HASHBYTES];
 
         // Create two links with the same ephemeral keys by using the same seed
@@ -2527,7 +2517,7 @@ mod tests {
         let mut header1_packet = Vec::new();
         header1_packet.push(0x02); // flags: Type1, Broadcast, Single, LinkRequest
         header1_packet.push(0x00); // hops
-        header1_packet.extend_from_slice(&dest_hash);
+        header1_packet.extend_from_slice(dest_hash.as_bytes());
         header1_packet.push(0x00); // context
         header1_packet.extend_from_slice(&request_data);
 
@@ -2536,7 +2526,7 @@ mod tests {
         header2_packet.push(0x52); // flags: Type2, Transport, Single, LinkRequest
         header2_packet.push(0x00); // hops
         header2_packet.extend_from_slice(&transport_id);
-        header2_packet.extend_from_slice(&dest_hash);
+        header2_packet.extend_from_slice(dest_hash.as_bytes());
         header2_packet.push(0x00); // context
         header2_packet.extend_from_slice(&request_data);
 
@@ -2580,7 +2570,7 @@ mod tests {
 
     #[test]
     fn test_update_keepalive_from_rtt() {
-        let dest_hash = [0x42; TRUNCATED_HASHBYTES];
+        let dest_hash = DestinationHash::new([0x42; TRUNCATED_HASHBYTES]);
         let mut link = Link::new_outgoing_with_rng(dest_hash, &mut OsRng);
 
         // Default values
@@ -2600,7 +2590,7 @@ mod tests {
 
     #[test]
     fn test_should_send_keepalive() {
-        let dest_hash = [0x42; TRUNCATED_HASHBYTES];
+        let dest_hash = DestinationHash::new([0x42; TRUNCATED_HASHBYTES]);
 
         // Create initiator and responder
         let mut initiator = Link::new_outgoing_with_rng(dest_hash, &mut OsRng);
@@ -2634,7 +2624,7 @@ mod tests {
 
     #[test]
     fn test_is_stale_and_should_close() {
-        let dest_hash = [0x42; TRUNCATED_HASHBYTES];
+        let dest_hash = DestinationHash::new([0x42; TRUNCATED_HASHBYTES]);
         let mut link = Link::new_outgoing_with_rng(dest_hash, &mut OsRng);
 
         // Configure for easier testing
@@ -2663,7 +2653,7 @@ mod tests {
     fn setup_active_link_pair() -> (Link, Link, PlatformContext<OsRng, TestClock, NoStorage>) {
         use crate::identity::Identity;
 
-        let dest_hash = [0x42; TRUNCATED_HASHBYTES];
+        let dest_hash = DestinationHash::new([0x42; TRUNCATED_HASHBYTES]);
         let dest_identity = Identity::generate_with_rng(&mut OsRng);
 
         let mut initiator = Link::new_outgoing_with_rng(dest_hash, &mut OsRng);
@@ -2672,7 +2662,7 @@ mod tests {
         let mut raw_packet = Vec::new();
         raw_packet.push(0x02);
         raw_packet.push(0x00);
-        raw_packet.extend_from_slice(&dest_hash);
+        raw_packet.extend_from_slice(dest_hash.as_bytes());
         raw_packet.push(0x00);
         raw_packet.extend_from_slice(&request_data);
         let link_id = Link::calculate_link_id(&raw_packet);
@@ -2823,7 +2813,7 @@ mod tests {
 
     #[test]
     fn test_close_from_wrong_state() {
-        let dest_hash = [0x42; TRUNCATED_HASHBYTES];
+        let dest_hash = DestinationHash::new([0x42; TRUNCATED_HASHBYTES]);
         let link = Link::new_outgoing_with_rng(dest_hash, &mut OsRng);
 
         // Link is in Pending state
@@ -2838,7 +2828,7 @@ mod tests {
 
     #[test]
     fn test_link_state_transitions() {
-        let dest_hash = [0x42; TRUNCATED_HASHBYTES];
+        let dest_hash = DestinationHash::new([0x42; TRUNCATED_HASHBYTES]);
         let mut link = Link::new_outgoing_with_rng(dest_hash, &mut OsRng);
 
         assert_eq!(link.state(), LinkState::Pending);
@@ -2857,7 +2847,7 @@ mod tests {
 
     #[test]
     fn test_record_timestamps() {
-        let dest_hash = [0x42; TRUNCATED_HASHBYTES];
+        let dest_hash = DestinationHash::new([0x42; TRUNCATED_HASHBYTES]);
         let mut link = Link::new_outgoing_with_rng(dest_hash, &mut OsRng);
 
         link.record_inbound(12345);

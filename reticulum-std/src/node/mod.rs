@@ -56,7 +56,7 @@ use reticulum_core::constants::{MTU, TRUNCATED_HASHBYTES};
 use reticulum_core::link::LinkId;
 use reticulum_core::node::{NodeCore, NodeEvent};
 use reticulum_core::traits::{Interface, InterfaceError, NoStorage, PlatformContext};
-use reticulum_core::Destination;
+use reticulum_core::{Destination, DestinationHash};
 
 use crate::clock::SystemClock;
 use crate::config::InterfaceConfig;
@@ -270,7 +270,7 @@ impl ReticulumNode {
     /// via an interface to initiate the connection handshake.
     pub async fn connect(
         &self,
-        dest_hash: &[u8; TRUNCATED_HASHBYTES],
+        dest_hash: &DestinationHash,
         dest_signing_key: &[u8; 32],
     ) -> Result<(ConnectionStream, Vec<u8>), Error> {
         // Create oneshot channel to receive notification when connection is established
@@ -279,7 +279,7 @@ impl ReticulumNode {
         // Register the pending connect
         {
             let mut pending = self.pending_connects.lock().unwrap();
-            pending.insert(*dest_hash, tx);
+            pending.insert(dest_hash.into_bytes(), tx);
         }
 
         // Request connection from NodeCore

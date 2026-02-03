@@ -87,7 +87,7 @@ async fn test_rotation_during_active_link() {
     let pub_key_bytes = hex::decode(&dest_info.public_key).unwrap();
     let signing_key_bytes: [u8; 32] = pub_key_bytes[32..64].try_into().unwrap();
 
-    let mut link = Link::new_outgoing_with_rng(dest_hash, &mut OsRng);
+    let mut link = Link::new_outgoing_with_rng(dest_hash.into(), &mut OsRng);
     link.set_destination_keys(&signing_key_bytes).unwrap();
 
     let mut stream = connect_to_daemon(&daemon).await;
@@ -486,7 +486,7 @@ async fn test_link_to_ratcheted_destination() {
     let pub_key_bytes = hex::decode(&dest_info.public_key).unwrap();
     let signing_key_bytes: [u8; 32] = pub_key_bytes[32..64].try_into().unwrap();
 
-    let mut link = Link::new_outgoing_with_rng(dest_hash, &mut OsRng);
+    let mut link = Link::new_outgoing_with_rng(dest_hash.into(), &mut OsRng);
     link.set_destination_keys(&signing_key_bytes).unwrap();
 
     let mut stream = connect_to_daemon(&daemon).await;

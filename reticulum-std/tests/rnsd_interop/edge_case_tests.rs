@@ -224,7 +224,7 @@ async fn test_link_id_calculation_matches_python() {
     let signing_key_bytes: [u8; 32] = pub_key_bytes[32..64].try_into().unwrap();
 
     // Create link
-    let mut link = Link::new_outgoing_with_rng(dest_hash, &mut OsRng);
+    let mut link = Link::new_outgoing_with_rng(dest_hash.into(), &mut OsRng);
     link.set_destination_keys(&signing_key_bytes).unwrap();
 
     let raw_packet = link.build_link_request_packet();
@@ -277,7 +277,7 @@ async fn test_link_request_to_unknown_destination() {
     let random_dest: [u8; TRUNCATED_HASHBYTES] = [0xAB; TRUNCATED_HASHBYTES];
     let dummy_key = [0u8; 32];
 
-    let mut link = Link::new_outgoing_with_rng(random_dest, &mut OsRng);
+    let mut link = Link::new_outgoing_with_rng(random_dest.into(), &mut OsRng);
     let _ = link.set_destination_keys(&dummy_key);
 
     let raw_packet = link.build_link_request_packet();
@@ -328,7 +328,7 @@ async fn test_duplicate_link_request_handling() {
     let signing_key_bytes: [u8; 32] = pub_key_bytes[32..64].try_into().unwrap();
 
     // Create and send first link request
-    let mut link = Link::new_outgoing_with_rng(dest_hash, &mut OsRng);
+    let mut link = Link::new_outgoing_with_rng(dest_hash.into(), &mut OsRng);
     link.set_destination_keys(&signing_key_bytes).unwrap();
 
     let raw_packet = link.build_link_request_packet();
@@ -392,7 +392,7 @@ async fn test_data_on_aes_block_boundary() {
     let pub_key_bytes = hex::decode(&dest_info.public_key).unwrap();
     let signing_key_bytes: [u8; 32] = pub_key_bytes[32..64].try_into().unwrap();
 
-    let mut link = Link::new_outgoing_with_rng(dest_hash, &mut OsRng);
+    let mut link = Link::new_outgoing_with_rng(dest_hash.into(), &mut OsRng);
     link.set_destination_keys(&signing_key_bytes).unwrap();
 
     let mut stream = connect_to_daemon(&daemon).await;
@@ -498,7 +498,7 @@ async fn test_empty_data_packet() {
     let pub_key_bytes = hex::decode(&dest_info.public_key).unwrap();
     let signing_key_bytes: [u8; 32] = pub_key_bytes[32..64].try_into().unwrap();
 
-    let mut link = Link::new_outgoing_with_rng(dest_hash, &mut OsRng);
+    let mut link = Link::new_outgoing_with_rng(dest_hash.into(), &mut OsRng);
     link.set_destination_keys(&signing_key_bytes).unwrap();
 
     let mut stream = connect_to_daemon(&daemon).await;
@@ -583,7 +583,7 @@ async fn test_large_payload_near_mtu() {
     let pub_key_bytes = hex::decode(&dest_info.public_key).unwrap();
     let signing_key_bytes: [u8; 32] = pub_key_bytes[32..64].try_into().unwrap();
 
-    let mut link = Link::new_outgoing_with_rng(dest_hash, &mut OsRng);
+    let mut link = Link::new_outgoing_with_rng(dest_hash.into(), &mut OsRng);
     link.set_destination_keys(&signing_key_bytes).unwrap();
 
     let mut stream = connect_to_daemon(&daemon).await;

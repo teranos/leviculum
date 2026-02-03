@@ -26,7 +26,7 @@ use tokio::io::AsyncReadExt;
 use tokio::net::TcpStream;
 use tokio::time::timeout;
 
-use reticulum_core::constants::{MTU, RATCHET_SIZE, TRUNCATED_HASHBYTES};
+use reticulum_core::constants::{MTU, RATCHET_SIZE};
 use reticulum_core::destination::{Destination, DestinationType, Direction};
 use reticulum_core::identity::Identity;
 use reticulum_core::packet::{Packet, PacketType};
@@ -286,7 +286,7 @@ async fn test_rust_to_rust_ratcheted_announce_via_python() {
         .await
         .expect("Failed to flush A");
 
-    println!("A announced: {:02x?}...", &dest_a.hash()[..4]);
+    println!("A announced: {:02x?}...", &dest_a.hash().as_bytes()[..4]);
 
     // B announces
     let packet_b = dest_b
@@ -305,7 +305,7 @@ async fn test_rust_to_rust_ratcheted_announce_via_python() {
         .await
         .expect("Failed to flush B");
 
-    println!("B announced: {:02x?}...", &dest_b.hash()[..4]);
+    println!("B announced: {:02x?}...", &dest_b.hash().as_bytes()[..4]);
 
     // Wait for propagation
     tokio::time::sleep(Duration::from_millis(500)).await;
@@ -482,7 +482,7 @@ async fn wait_for_ratcheted_announce(
 /// Wait for an announce packet with a specific destination hash.
 async fn wait_for_announce_with_hash(
     stream: &mut TcpStream,
-    dest_hash: &[u8; TRUNCATED_HASHBYTES],
+    dest_hash: &reticulum_core::DestinationHash,
     timeout_duration: Duration,
 ) -> Option<ParsedAnnounce> {
     let mut deframer = Deframer::new();
@@ -498,7 +498,7 @@ async fn wait_for_announce_with_hash(
                     if let DeframeResult::Frame(data) = result {
                         if let Ok(pkt) = Packet::unpack(&data) {
                             if pkt.flags.packet_type == PacketType::Announce
-                                && pkt.destination_hash == *dest_hash
+                                && pkt.destination_hash == *dest_hash.as_bytes()
                             {
                                 return ParsedAnnounce::from_packet(&pkt);
                             }

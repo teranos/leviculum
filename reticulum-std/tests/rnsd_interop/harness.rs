@@ -329,8 +329,8 @@ impl TestDaemon {
     }
 
     /// Check if a path exists to a destination.
-    pub async fn has_path(&self, dest_hash: &[u8]) -> bool {
-        let hex_hash = hex::encode(dest_hash);
+    pub async fn has_path(&self, dest_hash: impl AsRef<[u8]>) -> bool {
+        let hex_hash = hex::encode(dest_hash.as_ref());
         match self
             .query("has_path", serde_json::json!({"hash": hex_hash}))
             .await

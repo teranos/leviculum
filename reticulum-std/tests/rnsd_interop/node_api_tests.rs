@@ -338,8 +338,9 @@ async fn test_node_learns_path_from_announce() {
             .expect("Invalid hex")
             .try_into()
             .expect("Wrong length");
+        let dest_hash = reticulum_core::DestinationHash::new(dest_hash_bytes);
 
-        let has_path = core.has_path(&dest_hash_bytes);
+        let has_path = core.has_path(&dest_hash);
         assert!(has_path, "Node should have a path to the announced destination");
     } // Lock is dropped here before await
 

@@ -52,9 +52,10 @@ use reticulum_core::constants::{MTU, TRUNCATED_HASHBYTES};
 use reticulum_core::destination::{Destination, DestinationType, Direction};
 use reticulum_core::identity::Identity;
 use reticulum_core::link::channel::{Channel, ChannelError, Envelope, Message, StreamDataMessage};
-use reticulum_core::link::{Link, LinkState};
+use reticulum_core::link::{Link, LinkId, LinkState};
 use reticulum_core::packet::{Packet, PacketContext};
 use reticulum_core::traits::Clock;
+use reticulum_core::DestinationHash;
 use reticulum_std::interfaces::hdlc::{frame, Deframer};
 
 use crate::common::*;
@@ -170,7 +171,7 @@ struct RustTestNode {
     stream: TcpStream,
     deframer: Deframer,
     destination: Destination,
-    dest_hash: [u8; 16],
+    dest_hash: DestinationHash,
     has_ratchets: bool,
     channel: Channel,
 }
@@ -453,8 +454,11 @@ async fn phase2_link_establishment(network: &mut MultiNodeTestNetwork) {
     // through the relay daemons. We first check if Rust-A can see Py-4's path.
     println!("Testing L1: Rust-A -> Py-4 (multi-hop link)...");
     if let Some(dest_info) = &network.py_4_dest {
-        let dest_hash: [u8; TRUNCATED_HASHBYTES] =
-            hex::decode(&dest_info.hash).unwrap().try_into().unwrap();
+        let dest_hash: DestinationHash = hex::decode(&dest_info.hash)
+            .unwrap()
+            .try_into()
+            .map(DestinationHash::new)
+            .unwrap();
 
         // Check if announce propagated to Py-1 (Rust-A's connected daemon)
         let py1_has_path = network.py_1.has_path(&dest_hash).await;
@@ -568,7 +572,8 @@ async fn phase2_link_establishment(network: &mut MultiNodeTestNetwork) {
     )
     .await;
 
-    if let Some((raw_req, link_id)) = link_request {
+    if let Some((raw_req, link_id_bytes)) = link_request {
+        let link_id = LinkId::new(link_id_bytes);
         println!("  L3: Link request received by Rust-B");
 
         // Parse the received packet to extract the link request data
@@ -579,7 +584,7 @@ async fn phase2_link_establishment(network: &mut MultiNodeTestNetwork) {
         let mut ctx = make_context();
         let mut incoming_link = Link::new_incoming(
             parsed_packet.data.as_slice(),
-            link_id.into(),
+            link_id,
             network.rust_b.dest_hash,
             &mut ctx,
         )
@@ -700,7 +705,8 @@ async fn phase2_link_establishment(network: &mut MultiNodeTestNetwork) {
     )
     .await;
 
-    if let Some((raw_req, link_id)) = link_request {
+    if let Some((raw_req, link_id_bytes)) = link_request {
+        let link_id = LinkId::new(link_id_bytes);
         println!("  L5: Link request received by Rust-D");
 
         // Parse the received packet to extract the link request data
@@ -709,7 +715,7 @@ async fn phase2_link_establishment(network: &mut MultiNodeTestNetwork) {
         let mut ctx = make_context();
         let mut incoming_link = Link::new_incoming(
             parsed_packet.data.as_slice(),
-            link_id.into(),
+            link_id,
             network.rust_d.dest_hash,
             &mut ctx,
         )
@@ -1178,8 +1184,12 @@ async fn test_rust_to_python_link() {
     println!("Python destination: {}", dest_info.hash);
 
     // Create link from Rust to Python destination
-    let dest_hash: [u8; TRUNCATED_HASHBYTES] =
-        hex::decode(&dest_info.hash).unwrap().try_into().unwrap();
+    let dest_hash: DestinationHash = DestinationHash::new(
+        hex::decode(&dest_info.hash)
+            .unwrap()
+            .try_into()
+            .unwrap(),
+    );
     let pub_key_bytes = hex::decode(&dest_info.public_key).unwrap();
     let signing_key: [u8; 32] = pub_key_bytes[32..64].try_into().unwrap();
 

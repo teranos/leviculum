@@ -10,9 +10,10 @@ use reticulum_core::constants::{MTU, TRUNCATED_HASHBYTES};
 use reticulum_core::crypto::truncated_hash;
 use reticulum_core::destination::{Destination, DestinationType, Direction};
 use reticulum_core::identity::Identity;
-use reticulum_core::link::Link;
+use reticulum_core::link::{Link, LinkId};
 use reticulum_core::packet::{Packet, PacketContext, PacketType};
 use reticulum_core::traits::{Clock, NoStorage, PlatformContext};
+use reticulum_core::DestinationHash;
 use reticulum_std::interfaces::hdlc::{frame, DeframeResult, Deframer};
 use reticulum_std::SystemClock;
 
@@ -133,14 +134,6 @@ pub fn compute_name_hash(app_name: &str, aspects: &[&str]) -> [u8; 10] {
     Destination::compute_name_hash(app_name, aspects)
 }
 
-/// Helper to compute destination_hash from name_hash and identity_hash
-pub fn compute_destination_hash(name_hash: &[u8; 10], identity_hash: &[u8; 16]) -> [u8; 16] {
-    let mut hash_material = Vec::with_capacity(26);
-    hash_material.extend_from_slice(name_hash);
-    hash_material.extend_from_slice(identity_hash);
-    truncated_hash(&hash_material)
-}
-
 /// Build and send a valid announce on the given stream.
 /// Returns (destination_hash, destination) for verification.
 pub async fn build_and_send_announce(
@@ -148,7 +141,7 @@ pub async fn build_and_send_announce(
     app_name: &str,
     aspects: &[&str],
     app_data: &[u8],
-) -> ([u8; TRUNCATED_HASHBYTES], Destination) {
+) -> (DestinationHash, Destination) {
     let identity = Identity::generate_with_rng(&mut OsRng);
     let mut dest = Destination::new(
         Some(identity),
@@ -182,7 +175,7 @@ pub fn build_announce_raw(
     app_name: &str,
     aspects: &[&str],
     app_data: &[u8],
-) -> (Vec<u8>, [u8; TRUNCATED_HASHBYTES], Destination) {
+) -> (Vec<u8>, DestinationHash, Destination) {
     let identity = Identity::generate_with_rng(&mut OsRng);
     let mut dest = Destination::new(
         Some(identity),
@@ -211,7 +204,7 @@ pub fn build_announce_raw_with_hops(
     aspects: &[&str],
     app_data: &[u8],
     hops: u8,
-) -> (Vec<u8>, [u8; TRUNCATED_HASHBYTES], Destination) {
+) -> (Vec<u8>, DestinationHash, Destination) {
     let (mut raw, dest_hash, dest) = build_announce_raw(app_name, aspects, app_data);
     // Hops is the second byte (offset 1) in the raw packet
     raw[1] = hops;
@@ -222,7 +215,7 @@ pub fn build_announce_raw_with_hops(
 /// Returns true if found within the timeout.
 pub async fn wait_for_announce(
     stream: &mut TcpStream,
-    dest_hash: &[u8; TRUNCATED_HASHBYTES],
+    dest_hash: &DestinationHash,
     timeout_duration: Duration,
 ) -> bool {
     let mut deframer = Deframer::new();
@@ -238,7 +231,7 @@ pub async fn wait_for_announce(
                     if let DeframeResult::Frame(data) = result {
                         if let Ok(pkt) = Packet::unpack(&data) {
                             if pkt.flags.packet_type == PacketType::Announce
-                                && pkt.destination_hash == *dest_hash
+                                && pkt.destination_hash == *dest_hash.as_bytes()
                             {
                                 return true;
                             }
@@ -348,7 +341,7 @@ pub async fn send_announce_to_daemon(
     app_name: &str,
     aspects: &[&str],
     app_data: &[u8],
-) -> [u8; TRUNCATED_HASHBYTES] {
+) -> DestinationHash {
     let mut stream = TcpStream::connect(daemon.rns_addr())
         .await
         .expect("Failed to connect to daemon");
@@ -396,7 +389,7 @@ pub async fn connect_to_daemon(daemon: &TestDaemon) -> TcpStream {
 pub async fn receive_proof_for_link(
     stream: &mut TcpStream,
     deframer: &mut Deframer,
-    link_id: &[u8; 16],
+    link_id: &LinkId,
     timeout_duration: Duration,
 ) -> Option<Packet> {
     let mut buffer = [0u8; 2048];
@@ -411,7 +404,7 @@ pub async fn receive_proof_for_link(
                     if let DeframeResult::Frame(data) = result {
                         if let Ok(pkt) = Packet::unpack(&data) {
                             if pkt.flags.packet_type == PacketType::Proof
-                                && pkt.destination_hash == *link_id
+                                && pkt.destination_hash == *link_id.as_bytes()
                             {
                                 return Some(pkt);
                             }
@@ -445,7 +438,7 @@ pub async fn receive_link_data(
                     if let DeframeResult::Frame(data) = result {
                         if let Ok(pkt) = Packet::unpack(&data) {
                             if pkt.flags.packet_type == PacketType::Data
-                                && pkt.destination_hash == *link.id()
+                                && pkt.destination_hash == *link.id().as_bytes()
                                 && pkt.context == PacketContext::None
                             {
                                 let mut decrypted = vec![0u8; pkt.data.len()];
@@ -474,7 +467,7 @@ pub async fn receive_link_data(
 pub async fn wait_for_link_request(
     stream: &mut TcpStream,
     deframer: &mut Deframer,
-    dest_hash: &[u8; TRUNCATED_HASHBYTES],
+    dest_hash: &DestinationHash,
     timeout_duration: Duration,
 ) -> Option<(Vec<u8>, [u8; TRUNCATED_HASHBYTES])> {
     let mut buf = [0u8; 2048];
@@ -491,10 +484,10 @@ pub async fn wait_for_link_request(
                     if let DeframeResult::Frame(data) = result {
                         if let Ok(pkt) = Packet::unpack(&data) {
                             if pkt.flags.packet_type == PacketType::LinkRequest
-                                && pkt.destination_hash == *dest_hash
+                                && pkt.destination_hash == *dest_hash.as_bytes()
                             {
                                 let link_id = Link::calculate_link_id(&data);
-                                return Some((data, *link_id));
+                                return Some((data, link_id.into_bytes()));
                             }
                         }
                     }
@@ -511,7 +504,7 @@ pub async fn wait_for_link_request(
 pub async fn wait_for_rtt_packet(
     stream: &mut TcpStream,
     deframer: &mut Deframer,
-    link_id: &[u8; TRUNCATED_HASHBYTES],
+    link_id: &LinkId,
     timeout_duration: Duration,
 ) -> Option<Vec<u8>> {
     let mut buf = [0u8; 2048];
@@ -528,7 +521,7 @@ pub async fn wait_for_rtt_packet(
                     if let DeframeResult::Frame(data) = result {
                         if let Ok(pkt) = Packet::unpack(&data) {
                             if pkt.flags.packet_type == PacketType::Data
-                                && pkt.destination_hash == *link_id
+                                && pkt.destination_hash == *link_id.as_bytes()
                                 && pkt.context == PacketContext::Lrrtt
                             {
                                 return Some(pkt.data.as_slice().to_vec());
@@ -548,7 +541,7 @@ pub async fn wait_for_rtt_packet(
 pub async fn wait_for_data_packet(
     stream: &mut TcpStream,
     deframer: &mut Deframer,
-    link_id: &[u8; TRUNCATED_HASHBYTES],
+    link_id: &LinkId,
     timeout_duration: Duration,
 ) -> Option<Vec<u8>> {
     let mut buf = [0u8; 2048];
@@ -565,7 +558,7 @@ pub async fn wait_for_data_packet(
                     if let DeframeResult::Frame(data) = result {
                         if let Ok(pkt) = Packet::unpack(&data) {
                             if pkt.flags.packet_type == PacketType::Data
-                                && pkt.destination_hash == *link_id
+                                && pkt.destination_hash == *link_id.as_bytes()
                                 && pkt.context == PacketContext::None
                             {
                                 return Some(data);
@@ -586,7 +579,7 @@ pub async fn wait_for_data_packet(
 pub async fn wait_for_keepalive_packet(
     stream: &mut TcpStream,
     deframer: &mut Deframer,
-    link_id: &[u8; TRUNCATED_HASHBYTES],
+    link_id: &LinkId,
     timeout_duration: Duration,
 ) -> Option<Vec<u8>> {
     let mut buf = [0u8; 2048];
@@ -603,7 +596,7 @@ pub async fn wait_for_keepalive_packet(
                     if let DeframeResult::Frame(data) = result {
                         if let Ok(pkt) = Packet::unpack(&data) {
                             if pkt.flags.packet_type == PacketType::Data
-                                && pkt.destination_hash == *link_id
+                                && pkt.destination_hash == *link_id.as_bytes()
                                 && pkt.context == PacketContext::Keepalive
                             {
                                 return Some(data);
@@ -624,7 +617,7 @@ pub async fn wait_for_keepalive_packet(
 pub async fn wait_for_close_packet(
     stream: &mut TcpStream,
     deframer: &mut Deframer,
-    link_id: &[u8; TRUNCATED_HASHBYTES],
+    link_id: &LinkId,
     timeout_duration: Duration,
 ) -> Option<Vec<u8>> {
     let mut buf = [0u8; 2048];
@@ -641,7 +634,7 @@ pub async fn wait_for_close_packet(
                     if let DeframeResult::Frame(data) = result {
                         if let Ok(pkt) = Packet::unpack(&data) {
                             if pkt.flags.packet_type == PacketType::Data
-                                && pkt.destination_hash == *link_id
+                                && pkt.destination_hash == *link_id.as_bytes()
                                 && pkt.context == PacketContext::LinkClose
                             {
                                 return Some(data);

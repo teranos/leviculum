@@ -10,7 +10,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [0.2.5] - 2026-02-03
 
 ### Changed
+- `DestinationHash` is now a newtype struct (like `LinkId`), providing compile-time distinction between destination hashes and raw byte arrays
+- Removed `Deref<Target=[u8; 16]>` from both `LinkId` and `DestinationHash` for full type safety — use `.as_bytes()` or `.into_bytes()` for byte access
 - `LinkId` is now a newtype struct instead of a type alias for `[u8; 16]`, providing compile-time distinction between link IDs and destination hashes
+- Removed `as_bytes_mut()` from `DestinationHash` and `LinkId` — newtypes should be constructed, not mutated in place
+- Replaced implicit `.into()` with explicit `DestinationHash::new()` in transport receipt creation
+- Added `DestinationHash` import in `link/mod.rs`, replacing 7 fully-qualified paths
+- Removed duplicate `compute_destination_hash` helpers in test code, using `Destination::compute_destination_hash()` instead
 - Unified five separate packet queues in `LinkManager` into a single `PendingPacket` enum queue, simplifying `send_pending_packets()` from five separate drain loops into one match
 - Moved timeout constants (`LINK_PENDING_TIMEOUT_MS`, `DATA_RECEIPT_TIMEOUT_MS`, `ANNOUNCE_RATE_LIMIT_MS`, `PACKET_CACHE_EXPIRY_MS`, `REVERSE_TABLE_EXPIRY_MS`) from module-local definitions to centralized `constants.rs`
 - Replaced magic numbers `500` and `1` with `MTU` and `MODE_AES256_CBC` constants in proof packet construction

@@ -8,6 +8,7 @@ use alloc::vec::Vec;
 
 use crate::announce::ReceivedAnnounce;
 use crate::constants::TRUNCATED_HASHBYTES;
+use crate::destination::DestinationHash;
 use crate::link::{LinkCloseReason, LinkId, PeerKeys};
 
 /// Unified event enum for all node operations
@@ -29,7 +30,7 @@ pub enum NodeEvent {
     /// Path to a destination was found (from announce)
     PathFound {
         /// Destination hash
-        destination_hash: [u8; TRUNCATED_HASHBYTES],
+        destination_hash: DestinationHash,
         /// Number of hops
         hops: u8,
         /// Interface index
@@ -39,7 +40,7 @@ pub enum NodeEvent {
     /// Path to a destination expired
     PathLost {
         /// Destination hash
-        destination_hash: [u8; TRUNCATED_HASHBYTES],
+        destination_hash: DestinationHash,
     },
 
     // ─── Single-Packet Events ──────────────────────────────────────────────────
@@ -47,7 +48,7 @@ pub enum NodeEvent {
     /// Incoming single-packet data (not via a Link)
     PacketReceived {
         /// Source destination hash (if known)
-        from: [u8; TRUNCATED_HASHBYTES],
+        from: DestinationHash,
         /// The decrypted data
         data: Vec<u8>,
         /// Interface it arrived on
@@ -75,7 +76,7 @@ pub enum NodeEvent {
         /// The link/connection ID
         link_id: LinkId,
         /// The destination that received the request
-        destination_hash: [u8; TRUNCATED_HASHBYTES],
+        destination_hash: DestinationHash,
         /// Peer's public keys
         peer_keys: PeerKeys,
     },
@@ -131,7 +132,7 @@ pub enum NodeEvent {
         /// Full SHA256 hash of the packet to potentially prove
         packet_hash: [u8; 32],
         /// Destination that received the packet
-        destination_hash: [u8; TRUNCATED_HASHBYTES],
+        destination_hash: DestinationHash,
     },
 
     /// Application should decide whether to prove this link data packet

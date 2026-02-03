@@ -15,10 +15,11 @@
 //!
 //! ```
 //! use reticulum_core::receipt::{PacketReceipt, ReceiptStatus};
+//! use reticulum_core::destination::DestinationHash;
 //!
 //! // After sending a packet
 //! let packet_hash = [0x42u8; 32];
-//! let dest_hash = [0x01u8; 16];
+//! let dest_hash = DestinationHash::new([0x01u8; 16]);
 //! let receipt = PacketReceipt::new(packet_hash, dest_hash, 1000);
 //!
 //! assert_eq!(receipt.status, ReceiptStatus::Sent);
@@ -28,6 +29,7 @@
 
 use crate::constants::{PROOF_DATA_SIZE, RECEIPT_TIMEOUT_DEFAULT_MS, TRUNCATED_HASHBYTES};
 use crate::crypto::truncated_hash;
+use crate::destination::DestinationHash;
 use crate::identity::Identity;
 
 /// Status of a packet receipt
@@ -53,7 +55,7 @@ pub struct PacketReceipt {
     /// Truncated hash (used as receipt ID for lookups)
     pub truncated_hash: [u8; TRUNCATED_HASHBYTES],
     /// Destination the packet was sent to
-    pub destination_hash: [u8; TRUNCATED_HASHBYTES],
+    pub destination_hash: DestinationHash,
     /// When the packet was sent (ms since epoch)
     pub sent_at_ms: u64,
     /// Current receipt status
@@ -73,14 +75,15 @@ impl PacketReceipt {
     /// # Example
     /// ```
     /// use reticulum_core::receipt::PacketReceipt;
+    /// use reticulum_core::destination::DestinationHash;
     ///
     /// let packet_hash = [0x42u8; 32];
-    /// let dest_hash = [0x01u8; 16];
+    /// let dest_hash = DestinationHash::new([0x01u8; 16]);
     /// let receipt = PacketReceipt::new(packet_hash, dest_hash, 1000);
     /// ```
     pub fn new(
         packet_hash: [u8; 32],
-        destination_hash: [u8; TRUNCATED_HASHBYTES],
+        destination_hash: DestinationHash,
         sent_at_ms: u64,
     ) -> Self {
         let truncated = truncated_hash(&packet_hash);
@@ -103,7 +106,7 @@ impl PacketReceipt {
     /// * `timeout_ms` - Custom timeout duration in milliseconds
     pub fn with_timeout(
         packet_hash: [u8; 32],
-        destination_hash: [u8; TRUNCATED_HASHBYTES],
+        destination_hash: DestinationHash,
         sent_at_ms: u64,
         timeout_ms: u64,
     ) -> Self {
@@ -196,7 +199,7 @@ mod tests {
     #[test]
     fn test_receipt_creation() {
         let packet_hash = [0x42u8; 32];
-        let dest_hash = [0x01u8; 16];
+        let dest_hash = DestinationHash::new([0x01u8; 16]);
         let receipt = PacketReceipt::new(packet_hash, dest_hash, 1000);
 
         assert_eq!(receipt.packet_hash, packet_hash);
@@ -212,7 +215,7 @@ mod tests {
     #[test]
     fn test_receipt_with_custom_timeout() {
         let packet_hash = [0x42u8; 32];
-        let dest_hash = [0x01u8; 16];
+        let dest_hash = DestinationHash::new([0x01u8; 16]);
         let receipt = PacketReceipt::with_timeout(packet_hash, dest_hash, 1000, 5000);
 
         assert_eq!(receipt.timeout_ms, 5000);
@@ -221,7 +224,7 @@ mod tests {
     #[test]
     fn test_receipt_expiry() {
         let packet_hash = [0x42u8; 32];
-        let dest_hash = [0x01u8; 16];
+        let dest_hash = DestinationHash::new([0x01u8; 16]);
         let receipt = PacketReceipt::with_timeout(packet_hash, dest_hash, 1000, 5000);
 
         // Not expired at sent time
@@ -240,7 +243,7 @@ mod tests {
     #[test]
     fn test_receipt_elapsed_remaining() {
         let packet_hash = [0x42u8; 32];
-        let dest_hash = [0x01u8; 16];
+        let dest_hash = DestinationHash::new([0x01u8; 16]);
         let receipt = PacketReceipt::with_timeout(packet_hash, dest_hash, 1000, 5000);
 
         // At start
@@ -263,7 +266,7 @@ mod tests {
     #[test]
     fn test_receipt_status_transitions() {
         let packet_hash = [0x42u8; 32];
-        let dest_hash = [0x01u8; 16];
+        let dest_hash = DestinationHash::new([0x01u8; 16]);
         let mut receipt = PacketReceipt::new(packet_hash, dest_hash, 1000);
 
         assert_eq!(receipt.status, ReceiptStatus::Sent);
@@ -281,7 +284,7 @@ mod tests {
     fn test_validate_proof_valid() {
         let identity = new_identity();
         let packet_hash = [0x42u8; 32];
-        let dest_hash = [0x01u8; 16];
+        let dest_hash = DestinationHash::new([0x01u8; 16]);
         let receipt = PacketReceipt::new(packet_hash, dest_hash, 1000);
 
         // Create a valid proof
@@ -296,7 +299,7 @@ mod tests {
         let identity = new_identity();
         let packet_hash = [0x42u8; 32];
         let wrong_hash = [0x43u8; 32];
-        let dest_hash = [0x01u8; 16];
+        let dest_hash = DestinationHash::new([0x01u8; 16]);
         let receipt = PacketReceipt::new(packet_hash, dest_hash, 1000);
 
         // Create proof for wrong hash
@@ -311,7 +314,7 @@ mod tests {
         let alice = new_identity();
         let bob = new_identity();
         let packet_hash = [0x42u8; 32];
-        let dest_hash = [0x01u8; 16];
+        let dest_hash = DestinationHash::new([0x01u8; 16]);
         let receipt = PacketReceipt::new(packet_hash, dest_hash, 1000);
 
         // Alice creates the proof
@@ -325,7 +328,7 @@ mod tests {
     fn test_validate_proof_invalid_length() {
         let identity = new_identity();
         let packet_hash = [0x42u8; 32];
-        let dest_hash = [0x01u8; 16];
+        let dest_hash = DestinationHash::new([0x01u8; 16]);
         let receipt = PacketReceipt::new(packet_hash, dest_hash, 1000);
 
         // Too short
@@ -339,7 +342,7 @@ mod tests {
     fn test_validate_proof_corrupted() {
         let identity = new_identity();
         let packet_hash = [0x42u8; 32];
-        let dest_hash = [0x01u8; 16];
+        let dest_hash = DestinationHash::new([0x01u8; 16]);
         let receipt = PacketReceipt::new(packet_hash, dest_hash, 1000);
 
         // Create valid proof, then corrupt it
@@ -355,7 +358,7 @@ mod tests {
         // Test that receipts can be looked up by truncated hash
         let packet_hash1 = [0x42u8; 32];
         let packet_hash2 = [0x43u8; 32];
-        let dest_hash = [0x01u8; 16];
+        let dest_hash = DestinationHash::new([0x01u8; 16]);
 
         let receipt1 = PacketReceipt::new(packet_hash1, dest_hash, 1000);
         let receipt2 = PacketReceipt::new(packet_hash2, dest_hash, 1000);

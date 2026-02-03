@@ -30,6 +30,8 @@
 
 use std::time::Duration;
 
+use reticulum_core::destination::Destination;
+
 use crate::common::*;
 use crate::harness::TestDaemon;
 
@@ -212,7 +214,7 @@ async fn test_announce_propagates_between_connections() {
     )
     .await;
 
-    println!("Sent announce on conn1, dest: {:02x?}...", &dest_hash[..4]);
+    println!("Sent announce on conn1, dest: {:02x?}...", &dest_hash.as_bytes()[..4]);
 
     // Wait for announce on conn2
     let found = wait_for_announce(&mut conn2, &dest_hash, Duration::from_secs(10)).await;
@@ -411,7 +413,7 @@ async fn test_hash_derivation_matches_daemon() {
     println!("Computed name hash: {}", hex::encode(name_hash));
 
     // Compute destination hash
-    let computed_dest_hash = compute_destination_hash(&name_hash, &identity_hash);
+    let computed_dest_hash = Destination::compute_destination_hash(&name_hash, &identity_hash).into_bytes();
     let computed_hex = hex::encode(computed_dest_hash);
 
     println!("Daemon destination hash:   {}", dest_info.hash);
@@ -625,7 +627,7 @@ async fn test_reconnect_after_disconnect() {
         daemon.has_path(&dest1).await,
         "First announce should create path"
     );
-    println!("First announce accepted, dest: {:02x?}...", &dest1[..4]);
+    println!("First announce accepted, dest: {:02x?}...", &dest1.as_bytes()[..4]);
 
     // Drop connection
     drop(stream1);
@@ -690,7 +692,7 @@ async fn test_multiple_connections_concurrent() {
         println!(
             "Connection {} sent announce: {:02x?}...",
             i + 1,
-            &dest_hash[..4]
+            &dest_hash.as_bytes()[..4]
         );
 
         // Small delay between sends
