@@ -1455,11 +1455,8 @@ impl Link {
     /// - Initiator sends 0xFF
     /// - Responder echoes 0xFE
     ///
-    /// The packet is encrypted over the link.
-    pub fn build_keepalive_packet(
-        &self,
-        ctx: &mut impl Context,
-    ) -> Result<alloc::vec::Vec<u8>, LinkError> {
+    /// Keepalive packets are NOT encrypted (matching Python Reticulum behavior).
+    pub fn build_keepalive_packet(&self) -> Result<alloc::vec::Vec<u8>, LinkError> {
         use crate::destination::DestinationType;
         use crate::packet::{HeaderType, PacketContext, PacketFlags, PacketType, TransportType};
 
@@ -1467,15 +1464,10 @@ impl Link {
 
         // Keepalive payload: KEEPALIVE_INITIATOR_BYTE for initiator, KEEPALIVE_RESPONDER_BYTE for responder
         let payload = if self.initiator {
-            [KEEPALIVE_INITIATOR_BYTE]
+            KEEPALIVE_INITIATOR_BYTE
         } else {
-            [KEEPALIVE_RESPONDER_BYTE]
+            KEEPALIVE_RESPONDER_BYTE
         };
-
-        // Encrypt the keepalive byte
-        let encrypted_len = Self::encrypted_size(payload.len());
-        let mut encrypted = alloc::vec![0u8; encrypted_len];
-        let enc_len = self.encrypt(&payload, &mut encrypted, ctx)?;
 
         // Build flags for keepalive packet
         let flags = PacketFlags {
@@ -1487,13 +1479,13 @@ impl Link {
             packet_type: PacketType::Data,
         };
 
-        // Packet format: [flags (1)] [hops (1)] [link_id (16)] [context (1)] [encrypted_data]
-        let mut packet = alloc::vec::Vec::with_capacity(1 + 1 + TRUNCATED_HASHBYTES + 1 + enc_len);
+        // Packet format: [flags (1)] [hops (1)] [link_id (16)] [context (1)] [payload (1)]
+        let mut packet = alloc::vec::Vec::with_capacity(1 + 1 + TRUNCATED_HASHBYTES + 1 + KEEPALIVE_PAYLOAD_SIZE);
         packet.push(flags.to_byte());
         packet.push(0); // hops = 0
         packet.extend_from_slice(self.id.as_bytes());
         packet.push(PacketContext::Keepalive as u8);
-        packet.extend_from_slice(&encrypted[..enc_len]);
+        packet.push(payload);
 
         Ok(packet)
     }
@@ -1579,25 +1571,21 @@ impl Link {
 
     /// Process an incoming keepalive packet
     ///
-    /// Decrypts and validates the keepalive byte.
+    /// Validates the keepalive byte (keepalive packets are NOT encrypted).
     /// - Initiator expects 0xFE from responder
     /// - Responder expects 0xFF from initiator
     ///
     /// # Returns
     /// Ok(true) if responder should echo back a keepalive, Ok(false) otherwise.
-    pub fn process_keepalive(&mut self, encrypted_data: &[u8]) -> Result<bool, LinkError> {
+    pub fn process_keepalive(&mut self, data: &[u8]) -> Result<bool, LinkError> {
         self.require_state(LinkState::Active)?;
 
-        // Decrypt the keepalive data
-        let mut plaintext = alloc::vec![0u8; encrypted_data.len()];
-        let plaintext_len = self.decrypt(encrypted_data, &mut plaintext)?;
-
-        // Keepalive payload should be KEEPALIVE_PAYLOAD_SIZE byte(s)
-        if plaintext_len != KEEPALIVE_PAYLOAD_SIZE {
+        // Keepalive payload should be exactly KEEPALIVE_PAYLOAD_SIZE byte(s)
+        if data.len() != KEEPALIVE_PAYLOAD_SIZE {
             return Err(LinkError::InvalidRtt);
         }
 
-        let keepalive_byte = plaintext[0];
+        let keepalive_byte = data[0];
 
         // Validate the keepalive byte
         if self.initiator {
@@ -2692,36 +2680,43 @@ mod tests {
 
     #[test]
     fn test_build_keepalive_packet() {
-        let (initiator, responder, mut ctx) = setup_active_link_pair();
+        let (initiator, responder, _ctx) = setup_active_link_pair();
 
         // Initiator builds keepalive with 0xFF
-        let initiator_ka = initiator.build_keepalive_packet(&mut ctx).unwrap();
+        let initiator_ka = initiator.build_keepalive_packet().unwrap();
         assert!(!initiator_ka.is_empty());
+        // Packet: [flags(1)][hops(1)][link_id(16)][context(1)][payload(1)] = 20 bytes
+        assert_eq!(initiator_ka.len(), 20);
 
         // Responder builds keepalive with 0xFE
-        let responder_ka = responder.build_keepalive_packet(&mut ctx).unwrap();
+        let responder_ka = responder.build_keepalive_packet().unwrap();
         assert!(!responder_ka.is_empty());
+        assert_eq!(responder_ka.len(), 20);
 
         // Both should have Keepalive context
         use crate::packet::PacketContext;
         assert_eq!(initiator_ka[18], PacketContext::Keepalive as u8);
         assert_eq!(responder_ka[18], PacketContext::Keepalive as u8);
+
+        // Verify raw payload bytes (not encrypted)
+        assert_eq!(initiator_ka[19], KEEPALIVE_INITIATOR_BYTE);
+        assert_eq!(responder_ka[19], KEEPALIVE_RESPONDER_BYTE);
     }
 
     #[test]
     fn test_process_keepalive() {
-        let (mut initiator, mut responder, mut ctx) = setup_active_link_pair();
+        let (mut initiator, mut responder, _ctx) = setup_active_link_pair();
 
         // Initiator sends keepalive (0xFF)
-        let initiator_ka = initiator.build_keepalive_packet(&mut ctx).unwrap();
-        let encrypted_data = &initiator_ka[19..]; // Skip header
+        let initiator_ka = initiator.build_keepalive_packet().unwrap();
+        let data = &initiator_ka[19..]; // Skip header
 
         // Responder processes it - should indicate to echo back
-        let should_echo = responder.process_keepalive(encrypted_data).unwrap();
+        let should_echo = responder.process_keepalive(data).unwrap();
         assert!(should_echo, "Responder should echo back keepalive");
 
         // Responder sends echo (0xFE)
-        let responder_echo = responder.build_keepalive_packet(&mut ctx).unwrap();
+        let responder_echo = responder.build_keepalive_packet().unwrap();
         let echo_data = &responder_echo[19..];
 
         // Initiator processes echo - should NOT indicate to echo back
@@ -2731,22 +2726,22 @@ mod tests {
 
     #[test]
     fn test_process_keepalive_wrong_byte() {
-        let (mut initiator, mut responder, mut ctx) = setup_active_link_pair();
+        let (mut initiator, mut responder, _ctx) = setup_active_link_pair();
 
         // Responder builds a keepalive (0xFE)
-        let responder_ka = responder.build_keepalive_packet(&mut ctx).unwrap();
-        let encrypted_data = &responder_ka[19..];
+        let responder_ka = responder.build_keepalive_packet().unwrap();
+        let data = &responder_ka[19..];
 
         // Responder tries to process its own type of keepalive (expects 0xFF, gets 0xFE)
-        let result = responder.process_keepalive(encrypted_data);
+        let result = responder.process_keepalive(data);
         assert!(result.is_err());
 
         // Similarly, initiator sends 0xFF
-        let initiator_ka = initiator.build_keepalive_packet(&mut ctx).unwrap();
-        let encrypted_data = &initiator_ka[19..];
+        let initiator_ka = initiator.build_keepalive_packet().unwrap();
+        let data = &initiator_ka[19..];
 
         // Initiator tries to process its own type (expects 0xFE, gets 0xFF)
-        let result = initiator.process_keepalive(encrypted_data);
+        let result = initiator.process_keepalive(data);
         assert!(result.is_err());
     }
 

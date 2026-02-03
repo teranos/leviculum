@@ -641,7 +641,7 @@ impl LinkManager {
     pub fn poll(&mut self, now_ms: u64, ctx: &mut impl Context) {
         self.check_timeouts(now_ms);
         let now_secs = now_ms / MS_PER_SECOND;
-        self.check_keepalives(now_secs, ctx);
+        self.check_keepalives(now_secs);
         self.check_stale_links(now_secs, ctx);
         self.check_channel_timeouts(now_ms, ctx);
     }
@@ -925,12 +925,12 @@ impl LinkManager {
             // Record inbound activity
             link.record_inbound(now_secs);
 
-            let encrypted_data = packet.data.as_slice();
-            match link.process_keepalive(encrypted_data) {
+            let data = packet.data.as_slice();
+            match link.process_keepalive(data) {
                 Ok(should_echo) => {
                     // If we're responder and received valid keepalive, echo back
                     if should_echo {
-                        if let Ok(echo_packet) = link.build_keepalive_packet(ctx) {
+                        if let Ok(echo_packet) = link.build_keepalive_packet() {
                             self.pending_packets.push(PendingPacket::Keepalive {
                                 link_id,
                                 data: echo_packet,
@@ -1138,7 +1138,7 @@ impl LinkManager {
     // --- Internal: Keepalive Handling ---
 
     /// Check if any active links need to send keepalives (initiator only)
-    fn check_keepalives(&mut self, now_secs: u64, ctx: &mut impl Context) {
+    fn check_keepalives(&mut self, now_secs: u64) {
         // Collect link IDs that need keepalives (only initiators send proactive keepalives)
         let need_keepalive: Vec<LinkId> = self
             .links
@@ -1150,7 +1150,7 @@ impl LinkManager {
         // Build and queue keepalive packets
         for link_id in need_keepalive {
             if let Some(link) = self.links.get_mut(&link_id) {
-                if let Ok(packet) = link.build_keepalive_packet(ctx) {
+                if let Ok(packet) = link.build_keepalive_packet() {
                     link.record_keepalive_sent(now_secs);
                     self.pending_packets.push(PendingPacket::Keepalive {
                         link_id,

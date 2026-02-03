@@ -7,7 +7,6 @@ reticulum-ffi/*.h
 
 # Markdown files
 IMPLEMENTATION_PLAN.md
-ROADMAP.md
 
 # Generated/outdated docs
 doc/html/

@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.2.6] - 2026-02-03
+
+### Fixed
+- Keepalive packets are no longer encrypted, matching Python Reticulum behavior — Python sends keepalive bytes as plaintext, so Rust's encrypted 64-byte payload was rejected by Python peers
+- `test_multiple_daemon_announces` rewritten using high-level Node API to fix HDLC deframing issue that caused only 1 of 3 announces to be received
+
+### Changed
+- `Link::build_keepalive_packet()` no longer requires a `Context` parameter (no encryption/RNG needed)
+- `Link::process_keepalive()` reads raw data directly instead of decrypting
+- `LinkManager::check_keepalives()` no longer requires a `Context` parameter
+
 ## [0.2.5] - 2026-02-03
 
 ### Changed
@@ -194,7 +205,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Transport layer (routing, paths, deduplication)
 - Full interoperability with Python rnsd
 
-[Unreleased]: https://codeberg.org/Lew_Palm/leviculum/compare/v0.2.5...HEAD
+[Unreleased]: https://codeberg.org/Lew_Palm/leviculum/compare/v0.2.6...HEAD
+[0.2.6]: https://codeberg.org/Lew_Palm/leviculum/compare/v0.2.5...v0.2.6
 [0.2.5]: https://codeberg.org/Lew_Palm/leviculum/compare/v0.2.4...v0.2.5
 [0.2.4]: https://codeberg.org/Lew_Palm/leviculum/compare/v0.2.3...v0.2.4
 [0.2.3]: https://codeberg.org/Lew_Palm/leviculum/compare/v0.2.2...v0.2.3

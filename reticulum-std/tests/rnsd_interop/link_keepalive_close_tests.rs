@@ -899,7 +899,6 @@ async fn test_keepalive_resets_stale_timer() {
 /// to be triggered. In real scenarios, this happens after keepalive_interval.
 /// For testing, we verify the keepalive mechanism exists and works.
 #[tokio::test]
-#[ignore = "BUG: Python doesn't echo keepalives from Rust initiator - see ROADMAP.md"]
 async fn test_rust_initiator_sends_keepalive_python_echoes() {
     let daemon = TestDaemon::start().await.expect("Failed to start daemon");
     let mut ctx = make_context();
@@ -918,7 +917,7 @@ async fn test_rust_initiator_sends_keepalive_python_echoes() {
     // (In real usage, this is triggered by poll() after keepalive interval)
     let keepalive_packet = {
         let link = manager.link(&link_id).expect("Link should exist");
-        link.build_keepalive_packet(&mut ctx)
+        link.build_keepalive_packet()
             .expect("Failed to build keepalive")
     };
 
@@ -1225,7 +1224,7 @@ async fn test_multi_hop_keepalive_through_python_relay() {
     let keepalive_packet = {
         let link_b = link.manager_b.link(&link_id).expect("B should have link");
         link_b
-            .build_keepalive_packet(&mut ctx_b)
+            .build_keepalive_packet()
             .expect("Failed to build keepalive")
     };
 

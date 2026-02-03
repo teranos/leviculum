@@ -32,7 +32,10 @@ use reticulum_core::identity::Identity;
 use reticulum_core::packet::{Packet, PacketType};
 use reticulum_core::traits::{Clock, Interface, InterfaceError, NoStorage};
 use reticulum_core::transport::{Transport, TransportConfig, TransportEvent};
+use reticulum_core::DestinationHash;
 use reticulum_std::interfaces::hdlc::{DeframeResult, Deframer};
+use reticulum_std::node::ReticulumNodeBuilder;
+use reticulum_std::NodeEvent;
 
 use crate::common::*;
 use crate::harness::TestDaemon;
@@ -393,12 +396,24 @@ async fn test_transport_path_from_daemon_announce() {
 /// - Each announce creates a separate path entry
 /// - Announces don't interfere with each other
 ///
-/// BUG: Currently the daemon only forwards 1 of 3 announces to connected clients.
-/// This test is ignored until the daemon announce forwarding is fixed.
+/// Uses the high-level ReticulumNode API which handles HDLC deframing
+/// correctly via TcpClientInterface's internal recv_queue.
 #[tokio::test]
-#[ignore = "BUG: daemon only forwards 1 of 3 announces - needs investigation"]
 async fn test_multiple_daemon_announces() {
     let daemon = TestDaemon::start().await.expect("Failed to start daemon");
+
+    // Build and start node connecting to the daemon
+    let mut node = ReticulumNodeBuilder::new()
+        .add_tcp_client(daemon.rns_addr())
+        .build()
+        .await
+        .expect("Failed to build node");
+
+    node.start().await.expect("Failed to start node");
+
+    let mut events = node
+        .take_event_receiver()
+        .expect("Failed to get event receiver");
 
     // Register multiple destinations
     let dest_a = daemon
@@ -419,18 +434,7 @@ async fn test_multiple_daemon_announces() {
     println!("  B: {}", dest_b.hash);
     println!("  C: {}", dest_c.hash);
 
-    let hash_a: [u8; TRUNCATED_HASHBYTES] = hex::decode(&dest_a.hash).unwrap().try_into().unwrap();
-    let hash_b: [u8; TRUNCATED_HASHBYTES] = hex::decode(&dest_b.hash).unwrap().try_into().unwrap();
-    let hash_c: [u8; TRUNCATED_HASHBYTES] = hex::decode(&dest_c.hash).unwrap().try_into().unwrap();
-
-    // Create Transport
-    let (mut transport, iface_idx) = create_test_transport();
-
-    // Connect to daemon
-    let mut stream = connect_to_daemon(&daemon).await;
-    let mut deframer = Deframer::new();
-
-    // Announce all three destinations with small delays to avoid coalescing
+    // Announce all three destinations with small delays
     daemon
         .announce_destination(&dest_a.hash, b"data-a")
         .await
@@ -448,50 +452,75 @@ async fn test_multiple_daemon_announces() {
         .await
         .expect("Failed to announce C");
 
-    println!("All destinations announced, collecting packets...");
+    println!("All destinations announced, collecting events...");
 
-    // Collect all announces (with longer timeout to get all 3)
-    let mut announces_received = 0;
+    // Collect AnnounceReceived events
+    let mut received_hashes = Vec::new();
+    let collection_timeout = Duration::from_secs(10);
     let start = std::time::Instant::now();
-    let timeout_duration = Duration::from_secs(10);
 
-    while start.elapsed() < timeout_duration && announces_received < 3 {
-        if let Some((_packet, raw)) =
-            receive_announce_from_daemon(&mut stream, &mut deframer, Duration::from_secs(2)).await
-        {
-            let result = transport.process_incoming(iface_idx, &raw);
-            if result.is_ok() {
-                announces_received += 1;
-                println!("Processed announce {}/3", announces_received);
+    while received_hashes.len() < 3 && start.elapsed() < collection_timeout {
+        match timeout(Duration::from_millis(500), events.recv()).await {
+            Ok(Some(NodeEvent::AnnounceReceived { announce, .. })) => {
+                let hash = hex::encode(announce.destination_hash());
+                println!(
+                    "Received announce {}/3: {}",
+                    received_hashes.len() + 1,
+                    hash
+                );
+                received_hashes.push(hash);
             }
+            Ok(Some(_)) => {} // Other event types, continue
+            Ok(None) => break, // Channel closed
+            Err(_) => continue, // Timeout, try again
         }
     }
 
-    println!(
-        "Received {} announces, path_count: {}",
-        announces_received,
-        transport.path_count()
+    println!("Received {} announces", received_hashes.len());
+
+    // Verify all three announces were received
+    assert!(
+        received_hashes.contains(&dest_a.hash),
+        "Should receive announce A"
+    );
+    assert!(
+        received_hashes.contains(&dest_b.hash),
+        "Should receive announce B"
+    );
+    assert!(
+        received_hashes.contains(&dest_c.hash),
+        "Should receive announce C"
     );
 
-    // All three paths must be created.
-    // NOTE: If this fails, increase timeout or investigate daemon announce forwarding.
-    // The daemon should forward all announces to connected clients.
-    assert_eq!(
-        transport.path_count(),
-        3,
-        "All 3 paths must be created (got {}). Check daemon announce forwarding.",
-        transport.path_count()
-    );
+    // Verify all paths exist in the node
+    {
+        let inner = node.inner();
+        let core = inner.lock().unwrap();
 
-    // Verify all specific paths exist
-    let has_a = transport.has_path(&hash_a);
-    let has_b = transport.has_path(&hash_b);
-    let has_c = transport.has_path(&hash_c);
-    assert!(has_a, "Path A must exist");
-    assert!(has_b, "Path B must exist");
-    assert!(has_c, "Path C must exist");
+        let hash_a: [u8; TRUNCATED_HASHBYTES] =
+            hex::decode(&dest_a.hash).unwrap().try_into().unwrap();
+        let hash_b: [u8; TRUNCATED_HASHBYTES] =
+            hex::decode(&dest_b.hash).unwrap().try_into().unwrap();
+        let hash_c: [u8; TRUNCATED_HASHBYTES] =
+            hex::decode(&dest_c.hash).unwrap().try_into().unwrap();
 
-    println!("All 3 announces processed");
+        assert!(
+            core.has_path(&DestinationHash::new(hash_a)),
+            "Path A must exist"
+        );
+        assert!(
+            core.has_path(&DestinationHash::new(hash_b)),
+            "Path B must exist"
+        );
+        assert!(
+            core.has_path(&DestinationHash::new(hash_c)),
+            "Path C must exist"
+        );
+    } // Lock dropped before await
+
+    println!("All 3 announces processed and paths verified");
+
+    node.stop().await.expect("Failed to stop node");
 }
 
 // =========================================================================
