@@ -1,11 +1,39 @@
-//! Packet framing for stream-based interfaces
+//! Packet framing for stream-based interfaces.
 //!
-//! This module provides framing implementations for protocols
-//! that need to delimit packets on byte streams (TCP, Serial).
+//! Framing converts variable-length packets into delimited byte sequences so
+//! that a receiver on a stream transport (TCP, serial) can find packet
+//! boundaries. Datagram transports (UDP, LoRa) deliver discrete packets and
+//! do not need framing.
 //!
-//! # Available Framers
+//! # HDLC Framing
 //!
-//! - [`hdlc`] - HDLC-style framing with byte stuffing (used by Reticulum)
+//! The [`hdlc`] sub-module implements the framing scheme used by Python
+//! Reticulum: `0x7E` flag delimiters, `0x7D` escape byte with XOR `0x20`,
+//! and CRC-16-CCITT for integrity.
+//!
+//! ```text
+//! [FLAG 0x7E] [escaped payload] [CRC-16 hi] [CRC-16 lo] [FLAG 0x7E]
+//! ```
+//!
+//! # Usage
+//!
+//! ```text
+//! // Sender: frame a packet
+//! let framed = frame(&raw_packet);
+//! stream.write_all(&framed);
+//!
+//! // Receiver: accumulate bytes and extract packets
+//! let mut deframer = Deframer::new();
+//! deframer.receive(&incoming_bytes);
+//! while let Some(packet) = deframer.next_frame() {
+//!     process(packet);
+//! }
+//! ```
+//!
+//! # Allocation
+//!
+//! [`frame_to_slice`] and [`crc16`] work without `alloc`.
+//! [`Deframer`] and [`frame`] require `alloc`.
 
 pub mod hdlc;
 

@@ -1,4 +1,34 @@
-//! Protocol constants matching the Python Reticulum implementation
+//! Protocol constants defining the wire format, timing, and sizing for
+//! Reticulum.
+//!
+//! Values match the Python Reticulum reference implementation to ensure
+//! interoperability between the two stacks.
+//!
+//! # Constant Groups
+//!
+//! | Section | Covers |
+//! |---------|--------|
+//! | Protocol | MTU, header sizes, MDU, hop timeout |
+//! | Keys | X25519, Ed25519, AES, HMAC sizes |
+//! | Ratchet | Ratchet size, expiry, rotation interval |
+//! | Transport | Max hops, path expiry, request grace |
+//! | Link | Keepalive intervals, stale detection, pending timeout |
+//! | Channel | Window sizes, RTT thresholds, retry/backoff parameters |
+//! | Proof | Proof strategies, data sizes, receipt timeout |
+//! | Resource | Window sizing, hash map length, auto-compress limit |
+//! | Stream | Stream data message type, ID range, header, flags |
+//! | IFAC | Interface Access Code sizes and salt |
+//! | CRC | CRC-16-CCITT initial value, polynomial helpers |
+//! | Token | Token encryption key sizes |
+//! | Signaling | Link signaling bit masks and shifts |
+//!
+//! # Key Relationships
+//!
+//! ```text
+//! MDU = MTU - HEADER_MAXSIZE - IFAC_MIN_SIZE
+//!     = 500 - 35            - 1
+//!     = 464 bytes
+//! ```
 
 // ─── Utility Functions ───────────────────────────────────────────────────────
 

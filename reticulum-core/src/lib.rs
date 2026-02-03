@@ -1,35 +1,94 @@
-//! reticulum-core: Core library for Reticulum network stack
+//! Cryptographic mesh networking protocol for resilient communication over any
+//! medium.
 //!
-//! This crate provides the fundamental building blocks for the Reticulum
-//! protocol implementation. It is designed to be no_std compatible for
-//! embedded systems support.
+//! `reticulum-core` implements all protocol logic as `no_std + alloc`, making it
+//! suitable for both full operating systems (Linux, macOS, Windows) and bare-metal
+//! embedded targets (ESP32, nRF52, STM32). Platform-specific I/O is injected via
+//! the [`Context`] trait — see the [`traits`] module.
 //!
-//! # Architecture
+//! # Core Concepts
 //!
-//! The core library contains all protocol logic and is platform-independent.
-//! Platform-specific I/O is abstracted via traits in the `traits` module:
+//! | Concept | Type | Purpose |
+//! |---------|------|---------|
+//! | Identity | [`Identity`] | Dual keypair (X25519 + Ed25519) for encryption and signing |
+//! | Destination | [`Destination`] | Addressable endpoint identified by a 16-byte hash |
+//! | Announce | [`ReceivedAnnounce`] | Broadcast presence notification with public keys |
+//! | Link | [`Link`] | Point-to-point encrypted connection with perfect forward secrecy |
+//! | Channel | [`Channel`] | Reliable ordered messaging over a Link |
+//! | Transport | [`transport`] | Routing, path discovery, and packet forwarding |
+//! | NodeCore | [`NodeCore`] | High-level unified API that ties everything together |
 //!
-//! - `Interface`: Network interface (TCP, UDP, LoRa, BLE)
-//! - `Clock`: Time source for timeouts and RTT
-//! - `Storage`: Persistent storage for identities and paths
-//! - `CryptoRngCore`: Cryptographic random number generator
+//! # Typical Usage Flow
+//!
+//! 1. Create an [`Identity`] (or load an existing one)
+//! 2. Register a [`Destination`] on a [`NodeCore`]
+//! 3. Send an announce so the network learns about this destination
+//! 4. Receive announces from peers and open a [`Link`] to them
+//! 5. Open a [`Channel`] on the link for reliable messaging
+//! 6. Exchange [`Message`]s over the channel
+//!
+//! # The Context Pattern
+//!
+//! All functions that need RNG, time, or storage take `&mut impl Context`
+//! rather than concrete types. [`PlatformContext`] bundles the three platform
+//! dependencies ([`CryptoRngCore`](rand_core::CryptoRngCore), [`Clock`],
+//! [`Storage`]) into a single value.
+//!
+//! ```
+//! use rand_core::OsRng;
+//! use reticulum_core::identity::Identity;
+//! use reticulum_core::traits::{Clock, PlatformContext, NoStorage};
+//!
+//! struct SimpleClock;
+//! impl Clock for SimpleClock {
+//!     fn now_ms(&self) -> u64 { 0 }
+//! }
+//!
+//! let mut ctx = PlatformContext {
+//!     rng: OsRng,
+//!     clock: SimpleClock,
+//!     storage: NoStorage,
+//! };
+//! let identity = Identity::generate(&mut ctx);
+//! ```
+//!
+//! # Crate Hierarchy
+//!
+//! ```text
+//! reticulum-core   (no_std + alloc)  — all protocol logic
+//!     │
+//!     ▼
+//! reticulum-std    (std)             — platform impls: SystemClock, TcpInterface, FileStorage
+//!     │
+//!     ▼
+//! reticulum-cli / reticulum-ffi     — binaries and C-API
+//! ```
+//!
+//! # Feature Flags
+//!
+//! | Feature | Default | Description |
+//! |---------|---------|-------------|
+//! | `compression` | off | BZ2 compression via `libbz2-rs-sys` (pure-Rust) |
 //!
 //! # Modules
 //!
-//! - `traits`: Platform abstraction traits (Interface, Clock, Storage, Rng)
-//! - `crypto`: Cryptographic primitives (X25519, Ed25519, AES, HKDF)
-//! - `framing`: Packet framing for streams (HDLC)
-//! - `identity`: Cryptographic identity management
-//! - `destination`: Network endpoint addressing
-//! - `packet`: Packet structure and serialization
-//! - `link`: Point-to-point verified connections
-//! - `transport`: Routing and path discovery (data structures)
-//! - `resource`: Large data transfer protocol
+//! **Protocol core:**
+//! [`identity`], [`destination`], [`packet`], [`announce`], [`receipt`]
 //!
-//! # no_std
+//! **Connections:**
+//! [`link`], [`link::channel`]
 //!
-//! This crate is fully `no_std` compatible with `alloc`. It has no optional
-//! `std` feature - all functionality works on embedded systems without an OS.
+//! **Infrastructure:**
+//! [`transport`], [`node`]
+//!
+//! **Crypto and encoding:**
+//! [`crypto`], [`ratchet`], [`ifac`], [`framing`]
+//!
+//! **Data transfer:**
+//! [`resource`]
+//!
+//! **Platform abstraction:**
+//! [`traits`], [`constants`]
 
 #![no_std]
 

@@ -1,17 +1,25 @@
-//! Platform abstraction traits for reticulum-core
+//! Platform abstraction traits for `reticulum-core`.
 //!
-//! These traits allow the protocol logic to run on any platform
-//! by abstracting I/O, time, and storage.
+//! These traits decouple all protocol logic from platform I/O, enabling the
+//! same code to run on Linux/macOS (via `reticulum-std`) and on bare-metal
+//! embedded targets (ESP32, nRF52, STM32).
 //!
-//! # Example
+//! # Traits
 //!
-//! ```text
-//! use reticulum_core::traits::{Interface, Clock, Storage, NoStorage};
+//! | Trait | Purpose | `std` example | Embedded example |
+//! |-------|---------|---------------|------------------|
+//! | [`Interface`] | Network I/O | `TcpInterface` | LoRa / BLE driver |
+//! | [`Clock`] | Monotonic time | `SystemClock` | Hardware timer |
+//! | [`Storage`] | Key-value persistence | `FileStorage` | Flash storage |
+//! | [`Context`] | Bundles RNG + Clock + Storage | `PlatformContext<OsRng, ..>` | `PlatformContext<HwRng, ..>` |
 //!
-//! // Implement these traits for your platform:
-//! // - std: TcpInterface, SystemClock, FileStorage
-//! // - embedded: LoRaInterface, EmbassyClock, FlashStorage or NoStorage
-//! ```
+//! # The Context Pattern
+//!
+//! Instead of passing three separate parameters for RNG, clock, and storage,
+//! protocol functions accept a single `&mut impl Context`. The concrete type
+//! [`PlatformContext`] provides this by composing any implementations of the
+//! three underlying traits. For devices that do not need persistence, use
+//! [`NoStorage`].
 
 use crate::constants::TRUNCATED_HASHBYTES;
 use rand_core::CryptoRngCore;
