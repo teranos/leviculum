@@ -1,7 +1,9 @@
 //! BZ2 compression for no_std environments
 //!
-//! This module provides safe wrappers around libbz2-rs-sys for BZ2 compression
-//! and decompression in no_std environments with alloc.
+//! This module provides safe wrappers around libbz2-rs-sys (a pure Rust bzip2
+//! implementation) for BZ2 compression and decompression. The underlying
+//! library is 100% Rust with no C dependencies — the `unsafe` blocks bridge
+//! between Rust slices and the library's C-compatible pointer API.
 //!
 //! # Example
 //!
