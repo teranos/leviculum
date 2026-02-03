@@ -33,7 +33,7 @@ use reticulum_core::constants::{
     LINK_KEEPALIVE_SECS, LINK_STALE_FACTOR, LINK_STALE_GRACE_SECS, MS_PER_SECOND,
     TRUNCATED_HASHBYTES,
 };
-use reticulum_core::destination::{Destination, DestinationType, Direction};
+use reticulum_core::destination::{Destination, DestinationType, Direction, ProofStrategy};
 use reticulum_core::identity::Identity;
 use reticulum_core::link::{LinkCloseReason, LinkEvent, LinkId, LinkManager, LinkState};
 use reticulum_core::packet::{Packet, PacketContext, PacketType};
@@ -310,7 +310,7 @@ async fn establish_rust_to_rust_link(daemon: &TestDaemon) -> Result<RustToRustLi
     // A accepts the link
     let _: Vec<_> = manager_a.drain_events().collect();
     let proof_packet = manager_a
-        .accept_link(&link_id_a, identity_a, &mut ctx_a)
+        .accept_link(&link_id_a, identity_a, ProofStrategy::None, &mut ctx_a)
         .map_err(|e| format!("Failed to accept link: {:?}", e))?;
 
     // Send proof via A's stream
@@ -581,7 +581,7 @@ async fn test_link_stale_detection_no_inbound() {
     // Responder accepts
     let _: Vec<_> = responder_mgr.drain_events().collect();
     let proof_packet = responder_mgr
-        .accept_link(&link_id, &dest_identity, &mut responder_ctx)
+        .accept_link(&link_id, &dest_identity, ProofStrategy::None, &mut responder_ctx)
         .unwrap();
 
     // Deliver proof to initiator
@@ -697,7 +697,7 @@ async fn test_stale_link_closes_after_timeout() {
     // Responder accepts
     let _: Vec<_> = responder_mgr.drain_events().collect();
     let proof_packet = responder_mgr
-        .accept_link(&link_id, &dest_identity, &mut responder_ctx)
+        .accept_link(&link_id, &dest_identity, ProofStrategy::None, &mut responder_ctx)
         .unwrap();
 
     // Deliver proof to initiator
@@ -823,7 +823,7 @@ async fn test_keepalive_resets_stale_timer() {
     // Responder accepts
     let _: Vec<_> = responder_mgr.drain_events().collect();
     let proof_packet = responder_mgr
-        .accept_link(&link_id, &dest_identity, &mut responder_ctx)
+        .accept_link(&link_id, &dest_identity, ProofStrategy::None, &mut responder_ctx)
         .unwrap();
 
     // Deliver proof to initiator
@@ -1011,7 +1011,7 @@ async fn test_python_initiator_sends_keepalive_rust_echoes() {
     // Accept the link
     let _: Vec<_> = manager.drain_events().collect();
     let proof_packet = manager
-        .accept_link(&link_id, identity, &mut ctx)
+        .accept_link(&link_id, identity, ProofStrategy::None, &mut ctx)
         .expect("Failed to accept link");
 
     send_framed(&mut stream, &proof_packet).await;

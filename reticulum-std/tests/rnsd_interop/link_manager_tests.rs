@@ -34,7 +34,7 @@ use tokio::net::TcpStream;
 use tokio::time::timeout;
 
 use reticulum_core::constants::{MTU, TRUNCATED_HASHBYTES};
-use reticulum_core::destination::{Destination, DestinationType, Direction};
+use reticulum_core::destination::{Destination, DestinationType, Direction, ProofStrategy};
 use reticulum_core::identity::Identity;
 use reticulum_core::link::{LinkCloseReason, LinkEvent, LinkId, LinkManager};
 use reticulum_core::packet::{Packet, PacketContext, PacketType};
@@ -197,7 +197,7 @@ async fn establish_manager_responder_link(
 
     // Accept the link
     let proof_packet = manager
-        .accept_link(&link_id, identity, ctx)
+        .accept_link(&link_id, identity, ProofStrategy::None, ctx)
         .map_err(|e| HarnessError::CommandFailed(format!("Failed to accept link: {:?}", e)))?;
 
     // Send proof
@@ -1054,7 +1054,7 @@ async fn test_rust_to_rust_via_daemon() {
     // A accepts the link
     let _: Vec<_> = manager_a.drain_events().collect();
     let proof_packet = manager_a
-        .accept_link(&link_id_a, identity_a, &mut ctx_a)
+        .accept_link(&link_id_a, identity_a, ProofStrategy::None, &mut ctx_a)
         .expect("Failed to accept link");
 
     // Send proof via A's stream
@@ -1268,7 +1268,7 @@ async fn test_rust_to_rust_multiple_messages() {
     let _: Vec<_> = manager_a.drain_events().collect();
 
     let proof_packet = manager_a
-        .accept_link(&link_id_a, identity_a, &mut ctx_a)
+        .accept_link(&link_id_a, identity_a, ProofStrategy::None, &mut ctx_a)
         .unwrap();
     send_framed(&mut stream_a, &proof_packet).await;
 
@@ -1476,7 +1476,7 @@ async fn test_manager_operations_on_unknown_link() {
     assert!(send_result.is_err());
 
     // accept_link() on unknown link
-    let accept_result = manager.accept_link(&unknown_link_id, &identity, &mut ctx);
+    let accept_result = manager.accept_link(&unknown_link_id, &identity, ProofStrategy::None, &mut ctx);
     assert!(accept_result.is_err());
 
     // close() on unknown link should not panic
@@ -1520,7 +1520,7 @@ async fn test_manager_responder_timeout() {
 
     // Accept the link
     let _: Vec<_> = manager.drain_events().collect();
-    let _proof = manager.accept_link(&link_id, &identity, &mut ctx).unwrap();
+    let _proof = manager.accept_link(&link_id, &identity, ProofStrategy::None, &mut ctx).unwrap();
 
     // Verify pending incoming
     assert_eq!(manager.pending_link_count(), 1);

@@ -42,7 +42,7 @@
 //! }
 //! ```
 
-use alloc::collections::BTreeMap;
+use alloc::collections::{BTreeMap, BTreeSet};
 use alloc::vec::Vec;
 
 use crate::constants::{DATA_RECEIPT_TIMEOUT_MS, LINK_PENDING_TIMEOUT_MS, MODE_AES256_CBC, MS_PER_SECOND, MTU, PROOF_DATA_SIZE, TRUNCATED_HASHBYTES};
@@ -90,8 +90,8 @@ pub struct LinkManager {
     pending_outgoing: BTreeMap<LinkId, PendingOutgoing>,
     /// Pending incoming links (awaiting RTT) - stores (link_id, created_at_ms)
     pending_incoming: BTreeMap<LinkId, PendingIncoming>,
-    /// Destinations that accept links (dest_hash -> proof_strategy)
-    destinations: BTreeMap<DestinationHash, DestinationEntry>,
+    /// Destinations that accept incoming links
+    accepted_destinations: BTreeSet<DestinationHash>,
     /// Pending events
     events: Vec<LinkEvent>,
     /// Unified queue for all outbound link packets
@@ -116,14 +116,6 @@ struct DataReceipt {
     sent_at_ms: u64,
 }
 
-/// Destination registration info
-struct DestinationEntry {
-    /// Proof strategy for this destination
-    proof_strategy: ProofStrategy,
-    /// Signing key for data proofs (stored when accept_link is called with PROVE_ALL or PROVE_APP)
-    signing_key: Option<ed25519_dalek::SigningKey>,
-}
-
 /// State for a pending incoming link (responder side, awaiting RTT)
 struct PendingIncoming {
     /// When the proof was sent
@@ -138,7 +130,7 @@ impl LinkManager {
             channels: BTreeMap::new(),
             pending_outgoing: BTreeMap::new(),
             pending_incoming: BTreeMap::new(),
-            destinations: BTreeMap::new(),
+            accepted_destinations: BTreeSet::new(),
             events: Vec::new(),
             pending_packets: Vec::new(),
             data_receipts: BTreeMap::new(),
@@ -257,47 +249,17 @@ impl LinkManager {
     /// # Arguments
     /// * `dest_hash` - The destination hash to register
     pub fn register_destination(&mut self, dest_hash: DestinationHash) {
-        self.register_destination_with_strategy(dest_hash, ProofStrategy::None);
-    }
-
-    /// Register a destination to accept incoming links with a specific proof strategy
-    ///
-    /// # Arguments
-    /// * `dest_hash` - The destination hash to register
-    /// * `proof_strategy` - The proof strategy for received data packets:
-    ///   - `ProofStrategy::None` - Never generate proofs
-    ///   - `ProofStrategy::App` - Emit `ProofRequested` event for application to decide
-    ///   - `ProofStrategy::All` - Automatically generate and queue proofs
-    pub fn register_destination_with_strategy(
-        &mut self,
-        dest_hash: DestinationHash,
-        proof_strategy: ProofStrategy,
-    ) {
-        self.destinations.insert(
-            dest_hash,
-            DestinationEntry {
-                proof_strategy,
-                signing_key: None,
-            },
-        );
+        self.accepted_destinations.insert(dest_hash);
     }
 
     /// Unregister a destination from accepting links
     pub fn unregister_destination(&mut self, dest_hash: &DestinationHash) {
-        self.destinations.remove(dest_hash);
+        self.accepted_destinations.remove(dest_hash);
     }
 
     /// Check if a destination accepts links
     pub fn accepts_links(&self, dest_hash: &DestinationHash) -> bool {
-        self.destinations.contains_key(dest_hash)
-    }
-
-    /// Get the proof strategy for a registered destination
-    pub fn proof_strategy(
-        &self,
-        dest_hash: &DestinationHash,
-    ) -> Option<ProofStrategy> {
-        self.destinations.get(dest_hash).map(|e| e.proof_strategy)
+        self.accepted_destinations.contains(dest_hash)
     }
 
     /// Accept a pending incoming link (after `LinkRequestReceived` event)
@@ -307,11 +269,13 @@ impl LinkManager {
     /// # Arguments
     /// * `link_id` - The link ID from the `LinkRequestReceived` event
     /// * `identity` - The destination's identity (for signing the proof)
+    /// * `proof_strategy` - The proof strategy for received data packets on this link
     /// * `ctx` - Platform context for clock
     pub fn accept_link(
         &mut self,
         link_id: &LinkId,
         identity: &Identity,
+        proof_strategy: ProofStrategy,
         ctx: &mut impl Context,
     ) -> Result<Vec<u8>, LinkError> {
         let link = self.links.get_mut(link_id).ok_or(LinkError::NotFound)?;
@@ -324,13 +288,11 @@ impl LinkManager {
             return Err(LinkError::InvalidState);
         }
 
-        // Store the signing key for data proof generation (PROVE_ALL and PROVE_APP)
-        let dest_hash = *link.destination_hash();
-        if let Some(entry) = self.destinations.get_mut(&dest_hash) {
-            if entry.proof_strategy != ProofStrategy::None && entry.signing_key.is_none() {
-                if let Some(sk) = identity.ed25519_signing_key() {
-                    entry.signing_key = Some(sk.clone());
-                }
+        // Store proof strategy and signing key on the link itself
+        link.set_proof_strategy(proof_strategy);
+        if proof_strategy != ProofStrategy::None {
+            if let Some(sk) = identity.ed25519_signing_key() {
+                link.set_dest_signing_key(sk.clone());
             }
         }
 
@@ -452,9 +414,7 @@ impl LinkManager {
             return Err(LinkError::InvalidState);
         }
 
-        let dest_hash = *link.destination_hash();
-        let entry = self.destinations.get(&dest_hash).ok_or(LinkError::NotFound)?;
-        let signing_key = entry.signing_key.as_ref().ok_or(LinkError::NoIdentity)?;
+        let signing_key = link.dest_signing_key().ok_or(LinkError::NoIdentity)?;
         link.build_data_proof_packet_with_signing_key(packet_hash, signing_key)
     }
 
@@ -737,7 +697,7 @@ impl LinkManager {
         let dest_hash = DestinationHash::new(packet.destination_hash);
 
         // Check if we accept links for this destination
-        if !self.destinations.contains_key(&dest_hash) {
+        if !self.accepted_destinations.contains(&dest_hash) {
             return;
         }
 
@@ -1039,39 +999,35 @@ impl LinkManager {
             Ok(len) => {
                 plaintext.truncate(len);
 
-                // Handle proof strategy for received data
-                let dest_hash = *link.destination_hash();
+                // Handle proof strategy for received data (stored on the link)
                 let full_packet_hash = packet_hash(raw_packet);
 
-                if let Some(entry) = self.destinations.get(&dest_hash) {
-                    match entry.proof_strategy {
-                        ProofStrategy::All => {
-                            // Automatically generate and queue proof using destination's signing key
-                            if let Some(ref signing_key) = entry.signing_key {
-                                if let Ok(proof_packet) = link
-                                    .build_data_proof_packet_with_signing_key(
-                                        &full_packet_hash,
-                                        signing_key,
-                                    )
-                                {
-                                    self.pending_packets.push(PendingPacket::Proof {
-                                        link_id,
-                                        data: proof_packet,
-                                    });
-                                }
+                match link.proof_strategy() {
+                    ProofStrategy::All => {
+                        // Automatically generate and queue proof using the link's signing key
+                        if let Some(signing_key) = link.dest_signing_key() {
+                            if let Ok(proof_packet) = link
+                                .build_data_proof_packet_with_signing_key(
+                                    &full_packet_hash,
+                                    signing_key,
+                                )
+                            {
+                                self.pending_packets.push(PendingPacket::Proof {
+                                    link_id,
+                                    data: proof_packet,
+                                });
                             }
-                            // If no signing key is available, we can't generate proofs
                         }
-                        ProofStrategy::App => {
-                            // Emit event for application to decide
-                            self.events.push(LinkEvent::ProofRequested {
-                                link_id,
-                                packet_hash: full_packet_hash,
-                            });
-                        }
-                        ProofStrategy::None => {
-                            // No proof needed
-                        }
+                    }
+                    ProofStrategy::App => {
+                        // Emit event for application to decide
+                        self.events.push(LinkEvent::ProofRequested {
+                            link_id,
+                            packet_hash: full_packet_hash,
+                        });
+                    }
+                    ProofStrategy::None => {
+                        // No proof needed
                     }
                 }
 
@@ -1435,8 +1391,8 @@ mod tests {
         let dest_hash = DestinationHash::new([0x42; 16]);
         let dest_signing_key = dest_identity.ed25519_verifying().to_bytes();
 
-        // Register destination on responder with the given proof strategy
-        responder_mgr.register_destination_with_strategy(dest_hash, proof_strategy);
+        // Register destination on responder
+        responder_mgr.register_destination(dest_hash);
 
         // Initiator starts link
         let (link_id, link_request_packet) =
@@ -1454,7 +1410,7 @@ mod tests {
         };
 
         let proof_packet = responder_mgr
-            .accept_link(&responder_link_id, &dest_identity, &mut responder_ctx)
+            .accept_link(&responder_link_id, &dest_identity, proof_strategy, &mut responder_ctx)
             .unwrap();
 
         // Deliver proof to initiator
@@ -1489,31 +1445,23 @@ mod tests {
     }
 
     #[test]
-    fn test_register_destination_with_proof_strategy() {
-        let mut manager = LinkManager::new();
-        let dest_hash = DestinationHash::new([0x42; 16]);
+    fn test_proof_strategy_set_on_link_via_accept() {
+        // Proof strategy is now set on the Link at accept_link() time,
+        // not at destination registration time.
+        let pair = establish_link_pair(ProofStrategy::All);
+        let link = pair.responder.link(&pair.responder_link_id).unwrap();
+        assert_eq!(link.proof_strategy(), ProofStrategy::All);
+        assert!(link.dest_signing_key().is_some());
 
-        // Register with PROVE_ALL strategy
-        manager.register_destination_with_strategy(dest_hash, ProofStrategy::All);
-        assert!(manager.accepts_links(&dest_hash));
-        assert_eq!(manager.proof_strategy(&dest_hash), Some(ProofStrategy::All));
+        let pair_app = establish_link_pair(ProofStrategy::App);
+        let link_app = pair_app.responder.link(&pair_app.responder_link_id).unwrap();
+        assert_eq!(link_app.proof_strategy(), ProofStrategy::App);
+        assert!(link_app.dest_signing_key().is_some());
 
-        // Unregister
-        manager.unregister_destination(&dest_hash);
-        assert!(!manager.accepts_links(&dest_hash));
-        assert_eq!(manager.proof_strategy(&dest_hash), None);
-
-        // Register with PROVE_APP strategy
-        manager.register_destination_with_strategy(dest_hash, ProofStrategy::App);
-        assert_eq!(manager.proof_strategy(&dest_hash), Some(ProofStrategy::App));
-
-        // Default registration uses PROVE_NONE
-        let other_hash = DestinationHash::new([0x33; 16]);
-        manager.register_destination(other_hash);
-        assert_eq!(
-            manager.proof_strategy(&other_hash),
-            Some(ProofStrategy::None)
-        );
+        let pair_none = establish_link_pair(ProofStrategy::None);
+        let link_none = pair_none.responder.link(&pair_none.responder_link_id).unwrap();
+        assert_eq!(link_none.proof_strategy(), ProofStrategy::None);
+        assert!(link_none.dest_signing_key().is_none());
     }
 
     #[test]

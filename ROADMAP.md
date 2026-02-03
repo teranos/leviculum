@@ -36,7 +36,7 @@ Das Projekt hat Phase 1 vollständig abgeschlossen und Phase 2 ist zu ~90% ferti
 
 **Ratchet & IFAC implementiert:** Forward Secrecy via Ratchets und Interface Access Codes sind vollständig implementiert und gegen Python Reticulum getestet.
 
-**Code-Qualität:** LinkManager intern auf einheitliche Paket-Queue (`PendingPacket` Enum) umgestellt, Timeout-Konstanten zentralisiert, `LinkId` und `DestinationHash` als Newtype-Structs für vollständige Typ-Sicherheit (keine `Deref` mehr, kein `as_bytes_mut()`). 671 Tests bestehen (421 Core + 20 Std-Lib + 230 Interop).
+**Code-Qualität:** LinkManager intern auf einheitliche Paket-Queue (`PendingPacket` Enum) umgestellt, Timeout-Konstanten zentralisiert, `LinkId` und `DestinationHash` als Newtype-Structs für vollständige Typ-Sicherheit (keine `Deref` mehr, kein `as_bytes_mut()`). Proof-Strategy und Signing-Key von LinkManager's Destination-Map auf den `Link` selbst verschoben — reduziert duplizierte State zwischen Transport, LinkManager und NodeCore. 671 Tests bestehen (421 Core + 20 Std-Lib + 230 Interop).
 
 | Komponente | Status | LOC |
 |------------|--------|-----|

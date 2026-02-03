@@ -53,7 +53,7 @@ use crate::constants::{
     X25519_KEY_SIZE,
 };
 use crate::crypto::{derive_key, truncated_hash};
-use crate::destination::DestinationHash;
+use crate::destination::{DestinationHash, ProofStrategy};
 use crate::identity::Identity;
 use crate::packet::PacketContext;
 use crate::traits::Context;
@@ -380,6 +380,10 @@ pub struct Link {
     last_keepalive: u64,
     /// When the link was established (timestamp in seconds)
     established_at: Option<u64>,
+    /// Proof strategy for received data on this link (responder only)
+    proof_strategy: ProofStrategy,
+    /// Destination identity signing key for generating proofs (responder only)
+    dest_signing_key: Option<ed25519_dalek::SigningKey>,
 }
 
 impl Link {
@@ -428,6 +432,8 @@ impl Link {
             last_outbound: 0,
             last_keepalive: 0,
             established_at: None,
+            proof_strategy: ProofStrategy::None,
+            dest_signing_key: None,
         }
     }
 
@@ -509,6 +515,8 @@ impl Link {
             last_outbound: 0,
             last_keepalive: 0,
             established_at: None,
+            proof_strategy: ProofStrategy::None,
+            dest_signing_key: None,
         })
     }
 
@@ -656,6 +664,26 @@ impl Link {
     /// Check if we initiated this link
     pub fn is_initiator(&self) -> bool {
         self.initiator
+    }
+
+    /// Get the proof strategy for received data on this link
+    pub fn proof_strategy(&self) -> ProofStrategy {
+        self.proof_strategy
+    }
+
+    /// Set the proof strategy for received data on this link
+    pub fn set_proof_strategy(&mut self, strategy: ProofStrategy) {
+        self.proof_strategy = strategy;
+    }
+
+    /// Get the destination identity signing key (for proof generation)
+    pub fn dest_signing_key(&self) -> Option<&ed25519_dalek::SigningKey> {
+        self.dest_signing_key.as_ref()
+    }
+
+    /// Set the destination identity signing key (for proof generation)
+    pub fn set_dest_signing_key(&mut self, key: ed25519_dalek::SigningKey) {
+        self.dest_signing_key = Some(key);
     }
 
     /// Get the hop count

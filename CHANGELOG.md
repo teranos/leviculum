@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+- Move `proof_strategy` and `dest_signing_key` from `LinkManager`'s per-destination `DestinationEntry` to the `Link` struct, reducing duplicated state across components
+- `LinkManager::accept_link()` now takes a `proof_strategy: ProofStrategy` parameter instead of reading it from destination registration
+- Replace `LinkManager`'s destination tracking from `BTreeMap<DestinationHash, DestinationEntry>` to `BTreeSet<DestinationHash>` (acceptance-only, no metadata)
+
+### Removed
+- `LinkManager::register_destination_with_strategy()` — proof strategy is now passed at `accept_link()` time
+- `LinkManager::proof_strategy()` query — proof strategy is now stored on the `Link` itself
+- `DestinationEntry` struct from `LinkManager` — replaced by simple `BTreeSet`
+
 ### Fixed
 - Fix 16 ignored doc-tests across reticulum-core and reticulum-std: 9 made fully runnable, 5 converted to compile-only (`no_run`), 1 made runnable (was `ignore`), 1 converted to `text` block (private function)
 - Fix incorrect types in IFAC module doc example (`String` vs `&str`, missing `Result` handling)

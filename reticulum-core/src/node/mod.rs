@@ -306,9 +306,17 @@ impl<C: Clock, S: Storage> NodeCore<C, S> {
         identity: &Identity,
         ctx: &mut impl Context,
     ) -> Result<Vec<u8>, ConnectionError> {
+        // Look up proof strategy from the destination
+        let proof_strategy = self
+            .link_manager
+            .link(link_id)
+            .and_then(|link| self.destinations.get(link.destination_hash()))
+            .map(|dest| dest.proof_strategy())
+            .unwrap_or(ProofStrategy::None);
+
         let proof = self
             .link_manager
-            .accept_link(link_id, identity, ctx)
+            .accept_link(link_id, identity, proof_strategy, ctx)
             .map_err(ConnectionError::LinkError)?;
 
         // Get destination hash from link
