@@ -958,7 +958,7 @@ impl<C: Clock, S: Storage> Transport<C, S> {
                 let link_id = Link::calculate_link_id(raw);
                 let target_iface = path.interface_index;
                 let iface_hash = path.received_from;
-                let transport_id_bytes = self.identity.hash().clone();
+                let transport_id_bytes = *self.identity.hash();
 
                 // Insert link table entry for bidirectional routing
                 self.link_table.insert(
@@ -1372,7 +1372,7 @@ impl<C: Clock, S: Storage> Transport<C, S> {
         self.path_requests.insert(*dest_hash, now);
 
         // Build path request data: dest_hash(16) + transport_id(16) + tag(16)
-        let transport_id_bytes = self.identity.hash().clone();
+        let transport_id_bytes = *self.identity.hash();
         let mut data = Vec::with_capacity(48);
         data.extend_from_slice(dest_hash);
         data.extend_from_slice(&transport_id_bytes);
@@ -1850,7 +1850,7 @@ mod tests {
 
         fn make_transport() -> Transport<MockClock, NoStorage> {
             let clock = MockClock::new(1_000_000);
-            let identity = Identity::generate_with_rng(&mut OsRng);
+            let identity = Identity::generate(&mut OsRng);
             Transport::new(TransportConfig::default(), clock, NoStorage, identity)
         }
 
@@ -2172,7 +2172,7 @@ mod tests {
             transport.register_interface(Box::new(MockInterface::new("test", 1)));
 
             // Create a real announce
-            let identity = Identity::generate_with_rng(&mut OsRng);
+            let identity = Identity::generate(&mut OsRng);
             let dest = Destination::new(
                 Some(identity),
                 Direction::In,
@@ -2261,7 +2261,7 @@ mod tests {
                 HeaderType, PacketData, PacketFlags, TransportType,
             };
 
-            let identity = Identity::generate_with_rng(&mut OsRng);
+            let identity = Identity::generate(&mut OsRng);
             let dest = Destination::new(
                 Some(identity),
                 Direction::In,
@@ -2314,7 +2314,7 @@ mod tests {
 
         fn make_transport_enabled() -> Transport<MockClock, NoStorage> {
             let clock = MockClock::new(1_000_000);
-            let identity = Identity::generate_with_rng(&mut OsRng);
+            let identity = Identity::generate(&mut OsRng);
             let config = TransportConfig {
                 enable_transport: true,
                 ..TransportConfig::default()

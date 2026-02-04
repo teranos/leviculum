@@ -7,6 +7,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+- Fix clippy warnings: use dereference instead of `.clone()` on `[u8; 16]` (implements Copy) in transport.rs
+
 ## [0.2.8] - 2026-02-04
 
 ### Added
