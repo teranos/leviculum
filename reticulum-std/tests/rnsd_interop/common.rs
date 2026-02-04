@@ -6,7 +6,7 @@ use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpStream;
 use tokio::time::timeout;
 
-use reticulum_core::constants::{MTU, NAME_HASHBYTES, TRUNCATED_HASHBYTES};
+use reticulum_core::constants::{MTU, TRUNCATED_HASHBYTES};
 use reticulum_core::crypto::truncated_hash;
 use reticulum_core::destination::{Destination, DestinationType, Direction};
 use reticulum_core::identity::Identity;
@@ -688,10 +688,9 @@ pub async fn wait_for_path_on_daemon(
 pub fn build_path_request_raw(requested_dest_hash: &[u8; TRUNCATED_HASHBYTES]) -> Vec<u8> {
     use rand_core::RngCore;
 
-    // Compute path request destination hash (PLAIN destination: name_hash padded to 16 bytes)
+    // Compute path request destination hash (PLAIN destination: full_hash(name_hash)[:16])
     let name_hash = Destination::compute_name_hash("rnstransport", &["path", "request"]);
-    let mut path_request_dest = [0u8; TRUNCATED_HASHBYTES];
-    path_request_dest[..NAME_HASHBYTES].copy_from_slice(&name_hash);
+    let path_request_dest = truncated_hash(&name_hash);
 
     // Generate random request tag
     let mut tag = [0u8; TRUNCATED_HASHBYTES];
@@ -733,8 +732,7 @@ pub fn build_path_request_raw_with_tag(
     tag: &[u8; TRUNCATED_HASHBYTES],
 ) -> Vec<u8> {
     let name_hash = Destination::compute_name_hash("rnstransport", &["path", "request"]);
-    let mut path_request_dest = [0u8; TRUNCATED_HASHBYTES];
-    path_request_dest[..NAME_HASHBYTES].copy_from_slice(&name_hash);
+    let path_request_dest = truncated_hash(&name_hash);
 
     let mut payload = Vec::with_capacity(32);
     payload.extend_from_slice(requested_dest_hash);

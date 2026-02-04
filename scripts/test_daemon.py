@@ -129,6 +129,7 @@ class TestDaemon:
     enabled = yes
     listen_ip = 127.0.0.1
     listen_port = {self.rns_port}
+    mode = gateway
 """
         config_path = os.path.join(self.config_dir, "config")
         with open(config_path, 'w') as f:
@@ -479,6 +480,7 @@ class TestDaemon:
                 # packet. Without this, no announces or data get sent through it.
                 client_iface.OUT = True
                 client_iface.IN = True
+                client_iface.mode = RNS.Interfaces.Interface.Interface.MODE_GATEWAY
 
                 # Register with Transport
                 RNS.Transport.interfaces.append(client_iface)

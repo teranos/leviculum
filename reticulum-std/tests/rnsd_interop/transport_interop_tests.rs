@@ -1740,16 +1740,13 @@ async fn test_announce_rebroadcast_timing_accuracy() {
 /// multiple interfaces. D1 has both TCPServerInterface (where Rust-A connects)
 /// and TCPClientInterface (to D0), enabling forwarding between them.
 ///
-/// IGNORED: Python Reticulum's `path_request_handler` (Transport.py:2667)
-/// uses float division (`TRUNCATED_HASHLENGTH/8`) for byte slice indices,
-/// which raises TypeError in Python 3. The except clause silently swallows
-/// the error, so PATH_REQUESTs are never actually processed. Existing
-/// PATH_REQUEST tests (5a, 5b) pass because they rely on announce
-/// rebroadcasting, not actual PATH_REQUEST response. This test fails
-/// because the destination was never announced, so there is no
-/// rebroadcast to fall back on.
+/// Previously ignored due to incorrect interface mode configuration in the
+/// test daemon. TCP interfaces default to MODE_FULL, which does not forward
+/// PATH_REQUESTs for unknown destinations. Fixed by setting
+/// `mode = gateway` on the TCPServerInterface config, making spawned
+/// per-client interfaces use MODE_GATEWAY (which is in DISCOVER_PATHS_FOR
+/// and enables path discovery forwarding).
 #[tokio::test]
-#[ignore]
 async fn test_path_request_forwarding_to_local_destination() {
     let topology = DaemonTopology::linear(2)
         .await

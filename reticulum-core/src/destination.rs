@@ -287,10 +287,9 @@ impl Destination {
         let hash = match &identity {
             Some(id) => Self::compute_destination_hash(&name_hash, id.hash()),
             None => {
-                // For PLAIN destinations without identity, hash is just name_hash padded
-                let mut h = [0u8; TRUNCATED_HASHBYTES];
-                h[..NAME_HASHBYTES].copy_from_slice(&name_hash);
-                DestinationHash::new(h)
+                // For PLAIN destinations without identity: hash = full_hash(name_hash)[:16]
+                // This matches Python: RNS.Identity.full_hash(name_hash)[:TRUNCATED_HASHLENGTH//8]
+                DestinationHash::new(truncated_hash(&name_hash))
             }
         };
 

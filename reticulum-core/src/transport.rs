@@ -31,6 +31,7 @@
 
 use alloc::boxed::Box;
 use alloc::collections::BTreeMap;
+use alloc::collections::VecDeque;
 use alloc::vec::Vec;
 
 use crate::constants::{
@@ -67,6 +68,8 @@ pub struct PathEntry {
     pub expires_ms: u64,
     /// Interface index where we learned this path
     pub interface_index: usize,
+    /// Random blobs seen for this destination (for replay detection)
+    pub random_blobs: Vec<[u8; crate::constants::RANDOM_HASHBYTES]>,
 }
 
 /// Link table entry (for active links routed through this transport node)
@@ -99,8 +102,10 @@ pub struct ReverseEntry {
     pub timestamp_ms: u64,
     /// Who sent this to us
     pub received_from: [u8; TRUNCATED_HASHBYTES],
-    /// Interface index
-    pub interface_index: usize,
+    /// Interface index where the original packet was received
+    pub receiving_interface_index: usize,
+    /// Interface index where the packet was forwarded to
+    pub outbound_interface_index: usize,
 }
 
 /// Announce table entry (for rate limiting and rebroadcast tracking)
@@ -330,13 +335,16 @@ pub struct Transport<C: Clock, S: Storage> {
     path_request_hash: [u8; TRUNCATED_HASHBYTES],
 
     /// Dedup tags for path requests (dest_hash + random tag)
-    path_request_tags: Vec<[u8; 32]>,
+    path_request_tags: VecDeque<[u8; 32]>,
 
     /// Rate limiting for path requests: dest_hash -> last request timestamp (ms)
     path_requests: BTreeMap<[u8; TRUNCATED_HASHBYTES], u64>,
 
     /// Cached raw announce bytes for path responses: dest_hash -> raw bytes
     announce_cache: BTreeMap<[u8; TRUNCATED_HASHBYTES], Vec<u8>>,
+
+    /// Known identities from received announces: dest_hash -> Identity
+    identity_table: BTreeMap<[u8; TRUNCATED_HASHBYTES], Identity>,
 }
 
 impl<C: Clock, S: Storage> Transport<C, S> {
@@ -359,9 +367,10 @@ impl<C: Clock, S: Storage> Transport<C, S> {
             events: Vec::new(),
             stats: TransportStats::default(),
             path_request_hash,
-            path_request_tags: Vec::new(),
+            path_request_tags: VecDeque::new(),
             path_requests: BTreeMap::new(),
             announce_cache: BTreeMap::new(),
+            identity_table: BTreeMap::new(),
         }
     }
 
@@ -604,28 +613,15 @@ impl<C: Clock, S: Storage> Transport<C, S> {
         // Cache this packet hash
         self.packet_cache.insert(dedup_hash, now);
 
-        // Store reverse path for replies
-        if let Some(iface) = self
-            .interfaces
-            .get(interface_index)
-            .and_then(|i| i.as_ref())
-        {
-            self.reverse_table.insert(
-                dedup_hash,
-                ReverseEntry {
-                    timestamp_ms: now,
-                    received_from: iface.hash(),
-                    interface_index,
-                },
-            );
-        }
-
         // Route to handler based on packet type
+        // Note: reverse table entries are populated at forwarding time (in forward_packet,
+        // handle_data link-table routing, handle_link_request) so they include the
+        // outbound interface index needed for proof routing.
         match packet.flags.packet_type {
             PacketType::Announce => self.handle_announce(packet, interface_index, raw),
-            PacketType::LinkRequest => self.handle_link_request(packet, interface_index, raw),
+            PacketType::LinkRequest => self.handle_link_request(packet, interface_index, raw, dedup_hash),
             PacketType::Proof => self.handle_proof(packet, interface_index),
-            PacketType::Data => self.handle_data(packet, interface_index, full_packet_hash),
+            PacketType::Data => self.handle_data(packet, interface_index, full_packet_hash, dedup_hash),
         }
     }
 
@@ -745,6 +741,15 @@ impl<C: Clock, S: Storage> Transport<C, S> {
         announce.validate().map_err(TransportError::AnnounceError)?;
 
         let dest_hash = announce.destination_hash().into_bytes();
+        let random_hash = *announce.random_hash();
+
+        // Random blob replay protection: reject if we've seen this exact random_hash
+        if let Some(path) = self.path_table.get(&dest_hash) {
+            if path.random_blobs.contains(&random_hash) {
+                self.stats.packets_dropped += 1;
+                return Ok(());
+            }
+        }
 
         // Rate limiting: check if we've seen this destination recently
         // Also detect local rebroadcasts from neighbors
@@ -782,6 +787,14 @@ impl<C: Clock, S: Storage> Transport<C, S> {
             .map(|i| i.hash())
             .unwrap_or([0u8; TRUNCATED_HASHBYTES]);
 
+        // Preserve existing random_blobs and add the new one
+        let mut random_blobs = self
+            .path_table
+            .get(&dest_hash)
+            .map(|p| p.random_blobs.clone())
+            .unwrap_or_default();
+        random_blobs.push(random_hash);
+
         self.path_table.insert(
             dest_hash,
             PathEntry {
@@ -790,6 +803,7 @@ impl<C: Clock, S: Storage> Transport<C, S> {
                 hops: packet.hops,
                 expires_ms: now + (self.config.path_expiry_secs * 1000),
                 interface_index,
+                random_blobs,
             },
         );
 
@@ -821,6 +835,11 @@ impl<C: Clock, S: Storage> Transport<C, S> {
             self.announce_cache.insert(dest_hash, raw.to_vec());
         }
 
+        // Store identity from announce for proof validation
+        if let Ok(identity) = announce.to_identity() {
+            self.identity_table.insert(dest_hash, identity);
+        }
+
         self.stats.announces_processed += 1;
 
         // Emit events
@@ -845,6 +864,7 @@ impl<C: Clock, S: Storage> Transport<C, S> {
         packet: Packet,
         interface_index: usize,
         raw: &[u8],
+        dedup_hash: [u8; TRUNCATED_HASHBYTES],
     ) -> Result<(), TransportError> {
         let dest_hash = packet.destination_hash;
 
@@ -867,6 +887,7 @@ impl<C: Clock, S: Storage> Transport<C, S> {
                 let now = self.clock.now_ms();
                 let link_id = Link::calculate_link_id(raw);
                 let target_iface = path.interface_index;
+                let iface_hash = path.received_from;
                 let transport_id_bytes = self.identity.hash().clone();
 
                 // Insert link table entry for bidirectional routing
@@ -874,7 +895,7 @@ impl<C: Clock, S: Storage> Transport<C, S> {
                     *link_id.as_bytes(),
                     LinkEntry {
                         timestamp_ms: now,
-                        next_hop_transport_id: path.received_from,
+                        next_hop_transport_id: iface_hash,
                         next_hop_interface_index: target_iface,
                         remaining_hops: path.hops,
                         received_interface_index: interface_index,
@@ -888,18 +909,53 @@ impl<C: Clock, S: Storage> Transport<C, S> {
                     },
                 );
 
-                // Forward as Header Type 2 with our transport ID
-                let forwarded = Packet {
-                    flags: PacketFlags {
-                        header_type: HeaderType::Type2,
-                        transport_type: TransportType::Transport,
-                        ..packet.flags
+                // Populate reverse table at forwarding time
+                let recv_iface_hash = self
+                    .interfaces
+                    .get(interface_index)
+                    .and_then(|i| i.as_ref())
+                    .map(|i| i.hash())
+                    .unwrap_or([0u8; TRUNCATED_HASHBYTES]);
+                self.reverse_table.insert(
+                    dedup_hash,
+                    ReverseEntry {
+                        timestamp_ms: now,
+                        received_from: recv_iface_hash,
+                        receiving_interface_index: interface_index,
+                        outbound_interface_index: target_iface,
                     },
-                    hops: packet.hops.saturating_add(1),
-                    transport_id: Some(transport_id_bytes),
-                    destination_hash: dest_hash,
-                    context: packet.context,
-                    data: packet.data,
+                );
+
+                // Forward: strip to Type1 at final hop, Type2 otherwise
+                let remaining_hops = path.hops;
+                let forwarded = if remaining_hops <= 1 {
+                    // Final hop: destination is directly connected, strip transport header
+                    Packet {
+                        flags: PacketFlags {
+                            header_type: HeaderType::Type1,
+                            transport_type: TransportType::Broadcast,
+                            ..packet.flags
+                        },
+                        hops: packet.hops.saturating_add(1),
+                        transport_id: None,
+                        destination_hash: dest_hash,
+                        context: packet.context,
+                        data: packet.data,
+                    }
+                } else {
+                    // Intermediate: Header Type 2 with our transport ID
+                    Packet {
+                        flags: PacketFlags {
+                            header_type: HeaderType::Type2,
+                            transport_type: TransportType::Transport,
+                            ..packet.flags
+                        },
+                        hops: packet.hops.saturating_add(1),
+                        transport_id: Some(transport_id_bytes),
+                        destination_hash: dest_hash,
+                        context: packet.context,
+                        data: packet.data,
+                    }
                 };
 
                 self.stats.packets_forwarded += 1;
@@ -972,15 +1028,32 @@ impl<C: Clock, S: Storage> Transport<C, S> {
         // If we're a transport node, check link table for bidirectional routing
         if self.config.enable_transport {
             if let Some(link_entry) = self.link_table.get(&dest_hash).cloned() {
-                // Determine direction: if it arrived from the destination side,
-                // route toward the initiator, and vice versa
-                let target_iface = if interface_index == link_entry.next_hop_interface_index {
-                    // Arrived from destination side → route to initiator side
-                    link_entry.received_interface_index
-                } else {
-                    // Arrived from initiator side → route to destination side
-                    link_entry.next_hop_interface_index
-                };
+                // Determine direction with hop count validation
+                let target_iface =
+                    if interface_index == link_entry.next_hop_interface_index {
+                        // From destination side: check remaining_hops
+                        if packet.hops != link_entry.remaining_hops {
+                            return Ok(());
+                        }
+                        link_entry.received_interface_index
+                    } else if interface_index == link_entry.received_interface_index {
+                        // From initiator side: check taken hops
+                        if packet.hops != link_entry.hops {
+                            return Ok(());
+                        }
+                        link_entry.next_hop_interface_index
+                    } else {
+                        return Ok(()); // Unknown direction
+                    };
+
+                // LRPROOF validation: check proof data size before forwarding
+                if packet.context == PacketContext::Lrproof {
+                    // Link proof format: sig(64) + X25519(32) + signaling(3) = 99 bytes
+                    const LINK_PROOF_SIZE: usize = 99;
+                    if proof_data.len() != LINK_PROOF_SIZE {
+                        return Ok(());
+                    }
+                }
 
                 // Mark link as validated on first proof
                 if !link_entry.validated {
@@ -993,6 +1066,20 @@ impl<C: Clock, S: Storage> Transport<C, S> {
                 self.stats.packets_forwarded += 1;
                 return self.send_packet_on_interface(target_iface, &packet);
             }
+
+            // Check reverse table for regular proof routing
+            if let Some(reverse_entry) = self.reverse_table.remove(&dest_hash) {
+                // The proof should arrive on the outbound interface (where the
+                // original packet was forwarded to) and be routed back to the
+                // receiving interface (where the original packet came from).
+                if interface_index == reverse_entry.outbound_interface_index {
+                    self.stats.packets_forwarded += 1;
+                    return self.send_packet_on_interface(
+                        reverse_entry.receiving_interface_index,
+                        &packet,
+                    );
+                }
+            }
         }
 
         Ok(())
@@ -1003,6 +1090,7 @@ impl<C: Clock, S: Storage> Transport<C, S> {
         packet: Packet,
         interface_index: usize,
         full_packet_hash: [u8; 32],
+        dedup_hash: [u8; TRUNCATED_HASHBYTES],
     ) -> Result<(), TransportError> {
         let dest_hash = packet.destination_hash;
 
@@ -1047,17 +1135,47 @@ impl<C: Clock, S: Storage> Transport<C, S> {
             // Check link table for validated links
             if let Some(link_entry) = self.link_table.get(&dest_hash).cloned() {
                 if link_entry.validated {
-                    let target_iface = if interface_index == link_entry.next_hop_interface_index {
-                        link_entry.received_interface_index
-                    } else {
-                        link_entry.next_hop_interface_index
-                    };
+                    let target_iface =
+                        if interface_index == link_entry.next_hop_interface_index {
+                            // From destination side: check remaining_hops
+                            if packet.hops != link_entry.remaining_hops {
+                                return Ok(());
+                            }
+                            link_entry.received_interface_index
+                        } else if interface_index == link_entry.received_interface_index {
+                            // From initiator side: check taken hops
+                            if packet.hops != link_entry.hops {
+                                return Ok(());
+                            }
+                            link_entry.next_hop_interface_index
+                        } else {
+                            return Ok(()); // Unknown direction
+                        };
+
+                    // Populate reverse table for link-routed data packets
+                    let now = self.clock.now_ms();
+                    let recv_iface_hash = self
+                        .interfaces
+                        .get(interface_index)
+                        .and_then(|i| i.as_ref())
+                        .map(|i| i.hash())
+                        .unwrap_or([0u8; TRUNCATED_HASHBYTES]);
+                    self.reverse_table.insert(
+                        dedup_hash,
+                        ReverseEntry {
+                            timestamp_ms: now,
+                            received_from: recv_iface_hash,
+                            receiving_interface_index: interface_index,
+                            outbound_interface_index: target_iface,
+                        },
+                    );
+
                     self.stats.packets_forwarded += 1;
                     return self.send_packet_on_interface(target_iface, &packet);
                 }
             }
 
-            self.forward_packet(packet)?;
+            self.forward_packet(packet, interface_index, dedup_hash)?;
         }
 
         Ok(())
@@ -1065,7 +1183,12 @@ impl<C: Clock, S: Storage> Transport<C, S> {
 
     // ─── Internal: Forwarding ───────────────────────────────────────────
 
-    fn forward_packet(&mut self, mut packet: Packet) -> Result<(), TransportError> {
+    fn forward_packet(
+        &mut self,
+        mut packet: Packet,
+        source_interface_index: usize,
+        dedup_hash: [u8; TRUNCATED_HASHBYTES],
+    ) -> Result<(), TransportError> {
         packet.hops = packet.hops.saturating_add(1);
         if packet.hops > self.config.max_hops {
             self.stats.packets_dropped += 1;
@@ -1075,6 +1198,25 @@ impl<C: Clock, S: Storage> Transport<C, S> {
         // Look up path
         if let Some(path) = self.path_table.get(&packet.destination_hash) {
             let target_iface = path.interface_index;
+
+            // Populate reverse table at forwarding time
+            let now = self.clock.now_ms();
+            let recv_iface_hash = self
+                .interfaces
+                .get(source_interface_index)
+                .and_then(|i| i.as_ref())
+                .map(|i| i.hash())
+                .unwrap_or([0u8; TRUNCATED_HASHBYTES]);
+            self.reverse_table.insert(
+                dedup_hash,
+                ReverseEntry {
+                    timestamp_ms: now,
+                    received_from: recv_iface_hash,
+                    receiving_interface_index: source_interface_index,
+                    outbound_interface_index: target_iface,
+                },
+            );
+
             self.stats.packets_forwarded += 1;
             return self.send_packet_on_interface(target_iface, &packet);
         }
@@ -1167,13 +1309,11 @@ impl<C: Clock, S: Storage> Transport<C, S> {
     /// Compute the well-known path request destination hash
     ///
     /// PLAIN destination with name "rnstransport.path.request".
-    /// Hash = name_hash padded to 16 bytes (no identity for PLAIN).
+    /// Hash = full_hash(name_hash)[:16], matching Python Reticulum.
     fn compute_path_request_hash() -> [u8; TRUNCATED_HASHBYTES] {
         let name_hash =
             Destination::compute_name_hash("rnstransport", &["path", "request"]);
-        let mut hash = [0u8; TRUNCATED_HASHBYTES];
-        hash[..crate::constants::NAME_HASHBYTES].copy_from_slice(&name_hash);
-        hash
+        truncated_hash(&name_hash)
     }
 
     /// Send data on all online interfaces except the one at `except_index`
@@ -1226,10 +1366,10 @@ impl<C: Clock, S: Storage> Transport<C, S> {
             return Ok(());
         }
 
-        self.path_request_tags.push(dedup_key);
+        self.path_request_tags.push_back(dedup_key);
         // Trim if too many tags
         if self.path_request_tags.len() > MAX_PATH_REQUEST_TAGS {
-            self.path_request_tags.remove(0);
+            self.path_request_tags.pop_front();
         }
 
         // 1. Check if it's a local destination
@@ -1237,6 +1377,26 @@ impl<C: Clock, S: Storage> Transport<C, S> {
             self.events.push(TransportEvent::PathRequestReceived {
                 destination_hash: requested_hash,
             });
+            // Also respond from cache if available
+            if let Some(cached_raw) = self.announce_cache.get(&requested_hash).cloned() {
+                let now = self.clock.now_ms();
+                if let Ok(cached_packet) = Packet::unpack(&cached_raw) {
+                    let jitter = Self::jitter_ms(&requested_hash);
+                    self.announce_table.insert(
+                        requested_hash,
+                        AnnounceEntry {
+                            timestamp_ms: now,
+                            hops: cached_packet.hops,
+                            retries: 0,
+                            retransmit_at_ms: Some(now + PATH_REQUEST_GRACE_MS + jitter),
+                            raw_packet: cached_raw,
+                            receiving_interface_index: interface_index,
+                            local_rebroadcasts: 0,
+                            block_rebroadcasts: true,
+                        },
+                    );
+                }
+            }
             return Ok(());
         }
 
@@ -1309,7 +1469,11 @@ impl<C: Clock, S: Storage> Transport<C, S> {
         let expired: Vec<[u8; TRUNCATED_HASHBYTES]> = self
             .reverse_table
             .iter()
-            .filter(|(_, e)| now.saturating_sub(e.timestamp_ms) > REVERSE_TABLE_EXPIRY_MS)
+            .filter(|(_, e)| {
+                now.saturating_sub(e.timestamp_ms) > REVERSE_TABLE_EXPIRY_MS
+                    || !self.is_interface_online(e.receiving_interface_index)
+                    || !self.is_interface_online(e.outbound_interface_index)
+            })
             .map(|(k, _)| *k)
             .collect();
 
@@ -1409,16 +1573,28 @@ impl<C: Clock, S: Storage> Transport<C, S> {
         }
     }
 
+    /// Check if an interface slot is present and online
+    fn is_interface_online(&self, index: usize) -> bool {
+        self.interfaces
+            .get(index)
+            .and_then(|slot| slot.as_ref())
+            .map(|iface| iface.is_online())
+            .unwrap_or(false)
+    }
+
     fn clean_link_table(&mut self, now: u64) {
         let expired: Vec<[u8; TRUNCATED_HASHBYTES]> = self
             .link_table
             .iter()
             .filter(|(_, e)| {
-                if e.validated {
+                let time_expired = if e.validated {
                     now.saturating_sub(e.timestamp_ms) > LINK_TIMEOUT_MS
                 } else {
                     now > e.proof_timeout_ms
-                }
+                };
+                time_expired
+                    || !self.is_interface_online(e.next_hop_interface_index)
+                    || !self.is_interface_online(e.received_interface_index)
             })
             .map(|(k, _)| *k)
             .collect();
@@ -1428,9 +1604,11 @@ impl<C: Clock, S: Storage> Transport<C, S> {
         }
     }
 
-    fn calculate_retransmit_delay(&self, hops: u8) -> u64 {
-        // Longer delay for closer announces (they spread faster naturally)
-        ((hops as u64) + 1) * MS_PER_SECOND
+    fn calculate_retransmit_delay(&self, _hops: u8) -> u64 {
+        // Python: initial retransmit = random() * PATHFINDER_RW
+        // Use deterministic jitter from clock for no_std compatibility
+        let seed = (self.clock.now_ms() & 0xFFFF) as u16;
+        (seed % PATHFINDER_RW_MS as u16) as u64
     }
 }
 
@@ -1451,6 +1629,9 @@ mod tests {
         use super::*;
         use crate::traits::NoStorage;
         use rand_core::OsRng;
+
+        extern crate std;
+        use std::sync::{Arc, Mutex};
 
         // Mock clock for deterministic testing
         struct MockClock {
@@ -1508,6 +1689,53 @@ mod tests {
             }
             fn send(&mut self, data: &[u8]) -> Result<(), InterfaceError> {
                 self.sent.push(data.to_vec());
+                Ok(())
+            }
+            fn recv(&mut self, _buf: &mut [u8]) -> Result<usize, InterfaceError> {
+                Err(InterfaceError::WouldBlock)
+            }
+            fn is_online(&self) -> bool {
+                self.online
+            }
+        }
+
+        /// Mock interface with shared send buffer for inspecting sent packets
+        struct CaptureMockInterface {
+            name: &'static str,
+            hash: [u8; TRUNCATED_HASHBYTES],
+            sent: Arc<Mutex<Vec<Vec<u8>>>>,
+            online: bool,
+        }
+
+        impl CaptureMockInterface {
+            fn new(
+                name: &'static str,
+                id: u8,
+                sent: Arc<Mutex<Vec<Vec<u8>>>>,
+            ) -> Self {
+                let mut hash = [0u8; TRUNCATED_HASHBYTES];
+                hash[0] = id;
+                Self {
+                    name,
+                    hash,
+                    sent,
+                    online: true,
+                }
+            }
+        }
+
+        impl Interface for CaptureMockInterface {
+            fn name(&self) -> &str {
+                self.name
+            }
+            fn mtu(&self) -> usize {
+                500
+            }
+            fn hash(&self) -> [u8; TRUNCATED_HASHBYTES] {
+                self.hash
+            }
+            fn send(&mut self, data: &[u8]) -> Result<(), InterfaceError> {
+                self.sent.lock().unwrap().push(data.to_vec());
                 Ok(())
             }
             fn recv(&mut self, _buf: &mut [u8]) -> Result<usize, InterfaceError> {
@@ -1584,6 +1812,7 @@ mod tests {
                     hops: 3,
                     expires_ms: now + 3_600_000,
                     interface_index: 0,
+                    random_blobs: Vec::new(),
                 },
             );
 
@@ -1606,6 +1835,7 @@ mod tests {
                     hops: 1,
                     expires_ms: now + 1000, // Expires in 1 second
                     interface_index: 0,
+                    random_blobs: Vec::new(),
                 },
             );
 
@@ -2170,6 +2400,10 @@ mod tests {
         #[test]
         fn test_link_table_entry_expiry_validated() {
             let mut transport = make_transport_enabled();
+            let _idx0 =
+                transport.register_interface(Box::new(MockInterface::new("if0", 1)));
+            let _idx1 =
+                transport.register_interface(Box::new(MockInterface::new("if1", 2)));
             let now = transport.clock.now_ms();
 
             let link_id = [0xAA; TRUNCATED_HASHBYTES];
@@ -2200,6 +2434,10 @@ mod tests {
         #[test]
         fn test_link_table_entry_expiry_unvalidated() {
             let mut transport = make_transport_enabled();
+            let _idx0 =
+                transport.register_interface(Box::new(MockInterface::new("if0", 1)));
+            let _idx1 =
+                transport.register_interface(Box::new(MockInterface::new("if1", 2)));
             let now = transport.clock.now_ms();
 
             let link_id = [0xAA; TRUNCATED_HASHBYTES];
@@ -2230,6 +2468,10 @@ mod tests {
         #[test]
         fn test_link_table_validated_not_expired_early() {
             let mut transport = make_transport_enabled();
+            let _idx0 =
+                transport.register_interface(Box::new(MockInterface::new("if0", 1)));
+            let _idx1 =
+                transport.register_interface(Box::new(MockInterface::new("if1", 2)));
             let now = transport.clock.now_ms();
 
             let link_id = [0xAA; TRUNCATED_HASHBYTES];
@@ -2261,14 +2503,13 @@ mod tests {
         #[test]
         fn test_compute_path_request_hash() {
             let hash = Transport::<MockClock, NoStorage>::compute_path_request_hash();
-            // Should be name_hash of "rnstransport.path.request" padded to 16 bytes
-            let expected_name_hash = crate::destination::Destination::compute_name_hash(
+            // Should be full_hash(name_hash)[:16], matching Python Reticulum
+            let name_hash = crate::destination::Destination::compute_name_hash(
                 "rnstransport",
                 &["path", "request"],
             );
-            assert_eq!(&hash[..crate::constants::NAME_HASHBYTES], &expected_name_hash);
-            // Remaining bytes should be zero
-            assert_eq!(&hash[crate::constants::NAME_HASHBYTES..], &[0u8; 6]);
+            let expected = truncated_hash(&name_hash);
+            assert_eq!(hash, expected);
         }
 
         #[test]
@@ -2530,6 +2771,631 @@ mod tests {
             assert_eq!(crate::constants::PATH_REQUEST_TIMEOUT_MS, 15_000);
             assert_eq!(MAX_PATH_REQUEST_TAGS, 32_000);
             assert_eq!(PATH_REQUEST_MIN_INTERVAL_MS, 20_000);
+        }
+
+        // ─── Stage 9: Random blob replay protection ────────────────────
+
+        #[test]
+        fn test_announce_replay_detected_via_random_blob() {
+            let mut transport = make_transport_enabled();
+            let _idx0 =
+                transport.register_interface(Box::new(MockInterface::new("if0", 1)));
+
+            let (raw, _dest_hash) = make_announce_raw(2, PacketContext::None);
+            transport.process_incoming(0, &raw).unwrap();
+            assert_eq!(transport.stats().announces_processed, 1);
+
+            // Bypass packet cache and rate limit
+            transport.packet_cache.clear();
+            transport.clock.advance(ANNOUNCE_RATE_LIMIT_MS + 1);
+
+            // Replay exact same announce (same random_hash)
+            transport.process_incoming(0, &raw).unwrap();
+            assert_eq!(
+                transport.stats().announces_processed, 1,
+                "Replayed announce should be dropped"
+            );
+        }
+
+        #[test]
+        fn test_different_random_blob_accepted() {
+            let mut transport = make_transport_enabled();
+            let _idx0 =
+                transport.register_interface(Box::new(MockInterface::new("if0", 1)));
+
+            let (raw1, _dest_hash) = make_announce_raw(2, PacketContext::None);
+            transport.process_incoming(0, &raw1).unwrap();
+            assert_eq!(transport.stats().announces_processed, 1);
+
+            // Create a new announce for the same app but different identity
+            // (make_announce_raw generates a fresh identity each time)
+            let (raw2, _dest_hash2) = make_announce_raw(2, PacketContext::None);
+
+            // Bypass packet cache and rate limit
+            transport.packet_cache.clear();
+            transport.clock.advance(ANNOUNCE_RATE_LIMIT_MS + 1);
+
+            // This is a different destination, so it should be processed
+            transport.process_incoming(0, &raw2).unwrap();
+            assert_eq!(
+                transport.stats().announces_processed, 2,
+                "Different destination should be accepted"
+            );
+        }
+
+        // ─── Stage 8: LRPROOF validation ────────────────────────────────
+
+        #[test]
+        fn test_identity_stored_from_announce() {
+            let mut transport = make_transport_enabled();
+            let _idx0 =
+                transport.register_interface(Box::new(MockInterface::new("if0", 1)));
+
+            let (raw, dest_hash) = make_announce_raw(2, PacketContext::None);
+            transport.process_incoming(0, &raw).unwrap();
+
+            assert!(
+                transport.identity_table.contains_key(&dest_hash),
+                "Identity should be stored from announce"
+            );
+        }
+
+        #[test]
+        fn test_lrproof_invalid_length_not_forwarded() {
+            let mut transport = make_transport_enabled();
+            let _idx0 =
+                transport.register_interface(Box::new(MockInterface::new("if0", 1)));
+            let _idx1 =
+                transport.register_interface(Box::new(MockInterface::new("if1", 2)));
+
+            let link_id = [0xAA; TRUNCATED_HASHBYTES];
+            let now = transport.clock.now_ms();
+
+            transport.link_table.insert(
+                link_id,
+                LinkEntry {
+                    timestamp_ms: now,
+                    next_hop_transport_id: [0x01; TRUNCATED_HASHBYTES],
+                    next_hop_interface_index: 1,
+                    remaining_hops: 2,
+                    received_interface_index: 0,
+                    hops: 1,
+                    destination_hash: [0xBB; TRUNCATED_HASHBYTES],
+                    validated: false,
+                    proof_timeout_ms: now + 30_000,
+                },
+            );
+
+            // Build LRPROOF with wrong size (too short)
+            let pkt = Packet {
+                flags: PacketFlags {
+                    ifac_flag: false,
+                    header_type: HeaderType::Type1,
+                    context_flag: false,
+                    transport_type: TransportType::Broadcast,
+                    dest_type: crate::destination::DestinationType::Link,
+                    packet_type: PacketType::Proof,
+                },
+                hops: 2,
+                transport_id: None,
+                destination_hash: link_id,
+                context: PacketContext::Lrproof,
+                data: PacketData::Owned(b"too short".to_vec()),
+            };
+
+            let mut buf = [0u8; 500];
+            let len = pkt.pack(&mut buf).unwrap();
+            transport.process_incoming(1, &buf[..len]).unwrap();
+
+            assert_eq!(
+                transport.stats().packets_forwarded, 0,
+                "LRPROOF with invalid length should not be forwarded"
+            );
+            assert!(
+                !transport.link_table.get(&link_id).unwrap().validated,
+                "Link should not be validated with bad proof"
+            );
+        }
+
+        // ─── Stage 7: Auto re-announce on local path request ─────────────
+
+        #[test]
+        fn test_path_request_local_dest_schedules_rebroadcast() {
+            let mut transport = make_transport_enabled();
+            let _idx0 =
+                transport.register_interface(Box::new(MockInterface::new("if0", 1)));
+
+            let dest_hash = [0x42; TRUNCATED_HASHBYTES];
+            transport.register_destination(dest_hash, false);
+
+            // Populate announce cache for this destination (simulate prior announce)
+            let (raw, _) = make_announce_raw(0, PacketContext::None);
+            transport.announce_cache.insert(dest_hash, raw);
+
+            // Send path request
+            let path_req_hash = transport.path_request_hash;
+            let mut data = Vec::new();
+            data.extend_from_slice(&dest_hash);
+            data.extend_from_slice(&[0xBB; TRUNCATED_HASHBYTES]); // transport_id
+            data.extend_from_slice(&[0xCC; TRUNCATED_HASHBYTES]); // tag
+
+            let packet = Packet {
+                flags: PacketFlags {
+                    ifac_flag: false,
+                    header_type: HeaderType::Type1,
+                    context_flag: false,
+                    transport_type: TransportType::Broadcast,
+                    dest_type: crate::destination::DestinationType::Plain,
+                    packet_type: PacketType::Data,
+                },
+                hops: 0,
+                transport_id: None,
+                destination_hash: path_req_hash,
+                context: PacketContext::None,
+                data: PacketData::Owned(data),
+            };
+
+            let mut buf = [0u8; 500];
+            let len = packet.pack(&mut buf).unwrap();
+            transport.process_incoming(0, &buf[..len]).unwrap();
+
+            // Should still emit PathRequestReceived event
+            let events: Vec<_> = transport.drain_events().collect();
+            assert!(
+                events.iter().any(|e| matches!(
+                    e,
+                    TransportEvent::PathRequestReceived { .. }
+                )),
+                "Should emit PathRequestReceived event"
+            );
+
+            // AND should schedule a rebroadcast from the cache
+            assert!(
+                transport.announce_table.contains_key(&dest_hash),
+                "Should schedule announce rebroadcast from cache"
+            );
+        }
+
+        // ─── Stage 6: Interface validation in table cleanup ─────────────
+
+        #[test]
+        fn test_link_table_cleaned_when_interface_offline() {
+            let mut transport = make_transport_enabled();
+            let _idx0 =
+                transport.register_interface(Box::new(MockInterface::new("if0", 1)));
+            let idx1 =
+                transport.register_interface(Box::new(MockInterface::new("if1", 2)));
+
+            let link_id = [0xAA; TRUNCATED_HASHBYTES];
+            let now = transport.clock.now_ms();
+            transport.link_table.insert(
+                link_id,
+                LinkEntry {
+                    timestamp_ms: now,
+                    next_hop_transport_id: [0x01; TRUNCATED_HASHBYTES],
+                    next_hop_interface_index: 1,
+                    remaining_hops: 2,
+                    received_interface_index: 0,
+                    hops: 1,
+                    destination_hash: [0xBB; TRUNCATED_HASHBYTES],
+                    validated: true,
+                    proof_timeout_ms: now + 30_000,
+                },
+            );
+
+            // Take interface 1 offline
+            transport.unregister_interface(idx1);
+
+            transport.poll();
+            assert!(
+                !transport.link_table.contains_key(&link_id),
+                "Link entry should be removed when interface goes offline"
+            );
+        }
+
+        #[test]
+        fn test_reverse_table_cleaned_when_interface_offline() {
+            let mut transport = make_transport_enabled();
+            let _idx0 =
+                transport.register_interface(Box::new(MockInterface::new("if0", 1)));
+            let idx1 =
+                transport.register_interface(Box::new(MockInterface::new("if1", 2)));
+
+            let hash = [0xAA; TRUNCATED_HASHBYTES];
+            let now = transport.clock.now_ms();
+            transport.reverse_table.insert(
+                hash,
+                ReverseEntry {
+                    timestamp_ms: now,
+                    received_from: [0x01; TRUNCATED_HASHBYTES],
+                    receiving_interface_index: 0,
+                    outbound_interface_index: 1,
+                },
+            );
+
+            // Take interface 1 offline
+            transport.unregister_interface(idx1);
+
+            transport.poll();
+            assert!(
+                !transport.reverse_table.contains_key(&hash),
+                "Reverse entry should be removed when outbound interface goes offline"
+            );
+        }
+
+        // ─── Stage 5: Strip transport header at final hop ─────────────
+
+        #[test]
+        fn test_link_request_stripped_to_type1_at_final_hop() {
+            let mut transport = make_transport_enabled();
+            let _idx0 =
+                transport.register_interface(Box::new(MockInterface::new("if0", 1)));
+
+            // Use CaptureMockInterface on if1 so we can inspect sent packets
+            let sent_buf: Arc<Mutex<Vec<Vec<u8>>>> = Arc::new(Mutex::new(Vec::new()));
+            let _idx1 = transport.register_interface(Box::new(
+                CaptureMockInterface::new("if1", 2, sent_buf.clone()),
+            ));
+
+            // Path with hops=1 (destination directly connected to if1)
+            let dest_hash = [0xBB; TRUNCATED_HASHBYTES];
+            let now = transport.clock.now_ms();
+            transport.path_table.insert(
+                dest_hash,
+                PathEntry {
+                    received_from: [0x02; TRUNCATED_HASHBYTES],
+                    hops: 1,
+                    timestamp_ms: now,
+                    expires_ms: now + 100_000,
+                    interface_index: 1,
+                    random_blobs: Vec::new(),
+                },
+            );
+
+            // Build a link request arriving on if0
+            let mut link = Link::new_outgoing_with_rng(dest_hash.into(), &mut OsRng);
+            let raw = link.build_link_request_packet();
+            transport.process_incoming(0, &raw).unwrap();
+
+            assert!(
+                transport.stats().packets_forwarded > 0,
+                "Link request should be forwarded"
+            );
+
+            // Verify forwarded packet is Type1 (no transport_id)
+            let sent = sent_buf.lock().unwrap();
+            assert!(!sent.is_empty(), "Should have sent a packet on if1");
+            let forwarded_raw = &sent[0];
+            let forwarded_pkt = Packet::unpack(forwarded_raw).unwrap();
+            assert_eq!(
+                forwarded_pkt.flags.header_type,
+                HeaderType::Type1,
+                "Final hop should strip to Type1"
+            );
+            assert!(
+                forwarded_pkt.transport_id.is_none(),
+                "Type1 packet should have no transport_id"
+            );
+        }
+
+        #[test]
+        fn test_link_request_type2_when_not_final_hop() {
+            let mut transport = make_transport_enabled();
+            let _idx0 =
+                transport.register_interface(Box::new(MockInterface::new("if0", 1)));
+
+            let sent_buf: Arc<Mutex<Vec<Vec<u8>>>> = Arc::new(Mutex::new(Vec::new()));
+            let _idx1 = transport.register_interface(Box::new(
+                CaptureMockInterface::new("if1", 2, sent_buf.clone()),
+            ));
+
+            // Path with hops=3 (destination is multiple hops away)
+            let dest_hash = [0xBB; TRUNCATED_HASHBYTES];
+            let now = transport.clock.now_ms();
+            transport.path_table.insert(
+                dest_hash,
+                PathEntry {
+                    received_from: [0x02; TRUNCATED_HASHBYTES],
+                    hops: 3,
+                    timestamp_ms: now,
+                    expires_ms: now + 100_000,
+                    interface_index: 1,
+                    random_blobs: Vec::new(),
+                },
+            );
+
+            // Build a link request arriving on if0
+            let mut link = Link::new_outgoing_with_rng(dest_hash.into(), &mut OsRng);
+            let raw = link.build_link_request_packet();
+            transport.process_incoming(0, &raw).unwrap();
+
+            assert!(
+                transport.stats().packets_forwarded > 0,
+                "Link request should be forwarded"
+            );
+
+            // Verify forwarded packet is Type2 (with transport_id)
+            let sent = sent_buf.lock().unwrap();
+            assert!(!sent.is_empty(), "Should have sent a packet on if1");
+            let forwarded_raw = &sent[0];
+            let forwarded_pkt = Packet::unpack(forwarded_raw).unwrap();
+            assert_eq!(
+                forwarded_pkt.flags.header_type,
+                HeaderType::Type2,
+                "Intermediate hop should use Type2"
+            );
+            assert!(
+                forwarded_pkt.transport_id.is_some(),
+                "Type2 packet should have transport_id"
+            );
+        }
+
+        // ─── Stage 4: Hop count validation ──────────────────────────────
+
+        /// Build a data packet with the given destination hash and hop count
+        fn build_link_data_packet(
+            dest_hash: [u8; TRUNCATED_HASHBYTES],
+            hops: u8,
+        ) -> Packet {
+            Packet {
+                flags: PacketFlags {
+                    ifac_flag: false,
+                    header_type: HeaderType::Type1,
+                    context_flag: false,
+                    transport_type: TransportType::Broadcast,
+                    dest_type: crate::destination::DestinationType::Single,
+                    packet_type: PacketType::Data,
+                },
+                hops,
+                transport_id: None,
+                destination_hash: dest_hash,
+                context: PacketContext::None,
+                data: PacketData::Owned(b"link data".to_vec()),
+            }
+        }
+
+        #[test]
+        fn test_link_data_wrong_hops_dropped() {
+            let mut transport = make_transport_enabled();
+            let _idx0 =
+                transport.register_interface(Box::new(MockInterface::new("if0", 1)));
+            let _idx1 =
+                transport.register_interface(Box::new(MockInterface::new("if1", 2)));
+
+            let link_id = [0xAA; TRUNCATED_HASHBYTES];
+            let now = transport.clock.now_ms();
+            transport.link_table.insert(
+                link_id,
+                LinkEntry {
+                    timestamp_ms: now,
+                    next_hop_transport_id: [0x01; TRUNCATED_HASHBYTES],
+                    next_hop_interface_index: 1,
+                    remaining_hops: 3,
+                    received_interface_index: 0,
+                    hops: 2,
+                    destination_hash: [0xBB; TRUNCATED_HASHBYTES],
+                    validated: true,
+                    proof_timeout_ms: now + 30_000,
+                },
+            );
+
+            // Data from dest side (if1): hops should match remaining_hops=3
+            let pkt = build_link_data_packet(link_id, 99); // wrong hops
+            let mut buf = [0u8; 500];
+            let len = pkt.pack(&mut buf).unwrap();
+            transport.process_incoming(1, &buf[..len]).unwrap();
+            assert_eq!(
+                transport.stats().packets_forwarded, 0,
+                "Wrong hops should be dropped"
+            );
+        }
+
+        #[test]
+        fn test_link_data_correct_hops_forwarded() {
+            let mut transport = make_transport_enabled();
+            let _idx0 =
+                transport.register_interface(Box::new(MockInterface::new("if0", 1)));
+            let _idx1 =
+                transport.register_interface(Box::new(MockInterface::new("if1", 2)));
+
+            let link_id = [0xAA; TRUNCATED_HASHBYTES];
+            let now = transport.clock.now_ms();
+            transport.link_table.insert(
+                link_id,
+                LinkEntry {
+                    timestamp_ms: now,
+                    next_hop_transport_id: [0x01; TRUNCATED_HASHBYTES],
+                    next_hop_interface_index: 1,
+                    remaining_hops: 3,
+                    received_interface_index: 0,
+                    hops: 2,
+                    destination_hash: [0xBB; TRUNCATED_HASHBYTES],
+                    validated: true,
+                    proof_timeout_ms: now + 30_000,
+                },
+            );
+
+            // Data from dest side (if1): hops=3 matches remaining_hops=3
+            let pkt = build_link_data_packet(link_id, 3);
+            let mut buf = [0u8; 500];
+            let len = pkt.pack(&mut buf).unwrap();
+            transport.process_incoming(1, &buf[..len]).unwrap();
+            assert!(
+                transport.stats().packets_forwarded > 0,
+                "Correct hops should be forwarded"
+            );
+        }
+
+        #[test]
+        fn test_link_data_correct_hops_from_initiator() {
+            let mut transport = make_transport_enabled();
+            let _idx0 =
+                transport.register_interface(Box::new(MockInterface::new("if0", 1)));
+            let _idx1 =
+                transport.register_interface(Box::new(MockInterface::new("if1", 2)));
+
+            let link_id = [0xAA; TRUNCATED_HASHBYTES];
+            let now = transport.clock.now_ms();
+            transport.link_table.insert(
+                link_id,
+                LinkEntry {
+                    timestamp_ms: now,
+                    next_hop_transport_id: [0x01; TRUNCATED_HASHBYTES],
+                    next_hop_interface_index: 1,
+                    remaining_hops: 3,
+                    received_interface_index: 0,
+                    hops: 2,
+                    destination_hash: [0xBB; TRUNCATED_HASHBYTES],
+                    validated: true,
+                    proof_timeout_ms: now + 30_000,
+                },
+            );
+
+            // Data from initiator side (if0): hops=2 matches hops=2
+            let pkt = build_link_data_packet(link_id, 2);
+            let mut buf = [0u8; 500];
+            let len = pkt.pack(&mut buf).unwrap();
+            transport.process_incoming(0, &buf[..len]).unwrap();
+            assert!(
+                transport.stats().packets_forwarded > 0,
+                "Correct hops from initiator should be forwarded"
+            );
+        }
+
+        // ─── Stage 3: Reverse table proof routing ──────────────────────
+
+        #[test]
+        fn test_regular_proof_routed_via_reverse_table() {
+            let mut transport = make_transport_enabled();
+            let _idx0 =
+                transport.register_interface(Box::new(MockInterface::new("if0", 1)));
+            let _idx1 =
+                transport.register_interface(Box::new(MockInterface::new("if1", 2)));
+
+            // Simulate a data packet that was forwarded from if0 to if1,
+            // creating a reverse table entry keyed by truncated_packet_hash
+            let packet_hash = [0xAA; TRUNCATED_HASHBYTES];
+            let now = transport.clock.now_ms();
+            transport.reverse_table.insert(
+                packet_hash,
+                ReverseEntry {
+                    timestamp_ms: now,
+                    received_from: [0x01; TRUNCATED_HASHBYTES],
+                    receiving_interface_index: 0, // received on if0
+                    outbound_interface_index: 1,  // forwarded to if1
+                },
+            );
+
+            // Build a proof packet targeting this packet_hash
+            let proof_packet = Packet {
+                flags: PacketFlags {
+                    ifac_flag: false,
+                    header_type: HeaderType::Type1,
+                    context_flag: false,
+                    transport_type: TransportType::Broadcast,
+                    dest_type: crate::destination::DestinationType::Single,
+                    packet_type: PacketType::Proof,
+                },
+                hops: 0,
+                transport_id: None,
+                destination_hash: packet_hash,
+                context: PacketContext::None,
+                data: PacketData::Owned(
+                    alloc::vec![0x55; crate::constants::PROOF_DATA_SIZE],
+                ),
+            };
+
+            let mut buf = [0u8; crate::constants::MTU];
+            let len = proof_packet.pack(&mut buf).unwrap();
+            // Proof arrives on if1 (the outbound interface)
+            transport.process_incoming(1, &buf[..len]).unwrap();
+
+            // Proof should be forwarded via reverse table → if0
+            assert!(
+                transport.stats().packets_forwarded > 0,
+                "Proof should have been forwarded via reverse table"
+            );
+            // Reverse table entry should be consumed (removed)
+            assert!(
+                !transport.reverse_table.contains_key(&packet_hash),
+                "Reverse table entry should be consumed after proof routing"
+            );
+        }
+
+        // ─── Stage 2: Fix calculate_retransmit_delay ────────────────────
+
+        #[test]
+        fn test_retransmit_delay_independent_of_hops() {
+            let transport = make_transport_enabled();
+            let delay_1hop = transport.calculate_retransmit_delay(1);
+            let delay_10hops = transport.calculate_retransmit_delay(10);
+            // Both should be in the same range (0..PATHFINDER_RW_MS)
+            assert!(
+                delay_1hop < PATHFINDER_RW_MS,
+                "1-hop delay {} should be < PATHFINDER_RW_MS {}",
+                delay_1hop,
+                PATHFINDER_RW_MS
+            );
+            assert!(
+                delay_10hops < PATHFINDER_RW_MS,
+                "10-hop delay {} should be < PATHFINDER_RW_MS {}",
+                delay_10hops,
+                PATHFINDER_RW_MS
+            );
+        }
+
+        // ─── Stage 1: VecDeque for path_request_tags ─────────────────────
+
+        #[test]
+        fn test_path_request_tags_uses_efficient_deque() {
+            let mut transport = make_transport_enabled();
+            let _idx0 =
+                transport.register_interface(Box::new(MockInterface::new("if0", 1)));
+
+            let path_req_hash = transport.path_request_hash;
+
+            // Insert MAX_PATH_REQUEST_TAGS + 1 unique path request tags
+            for i in 0..=MAX_PATH_REQUEST_TAGS {
+                let dest_hash = [0x42; TRUNCATED_HASHBYTES];
+                let mut tag = [0u8; TRUNCATED_HASHBYTES];
+                let bytes = (i as u32).to_le_bytes();
+                tag[..4].copy_from_slice(&bytes);
+
+                let mut data = Vec::new();
+                data.extend_from_slice(&dest_hash);
+                data.extend_from_slice(&[0xBB; TRUNCATED_HASHBYTES]); // transport_id
+                data.extend_from_slice(&tag);
+
+                let packet = Packet {
+                    flags: PacketFlags {
+                        ifac_flag: false,
+                        header_type: HeaderType::Type1,
+                        context_flag: false,
+                        transport_type: TransportType::Broadcast,
+                        dest_type: crate::destination::DestinationType::Plain,
+                        packet_type: PacketType::Data,
+                    },
+                    hops: 0,
+                    transport_id: None,
+                    destination_hash: path_req_hash,
+                    context: PacketContext::None,
+                    data: PacketData::Owned(data),
+                };
+
+                let mut buf = [0u8; 500];
+                let len = packet.pack(&mut buf).unwrap();
+
+                // Clear packet cache so each iteration is processed
+                transport.packet_cache.clear();
+                transport.process_incoming(0, &buf[..len]).unwrap();
+            }
+
+            // Should be capped at MAX_PATH_REQUEST_TAGS
+            assert_eq!(
+                transport.path_request_tags.len(),
+                MAX_PATH_REQUEST_TAGS,
+                "path_request_tags should be capped at MAX_PATH_REQUEST_TAGS"
+            );
         }
     }
 }
