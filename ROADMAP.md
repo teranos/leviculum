@@ -36,7 +36,7 @@ Das Projekt hat Phase 1 vollständig abgeschlossen und Phase 2 ist zu ~90% ferti
 
 **Ratchet & IFAC implementiert:** Forward Secrecy via Ratchets und Interface Access Codes sind vollständig implementiert und gegen Python Reticulum getestet.
 
-**Code-Qualität:** LinkManager intern auf einheitliche Paket-Queue (`PendingPacket` Enum) umgestellt, Timeout-Konstanten zentralisiert, `LinkId` und `DestinationHash` als Newtype-Structs für vollständige Typ-Sicherheit (keine `Deref` mehr, kein `as_bytes_mut()`). Proof-Strategy und Signing-Key von LinkManager's Destination-Map auf den `Link` selbst verschoben — reduziert duplizierte State zwischen Transport, LinkManager und NodeCore. 746 Tests bestehen (475 Core + 20 Std-Lib + 164 Interop + 30 Doctests + 18 Proptest + 31 Test-Vektoren + 7 Std-Unit + 1 FFI).
+**Code-Qualität:** LinkManager intern auf einheitliche Paket-Queue (`PendingPacket` Enum) umgestellt, Timeout-Konstanten zentralisiert, `LinkId` und `DestinationHash` als Newtype-Structs für vollständige Typ-Sicherheit (keine `Deref` mehr, kein `as_bytes_mut()`). Proof-Strategy und Signing-Key von LinkManager's Destination-Map auf den `Link` selbst verschoben — reduziert duplizierte State zwischen Transport, LinkManager und NodeCore. Transport Layer um 9 Bugfixes/Features erweitert: Reverse-Table-Proof-Routing, Hop-Count-Validation, Header-Stripping am letzten Hop, Interface-Cleanup, Announce-Replay-Schutz, LRPROOF-Validierung, Auto-Re-Announce auf PATH_REQUEST. 761 Tests bestehen (490 Core + 20 Std-Lib + 164 Interop + 30 Doctests + 18 Proptest + 31 Test-Vektoren + 7 Std-Unit + 1 FFI).
 
 | Komponente | Status | LOC |
 |------------|--------|-----|
@@ -48,23 +48,23 @@ Das Projekt hat Phase 1 vollständig abgeschlossen und Phase 2 ist zu ~90% ferti
 | Ratchet (Forward Secrecy) | ✅ Fertig | 419 |
 | IFAC (Interface Access Codes) | ✅ Fertig | 378 |
 | Link-State-Machine (Handshake, Proof, RTT, Data) | ✅ Initiator + Responder | 1.800 |
-| Transport Layer (Routing, Pfade, Announces, Dedup) | ✅ Kern fertig | 1.227 |
+| Transport Layer (Routing, Pfade, Announces, Dedup) | ✅ Kern fertig | 1.500 |
 | HDLC-Framing (no_std + alloc) | ✅ Fertig | 577 |
 | Interface-Traits + TCP-Client | ✅ Fertig | 623 |
 | Async Runtime (tokio-Wrapper) | ✅ Fertig | 224 |
 | Reticulum-Instanz + Config + Storage | ✅ Fertig | 597 |
 | FFI/C-API | ✅ Grundfunktionen | 361 |
-| Tests (Rust + C) | | 11.737 |
-| **Gesamt** | | **~24.300** |
+| Tests (Rust + C) | | 12.100 |
+| **Gesamt** | | **~24.700** |
 
 **Crate-Aufteilung:**
 | Crate | src LOC | test LOC |
 |-------|---------|----------|
-| reticulum-core | 11.442 | 1.319 |
+| reticulum-core | 11.800 | 1.527 |
 | reticulum-std | 1.146 | 10.418 |
 | reticulum-ffi | 361 | 404 |
 
-**Test-Abdeckung:** 746 Tests (475 Core-Unit + 18 Proptest + 31 Test-Vektoren + 30 Doctests + 20 Std-Lib + 7 Std-Unit + 1 FFI + 164 Interop gegen rnsd)
+**Test-Abdeckung:** 761 Tests (490 Core-Unit + 18 Proptest + 31 Test-Vektoren + 30 Doctests + 20 Std-Lib + 7 Std-Unit + 1 FFI + 164 Interop gegen rnsd)
 
 **Architektur:** Siehe [doc/ARCHITECTURE.md](doc/ARCHITECTURE.md) — no_std/embedded-freundlich, Protocol in Core, I/O via Traits.
 
@@ -204,7 +204,7 @@ Bestehende Infrastruktur fertigstellen:
 - [x] PATH_REQUEST/PATH_RESPONSE Handling
 - [x] Paket-Weiterleitung (forward_packet)
 - [x] Duplikaterkennung (packet_cache mit Expiry)
-- [ ] Reverse-Path-Tracking (Datenstrukturen vorhanden, Logik unvollständig)
+- [x] Reverse-Path-Tracking (proof routing via reverse table, hop validation, announce replay protection)
 - [x] Rate Limiting (Announce-Rate-Limiting)
 - [x] Link-Tabellenverwaltung
 - [x] Announce-Tabellenverwaltung

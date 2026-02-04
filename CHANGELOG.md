@@ -7,15 +7,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.2.7] - 2026-02-04
+
 ### Added
 - Transport interop test coverage: data echo through two relays, PATH_REQUEST dedup, link close verification through relay
 - New test `test_path_request_forwarding_to_local_destination` for PATH_REQUEST forwarding to unannounced local destinations
 - New test `test_path_request_dedup` verifying duplicate PATH_REQUEST suppression
+- Identity table in Transport for storing identities extracted from announces
+- Automatic announce cache response when a PATH_REQUEST arrives for a locally registered destination
+- 15 new transport unit tests covering proof routing, hop validation, header stripping, interface cleanup, announce replay protection, and path request response
 
 ### Changed
 - Move `proof_strategy` and `dest_signing_key` from `LinkManager`'s per-destination `DestinationEntry` to the `Link` struct, reducing duplicated state across components
 - `LinkManager::accept_link()` now takes a `proof_strategy: ProofStrategy` parameter instead of reading it from destination registration
 - Replace `LinkManager`'s destination tracking from `BTreeMap<DestinationHash, DestinationEntry>` to `BTreeSet<DestinationHash>` (acceptance-only, no metadata)
+- `ReverseEntry` now tracks both `receiving_interface_index` and `outbound_interface_index` for correct bidirectional proof routing
+- `PathEntry` now tracks `random_blobs` for announce replay detection
+- `path_request_tags` changed from `Vec` to `VecDeque` for O(1) eviction of oldest entries
+- Reverse table entries are now populated at forwarding time (in `forward_packet` and `handle_data`) instead of at receive time, ensuring the outbound interface is known
 
 ### Removed
 - `LinkManager::register_destination_with_strategy()` — proof strategy is now passed at `accept_link()` time
@@ -30,6 +39,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Fix incorrect types in IFAC module doc example (`String` vs `&str`, missing `Result` handling)
 - Fix missing `Message` trait import in `StreamDataMessage` doc example
 - Add concrete values and self-contained examples to Channel/Envelope doc-tests
+- Fix reverse table proof routing: proofs for regular (non-link) packets are now routed back via the reverse table, matching Python Reticulum behavior
+- Fix announce retransmit delay: was scaling linearly with hop count (`(hops+1) * 1000ms`), now uses random jitter only (`0..PATHFINDER_RW`), matching Python Reticulum
+- Fix missing hop count validation for link-routed packets: data and proof packets forwarded via the link table now verify hop count matches the expected value
+- Fix LRPROOF (link proof) forwarding without size validation: link proofs are now checked for correct size (99 bytes) before forwarding
+- Fix link request not stripped to Header Type 1 at final hop: when the destination is directly connected, the transport header is now removed before forwarding
+- Fix link and reverse table entries not cleaned up when their interfaces go offline
+- Fix announce replay not detected: announces with previously-seen random blobs are now rejected even if they bypass the packet cache and rate limit
 
 ## [0.2.6] - 2026-02-03
 
@@ -229,7 +245,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Transport layer (routing, paths, deduplication)
 - Full interoperability with Python rnsd
 
-[Unreleased]: https://codeberg.org/Lew_Palm/leviculum/compare/v0.2.6...HEAD
+[Unreleased]: https://codeberg.org/Lew_Palm/leviculum/compare/v0.2.7...HEAD
+[0.2.7]: https://codeberg.org/Lew_Palm/leviculum/compare/v0.2.6...v0.2.7
 [0.2.6]: https://codeberg.org/Lew_Palm/leviculum/compare/v0.2.5...v0.2.6
 [0.2.5]: https://codeberg.org/Lew_Palm/leviculum/compare/v0.2.4...v0.2.5
 [0.2.4]: https://codeberg.org/Lew_Palm/leviculum/compare/v0.2.3...v0.2.4
