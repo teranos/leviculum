@@ -78,22 +78,6 @@ impl Clock for MockClock {
     }
 }
 
-fn mock_context(initial_ms: u64) -> PlatformContext<OsRng, MockClock, NoStorage> {
-    PlatformContext {
-        rng: OsRng,
-        clock: MockClock::new(initial_ms),
-        storage: NoStorage,
-    }
-}
-
-fn make_context() -> PlatformContext<OsRng, TestClock, NoStorage> {
-    PlatformContext {
-        rng: OsRng,
-        clock: TestClock,
-        storage: NoStorage,
-    }
-}
-
 // =========================================================================
 // Helper functions
 // =========================================================================
@@ -104,8 +88,9 @@ async fn establish_link_as_initiator(
     daemon: &TestDaemon,
     stream: &mut TcpStream,
     deframer: &mut Deframer,
-    ctx: &mut PlatformContext<OsRng, TestClock, NoStorage>,
 ) -> Result<(LinkId, String), String> {
+    let clock = TestClock;
+
     // Register a destination in daemon
     let dest_info = daemon
         .register_destination("keepalive", &["test"])
@@ -126,7 +111,8 @@ async fn establish_link_as_initiator(
         .map_err(|_| "Invalid hash length")?;
 
     // Initiate link
-    let (link_id, link_request_packet) = manager.initiate(dest_hash.into(), &signing_key, ctx);
+    let (link_id, link_request_packet) =
+        manager.initiate(dest_hash.into(), &signing_key, clock.now_ms(), &mut OsRng);
     send_framed(stream, &link_request_packet).await;
 
     // Wait for proof
@@ -135,7 +121,7 @@ async fn establish_link_as_initiator(
         .ok_or("No proof received")?;
 
     // Process proof
-    manager.process_packet(&proof_packet, &[], ctx);
+    manager.process_packet(&proof_packet, &[], clock.now_ms(), &mut OsRng);
 
     // Check for LinkEstablished
     let events: Vec<_> = manager.drain_events().collect();
@@ -167,7 +153,11 @@ async fn setup_rust_destination(
     aspects: &[&str],
     app_data: &[u8],
 ) -> (Destination, String) {
-    let mut ctx = make_context();
+    let mut ctx = PlatformContext {
+        rng: OsRng,
+        clock: TestClock,
+        storage: NoStorage,
+    };
     let identity = Identity::generate(&mut ctx);
     let public_key_hex = hex::encode(identity.public_key_bytes());
 
@@ -226,13 +216,12 @@ pub struct RustToRustLink {
 /// 2. A sets up destination and announces via separate stream
 /// 3. B receives announce via `wait_for_any_announce_with_route_info`
 /// 4. B initiates link using `initiate_with_path(dest_hash, signing_key, transport_id, hops)`
-/// 5. Complete handshake: link request → proof → RTT
+/// 5. Complete handshake: link request -> proof -> RTT
 ///
 /// Returns a `RustToRustLink` containing all state needed for further testing.
 /// Note: Identity is used during establishment and not stored - it's only needed for accept_link.
 async fn establish_rust_to_rust_link(daemon: &TestDaemon) -> Result<RustToRustLink, String> {
-    let mut ctx_a = make_context();
-    let mut ctx_b = make_context();
+    let clock = TestClock;
 
     // B connects first to receive announces
     let mut stream_b = connect_to_daemon(daemon).await;
@@ -277,8 +266,14 @@ async fn establish_rust_to_rust_link(daemon: &TestDaemon) -> Result<RustToRustLi
     let hops = announce_info.hops;
 
     // B initiates link to A using transport headers if announce came through relay
-    let (link_id_b, link_request_packet) =
-        manager_b.initiate_with_path(dest_hash_a, &signing_key_a, transport_id, hops, &mut ctx_b);
+    let (link_id_b, link_request_packet) = manager_b.initiate_with_path(
+        dest_hash_a,
+        &signing_key_a,
+        transport_id,
+        hops,
+        clock.now_ms(),
+        &mut OsRng,
+    );
 
     // Send link request via B's stream
     send_framed(&mut stream_b, &link_request_packet).await;
@@ -305,12 +300,12 @@ async fn establish_rust_to_rust_link(daemon: &TestDaemon) -> Result<RustToRustLi
 
     let request_pkt =
         Packet::unpack(&raw_request).map_err(|e| format!("Failed to unpack: {:?}", e))?;
-    manager_a.process_packet(&request_pkt, &raw_request, &mut ctx_a);
+    manager_a.process_packet(&request_pkt, &raw_request, clock.now_ms(), &mut OsRng);
 
     // A accepts the link
     let _: Vec<_> = manager_a.drain_events().collect();
     let proof_packet = manager_a
-        .accept_link(&link_id_a, identity_a, ProofStrategy::None, &mut ctx_a)
+        .accept_link(&link_id_a, identity_a, ProofStrategy::None, clock.now_ms())
         .map_err(|e| format!("Failed to accept link: {:?}", e))?;
 
     // Send proof via A's stream
@@ -326,7 +321,7 @@ async fn establish_rust_to_rust_link(daemon: &TestDaemon) -> Result<RustToRustLi
     .await
     .ok_or("B should receive proof")?;
 
-    manager_b.process_packet(&proof_pkt, &[], &mut ctx_b);
+    manager_b.process_packet(&proof_pkt, &[], clock.now_ms(), &mut OsRng);
 
     // B should have LinkEstablished
     let events_b: Vec<_> = manager_b.drain_events().collect();
@@ -367,7 +362,7 @@ async fn establish_rust_to_rust_link(daemon: &TestDaemon) -> Result<RustToRustLi
     rtt_raw.extend_from_slice(&rtt_data);
 
     let rtt_pkt = Packet::unpack(&rtt_raw).map_err(|e| format!("Failed to unpack RTT: {:?}", e))?;
-    manager_a.process_packet(&rtt_pkt, &rtt_raw, &mut ctx_a);
+    manager_a.process_packet(&rtt_pkt, &rtt_raw, clock.now_ms(), &mut OsRng);
 
     // A should have LinkEstablished
     let events_a: Vec<_> = manager_a.drain_events().collect();
@@ -411,7 +406,7 @@ async fn establish_rust_to_rust_link(daemon: &TestDaemon) -> Result<RustToRustLi
 /// Steps:
 /// 1. Start Python daemon
 /// 2. Establish link (Rust as initiator)
-/// 3. Call manager.close(&link_id, &mut ctx)
+/// 3. Call manager.close(&link_id, &mut OsRng)
 /// 4. Drain and transmit close packet
 /// 5. Call Python RPC wait_for_link_state(link_hash, "CLOSED", 5)
 /// 6. Verify Python link is closed
@@ -419,7 +414,6 @@ async fn establish_rust_to_rust_link(daemon: &TestDaemon) -> Result<RustToRustLi
 #[tokio::test]
 async fn test_rust_graceful_close_received_by_python() {
     let daemon = TestDaemon::start().await.expect("Failed to start daemon");
-    let mut ctx = make_context();
 
     let mut stream = connect_to_daemon(&daemon).await;
     let mut deframer = Deframer::new();
@@ -427,14 +421,14 @@ async fn test_rust_graceful_close_received_by_python() {
 
     // Establish link
     let (link_id, link_hash_hex) =
-        establish_link_as_initiator(&mut manager, &daemon, &mut stream, &mut deframer, &mut ctx)
+        establish_link_as_initiator(&mut manager, &daemon, &mut stream, &mut deframer)
             .await
             .expect("Failed to establish link");
 
     assert!(manager.is_active(&link_id), "Link should be active");
 
     // Close the link gracefully
-    manager.close(&link_id, &mut ctx);
+    manager.close(&link_id, &mut OsRng);
 
     // Drain and send close packets
     for (_, close_packet) in manager.drain_close_packets() {
@@ -487,7 +481,7 @@ async fn test_rust_graceful_close_received_by_python() {
 #[tokio::test]
 async fn test_python_graceful_close_received_by_rust() {
     let daemon = TestDaemon::start().await.expect("Failed to start daemon");
-    let mut ctx = make_context();
+    let clock = TestClock;
 
     let mut stream = connect_to_daemon(&daemon).await;
     let mut deframer = Deframer::new();
@@ -495,7 +489,7 @@ async fn test_python_graceful_close_received_by_rust() {
 
     // Establish link
     let (link_id, link_hash_hex) =
-        establish_link_as_initiator(&mut manager, &daemon, &mut stream, &mut deframer, &mut ctx)
+        establish_link_as_initiator(&mut manager, &daemon, &mut stream, &mut deframer)
             .await
             .expect("Failed to establish link");
 
@@ -515,7 +509,7 @@ async fn test_python_graceful_close_received_by_rust() {
             .expect("Should receive LINKCLOSE packet from Python");
 
     let close_pkt = Packet::unpack(&close_raw).expect("Failed to unpack close packet");
-    manager.process_packet(&close_pkt, &close_raw, &mut ctx);
+    manager.process_packet(&close_pkt, &close_raw, clock.now_ms(), &mut OsRng);
 
     // Check for LinkClosed event with PeerClosed reason
     let events: Vec<_> = manager.drain_events().collect();
@@ -543,7 +537,7 @@ async fn test_python_graceful_close_received_by_rust() {
 /// Test: Link transitions to STALE when no packets are received.
 ///
 /// Steps:
-/// 1. Create mock context with controlled clock
+/// 1. Create mock clock with controlled time
 /// 2. Use two managers to simulate a complete handshake
 /// 3. Calculate stale_time = keepalive_secs * STALE_FACTOR
 /// 4. Advance MockClock past stale_time
@@ -556,14 +550,21 @@ async fn test_link_stale_detection_no_inbound() {
 
     // Start with a reasonable initial time
     let initial_time_secs = 10u64;
-    let mut initiator_ctx = mock_context(initial_time_secs * MS_PER_SECOND);
-    let mut responder_ctx = mock_context(initial_time_secs * MS_PER_SECOND);
+    let initiator_clock = MockClock::new(initial_time_secs * MS_PER_SECOND);
+    let responder_clock = MockClock::new(initial_time_secs * MS_PER_SECOND);
+
+    // PlatformContext only needed for Identity::generate
+    let mut gen_ctx = PlatformContext {
+        rng: OsRng,
+        clock: TestClock,
+        storage: NoStorage,
+    };
 
     let mut initiator_mgr = LinkManager::new();
     let mut responder_mgr = LinkManager::new();
 
     // Create destination identity for responder
-    let dest_identity = Identity::generate(&mut initiator_ctx);
+    let dest_identity = Identity::generate(&mut gen_ctx);
     let dest_hash = [0x42u8; 16];
     let dest_signing_key = dest_identity.ed25519_verifying().to_bytes();
 
@@ -571,22 +572,26 @@ async fn test_link_stale_detection_no_inbound() {
     responder_mgr.register_destination(dest_hash.into());
 
     // Initiator starts link
-    let (link_id, link_request_packet) =
-        initiator_mgr.initiate(dest_hash.into(), &dest_signing_key, &mut initiator_ctx);
+    let (link_id, link_request_packet) = initiator_mgr.initiate(
+        dest_hash.into(),
+        &dest_signing_key,
+        initiator_clock.now_ms(),
+        &mut OsRng,
+    );
 
     // Deliver link request to responder
     let packet = Packet::unpack(&link_request_packet).unwrap();
-    responder_mgr.process_packet(&packet, &link_request_packet, &mut responder_ctx);
+    responder_mgr.process_packet(&packet, &link_request_packet, responder_clock.now_ms(), &mut OsRng);
 
     // Responder accepts
     let _: Vec<_> = responder_mgr.drain_events().collect();
     let proof_packet = responder_mgr
-        .accept_link(&link_id, &dest_identity, ProofStrategy::None, &mut responder_ctx)
+        .accept_link(&link_id, &dest_identity, ProofStrategy::None, responder_clock.now_ms())
         .unwrap();
 
     // Deliver proof to initiator
     let proof = Packet::unpack(&proof_packet).unwrap();
-    initiator_mgr.process_packet(&proof, &proof_packet, &mut initiator_ctx);
+    initiator_mgr.process_packet(&proof, &proof_packet, initiator_clock.now_ms(), &mut OsRng);
 
     // Initiator sends RTT
     let _: Vec<_> = initiator_mgr.drain_events().collect();
@@ -594,7 +599,7 @@ async fn test_link_stale_detection_no_inbound() {
 
     // Deliver RTT to responder
     let rtt = Packet::unpack(&rtt_packet).unwrap();
-    responder_mgr.process_packet(&rtt, &rtt_packet, &mut responder_ctx);
+    responder_mgr.process_packet(&rtt, &rtt_packet, responder_clock.now_ms(), &mut OsRng);
     let _: Vec<_> = responder_mgr.drain_events().collect();
 
     // Verify link is active on initiator
@@ -621,10 +626,10 @@ async fn test_link_stale_detection_no_inbound() {
 
     // Advance time past the stale threshold but NOT past the close timeout
     // Close timeout = stale_time_secs + RTT*TIMEOUT_FACTOR + GRACE (5s)
-    initiator_ctx.clock.advance_secs(stale_time_secs + 1);
+    initiator_clock.advance_secs(stale_time_secs + 1);
 
     // Poll the manager
-    initiator_mgr.poll(initiator_ctx.clock.now_ms(), &mut initiator_ctx);
+    initiator_mgr.poll(initiator_clock.now_ms(), &mut OsRng);
 
     // Check for LinkStale event
     let events: Vec<_> = initiator_mgr.drain_events().collect();
@@ -659,7 +664,7 @@ async fn test_link_stale_detection_no_inbound() {
 /// Test: Stale link sends LINKCLOSE and transitions to CLOSED.
 ///
 /// Steps:
-/// 1. Create mock context with controlled clock
+/// 1. Create mock clock with controlled time
 /// 2. Simulate a complete handshake to get an active link
 /// 3. Advance clock past stale_time (link becomes STALE)
 /// 4. Calculate close_timeout based on stale grace period
@@ -672,14 +677,21 @@ async fn test_stale_link_closes_after_timeout() {
     use reticulum_core::identity::Identity;
 
     let initial_time_secs = 10u64;
-    let mut initiator_ctx = mock_context(initial_time_secs * MS_PER_SECOND);
-    let mut responder_ctx = mock_context(initial_time_secs * MS_PER_SECOND);
+    let initiator_clock = MockClock::new(initial_time_secs * MS_PER_SECOND);
+    let responder_clock = MockClock::new(initial_time_secs * MS_PER_SECOND);
+
+    // PlatformContext only needed for Identity::generate
+    let mut gen_ctx = PlatformContext {
+        rng: OsRng,
+        clock: TestClock,
+        storage: NoStorage,
+    };
 
     let mut initiator_mgr = LinkManager::new();
     let mut responder_mgr = LinkManager::new();
 
     // Create destination identity for responder
-    let dest_identity = Identity::generate(&mut initiator_ctx);
+    let dest_identity = Identity::generate(&mut gen_ctx);
     let dest_hash = [0x42u8; 16];
     let dest_signing_key = dest_identity.ed25519_verifying().to_bytes();
 
@@ -687,22 +699,26 @@ async fn test_stale_link_closes_after_timeout() {
     responder_mgr.register_destination(dest_hash.into());
 
     // Initiator starts link
-    let (link_id, link_request_packet) =
-        initiator_mgr.initiate(dest_hash.into(), &dest_signing_key, &mut initiator_ctx);
+    let (link_id, link_request_packet) = initiator_mgr.initiate(
+        dest_hash.into(),
+        &dest_signing_key,
+        initiator_clock.now_ms(),
+        &mut OsRng,
+    );
 
     // Deliver link request to responder
     let packet = Packet::unpack(&link_request_packet).unwrap();
-    responder_mgr.process_packet(&packet, &link_request_packet, &mut responder_ctx);
+    responder_mgr.process_packet(&packet, &link_request_packet, responder_clock.now_ms(), &mut OsRng);
 
     // Responder accepts
     let _: Vec<_> = responder_mgr.drain_events().collect();
     let proof_packet = responder_mgr
-        .accept_link(&link_id, &dest_identity, ProofStrategy::None, &mut responder_ctx)
+        .accept_link(&link_id, &dest_identity, ProofStrategy::None, responder_clock.now_ms())
         .unwrap();
 
     // Deliver proof to initiator
     let proof = Packet::unpack(&proof_packet).unwrap();
-    initiator_mgr.process_packet(&proof, &proof_packet, &mut initiator_ctx);
+    initiator_mgr.process_packet(&proof, &proof_packet, initiator_clock.now_ms(), &mut OsRng);
 
     // Initiator sends RTT
     let _: Vec<_> = initiator_mgr.drain_events().collect();
@@ -710,7 +726,7 @@ async fn test_stale_link_closes_after_timeout() {
 
     // Deliver RTT to responder
     let rtt = Packet::unpack(&rtt_packet).unwrap();
-    responder_mgr.process_packet(&rtt, &rtt_packet, &mut responder_ctx);
+    responder_mgr.process_packet(&rtt, &rtt_packet, responder_clock.now_ms(), &mut OsRng);
     let _: Vec<_> = responder_mgr.drain_events().collect();
 
     // Verify link is active on initiator
@@ -726,10 +742,10 @@ async fn test_stale_link_closes_after_timeout() {
         .unwrap_or(LINK_KEEPALIVE_SECS * LINK_STALE_FACTOR);
 
     // Advance past stale time but NOT past close timeout
-    initiator_ctx.clock.advance_secs(stale_time_secs + 1);
+    initiator_clock.advance_secs(stale_time_secs + 1);
 
     // Poll to trigger stale transition
-    initiator_mgr.poll(initiator_ctx.clock.now_ms(), &mut initiator_ctx);
+    initiator_mgr.poll(initiator_clock.now_ms(), &mut OsRng);
 
     // Drain stale events
     let events: Vec<_> = initiator_mgr.drain_events().collect();
@@ -746,10 +762,10 @@ async fn test_stale_link_closes_after_timeout() {
     // Advance past the stale grace period
     // Close timeout = stale_time + rtt*TIMEOUT_FACTOR + GRACE
     // Since RTT is ~0 in mock handshake, we just need to go past GRACE
-    initiator_ctx.clock.advance_secs(LINK_STALE_GRACE_SECS + 2);
+    initiator_clock.advance_secs(LINK_STALE_GRACE_SECS + 2);
 
     // Poll to trigger close
-    initiator_mgr.poll(initiator_ctx.clock.now_ms(), &mut initiator_ctx);
+    initiator_mgr.poll(initiator_clock.now_ms(), &mut OsRng);
 
     // Check for close packet
     let close_packets: Vec<_> = initiator_mgr.drain_close_packets();
@@ -798,14 +814,21 @@ async fn test_keepalive_resets_stale_timer() {
     use reticulum_core::identity::Identity;
 
     let initial_time_secs = 10u64;
-    let mut initiator_ctx = mock_context(initial_time_secs * MS_PER_SECOND);
-    let mut responder_ctx = mock_context(initial_time_secs * MS_PER_SECOND);
+    let initiator_clock = MockClock::new(initial_time_secs * MS_PER_SECOND);
+    let responder_clock = MockClock::new(initial_time_secs * MS_PER_SECOND);
+
+    // PlatformContext only needed for Identity::generate
+    let mut gen_ctx = PlatformContext {
+        rng: OsRng,
+        clock: TestClock,
+        storage: NoStorage,
+    };
 
     let mut initiator_mgr = LinkManager::new();
     let mut responder_mgr = LinkManager::new();
 
     // Create destination identity for responder
-    let dest_identity = Identity::generate(&mut initiator_ctx);
+    let dest_identity = Identity::generate(&mut gen_ctx);
     let dest_hash = [0x42u8; 16];
     let dest_signing_key = dest_identity.ed25519_verifying().to_bytes();
 
@@ -813,22 +836,26 @@ async fn test_keepalive_resets_stale_timer() {
     responder_mgr.register_destination(dest_hash.into());
 
     // Initiator starts link
-    let (link_id, link_request_packet) =
-        initiator_mgr.initiate(dest_hash.into(), &dest_signing_key, &mut initiator_ctx);
+    let (link_id, link_request_packet) = initiator_mgr.initiate(
+        dest_hash.into(),
+        &dest_signing_key,
+        initiator_clock.now_ms(),
+        &mut OsRng,
+    );
 
     // Deliver link request to responder
     let packet = Packet::unpack(&link_request_packet).unwrap();
-    responder_mgr.process_packet(&packet, &link_request_packet, &mut responder_ctx);
+    responder_mgr.process_packet(&packet, &link_request_packet, responder_clock.now_ms(), &mut OsRng);
 
     // Responder accepts
     let _: Vec<_> = responder_mgr.drain_events().collect();
     let proof_packet = responder_mgr
-        .accept_link(&link_id, &dest_identity, ProofStrategy::None, &mut responder_ctx)
+        .accept_link(&link_id, &dest_identity, ProofStrategy::None, responder_clock.now_ms())
         .unwrap();
 
     // Deliver proof to initiator
     let proof = Packet::unpack(&proof_packet).unwrap();
-    initiator_mgr.process_packet(&proof, &proof_packet, &mut initiator_ctx);
+    initiator_mgr.process_packet(&proof, &proof_packet, initiator_clock.now_ms(), &mut OsRng);
 
     // Initiator sends RTT
     let _: Vec<_> = initiator_mgr.drain_events().collect();
@@ -836,7 +863,7 @@ async fn test_keepalive_resets_stale_timer() {
 
     // Deliver RTT to responder
     let rtt = Packet::unpack(&rtt_packet).unwrap();
-    responder_mgr.process_packet(&rtt, &rtt_packet, &mut responder_ctx);
+    responder_mgr.process_packet(&rtt, &rtt_packet, responder_clock.now_ms(), &mut OsRng);
     let _: Vec<_> = responder_mgr.drain_events().collect();
 
     // Verify link is active
@@ -853,19 +880,19 @@ async fn test_keepalive_resets_stale_timer() {
 
     // Advance to just before stale time (but at least 2 seconds to allow for edge cases)
     let advance_before = stale_time_secs.saturating_sub(2).max(1);
-    initiator_ctx.clock.advance_secs(advance_before);
+    initiator_clock.advance_secs(advance_before);
 
     // Simulate receiving inbound traffic by recording inbound
     if let Some(link) = initiator_mgr.link_mut(&link_id) {
-        link.record_inbound(initiator_ctx.clock.now_ms() / MS_PER_SECOND);
+        link.record_inbound(initiator_clock.now_ms() / MS_PER_SECOND);
     }
 
     // Advance past where the old stale time would have been
     // but not past the new stale time (since we just received data)
-    initiator_ctx.clock.advance_secs(stale_time_secs / 2 + 1);
+    initiator_clock.advance_secs(stale_time_secs / 2 + 1);
 
     // Poll
-    initiator_mgr.poll(initiator_ctx.clock.now_ms(), &mut initiator_ctx);
+    initiator_mgr.poll(initiator_clock.now_ms(), &mut OsRng);
 
     // Check events - should NOT have LinkStale
     let events: Vec<_> = initiator_mgr.drain_events().collect();
@@ -901,7 +928,7 @@ async fn test_keepalive_resets_stale_timer() {
 #[tokio::test]
 async fn test_rust_initiator_sends_keepalive_python_echoes() {
     let daemon = TestDaemon::start().await.expect("Failed to start daemon");
-    let mut ctx = make_context();
+    let clock = TestClock;
 
     let mut stream = connect_to_daemon(&daemon).await;
     let mut deframer = Deframer::new();
@@ -909,7 +936,7 @@ async fn test_rust_initiator_sends_keepalive_python_echoes() {
 
     // Establish link
     let (link_id, _link_hash_hex) =
-        establish_link_as_initiator(&mut manager, &daemon, &mut stream, &mut deframer, &mut ctx)
+        establish_link_as_initiator(&mut manager, &daemon, &mut stream, &mut deframer)
             .await
             .expect("Failed to establish link");
 
@@ -933,7 +960,7 @@ async fn test_rust_initiator_sends_keepalive_python_echoes() {
         let echo_pkt = Packet::unpack(&echo_data).expect("Failed to unpack echo");
 
         // Process the echo (keepalive bookkeeping happens internally)
-        manager.process_packet(&echo_pkt, &echo_data, &mut ctx);
+        manager.process_packet(&echo_pkt, &echo_data, clock.now_ms(), &mut OsRng);
 
         // Drain any events (keepalives no longer emit events, but link should stay active)
         let _: Vec<_> = manager.drain_events().collect();
@@ -955,7 +982,7 @@ async fn test_rust_initiator_sends_keepalive_python_echoes() {
 #[tokio::test]
 async fn test_python_initiator_sends_keepalive_rust_echoes() {
     let daemon = TestDaemon::start().await.expect("Failed to start daemon");
-    let mut ctx = make_context();
+    let clock = TestClock;
 
     let mut stream = connect_to_daemon(&daemon).await;
     let mut deframer = Deframer::new();
@@ -1006,12 +1033,12 @@ async fn test_python_initiator_sends_keepalive_rust_echoes() {
 
     // Process link request
     let packet = Packet::unpack(&raw_packet).expect("Failed to unpack");
-    manager.process_packet(&packet, &raw_packet, &mut ctx);
+    manager.process_packet(&packet, &raw_packet, clock.now_ms(), &mut OsRng);
 
     // Accept the link
     let _: Vec<_> = manager.drain_events().collect();
     let proof_packet = manager
-        .accept_link(&link_id, identity, ProofStrategy::None, &mut ctx)
+        .accept_link(&link_id, identity, ProofStrategy::None, clock.now_ms())
         .expect("Failed to accept link");
 
     send_framed(&mut stream, &proof_packet).await;
@@ -1035,7 +1062,7 @@ async fn test_python_initiator_sends_keepalive_rust_echoes() {
     rtt_raw.extend_from_slice(&rtt_data);
 
     let rtt_pkt = Packet::unpack(&rtt_raw).expect("Failed to unpack RTT");
-    manager.process_packet(&rtt_pkt, &rtt_raw, &mut ctx);
+    manager.process_packet(&rtt_pkt, &rtt_raw, clock.now_ms(), &mut OsRng);
 
     // Drain establishment events
     let _: Vec<_> = manager.drain_events().collect();
@@ -1067,7 +1094,6 @@ async fn test_python_initiator_sends_keepalive_rust_echoes() {
 #[tokio::test]
 async fn test_get_link_status_rpc() {
     let daemon = TestDaemon::start().await.expect("Failed to start daemon");
-    let mut ctx = make_context();
 
     let mut stream = connect_to_daemon(&daemon).await;
     let mut deframer = Deframer::new();
@@ -1075,7 +1101,7 @@ async fn test_get_link_status_rpc() {
 
     // Establish link
     let (link_id, link_hash_hex) =
-        establish_link_as_initiator(&mut manager, &daemon, &mut stream, &mut deframer, &mut ctx)
+        establish_link_as_initiator(&mut manager, &daemon, &mut stream, &mut deframer)
             .await
             .expect("Failed to establish link");
 
@@ -1100,7 +1126,7 @@ async fn test_get_link_status_rpc() {
     );
 
     // Close the link
-    manager.close(&link_id, &mut ctx);
+    manager.close(&link_id, &mut OsRng);
     for (_, close_packet) in manager.drain_close_packets() {
         send_framed(&mut stream, &close_packet).await;
     }
@@ -1142,7 +1168,6 @@ async fn test_get_link_status_rpc() {
 #[tokio::test]
 async fn test_close_packet_payload_verification() {
     let daemon = TestDaemon::start().await.expect("Failed to start daemon");
-    let mut ctx = make_context();
 
     let mut stream = connect_to_daemon(&daemon).await;
     let mut deframer = Deframer::new();
@@ -1150,14 +1175,14 @@ async fn test_close_packet_payload_verification() {
 
     // Establish link
     let (link_id, link_hash_hex) =
-        establish_link_as_initiator(&mut manager, &daemon, &mut stream, &mut deframer, &mut ctx)
+        establish_link_as_initiator(&mut manager, &daemon, &mut stream, &mut deframer)
             .await
             .expect("Failed to establish link");
 
     // Build close packet
     let close_packet = {
         let link = manager.link(&link_id).expect("Link should exist");
-        link.build_close_packet(&mut ctx)
+        link.build_close_packet(&mut OsRng)
             .expect("Failed to build close packet")
     };
 
@@ -1195,7 +1220,7 @@ async fn test_close_packet_payload_verification() {
 // Test 8: Multi-hop keepalive through Python relay
 // =========================================================================
 
-/// Test: Verify keepalive works across Rust B → Python daemon → Rust A path.
+/// Test: Verify keepalive works across Rust B -> Python daemon -> Rust A path.
 ///
 /// Steps:
 /// 1. Establish Rust-to-Rust link via daemon using `establish_rust_to_rust_link`
@@ -1209,8 +1234,7 @@ async fn test_close_packet_payload_verification() {
 #[tokio::test]
 async fn test_multi_hop_keepalive_through_python_relay() {
     let daemon = TestDaemon::start().await.expect("Failed to start daemon");
-    let mut ctx_a = make_context();
-    let mut ctx_b = make_context();
+    let clock = TestClock;
 
     // 1. Establish Rust-to-Rust link via daemon
     let mut link = establish_rust_to_rust_link(&daemon)
@@ -1245,7 +1269,8 @@ async fn test_multi_hop_keepalive_through_python_relay() {
 
     // 4. A processes keepalive and generates echo
     let ka_pkt = Packet::unpack(&ka_raw).expect("Failed to unpack keepalive");
-    link.manager_a.process_packet(&ka_pkt, &ka_raw, &mut ctx_a);
+    link.manager_a
+        .process_packet(&ka_pkt, &ka_raw, clock.now_ms(), &mut OsRng);
 
     // 5. Drain echo packets from A and send them
     let echo_packets: Vec<_> = link.manager_a.drain_keepalive_packets();
@@ -1274,7 +1299,7 @@ async fn test_multi_hop_keepalive_through_python_relay() {
     // 7. B processes echo (keepalive bookkeeping happens internally)
     let echo_pkt = Packet::unpack(&echo_raw).expect("Failed to unpack echo");
     link.manager_b
-        .process_packet(&echo_pkt, &echo_raw, &mut ctx_b);
+        .process_packet(&echo_pkt, &echo_raw, clock.now_ms(), &mut OsRng);
 
     // 8. Verify link is still active after keepalive round-trip
     let _: Vec<_> = link.manager_b.drain_events().collect();
@@ -1291,7 +1316,7 @@ async fn test_multi_hop_keepalive_through_python_relay() {
 // Test 9: Multi-hop graceful close through Python relay
 // =========================================================================
 
-/// Test: Verify graceful close works across Rust B → Python daemon → Rust A path.
+/// Test: Verify graceful close works across Rust B -> Python daemon -> Rust A path.
 ///
 /// Steps:
 /// 1. Establish Rust-to-Rust link via daemon using `establish_rust_to_rust_link`
@@ -1304,8 +1329,7 @@ async fn test_multi_hop_keepalive_through_python_relay() {
 #[tokio::test]
 async fn test_multi_hop_graceful_close_through_relay() {
     let daemon = TestDaemon::start().await.expect("Failed to start daemon");
-    let mut ctx_a = make_context();
-    let mut ctx_b = make_context();
+    let clock = TestClock;
 
     // 1. Establish Rust-to-Rust link via daemon
     let mut link = establish_rust_to_rust_link(&daemon)
@@ -1326,7 +1350,7 @@ async fn test_multi_hop_graceful_close_through_relay() {
     );
 
     // 2. B (initiator) closes the link
-    link.manager_b.close(&link_id, &mut ctx_b);
+    link.manager_b.close(&link_id, &mut OsRng);
     println!("B closed the link");
 
     // 3. Drain and send close packets from B
@@ -1369,7 +1393,7 @@ async fn test_multi_hop_graceful_close_through_relay() {
     // 6. A processes close packet
     let close_pkt = Packet::unpack(&close_raw).expect("Failed to unpack close packet");
     link.manager_a
-        .process_packet(&close_pkt, &close_raw, &mut ctx_a);
+        .process_packet(&close_pkt, &close_raw, clock.now_ms(), &mut OsRng);
 
     // 7. Verify A emits LinkClosed with PeerClosed reason
     let events_a: Vec<_> = link.manager_a.drain_events().collect();

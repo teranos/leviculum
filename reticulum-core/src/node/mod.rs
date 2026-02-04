@@ -17,24 +17,19 @@
 //! use reticulum_core::node::{NodeCore, NodeCoreBuilder, NodeEvent, SendOptions};
 //! use reticulum_core::destination::{Destination, DestinationType, Direction};
 //! use reticulum_core::identity::Identity;
-//! use reticulum_core::traits::{Clock, NoStorage, PlatformContext};
+//! use reticulum_core::traits::{Clock, NoStorage};
 //! # use core::cell::Cell;
 //! # struct MyClock(Cell<u64>);
 //! # impl MyClock { fn new(ms: u64) -> Self { Self(Cell::new(ms)) } }
 //! # impl Clock for MyClock { fn now_ms(&self) -> u64 { self.0.get() } }
 //!
 //! # fn example() {
-//! let mut ctx = PlatformContext {
-//!     rng: rand_core::OsRng,
-//!     clock: MyClock::new(0),
-//!     storage: NoStorage,
-//! };
-//! let my_identity = Identity::generate(&mut ctx);
+//! let my_identity = Identity::generate_with_rng(&mut rand_core::OsRng);
 //!
 //! // Build a node
 //! let mut node = NodeCoreBuilder::new()
 //!     .enable_transport(false)
-//!     .build(&mut ctx, MyClock::new(0), NoStorage)
+//!     .build(rand_core::OsRng, MyClock::new(0), NoStorage)
 //!     .unwrap();
 //!
 //! // Register a destination
@@ -67,8 +62,9 @@ use crate::destination::{Destination, DestinationHash, ProofStrategy};
 use crate::identity::Identity;
 use crate::link::{LinkEvent, LinkId, LinkManager};
 use crate::packet::Packet;
-use crate::traits::{Clock, Context, Interface, Storage};
-use crate::transport::{Transport, TransportConfig, TransportError, TransportEvent};
+use crate::traits::{Clock, Interface, Storage};
+use crate::transport::{Transport, TransportConfig, TransportError, TransportEvent, TransportStats};
+use rand_core::CryptoRngCore;
 
 /// Send options for controlling how data is delivered
 ///
@@ -123,14 +119,17 @@ impl SendOptions {
 
 /// The unified Reticulum node - combines Transport + LinkManager
 ///
-/// NodeCore is generic over Clock and Storage traits, allowing it to run
+/// NodeCore is generic over RNG, Clock, and Storage traits, allowing it to run
 /// on both std and no_std environments.
 ///
 /// # Type Parameters
 ///
+/// * `R` - Random number generator (must implement `CryptoRngCore`)
 /// * `C` - Clock implementation for timestamps
 /// * `S` - Storage implementation for persistence
-pub struct NodeCore<C: Clock, S: Storage> {
+pub struct NodeCore<R: CryptoRngCore, C: Clock, S: Storage> {
+    /// Owned random number generator
+    rng: R,
     /// Transport layer (routing, paths, packets) - owns the node's identity
     transport: Transport<C, S>,
     /// Link manager (connections, channels)
@@ -145,19 +144,21 @@ pub struct NodeCore<C: Clock, S: Storage> {
     events: Vec<NodeEvent>,
 }
 
-impl<C: Clock, S: Storage> NodeCore<C, S> {
+impl<R: CryptoRngCore, C: Clock, S: Storage> NodeCore<R, C, S> {
     /// Create a new NodeCore with the given configuration
     ///
     /// # Arguments
     /// * `identity` - The node's identity
     /// * `config` - Transport configuration
     /// * `proof_strategy` - Default proof strategy for destinations
+    /// * `rng` - Random number generator (moved into NodeCore)
     /// * `clock` - Clock instance (moved into NodeCore)
     /// * `storage` - Storage instance (moved into NodeCore)
     pub fn new(
         identity: Identity,
         config: TransportConfig,
         proof_strategy: ProofStrategy,
+        rng: R,
         clock: C,
         storage: S,
     ) -> Self {
@@ -167,6 +168,7 @@ impl<C: Clock, S: Storage> NodeCore<C, S> {
         let transport = Transport::new(config, clock, storage, identity);
 
         Self {
+            rng,
             // We don't store identity separately - Transport owns it
             // Access via transport.identity()
             transport,
@@ -256,12 +258,10 @@ impl<C: Clock, S: Storage> NodeCore<C, S> {
     /// # Arguments
     /// * `dest_hash` - The destination to connect to
     /// * `dest_signing_key` - The destination's signing key (from announce)
-    /// * `ctx` - Platform context
     pub fn connect(
         &mut self,
         dest_hash: DestinationHash,
         dest_signing_key: &[u8; 32],
-        ctx: &mut impl Context,
     ) -> (LinkId, Vec<u8>) {
         // Check if we have path info for this destination
         let (next_hop, hops) = if let Some(path) = self.transport.path(dest_hash.as_bytes()) {
@@ -277,12 +277,14 @@ impl<C: Clock, S: Storage> NodeCore<C, S> {
             (None, 1)
         };
 
+        let now_ms = self.transport.clock().now_ms();
         let (link_id, packet) = self.link_manager.initiate_with_path(
             dest_hash,
             dest_signing_key,
             next_hop,
             hops,
-            ctx,
+            now_ms,
+            &mut self.rng,
         );
 
         // Create connection wrapper
@@ -299,12 +301,10 @@ impl<C: Clock, S: Storage> NodeCore<C, S> {
     /// # Arguments
     /// * `link_id` - The link ID from the ConnectionRequest event
     /// * `identity` - The destination's identity (for signing the proof)
-    /// * `ctx` - Platform context
     pub fn accept_connection(
         &mut self,
         link_id: &LinkId,
         identity: &Identity,
-        ctx: &mut impl Context,
     ) -> Result<Vec<u8>, ConnectionError> {
         // Look up proof strategy from the destination
         let proof_strategy = self
@@ -314,9 +314,10 @@ impl<C: Clock, S: Storage> NodeCore<C, S> {
             .map(|dest| dest.proof_strategy())
             .unwrap_or(ProofStrategy::None);
 
+        let now_ms = self.transport.clock().now_ms();
         let proof = self
             .link_manager
-            .accept_link(link_id, identity, proof_strategy, ctx)
+            .accept_link(link_id, identity, proof_strategy, now_ms)
             .map_err(ConnectionError::LinkError)?;
 
         // Get destination hash from link
@@ -335,8 +336,8 @@ impl<C: Clock, S: Storage> NodeCore<C, S> {
     }
 
     /// Close a connection gracefully
-    pub fn close_connection(&mut self, link_id: &LinkId, ctx: &mut impl Context) {
-        self.link_manager.close(link_id, ctx);
+    pub fn close_connection(&mut self, link_id: &LinkId) {
+        self.link_manager.close(link_id, &mut self.rng);
         self.connections.remove(link_id);
     }
 
@@ -386,14 +387,13 @@ impl<C: Clock, S: Storage> NodeCore<C, S> {
     /// ```no_run
     /// # use reticulum_core::node::{NodeCoreBuilder, SendOptions};
     /// # use reticulum_core::destination::DestinationHash;
-    /// # use reticulum_core::traits::{Clock, NoStorage, PlatformContext};
+    /// # use reticulum_core::traits::{Clock, NoStorage};
     /// # use core::cell::Cell;
     /// # struct MyClock(Cell<u64>);
     /// # impl MyClock { fn new(ms: u64) -> Self { Self(Cell::new(ms)) } }
     /// # impl Clock for MyClock { fn now_ms(&self) -> u64 { self.0.get() } }
     /// # fn example() {
-    /// # let mut ctx = PlatformContext { rng: rand_core::OsRng, clock: MyClock::new(0), storage: NoStorage };
-    /// # let node = NodeCoreBuilder::new().build(&mut ctx, MyClock::new(0), NoStorage).unwrap();
+    /// # let node = NodeCoreBuilder::new().build(rand_core::OsRng, MyClock::new(0), NoStorage).unwrap();
     /// # let dest_hash = DestinationHash::new([0x42; 16]);
     /// // Simple unreliable send (single-packet if possible)
     /// let result = node.send(&dest_hash, b"Hello!", &SendOptions::default());
@@ -500,7 +500,6 @@ impl<C: Clock, S: Storage> NodeCore<C, S> {
     /// # Arguments
     /// * `link_id` - The connection to send on
     /// * `data` - The data to send
-    /// * `ctx` - Platform context
     ///
     /// # Returns
     /// The packet data to transmit, or an error
@@ -508,7 +507,6 @@ impl<C: Clock, S: Storage> NodeCore<C, S> {
         &mut self,
         link_id: &LinkId,
         data: &[u8],
-        ctx: &mut impl Context,
     ) -> Result<Vec<u8>, send::SendError> {
         // Get the connection and link
         let connection = self
@@ -521,9 +519,11 @@ impl<C: Clock, S: Storage> NodeCore<C, S> {
             .link(link_id)
             .ok_or(send::SendError::NoConnection)?;
 
+        let now_ms = self.transport.clock().now_ms();
+
         // Send via connection
         connection
-            .send_bytes(link, data, ctx)
+            .send_bytes(link, data, now_ms, &mut self.rng)
             .map_err(|e| match e {
                 ConnectionError::ChannelError(crate::link::channel::ChannelError::WindowFull) => {
                     send::SendError::WindowFull
@@ -555,12 +555,10 @@ impl<C: Clock, S: Storage> NodeCore<C, S> {
     /// # Arguments
     /// * `interface_index` - The interface the packet arrived on
     /// * `raw` - The raw packet bytes
-    /// * `ctx` - Platform context
     pub fn receive_packet(
         &mut self,
         interface_index: usize,
         raw: &[u8],
-        _ctx: &mut impl Context,
     ) -> Result<(), TransportError> {
         self.transport.process_incoming(interface_index, raw)
     }
@@ -585,31 +583,60 @@ impl<C: Clock, S: Storage> NodeCore<C, S> {
 
     // ─── Polling ───────────────────────────────────────────────────────────────
 
+    /// Drive the node for one tick, returning all events.
+    ///
+    /// Single entry point: polls interfaces, runs maintenance, processes events.
+    /// This is the preferred way to drive the node in an event loop.
+    pub fn tick(&mut self) -> Vec<NodeEvent> {
+        self.transport.poll_interfaces();
+
+        let now_ms = self.transport.clock().now_ms();
+        self.transport.poll();
+        self.link_manager.poll(now_ms, &mut self.rng);
+
+        let transport_events: Vec<_> = self.transport.drain_events().collect();
+        for event in transport_events {
+            self.handle_transport_event(event);
+        }
+        let link_events: Vec<_> = self.link_manager.drain_events().collect();
+        for event in link_events {
+            self.handle_link_event(event);
+        }
+        self.send_pending_packets();
+
+        core::mem::take(&mut self.events)
+    }
+
+    /// Poll registered interfaces for incoming data.
+    ///
+    /// Reads from each interface registered via `register_interface()` and
+    /// feeds received packets into the transport layer for processing.
+    pub fn poll_interfaces(&mut self) {
+        self.transport.poll_interfaces();
+    }
+
     /// Poll for the next event
     ///
     /// This processes transport events, link events, and returns unified NodeEvents.
     /// Call this in your main loop to handle all node activity.
-    ///
-    /// # Arguments
-    /// * `ctx` - Platform context
-    pub fn poll(&mut self, ctx: &mut impl Context) -> Option<NodeEvent> {
+    pub fn poll(&mut self) -> Option<NodeEvent> {
         // Check for pending events first
         if !self.events.is_empty() {
             return Some(self.events.remove(0));
         }
 
-        let now_ms = ctx.clock().now_ms();
+        let now_ms = self.transport.clock().now_ms();
 
         // Poll transport for periodic work
         self.transport.poll();
 
         // Poll link manager
-        self.link_manager.poll(now_ms, ctx);
+        self.link_manager.poll(now_ms, &mut self.rng);
 
         // Collect transport events first to avoid borrow issues
         let transport_events: Vec<_> = self.transport.drain_events().collect();
         for event in transport_events {
-            self.handle_transport_event(event, ctx);
+            self.handle_transport_event(event);
         }
 
         // Collect link events first to avoid borrow issues
@@ -661,6 +688,21 @@ impl<C: Clock, S: Storage> NodeCore<C, S> {
         self.transport.hops_to(dest_hash.as_bytes())
     }
 
+    /// Get the number of known paths
+    pub fn path_count(&self) -> usize {
+        self.transport.path_count()
+    }
+
+    /// Get transport statistics
+    pub fn transport_stats(&self) -> TransportStats {
+        self.transport.stats().clone()
+    }
+
+    /// Get the number of links being relayed through this node
+    pub fn relayed_link_count(&self) -> usize {
+        self.transport.link_table_count()
+    }
+
     /// Access the underlying transport (for advanced use cases)
     pub fn transport(&self) -> &Transport<C, S> {
         &self.transport
@@ -683,7 +725,7 @@ impl<C: Clock, S: Storage> NodeCore<C, S> {
 
     // ─── Internal: Event Handling ──────────────────────────────────────────────
 
-    fn handle_transport_event(&mut self, event: TransportEvent, ctx: &mut impl Context) {
+    fn handle_transport_event(&mut self, event: TransportEvent) {
         match event {
             TransportEvent::AnnounceReceived {
                 announce,
@@ -725,7 +767,8 @@ impl<C: Clock, S: Storage> NodeCore<C, S> {
                 {
                     // Route to link manager
                     let raw = self.repack_packet(&packet);
-                    self.link_manager.process_packet(&packet, &raw, ctx);
+                    let now_ms = self.transport.clock().now_ms();
+                    self.link_manager.process_packet(&packet, &raw, now_ms, &mut self.rng);
                 } else {
                     // Regular packet event
                     self.events.push(NodeEvent::PacketReceived {
@@ -909,7 +952,7 @@ impl<C: Clock, S: Storage> NodeCore<C, S> {
 mod tests {
     use super::*;
     use crate::destination::{DestinationType, Direction};
-    use crate::traits::{NoStorage, PlatformContext};
+    use crate::traits::NoStorage;
     use core::cell::Cell;
     use rand_core::OsRng;
 
@@ -919,11 +962,6 @@ mod tests {
         fn new(ms: u64) -> Self {
             Self(Cell::new(ms))
         }
-
-        #[allow(dead_code)]
-        fn advance(&self, ms: u64) {
-            self.0.set(self.0.get() + ms);
-        }
     }
 
     impl Clock for MockClock {
@@ -932,20 +970,11 @@ mod tests {
         }
     }
 
-    fn make_ctx() -> PlatformContext<OsRng, MockClock, NoStorage> {
-        PlatformContext {
-            rng: OsRng,
-            clock: MockClock::new(1_000_000),
-            storage: NoStorage,
-        }
-    }
-
     #[test]
     fn test_nodecore_builder_default() {
-        let mut ctx = make_ctx();
         let clock = MockClock::new(1_000_000);
         let node = NodeCoreBuilder::new()
-            .build(&mut ctx, clock, NoStorage)
+            .build(OsRng, clock, NoStorage)
             .unwrap();
 
         assert_eq!(node.active_connection_count(), 0);
@@ -955,14 +984,13 @@ mod tests {
 
     #[test]
     fn test_nodecore_builder_with_identity() {
-        let mut ctx = make_ctx();
         let identity = Identity::generate_with_rng(&mut OsRng);
         let id_hash = *identity.hash();
         let clock = MockClock::new(1_000_000);
 
         let node = NodeCoreBuilder::new()
             .identity(identity)
-            .build(&mut ctx, clock, NoStorage)
+            .build(OsRng, clock, NoStorage)
             .unwrap();
 
         assert_eq!(node.identity().hash(), &id_hash);
@@ -970,10 +998,9 @@ mod tests {
 
     #[test]
     fn test_nodecore_register_destination() {
-        let mut ctx = make_ctx();
         let clock = MockClock::new(1_000_000);
         let mut node = NodeCoreBuilder::new()
-            .build(&mut ctx, clock, NoStorage)
+            .build(OsRng, clock, NoStorage)
             .unwrap();
 
         let identity = Identity::generate_with_rng(&mut OsRng);
@@ -995,14 +1022,13 @@ mod tests {
 
     #[test]
     fn test_nodecore_poll_empty() {
-        let mut ctx = make_ctx();
         let clock = MockClock::new(1_000_000);
         let mut node = NodeCoreBuilder::new()
-            .build(&mut ctx, clock, NoStorage)
+            .build(OsRng, clock, NoStorage)
             .unwrap();
 
         // Poll should return None when there are no events
-        assert!(node.poll(&mut ctx).is_none());
+        assert!(node.poll().is_none());
     }
 
     #[test]
@@ -1030,10 +1056,9 @@ mod tests {
 
     #[test]
     fn test_nodecore_has_path_empty() {
-        let mut ctx = make_ctx();
         let clock = MockClock::new(1_000_000);
         let node = NodeCoreBuilder::new()
-            .build(&mut ctx, clock, NoStorage)
+            .build(OsRng, clock, NoStorage)
             .unwrap();
 
         let dest_hash = DestinationHash::new([0x42; 16]);
@@ -1055,10 +1080,9 @@ mod tests {
 
     #[test]
     fn test_send_no_path_returns_error() {
-        let mut ctx = make_ctx();
         let clock = MockClock::new(1_000_000);
         let node = NodeCoreBuilder::new()
-            .build(&mut ctx, clock, NoStorage)
+            .build(OsRng, clock, NoStorage)
             .unwrap();
 
         let dest_hash = DestinationHash::new([0x42; 16]);
@@ -1071,10 +1095,9 @@ mod tests {
 
     #[test]
     fn test_send_reliable_no_path_returns_error() {
-        let mut ctx = make_ctx();
         let clock = MockClock::new(1_000_000);
         let node = NodeCoreBuilder::new()
-            .build(&mut ctx, clock, NoStorage)
+            .build(OsRng, clock, NoStorage)
             .unwrap();
 
         let dest_hash = DestinationHash::new([0x42; 16]);
@@ -1087,10 +1110,9 @@ mod tests {
 
     #[test]
     fn test_find_connection_to_none() {
-        let mut ctx = make_ctx();
         let clock = MockClock::new(1_000_000);
         let node = NodeCoreBuilder::new()
-            .build(&mut ctx, clock, NoStorage)
+            .build(OsRng, clock, NoStorage)
             .unwrap();
 
         let dest_hash = DestinationHash::new([0x42; 16]);

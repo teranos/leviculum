@@ -97,10 +97,11 @@ async fn test_better_path_replaces_worse() {
     )
     .expect("Failed to create destination");
 
-    let mut ctx = make_context();
-    let packet = dest
-        .announce(Some(b"path-test"), &mut ctx)
-        .expect("Failed to create announce");
+    let packet = {
+        use reticulum_core::traits::{NoStorage, PlatformContext};
+        let mut ctx = PlatformContext { rng: OsRng, clock: crate::common::TestClock, storage: NoStorage };
+        dest.announce(Some(b"path-test"), &mut ctx).expect("Failed to create announce")
+    };
 
     // Pack and manually set hops=3
     let mut raw1 = [0u8; MTU];
@@ -159,10 +160,11 @@ async fn test_worse_path_does_not_replace() {
     )
     .expect("Failed to create destination");
 
-    let mut ctx = make_context();
-    let packet = dest
-        .announce(Some(b"path-test"), &mut ctx)
-        .expect("Failed to create announce");
+    let packet = {
+        use reticulum_core::traits::{NoStorage, PlatformContext};
+        let mut ctx = PlatformContext { rng: OsRng, clock: crate::common::TestClock, storage: NoStorage };
+        dest.announce(Some(b"path-test"), &mut ctx).expect("Failed to create announce")
+    };
 
     // Send first announce with hops=1 (good path)
     let mut raw1 = [0u8; MTU];
@@ -224,7 +226,7 @@ async fn test_link_id_calculation_matches_python() {
     let signing_key_bytes: [u8; 32] = pub_key_bytes[32..64].try_into().unwrap();
 
     // Create link
-    let mut link = Link::new_outgoing_with_rng(dest_hash.into(), &mut OsRng);
+    let mut link = Link::new_outgoing(dest_hash.into(), &mut OsRng);
     link.set_destination_keys(&signing_key_bytes).unwrap();
 
     let raw_packet = link.build_link_request_packet();
@@ -277,7 +279,7 @@ async fn test_link_request_to_unknown_destination() {
     let random_dest: [u8; TRUNCATED_HASHBYTES] = [0xAB; TRUNCATED_HASHBYTES];
     let dummy_key = [0u8; 32];
 
-    let mut link = Link::new_outgoing_with_rng(random_dest.into(), &mut OsRng);
+    let mut link = Link::new_outgoing(random_dest.into(), &mut OsRng);
     let _ = link.set_destination_keys(&dummy_key);
 
     let raw_packet = link.build_link_request_packet();
@@ -328,7 +330,7 @@ async fn test_duplicate_link_request_handling() {
     let signing_key_bytes: [u8; 32] = pub_key_bytes[32..64].try_into().unwrap();
 
     // Create and send first link request
-    let mut link = Link::new_outgoing_with_rng(dest_hash.into(), &mut OsRng);
+    let mut link = Link::new_outgoing(dest_hash.into(), &mut OsRng);
     link.set_destination_keys(&signing_key_bytes).unwrap();
 
     let raw_packet = link.build_link_request_packet();
@@ -392,7 +394,7 @@ async fn test_data_on_aes_block_boundary() {
     let pub_key_bytes = hex::decode(&dest_info.public_key).unwrap();
     let signing_key_bytes: [u8; 32] = pub_key_bytes[32..64].try_into().unwrap();
 
-    let mut link = Link::new_outgoing_with_rng(dest_hash.into(), &mut OsRng);
+    let mut link = Link::new_outgoing(dest_hash.into(), &mut OsRng);
     link.set_destination_keys(&signing_key_bytes).unwrap();
 
     let mut stream = connect_to_daemon(&daemon).await;
@@ -415,8 +417,8 @@ async fn test_data_on_aes_block_boundary() {
 
     link.process_proof(proof.data.as_slice()).unwrap();
 
-    let mut ctx = make_context();
-    let rtt_packet = link.build_rtt_packet(0.05, &mut ctx).unwrap();
+    
+    let rtt_packet = link.build_rtt_packet(0.05, &mut OsRng).unwrap();
     framed.clear();
     frame(&rtt_packet, &mut framed);
     stream.write_all(&framed).await.unwrap();
@@ -434,7 +436,7 @@ async fn test_data_on_aes_block_boundary() {
         let data: Vec<u8> = (0..size).map(|i| (i % 256) as u8).collect();
 
         let data_packet = link
-            .build_data_packet(&data, &mut ctx)
+            .build_data_packet(&data, &mut OsRng)
             .expect("Failed to build data packet");
 
         framed.clear();
@@ -498,7 +500,7 @@ async fn test_empty_data_packet() {
     let pub_key_bytes = hex::decode(&dest_info.public_key).unwrap();
     let signing_key_bytes: [u8; 32] = pub_key_bytes[32..64].try_into().unwrap();
 
-    let mut link = Link::new_outgoing_with_rng(dest_hash.into(), &mut OsRng);
+    let mut link = Link::new_outgoing(dest_hash.into(), &mut OsRng);
     link.set_destination_keys(&signing_key_bytes).unwrap();
 
     let mut stream = connect_to_daemon(&daemon).await;
@@ -521,8 +523,8 @@ async fn test_empty_data_packet() {
 
     link.process_proof(proof.data.as_slice()).unwrap();
 
-    let mut ctx = make_context();
-    let rtt_packet = link.build_rtt_packet(0.05, &mut ctx).unwrap();
+    
+    let rtt_packet = link.build_rtt_packet(0.05, &mut OsRng).unwrap();
     framed.clear();
     frame(&rtt_packet, &mut framed);
     stream.write_all(&framed).await.unwrap();
@@ -531,7 +533,7 @@ async fn test_empty_data_packet() {
 
     // Try sending empty data
     let empty_data: &[u8] = &[];
-    let result = link.build_data_packet(empty_data, &mut ctx);
+    let result = link.build_data_packet(empty_data, &mut OsRng);
 
     // Empty data packet may or may not be allowed depending on implementation
     match result {
@@ -583,7 +585,7 @@ async fn test_large_payload_near_mtu() {
     let pub_key_bytes = hex::decode(&dest_info.public_key).unwrap();
     let signing_key_bytes: [u8; 32] = pub_key_bytes[32..64].try_into().unwrap();
 
-    let mut link = Link::new_outgoing_with_rng(dest_hash.into(), &mut OsRng);
+    let mut link = Link::new_outgoing(dest_hash.into(), &mut OsRng);
     link.set_destination_keys(&signing_key_bytes).unwrap();
 
     let mut stream = connect_to_daemon(&daemon).await;
@@ -606,8 +608,8 @@ async fn test_large_payload_near_mtu() {
 
     link.process_proof(proof.data.as_slice()).unwrap();
 
-    let mut ctx = make_context();
-    let rtt_packet = link.build_rtt_packet(0.05, &mut ctx).unwrap();
+    
+    let rtt_packet = link.build_rtt_packet(0.05, &mut OsRng).unwrap();
     framed.clear();
     frame(&rtt_packet, &mut framed);
     stream.write_all(&framed).await.unwrap();
@@ -621,7 +623,7 @@ async fn test_large_payload_near_mtu() {
     for &size in test_sizes {
         let data: Vec<u8> = (0..size).map(|i| (i % 256) as u8).collect();
 
-        match link.build_data_packet(&data, &mut ctx) {
+        match link.build_data_packet(&data, &mut OsRng) {
             Ok(data_packet) => {
                 framed.clear();
                 frame(&data_packet, &mut framed);

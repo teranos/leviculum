@@ -240,7 +240,7 @@ fn test_destination_hash_known_vector() {
 #[test]
 fn test_link_request_packet_byte_layout() {
     let dest_hash = [0x42u8; TRUNCATED_HASHBYTES];
-    let mut link = Link::new_outgoing_with_rng(dest_hash.into(), &mut rand_core::OsRng);
+    let mut link = Link::new_outgoing(dest_hash.into(), &mut rand_core::OsRng);
 
     let raw = link.build_link_request_packet();
 

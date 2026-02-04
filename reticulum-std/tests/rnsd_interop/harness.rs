@@ -348,6 +348,7 @@ impl TestDaemon {
         if let serde_json::Value::Object(map) = result {
             for (hash, entry) in map {
                 let timestamp = entry.get("timestamp").and_then(|v| v.as_f64());
+                let next_hop = entry.get("next_hop").and_then(|v| v.as_str()).map(|s| s.to_string());
                 let hops = entry.get("hops").and_then(|v| v.as_u64()).map(|v| v as u8);
                 let expires = entry.get("expires").and_then(|v| v.as_f64());
 
@@ -355,6 +356,7 @@ impl TestDaemon {
                     hash,
                     PathEntry {
                         timestamp,
+                        next_hop,
                         hops,
                         expires,
                     },
@@ -555,6 +557,38 @@ impl TestDaemon {
         )
         .await?;
         Ok(())
+    }
+
+    /// Create a link from this daemon to an external destination (Python as initiator).
+    ///
+    /// # Arguments
+    /// * `dest_hash` - The destination hash (hex)
+    /// * `dest_key` - The full 64-byte public key (hex)
+    /// * `timeout` - Timeout in seconds for link establishment
+    pub async fn create_link(
+        &self,
+        dest_hash: &str,
+        dest_key: &str,
+        timeout: u64,
+    ) -> Result<String, HarnessError> {
+        let result = self
+            .query(
+                "create_link",
+                serde_json::json!({
+                    "dest_hash": dest_hash,
+                    "dest_key": dest_key,
+                    "timeout": timeout,
+                }),
+            )
+            .await?;
+
+        let link_hash = result
+            .get("link_hash")
+            .and_then(|v| v.as_str())
+            .ok_or_else(|| HarnessError::ParseError("Missing link_hash".to_string()))?
+            .to_string();
+
+        Ok(link_hash)
     }
 
     /// Enable ratchets for a destination (forward secrecy).
@@ -1082,6 +1116,7 @@ impl Drop for TestDaemon {
 #[derive(Debug, Clone)]
 pub struct PathEntry {
     pub timestamp: Option<f64>,
+    pub next_hop: Option<String>,
     pub hops: Option<u8>,
     #[allow(dead_code)]
     pub expires: Option<f64>,

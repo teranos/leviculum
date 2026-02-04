@@ -213,9 +213,11 @@ class TestDaemon:
             # Return path table as hex strings
             paths = {}
             for h, entry in Transport.path_table.items():
-                # entry = [timestamp, received_from, hops, expires, ...]
+                # entry = [timestamp, next_hop, hops, expires, ...]
+                next_hop = entry[1].hex() if len(entry) > 1 and hasattr(entry[1], 'hex') else (entry[1] if len(entry) > 1 else None)
                 paths[h.hex()] = {
                     "timestamp": entry[0],
+                    "next_hop": next_hop,
                     "hops": entry[2] if len(entry) > 2 else None,
                     "expires": entry[3] if len(entry) > 3 else None,
                 }

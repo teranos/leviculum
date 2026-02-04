@@ -60,8 +60,7 @@ async fn setup_rust_destination(
     aspects: &[&str],
     app_data: &[u8],
 ) -> (Destination, String) {
-    let mut ctx = make_context();
-    let identity = Identity::generate(&mut ctx);
+    let identity = Identity::generate_with_rng(&mut OsRng);
     let public_key_hex = hex::encode(identity.public_key_bytes());
 
     let mut destination = Destination::new(
@@ -74,9 +73,11 @@ async fn setup_rust_destination(
     .expect("Failed to create destination");
 
     // Create and send announce
-    let packet = destination
-        .announce(Some(app_data), &mut ctx)
-        .expect("Failed to create announce");
+    let packet = {
+        use reticulum_core::traits::{NoStorage, PlatformContext};
+        let mut ctx = PlatformContext { rng: OsRng, clock: crate::common::TestClock, storage: NoStorage };
+        destination.announce(Some(app_data), &mut ctx).expect("Failed to create announce")
+    };
 
     let mut raw_packet = [0u8; MTU];
     let size = packet.pack(&mut raw_packet).expect("Failed to pack");
@@ -112,7 +113,7 @@ async fn send_packet(stream: &mut TcpStream, packet_bytes: &[u8]) {
 #[tokio::test]
 async fn test_responder_basic_handshake() {
     let daemon = TestDaemon::start().await.expect("Failed to start daemon");
-    let mut ctx = make_context();
+    
 
     // Connect to daemon
     let mut stream = connect_to_daemon(&daemon).await;
@@ -193,7 +194,7 @@ async fn test_responder_basic_handshake() {
     let request_data = &raw_packet[19..];
 
     // Create incoming link
-    let mut link = Link::new_incoming(request_data, link_id, dest_hash, &mut ctx)
+    let mut link = Link::new_incoming(request_data, link_id, dest_hash, &mut OsRng)
         .expect("Failed to create incoming link");
 
     assert_eq!(link.state(), LinkState::Pending);
@@ -268,7 +269,7 @@ async fn test_responder_basic_handshake() {
 #[tokio::test]
 async fn test_responder_bidirectional_data() {
     let daemon = TestDaemon::start().await.expect("Failed to start daemon");
-    let mut ctx = make_context();
+    
 
     let mut stream = connect_to_daemon(&daemon).await;
     let mut deframer = Deframer::new();
@@ -312,7 +313,7 @@ async fn test_responder_bidirectional_data() {
     .expect("Should receive LINK_REQUEST");
     let link_id = LinkId::new(link_id_bytes);
 
-    let mut link = Link::new_incoming(&raw_packet[19..], link_id, dest_hash, &mut ctx).unwrap();
+    let mut link = Link::new_incoming(&raw_packet[19..], link_id, dest_hash, &mut OsRng).unwrap();
 
     // Send proof
     let proof_packet = link.build_proof_packet(identity, 500, 1).unwrap();
@@ -377,7 +378,7 @@ async fn test_responder_bidirectional_data() {
     // Rust sends data back to Python
     let reply_message = b"Hello from Rust!";
     let data_packet = link
-        .build_data_packet(reply_message, &mut ctx)
+        .build_data_packet(reply_message, &mut OsRng)
         .expect("Failed to build data packet");
 
     send_packet(&mut stream, &data_packet).await;
@@ -414,7 +415,7 @@ async fn test_responder_bidirectional_data() {
 #[tokio::test]
 async fn test_responder_key_derivation_match() {
     let daemon = TestDaemon::start().await.expect("Failed to start daemon");
-    let mut ctx = make_context();
+    
 
     let mut stream = connect_to_daemon(&daemon).await;
     let mut deframer = Deframer::new();
@@ -455,7 +456,7 @@ async fn test_responder_key_derivation_match() {
     .await
     .unwrap();
     let link_id = LinkId::new(link_id_bytes);
-    let mut link = Link::new_incoming(&raw[19..], link_id, dest_hash, &mut ctx).unwrap();
+    let mut link = Link::new_incoming(&raw[19..], link_id, dest_hash, &mut OsRng).unwrap();
 
     let proof = link.build_proof_packet(identity, 500, 1).unwrap();
     send_packet(&mut stream, &proof).await;
@@ -502,7 +503,7 @@ async fn test_responder_key_derivation_match() {
 
     // Test 2: Rust encrypts, Python decrypts
     let rust_message = b"Rust encrypted this with the same derived key";
-    let data_packet = link.build_data_packet(rust_message, &mut ctx).unwrap();
+    let data_packet = link.build_data_packet(rust_message, &mut OsRng).unwrap();
     send_packet(&mut stream, &data_packet).await;
 
     tokio::time::sleep(Duration::from_millis(500)).await;
@@ -522,7 +523,7 @@ async fn test_responder_key_derivation_match() {
 #[tokio::test]
 async fn test_responder_multiple_packets() {
     let daemon = TestDaemon::start().await.expect("Failed to start daemon");
-    let mut ctx = make_context();
+    
 
     let mut stream = connect_to_daemon(&daemon).await;
     let mut deframer = Deframer::new();
@@ -563,7 +564,7 @@ async fn test_responder_multiple_packets() {
     .await
     .unwrap();
     let link_id = LinkId::new(link_id_bytes);
-    let mut link = Link::new_incoming(&raw[19..], link_id, dest_hash, &mut ctx).unwrap();
+    let mut link = Link::new_incoming(&raw[19..], link_id, dest_hash, &mut OsRng).unwrap();
 
     let proof = link.build_proof_packet(identity, 500, 1).unwrap();
     send_packet(&mut stream, &proof).await;
@@ -587,7 +588,7 @@ async fn test_responder_multiple_packets() {
 
     for (i, &size) in test_sizes.iter().enumerate() {
         let data: Vec<u8> = (0..size).map(|j| ((i + j) & 0xFF) as u8).collect();
-        let data_packet = link.build_data_packet(&data, &mut ctx).unwrap();
+        let data_packet = link.build_data_packet(&data, &mut OsRng).unwrap();
         send_packet(&mut stream, &data_packet).await;
         println!("Sent packet {}: {} bytes", i + 1, size);
         tokio::time::sleep(Duration::from_millis(50)).await;

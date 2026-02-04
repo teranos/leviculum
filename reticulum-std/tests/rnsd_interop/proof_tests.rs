@@ -23,7 +23,7 @@ use reticulum_core::packet::{
 };
 use reticulum_std::interfaces::hdlc::{frame, DeframeResult, Deframer};
 
-use crate::common::{make_context, OsRng};
+use crate::common::OsRng;
 use crate::harness::TestDaemon;
 
 // =========================================================================
@@ -251,10 +251,11 @@ async fn test_python_prove_all_sends_proof() {
     .unwrap();
 
     // Send our announce so Python knows where to send the proof
-    let mut ctx = make_context();
-    let announce_packet = our_dest
-        .announce(None, &mut ctx)
-        .expect("Failed to create announce");
+    let announce_packet = {
+        use reticulum_core::traits::{NoStorage, PlatformContext};
+        let mut ctx = PlatformContext { rng: OsRng, clock: crate::common::TestClock, storage: NoStorage };
+        our_dest.announce(None, &mut ctx).expect("Failed to create announce")
+    };
 
     let mut announce_raw = [0u8; MTU];
     let announce_len = announce_packet.pack(&mut announce_raw).unwrap();
@@ -484,7 +485,7 @@ async fn test_prove_all_link_traffic_comprehensive() {
     let signing_key: [u8; 32] = pub_key_bytes[32..64].try_into().expect("Wrong signing key length");
 
     // Create and send link request
-    let mut link = Link::new_outgoing_with_rng(dest_hash.into(), &mut OsRng);
+    let mut link = Link::new_outgoing(dest_hash.into(), &mut OsRng);
     link.set_destination_keys(&signing_key)
         .expect("Failed to set destination keys");
 
@@ -534,9 +535,8 @@ async fn test_prove_all_link_traffic_comprehensive() {
     assert_eq!(link.state(), LinkState::Active);
 
     // Send RTT to finalize link
-    let mut ctx = make_context();
     let rtt_packet = link
-        .build_rtt_packet(0.05, &mut ctx)
+        .build_rtt_packet(0.05, &mut OsRng)
         .expect("Failed to build RTT");
     framed.clear();
     frame(&rtt_packet, &mut framed);
@@ -558,7 +558,7 @@ async fn test_prove_all_link_traffic_comprehensive() {
 
         // Build and send data packet
         let data_packet = link
-            .build_data_packet(msg.as_bytes(), &mut ctx)
+            .build_data_packet(msg.as_bytes(), &mut OsRng)
             .expect("Failed to build data packet");
 
         // Calculate packet hash (now matches Python's algorithm)

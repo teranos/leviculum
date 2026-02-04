@@ -5,8 +5,8 @@
 
 use crate::destination::ProofStrategy;
 use crate::identity::Identity;
-use crate::traits::Context;
 use crate::transport::TransportConfig;
+use rand_core::CryptoRngCore;
 
 use super::NodeCore;
 
@@ -27,25 +27,20 @@ pub enum BuildError {
 /// use reticulum_core::node::NodeCoreBuilder;
 /// use reticulum_core::identity::Identity;
 /// use reticulum_core::destination::ProofStrategy;
-/// use reticulum_core::traits::{Clock, NoStorage, PlatformContext};
+/// use reticulum_core::traits::{Clock, NoStorage};
 /// # use core::cell::Cell;
 /// # struct MyClock(Cell<u64>);
 /// # impl MyClock { fn new(ms: u64) -> Self { Self(Cell::new(ms)) } }
 /// # impl Clock for MyClock { fn now_ms(&self) -> u64 { self.0.get() } }
 ///
 /// # fn example() {
-/// let mut ctx = PlatformContext {
-///     rng: rand_core::OsRng,
-///     clock: MyClock::new(0),
-///     storage: NoStorage,
-/// };
-/// let my_identity = Identity::generate(&mut ctx);
+/// let my_identity = Identity::generate_with_rng(&mut rand_core::OsRng);
 ///
 /// let node = NodeCoreBuilder::new()
 ///     .identity(my_identity)
 ///     .proof_strategy(ProofStrategy::All)
 ///     .enable_transport(true)
-///     .build(&mut ctx, MyClock::new(0), NoStorage)
+///     .build(rand_core::OsRng, MyClock::new(0), NoStorage)
 ///     .unwrap();
 /// # }
 /// ```
@@ -121,37 +116,41 @@ impl NodeCoreBuilder {
         self
     }
 
+    /// Check if transport mode is enabled in this builder
+    pub fn is_transport_enabled(&self) -> bool {
+        self.transport_config.enable_transport
+    }
+
     /// Build the NodeCore instance
     ///
-    /// If no identity was provided, a new one will be generated using the
-    /// context's RNG.
+    /// If no identity was provided, a new one will be generated using the RNG.
     ///
     /// # Arguments
-    /// * `ctx` - Platform context providing RNG, clock, and storage (consumed)
-    ///
-    /// Note: This takes ownership of the clock and storage from the context.
-    /// You'll need to provide new instances for subsequent operations.
-    pub fn build<C, Clk, S>(
+    /// * `rng` - Random number generator (moved into NodeCore)
+    /// * `clock` - Clock instance (moved into NodeCore)
+    /// * `storage` - Storage instance (moved into NodeCore)
+    pub fn build<R, Clk, S>(
         self,
-        ctx: &mut C,
+        mut rng: R,
         clock: Clk,
         storage: S,
-    ) -> Result<NodeCore<Clk, S>, BuildError>
+    ) -> Result<NodeCore<R, Clk, S>, BuildError>
     where
-        C: Context,
+        R: CryptoRngCore,
         Clk: crate::traits::Clock,
         S: crate::traits::Storage,
     {
         // Get or generate identity
         let identity = match self.identity {
             Some(id) => id,
-            None => Identity::generate(ctx),
+            None => Identity::generate_with_rng(&mut rng),
         };
 
         Ok(NodeCore::new(
             identity,
             self.transport_config,
             self.proof_strategy,
+            rng,
             clock,
             storage,
         ))
@@ -161,7 +160,7 @@ impl NodeCoreBuilder {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::traits::{Clock, NoStorage, PlatformContext};
+    use crate::traits::{Clock, NoStorage};
     use core::cell::Cell;
     use rand_core::OsRng;
 
@@ -179,20 +178,11 @@ mod tests {
         }
     }
 
-    fn make_ctx() -> PlatformContext<OsRng, MockClock, NoStorage> {
-        PlatformContext {
-            rng: OsRng,
-            clock: MockClock::new(1_000_000),
-            storage: NoStorage,
-        }
-    }
-
     #[test]
     fn test_builder_default() {
-        let mut ctx = make_ctx();
         let clock = MockClock::new(1_000_000);
         let node = NodeCoreBuilder::new()
-            .build(&mut ctx, clock, NoStorage)
+            .build(OsRng, clock, NoStorage)
             .unwrap();
 
         assert_eq!(node.active_connection_count(), 0);
@@ -201,14 +191,13 @@ mod tests {
 
     #[test]
     fn test_builder_with_identity() {
-        let mut ctx = make_ctx();
         let identity = Identity::generate_with_rng(&mut OsRng);
         let id_hash = *identity.hash();
         let clock = MockClock::new(1_000_000);
 
         let node = NodeCoreBuilder::new()
             .identity(identity)
-            .build(&mut ctx, clock, NoStorage)
+            .build(OsRng, clock, NoStorage)
             .unwrap();
 
         assert_eq!(node.identity().hash(), &id_hash);
@@ -216,11 +205,10 @@ mod tests {
 
     #[test]
     fn test_builder_with_proof_strategy() {
-        let mut ctx = make_ctx();
         let clock = MockClock::new(1_000_000);
         let node = NodeCoreBuilder::new()
             .proof_strategy(ProofStrategy::All)
-            .build(&mut ctx, clock, NoStorage)
+            .build(OsRng, clock, NoStorage)
             .unwrap();
 
         assert_eq!(node.default_proof_strategy(), ProofStrategy::All);
@@ -228,13 +216,12 @@ mod tests {
 
     #[test]
     fn test_builder_with_transport_config() {
-        let mut ctx = make_ctx();
         let clock = MockClock::new(1_000_000);
         let node = NodeCoreBuilder::new()
             .enable_transport(true)
             .max_hops(10)
             .path_expiry_secs(7200)
-            .build(&mut ctx, clock, NoStorage)
+            .build(OsRng, clock, NoStorage)
             .unwrap();
 
         assert!(node.transport_config().enable_transport);
@@ -244,7 +231,6 @@ mod tests {
 
     #[test]
     fn test_builder_chaining() {
-        let mut ctx = make_ctx();
         let identity = Identity::generate_with_rng(&mut OsRng);
         let clock = MockClock::new(1_000_000);
 
@@ -256,7 +242,7 @@ mod tests {
             .path_expiry_secs(3600)
             .announce_rate_limit_ms(5000)
             .packet_cache_expiry_ms(120_000)
-            .build(&mut ctx, clock, NoStorage)
+            .build(OsRng, clock, NoStorage)
             .unwrap();
 
         assert_eq!(node.default_proof_strategy(), ProofStrategy::App);

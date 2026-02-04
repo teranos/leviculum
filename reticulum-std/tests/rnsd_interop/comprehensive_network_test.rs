@@ -54,7 +54,6 @@ use reticulum_core::identity::Identity;
 use reticulum_core::link::channel::{Channel, ChannelError, Envelope, Message, StreamDataMessage};
 use reticulum_core::link::{Link, LinkId, LinkState};
 use reticulum_core::packet::{Packet, PacketContext};
-use reticulum_core::traits::Clock;
 use reticulum_core::DestinationHash;
 use reticulum_std::interfaces::hdlc::{frame, Deframer};
 
@@ -221,11 +220,13 @@ impl RustTestNode {
 
     /// Send announce with optional app_data
     async fn announce(&mut self, app_data: &[u8]) {
-        let mut ctx = make_context();
-        let packet = self
-            .destination
-            .announce(Some(app_data), &mut ctx)
-            .expect("Failed to create announce");
+        let packet = {
+            use reticulum_core::traits::{NoStorage, PlatformContext};
+            let mut ctx = PlatformContext { rng: OsRng, clock: TestClock, storage: NoStorage };
+            self.destination
+                .announce(Some(app_data), &mut ctx)
+                .expect("Failed to create announce")
+        };
 
         let mut raw = [0u8; MTU];
         let size = packet.pack(&mut raw).expect("Failed to pack");
@@ -492,7 +493,7 @@ async fn phase2_link_establishment(network: &mut MultiNodeTestNetwork) {
                 );
                 let signing_key = announce_info.signing_key().expect("Announce should have signing key");
 
-                let mut link = Link::new_outgoing_with_rng(dest_hash, &mut OsRng);
+                let mut link = Link::new_outgoing(dest_hash, &mut OsRng);
                 link.set_destination_keys(&signing_key).unwrap();
 
             // Use transport routing for multi-hop link
@@ -528,8 +529,7 @@ async fn phase2_link_establishment(network: &mut MultiNodeTestNetwork) {
                 println!("  L1: ESTABLISHED (Rust-A -> Py-4)");
 
                 // Send RTT to finalize
-                let mut ctx = make_context();
-                let rtt_packet = link.build_rtt_packet(0.05, &mut ctx).unwrap();
+                let rtt_packet = link.build_rtt_packet(0.05, &mut OsRng).unwrap();
                 framed.clear();
                 frame(&rtt_packet, &mut framed);
                 network.rust_a.stream.write_all(&framed).await.unwrap();
@@ -578,7 +578,7 @@ async fn phase2_link_establishment(network: &mut MultiNodeTestNetwork) {
     let rust_b_public_key = network.rust_b.identity().public_key_bytes();
     let rust_b_signing_key: [u8; 32] = rust_b_public_key[32..64].try_into().unwrap();
 
-    let mut link_ab = Link::new_outgoing_with_rng(network.rust_b.dest_hash, &mut OsRng);
+    let mut link_ab = Link::new_outgoing(network.rust_b.dest_hash, &mut OsRng);
     link_ab.set_destination_keys(&rust_b_signing_key).unwrap();
 
     // Use HEADER_2 format with transport_id for routing through the daemon
@@ -612,12 +612,11 @@ async fn phase2_link_establishment(network: &mut MultiNodeTestNetwork) {
         let parsed_packet = Packet::unpack(&raw_req).expect("Failed to parse link request");
 
         // Create incoming link on Rust-B using the parsed data
-        let mut ctx = make_context();
         let mut incoming_link = Link::new_incoming(
             parsed_packet.data.as_slice(),
             link_id,
             network.rust_b.dest_hash,
-            &mut ctx,
+            &mut OsRng,
         )
         .expect("Failed to create incoming link");
 
@@ -646,8 +645,7 @@ async fn phase2_link_establishment(network: &mut MultiNodeTestNetwork) {
             assert_eq!(link_ab.state(), LinkState::Active);
 
             // Send RTT
-            let mut ctx = make_context();
-            let rtt_packet = link_ab.build_rtt_packet(0.05, &mut ctx).unwrap();
+            let rtt_packet = link_ab.build_rtt_packet(0.05, &mut OsRng).unwrap();
             framed.clear();
             frame(&rtt_packet, &mut framed);
             network.rust_a.stream.write_all(&framed).await.unwrap();
@@ -712,7 +710,7 @@ async fn phase2_link_establishment(network: &mut MultiNodeTestNetwork) {
     let rust_d_public_key = network.rust_d.identity().public_key_bytes();
     let rust_d_signing_key: [u8; 32] = rust_d_public_key[32..64].try_into().unwrap();
 
-    let mut link_cd = Link::new_outgoing_with_rng(network.rust_d.dest_hash, &mut OsRng);
+    let mut link_cd = Link::new_outgoing(network.rust_d.dest_hash, &mut OsRng);
     link_cd.set_destination_keys(&rust_d_signing_key).unwrap();
 
     // Use HEADER_2 format with transport_id for routing through Py-3
@@ -743,12 +741,11 @@ async fn phase2_link_establishment(network: &mut MultiNodeTestNetwork) {
         // Parse the received packet to extract the link request data
         let parsed_packet = Packet::unpack(&raw_req).expect("Failed to parse link request");
 
-        let mut ctx = make_context();
         let mut incoming_link = Link::new_incoming(
             parsed_packet.data.as_slice(),
             link_id,
             network.rust_d.dest_hash,
-            &mut ctx,
+            &mut OsRng,
         )
         .expect("Failed to create incoming link");
 
@@ -774,8 +771,7 @@ async fn phase2_link_establishment(network: &mut MultiNodeTestNetwork) {
                 .expect("Proof should validate");
             assert_eq!(link_cd.state(), LinkState::Active);
 
-            let mut ctx = make_context();
-            let rtt_packet = link_cd.build_rtt_packet(0.05, &mut ctx).unwrap();
+            let rtt_packet = link_cd.build_rtt_packet(0.05, &mut OsRng).unwrap();
             framed.clear();
             frame(&rtt_packet, &mut framed);
             network.rust_c.stream.write_all(&framed).await.unwrap();
@@ -838,13 +834,12 @@ async fn phase3_channel_messages(network: &mut MultiNodeTestNetwork) {
     if let Some(active_link) = network.active_links.get_mut("L3") {
         println!("Testing ping-pong on L3...");
 
-        let mut ctx = make_context();
-        let now_ms = ctx.clock.now_ms();
+        let now = now_ms();
 
         // Send a ping message via Channel
         let ping = PingMessage {
             sequence: 1,
-            timestamp_ms: now_ms,
+            timestamp_ms: now,
             payload: b"Hello from Rust-A!".to_vec(),
         };
 
@@ -853,13 +848,13 @@ async fn phase3_channel_messages(network: &mut MultiNodeTestNetwork) {
 
         let channel_data = active_link
             .channel
-            .send(&ping, link_mdu, now_ms, rtt_ms)
+            .send(&ping, link_mdu, now, rtt_ms)
             .expect("Failed to send ping");
 
         // Encrypt via link and send
         let data_packet = active_link
             .link
-            .build_data_packet_with_context(&channel_data, PacketContext::Channel, &mut ctx)
+            .build_data_packet_with_context(&channel_data, PacketContext::Channel, &mut OsRng)
             .expect("Failed to build data packet");
 
         let mut framed = Vec::new();
@@ -983,8 +978,7 @@ async fn phase4_stream_buffer(network: &mut MultiNodeTestNetwork) {
     if let Some(active_link) = network.active_links.get_mut("L5") {
         println!("Testing stream data over L5 (Rust-C -> Rust-D)...");
 
-        let mut ctx = make_context();
-        let now_ms = ctx.clock.now_ms();
+        let now = now_ms();
 
         // Create a stream message
         let stream_data = b"Binary stream data for testing";
@@ -996,13 +990,13 @@ async fn phase4_stream_buffer(network: &mut MultiNodeTestNetwork) {
         // Send via channel with system message (bypasses MSGTYPE validation)
         let channel_data = active_link
             .channel
-            .send_system(&msg, link_mdu, now_ms, rtt_ms)
+            .send_system(&msg, link_mdu, now, rtt_ms)
             .expect("Failed to send stream message");
 
         // Encrypt and send
         let data_packet = active_link
             .link
-            .build_data_packet_with_context(&channel_data, PacketContext::Channel, &mut ctx)
+            .build_data_packet_with_context(&channel_data, PacketContext::Channel, &mut OsRng)
             .expect("Failed to build data packet");
 
         let mut framed = Vec::new();
@@ -1224,7 +1218,7 @@ async fn test_rust_to_python_link() {
     let pub_key_bytes = hex::decode(&dest_info.public_key).unwrap();
     let signing_key: [u8; 32] = pub_key_bytes[32..64].try_into().unwrap();
 
-    let mut link = Link::new_outgoing_with_rng(dest_hash, &mut OsRng);
+    let mut link = Link::new_outgoing(dest_hash, &mut OsRng);
     link.set_destination_keys(&signing_key).unwrap();
 
     let raw_packet = link.build_link_request_packet();
@@ -1251,8 +1245,7 @@ async fn test_rust_to_python_link() {
     assert_eq!(link.state(), LinkState::Active);
 
     // Send RTT to finalize
-    let mut ctx = make_context();
-    let rtt_packet = link.build_rtt_packet(0.05, &mut ctx).unwrap();
+    let rtt_packet = link.build_rtt_packet(0.05, &mut OsRng).unwrap();
     framed.clear();
     frame(&rtt_packet, &mut framed);
     node_a.stream.write_all(&framed).await.unwrap();

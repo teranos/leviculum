@@ -87,7 +87,7 @@ async fn test_rotation_during_active_link() {
     let pub_key_bytes = hex::decode(&dest_info.public_key).unwrap();
     let signing_key_bytes: [u8; 32] = pub_key_bytes[32..64].try_into().unwrap();
 
-    let mut link = Link::new_outgoing_with_rng(dest_hash.into(), &mut OsRng);
+    let mut link = Link::new_outgoing(dest_hash.into(), &mut OsRng);
     link.set_destination_keys(&signing_key_bytes).unwrap();
 
     let mut stream = connect_to_daemon(&daemon).await;
@@ -113,8 +113,8 @@ async fn test_rotation_during_active_link() {
     assert_eq!(link.state(), LinkState::Active);
 
     // Send RTT
-    let mut ctx = make_context();
-    let rtt_packet = link.build_rtt_packet(0.05, &mut ctx).unwrap();
+    
+    let rtt_packet = link.build_rtt_packet(0.05, &mut OsRng).unwrap();
     framed.clear();
     frame(&rtt_packet, &mut framed);
     stream.write_all(&framed).await.unwrap();
@@ -127,7 +127,7 @@ async fn test_rotation_during_active_link() {
     for i in 0..5 {
         let msg = format!("Pre-rotation message {}", i);
         let data_packet = link
-            .build_data_packet(msg.as_bytes(), &mut ctx)
+            .build_data_packet(msg.as_bytes(), &mut OsRng)
             .expect("Failed to build data packet");
 
         framed.clear();
@@ -176,7 +176,7 @@ async fn test_rotation_during_active_link() {
     for i in 0..5 {
         let msg = format!("Post-rotation message {}", i);
         let data_packet = link
-            .build_data_packet(msg.as_bytes(), &mut ctx)
+            .build_data_packet(msg.as_bytes(), &mut OsRng)
             .expect("Failed to build data packet");
 
         framed.clear();
@@ -486,7 +486,7 @@ async fn test_link_to_ratcheted_destination() {
     let pub_key_bytes = hex::decode(&dest_info.public_key).unwrap();
     let signing_key_bytes: [u8; 32] = pub_key_bytes[32..64].try_into().unwrap();
 
-    let mut link = Link::new_outgoing_with_rng(dest_hash.into(), &mut OsRng);
+    let mut link = Link::new_outgoing(dest_hash.into(), &mut OsRng);
     link.set_destination_keys(&signing_key_bytes).unwrap();
 
     let mut stream = connect_to_daemon(&daemon).await;
@@ -522,8 +522,8 @@ async fn test_link_to_ratcheted_destination() {
     );
 
     // Send RTT
-    let mut ctx = make_context();
-    let rtt_packet = link.build_rtt_packet(0.05, &mut ctx).unwrap();
+    
+    let rtt_packet = link.build_rtt_packet(0.05, &mut OsRng).unwrap();
     framed.clear();
     frame(&rtt_packet, &mut framed);
     stream.write_all(&framed).await.unwrap();
@@ -533,7 +533,7 @@ async fn test_link_to_ratcheted_destination() {
     // Send test data
     let test_data = b"Hello ratcheted destination!";
     let data_packet = link
-        .build_data_packet(test_data, &mut ctx)
+        .build_data_packet(test_data, &mut OsRng)
         .expect("Failed to build data packet");
 
     framed.clear();

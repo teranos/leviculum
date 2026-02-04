@@ -28,7 +28,7 @@
 use std::cell::Cell;
 use std::time::Duration;
 
-use rand_core::OsRng;
+use rand_core::{CryptoRngCore, OsRng};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpStream;
 use tokio::time::timeout;
@@ -67,27 +67,15 @@ impl MockClock {
     fn advance(&self, ms: u64) {
         self.time_ms.set(self.time_ms.get() + ms);
     }
-}
 
-impl Clock for MockClock {
     fn now_ms(&self) -> u64 {
         self.time_ms.get()
     }
 }
 
-fn make_context() -> PlatformContext<OsRng, TestClock, NoStorage> {
-    PlatformContext {
-        rng: OsRng,
-        clock: TestClock,
-        storage: NoStorage,
-    }
-}
-
-fn mock_context(initial_ms: u64) -> PlatformContext<OsRng, MockClock, NoStorage> {
-    PlatformContext {
-        rng: OsRng,
-        clock: MockClock::new(initial_ms),
-        storage: NoStorage,
+impl Clock for MockClock {
+    fn now_ms(&self) -> u64 {
+        self.time_ms.get()
     }
 }
 
@@ -103,7 +91,7 @@ async fn establish_manager_initiator_link(
     daemon: &TestDaemon,
     stream: &mut TcpStream,
     deframer: &mut Deframer,
-    ctx: &mut PlatformContext<OsRng, TestClock, NoStorage>,
+    rng: &mut impl CryptoRngCore,
 ) -> Result<(LinkId, DestinationInfo), HarnessError> {
     // Register a destination in daemon
     let dest_info = daemon.register_destination("linktest", &["echo"]).await?;
@@ -122,8 +110,11 @@ async fn establish_manager_initiator_link(
         .try_into()
         .map_err(|_| HarnessError::ParseError("Invalid hash length".to_string()))?;
 
+    let now_ms = TestClock.now_ms();
+
     // Initiate link via manager
-    let (link_id, link_request_packet) = manager.initiate(dest_hash.into(), &signing_key_bytes, ctx);
+    let (link_id, link_request_packet) =
+        manager.initiate(dest_hash.into(), &signing_key_bytes, now_ms, rng);
 
     // Send link request
     send_framed(stream, &link_request_packet).await;
@@ -134,7 +125,8 @@ async fn establish_manager_initiator_link(
         .ok_or_else(|| HarnessError::CommandFailed("No proof received".to_string()))?;
 
     // Process proof via manager
-    manager.process_packet(&proof_packet, &[], ctx);
+    let now_ms = TestClock.now_ms();
+    manager.process_packet(&proof_packet, &[], now_ms, rng);
 
     // Check for LinkEstablished event
     let events: Vec<_> = manager.drain_events().collect();
@@ -169,7 +161,7 @@ async fn establish_manager_responder_link(
     deframer: &mut Deframer,
     identity: &Identity,
     dest_hash: DestinationHash,
-    ctx: &mut PlatformContext<OsRng, TestClock, NoStorage>,
+    rng: &mut impl CryptoRngCore,
 ) -> Result<LinkId, HarnessError> {
     // Wait for link request
     let (raw_packet, link_id_bytes) =
@@ -181,7 +173,8 @@ async fn establish_manager_responder_link(
     // Process the packet via manager
     let packet = Packet::unpack(&raw_packet)
         .map_err(|_| HarnessError::ParseError("Failed to unpack packet".to_string()))?;
-    manager.process_packet(&packet, &raw_packet, ctx);
+    let now_ms = TestClock.now_ms();
+    manager.process_packet(&packet, &raw_packet, now_ms, rng);
 
     // Check for LinkRequestReceived event
     let events: Vec<_> = manager.drain_events().collect();
@@ -196,8 +189,9 @@ async fn establish_manager_responder_link(
     }
 
     // Accept the link
+    let now_ms = TestClock.now_ms();
     let proof_packet = manager
-        .accept_link(&link_id, identity, ProofStrategy::None, ctx)
+        .accept_link(&link_id, identity, ProofStrategy::None, now_ms)
         .map_err(|e| HarnessError::CommandFailed(format!("Failed to accept link: {:?}", e)))?;
 
     // Send proof
@@ -218,7 +212,8 @@ async fn establish_manager_responder_link(
 
     let rtt_packet = Packet::unpack(&rtt_raw)
         .map_err(|_| HarnessError::ParseError("Failed to unpack RTT".to_string()))?;
-    manager.process_packet(&rtt_packet, &rtt_raw, ctx);
+    let now_ms = TestClock.now_ms();
+    manager.process_packet(&rtt_packet, &rtt_raw, now_ms, rng);
 
     // Check for LinkEstablished event
     let events: Vec<_> = manager.drain_events().collect();
@@ -241,7 +236,7 @@ async fn wait_for_link_event<F>(
     manager: &mut LinkManager,
     stream: &mut TcpStream,
     deframer: &mut Deframer,
-    ctx: &mut PlatformContext<OsRng, TestClock, NoStorage>,
+    rng: &mut impl CryptoRngCore,
     predicate: F,
     timeout_duration: Duration,
 ) -> Option<LinkEvent>
@@ -260,7 +255,8 @@ where
         }
 
         // Poll manager
-        manager.poll(ctx.clock.now_ms(), ctx);
+        let now_ms = TestClock.now_ms();
+        manager.poll(now_ms, rng);
 
         // Try to receive more packets
         let remaining = deadline - tokio::time::Instant::now();
@@ -276,7 +272,8 @@ where
                 for result in results {
                     if let DeframeResult::Frame(data) = result {
                         if let Ok(pkt) = Packet::unpack(&data) {
-                            manager.process_packet(&pkt, &data, ctx);
+                            let now_ms = TestClock.now_ms();
+                            manager.process_packet(&pkt, &data, now_ms, rng);
                         }
                     }
                 }
@@ -304,7 +301,12 @@ async fn setup_rust_destination(
     aspects: &[&str],
     app_data: &[u8],
 ) -> (Destination, String) {
-    let mut ctx = make_context();
+    // Identity::generate still needs a context, use PlatformContext for announce
+    let mut ctx = PlatformContext {
+        rng: OsRng,
+        clock: TestClock,
+        storage: NoStorage,
+    };
     let identity = Identity::generate(&mut ctx);
     let public_key_hex = hex::encode(identity.public_key_bytes());
 
@@ -346,7 +348,6 @@ async fn setup_rust_destination(
 #[tokio::test]
 async fn test_manager_initiator_basic_handshake() {
     let daemon = TestDaemon::start().await.expect("Failed to start daemon");
-    let mut ctx = make_context();
 
     let mut stream = connect_to_daemon(&daemon).await;
     let mut deframer = Deframer::new();
@@ -359,7 +360,7 @@ async fn test_manager_initiator_basic_handshake() {
         &daemon,
         &mut stream,
         &mut deframer,
-        &mut ctx,
+        &mut OsRng,
     )
     .await
     .expect("Failed to establish link");
@@ -385,7 +386,6 @@ async fn test_manager_initiator_basic_handshake() {
 #[tokio::test]
 async fn test_manager_initiator_data_exchange() {
     let daemon = TestDaemon::start().await.expect("Failed to start daemon");
-    let mut ctx = make_context();
 
     let mut stream = connect_to_daemon(&daemon).await;
     let mut deframer = Deframer::new();
@@ -397,7 +397,7 @@ async fn test_manager_initiator_data_exchange() {
         &daemon,
         &mut stream,
         &mut deframer,
-        &mut ctx,
+        &mut OsRng,
     )
     .await
     .expect("Failed to establish link");
@@ -405,7 +405,7 @@ async fn test_manager_initiator_data_exchange() {
     // Send data via manager
     let test_data = b"Hello from LinkManager!";
     let data_packet = manager
-        .send(&link_id, test_data, &mut ctx)
+        .send(&link_id, test_data, &mut OsRng)
         .expect("Failed to build data packet");
 
     send_framed(&mut stream, &data_packet).await;
@@ -437,7 +437,6 @@ async fn test_manager_initiator_data_exchange() {
 #[tokio::test]
 async fn test_manager_initiator_sequential_links() {
     let daemon = TestDaemon::start().await.expect("Failed to start daemon");
-    let mut ctx = make_context();
 
     let mut manager = LinkManager::new();
 
@@ -450,18 +449,18 @@ async fn test_manager_initiator_sequential_links() {
         &daemon,
         &mut stream1,
         &mut deframer1,
-        &mut ctx,
+        &mut OsRng,
     )
     .await
     .expect("Failed to establish first link");
 
     // Send data on first link
     let data1 = b"First link data";
-    let packet1 = manager.send(&link_id1, data1, &mut ctx).unwrap();
+    let packet1 = manager.send(&link_id1, data1, &mut OsRng).unwrap();
     send_framed(&mut stream1, &packet1).await;
 
     // Close first link
-    manager.close(&link_id1, &mut ctx);
+    manager.close(&link_id1, &mut OsRng);
     assert!(!manager.is_active(&link_id1));
 
     // Drain close event
@@ -480,7 +479,7 @@ async fn test_manager_initiator_sequential_links() {
         &daemon,
         &mut stream2,
         &mut deframer2,
-        &mut ctx,
+        &mut OsRng,
     )
     .await
     .expect("Failed to establish second link");
@@ -490,7 +489,7 @@ async fn test_manager_initiator_sequential_links() {
 
     // Send data on second link
     let data2 = b"Second link data";
-    let packet2 = manager.send(&link_id2, data2, &mut ctx).unwrap();
+    let packet2 = manager.send(&link_id2, data2, &mut OsRng).unwrap();
     send_framed(&mut stream2, &packet2).await;
 
     tokio::time::sleep(Duration::from_millis(300)).await;
@@ -507,7 +506,6 @@ async fn test_manager_initiator_sequential_links() {
 #[tokio::test]
 async fn test_manager_initiator_concurrent_links() {
     let daemon = TestDaemon::start().await.expect("Failed to start daemon");
-    let mut ctx = make_context();
 
     // Register multiple destinations
     let dest1 = daemon
@@ -524,22 +522,24 @@ async fn test_manager_initiator_concurrent_links() {
         .expect("Failed to register dest3");
 
     let mut manager = LinkManager::new();
+    let mut rng = OsRng;
 
     // Helper to initiate link
     let initiate_link = |manager: &mut LinkManager,
                          dest_info: &DestinationInfo,
-                         ctx: &mut PlatformContext<OsRng, TestClock, NoStorage>|
+                         rng: &mut OsRng|
      -> (LinkId, Vec<u8>) {
         let pub_key_bytes = hex::decode(&dest_info.public_key).unwrap();
         let signing_key: [u8; 32] = pub_key_bytes[32..64].try_into().unwrap();
         let dest_hash: [u8; 16] = hex::decode(&dest_info.hash).unwrap().try_into().unwrap();
-        manager.initiate(dest_hash.into(), &signing_key, ctx)
+        let now_ms = TestClock.now_ms();
+        manager.initiate(dest_hash.into(), &signing_key, now_ms, rng)
     };
 
     // Initiate all three links
-    let (link_id1, packet1) = initiate_link(&mut manager, &dest1, &mut ctx);
-    let (link_id2, packet2) = initiate_link(&mut manager, &dest2, &mut ctx);
-    let (link_id3, packet3) = initiate_link(&mut manager, &dest3, &mut ctx);
+    let (link_id1, packet1) = initiate_link(&mut manager, &dest1, &mut rng);
+    let (link_id2, packet2) = initiate_link(&mut manager, &dest2, &mut rng);
+    let (link_id3, packet3) = initiate_link(&mut manager, &dest3, &mut rng);
 
     // Connect and send all requests
     let mut stream = connect_to_daemon(&daemon).await;
@@ -564,7 +564,8 @@ async fn test_manager_initiator_concurrent_links() {
                     if let DeframeResult::Frame(data) = result {
                         if let Ok(pkt) = Packet::unpack(&data) {
                             if pkt.flags.packet_type == PacketType::Proof {
-                                manager.process_packet(&pkt, &data, &mut ctx);
+                                let now_ms = TestClock.now_ms();
+                                manager.process_packet(&pkt, &data, now_ms, &mut rng);
                             }
                         }
                     }
@@ -613,7 +614,6 @@ async fn test_manager_initiator_concurrent_links() {
 #[tokio::test]
 async fn test_manager_responder_accept_link() {
     let daemon = TestDaemon::start().await.expect("Failed to start daemon");
-    let mut ctx = make_context();
 
     let mut stream = connect_to_daemon(&daemon).await;
     let mut deframer = Deframer::new();
@@ -666,7 +666,7 @@ async fn test_manager_responder_accept_link() {
         &mut deframer,
         identity,
         dest_hash,
-        &mut ctx,
+        &mut OsRng,
     )
     .await
     .expect("Failed to establish responder link");
@@ -692,7 +692,6 @@ async fn test_manager_responder_accept_link() {
 #[tokio::test]
 async fn test_manager_responder_reject_link() {
     let daemon = TestDaemon::start().await.expect("Failed to start daemon");
-    let mut ctx = make_context();
 
     let mut stream = connect_to_daemon(&daemon).await;
     let mut deframer = Deframer::new();
@@ -745,7 +744,8 @@ async fn test_manager_responder_reject_link() {
 
     // Process the packet
     let packet = Packet::unpack(&raw_packet).unwrap();
-    manager.process_packet(&packet, &raw_packet, &mut ctx);
+    let now_ms = TestClock.now_ms();
+    manager.process_packet(&packet, &raw_packet, now_ms, &mut OsRng);
 
     // Check for LinkRequestReceived
     let events: Vec<_> = manager.drain_events().collect();
@@ -767,7 +767,6 @@ async fn test_manager_responder_reject_link() {
 #[tokio::test]
 async fn test_manager_responder_data_exchange() {
     let daemon = TestDaemon::start().await.expect("Failed to start daemon");
-    let mut ctx = make_context();
 
     let mut stream = connect_to_daemon(&daemon).await;
     let mut deframer = Deframer::new();
@@ -812,7 +811,7 @@ async fn test_manager_responder_data_exchange() {
         &mut deframer,
         identity,
         dest_hash,
-        &mut ctx,
+        &mut OsRng,
     )
     .await
     .expect("Failed to establish link");
@@ -839,7 +838,8 @@ async fn test_manager_responder_data_exchange() {
             .expect("Should receive data from Python");
 
     let data_pkt = Packet::unpack(&data_raw).unwrap();
-    manager.process_packet(&data_pkt, &data_raw, &mut ctx);
+    let now_ms = TestClock.now_ms();
+    manager.process_packet(&data_pkt, &data_raw, now_ms, &mut OsRng);
 
     // Check for DataReceived event
     let events: Vec<_> = manager.drain_events().collect();
@@ -861,7 +861,7 @@ async fn test_manager_responder_data_exchange() {
     // Rust sends data to Python
     let rust_message = b"Hello from Rust!";
     let data_packet = manager
-        .send(&link_id, rust_message, &mut ctx)
+        .send(&link_id, rust_message, &mut OsRng)
         .expect("Failed to build data packet");
     send_framed(&mut stream, &data_packet).await;
 
@@ -879,7 +879,6 @@ async fn test_manager_responder_data_exchange() {
 #[tokio::test]
 async fn test_manager_responder_multiple_incoming() {
     let daemon = TestDaemon::start().await.expect("Failed to start daemon");
-    let mut ctx = make_context();
 
     let mut stream = connect_to_daemon(&daemon).await;
     let mut deframer = Deframer::new();
@@ -924,7 +923,7 @@ async fn test_manager_responder_multiple_incoming() {
             &mut deframer,
             identity,
             dest_hash,
-            &mut ctx,
+            &mut OsRng,
         )
         .await
         .unwrap_or_else(|_| panic!("Failed to establish link {}", i + 1));
@@ -932,7 +931,7 @@ async fn test_manager_responder_multiple_incoming() {
         let _ = link_task.await;
 
         // Close the link before next iteration
-        manager.close(&link_id, &mut ctx);
+        manager.close(&link_id, &mut OsRng);
         let _: Vec<_> = manager.drain_events().collect();
 
         println!("Established and closed link {}", i + 1);
@@ -961,8 +960,8 @@ async fn test_manager_responder_multiple_incoming() {
 #[tokio::test]
 async fn test_rust_to_rust_via_daemon() {
     let daemon = TestDaemon::start().await.expect("Failed to start daemon");
-    let mut ctx_a = make_context();
-    let mut ctx_b = make_context();
+    let mut rng_a = OsRng;
+    let mut rng_b = OsRng;
 
     // --- Manager B connects first to receive announces ---
     let mut stream_b = connect_to_daemon(&daemon).await;
@@ -1016,8 +1015,15 @@ async fn test_rust_to_rust_via_daemon() {
     let hops = announce_info.hops;
 
     // B initiates link to A using transport headers if announce came through relay
-    let (link_id_b, link_request_packet) =
-        manager_b.initiate_with_path(dest_hash_a, &signing_key_a, transport_id, hops, &mut ctx_b);
+    let now_ms = TestClock.now_ms();
+    let (link_id_b, link_request_packet) = manager_b.initiate_with_path(
+        dest_hash_a,
+        &signing_key_a,
+        transport_id,
+        hops,
+        now_ms,
+        &mut rng_b,
+    );
 
     // If transport_id is set, we should be using HEADER_2
     if transport_id.is_some() {
@@ -1049,12 +1055,14 @@ async fn test_rust_to_rust_via_daemon() {
     );
 
     let request_pkt = Packet::unpack(&raw_request).unwrap();
-    manager_a.process_packet(&request_pkt, &raw_request, &mut ctx_a);
+    let now_ms = TestClock.now_ms();
+    manager_a.process_packet(&request_pkt, &raw_request, now_ms, &mut rng_a);
 
     // A accepts the link
     let _: Vec<_> = manager_a.drain_events().collect();
+    let now_ms = TestClock.now_ms();
     let proof_packet = manager_a
-        .accept_link(&link_id_a, identity_a, ProofStrategy::None, &mut ctx_a)
+        .accept_link(&link_id_a, identity_a, ProofStrategy::None, now_ms)
         .expect("Failed to accept link");
 
     // Send proof via A's stream
@@ -1070,7 +1078,8 @@ async fn test_rust_to_rust_via_daemon() {
     .await
     .expect("B should receive proof");
 
-    manager_b.process_packet(&proof_pkt, &[], &mut ctx_b);
+    let now_ms = TestClock.now_ms();
+    manager_b.process_packet(&proof_pkt, &[], now_ms, &mut rng_b);
 
     // B should have LinkEstablished
     let events_b: Vec<_> = manager_b.drain_events().collect();
@@ -1107,7 +1116,8 @@ async fn test_rust_to_rust_via_daemon() {
     rtt_raw.extend_from_slice(&rtt_data);
 
     let rtt_pkt = Packet::unpack(&rtt_raw).unwrap();
-    manager_a.process_packet(&rtt_pkt, &rtt_raw, &mut ctx_a);
+    let now_ms = TestClock.now_ms();
+    manager_a.process_packet(&rtt_pkt, &rtt_raw, now_ms, &mut rng_a);
 
     // A should have LinkEstablished
     let events_a: Vec<_> = manager_a.drain_events().collect();
@@ -1127,7 +1137,9 @@ async fn test_rust_to_rust_via_daemon() {
 
     // B sends to A
     let msg_b_to_a = b"Hello from B to A!";
-    let data_b = manager_b.send(&link_id_b, msg_b_to_a, &mut ctx_b).unwrap();
+    let data_b = manager_b
+        .send(&link_id_b, msg_b_to_a, &mut rng_b)
+        .unwrap();
     send_framed(&mut stream_b, &data_b).await;
 
     // A receives
@@ -1141,7 +1153,8 @@ async fn test_rust_to_rust_via_daemon() {
     .expect("A should receive data from B");
 
     let data_pkt_a = Packet::unpack(&data_raw_a).unwrap();
-    manager_a.process_packet(&data_pkt_a, &data_raw_a, &mut ctx_a);
+    let now_ms = TestClock.now_ms();
+    manager_a.process_packet(&data_pkt_a, &data_raw_a, now_ms, &mut rng_a);
 
     let events_a: Vec<_> = manager_a.drain_events().collect();
     let received_a = events_a.iter().find_map(|e| {
@@ -1156,7 +1169,9 @@ async fn test_rust_to_rust_via_daemon() {
 
     // A sends to B
     let msg_a_to_b = b"Hello from A to B!";
-    let data_a = manager_a.send(&link_id_a, msg_a_to_b, &mut ctx_a).unwrap();
+    let data_a = manager_a
+        .send(&link_id_a, msg_a_to_b, &mut rng_a)
+        .unwrap();
     send_framed(&mut stream_a, &data_a).await;
 
     // B receives
@@ -1170,7 +1185,8 @@ async fn test_rust_to_rust_via_daemon() {
     .expect("B should receive data from A");
 
     let data_pkt_b = Packet::unpack(&data_raw_b).unwrap();
-    manager_b.process_packet(&data_pkt_b, &data_raw_b, &mut ctx_b);
+    let now_ms = TestClock.now_ms();
+    manager_b.process_packet(&data_pkt_b, &data_raw_b, now_ms, &mut rng_b);
 
     let events_b: Vec<_> = manager_b.drain_events().collect();
     let received_b = events_b.iter().find_map(|e| {
@@ -1193,8 +1209,8 @@ async fn test_rust_to_rust_via_daemon() {
 #[tokio::test]
 async fn test_rust_to_rust_multiple_messages() {
     let daemon = TestDaemon::start().await.expect("Failed to start daemon");
-    let mut ctx_a = make_context();
-    let mut ctx_b = make_context();
+    let mut rng_a = OsRng;
+    let mut rng_b = OsRng;
 
     // --- B connects first to receive announces ---
     let mut stream_b = connect_to_daemon(&daemon).await;
@@ -1240,8 +1256,15 @@ async fn test_rust_to_rust_multiple_messages() {
     );
 
     // Establish link with transport headers
-    let (link_id_b, link_request_packet) =
-        manager_b.initiate_with_path(dest_hash_a, &signing_key_a, transport_id, hops, &mut ctx_b);
+    let now_ms = TestClock.now_ms();
+    let (link_id_b, link_request_packet) = manager_b.initiate_with_path(
+        dest_hash_a,
+        &signing_key_a,
+        transport_id,
+        hops,
+        now_ms,
+        &mut rng_b,
+    );
 
     // Verify HEADER_2 is used when transport_id is set
     if transport_id.is_some() {
@@ -1264,11 +1287,13 @@ async fn test_rust_to_rust_multiple_messages() {
     let link_id_a = LinkId::new(link_id_a_bytes);
 
     let request_pkt = Packet::unpack(&raw_request).unwrap();
-    manager_a.process_packet(&request_pkt, &raw_request, &mut ctx_a);
+    let now_ms = TestClock.now_ms();
+    manager_a.process_packet(&request_pkt, &raw_request, now_ms, &mut rng_a);
     let _: Vec<_> = manager_a.drain_events().collect();
 
+    let now_ms = TestClock.now_ms();
     let proof_packet = manager_a
-        .accept_link(&link_id_a, identity_a, ProofStrategy::None, &mut ctx_a)
+        .accept_link(&link_id_a, identity_a, ProofStrategy::None, now_ms)
         .unwrap();
     send_framed(&mut stream_a, &proof_packet).await;
 
@@ -1280,7 +1305,8 @@ async fn test_rust_to_rust_multiple_messages() {
     )
     .await
     .unwrap();
-    manager_b.process_packet(&proof_pkt, &[], &mut ctx_b);
+    let now_ms = TestClock.now_ms();
+    manager_b.process_packet(&proof_pkt, &[], now_ms, &mut rng_b);
     let _: Vec<_> = manager_b.drain_events().collect();
 
     let rtt_packet = manager_b.take_pending_rtt_packet(&link_id_b).unwrap();
@@ -1303,7 +1329,8 @@ async fn test_rust_to_rust_multiple_messages() {
     rtt_raw.extend_from_slice(&rtt_data);
 
     let rtt_pkt = Packet::unpack(&rtt_raw).unwrap();
-    manager_a.process_packet(&rtt_pkt, &rtt_raw, &mut ctx_a);
+    let now_ms = TestClock.now_ms();
+    manager_a.process_packet(&rtt_pkt, &rtt_raw, now_ms, &mut rng_a);
     let _: Vec<_> = manager_a.drain_events().collect();
 
     // Exchange 10+ messages in both directions
@@ -1314,14 +1341,14 @@ async fn test_rust_to_rust_multiple_messages() {
         // B -> A
         let msg = format!("Message {} from B", i);
         let data = manager_b
-            .send(&link_id_b, msg.as_bytes(), &mut ctx_b)
+            .send(&link_id_b, msg.as_bytes(), &mut rng_b)
             .unwrap();
         send_framed(&mut stream_b, &data).await;
 
         // A -> B
         let msg = format!("Message {} from A", i);
         let data = manager_a
-            .send(&link_id_a, msg.as_bytes(), &mut ctx_a)
+            .send(&link_id_a, msg.as_bytes(), &mut rng_a)
             .unwrap();
         send_framed(&mut stream_a, &data).await;
 
@@ -1343,7 +1370,8 @@ async fn test_rust_to_rust_multiple_messages() {
                             if pkt.flags.packet_type == PacketType::Data
                                 && pkt.context == PacketContext::None
                             {
-                                manager_a.process_packet(&pkt, &data, &mut ctx_a);
+                                let now_ms = TestClock.now_ms();
+                                manager_a.process_packet(&pkt, &data, now_ms, &mut rng_a);
                             }
                         }
                     }
@@ -1360,7 +1388,8 @@ async fn test_rust_to_rust_multiple_messages() {
                             if pkt.flags.packet_type == PacketType::Data
                                 && pkt.context == PacketContext::None
                             {
-                                manager_b.process_packet(&pkt, &data, &mut ctx_b);
+                                let now_ms = TestClock.now_ms();
+                                manager_b.process_packet(&pkt, &data, now_ms, &mut rng_b);
                             }
                         }
                     }
@@ -1406,22 +1435,23 @@ async fn test_rust_to_rust_multiple_messages() {
 /// Test handshake timeout for initiator.
 #[tokio::test]
 async fn test_manager_handshake_timeout() {
-    let mut ctx = mock_context(1_000_000);
+    let clock = MockClock::new(1_000_000);
+    let mut rng = OsRng;
     let mut manager = LinkManager::new();
 
     let dest_hash = [0x42; 16];
     let signing_key = [0x33; 32];
 
     // Initiate link to non-existent destination
-    let (link_id, _packet) = manager.initiate(dest_hash.into(), &signing_key, &mut ctx);
+    let (link_id, _packet) = manager.initiate(dest_hash.into(), &signing_key, clock.now_ms(), &mut rng);
 
     // Verify pending
     assert_eq!(manager.pending_link_count(), 1);
     assert!(manager.link(&link_id).is_some());
 
     // Advance time past 30s timeout
-    ctx.clock.advance(31_000);
-    manager.poll(ctx.clock.now_ms(), &mut ctx);
+    clock.advance(31_000);
+    manager.poll(clock.now_ms(), &mut rng);
 
     // Link should be removed
     assert!(manager.link(&link_id).is_none());
@@ -1443,17 +1473,19 @@ async fn test_manager_handshake_timeout() {
 /// Test sending on inactive link returns error.
 #[tokio::test]
 async fn test_manager_send_on_inactive_link() {
-    let mut ctx = make_context();
+    let mut rng = OsRng;
     let mut manager = LinkManager::new();
 
     let dest_hash = [0x42; 16];
     let signing_key = [0x33; 32];
 
+    let now_ms = TestClock.now_ms();
+
     // Initiate link (pending, not active)
-    let (link_id, _packet) = manager.initiate(dest_hash.into(), &signing_key, &mut ctx);
+    let (link_id, _packet) = manager.initiate(dest_hash.into(), &signing_key, now_ms, &mut rng);
 
     // Try to send - should fail
-    let result = manager.send(&link_id, b"test data", &mut ctx);
+    let result = manager.send(&link_id, b"test data", &mut rng);
     assert!(
         result.is_err(),
         "Should not be able to send on pending link"
@@ -1465,22 +1497,24 @@ async fn test_manager_send_on_inactive_link() {
 /// Test operations on unknown link ID.
 #[tokio::test]
 async fn test_manager_operations_on_unknown_link() {
-    let mut ctx = make_context();
+    let mut rng = OsRng;
     let mut manager = LinkManager::new();
-    let identity = Identity::generate(&mut ctx);
+    let identity = Identity::generate_with_rng(&mut rng);
 
     let unknown_link_id = LinkId::new([0xFF; 16]);
 
     // send() on unknown link
-    let send_result = manager.send(&unknown_link_id, b"test", &mut ctx);
+    let send_result = manager.send(&unknown_link_id, b"test", &mut rng);
     assert!(send_result.is_err());
 
     // accept_link() on unknown link
-    let accept_result = manager.accept_link(&unknown_link_id, &identity, ProofStrategy::None, &mut ctx);
+    let now_ms = TestClock.now_ms();
+    let accept_result =
+        manager.accept_link(&unknown_link_id, &identity, ProofStrategy::None, now_ms);
     assert!(accept_result.is_err());
 
     // close() on unknown link should not panic
-    manager.close(&unknown_link_id, &mut ctx);
+    manager.close(&unknown_link_id, &mut rng);
 
     // link() returns None
     assert!(manager.link(&unknown_link_id).is_none());
@@ -1494,15 +1528,16 @@ async fn test_manager_operations_on_unknown_link() {
 /// Test responder timeout when RTT is not received.
 #[tokio::test]
 async fn test_manager_responder_timeout() {
-    let mut ctx = mock_context(1_000_000);
-    let identity = Identity::generate(&mut ctx);
+    let clock = MockClock::new(1_000_000);
+    let mut rng = OsRng;
+    let identity = Identity::generate_with_rng(&mut rng);
 
     let mut manager = LinkManager::new();
     let dest_hash = [0x42; 16];
     manager.register_destination(dest_hash.into());
 
     // Simulate receiving a link request
-    let initiator_link = reticulum_core::link::Link::new_outgoing(dest_hash.into(), &mut ctx);
+    let initiator_link = reticulum_core::link::Link::new_outgoing(dest_hash.into(), &mut rng);
     let request_data = initiator_link.create_link_request();
 
     // Build raw packet
@@ -1516,18 +1551,20 @@ async fn test_manager_responder_timeout() {
     let link_id = reticulum_core::link::Link::calculate_link_id(&raw_packet);
 
     let packet = Packet::unpack(&raw_packet).unwrap();
-    manager.process_packet(&packet, &raw_packet, &mut ctx);
+    manager.process_packet(&packet, &raw_packet, clock.now_ms(), &mut rng);
 
     // Accept the link
     let _: Vec<_> = manager.drain_events().collect();
-    let _proof = manager.accept_link(&link_id, &identity, ProofStrategy::None, &mut ctx).unwrap();
+    let _proof = manager
+        .accept_link(&link_id, &identity, ProofStrategy::None, clock.now_ms())
+        .unwrap();
 
     // Verify pending incoming
     assert_eq!(manager.pending_link_count(), 1);
 
     // Advance time past timeout (don't send RTT)
-    ctx.clock.advance(31_000);
-    manager.poll(ctx.clock.now_ms(), &mut ctx);
+    clock.advance(31_000);
+    manager.poll(clock.now_ms(), &mut rng);
 
     // Link should be timed out
     assert!(manager.link(&link_id).is_none());
@@ -1552,7 +1589,7 @@ async fn test_manager_responder_timeout() {
 #[tokio::test]
 async fn test_manager_many_simultaneous_links() {
     let daemon = TestDaemon::start().await.expect("Failed to start daemon");
-    let mut ctx = make_context();
+    let mut rng = OsRng;
 
     // Register 10 destinations
     let mut destinations = Vec::new();
@@ -1575,7 +1612,9 @@ async fn test_manager_many_simultaneous_links() {
         let signing_key: [u8; 32] = pub_key_bytes[32..64].try_into().unwrap();
         let dest_hash: [u8; 16] = hex::decode(&dest.hash).unwrap().try_into().unwrap();
 
-        let (link_id, packet) = manager.initiate(dest_hash.into(), &signing_key, &mut ctx);
+        let now_ms = TestClock.now_ms();
+        let (link_id, packet) =
+            manager.initiate(dest_hash.into(), &signing_key, now_ms, &mut rng);
         link_ids.push(link_id);
         send_framed(&mut stream, &packet).await;
     }
@@ -1595,7 +1634,8 @@ async fn test_manager_many_simultaneous_links() {
                     if let DeframeResult::Frame(data) = result {
                         if let Ok(pkt) = Packet::unpack(&data) {
                             if pkt.flags.packet_type == PacketType::Proof {
-                                manager.process_packet(&pkt, &data, &mut ctx);
+                                let now_ms = TestClock.now_ms();
+                                manager.process_packet(&pkt, &data, now_ms, &mut rng);
                             }
                         }
                     }
@@ -1610,7 +1650,8 @@ async fn test_manager_many_simultaneous_links() {
             }
         }
 
-        manager.poll(ctx.clock.now_ms(), &mut ctx);
+        let now_ms = TestClock.now_ms();
+        manager.poll(now_ms, &mut rng);
     }
 
     // Send RTT for all established links
@@ -1637,7 +1678,6 @@ async fn test_manager_many_simultaneous_links() {
 #[tokio::test]
 async fn test_manager_rapid_data_exchange() {
     let daemon = TestDaemon::start().await.expect("Failed to start daemon");
-    let mut ctx = make_context();
 
     let mut stream = connect_to_daemon(&daemon).await;
     let mut deframer = Deframer::new();
@@ -1649,7 +1689,7 @@ async fn test_manager_rapid_data_exchange() {
         &daemon,
         &mut stream,
         &mut deframer,
-        &mut ctx,
+        &mut OsRng,
     )
     .await
     .expect("Failed to establish link");
@@ -1658,7 +1698,7 @@ async fn test_manager_rapid_data_exchange() {
     for i in 0..50 {
         let data = format!("Rapid message {}", i);
         let packet = manager
-            .send(&link_id, data.as_bytes(), &mut ctx)
+            .send(&link_id, data.as_bytes(), &mut OsRng)
             .expect("Failed to build packet");
         send_framed(&mut stream, &packet).await;
     }
@@ -1682,7 +1722,6 @@ async fn test_manager_rapid_data_exchange() {
 #[tokio::test]
 async fn test_manager_large_payloads() {
     let daemon = TestDaemon::start().await.expect("Failed to start daemon");
-    let mut ctx = make_context();
 
     let mut stream = connect_to_daemon(&daemon).await;
     let mut deframer = Deframer::new();
@@ -1694,7 +1733,7 @@ async fn test_manager_large_payloads() {
         &daemon,
         &mut stream,
         &mut deframer,
-        &mut ctx,
+        &mut OsRng,
     )
     .await
     .expect("Failed to establish link");
@@ -1705,7 +1744,7 @@ async fn test_manager_large_payloads() {
     for size in sizes {
         let data: Vec<u8> = (0..size).map(|i| (i & 0xFF) as u8).collect();
         let packet = manager
-            .send(&link_id, &data, &mut ctx)
+            .send(&link_id, &data, &mut OsRng)
             .unwrap_or_else(|_| panic!("Failed to build {} byte packet", size));
         send_framed(&mut stream, &packet).await;
         println!("Sent {} byte payload", size);
@@ -1744,7 +1783,7 @@ async fn test_manager_large_payloads() {
 #[tokio::test]
 async fn test_manager_interleaved_operations() {
     let daemon = TestDaemon::start().await.expect("Failed to start daemon");
-    let mut ctx = make_context();
+    let mut rng = OsRng;
 
     // Register 3 destinations
     let dest1 = daemon
@@ -1767,25 +1806,26 @@ async fn test_manager_interleaved_operations() {
     // Helper to initiate
     let initiate = |manager: &mut LinkManager,
                     dest: &DestinationInfo,
-                    ctx: &mut PlatformContext<OsRng, TestClock, NoStorage>|
+                    rng: &mut OsRng|
      -> (LinkId, Vec<u8>) {
         let pub_key_bytes = hex::decode(&dest.public_key).unwrap();
         let signing_key: [u8; 32] = pub_key_bytes[32..64].try_into().unwrap();
         let dest_hash: [u8; 16] = hex::decode(&dest.hash).unwrap().try_into().unwrap();
-        manager.initiate(dest_hash.into(), &signing_key, ctx)
+        let now_ms = TestClock.now_ms();
+        manager.initiate(dest_hash.into(), &signing_key, now_ms, rng)
     };
 
     // Interleave: initiate 1, initiate 2, wait for proof 1, initiate 3, etc.
-    let (link_id1, packet1) = initiate(&mut manager, &dest1, &mut ctx);
+    let (link_id1, packet1) = initiate(&mut manager, &dest1, &mut rng);
     send_framed(&mut stream, &packet1).await;
 
-    let (link_id2, packet2) = initiate(&mut manager, &dest2, &mut ctx);
+    let (link_id2, packet2) = initiate(&mut manager, &dest2, &mut rng);
     send_framed(&mut stream, &packet2).await;
 
     // Receive some proofs
     tokio::time::sleep(Duration::from_millis(500)).await;
 
-    let (link_id3, packet3) = initiate(&mut manager, &dest3, &mut ctx);
+    let (link_id3, packet3) = initiate(&mut manager, &dest3, &mut rng);
     send_framed(&mut stream, &packet3).await;
 
     // Process all proofs
@@ -1802,7 +1842,8 @@ async fn test_manager_interleaved_operations() {
                     if let DeframeResult::Frame(data) = result {
                         if let Ok(pkt) = Packet::unpack(&data) {
                             if pkt.flags.packet_type == PacketType::Proof {
-                                manager.process_packet(&pkt, &data, &mut ctx);
+                                let now_ms = TestClock.now_ms();
+                                manager.process_packet(&pkt, &data, now_ms, &mut rng);
                             }
                         }
                     }
@@ -1832,7 +1873,7 @@ async fn test_manager_interleaved_operations() {
     for (i, link_id) in [link_id1, link_id2, link_id3].iter().enumerate() {
         if manager.is_active(link_id) {
             let data = format!("Data on link {}", i + 1);
-            if let Ok(packet) = manager.send(link_id, data.as_bytes(), &mut ctx) {
+            if let Ok(packet) = manager.send(link_id, data.as_bytes(), &mut rng) {
                 send_framed(&mut stream, &packet).await;
                 sent_count += 1;
             }
@@ -1841,7 +1882,7 @@ async fn test_manager_interleaved_operations() {
 
     // Close one active link
     if manager.is_active(&link_id2) {
-        manager.close(&link_id2, &mut ctx);
+        manager.close(&link_id2, &mut rng);
     }
 
     tokio::time::sleep(Duration::from_millis(300)).await;

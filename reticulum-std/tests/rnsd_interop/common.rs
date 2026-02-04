@@ -14,13 +14,12 @@ use reticulum_core::link::{Link, LinkId};
 use reticulum_core::packet::{
     HeaderType, Packet, PacketContext, PacketData, PacketFlags, PacketType, TransportType,
 };
-use reticulum_core::traits::{Clock, NoStorage, PlatformContext};
+use reticulum_core::traits::Clock;
 use reticulum_core::DestinationHash;
 use reticulum_std::interfaces::hdlc::{frame, DeframeResult, Deframer};
-use reticulum_std::SystemClock;
 
 // =========================================================================
-// Shared test context helpers
+// Shared test helpers
 // =========================================================================
 
 /// Real-time clock for tests that need actual time
@@ -35,22 +34,9 @@ impl Clock for TestClock {
     }
 }
 
-/// Create a platform context using TestClock for tests
-pub fn make_context() -> PlatformContext<OsRng, TestClock, NoStorage> {
-    PlatformContext {
-        rng: OsRng,
-        clock: TestClock,
-        storage: NoStorage,
-    }
-}
-
-/// Create a platform context for internal helpers that use SystemClock
-fn make_system_context() -> PlatformContext<OsRng, SystemClock, NoStorage> {
-    PlatformContext {
-        rng: OsRng,
-        clock: SystemClock::new(),
-        storage: NoStorage,
-    }
+/// Get current time in milliseconds (convenience for tests)
+pub fn now_ms() -> u64 {
+    TestClock.now_ms()
 }
 
 /// Parsed announce data for verification
@@ -154,10 +140,12 @@ pub async fn build_and_send_announce(
     )
     .expect("Failed to create destination");
 
-    let mut ctx = make_system_context();
-    let packet = dest
-        .announce(Some(app_data), &mut ctx)
-        .expect("Failed to create announce");
+    let packet = {
+        use reticulum_core::traits::{NoStorage, PlatformContext};
+        let mut ctx = PlatformContext { rng: OsRng, clock: TestClock, storage: NoStorage };
+        dest.announce(Some(app_data), &mut ctx)
+            .expect("Failed to create announce")
+    };
 
     let mut raw_packet = [0u8; MTU];
     let size = packet.pack(&mut raw_packet).expect("Failed to pack packet");
@@ -188,10 +176,12 @@ pub fn build_announce_raw(
     )
     .expect("Failed to create destination");
 
-    let mut ctx = make_system_context();
-    let packet = dest
-        .announce(Some(app_data), &mut ctx)
-        .expect("Failed to create announce");
+    let packet = {
+        use reticulum_core::traits::{NoStorage, PlatformContext};
+        let mut ctx = PlatformContext { rng: OsRng, clock: TestClock, storage: NoStorage };
+        dest.announce(Some(app_data), &mut ctx)
+            .expect("Failed to create announce")
+    };
 
     let mut raw_packet = [0u8; MTU];
     let size = packet.pack(&mut raw_packet).expect("Failed to pack packet");
@@ -816,10 +806,12 @@ pub async fn setup_rust_destination(
     )
     .expect("Failed to create destination");
 
-    let mut ctx = make_context();
-    let packet = dest
-        .announce(Some(app_data), &mut ctx)
-        .expect("Failed to create announce");
+    let packet = {
+        use reticulum_core::traits::{NoStorage, PlatformContext};
+        let mut ctx = PlatformContext { rng: OsRng, clock: TestClock, storage: NoStorage };
+        dest.announce(Some(app_data), &mut ctx)
+            .expect("Failed to create announce")
+    };
 
     let mut raw_packet = [0u8; MTU];
     let size = packet.pack(&mut raw_packet).expect("Failed to pack packet");

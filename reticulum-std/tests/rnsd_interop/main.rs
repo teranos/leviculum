@@ -49,5 +49,6 @@ mod protocol_tests;
 mod ratchet_rotation_tests;
 mod ratchet_tests;
 mod responder_tests;
+mod rust_relay_tests;
 mod stress_tests;
 mod transport_interop_tests;

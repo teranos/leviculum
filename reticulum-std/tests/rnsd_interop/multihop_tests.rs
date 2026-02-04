@@ -111,10 +111,11 @@ async fn test_two_hop_announce_propagation() {
     )
     .expect("Failed to create destination");
 
-    let mut ctx = make_context();
-    let packet = dest
-        .announce(Some(b"two-hop-test"), &mut ctx)
-        .expect("Failed to create announce");
+    let packet = {
+        use reticulum_core::traits::{NoStorage, PlatformContext};
+        let mut ctx = PlatformContext { rng: OsRng, clock: crate::common::TestClock, storage: NoStorage };
+        dest.announce(Some(b"two-hop-test"), &mut ctx).expect("Failed to create announce")
+    };
 
     // Send announce to entry daemon
     let mut stream = connect_to_daemon(topology.entry_daemon()).await;
@@ -235,10 +236,11 @@ async fn test_three_hop_topology_setup() {
     )
     .expect("Failed to create destination");
 
-    let mut ctx = make_context();
-    let packet = dest
-        .announce(Some(b"three-hop-test"), &mut ctx)
-        .expect("Failed to create announce");
+    let packet = {
+        use reticulum_core::traits::{NoStorage, PlatformContext};
+        let mut ctx = PlatformContext { rng: OsRng, clock: crate::common::TestClock, storage: NoStorage };
+        dest.announce(Some(b"three-hop-test"), &mut ctx).expect("Failed to create announce")
+    };
 
     // Send announce to entry daemon
     let mut stream = connect_to_daemon(topology.entry_daemon()).await;
@@ -321,7 +323,7 @@ async fn test_destination_in_exit_daemon() {
     let pub_key_bytes = hex::decode(&dest_info.public_key).unwrap();
     let signing_key_bytes: [u8; 32] = pub_key_bytes[32..64].try_into().unwrap();
 
-    let mut link = Link::new_outgoing_with_rng(dest_hash.into(), &mut OsRng);
+    let mut link = Link::new_outgoing(dest_hash.into(), &mut OsRng);
     link.set_destination_keys(&signing_key_bytes).unwrap();
 
     let raw_packet = link.build_link_request_packet();
@@ -355,8 +357,7 @@ async fn test_destination_in_exit_daemon() {
     println!("Direct link to exit daemon established!");
 
     // Send RTT packet
-    let mut ctx = make_context();
-    let rtt_packet = link.build_rtt_packet(0.05, &mut ctx).unwrap();
+    let rtt_packet = link.build_rtt_packet(0.05, &mut OsRng).unwrap();
     framed.clear();
     frame(&rtt_packet, &mut framed);
     stream.write_all(&framed).await.unwrap();
@@ -366,7 +367,7 @@ async fn test_destination_in_exit_daemon() {
     // Send a test message
     let test_msg = b"Direct message to exit daemon";
     let data_packet = link
-        .build_data_packet(test_msg, &mut ctx)
+        .build_data_packet(test_msg, &mut OsRng)
         .expect("Failed to build data packet");
 
     framed.clear();
@@ -417,10 +418,11 @@ async fn test_path_table_in_topology() {
     )
     .expect("Failed to create destination");
 
-    let mut ctx = make_context();
-    let packet = dest
-        .announce(Some(b"path-test"), &mut ctx)
-        .expect("Failed to create announce");
+    let packet = {
+        use reticulum_core::traits::{NoStorage, PlatformContext};
+        let mut ctx = PlatformContext { rng: OsRng, clock: crate::common::TestClock, storage: NoStorage };
+        dest.announce(Some(b"path-test"), &mut ctx).expect("Failed to create announce")
+    };
 
     // Send announce to entry daemon
     let mut stream = connect_to_daemon(topology.entry_daemon()).await;
@@ -556,7 +558,7 @@ async fn test_link_table_queries_in_topology() {
     let pub_key_bytes = hex::decode(&dest_info.public_key).unwrap();
     let signing_key_bytes: [u8; 32] = pub_key_bytes[32..64].try_into().unwrap();
 
-    let mut link = Link::new_outgoing_with_rng(dest_hash.into(), &mut OsRng);
+    let mut link = Link::new_outgoing(dest_hash.into(), &mut OsRng);
     link.set_destination_keys(&signing_key_bytes).unwrap();
 
     let raw_packet = link.build_link_request_packet();
@@ -583,8 +585,7 @@ async fn test_link_table_queries_in_topology() {
         .expect("Proof should validate");
 
     // Send RTT to finalize link
-    let mut ctx = make_context();
-    let rtt_packet = link.build_rtt_packet(0.05, &mut ctx).unwrap();
+    let rtt_packet = link.build_rtt_packet(0.05, &mut OsRng).unwrap();
     framed.clear();
     frame(&rtt_packet, &mut framed);
     stream.write_all(&framed).await.unwrap();

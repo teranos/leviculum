@@ -270,13 +270,13 @@ async fn test_local_rebroadcast_suppression() {
     println!("SUCCESS: Local rebroadcast suppression test completed");
 }
 
-/// Test 3e: Verify hop count accuracy across a 5-hop linear chain.
+/// Test 3e: Verify hop count accuracy across a 5-daemon linear chain.
 ///
 /// Topology: D0 <-> D1 <-> D2 <-> D3 <-> D4
 ///
-/// D4 announces. Each daemon should have incrementing hop counts.
+/// D4 announces with hops=0. Each relay increments the hop count by 1,
+/// so D3 should see hops=1, D2=2, D1=3, D0=4.
 #[tokio::test]
-#[ignore] // Long test: 5 daemons + multi-hop propagation delays
 async fn test_announce_rebroadcast_hop_count_accuracy() {
     let topology = DaemonTopology::linear(5)
         .await
@@ -306,14 +306,14 @@ async fn test_announce_rebroadcast_hop_count_accuracy() {
         hex::encode(dest_hash)
     );
 
-    // Wait for full propagation (up to 4 relays × ~6s each)
+    // Wait for full propagation (up to 4 relays)
     let propagation_timeout = Duration::from_secs(35);
 
     // Wait for the furthest daemon (D0) to have the path
     let d0_has_path =
         wait_for_path_on_daemon(topology.entry_daemon(), &dest_hash, propagation_timeout).await;
 
-    // Check hop counts at each daemon
+    // Print hop counts at each daemon for diagnostics
     for i in 0..5 {
         let daemon = topology.daemon(i).unwrap();
         let paths = daemon.get_path_table().await.unwrap_or_default();
@@ -326,20 +326,27 @@ async fn test_announce_rebroadcast_hop_count_accuracy() {
         }
     }
 
-    if d0_has_path {
-        let d0_paths = topology
-            .entry_daemon()
-            .get_path_table()
-            .await
-            .unwrap();
-        let d0_path = d0_paths.get(&hex::encode(dest_hash)).unwrap();
-        println!(
-            "D0 (furthest) hops: {:?} (expected ~4)",
-            d0_path.hops
-        );
-        assert!(
-            d0_path.hops.unwrap_or(0) >= 3,
-            "D0 should have hops >= 3 for 4-relay chain"
+    // Propagation to D0 must succeed — fail hard if it didn't
+    assert!(
+        d0_has_path,
+        "D0 should have received announce propagated from D4 through 4 relays"
+    );
+
+    // Verify exact hop counts at each intermediate daemon and D0
+    // D4 announces with hops=0; each relay adds 1
+    let expected_hops: [(usize, u8); 4] = [(3, 1), (2, 2), (1, 3), (0, 4)];
+
+    for (daemon_idx, expected) in &expected_hops {
+        let daemon = topology.daemon(*daemon_idx).unwrap();
+        let paths = daemon.get_path_table().await.unwrap();
+        let path = paths
+            .get(&hex::encode(dest_hash))
+            .unwrap_or_else(|| panic!("D{} should have a path entry", daemon_idx));
+        let actual = path.hops.unwrap_or(0);
+        assert_eq!(
+            actual, *expected,
+            "D{} should have hops={}, got hops={}",
+            daemon_idx, expected, actual
         );
     }
 
@@ -450,7 +457,7 @@ async fn test_link_through_single_python_relay() {
     let pub_key_bytes = hex::decode(&dest_info.public_key).unwrap();
     let signing_key_bytes: [u8; 32] = pub_key_bytes[32..64].try_into().unwrap();
 
-    let mut link = Link::new_outgoing_with_rng(dest_hash.into(), &mut OsRng);
+    let mut link = Link::new_outgoing(dest_hash.into(), &mut OsRng);
     link.set_destination_keys(&signing_key_bytes).unwrap();
 
     let raw_packet = link.build_link_request_packet();
@@ -468,8 +475,7 @@ async fn test_link_through_single_python_relay() {
     assert_eq!(link.state(), LinkState::Active);
 
     // Send RTT
-    let mut ctx = make_context();
-    let rtt_packet = link.build_rtt_packet(0.05, &mut ctx).unwrap();
+    let rtt_packet = link.build_rtt_packet(0.05, &mut OsRng).unwrap();
     send_framed(&mut stream, &rtt_packet).await;
     tokio::time::sleep(Duration::from_millis(300)).await;
 
@@ -487,7 +493,7 @@ async fn test_link_through_single_python_relay() {
     // Send data and verify echo
     let test_msg = b"Hello through relay!";
     let data_packet = link
-        .build_data_packet(test_msg, &mut ctx)
+        .build_data_packet(test_msg, &mut OsRng)
         .expect("Failed to build data packet");
     send_framed(&mut stream, &data_packet).await;
 
@@ -565,7 +571,7 @@ async fn test_link_through_two_python_relays() {
     // Build link request with transport routing
     let signing_key = announce_info.signing_key().expect("Announce should have signing key");
 
-    let mut link = Link::new_outgoing_with_rng(dest_hash, &mut OsRng);
+    let mut link = Link::new_outgoing(dest_hash, &mut OsRng);
     link.set_destination_keys(&signing_key).unwrap();
 
     let raw_request = link.build_link_request_packet_with_transport(
@@ -595,8 +601,7 @@ async fn test_link_through_two_python_relays() {
     println!("Link established through two relays!");
 
     // Send RTT to activate data exchange
-    let mut ctx = make_context();
-    let rtt_packet = link.build_rtt_packet(0.05, &mut ctx).unwrap();
+    let rtt_packet = link.build_rtt_packet(0.05, &mut OsRng).unwrap();
     send_framed(&mut stream_a, &rtt_packet).await;
     tokio::time::sleep(Duration::from_millis(500)).await;
 
@@ -608,7 +613,7 @@ async fn test_link_through_two_python_relays() {
     // Send data and verify echo through two relays
     let test_msg = b"Data through two relays!";
     let data_pkt = link
-        .build_data_packet(test_msg, &mut ctx)
+        .build_data_packet(test_msg, &mut OsRng)
         .expect("Failed to build data packet");
     send_framed(&mut stream_a, &data_pkt).await;
 
@@ -644,7 +649,7 @@ async fn test_link_data_routing_bidirectional() {
     let mut stream = connect_to_daemon(&daemon).await;
     let mut deframer = Deframer::new();
 
-    let mut link = Link::new_outgoing_with_rng(dest_hash.into(), &mut OsRng);
+    let mut link = Link::new_outgoing(dest_hash.into(), &mut OsRng);
     link.set_destination_keys(&signing_key).unwrap();
     let req = link.build_link_request_packet();
     send_framed(&mut stream, &req).await;
@@ -656,8 +661,7 @@ async fn test_link_data_routing_bidirectional() {
     link.process_proof(proof.data.as_slice()).unwrap();
     assert_eq!(link.state(), LinkState::Active);
 
-    let mut ctx = make_context();
-    let rtt = link.build_rtt_packet(0.05, &mut ctx).unwrap();
+    let rtt = link.build_rtt_packet(0.05, &mut OsRng).unwrap();
     send_framed(&mut stream, &rtt).await;
     tokio::time::sleep(Duration::from_millis(300)).await;
 
@@ -666,7 +670,7 @@ async fn test_link_data_routing_bidirectional() {
     let messages: Vec<&[u8]> = vec![b"Message 1", b"Message 2", b"Message 3"];
 
     for msg in &messages {
-        let data_pkt = link.build_data_packet(msg, &mut ctx).unwrap();
+        let data_pkt = link.build_data_packet(msg, &mut OsRng).unwrap();
         send_framed(&mut stream, &data_pkt).await;
 
         let echoed =
@@ -702,7 +706,6 @@ async fn test_multiple_links_through_same_relay() {
     // Connect Rust-A
     let mut stream = connect_to_daemon(&daemon).await;
     let mut deframer = Deframer::new();
-    let mut ctx = make_context();
 
     // Link to dest1
     let dest1_hash: [u8; TRUNCATED_HASHBYTES] =
@@ -710,7 +713,7 @@ async fn test_multiple_links_through_same_relay() {
     let pub_key1 = hex::decode(&dest1_info.public_key).unwrap();
     let signing_key1: [u8; 32] = pub_key1[32..64].try_into().unwrap();
 
-    let mut link1 = Link::new_outgoing_with_rng(dest1_hash.into(), &mut OsRng);
+    let mut link1 = Link::new_outgoing(dest1_hash.into(), &mut OsRng);
     link1.set_destination_keys(&signing_key1).unwrap();
     let req1 = link1.build_link_request_packet();
     send_framed(&mut stream, &req1).await;
@@ -724,7 +727,7 @@ async fn test_multiple_links_through_same_relay() {
         .expect("Proof1 should validate");
     assert_eq!(link1.state(), LinkState::Active);
 
-    let rtt1 = link1.build_rtt_packet(0.05, &mut ctx).unwrap();
+    let rtt1 = link1.build_rtt_packet(0.05, &mut OsRng).unwrap();
     send_framed(&mut stream, &rtt1).await;
     tokio::time::sleep(Duration::from_millis(300)).await;
 
@@ -734,7 +737,7 @@ async fn test_multiple_links_through_same_relay() {
     let pub_key2 = hex::decode(&dest2_info.public_key).unwrap();
     let signing_key2: [u8; 32] = pub_key2[32..64].try_into().unwrap();
 
-    let mut link2 = Link::new_outgoing_with_rng(dest2_hash.into(), &mut OsRng);
+    let mut link2 = Link::new_outgoing(dest2_hash.into(), &mut OsRng);
     link2.set_destination_keys(&signing_key2).unwrap();
     let req2 = link2.build_link_request_packet();
     send_framed(&mut stream, &req2).await;
@@ -748,7 +751,7 @@ async fn test_multiple_links_through_same_relay() {
         .expect("Proof2 should validate");
     assert_eq!(link2.state(), LinkState::Active);
 
-    let rtt2 = link2.build_rtt_packet(0.05, &mut ctx).unwrap();
+    let rtt2 = link2.build_rtt_packet(0.05, &mut OsRng).unwrap();
     send_framed(&mut stream, &rtt2).await;
     tokio::time::sleep(Duration::from_millis(300)).await;
 
@@ -758,12 +761,12 @@ async fn test_multiple_links_through_same_relay() {
 
     // Send data on link1
     let msg1 = b"Data for dest1";
-    let data1 = link1.build_data_packet(msg1, &mut ctx).unwrap();
+    let data1 = link1.build_data_packet(msg1, &mut OsRng).unwrap();
     send_framed(&mut stream, &data1).await;
 
     // Send data on link2
     let msg2 = b"Data for dest2";
-    let data2 = link2.build_data_packet(msg2, &mut ctx).unwrap();
+    let data2 = link2.build_data_packet(msg2, &mut OsRng).unwrap();
     send_framed(&mut stream, &data2).await;
 
     // Receive echoes (may arrive in either order)
@@ -1132,7 +1135,7 @@ async fn test_full_discovery_and_link_cycle() {
     // Create link with transport routing
     let signing_key = announce_info.signing_key().expect("Announce should have signing key");
 
-    let mut link = Link::new_outgoing_with_rng(dest_hash, &mut OsRng);
+    let mut link = Link::new_outgoing(dest_hash, &mut OsRng);
     link.set_destination_keys(&signing_key).unwrap();
 
     let raw_request = link.build_link_request_packet_with_transport(
@@ -1157,8 +1160,8 @@ async fn test_full_discovery_and_link_cycle() {
 
     println!("Step 4: Link established through 3 daemons! Sending RTT...");
 
-    let mut ctx = make_context();
-    let rtt = link.build_rtt_packet(0.05, &mut ctx).unwrap();
+    
+    let rtt = link.build_rtt_packet(0.05, &mut OsRng).unwrap();
     send_framed(&mut stream_a, &rtt).await;
     tokio::time::sleep(Duration::from_millis(500)).await;
 
@@ -1166,7 +1169,7 @@ async fn test_full_discovery_and_link_cycle() {
 
     // Send data
     let test_msg = b"Full cycle test!";
-    let data_pkt = link.build_data_packet(test_msg, &mut ctx).unwrap();
+    let data_pkt = link.build_data_packet(test_msg, &mut OsRng).unwrap();
     send_framed(&mut stream_a, &data_pkt).await;
 
     // Receive echo
@@ -1179,7 +1182,7 @@ async fn test_full_discovery_and_link_cycle() {
 
     // Close link
     let link_hash_hex = hex::encode(link.id().as_bytes());
-    let close_pkt = link.build_close_packet(&mut ctx).unwrap();
+    let close_pkt = link.build_close_packet(&mut OsRng).unwrap();
     send_framed(&mut stream_a, &close_pkt).await;
 
     // Wait for the close to propagate through the relay chain
@@ -1289,7 +1292,7 @@ async fn test_path_discovery_then_link() {
     // Create link using routing info from path response
     let signing_key = response.signing_key().expect("Path response should have signing key");
 
-    let mut link = Link::new_outgoing_with_rng(dest_hash, &mut OsRng);
+    let mut link = Link::new_outgoing(dest_hash, &mut OsRng);
     link.set_destination_keys(&signing_key).unwrap();
 
     let raw_request = link.build_link_request_packet_with_transport(
@@ -1311,14 +1314,14 @@ async fn test_path_discovery_then_link() {
         .expect("Proof validation failed");
     assert_eq!(link.state(), LinkState::Active);
 
-    let mut ctx = make_context();
-    let rtt = link.build_rtt_packet(0.05, &mut ctx).unwrap();
+    
+    let rtt = link.build_rtt_packet(0.05, &mut OsRng).unwrap();
     send_framed(&mut stream_a, &rtt).await;
     tokio::time::sleep(Duration::from_millis(500)).await;
 
     // Send data and verify echo
     let test_msg = b"After path discovery!";
-    let data_pkt = link.build_data_packet(test_msg, &mut ctx).unwrap();
+    let data_pkt = link.build_data_packet(test_msg, &mut OsRng).unwrap();
     send_framed(&mut stream_a, &data_pkt).await;
 
     let echoed =
@@ -1425,7 +1428,7 @@ async fn test_concurrent_links_through_relay() {
     // Connect Rust-A
     let mut stream = connect_to_daemon(&daemon).await;
     let mut deframer = Deframer::new();
-    let mut ctx = make_context();
+    
 
     // Establish all links
     let mut links = Vec::new();
@@ -1436,7 +1439,7 @@ async fn test_concurrent_links_through_relay() {
         let pub_key = hex::decode(&dest_info.public_key).unwrap();
         let signing_key: [u8; 32] = pub_key[32..64].try_into().unwrap();
 
-        let mut link = Link::new_outgoing_with_rng(dest_hash.into(), &mut OsRng);
+        let mut link = Link::new_outgoing(dest_hash.into(), &mut OsRng);
         link.set_destination_keys(&signing_key).unwrap();
         let req = link.build_link_request_packet();
         send_framed(&mut stream, &req).await;
@@ -1449,7 +1452,7 @@ async fn test_concurrent_links_through_relay() {
             .expect(&format!("Proof {} should validate", i));
         assert_eq!(link.state(), LinkState::Active);
 
-        let rtt = link.build_rtt_packet(0.05, &mut ctx).unwrap();
+        let rtt = link.build_rtt_packet(0.05, &mut OsRng).unwrap();
         send_framed(&mut stream, &rtt).await;
         tokio::time::sleep(Duration::from_millis(200)).await;
 
@@ -1473,7 +1476,7 @@ async fn test_concurrent_links_through_relay() {
     for (i, link) in links.iter().enumerate() {
         let msg = format!("Data for link {}", i);
         let data_pkt = link
-            .build_data_packet(msg.as_bytes(), &mut ctx)
+            .build_data_packet(msg.as_bytes(), &mut OsRng)
             .unwrap();
         send_framed(&mut stream, &data_pkt).await;
 
@@ -1515,7 +1518,7 @@ async fn test_link_survives_idle_through_relay() {
     let pub_key = hex::decode(&dest_info.public_key).unwrap();
     let signing_key: [u8; 32] = pub_key[32..64].try_into().unwrap();
 
-    let mut link = Link::new_outgoing_with_rng(dest_hash.into(), &mut OsRng);
+    let mut link = Link::new_outgoing(dest_hash.into(), &mut OsRng);
     link.set_destination_keys(&signing_key).unwrap();
     let req = link.build_link_request_packet();
     send_framed(&mut stream, &req).await;
@@ -1527,14 +1530,14 @@ async fn test_link_survives_idle_through_relay() {
     link.process_proof(proof.data.as_slice()).unwrap();
     assert_eq!(link.state(), LinkState::Active);
 
-    let mut ctx = make_context();
-    let rtt = link.build_rtt_packet(0.05, &mut ctx).unwrap();
+    
+    let rtt = link.build_rtt_packet(0.05, &mut OsRng).unwrap();
     send_framed(&mut stream, &rtt).await;
     tokio::time::sleep(Duration::from_millis(300)).await;
 
     // Verify link works before idle period
     let pre_msg = b"Pre-idle check";
-    let pre_pkt = link.build_data_packet(pre_msg, &mut ctx).unwrap();
+    let pre_pkt = link.build_data_packet(pre_msg, &mut OsRng).unwrap();
     send_framed(&mut stream, &pre_pkt).await;
 
     let pre_echo =
@@ -1547,7 +1550,7 @@ async fn test_link_survives_idle_through_relay() {
 
     // After idle, verify link still works
     let test_msg = b"Still alive after idle!";
-    let data_pkt = link.build_data_packet(test_msg, &mut ctx).unwrap();
+    let data_pkt = link.build_data_packet(test_msg, &mut OsRng).unwrap();
     send_framed(&mut stream, &data_pkt).await;
 
     let echoed =
@@ -1625,7 +1628,7 @@ async fn test_link_request_to_unreachable_destination() {
     use rand_core::RngCore;
     OsRng.fill_bytes(&mut random_hash);
 
-    let mut link = Link::new_outgoing_with_rng(random_hash.into(), &mut OsRng);
+    let mut link = Link::new_outgoing(random_hash.into(), &mut OsRng);
     // We don't have a real signing key, but the link request will be sent
     // and should be silently dropped by the daemon
     let req = link.build_link_request_packet();

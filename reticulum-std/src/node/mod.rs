@@ -52,10 +52,10 @@ use std::time::Duration;
 
 use tokio::sync::{mpsc, oneshot, watch};
 
-use reticulum_core::constants::{MTU, TRUNCATED_HASHBYTES};
+use reticulum_core::constants::TRUNCATED_HASHBYTES;
 use reticulum_core::link::LinkId;
 use reticulum_core::node::{NodeCore, NodeEvent};
-use reticulum_core::traits::{Interface, InterfaceError, NoStorage, PlatformContext};
+use reticulum_core::traits::Interface;
 use reticulum_core::{Destination, DestinationHash};
 
 use crate::clock::SystemClock;
@@ -65,7 +65,7 @@ use crate::interfaces::TcpClientInterface;
 use crate::storage::Storage;
 
 /// Type alias for the concrete NodeCore used by std platforms
-pub type StdNodeCore = NodeCore<SystemClock, Storage>;
+pub type StdNodeCore = NodeCore<rand_core::OsRng, SystemClock, Storage>;
 
 /// Default poll interval in milliseconds
 const DEFAULT_POLL_INTERVAL_MS: u64 = 50;
@@ -142,8 +142,14 @@ impl ReticulumNode {
             return Err(Error::Transport("Node already running".to_string()));
         }
 
-        // Initialize interfaces
+        // Initialize interfaces and register them with NodeCore
         let interfaces = self.initialize_interfaces().await?;
+        {
+            let mut core = self.inner.lock().unwrap();
+            for iface in interfaces {
+                core.register_interface(iface);
+            }
+        }
 
         let (shutdown_tx, shutdown_rx) = watch::channel(false);
         self.shutdown_tx = Some(shutdown_tx);
@@ -158,7 +164,6 @@ impl ReticulumNode {
         let runner_handle = tokio::spawn(async move {
             run_event_loop(
                 inner,
-                interfaces,
                 event_tx,
                 connections,
                 pending_connects,
@@ -173,8 +178,8 @@ impl ReticulumNode {
     }
 
     /// Initialize interfaces from configuration
-    async fn initialize_interfaces(&self) -> Result<Vec<Box<dyn Interface + Send + Sync>>, Error> {
-        let mut interfaces: Vec<Box<dyn Interface + Send + Sync>> = Vec::new();
+    async fn initialize_interfaces(&self) -> Result<Vec<Box<dyn Interface + Send>>, Error> {
+        let mut interfaces: Vec<Box<dyn Interface + Send>> = Vec::new();
 
         for (idx, config) in self.interfaces.iter().enumerate() {
             if !config.enabled {
@@ -285,12 +290,7 @@ impl ReticulumNode {
         // Request connection from NodeCore
         let (link_id, packet) = {
             let mut inner = self.inner.lock().unwrap();
-            let mut ctx = PlatformContext {
-                rng: rand_core::OsRng,
-                clock: SystemClock::new(),
-                storage: NoStorage,
-            };
-            inner.connect(*dest_hash, dest_signing_key, &mut ctx)
+            inner.connect(*dest_hash, dest_signing_key)
         };
 
         // Create channels for the stream
@@ -332,12 +332,36 @@ impl ReticulumNode {
     pub fn inner(&self) -> Arc<Mutex<StdNodeCore>> {
         Arc::clone(&self.inner)
     }
+
+    /// Check if a path to a destination is known
+    pub fn has_path(&self, dest_hash: &reticulum_core::DestinationHash) -> bool {
+        self.inner.lock().unwrap().has_path(dest_hash)
+    }
+
+    /// Get hop count to a destination
+    pub fn hops_to(&self, dest_hash: &reticulum_core::DestinationHash) -> Option<u8> {
+        self.inner.lock().unwrap().hops_to(dest_hash)
+    }
+
+    /// Get the number of known paths
+    pub fn path_count(&self) -> usize {
+        self.inner.lock().unwrap().path_count()
+    }
+
+    /// Get transport statistics (packets sent, received, forwarded, dropped)
+    pub fn transport_stats(&self) -> reticulum_core::transport::TransportStats {
+        self.inner.lock().unwrap().transport_stats()
+    }
+
+    /// Check if transport mode (relay/routing) is enabled
+    pub fn is_transport_enabled(&self) -> bool {
+        self.inner.lock().unwrap().transport_config().enable_transport
+    }
 }
 
 /// Run the internal event loop
 async fn run_event_loop(
     inner: Arc<Mutex<StdNodeCore>>,
-    mut interfaces: Vec<Box<dyn Interface + Send + Sync>>,
     event_tx: mpsc::Sender<NodeEvent>,
     connections: Arc<Mutex<HashMap<LinkId, ConnectionChannels>>>,
     pending_connects: Arc<Mutex<HashMap<[u8; TRUNCATED_HASHBYTES], oneshot::Sender<LinkId>>>>,
@@ -349,23 +373,13 @@ async fn run_event_loop(
     loop {
         tokio::select! {
             _ = interval.tick() => {
-                // Poll interfaces for incoming data
-                poll_interfaces(&inner, &mut interfaces);
-
                 // Process outgoing data from connections
                 process_outgoing(&inner, &connections);
 
-                // Run NodeCore poll and collect events
+                // Drive node for one tick, collecting all events
                 let events = {
                     let mut core = inner.lock().unwrap();
-                    // Create a platform context for polling
-                    let mut ctx = PlatformContext {
-                        rng: rand_core::OsRng,
-                        clock: SystemClock::new(),
-                        storage: NoStorage,
-                    };
-                    core.poll(&mut ctx);
-                    core.drain_events().collect::<Vec<_>>()
+                    core.tick()
                 };
 
                 // Handle events
@@ -392,43 +406,6 @@ async fn run_event_loop(
     }
 }
 
-/// Poll interfaces for incoming data
-fn poll_interfaces(
-    inner: &Arc<Mutex<StdNodeCore>>,
-    interfaces: &mut [Box<dyn Interface + Send + Sync>],
-) {
-    let mut recv_buf = [0u8; MTU];
-
-    for (idx, iface) in interfaces.iter_mut().enumerate() {
-        loop {
-            match iface.recv(&mut recv_buf) {
-                Ok(len) if len > 0 => {
-                    let data = recv_buf[..len].to_vec();
-                    let mut core = inner.lock().unwrap();
-                    // Create a platform context for receiving
-                    let mut ctx = PlatformContext {
-                        rng: rand_core::OsRng,
-                        clock: SystemClock::new(),
-                        storage: NoStorage,
-                    };
-                    if let Err(e) = core.receive_packet(idx, &data, &mut ctx) {
-                        tracing::debug!("Error processing packet from interface {}: {:?}", idx, e);
-                    }
-                }
-                Ok(_) | Err(InterfaceError::WouldBlock) => break,
-                Err(InterfaceError::Disconnected) => {
-                    tracing::warn!("Interface {} disconnected", idx);
-                    break;
-                }
-                Err(e) => {
-                    tracing::debug!("Interface {} recv error: {:?}", idx, e);
-                    break;
-                }
-            }
-        }
-    }
-}
-
 /// Process outgoing data from connection streams
 fn process_outgoing(
     inner: &Arc<Mutex<StdNodeCore>>,
@@ -440,14 +417,8 @@ fn process_outgoing(
         // Try to receive outgoing data from the stream
         while let Ok(data) = channels.outgoing_rx.try_recv() {
             let mut core = inner.lock().unwrap();
-            // Create a platform context for sending
-            let mut ctx = PlatformContext {
-                rng: rand_core::OsRng,
-                clock: SystemClock::new(),
-                storage: NoStorage,
-            };
             // Send data on the connection
-            if let Err(e) = core.send_on_connection(link_id, &data, &mut ctx) {
+            if let Err(e) = core.send_on_connection(link_id, &data) {
                 tracing::debug!("Error sending on connection {:?}: {:?}", link_id, e);
             }
         }

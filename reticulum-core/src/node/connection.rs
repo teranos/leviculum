@@ -10,7 +10,7 @@ use crate::destination::DestinationHash;
 use crate::link::channel::{Channel, ChannelError, Message};
 use crate::link::{Link, LinkError, LinkId, LinkState};
 use crate::packet::PacketContext;
-use crate::traits::{Clock, Context};
+use rand_core::CryptoRngCore;
 
 /// Error type for connection operations
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -150,7 +150,7 @@ impl Connection {
     /// # Arguments
     /// * `link` - The underlying link (for encryption)
     /// * `data` - The plaintext data to send
-    /// * `ctx` - Platform context for RNG
+    /// * `rng` - Random number generator
     ///
     /// # Returns
     /// The encrypted packet bytes ready for transmission
@@ -158,12 +158,12 @@ impl Connection {
         &self,
         link: &Link,
         data: &[u8],
-        ctx: &mut impl Context,
+        rng: &mut impl CryptoRngCore,
     ) -> Result<Vec<u8>, ConnectionError> {
         if link.state() != LinkState::Active {
             return Err(ConnectionError::InvalidState);
         }
-        link.build_data_packet(data, ctx).map_err(Into::into)
+        link.build_data_packet(data, rng).map_err(Into::into)
     }
 
     /// Send a typed message on this connection via Channel
@@ -173,7 +173,8 @@ impl Connection {
     /// # Arguments
     /// * `link` - The underlying link (for encryption and MDU)
     /// * `message` - The message to send
-    /// * `ctx` - Platform context
+    /// * `now_ms` - Current time in milliseconds
+    /// * `rng` - Random number generator
     ///
     /// # Returns
     /// The encrypted packet bytes ready for transmission
@@ -181,7 +182,8 @@ impl Connection {
         &mut self,
         link: &Link,
         message: &M,
-        ctx: &mut impl Context,
+        now_ms: u64,
+        rng: &mut impl CryptoRngCore,
     ) -> Result<Vec<u8>, ConnectionError> {
         if link.state() != LinkState::Active {
             return Err(ConnectionError::InvalidState);
@@ -189,7 +191,6 @@ impl Connection {
 
         let link_mdu = link.mdu();
         let rtt_ms = link.rtt_ms();
-        let now_ms = ctx.clock().now_ms();
 
         // Get or create channel
         let channel = self.get_or_create_channel(rtt_ms);
@@ -198,7 +199,7 @@ impl Connection {
         let envelope_data = channel.send(message, link_mdu, now_ms, rtt_ms)?;
 
         // Build data packet with Channel context
-        link.build_data_packet_with_context(&envelope_data, PacketContext::Channel, ctx)
+        link.build_data_packet_with_context(&envelope_data, PacketContext::Channel, rng)
             .map_err(Into::into)
     }
 
@@ -209,14 +210,16 @@ impl Connection {
     /// # Arguments
     /// * `link` - The underlying link
     /// * `data` - The raw bytes to send
-    /// * `ctx` - Platform context
+    /// * `now_ms` - Current time in milliseconds
+    /// * `rng` - Random number generator
     pub fn send_bytes(
         &mut self,
         link: &Link,
         data: &[u8],
-        ctx: &mut impl Context,
+        now_ms: u64,
+        rng: &mut impl CryptoRngCore,
     ) -> Result<Vec<u8>, ConnectionError> {
-        self.send_message(link, &RawBytesMessage(data.to_vec()), ctx)
+        self.send_message(link, &RawBytesMessage(data.to_vec()), now_ms, rng)
     }
 
     /// Check if the channel is ready to send more messages

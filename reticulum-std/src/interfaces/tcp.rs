@@ -79,6 +79,29 @@ impl TcpClientInterface {
         })
     }
 
+    /// Create from an already-connected TCP stream (e.g. from `TcpListener::accept()`)
+    ///
+    /// Sets the stream to non-blocking mode and enables TCP_NODELAY.
+    ///
+    /// # Arguments
+    /// * `name` - Human-readable name for logging
+    /// * `stream` - An already-connected `TcpStream`
+    pub fn from_stream(name: &str, stream: TcpStream) -> io::Result<Self> {
+        stream.set_nonblocking(true)?;
+        stream.set_nodelay(true)?;
+        let hash = truncated_hash(name.as_bytes());
+        Ok(Self {
+            name: name.to_string(),
+            hash,
+            stream,
+            deframer: Deframer::new(),
+            recv_queue: VecDeque::new(),
+            frame_buf: Vec::with_capacity(MTU * FRAME_BUFFER_MULTIPLIER),
+            read_buf: vec![0u8; MTU * READ_BUFFER_MULTIPLIER],
+            online: true,
+        })
+    }
+
     /// Try to dequeue a packet from the receive queue into the provided buffer.
     /// Returns Some(Ok(len)) if a packet was dequeued, Some(Err) on error, None if queue is empty.
     fn try_dequeue(&mut self, buf: &mut [u8]) -> Option<Result<usize, InterfaceError>> {
@@ -192,6 +215,23 @@ mod tests {
         let result =
             TcpClientInterface::connect("test", "127.0.0.1:19999", Duration::from_millis(500));
         assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_from_stream() {
+        // Start a listener, connect, then wrap the accepted stream
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = listener.local_addr().unwrap();
+
+        let client = TcpStream::connect(addr).unwrap();
+        let (server_stream, _peer) = listener.accept().unwrap();
+
+        let iface = TcpClientInterface::from_stream("test_server", server_stream).unwrap();
+        assert!(iface.is_online());
+        assert_eq!(iface.name(), "test_server");
+
+        // Verify the client connection is alive
+        drop(client);
     }
 
     // Integration tests for TcpClientInterface are in tests/rnsd_interop/

@@ -33,7 +33,7 @@ use reticulum_core::constants::{MTU, TRUNCATED_HASHBYTES};
 use reticulum_core::identity::Identity;
 use reticulum_core::link::{Link, LinkState};
 use reticulum_core::packet::{Packet, PacketType};
-use reticulum_core::traits::{Clock, Interface, InterfaceError, NoStorage, PlatformContext};
+use reticulum_core::traits::{Clock, Interface, InterfaceError, NoStorage};
 use reticulum_core::transport::{Transport, TransportConfig, TransportEvent};
 use reticulum_std::interfaces::hdlc::{frame, DeframeResult, Deframer};
 
@@ -52,14 +52,6 @@ impl Clock for TestClock {
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap()
             .as_millis() as u64
-    }
-}
-
-fn make_context() -> PlatformContext<OsRng, TestClock, NoStorage> {
-    PlatformContext {
-        rng: OsRng,
-        clock: TestClock,
-        storage: NoStorage,
     }
 }
 
@@ -231,7 +223,7 @@ async fn test_discovery_then_link_establishment() {
         .try_into()
         .expect("Invalid signing key");
 
-    let mut link = Link::new_outgoing_with_rng(dest_hash.into(), &mut OsRng);
+    let mut link = Link::new_outgoing(dest_hash.into(), &mut OsRng);
     link.set_destination_keys(&signing_key_bytes)
         .expect("Failed to set destination keys");
 
@@ -322,7 +314,7 @@ async fn test_complete_roundtrip() {
     let pub_key_bytes = hex::decode(&dest_info.public_key).unwrap();
     let signing_key_bytes: [u8; 32] = pub_key_bytes[32..64].try_into().unwrap();
 
-    let mut link = Link::new_outgoing_with_rng(dest_hash.into(), &mut OsRng);
+    let mut link = Link::new_outgoing(dest_hash.into(), &mut OsRng);
     link.set_destination_keys(&signing_key_bytes).unwrap();
 
     let raw_packet = link.build_link_request_packet();
@@ -347,9 +339,8 @@ async fn test_complete_roundtrip() {
     println!("Link established!");
 
     // 4. Send RTT packet to finalize link on daemon side
-    let mut ctx = make_context();
     let rtt_packet = link
-        .build_rtt_packet(0.05, &mut ctx)
+        .build_rtt_packet(0.05, &mut OsRng)
         .expect("Failed to build RTT");
     framed.clear();
     frame(&rtt_packet, &mut framed);
@@ -360,7 +351,7 @@ async fn test_complete_roundtrip() {
     // 5. Send encrypted data
     let test_message = b"Hello from complete roundtrip test!";
     let data_packet = link
-        .build_data_packet(test_message, &mut ctx)
+        .build_data_packet(test_message, &mut OsRng)
         .expect("Failed to build data packet");
 
     framed.clear();
@@ -516,7 +507,7 @@ async fn test_multiple_destinations_selective_link() {
     let pub_key_bytes = hex::decode(&target_dest_info.public_key).unwrap();
     let signing_key_bytes: [u8; 32] = pub_key_bytes[32..64].try_into().unwrap();
 
-    let mut link = Link::new_outgoing_with_rng(target_hash.into(), &mut OsRng);
+    let mut link = Link::new_outgoing(target_hash.into(), &mut OsRng);
     link.set_destination_keys(&signing_key_bytes).unwrap();
 
     let raw_packet = link.build_link_request_packet();
@@ -543,8 +534,7 @@ async fn test_multiple_destinations_selective_link() {
     println!("Link to {} established!", target_name);
 
     // 6. Send data on the link
-    let mut ctx = make_context();
-    let rtt_packet = link.build_rtt_packet(0.05, &mut ctx).unwrap();
+    let rtt_packet = link.build_rtt_packet(0.05, &mut OsRng).unwrap();
     framed.clear();
     frame(&rtt_packet, &mut framed);
     stream.write_all(&framed).await.unwrap();
@@ -554,7 +544,7 @@ async fn test_multiple_destinations_selective_link() {
     let test_message = format!("Hello {}!", target_name);
     let test_message_bytes = test_message.as_bytes();
     let data_packet = link
-        .build_data_packet(test_message_bytes, &mut ctx)
+        .build_data_packet(test_message_bytes, &mut OsRng)
         .expect("Failed to build data packet");
 
     framed.clear();
@@ -674,7 +664,7 @@ async fn test_discovery_path_update() {
     let pub_key_bytes = hex::decode(&dest_info.public_key).unwrap();
     let signing_key_bytes: [u8; 32] = pub_key_bytes[32..64].try_into().unwrap();
 
-    let mut link = Link::new_outgoing_with_rng(dest_hash.into(), &mut OsRng);
+    let mut link = Link::new_outgoing(dest_hash.into(), &mut OsRng);
     link.set_destination_keys(&signing_key_bytes).unwrap();
 
     let raw_packet = link.build_link_request_packet();
@@ -750,7 +740,7 @@ async fn test_discovery_link_multiple_messages() {
     let pub_key_bytes = hex::decode(&dest_info.public_key).unwrap();
     let signing_key_bytes: [u8; 32] = pub_key_bytes[32..64].try_into().unwrap();
 
-    let mut link = Link::new_outgoing_with_rng(dest_hash.into(), &mut OsRng);
+    let mut link = Link::new_outgoing(dest_hash.into(), &mut OsRng);
     link.set_destination_keys(&signing_key_bytes).unwrap();
 
     let raw_packet = link.build_link_request_packet();
@@ -772,8 +762,7 @@ async fn test_discovery_link_multiple_messages() {
         .expect("Proof should validate");
 
     // Send RTT
-    let mut ctx = make_context();
-    let rtt_packet = link.build_rtt_packet(0.05, &mut ctx).unwrap();
+    let rtt_packet = link.build_rtt_packet(0.05, &mut OsRng).unwrap();
     framed.clear();
     frame(&rtt_packet, &mut framed);
     stream.write_all(&framed).await.unwrap();
@@ -792,7 +781,7 @@ async fn test_discovery_link_multiple_messages() {
 
     for (i, msg) in messages.iter().enumerate() {
         let data_packet = link
-            .build_data_packet(msg, &mut ctx)
+            .build_data_packet(msg, &mut OsRng)
             .expect("Failed to build data packet");
 
         framed.clear();

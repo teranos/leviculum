@@ -10,13 +10,7 @@
 //!
 //! ```
 //! use reticulum_core::link::{LinkManager, LinkEvent};
-//! use reticulum_core::traits::{PlatformContext, NoStorage};
 //! use rand_core::OsRng;
-//!
-//! struct SimpleClock;
-//! impl reticulum_core::traits::Clock for SimpleClock {
-//!     fn now_ms(&self) -> u64 { 1000000 }
-//! }
 //!
 //! use reticulum_core::destination::DestinationHash;
 //!
@@ -29,8 +23,8 @@
 //! // Initiate outgoing link
 //! let dest_hash = DestinationHash::new([0x33u8; 16]);
 //! let dest_signing_key = [0x11u8; 32];
-//! let mut ctx = PlatformContext { rng: OsRng, clock: SimpleClock, storage: NoStorage };
-//! let (link_id, packet) = manager.initiate(dest_hash, &dest_signing_key, &mut ctx);
+//! let now_ms = 1_000_000u64;
+//! let (link_id, packet) = manager.initiate(dest_hash, &dest_signing_key, now_ms, &mut OsRng);
 //!
 //! // Handle events
 //! for event in manager.drain_events() {
@@ -49,7 +43,7 @@ use crate::constants::{DATA_RECEIPT_TIMEOUT_MS, LINK_PENDING_TIMEOUT_MS, MODE_AE
 use crate::destination::ProofStrategy;
 use crate::identity::Identity;
 use crate::packet::{packet_hash, Packet, PacketContext, PacketType};
-use crate::traits::{Clock, Context};
+use rand_core::CryptoRngCore;
 
 use crate::destination::DestinationHash;
 use super::channel::{Channel, Message};
@@ -150,14 +144,16 @@ impl LinkManager {
     /// # Arguments
     /// * `dest_hash` - The destination hash to connect to
     /// * `dest_signing_key` - The destination's Ed25519 signing key (from announce)
-    /// * `ctx` - Platform context for RNG
+    /// * `now_ms` - Current time in milliseconds
+    /// * `rng` - Random number generator
     pub fn initiate(
         &mut self,
         dest_hash: DestinationHash,
         dest_signing_key: &[u8; 32],
-        ctx: &mut impl Context,
+        now_ms: u64,
+        rng: &mut impl CryptoRngCore,
     ) -> (LinkId, Vec<u8>) {
-        self.initiate_with_path(dest_hash, dest_signing_key, None, 1, ctx)
+        self.initiate_with_path(dest_hash, dest_signing_key, None, 1, now_ms, rng)
     }
 
     /// Start establishing a link to a destination with explicit path information.
@@ -174,22 +170,16 @@ impl LinkManager {
     /// * `dest_signing_key` - The destination's Ed25519 signing key (from announce)
     /// * `next_hop` - The transport_id (identity hash) of the next hop node, if routing through a relay
     /// * `hops` - Number of hops to the destination
-    /// * `ctx` - Platform context for RNG
+    /// * `now_ms` - Current time in milliseconds
+    /// * `rng` - Random number generator
     ///
     /// # Example
     /// ```
     /// use reticulum_core::link::LinkManager;
     /// use reticulum_core::destination::DestinationHash;
-    /// use reticulum_core::traits::{PlatformContext, NoStorage};
     /// use rand_core::OsRng;
     ///
-    /// struct SimpleClock;
-    /// impl reticulum_core::traits::Clock for SimpleClock {
-    ///     fn now_ms(&self) -> u64 { 1000000 }
-    /// }
-    ///
     /// let mut manager = LinkManager::new();
-    /// let mut ctx = PlatformContext { rng: OsRng, clock: SimpleClock, storage: NoStorage };
     ///
     /// // For a destination 2+ hops away, use the transport_id from the announce
     /// let dest_hash = DestinationHash::new([0x42u8; 16]);
@@ -202,7 +192,8 @@ impl LinkManager {
     ///     &signing_key,
     ///     Some(transport_id),
     ///     hops,
-    ///     &mut ctx,
+    ///     1_000_000,
+    ///     &mut OsRng,
     /// );
     /// assert!(!packet.is_empty());
     /// ```
@@ -212,10 +203,11 @@ impl LinkManager {
         dest_signing_key: &[u8; 32],
         next_hop: Option<[u8; TRUNCATED_HASHBYTES]>,
         hops: u8,
-        ctx: &mut impl Context,
+        now_ms: u64,
+        rng: &mut impl CryptoRngCore,
     ) -> (LinkId, Vec<u8>) {
         // Create new outgoing link
-        let mut link = Link::new_outgoing(dest_hash, ctx);
+        let mut link = Link::new_outgoing(dest_hash, rng);
 
         // Build the LINK_REQUEST packet with transport headers if needed
         let packet = link.build_link_request_packet_with_transport(next_hop, hops);
@@ -225,11 +217,10 @@ impl LinkManager {
         let _ = link.set_destination_keys(dest_signing_key);
 
         // Track as pending
-        let now = ctx.clock().now_ms();
         self.pending_outgoing.insert(
             link_id,
             PendingOutgoing {
-                created_at_ms: now,
+                created_at_ms: now_ms,
             },
         );
 
@@ -270,13 +261,13 @@ impl LinkManager {
     /// * `link_id` - The link ID from the `LinkRequestReceived` event
     /// * `identity` - The destination's identity (for signing the proof)
     /// * `proof_strategy` - The proof strategy for received data packets on this link
-    /// * `ctx` - Platform context for clock
+    /// * `now_ms` - Current time in milliseconds
     pub fn accept_link(
         &mut self,
         link_id: &LinkId,
         identity: &Identity,
         proof_strategy: ProofStrategy,
-        ctx: &mut impl Context,
+        now_ms: u64,
     ) -> Result<Vec<u8>, LinkError> {
         let link = self.links.get_mut(link_id).ok_or(LinkError::NotFound)?;
 
@@ -300,11 +291,10 @@ impl LinkManager {
         let proof_packet = link.build_proof_packet(identity, MTU as u32, MODE_AES256_CBC)?;
 
         // Track as pending incoming (awaiting RTT)
-        let now = ctx.clock().now_ms();
         self.pending_incoming.insert(
             *link_id,
             PendingIncoming {
-                proof_sent_at_ms: now,
+                proof_sent_at_ms: now_ms,
             },
         );
 
@@ -328,12 +318,12 @@ impl LinkManager {
     /// # Arguments
     /// * `link_id` - The link to send on
     /// * `data` - The plaintext data to send
-    /// * `ctx` - Platform context for RNG
+    /// * `rng` - Random number generator
     pub fn send(
         &mut self,
         link_id: &LinkId,
         data: &[u8],
-        ctx: &mut impl Context,
+        rng: &mut impl CryptoRngCore,
     ) -> Result<Vec<u8>, LinkError> {
         let link = self.links.get(link_id).ok_or(LinkError::NotFound)?;
 
@@ -341,7 +331,7 @@ impl LinkManager {
             return Err(LinkError::InvalidState);
         }
 
-        link.build_data_packet(data, ctx)
+        link.build_data_packet(data, rng)
     }
 
     /// Send data on an established link with receipt tracking
@@ -353,7 +343,8 @@ impl LinkManager {
     /// # Arguments
     /// * `link_id` - The link to send on
     /// * `data` - The plaintext data to send
-    /// * `ctx` - Platform context for RNG and clock
+    /// * `now_ms` - Current time in milliseconds
+    /// * `rng` - Random number generator
     ///
     /// # Returns
     /// On success, returns (packet_data, packet_hash) where:
@@ -363,7 +354,8 @@ impl LinkManager {
         &mut self,
         link_id: &LinkId,
         data: &[u8],
-        ctx: &mut impl Context,
+        now_ms: u64,
+        rng: &mut impl CryptoRngCore,
     ) -> Result<(Vec<u8>, [u8; 32]), LinkError> {
         let link = self.links.get(link_id).ok_or(LinkError::NotFound)?;
 
@@ -371,7 +363,7 @@ impl LinkManager {
             return Err(LinkError::InvalidState);
         }
 
-        let packet_data = link.build_data_packet(data, ctx)?;
+        let packet_data = link.build_data_packet(data, rng)?;
         let full_hash = packet_hash(&packet_data);
 
         // Compute truncated hash for receipt lookup
@@ -379,7 +371,6 @@ impl LinkManager {
         truncated.copy_from_slice(&full_hash[..TRUNCATED_HASHBYTES]);
 
         // Track the receipt
-        let now_ms = ctx.clock().now_ms();
         self.data_receipts.insert(
             truncated,
             DataReceipt {
@@ -422,10 +413,10 @@ impl LinkManager {
     ///
     /// This builds a LINKCLOSE packet that should be sent to the peer.
     /// Call `drain_pending_packets()` after this to get the packet to send.
-    pub fn close(&mut self, link_id: &LinkId, ctx: &mut impl Context) {
+    pub fn close(&mut self, link_id: &LinkId, rng: &mut impl CryptoRngCore) {
         if let Some(link) = self.links.get_mut(link_id) {
             // Try to build and queue the close packet
-            if let Ok(close_packet) = link.build_close_packet(ctx) {
+            if let Ok(close_packet) = link.build_close_packet(rng) {
                 self.pending_packets.push(PendingPacket::Close {
                     link_id: *link_id,
                     data: close_packet,
@@ -506,7 +497,8 @@ impl LinkManager {
     /// # Arguments
     /// * `link_id` - The link to send on
     /// * `message` - The message to send
-    /// * `ctx` - Platform context
+    /// * `now_ms` - Current time in milliseconds
+    /// * `rng` - Random number generator
     ///
     /// # Errors
     /// - `NotFound` if the link doesn't exist or isn't active
@@ -515,7 +507,8 @@ impl LinkManager {
         &mut self,
         link_id: &LinkId,
         message: &M,
-        ctx: &mut impl Context,
+        now_ms: u64,
+        rng: &mut impl CryptoRngCore,
     ) -> Result<Vec<u8>, LinkError> {
         // First check if link exists and is active
         let link = self.links.get(link_id).ok_or(LinkError::NotFound)?;
@@ -526,7 +519,6 @@ impl LinkManager {
         // Get link MDU and RTT for channel
         let link_mdu = link.mdu();
         let rtt_ms = link.rtt_ms();
-        let now_ms = ctx.clock().now_ms();
 
         // Get or create channel
         if !self.channels.contains_key(link_id) {
@@ -544,7 +536,7 @@ impl LinkManager {
 
         // Build data packet with Channel context
         let link = self.links.get(link_id).ok_or(LinkError::NotFound)?;
-        link.build_data_packet_with_context(&envelope_data, PacketContext::Channel, ctx)
+        link.build_data_packet_with_context(&envelope_data, PacketContext::Channel, rng)
     }
 
     /// Drain all pending outbound packets
@@ -567,17 +559,18 @@ impl LinkManager {
     /// # Arguments
     /// * `packet` - The parsed packet
     /// * `raw_packet` - The raw packet bytes (needed for link ID calculation)
-    /// * `ctx` - Platform context
-    pub fn process_packet(&mut self, packet: &Packet, raw_packet: &[u8], ctx: &mut impl Context) {
+    /// * `now_ms` - Current time in milliseconds
+    /// * `rng` - Random number generator
+    pub fn process_packet(&mut self, packet: &Packet, raw_packet: &[u8], now_ms: u64, rng: &mut impl CryptoRngCore) {
         match packet.flags.packet_type {
             PacketType::LinkRequest => {
-                self.handle_link_request(packet, raw_packet, ctx);
+                self.handle_link_request(packet, raw_packet, rng);
             }
             PacketType::Proof => {
-                self.handle_proof(packet, ctx);
+                self.handle_proof(packet, now_ms, rng);
             }
             PacketType::Data => {
-                self.handle_data(packet, raw_packet, ctx);
+                self.handle_data(packet, raw_packet, now_ms);
             }
             PacketType::Announce => {
                 // Announces are not link packets, ignore
@@ -597,13 +590,13 @@ impl LinkManager {
     ///
     /// # Arguments
     /// * `now_ms` - Current time in milliseconds
-    /// * `ctx` - Context for building keepalive/close packets
-    pub fn poll(&mut self, now_ms: u64, ctx: &mut impl Context) {
+    /// * `rng` - Random number generator (for building close packets)
+    pub fn poll(&mut self, now_ms: u64, rng: &mut impl CryptoRngCore) {
         self.check_timeouts(now_ms);
         let now_secs = now_ms / MS_PER_SECOND;
         self.check_keepalives(now_secs);
-        self.check_stale_links(now_secs, ctx);
-        self.check_channel_timeouts(now_ms, ctx);
+        self.check_stale_links(now_secs, rng);
+        self.check_channel_timeouts(now_ms, rng);
     }
 
     /// Drain pending events
@@ -693,7 +686,7 @@ impl LinkManager {
 
     // --- Internal: Packet Handlers ---
 
-    fn handle_link_request(&mut self, packet: &Packet, raw_packet: &[u8], ctx: &mut impl Context) {
+    fn handle_link_request(&mut self, packet: &Packet, raw_packet: &[u8], rng: &mut impl CryptoRngCore) {
         let dest_hash = DestinationHash::new(packet.destination_hash);
 
         // Check if we accept links for this destination
@@ -713,7 +706,7 @@ impl LinkManager {
         let request_data = packet.data.as_slice();
 
         // Create the incoming link
-        let Ok(link) = Link::new_incoming(request_data, link_id, dest_hash, ctx) else {
+        let Ok(link) = Link::new_incoming(request_data, link_id, dest_hash, rng) else {
             return;
         };
 
@@ -734,7 +727,7 @@ impl LinkManager {
         });
     }
 
-    fn handle_proof(&mut self, packet: &Packet, ctx: &mut impl Context) {
+    fn handle_proof(&mut self, packet: &Packet, now_ms: u64, rng: &mut impl CryptoRngCore) {
         // PROOF packets are addressed to link_id (not destination hash)
         let link_id = LinkId::new(packet.destination_hash);
 
@@ -774,7 +767,6 @@ impl LinkManager {
         }
 
         // Proof verified! Calculate RTT and build the RTT packet
-        let now_ms = ctx.clock().now_ms();
         let now_secs = now_ms / MS_PER_SECOND;
         let pending = self.pending_outgoing.remove(&link_id);
         let rtt_ms = pending
@@ -787,7 +779,7 @@ impl LinkManager {
         link.mark_established(now_secs);
 
         // Build RTT packet - the caller retrieves it via take_pending_rtt_packet()
-        if let Ok(rtt_packet) = link.build_rtt_packet(rtt_seconds, ctx) {
+        if let Ok(rtt_packet) = link.build_rtt_packet(rtt_seconds, rng) {
             // Link is now active (from initiator's perspective)
             self.events.push(LinkEvent::LinkEstablished {
                 link_id,
@@ -849,10 +841,10 @@ impl LinkManager {
         }
     }
 
-    fn handle_data(&mut self, packet: &Packet, raw_packet: &[u8], ctx: &mut impl Context) {
+    fn handle_data(&mut self, packet: &Packet, raw_packet: &[u8], now_ms: u64) {
         // DATA packets are addressed to link_id
         let link_id = LinkId::new(packet.destination_hash);
-        let now_secs = ctx.clock().now_ms() / MS_PER_SECOND;
+        let now_secs = now_ms / MS_PER_SECOND;
 
         let Some(link) = self.links.get_mut(&link_id) else {
             return;
@@ -1120,7 +1112,7 @@ impl LinkManager {
     // --- Internal: Stale Link Handling ---
 
     /// Check for stale links and close them if timeout expired
-    fn check_stale_links(&mut self, now_secs: u64, ctx: &mut impl Context) {
+    fn check_stale_links(&mut self, now_secs: u64, rng: &mut impl CryptoRngCore) {
         // First pass: Find links that are active but should become stale
         let newly_stale: Vec<LinkId> = self
             .links
@@ -1149,7 +1141,7 @@ impl LinkManager {
         for link_id in should_close {
             if let Some(link) = self.links.get_mut(&link_id) {
                 // Build close packet before closing
-                if let Ok(close_packet) = link.build_close_packet(ctx) {
+                if let Ok(close_packet) = link.build_close_packet(rng) {
                     self.pending_packets.push(PendingPacket::Close {
                         link_id,
                         data: close_packet,
@@ -1167,7 +1159,7 @@ impl LinkManager {
     // --- Internal: Channel Timeout Handling ---
 
     /// Check for channel envelope timeouts and queue retransmissions
-    fn check_channel_timeouts(&mut self, now_ms: u64, ctx: &mut impl Context) {
+    fn check_channel_timeouts(&mut self, now_ms: u64, rng: &mut impl CryptoRngCore) {
         use super::channel::ChannelAction;
 
         // Collect link IDs that have channels
@@ -1196,7 +1188,7 @@ impl LinkManager {
                             if let Ok(packet) = link.build_data_packet_with_context(
                                 &data,
                                 PacketContext::Channel,
-                                ctx,
+                                rng,
                             ) {
                                 self.pending_packets.push(PendingPacket::Channel {
                                     link_id,
@@ -1208,7 +1200,7 @@ impl LinkManager {
                     ChannelAction::TearDownLink => {
                         // Max retries exceeded - close the link
                         if let Some(link) = self.links.get_mut(&link_id) {
-                            if let Ok(close_packet) = link.build_close_packet(ctx) {
+                            if let Ok(close_packet) = link.build_close_packet(rng) {
                                 self.pending_packets.push(PendingPacket::Close {
                                     link_id,
                                     data: close_packet,
@@ -1238,38 +1230,9 @@ impl Default for LinkManager {
 mod tests {
     use super::*;
     use crate::identity::Identity;
-    use crate::traits::{Clock, NoStorage, PlatformContext};
     use rand_core::OsRng;
 
-    struct TestClock {
-        time_ms: core::cell::Cell<u64>,
-    }
-
-    impl TestClock {
-        fn new(time_ms: u64) -> Self {
-            Self {
-                time_ms: core::cell::Cell::new(time_ms),
-            }
-        }
-
-        fn advance(&self, ms: u64) {
-            self.time_ms.set(self.time_ms.get() + ms);
-        }
-    }
-
-    impl Clock for TestClock {
-        fn now_ms(&self) -> u64 {
-            self.time_ms.get()
-        }
-    }
-
-    fn make_ctx() -> PlatformContext<OsRng, TestClock, NoStorage> {
-        PlatformContext {
-            rng: OsRng,
-            clock: TestClock::new(1_000_000),
-            storage: NoStorage,
-        }
-    }
+    const INITIAL_TIME_MS: u64 = 1_000_000;
 
     #[test]
     fn test_new_manager() {
@@ -1293,11 +1256,10 @@ mod tests {
     #[test]
     fn test_initiate_link() {
         let mut manager = LinkManager::new();
-        let mut ctx = make_ctx();
         let dest_hash = DestinationHash::new([0x42; 16]);
         let dest_signing_key = [0x33; 32];
 
-        let (link_id, packet) = manager.initiate(dest_hash, &dest_signing_key, &mut ctx);
+        let (link_id, packet) = manager.initiate(dest_hash, &dest_signing_key, INITIAL_TIME_MS, &mut OsRng);
 
         // Should have created a pending link
         assert_eq!(manager.pending_link_count(), 1);
@@ -1311,16 +1273,15 @@ mod tests {
     #[test]
     fn test_link_timeout() {
         let mut manager = LinkManager::new();
-        let mut ctx = make_ctx();
         let dest_hash = DestinationHash::new([0x42; 16]);
         let dest_signing_key = [0x33; 32];
 
-        let (link_id, _) = manager.initiate(dest_hash, &dest_signing_key, &mut ctx);
+        let (link_id, _) = manager.initiate(dest_hash, &dest_signing_key, INITIAL_TIME_MS, &mut OsRng);
         assert_eq!(manager.pending_link_count(), 1);
 
         // Advance time past timeout
-        ctx.clock.advance(LINK_PENDING_TIMEOUT_MS + 1);
-        manager.poll(ctx.clock.now_ms(), &mut ctx);
+        let now_ms = INITIAL_TIME_MS + LINK_PENDING_TIMEOUT_MS + 1;
+        manager.poll(now_ms, &mut OsRng);
 
         // Link should be removed
         assert_eq!(manager.pending_link_count(), 0);
@@ -1344,11 +1305,10 @@ mod tests {
     #[test]
     fn test_close_link() {
         let mut manager = LinkManager::new();
-        let mut ctx = make_ctx();
         let dest_hash = DestinationHash::new([0x42; 16]);
         let dest_signing_key = [0x33; 32];
 
-        let (link_id, _) = manager.initiate(dest_hash, &dest_signing_key, &mut ctx);
+        let (link_id, _) = manager.initiate(dest_hash, &dest_signing_key, INITIAL_TIME_MS, &mut OsRng);
 
         // Use close_local for this test (graceful close requires active link with encryption key)
         manager.close_local(&link_id, LinkCloseReason::Normal);
@@ -1370,8 +1330,7 @@ mod tests {
     struct LinkPair {
         initiator: LinkManager,
         responder: LinkManager,
-        initiator_ctx: PlatformContext<OsRng, TestClock, NoStorage>,
-        responder_ctx: PlatformContext<OsRng, TestClock, NoStorage>,
+        now_ms: u64,
         initiator_link_id: LinkId,
         responder_link_id: LinkId,
     }
@@ -1383,9 +1342,7 @@ mod tests {
     fn establish_link_pair(proof_strategy: ProofStrategy) -> LinkPair {
         let mut initiator_mgr = LinkManager::new();
         let mut responder_mgr = LinkManager::new();
-
-        let mut initiator_ctx = make_ctx();
-        let mut responder_ctx = make_ctx();
+        let now_ms = INITIAL_TIME_MS;
 
         let dest_identity = Identity::generate_with_rng(&mut OsRng);
         let dest_hash = DestinationHash::new([0x42; 16]);
@@ -1396,11 +1353,11 @@ mod tests {
 
         // Initiator starts link
         let (link_id, link_request_packet) =
-            initiator_mgr.initiate(dest_hash, &dest_signing_key, &mut initiator_ctx);
+            initiator_mgr.initiate(dest_hash, &dest_signing_key, now_ms, &mut OsRng);
 
         // Deliver link request to responder
         let packet = Packet::unpack(&link_request_packet).unwrap();
-        responder_mgr.process_packet(&packet, &link_request_packet, &mut responder_ctx);
+        responder_mgr.process_packet(&packet, &link_request_packet, now_ms, &mut OsRng);
 
         // Accept on responder
         let events: Vec<_> = responder_mgr.drain_events().collect();
@@ -1410,18 +1367,18 @@ mod tests {
         };
 
         let proof_packet = responder_mgr
-            .accept_link(&responder_link_id, &dest_identity, proof_strategy, &mut responder_ctx)
+            .accept_link(&responder_link_id, &dest_identity, proof_strategy, now_ms)
             .unwrap();
 
         // Deliver proof to initiator
         let proof = Packet::unpack(&proof_packet).unwrap();
-        initiator_mgr.process_packet(&proof, &proof_packet, &mut initiator_ctx);
+        initiator_mgr.process_packet(&proof, &proof_packet, now_ms, &mut OsRng);
         let _ = initiator_mgr.drain_events().collect::<Vec<_>>();
 
         // Deliver RTT packet to responder
         let rtt_packet = initiator_mgr.take_pending_rtt_packet(&link_id).unwrap();
         let rtt = Packet::unpack(&rtt_packet).unwrap();
-        responder_mgr.process_packet(&rtt, &rtt_packet, &mut responder_ctx);
+        responder_mgr.process_packet(&rtt, &rtt_packet, now_ms, &mut OsRng);
         let _ = responder_mgr.drain_events().collect::<Vec<_>>();
 
         assert!(initiator_mgr.is_active(&link_id));
@@ -1430,8 +1387,7 @@ mod tests {
         LinkPair {
             initiator: initiator_mgr,
             responder: responder_mgr,
-            initiator_ctx,
-            responder_ctx,
+            now_ms,
             initiator_link_id: link_id,
             responder_link_id,
         }
@@ -1471,13 +1427,13 @@ mod tests {
         // Send data from initiator
         let data_packet = pair
             .initiator
-            .send(&pair.initiator_link_id, b"hello", &mut pair.initiator_ctx)
+            .send(&pair.initiator_link_id, b"hello", &mut OsRng)
             .unwrap();
 
         // Process data on responder
         let data = Packet::unpack(&data_packet).unwrap();
         pair.responder
-            .process_packet(&data, &data_packet, &mut pair.responder_ctx);
+            .process_packet(&data, &data_packet, pair.now_ms, &mut OsRng);
 
         // Should have generated a proof packet
         let proof_packets: Vec<_> = pair.responder.drain_proof_packets();
@@ -1497,13 +1453,13 @@ mod tests {
         // Send data from initiator
         let data_packet = pair
             .initiator
-            .send(&pair.initiator_link_id, b"hello", &mut pair.initiator_ctx)
+            .send(&pair.initiator_link_id, b"hello", &mut OsRng)
             .unwrap();
 
         // Process data on responder
         let data = Packet::unpack(&data_packet).unwrap();
         pair.responder
-            .process_packet(&data, &data_packet, &mut pair.responder_ctx);
+            .process_packet(&data, &data_packet, pair.now_ms, &mut OsRng);
 
         // Should NOT have generated a proof packet (PROVE_APP waits for app decision)
         let proof_packets: Vec<_> = pair.responder.drain_proof_packets();
@@ -1527,7 +1483,7 @@ mod tests {
         // Send data with receipt tracking
         let (data_packet, sent_hash) = pair
             .initiator
-            .send_with_receipt(&pair.initiator_link_id, b"hello", &mut pair.initiator_ctx)
+            .send_with_receipt(&pair.initiator_link_id, b"hello", pair.now_ms, &mut OsRng)
             .unwrap();
 
         // Should have created a receipt
@@ -1536,7 +1492,7 @@ mod tests {
         // Process data on responder - this generates the proof
         let data = Packet::unpack(&data_packet).unwrap();
         pair.responder
-            .process_packet(&data, &data_packet, &mut pair.responder_ctx);
+            .process_packet(&data, &data_packet, pair.now_ms, &mut OsRng);
 
         // Get the proof packet
         let proof_packets: Vec<_> = pair.responder.drain_proof_packets();
@@ -1563,7 +1519,7 @@ mod tests {
         );
 
         pair.initiator
-            .process_packet(&data_proof, data_proof_packet, &mut pair.initiator_ctx);
+            .process_packet(&data_proof, data_proof_packet, pair.now_ms, &mut OsRng);
 
         // Should have emitted DataDelivered event
         let events: Vec<_> = pair.initiator.drain_events().collect();
@@ -1597,14 +1553,15 @@ mod tests {
             .send_with_receipt(
                 &pair.initiator_link_id,
                 b"prove_app_test",
-                &mut pair.initiator_ctx,
+                pair.now_ms,
+                &mut OsRng,
             )
             .unwrap();
 
         // Process data on responder - should emit ProofRequested
         let data = Packet::unpack(&data_packet).unwrap();
         pair.responder
-            .process_packet(&data, &data_packet, &mut pair.responder_ctx);
+            .process_packet(&data, &data_packet, pair.now_ms, &mut OsRng);
 
         // Find the ProofRequested event
         let events: Vec<_> = pair.responder.drain_events().collect();
@@ -1624,7 +1581,7 @@ mod tests {
         // Deliver proof to initiator
         let data_proof = Packet::unpack(&proof_packet).unwrap();
         pair.initiator
-            .process_packet(&data_proof, &proof_packet, &mut pair.initiator_ctx);
+            .process_packet(&data_proof, &proof_packet, pair.now_ms, &mut OsRng);
 
         // Initiator should receive DataDelivered event
         let events: Vec<_> = pair.initiator.drain_events().collect();
@@ -1657,7 +1614,8 @@ mod tests {
             .send_with_receipt(
                 &pair.initiator_link_id,
                 b"will expire",
-                &mut pair.initiator_ctx,
+                pair.now_ms,
+                &mut OsRng,
             )
             .unwrap();
 
@@ -1665,9 +1623,9 @@ mod tests {
         assert_eq!(pair.initiator.data_receipts.len(), 1);
 
         // Advance time past the receipt timeout
-        pair.initiator_ctx.clock.advance(DATA_RECEIPT_TIMEOUT_MS + 1);
+        let expired_ms = pair.now_ms + DATA_RECEIPT_TIMEOUT_MS + 1;
         pair.initiator
-            .poll(pair.initiator_ctx.clock.now_ms(), &mut pair.initiator_ctx);
+            .poll(expired_ms, &mut OsRng);
 
         // Receipt should have been cleaned up
         assert_eq!(

@@ -32,11 +32,11 @@
 
 Das Projekt hat Phase 1 vollständig abgeschlossen und Phase 2 ist zu ~90% fertig. Meilensteine 2.1 (Destination API), 2.2 (Link-Responder) und 2.3 (High-Level Link API inkl. Keepalive) sind abgeschlossen. Meilenstein 3.2 (Channel-System inkl. Buffer-System) ist ebenfalls fertig — StreamDataMessage für binäre Streams und RawChannelReader/Writer für gepufferte I/O sind implementiert. **Neu: High-Level Node API** (`NodeCore` in reticulum-core, `ReticulumNode` in reticulum-std) bietet eine einheitliche async-kompatible Schnittstelle mit Smart Routing, Connection-Abstraktion und symmetrischer Channel-API. Die Architektur wurde grundlegend umgebaut: alle Protokolllogik lebt in `reticulum-core` (no_std + alloc), plattformspezifische I/O in `reticulum-std` via Traits. Vollständige Interoperabilität mit Python rnsd ist nachgewiesen.
 
-**Architektur-Migration abgeschlossen:** Die `Context`-Trait-Abstraktion für RNG, Clock und Storage ist vollständig. Alle `#[cfg(feature = "alloc")]` wurden entfernt — `alloc` ist immer verfügbar. Das `std` Feature aktiviert nur noch optimierte Crypto-Implementierungen.
+**Architektur-Migration abgeschlossen:** `NodeCore` besitzt RNG intern als generischen Parameter (`NodeCore<R, C, S>`). Alle Runtime-Methoden (`tick()`, `connect()`, etc.) benötigen keinen `Context`-Parameter mehr. Die `Context`-Trait-Abstraktion wird nur noch für `Destination::announce()` und `Identity::generate()` verwendet. Alle `#[cfg(feature = "alloc")]` wurden entfernt — `alloc` ist immer verfügbar. Das `std` Feature aktiviert nur noch optimierte Crypto-Implementierungen.
 
 **Ratchet & IFAC implementiert:** Forward Secrecy via Ratchets und Interface Access Codes sind vollständig implementiert und gegen Python Reticulum getestet.
 
-**Code-Qualität:** LinkManager intern auf einheitliche Paket-Queue (`PendingPacket` Enum) umgestellt, Timeout-Konstanten zentralisiert, `LinkId` und `DestinationHash` als Newtype-Structs für vollständige Typ-Sicherheit (keine `Deref` mehr, kein `as_bytes_mut()`). Proof-Strategy und Signing-Key von LinkManager's Destination-Map auf den `Link` selbst verschoben — reduziert duplizierte State zwischen Transport, LinkManager und NodeCore. Transport Layer um 9 Bugfixes/Features erweitert: Reverse-Table-Proof-Routing, Hop-Count-Validation, Header-Stripping am letzten Hop, Interface-Cleanup, Announce-Replay-Schutz, LRPROOF-Validierung, Auto-Re-Announce auf PATH_REQUEST. 761 Tests bestehen (490 Core + 20 Std-Lib + 164 Interop + 30 Doctests + 18 Proptest + 31 Test-Vektoren + 7 Std-Unit + 1 FFI).
+**Code-Qualität:** LinkManager intern auf einheitliche Paket-Queue (`PendingPacket` Enum) umgestellt, Timeout-Konstanten zentralisiert, `LinkId` und `DestinationHash` als Newtype-Structs für vollständige Typ-Sicherheit (keine `Deref` mehr, kein `as_bytes_mut()`). Proof-Strategy und Signing-Key von LinkManager's Destination-Map auf den `Link` selbst verschoben — reduziert duplizierte State zwischen Transport, LinkManager und NodeCore. Transport Layer um 9 Bugfixes/Features erweitert: Reverse-Table-Proof-Routing, Hop-Count-Validation, Header-Stripping am letzten Hop, Interface-Cleanup, Announce-Replay-Schutz, LRPROOF-Validierung, Auto-Re-Announce auf PATH_REQUEST. **Rust Transport Relay** funktioniert vollständig: Announce-Rebroadcast, Link-Routing und Datenweiterleitung zwischen zwei Python-Daemons getestet. 766 Tests bestehen (491 Core-Unit + 22 Std-Lib + 166 Interop + 30 Doctests + 18 Proptest + 31 Test-Vektoren + 7 Core-Integration + 1 FFI).
 
 | Komponente | Status | LOC |
 |------------|--------|-----|
@@ -64,7 +64,7 @@ Das Projekt hat Phase 1 vollständig abgeschlossen und Phase 2 ist zu ~90% ferti
 | reticulum-std | 1.146 | 10.418 |
 | reticulum-ffi | 361 | 404 |
 
-**Test-Abdeckung:** 761 Tests (490 Core-Unit + 18 Proptest + 31 Test-Vektoren + 30 Doctests + 20 Std-Lib + 7 Std-Unit + 1 FFI + 164 Interop gegen rnsd)
+**Test-Abdeckung:** 766 Tests (491 Core-Unit + 18 Proptest + 31 Test-Vektoren + 30 Doctests + 22 Std-Lib + 7 Core-Integration + 1 FFI + 166 Interop gegen rnsd)
 
 **Architektur:** Siehe [doc/ARCHITECTURE.md](doc/ARCHITECTURE.md) — no_std/embedded-freundlich, Protocol in Core, I/O via Traits.
 
@@ -265,7 +265,7 @@ Production-ready mit vollständigem Tooling.
 **Deliverable:** Wichtigste Interface-Typen verfügbar
 
 ### Meilenstein 4.3: Qualitätssicherung (Woche 25-26)
-- [x] Integration-Tests gegen rnsd-Daemon (164 Tests)
+- [x] Integration-Tests gegen rnsd-Daemon (166 Tests)
 - [ ] Performance-Optimierung
 - [ ] Speicher-Profiling mit Valgrind
 - [ ] Fuzzing der Paket-Parser
@@ -323,7 +323,7 @@ Testumgebung:
 └─────────────┘      └─────────────┘
 ```
 
-Automatisierte Test-Suite (164 Interop-Tests gegen rnsd):
+Automatisierte Test-Suite (166 Interop-Tests gegen rnsd):
 - ✅ TCP-Verbindung zu rnsd
 - ✅ Pakete empfangen und senden
 - ✅ Announce-Erstellung und -Validierung
@@ -337,6 +337,7 @@ Automatisierte Test-Suite (164 Interop-Tests gegen rnsd):
 - ✅ Multi-Hop-Topologie und Routing
 - ✅ Link-Manager mit Responder-Modus
 - ✅ Edge-Cases und Stress-Tests
+- ✅ Transport Relay (Rust-Node leitet Announces, Links und Daten zwischen zwei Python-Daemons)
 - Resource Transfer
 - Error Recovery
 
@@ -420,7 +421,7 @@ Monat 1    Monat 2    Monat 3       Monat 4       Monat 5    Monat 6
 - [ ] Resource Transfer: Dateien übertragen
 - [ ] `lrnsd` Daemon läuft standalone
 - [ ] TCP Client + Server Interfaces
-- [x] Integration-Tests gegen Python rnsd bestehen (164 Interop-Tests)
+- [x] Integration-Tests gegen Python rnsd bestehen (166 Interop-Tests)
 - [x] no_std-Kompatibilität für reticulum-core (Context-Trait)
 - [x] Forward Secrecy via Ratchets
 - [x] Interface Access Codes (IFAC)

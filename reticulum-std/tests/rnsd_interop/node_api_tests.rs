@@ -76,32 +76,35 @@ async fn test_node_receives_announce_from_daemon() {
         .await
         .expect("Failed to announce");
 
-    // Wait for announce event with timeout
-    let event_result = timeout(Duration::from_secs(5), events.recv()).await;
+    // Wait for AnnounceReceived event (skip other events like PathFound)
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
+    let mut found = false;
+    while tokio::time::Instant::now() < deadline {
+        let event_result = timeout(
+            deadline - tokio::time::Instant::now(),
+            events.recv(),
+        )
+        .await;
 
-    assert!(
-        event_result.is_ok(),
-        "Should receive event within timeout"
-    );
-
-    let event = event_result
-        .unwrap()
-        .expect("Event channel should not be closed");
-
-    // Verify we received an announce event
-    match event {
-        NodeEvent::AnnounceReceived { announce, .. } => {
-            // Verify destination hash matches
-            let received_hash = hex::encode(announce.destination_hash());
-            assert_eq!(
-                received_hash, dest.hash,
-                "Announce destination hash should match"
-            );
-        }
-        other => {
-            panic!("Expected AnnounceReceived event, got: {:?}", other);
+        match event_result {
+            Ok(Some(NodeEvent::AnnounceReceived { announce, .. })) => {
+                let received_hash = hex::encode(announce.destination_hash());
+                assert_eq!(
+                    received_hash, dest.hash,
+                    "Announce destination hash should match"
+                );
+                found = true;
+                break;
+            }
+            Ok(Some(_other)) => {
+                // Skip non-announce events (e.g. PathFound)
+                continue;
+            }
+            Ok(None) => panic!("Event channel closed"),
+            Err(_) => break,
         }
     }
+    assert!(found, "Should receive AnnounceReceived event within timeout");
 
     // Clean up
     node.stop().await.expect("Failed to stop node");

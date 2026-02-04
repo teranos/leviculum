@@ -6,7 +6,7 @@ use std::net::SocketAddr;
 use std::path::PathBuf;
 
 use reticulum_core::identity::Identity;
-use reticulum_core::traits::{NoStorage, PlatformContext};
+use reticulum_core::node::NodeCoreBuilder;
 use reticulum_core::ProofStrategy;
 
 use crate::clock::SystemClock;
@@ -32,12 +32,10 @@ use super::ReticulumNode;
 /// # }
 /// ```
 pub struct ReticulumNodeBuilder {
-    identity: Option<Identity>,
-    proof_strategy: ProofStrategy,
+    core_builder: NodeCoreBuilder,
     config_path: Option<PathBuf>,
     storage_path: Option<PathBuf>,
     interfaces: Vec<InterfaceConfig>,
-    enable_transport: bool,
 }
 
 impl Default for ReticulumNodeBuilder {
@@ -50,12 +48,10 @@ impl ReticulumNodeBuilder {
     /// Create a new builder with default settings
     pub fn new() -> Self {
         Self {
-            identity: None,
-            proof_strategy: ProofStrategy::default(),
+            core_builder: NodeCoreBuilder::new(),
             config_path: None,
             storage_path: None,
             interfaces: Vec::new(),
-            enable_transport: false,
         }
     }
 
@@ -63,13 +59,13 @@ impl ReticulumNodeBuilder {
     ///
     /// If not set, a random identity will be generated.
     pub fn identity(mut self, identity: Identity) -> Self {
-        self.identity = Some(identity);
+        self.core_builder = self.core_builder.identity(identity);
         self
     }
 
     /// Set the proof strategy for the node
     pub fn proof_strategy(mut self, strategy: ProofStrategy) -> Self {
-        self.proof_strategy = strategy;
+        self.core_builder = self.core_builder.proof_strategy(strategy);
         self
     }
 
@@ -153,7 +149,7 @@ impl ReticulumNodeBuilder {
     ///
     /// When enabled, this node will forward packets between interfaces.
     pub fn enable_transport(mut self, enabled: bool) -> Self {
-        self.enable_transport = enabled;
+        self.core_builder = self.core_builder.enable_transport(enabled);
         self
     }
 
@@ -190,11 +186,6 @@ impl ReticulumNodeBuilder {
         let storage = Storage::new(&storage_path)?;
         let clock = SystemClock::new();
 
-        // Get or generate identity
-        let identity = self
-            .identity
-            .unwrap_or_else(|| Identity::generate_with_rng(&mut rand_core::OsRng));
-
         // Merge interface configs from file
         let mut interfaces = config
             .interfaces
@@ -202,19 +193,13 @@ impl ReticulumNodeBuilder {
             .collect::<Vec<_>>();
         interfaces.extend(self.interfaces);
 
-        // Build NodeCore with identity
-        let mut ctx = PlatformContext {
-            rng: rand_core::OsRng,
-            clock: SystemClock::new(),
-            storage: NoStorage,
-        };
-        let node_core = reticulum_core::node::NodeCoreBuilder::new()
-            .identity(identity)
-            .proof_strategy(self.proof_strategy)
-            .build(&mut ctx, clock, storage)
+        // Build NodeCore directly from the core builder
+        let enable_transport = self.core_builder.is_transport_enabled();
+        let node_core = self.core_builder
+            .build(rand_core::OsRng, clock, storage)
             .map_err(|e| Error::Transport(format!("{:?}", e)))?;
 
-        Ok(ReticulumNode::new(node_core, interfaces, self.enable_transport))
+        Ok(ReticulumNode::new(node_core, interfaces, enable_transport))
     }
 }
 
@@ -225,17 +210,15 @@ mod tests {
     #[test]
     fn test_builder_default() {
         let builder = ReticulumNodeBuilder::new();
-        assert!(builder.identity.is_none());
         assert!(builder.config_path.is_none());
         assert!(builder.interfaces.is_empty());
-        assert!(!builder.enable_transport);
     }
 
     #[test]
     fn test_builder_with_identity() {
         let identity = Identity::generate_with_rng(&mut rand_core::OsRng);
-        let builder = ReticulumNodeBuilder::new().identity(identity);
-        assert!(builder.identity.is_some());
+        let _builder = ReticulumNodeBuilder::new().identity(identity);
+        // Identity is consumed by NodeCoreBuilder, verified by the build test
     }
 
     #[test]
@@ -249,6 +232,21 @@ mod tests {
     #[test]
     fn test_builder_enable_transport() {
         let builder = ReticulumNodeBuilder::new().enable_transport(true);
-        assert!(builder.enable_transport);
+        assert!(builder.core_builder.is_transport_enabled());
+    }
+
+    #[tokio::test]
+    async fn test_builder_enable_transport_wired_to_nodecore() {
+        let node = ReticulumNodeBuilder::new()
+            .enable_transport(true)
+            .build()
+            .await
+            .expect("Failed to build node");
+        let inner = node.inner();
+        let core = inner.lock().unwrap();
+        assert!(
+            core.transport_config().enable_transport,
+            "enable_transport should be wired through to NodeCore's TransportConfig"
+        );
     }
 }

@@ -36,9 +36,9 @@ use alloc::vec::Vec;
 
 use crate::constants::{
     ANNOUNCE_RATE_LIMIT_MS, LINK_TIMEOUT_MS, LOCAL_REBROADCASTS_MAX, MAX_PATH_REQUEST_TAGS,
-    MS_PER_SECOND, PACKET_CACHE_EXPIRY_MS, PATH_REQUEST_GRACE_MS, PATH_REQUEST_MIN_INTERVAL_MS,
-    PATHFINDER_EXPIRY_SECS, PATHFINDER_G_MS, PATHFINDER_MAX_HOPS, PATHFINDER_RETRIES,
-    PATHFINDER_RW_MS, REVERSE_TABLE_EXPIRY_MS, TRUNCATED_HASHBYTES,
+    MS_PER_SECOND, MTU, PACKET_CACHE_EXPIRY_MS, PATH_REQUEST_GRACE_MS,
+    PATH_REQUEST_MIN_INTERVAL_MS, PATHFINDER_EXPIRY_SECS, PATHFINDER_G_MS, PATHFINDER_MAX_HOPS,
+    PATHFINDER_RETRIES, PATHFINDER_RW_MS, REVERSE_TABLE_EXPIRY_MS, TRUNCATED_HASHBYTES,
 };
 
 use crate::announce::ReceivedAnnounce;
@@ -398,6 +398,14 @@ impl<C: Clock, S: Storage> Transport<C, S> {
         }
     }
 
+    /// Get an immutable reference to an interface
+    pub fn interface_ref(&self, index: usize) -> Option<&(dyn Interface + '_)> {
+        match self.interfaces.get(index) {
+            Some(Some(iface)) => Some(iface.as_ref()),
+            _ => None,
+        }
+    }
+
     /// Get the number of registered interfaces
     pub fn interface_count(&self) -> usize {
         self.interfaces.iter().filter(|i| i.is_some()).count()
@@ -669,6 +677,41 @@ impl<C: Clock, S: Storage> Transport<C, S> {
 
     // ─── Polling ────────────────────────────────────────────────────────
 
+    /// Poll registered interfaces for incoming data and process any received packets.
+    ///
+    /// This reads from each registered interface and feeds received data into
+    /// `process_incoming()`. The borrow on each interface is scoped so that
+    /// `process_incoming()` can access other interfaces for forwarding.
+    pub fn poll_interfaces(&mut self) {
+        let mut recv_buf = [0u8; MTU];
+        for idx in 0..self.interfaces.len() {
+            loop {
+                let len = {
+                    let iface = match self.interfaces.get_mut(idx) {
+                        Some(Some(iface)) => iface.as_mut(),
+                        _ => break,
+                    };
+                    match iface.recv(&mut recv_buf) {
+                        Ok(len) if len > 0 => len,
+                        _ => break,
+                    }
+                };
+                // Interface borrow dropped — safe to call process_incoming
+                let data = recv_buf[..len].to_vec();
+                let _ = self.process_incoming(idx, &data);
+            }
+        }
+    }
+
+    /// Drive the transport layer for one tick.
+    ///
+    /// Polls interfaces for incoming data, then runs periodic maintenance.
+    /// This is the preferred single entry point for the transport layer.
+    pub fn tick(&mut self) {
+        self.poll_interfaces();
+        self.poll();
+    }
+
     /// Poll for periodic work
     ///
     /// Call this regularly (e.g. every 100ms). Handles:
@@ -720,6 +763,33 @@ impl<C: Clock, S: Storage> Transport<C, S> {
     /// Access the clock
     pub fn clock(&self) -> &C {
         &self.clock
+    }
+
+    /// Iterate over all path table entries
+    pub fn paths(&self) -> impl Iterator<Item = (&[u8; TRUNCATED_HASHBYTES], &PathEntry)> {
+        self.path_table.iter()
+    }
+
+    /// Number of active entries in the link relay table
+    pub fn link_table_count(&self) -> usize {
+        self.link_table.len()
+    }
+
+    /// Get a link table entry by link ID hash
+    pub fn link_table_entry(&self, link_id: &[u8; TRUNCATED_HASHBYTES]) -> Option<&LinkEntry> {
+        self.link_table.get(link_id)
+    }
+
+    /// Iterate over all link table entries
+    pub fn link_table_iter(
+        &self,
+    ) -> impl Iterator<Item = (&[u8; TRUNCATED_HASHBYTES], &LinkEntry)> {
+        self.link_table.iter()
+    }
+
+    /// Number of pending announce rebroadcasts
+    pub fn announce_table_count(&self) -> usize {
+        self.announce_table.len()
     }
 
     // ─── Internal: Packet Handlers ──────────────────────────────────────
@@ -928,7 +998,7 @@ impl<C: Clock, S: Storage> Transport<C, S> {
 
                 // Forward: strip to Type1 at final hop, Type2 otherwise
                 let remaining_hops = path.hops;
-                let forwarded = if remaining_hops <= 1 {
+                let mut forwarded = if remaining_hops <= 1 {
                     // Final hop: destination is directly connected, strip transport header
                     Packet {
                         flags: PacketFlags {
@@ -936,7 +1006,7 @@ impl<C: Clock, S: Storage> Transport<C, S> {
                             transport_type: TransportType::Broadcast,
                             ..packet.flags
                         },
-                        hops: packet.hops.saturating_add(1),
+                        hops: packet.hops,
                         transport_id: None,
                         destination_hash: dest_hash,
                         context: packet.context,
@@ -950,7 +1020,7 @@ impl<C: Clock, S: Storage> Transport<C, S> {
                             transport_type: TransportType::Transport,
                             ..packet.flags
                         },
-                        hops: packet.hops.saturating_add(1),
+                        hops: packet.hops,
                         transport_id: Some(transport_id_bytes),
                         destination_hash: dest_hash,
                         context: packet.context,
@@ -958,8 +1028,7 @@ impl<C: Clock, S: Storage> Transport<C, S> {
                     }
                 };
 
-                self.stats.packets_forwarded += 1;
-                return self.send_packet_on_interface(target_iface, &forwarded);
+                return self.forward_on_interface(target_iface, &mut forwarded);
             }
 
             // No path known, drop
@@ -1033,12 +1102,14 @@ impl<C: Clock, S: Storage> Transport<C, S> {
                     if interface_index == link_entry.next_hop_interface_index {
                         // From destination side: check remaining_hops
                         if packet.hops != link_entry.remaining_hops {
+                            self.stats.packets_dropped += 1;
                             return Ok(());
                         }
                         link_entry.received_interface_index
                     } else if interface_index == link_entry.received_interface_index {
                         // From initiator side: check taken hops
                         if packet.hops != link_entry.hops {
+                            self.stats.packets_dropped += 1;
                             return Ok(());
                         }
                         link_entry.next_hop_interface_index
@@ -1048,9 +1119,15 @@ impl<C: Clock, S: Storage> Transport<C, S> {
 
                 // LRPROOF validation: check proof data size before forwarding
                 if packet.context == PacketContext::Lrproof {
-                    // Link proof format: sig(64) + X25519(32) + signaling(3) = 99 bytes
-                    const LINK_PROOF_SIZE: usize = 99;
-                    if proof_data.len() != LINK_PROOF_SIZE {
+                    // Link proof format:
+                    //   sig(64) + X25519(32) = 96 bytes (without signalling)
+                    //   sig(64) + X25519(32) + signaling(3) = 99 bytes (with signalling)
+                    const LINK_PROOF_SIZE_MIN: usize = 96;
+                    const LINK_PROOF_SIZE_MAX: usize = 99;
+                    if proof_data.len() != LINK_PROOF_SIZE_MIN
+                        && proof_data.len() != LINK_PROOF_SIZE_MAX
+                    {
+                        self.stats.packets_dropped += 1;
                         return Ok(());
                     }
                 }
@@ -1063,8 +1140,9 @@ impl<C: Clock, S: Storage> Transport<C, S> {
                     }
                 }
 
-                self.stats.packets_forwarded += 1;
-                return self.send_packet_on_interface(target_iface, &packet);
+                // Forward proof via link table
+                let mut forwarded = packet;
+                return self.forward_on_interface(target_iface, &mut forwarded);
             }
 
             // Check reverse table for regular proof routing
@@ -1073,10 +1151,10 @@ impl<C: Clock, S: Storage> Transport<C, S> {
                 // original packet was forwarded to) and be routed back to the
                 // receiving interface (where the original packet came from).
                 if interface_index == reverse_entry.outbound_interface_index {
-                    self.stats.packets_forwarded += 1;
-                    return self.send_packet_on_interface(
+                    let mut forwarded = packet;
+                    return self.forward_on_interface(
                         reverse_entry.receiving_interface_index,
-                        &packet,
+                        &mut forwarded,
                     );
                 }
             }
@@ -1170,8 +1248,9 @@ impl<C: Clock, S: Storage> Transport<C, S> {
                         },
                     );
 
-                    self.stats.packets_forwarded += 1;
-                    return self.send_packet_on_interface(target_iface, &packet);
+                    // Forward data via link table
+                    let mut forwarded = packet;
+                    return self.forward_on_interface(target_iface, &mut forwarded);
                 }
             }
 
@@ -1189,12 +1268,6 @@ impl<C: Clock, S: Storage> Transport<C, S> {
         source_interface_index: usize,
         dedup_hash: [u8; TRUNCATED_HASHBYTES],
     ) -> Result<(), TransportError> {
-        packet.hops = packet.hops.saturating_add(1);
-        if packet.hops > self.config.max_hops {
-            self.stats.packets_dropped += 1;
-            return Ok(()); // TTL exceeded
-        }
-
         // Look up path
         if let Some(path) = self.path_table.get(&packet.destination_hash) {
             let target_iface = path.interface_index;
@@ -1217,13 +1290,47 @@ impl<C: Clock, S: Storage> Transport<C, S> {
                 },
             );
 
-            self.stats.packets_forwarded += 1;
-            return self.send_packet_on_interface(target_iface, &packet);
+            return self.forward_on_interface(target_iface, &mut packet);
         }
 
         // No path, drop silently
         self.stats.packets_dropped += 1;
         Ok(())
+    }
+
+    /// Forward a packet through a single interface.
+    /// Always increments hops, checks TTL, and updates stats.
+    fn forward_on_interface(
+        &mut self,
+        interface_index: usize,
+        packet: &mut Packet,
+    ) -> Result<(), TransportError> {
+        packet.hops = packet.hops.saturating_add(1);
+        if packet.hops > self.config.max_hops {
+            self.stats.packets_dropped += 1;
+            return Ok(());
+        }
+        self.stats.packets_forwarded += 1;
+        self.send_packet_on_interface(interface_index, packet)
+    }
+
+    /// Forward a packet on all interfaces except one.
+    /// Always increments hops, checks TTL, and updates stats.
+    fn forward_on_all_except(
+        &mut self,
+        except_index: usize,
+        packet: &mut Packet,
+    ) {
+        packet.hops = packet.hops.saturating_add(1);
+        if packet.hops > self.config.max_hops {
+            self.stats.packets_dropped += 1;
+            return;
+        }
+        let mut buf = [0u8; MTU];
+        if let Ok(len) = packet.pack(&mut buf) {
+            self.send_on_all_interfaces_except(except_index, &buf[..len]);
+            self.stats.packets_forwarded += 1;
+        }
     }
 
     fn send_packet_on_interface(
@@ -1540,13 +1647,6 @@ impl<C: Clock, S: Storage> Transport<C, S> {
         for (dest_hash, raw, except_iface, _original_hops, block) in to_rebroadcast {
             // Rebuild packet as Header Type 2 with our transport ID
             if let Ok(mut parsed) = Packet::unpack(&raw) {
-                parsed.hops = parsed.hops.saturating_add(1);
-
-                if parsed.hops > self.config.max_hops {
-                    self.announce_table.remove(&dest_hash);
-                    continue;
-                }
-
                 // Set as Header Type 2 (transport-routed)
                 parsed.flags.header_type = HeaderType::Type2;
                 parsed.flags.transport_type = TransportType::Transport;
@@ -1557,10 +1657,12 @@ impl<C: Clock, S: Storage> Transport<C, S> {
                     parsed.context = PacketContext::PathResponse;
                 }
 
-                let mut buf = [0u8; crate::constants::MTU];
-                if let Ok(len) = parsed.pack(&mut buf) {
-                    self.send_on_all_interfaces_except(except_iface, &buf[..len]);
-                    self.stats.packets_forwarded += 1;
+                self.forward_on_all_except(except_iface, &mut parsed);
+
+                // If TTL exceeded, remove from announce table
+                if parsed.hops > self.config.max_hops {
+                    self.announce_table.remove(&dest_hash);
+                    continue;
                 }
             }
 
@@ -3053,7 +3155,7 @@ mod tests {
             );
 
             // Build a link request arriving on if0
-            let mut link = Link::new_outgoing_with_rng(dest_hash.into(), &mut OsRng);
+            let mut link = Link::new_outgoing(dest_hash.into(), &mut OsRng);
             let raw = link.build_link_request_packet();
             transport.process_incoming(0, &raw).unwrap();
 
@@ -3105,7 +3207,7 @@ mod tests {
             );
 
             // Build a link request arriving on if0
-            let mut link = Link::new_outgoing_with_rng(dest_hash.into(), &mut OsRng);
+            let mut link = Link::new_outgoing(dest_hash.into(), &mut OsRng);
             let raw = link.build_link_request_packet();
             transport.process_incoming(0, &raw).unwrap();
 
@@ -3128,6 +3230,277 @@ mod tests {
                 forwarded_pkt.transport_id.is_some(),
                 "Type2 packet should have transport_id"
             );
+        }
+
+        // ─── Forward payload integrity: Type2 -> Type1 conversion ────────
+
+        #[test]
+        fn test_link_request_forward_type2_to_type1_payload_intact() {
+            // Setup: transport with 2 CaptureMockInterfaces so we can inspect
+            // what is sent on each interface.
+            let mut transport = make_transport_enabled();
+
+            let sent_if0: Arc<Mutex<Vec<Vec<u8>>>> = Arc::new(Mutex::new(Vec::new()));
+            let sent_if1: Arc<Mutex<Vec<Vec<u8>>>> = Arc::new(Mutex::new(Vec::new()));
+
+            let _idx0 = transport.register_interface(Box::new(
+                CaptureMockInterface::new("if0", 1, sent_if0.clone()),
+            ));
+            let _idx1 = transport.register_interface(Box::new(
+                CaptureMockInterface::new("if1", 2, sent_if1.clone()),
+            ));
+
+            // Create a path entry for dest_hash with hops=0 (directly connected
+            // to if1), meaning the relay is the final hop.
+            let dest_hash = [0xDD; TRUNCATED_HASHBYTES];
+            let now = transport.clock.now_ms();
+            transport.path_table.insert(
+                dest_hash,
+                PathEntry {
+                    received_from: [0x02; TRUNCATED_HASHBYTES],
+                    hops: 0,
+                    timestamp_ms: now,
+                    expires_ms: now + 100_000,
+                    interface_index: 1,
+                    random_blobs: Vec::new(),
+                },
+            );
+
+            // ── Part A: Type1 link request arriving on if0, forwarded to if1 ──
+
+            let mut link_a = Link::new_outgoing(dest_hash.into(), &mut OsRng);
+            let original_request_data_a = link_a.create_link_request();
+            let raw_type1 = link_a.build_link_request_packet();
+
+            // Verify the original is Type1
+            let original_pkt_a = Packet::unpack(&raw_type1).unwrap();
+            assert_eq!(original_pkt_a.flags.header_type, HeaderType::Type1);
+            assert_eq!(original_pkt_a.flags.packet_type, PacketType::LinkRequest);
+
+            transport.process_incoming(0, &raw_type1).unwrap();
+
+            assert!(
+                transport.stats().packets_forwarded > 0,
+                "Type1 link request should be forwarded"
+            );
+
+            // Verify the forwarded packet on if1
+            {
+                let sent = sent_if1.lock().unwrap();
+                assert!(!sent.is_empty(), "Should have sent a packet on if1");
+                let forwarded_raw = &sent[0];
+                let forwarded_pkt = Packet::unpack(forwarded_raw)
+                    .expect("Forwarded packet must be parseable by Packet::unpack");
+
+                assert_eq!(
+                    forwarded_pkt.flags.header_type,
+                    HeaderType::Type1,
+                    "Final hop (hops=0) should produce Type1"
+                );
+                assert_eq!(
+                    forwarded_pkt.flags.packet_type,
+                    PacketType::LinkRequest,
+                    "Packet type must remain LinkRequest"
+                );
+                assert_eq!(
+                    forwarded_pkt.destination_hash, dest_hash,
+                    "Destination hash must match"
+                );
+                assert!(
+                    forwarded_pkt.transport_id.is_none(),
+                    "Type1 must have no transport_id"
+                );
+                assert_eq!(
+                    forwarded_pkt.hops, 1,
+                    "Hops should be incremented by 1"
+                );
+
+                // Verify data payload is intact (the 64-byte link request data)
+                assert_eq!(
+                    forwarded_pkt.data.as_slice(),
+                    &original_request_data_a[..],
+                    "Link request payload must be preserved exactly"
+                );
+            }
+
+            // Nothing should be sent on if0 (the receiving interface)
+            {
+                let sent = sent_if0.lock().unwrap();
+                assert!(
+                    sent.is_empty(),
+                    "No packets should be sent back on the receiving interface"
+                );
+            }
+
+            // ── Part B: Type2 link request arriving on if0, forwarded to if1 ──
+
+            // Clear previous state
+            sent_if1.lock().unwrap().clear();
+            transport.packet_cache.clear(); // allow processing
+
+            // Build a Type2 link request (with transport_id set)
+            let fake_transport_id = [0xAA; TRUNCATED_HASHBYTES];
+            let mut link_b = Link::new_outgoing(dest_hash.into(), &mut OsRng);
+            let original_request_data_b = link_b.create_link_request();
+            let raw_type2 = link_b.build_link_request_packet_with_transport(
+                Some(fake_transport_id),
+                1, // hops_to_dest
+            );
+
+            // Verify the original is Type2
+            let original_pkt_b = Packet::unpack(&raw_type2).unwrap();
+            assert_eq!(original_pkt_b.flags.header_type, HeaderType::Type2);
+            assert_eq!(original_pkt_b.flags.packet_type, PacketType::LinkRequest);
+            assert_eq!(
+                original_pkt_b.transport_id,
+                Some(fake_transport_id),
+                "Original should carry transport_id"
+            );
+
+            let forwarded_before = transport.stats().packets_forwarded;
+            transport.process_incoming(0, &raw_type2).unwrap();
+
+            assert!(
+                transport.stats().packets_forwarded > forwarded_before,
+                "Type2 link request should be forwarded"
+            );
+
+            // Verify the forwarded packet on if1
+            {
+                let sent = sent_if1.lock().unwrap();
+                assert!(!sent.is_empty(), "Should have sent a forwarded packet on if1");
+                let forwarded_raw = &sent[0];
+                let forwarded_pkt = Packet::unpack(forwarded_raw)
+                    .expect("Forwarded Type2->Type1 packet must be parseable");
+
+                assert_eq!(
+                    forwarded_pkt.flags.header_type,
+                    HeaderType::Type1,
+                    "Final hop should convert Type2 to Type1"
+                );
+                assert_eq!(
+                    forwarded_pkt.flags.packet_type,
+                    PacketType::LinkRequest,
+                    "Packet type must remain LinkRequest after conversion"
+                );
+                assert_eq!(
+                    forwarded_pkt.destination_hash, dest_hash,
+                    "Destination hash must be preserved"
+                );
+                assert!(
+                    forwarded_pkt.transport_id.is_none(),
+                    "Type1 must strip transport_id"
+                );
+                assert_eq!(
+                    forwarded_pkt.hops, 1,
+                    "Hops should be original (0) + 1 = 1"
+                );
+
+                // Verify data payload is intact (the 64-byte link request data)
+                assert_eq!(
+                    forwarded_pkt.data.as_slice(),
+                    &original_request_data_b[..],
+                    "Link request payload must be preserved exactly after Type2->Type1 conversion"
+                );
+            }
+
+            // ── Part C: Type2 arriving, multi-hop (hops=3), stays Type2 ──
+
+            sent_if1.lock().unwrap().clear();
+            transport.packet_cache.clear();
+
+            // Update path to multi-hop
+            transport.path_table.insert(
+                dest_hash,
+                PathEntry {
+                    received_from: [0x02; TRUNCATED_HASHBYTES],
+                    hops: 3,
+                    timestamp_ms: now,
+                    expires_ms: now + 100_000,
+                    interface_index: 1,
+                    random_blobs: Vec::new(),
+                },
+            );
+
+            let mut link_c = Link::new_outgoing(dest_hash.into(), &mut OsRng);
+            let original_request_data_c = link_c.create_link_request();
+            let raw_type2_multi = link_c.build_link_request_packet_with_transport(
+                Some(fake_transport_id),
+                3,
+            );
+
+            let forwarded_before = transport.stats().packets_forwarded;
+            transport.process_incoming(0, &raw_type2_multi).unwrap();
+
+            assert!(
+                transport.stats().packets_forwarded > forwarded_before,
+                "Multi-hop Type2 link request should be forwarded"
+            );
+
+            {
+                let sent = sent_if1.lock().unwrap();
+                assert!(!sent.is_empty(), "Should have sent a packet on if1");
+                let forwarded_raw = &sent[0];
+                let forwarded_pkt = Packet::unpack(forwarded_raw)
+                    .expect("Multi-hop forwarded packet must be parseable");
+
+                assert_eq!(
+                    forwarded_pkt.flags.header_type,
+                    HeaderType::Type2,
+                    "Multi-hop should remain Type2"
+                );
+                assert_eq!(
+                    forwarded_pkt.flags.packet_type,
+                    PacketType::LinkRequest,
+                    "Packet type must remain LinkRequest"
+                );
+                assert_eq!(
+                    forwarded_pkt.destination_hash, dest_hash,
+                    "Destination hash must be preserved"
+                );
+                assert!(
+                    forwarded_pkt.transport_id.is_some(),
+                    "Type2 must have transport_id"
+                );
+                // transport_id should now be THIS transport node's identity hash
+                let our_id = *transport.identity.hash();
+                assert_eq!(
+                    forwarded_pkt.transport_id.unwrap(),
+                    our_id,
+                    "Transport ID should be set to the relay's identity hash"
+                );
+
+                // Verify data payload is intact
+                assert_eq!(
+                    forwarded_pkt.data.as_slice(),
+                    &original_request_data_c[..],
+                    "Link request payload must be preserved in multi-hop forwarding"
+                );
+            }
+
+            // ── Part D: Verify link table was populated for all forwarded requests ──
+
+            assert!(
+                transport.link_table.len() >= 3,
+                "Link table should have entries for all forwarded link requests, got {}",
+                transport.link_table.len()
+            );
+
+            // All link table entries should point to interface 1 as next hop
+            for (_link_id, entry) in &transport.link_table {
+                assert_eq!(
+                    entry.next_hop_interface_index, 1,
+                    "Link entry should route toward if1"
+                );
+                assert_eq!(
+                    entry.received_interface_index, 0,
+                    "Link entry should record if0 as received interface"
+                );
+                assert_eq!(
+                    entry.destination_hash, dest_hash,
+                    "Link entry should record correct destination hash"
+                );
+            }
         }
 
         // ─── Stage 4: Hop count validation ──────────────────────────────

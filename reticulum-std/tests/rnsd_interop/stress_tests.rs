@@ -70,7 +70,7 @@ async fn test_extended_exchange_100_messages() {
     let signing_key_bytes: [u8; 32] = pub_key_bytes[32..64].try_into().unwrap();
 
     // Establish link
-    let mut link = Link::new_outgoing_with_rng(dest_hash.into(), &mut OsRng);
+    let mut link = Link::new_outgoing(dest_hash.into(), &mut OsRng);
     link.set_destination_keys(&signing_key_bytes).unwrap();
 
     let mut stream = connect_to_daemon(&daemon).await;
@@ -94,8 +94,8 @@ async fn test_extended_exchange_100_messages() {
     link.process_proof(proof.data.as_slice()).unwrap();
     assert_eq!(link.state(), LinkState::Active);
 
-    let mut ctx = make_context();
-    let rtt_packet = link.build_rtt_packet(0.05, &mut ctx).unwrap();
+    
+    let rtt_packet = link.build_rtt_packet(0.05, &mut OsRng).unwrap();
     framed.clear();
     frame(&rtt_packet, &mut framed);
     stream.write_all(&framed).await.unwrap();
@@ -110,7 +110,7 @@ async fn test_extended_exchange_100_messages() {
     for i in 0..NUM_MESSAGES {
         let msg = format!("Extended test message #{:04}", i);
         let data_packet = link
-            .build_data_packet(msg.as_bytes(), &mut ctx)
+            .build_data_packet(msg.as_bytes(), &mut OsRng)
             .expect("Failed to build packet");
 
         framed.clear();
@@ -206,7 +206,7 @@ async fn test_rapid_link_creation_teardown() {
 
     for i in 0..NUM_LINKS {
         // Create new link
-        let mut link = Link::new_outgoing_with_rng(dest_hash.into(), &mut OsRng);
+        let mut link = Link::new_outgoing(dest_hash.into(), &mut OsRng);
         link.set_destination_keys(&signing_key_bytes).unwrap();
 
         let raw_packet = link.build_link_request_packet();
@@ -256,9 +256,9 @@ async fn test_rapid_link_creation_teardown() {
         }
 
         // Send one message
-        let mut ctx = make_context();
+        
         let msg = format!("Rapid link {}", i);
-        let data_packet = link.build_data_packet(msg.as_bytes(), &mut ctx).unwrap();
+        let data_packet = link.build_data_packet(msg.as_bytes(), &mut OsRng).unwrap();
 
         framed.clear();
         frame(&data_packet, &mut framed);
@@ -345,7 +345,7 @@ async fn test_concurrent_links_to_daemon() {
 
         let handle = tokio::spawn(async move {
             // Create link
-            let mut link = Link::new_outgoing_with_rng(dest_hash_clone.into(), &mut OsRng);
+            let mut link = Link::new_outgoing(dest_hash_clone.into(), &mut OsRng);
             link.set_destination_keys(&signing_key).unwrap();
 
             // Connect directly to exit daemon
@@ -387,8 +387,8 @@ async fn test_concurrent_links_to_daemon() {
             }
 
             // Send RTT
-            let mut ctx = make_context();
-            let rtt_packet = link.build_rtt_packet(0.05, &mut ctx).unwrap();
+            
+            let rtt_packet = link.build_rtt_packet(0.05, &mut OsRng).unwrap();
             framed.clear();
             frame(&rtt_packet, &mut framed);
             stream.write_all(&framed).await.unwrap();
@@ -397,7 +397,7 @@ async fn test_concurrent_links_to_daemon() {
 
             // Send test message
             let msg = format!("Concurrent link {} message", i);
-            let data_packet = link.build_data_packet(msg.as_bytes(), &mut ctx).unwrap();
+            let data_packet = link.build_data_packet(msg.as_bytes(), &mut OsRng).unwrap();
             framed.clear();
             frame(&data_packet, &mut framed);
             stream.write_all(&framed).await.unwrap();
@@ -479,7 +479,7 @@ async fn test_large_payload_variety() {
     let signing_key_bytes: [u8; 32] = pub_key_bytes[32..64].try_into().unwrap();
 
     // Establish link
-    let mut link = Link::new_outgoing_with_rng(dest_hash.into(), &mut OsRng);
+    let mut link = Link::new_outgoing(dest_hash.into(), &mut OsRng);
     link.set_destination_keys(&signing_key_bytes).unwrap();
 
     let mut stream = connect_to_daemon(&daemon).await;
@@ -502,8 +502,8 @@ async fn test_large_payload_variety() {
 
     link.process_proof(proof.data.as_slice()).unwrap();
 
-    let mut ctx = make_context();
-    let rtt_packet = link.build_rtt_packet(0.05, &mut ctx).unwrap();
+    
+    let rtt_packet = link.build_rtt_packet(0.05, &mut OsRng).unwrap();
     framed.clear();
     frame(&rtt_packet, &mut framed);
     stream.write_all(&framed).await.unwrap();
@@ -522,7 +522,7 @@ async fn test_large_payload_variety() {
         // Create deterministic data based on size
         let data: Vec<u8> = (0..*size).map(|i| ((i + size) % 256) as u8).collect();
 
-        match link.build_data_packet(&data, &mut ctx) {
+        match link.build_data_packet(&data, &mut OsRng) {
             Ok(data_packet) => {
                 framed.clear();
                 frame(&data_packet, &mut framed);
@@ -608,7 +608,7 @@ async fn test_extended_exchange_rapid_fire() {
     let signing_key_bytes: [u8; 32] = pub_key_bytes[32..64].try_into().unwrap();
 
     // Establish link
-    let mut link = Link::new_outgoing_with_rng(dest_hash.into(), &mut OsRng);
+    let mut link = Link::new_outgoing(dest_hash.into(), &mut OsRng);
     link.set_destination_keys(&signing_key_bytes).unwrap();
 
     let mut stream = connect_to_daemon(&daemon).await;
@@ -631,8 +631,8 @@ async fn test_extended_exchange_rapid_fire() {
 
     link.process_proof(proof.data.as_slice()).unwrap();
 
-    let mut ctx = make_context();
-    let rtt_packet = link.build_rtt_packet(0.05, &mut ctx).unwrap();
+    
+    let rtt_packet = link.build_rtt_packet(0.05, &mut OsRng).unwrap();
     framed.clear();
     frame(&rtt_packet, &mut framed);
     stream.write_all(&framed).await.unwrap();
@@ -648,7 +648,7 @@ async fn test_extended_exchange_rapid_fire() {
     for i in 0..NUM_MESSAGES {
         let msg = format!("RapidFire#{:04}", i);
         let data_packet = link
-            .build_data_packet(msg.as_bytes(), &mut ctx)
+            .build_data_packet(msg.as_bytes(), &mut OsRng)
             .expect("Failed to build packet");
 
         framed.clear();

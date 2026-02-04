@@ -7,6 +7,33 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.2.8] - 2026-02-04
+
+### Added
+- Transport relay interop test: Rust node as relay between two Python daemons with bidirectional link establishment and data routing
+- `TcpClientInterface::from_stream()` constructor for wrapping already-connected TCP streams
+- `relay_daemon` example: standalone transport relay accepting incoming TCP connections
+- Transport convenience API: `link_table_iter()`, `link_table_entry()`, `paths()`, `link_table_count()`, `announce_table_count()`, `path_count()`, `is_transport_enabled()`
+- `ReticulumNode` convenience methods: `has_path()`, `hops_to()`, `path_count()`, `transport_stats()`, `is_transport_enabled()`
+
+### Changed
+- **Breaking:** `NodeCore<C, S>` is now `NodeCore<R, C, S>` — owns its RNG internally instead of borrowing via `Context` trait
+- **Breaking:** All `NodeCore` runtime methods (`tick()`, `connect()`, `accept_connection()`, `close_connection()`, `send_on_connection()`, `receive_packet()`) no longer take a `ctx: &mut impl Context` parameter
+- **Breaking:** `NodeCoreBuilder::build()` takes `rng: R` (owned) instead of `ctx: &mut impl Context`
+- **Breaking:** `LinkManager` methods take `rng: &mut impl CryptoRngCore` and `now_ms: u64` instead of `ctx: &mut impl Context`
+- **Breaking:** `Link` methods (`encrypt`, `build_data_packet`, `build_close_packet`, `new_outgoing`, `new_incoming`) take `rng: &mut impl CryptoRngCore` instead of `ctx: &mut impl Context`
+- **Breaking:** `Connection` send methods take `rng` and `now_ms` instead of `ctx`
+- Remove `_with_rng` suffix from `Link::new_outgoing` and `Link::new_incoming` — these are now the primary constructors
+- `ReticulumNode` event loop no longer constructs a `PlatformContext` on each tick
+- `StdNodeCore` type alias now includes `OsRng` as the RNG type parameter
+
+### Fixed
+- Fix `enable_transport` not wired through `ReticulumNodeBuilder` to `NodeCoreBuilder`, causing transport mode to be silently disabled
+- Fix interfaces not registered with Transport when using `ReticulumNode`, preventing packet forwarding (`InvalidInterface` errors)
+- Fix transport relay not incrementing hop count when forwarding proofs and link-table data, causing Python peers to reject forwarded packets due to hop count mismatch
+- Fix LRPROOF size validation: accept both 96 bytes (without signalling) and 99 bytes (with signalling), matching Python Reticulum behavior
+- Fix `test_announce_rebroadcast_hop_count_accuracy`: remove `#[ignore]`, add hard assertion on propagation success, and verify exact hop counts (D3=1, D2=2, D1=3, D0=4) instead of silently passing on propagation failure
+
 ## [0.2.7] - 2026-02-04
 
 ### Added
@@ -245,7 +272,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Transport layer (routing, paths, deduplication)
 - Full interoperability with Python rnsd
 
-[Unreleased]: https://codeberg.org/Lew_Palm/leviculum/compare/v0.2.7...HEAD
+[Unreleased]: https://codeberg.org/Lew_Palm/leviculum/compare/v0.2.8...HEAD
+[0.2.8]: https://codeberg.org/Lew_Palm/leviculum/compare/v0.2.7...v0.2.8
 [0.2.7]: https://codeberg.org/Lew_Palm/leviculum/compare/v0.2.6...v0.2.7
 [0.2.6]: https://codeberg.org/Lew_Palm/leviculum/compare/v0.2.5...v0.2.6
 [0.2.5]: https://codeberg.org/Lew_Palm/leviculum/compare/v0.2.4...v0.2.5

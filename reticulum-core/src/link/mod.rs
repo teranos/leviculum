@@ -56,9 +56,8 @@ use crate::crypto::{derive_key, truncated_hash};
 use crate::destination::{DestinationHash, ProofStrategy};
 use crate::identity::Identity;
 use crate::packet::PacketContext;
-use crate::traits::Context;
 use alloc::vec::Vec;
-use rand_core::RngCore;
+use rand_core::CryptoRngCore;
 
 // Link request/proof size constants
 /// Size of link request payload without signaling (X25519 pub + Ed25519 pub)
@@ -387,18 +386,14 @@ pub struct Link {
 }
 
 impl Link {
-    /// Create a new outgoing link (initiator side) using a Context
+    /// Create a new outgoing link (initiator side)
+    ///
+    /// # Arguments
+    /// * `destination_hash` - The destination to connect to
+    /// * `rng` - Random number generator for key generation
     pub fn new_outgoing(
         destination_hash: DestinationHash,
-        ctx: &mut impl Context,
-    ) -> Self {
-        Self::new_outgoing_with_rng(destination_hash, ctx.rng())
-    }
-
-    /// Create a new outgoing link with a provided RNG
-    pub fn new_outgoing_with_rng<R: rand_core::CryptoRngCore>(
-        destination_hash: DestinationHash,
-        rng: &mut R,
+        rng: &mut impl CryptoRngCore,
     ) -> Self {
         let ephemeral_private = x25519_dalek::StaticSecret::random_from_rng(&mut *rng);
         let ephemeral_public = x25519_dalek::PublicKey::from(&ephemeral_private);
@@ -447,7 +442,7 @@ impl Link {
     ///   (32 bytes X25519 pub + 32 bytes Ed25519 pub)
     /// * `link_id` - The pre-computed link ID (from `calculate_link_id()`)
     /// * `destination_hash` - The hash of the destination receiving this request
-    /// * `ctx` - Platform context for RNG
+    /// * `rng` - Random number generator for key generation
     ///
     /// # Returns
     /// A new Link in Pending state, ready for `build_proof_packet()` to be called.
@@ -455,17 +450,7 @@ impl Link {
         request_data: &[u8],
         link_id: LinkId,
         destination_hash: DestinationHash,
-        ctx: &mut impl Context,
-    ) -> Result<Self, LinkError> {
-        Self::new_incoming_with_rng(request_data, link_id, destination_hash, ctx.rng())
-    }
-
-    /// Create a new incoming link with a provided RNG.
-    pub fn new_incoming_with_rng<R: rand_core::CryptoRngCore>(
-        request_data: &[u8],
-        link_id: LinkId,
-        destination_hash: DestinationHash,
-        rng: &mut R,
+        rng: &mut impl CryptoRngCore,
     ) -> Result<Self, LinkError> {
         // LINK_REQUEST payload: [peer_x25519_pub (32)] [peer_ed25519_pub (32)]
         // May have additional MTU signaling bytes but we only need first LINK_REQUEST_BASE_SIZE
@@ -1275,20 +1260,20 @@ impl Link {
         self.link_key
     }
 
-    /// Encrypt data for transmission over this link (with provided RNG)
+    /// Encrypt data for transmission over this link
     ///
     /// Returns the encrypted token: \[IV (16)\]\[ciphertext\]\[HMAC (32)\]
     pub fn encrypt(
         &self,
         plaintext: &[u8],
         output: &mut [u8],
-        ctx: &mut impl Context,
+        rng: &mut impl CryptoRngCore,
     ) -> Result<usize, LinkError> {
         use crate::crypto::encrypt_token;
 
         let token_key = self.token_key().ok_or(LinkError::InvalidState)?;
         let mut iv = [0u8; 16];
-        ctx.rng().fill_bytes(&mut iv);
+        rng.fill_bytes(&mut iv);
 
         encrypt_token(&token_key, &iv, plaintext, output).map_err(|_| LinkError::KeyExchangeFailed)
     }
@@ -1327,9 +1312,9 @@ impl Link {
     pub fn build_data_packet(
         &self,
         plaintext: &[u8],
-        ctx: &mut impl Context,
+        rng: &mut impl CryptoRngCore,
     ) -> Result<alloc::vec::Vec<u8>, LinkError> {
-        self.build_data_packet_with_context(plaintext, PacketContext::None, ctx)
+        self.build_data_packet_with_context(plaintext, PacketContext::None, rng)
     }
 
     /// Build a data packet with a specific context for transmission over this link
@@ -1340,12 +1325,12 @@ impl Link {
     /// # Arguments
     /// * `plaintext` - The data to encrypt and send
     /// * `packet_context` - The packet context (e.g., Channel, Resource)
-    /// * `ctx` - Platform context
+    /// * `rng` - Random number generator for encryption IV
     pub fn build_data_packet_with_context(
         &self,
         plaintext: &[u8],
         packet_context: PacketContext,
-        ctx: &mut impl Context,
+        rng: &mut impl CryptoRngCore,
     ) -> Result<alloc::vec::Vec<u8>, LinkError> {
         use crate::destination::DestinationType;
         use crate::packet::{HeaderType, PacketFlags, PacketType, TransportType};
@@ -1355,7 +1340,7 @@ impl Link {
         // Encrypt the data
         let encrypted_len = Self::encrypted_size(plaintext.len());
         let mut encrypted = alloc::vec![0u8; encrypted_len];
-        let enc_len = self.encrypt(plaintext, &mut encrypted, ctx)?;
+        let enc_len = self.encrypt(plaintext, &mut encrypted, rng)?;
 
         // Build flags for link data packet
         let flags = PacketFlags {
@@ -1439,7 +1424,7 @@ impl Link {
     pub fn build_rtt_packet(
         &self,
         rtt_seconds: f64,
-        ctx: &mut impl Context,
+        rng: &mut impl CryptoRngCore,
     ) -> Result<alloc::vec::Vec<u8>, LinkError> {
         use crate::destination::DestinationType;
         use crate::packet::{HeaderType, PacketContext, PacketFlags, PacketType, TransportType};
@@ -1454,7 +1439,7 @@ impl Link {
         // Encrypt the RTT data
         let encrypted_len = Self::encrypted_size(rtt_data.len());
         let mut encrypted = alloc::vec![0u8; encrypted_len];
-        let enc_len = self.encrypt(&rtt_data, &mut encrypted, ctx)?;
+        let enc_len = self.encrypt(&rtt_data, &mut encrypted, rng)?;
 
         // Build flags for link RTT packet
         let flags = PacketFlags {
@@ -1525,7 +1510,7 @@ impl Link {
     /// the link to CLOSED state.
     pub fn build_close_packet(
         &self,
-        ctx: &mut impl Context,
+        rng: &mut impl CryptoRngCore,
     ) -> Result<alloc::vec::Vec<u8>, LinkError> {
         use crate::destination::DestinationType;
         use crate::packet::{HeaderType, PacketContext, PacketFlags, PacketType, TransportType};
@@ -1538,7 +1523,7 @@ impl Link {
         // Close payload is the encrypted link_id
         let encrypted_len = Self::encrypted_size(TRUNCATED_HASHBYTES);
         let mut encrypted = alloc::vec![0u8; encrypted_len];
-        let enc_len = self.encrypt(self.id.as_bytes(), &mut encrypted, ctx)?;
+        let enc_len = self.encrypt(self.id.as_bytes(), &mut encrypted, rng)?;
 
         // Build flags for close packet
         let flags = PacketFlags {
@@ -1638,34 +1623,14 @@ impl Link {
 mod tests {
     use super::*;
     use crate::destination::DestinationHash;
-    use crate::traits::{Clock, NoStorage, PlatformContext};
     use alloc::vec;
     use alloc::vec::Vec;
-    use core::cell::Cell;
     use rand_core::OsRng;
-
-    struct TestClock(Cell<u64>);
-    impl TestClock {
-        fn new(start_ms: u64) -> Self {
-            Self(Cell::new(start_ms))
-        }
-    }
-    impl Default for TestClock {
-        fn default() -> Self {
-            // Use a fixed timestamp for deterministic tests
-            Self::new(1_700_000_000_000) // ~2023-11-14
-        }
-    }
-    impl Clock for TestClock {
-        fn now_ms(&self) -> u64 {
-            self.0.get()
-        }
-    }
 
     #[test]
     fn test_link_creation() {
         let dest_hash = DestinationHash::new([0x42; TRUNCATED_HASHBYTES]);
-        let link = Link::new_outgoing_with_rng(dest_hash, &mut OsRng);
+        let link = Link::new_outgoing(dest_hash, &mut OsRng);
 
         assert_eq!(link.state(), LinkState::Pending);
         assert!(link.is_initiator());
@@ -1677,7 +1642,7 @@ mod tests {
     #[test]
     fn test_link_request_data() {
         let dest_hash = DestinationHash::new([0x42; TRUNCATED_HASHBYTES]);
-        let link = Link::new_outgoing_with_rng(dest_hash, &mut OsRng);
+        let link = Link::new_outgoing(dest_hash, &mut OsRng);
 
         let request = link.create_link_request();
         assert_eq!(request.len(), 64);
@@ -1690,7 +1655,7 @@ mod tests {
     #[test]
     fn test_link_request_with_mtu() {
         let dest_hash = DestinationHash::new([0x42; TRUNCATED_HASHBYTES]);
-        let link = Link::new_outgoing_with_rng(dest_hash, &mut OsRng);
+        let link = Link::new_outgoing(dest_hash, &mut OsRng);
 
         let request = link.create_link_request_with_mtu(500, 1);
         assert_eq!(request.len(), 67);
@@ -1710,7 +1675,7 @@ mod tests {
     #[test]
     fn test_link_id_calculation() {
         let dest_hash = DestinationHash::new([0x42; TRUNCATED_HASHBYTES]);
-        let link = Link::new_outgoing_with_rng(dest_hash, &mut OsRng);
+        let link = Link::new_outgoing(dest_hash, &mut OsRng);
 
         // Construct raw packet: [flags][hops][dest_hash][context][request_data]
         let request = link.create_link_request();
@@ -1732,7 +1697,7 @@ mod tests {
     #[test]
     fn test_set_link_id() {
         let dest_hash = DestinationHash::new([0x42; TRUNCATED_HASHBYTES]);
-        let mut link = Link::new_outgoing_with_rng(dest_hash, &mut OsRng);
+        let mut link = Link::new_outgoing(dest_hash, &mut OsRng);
 
         let new_id = LinkId::new([0xAB; TRUNCATED_HASHBYTES]);
         link.set_link_id(new_id);
@@ -1743,7 +1708,7 @@ mod tests {
     #[test]
     fn test_process_proof_invalid_state() {
         let dest_hash = DestinationHash::new([0x42; TRUNCATED_HASHBYTES]);
-        let mut link = Link::new_outgoing_with_rng(dest_hash, &mut OsRng);
+        let mut link = Link::new_outgoing(dest_hash, &mut OsRng);
 
         // Manually set state to Active
         link.state = LinkState::Active;
@@ -1756,7 +1721,7 @@ mod tests {
     #[test]
     fn test_process_proof_too_short() {
         let dest_hash = DestinationHash::new([0x42; TRUNCATED_HASHBYTES]);
-        let mut link = Link::new_outgoing_with_rng(dest_hash, &mut OsRng);
+        let mut link = Link::new_outgoing(dest_hash, &mut OsRng);
 
         let short_proof = [0u8; 98]; // One byte short of required 99
         let result = link.process_proof(&short_proof);
@@ -1766,7 +1731,7 @@ mod tests {
     #[test]
     fn test_process_proof_no_destination_key() {
         let dest_hash = DestinationHash::new([0x42; TRUNCATED_HASHBYTES]);
-        let mut link = Link::new_outgoing_with_rng(dest_hash, &mut OsRng);
+        let mut link = Link::new_outgoing(dest_hash, &mut OsRng);
 
         let fake_proof = [0u8; 99]; // 64 sig + 32 X25519 + 3 signalling
         let result = link.process_proof(&fake_proof);
@@ -1777,7 +1742,7 @@ mod tests {
     #[test]
     fn test_set_destination_keys() {
         let dest_hash = DestinationHash::new([0x42; TRUNCATED_HASHBYTES]);
-        let mut link = Link::new_outgoing_with_rng(dest_hash, &mut OsRng);
+        let mut link = Link::new_outgoing(dest_hash, &mut OsRng);
 
         // Create a valid Ed25519 verifying key
         let signing_key = ed25519_dalek::SigningKey::from_bytes(&[0x42; 32]);
@@ -1813,7 +1778,7 @@ mod tests {
         let dest_hash = DestinationHash::new([0x42; TRUNCATED_HASHBYTES]);
 
         // --- Initiator side ---
-        let mut link = Link::new_outgoing_with_rng(dest_hash, &mut OsRng);
+        let mut link = Link::new_outgoing(dest_hash, &mut OsRng);
         let request = link.create_link_request();
 
         // Build raw packet: [flags][hops][dest_hash][context][request]
@@ -1880,7 +1845,7 @@ mod tests {
 
         // Set up a link with completed handshake (reuse handshake simulation)
         let dest_hash = DestinationHash::new([0x42; TRUNCATED_HASHBYTES]);
-        let mut link = Link::new_outgoing_with_rng(dest_hash, &mut OsRng);
+        let mut link = Link::new_outgoing(dest_hash, &mut OsRng);
         let request = link.create_link_request();
 
         // Build raw packet
@@ -1924,12 +1889,7 @@ mod tests {
         let encrypted_len = Link::encrypted_size(plaintext.len());
         let mut encrypted = vec![0u8; encrypted_len];
 
-        let mut ctx = PlatformContext {
-            rng: OsRng,
-            clock: TestClock::default(),
-            storage: NoStorage,
-        };
-        let enc_len = link.encrypt(plaintext, &mut encrypted, &mut ctx).unwrap();
+        let enc_len = link.encrypt(plaintext, &mut encrypted, &mut OsRng).unwrap();
         assert!(enc_len > plaintext.len()); // Should be larger due to IV + padding + HMAC
 
         let mut decrypted = vec![0u8; plaintext.len() + 16]; // Allow for padding
@@ -1945,7 +1905,7 @@ mod tests {
 
         // Set up a link with completed handshake
         let dest_hash = DestinationHash::new([0x42; TRUNCATED_HASHBYTES]);
-        let mut link = Link::new_outgoing_with_rng(dest_hash, &mut OsRng);
+        let mut link = Link::new_outgoing(dest_hash, &mut OsRng);
         let request = link.create_link_request();
 
         let mut raw_packet = Vec::new();
@@ -1985,12 +1945,7 @@ mod tests {
         // Encrypt some data
         let plaintext = b"Secret message";
         let mut encrypted = vec![0u8; Link::encrypted_size(plaintext.len())];
-        let mut ctx = PlatformContext {
-            rng: OsRng,
-            clock: TestClock::default(),
-            storage: NoStorage,
-        };
-        let enc_len = link.encrypt(plaintext, &mut encrypted, &mut ctx).unwrap();
+        let enc_len = link.encrypt(plaintext, &mut encrypted, &mut OsRng).unwrap();
 
         // Tamper with the ciphertext
         encrypted[20] ^= 0xFF;
@@ -2025,7 +1980,7 @@ mod tests {
 
         // Set up a link with completed handshake
         let dest_hash = DestinationHash::new([0x42; TRUNCATED_HASHBYTES]);
-        let mut link = Link::new_outgoing_with_rng(dest_hash, &mut OsRng);
+        let mut link = Link::new_outgoing(dest_hash, &mut OsRng);
         let request = link.create_link_request();
 
         let mut raw_packet = Vec::new();
@@ -2064,12 +2019,7 @@ mod tests {
 
         // Now test build_data_packet
         let message = b"Hello, link!";
-        let mut ctx = PlatformContext {
-            rng: OsRng,
-            clock: TestClock::default(),
-            storage: NoStorage,
-        };
-        let packet = link.build_data_packet(message, &mut ctx).unwrap();
+        let packet = link.build_data_packet(message, &mut OsRng).unwrap();
 
         // Verify packet structure:
         // [flags (1)] [hops (1)] [link_id (16)] [context (1)] [encrypted_data]
@@ -2100,15 +2050,10 @@ mod tests {
     #[test]
     fn test_build_data_packet_not_active() {
         let dest_hash = DestinationHash::new([0x42; TRUNCATED_HASHBYTES]);
-        let link = Link::new_outgoing_with_rng(dest_hash, &mut OsRng);
+        let link = Link::new_outgoing(dest_hash, &mut OsRng);
 
-        let mut ctx = PlatformContext {
-            rng: OsRng,
-            clock: TestClock::default(),
-            storage: NoStorage,
-        };
         // Link is in Pending state, not Active
-        let result = link.build_data_packet(b"Hello", &mut ctx);
+        let result = link.build_data_packet(b"Hello", &mut OsRng);
         assert!(matches!(result, Err(LinkError::InvalidState)));
     }
 
@@ -2119,7 +2064,7 @@ mod tests {
         let dest_hash = DestinationHash::new([0x42; TRUNCATED_HASHBYTES]);
 
         // Create initiator's link request
-        let initiator = Link::new_outgoing_with_rng(dest_hash, &mut OsRng);
+        let initiator = Link::new_outgoing(dest_hash, &mut OsRng);
         let request_data = initiator.create_link_request();
 
         // Calculate link ID (as if from raw packet)
@@ -2133,7 +2078,7 @@ mod tests {
 
         // Create responder's link
         let responder =
-            Link::new_incoming_with_rng(&request_data, link_id, dest_hash, &mut OsRng).unwrap();
+            Link::new_incoming(&request_data, link_id, dest_hash, &mut OsRng).unwrap();
 
         assert_eq!(responder.state(), LinkState::Pending);
         assert!(!responder.is_initiator());
@@ -2151,7 +2096,7 @@ mod tests {
 
         // Too short request data
         let short_data = [0u8; 63];
-        let result = Link::new_incoming_with_rng(&short_data, link_id, dest_hash, &mut OsRng);
+        let result = Link::new_incoming(&short_data, link_id, dest_hash, &mut OsRng);
         assert!(matches!(result, Err(LinkError::InvalidRequest)));
     }
 
@@ -2165,7 +2110,7 @@ mod tests {
         let identity = Identity::generate_with_rng(&mut OsRng);
 
         // Create initiator's link request
-        let initiator = Link::new_outgoing_with_rng(dest_hash, &mut OsRng);
+        let initiator = Link::new_outgoing(dest_hash, &mut OsRng);
         let request_data = initiator.create_link_request();
 
         // Calculate link ID
@@ -2179,7 +2124,7 @@ mod tests {
 
         // Create responder's link
         let mut responder =
-            Link::new_incoming_with_rng(&request_data, link_id, dest_hash, &mut OsRng).unwrap();
+            Link::new_incoming(&request_data, link_id, dest_hash, &mut OsRng).unwrap();
 
         // Build proof packet
         let proof_packet = responder.build_proof_packet(&identity, 500, 1).unwrap();
@@ -2207,12 +2152,12 @@ mod tests {
         let dest_hash = DestinationHash::new([0x42; TRUNCATED_HASHBYTES]);
         let identity = Identity::generate_with_rng(&mut OsRng);
 
-        let initiator = Link::new_outgoing_with_rng(dest_hash, &mut OsRng);
+        let initiator = Link::new_outgoing(dest_hash, &mut OsRng);
         let request_data = initiator.create_link_request();
         let link_id = LinkId::new([0xAB; TRUNCATED_HASHBYTES]);
 
         let mut responder =
-            Link::new_incoming_with_rng(&request_data, link_id, dest_hash, &mut OsRng).unwrap();
+            Link::new_incoming(&request_data, link_id, dest_hash, &mut OsRng).unwrap();
 
         // Build proof once (transitions to Handshake)
         responder.build_proof_packet(&identity, 500, 1).unwrap();
@@ -2230,7 +2175,7 @@ mod tests {
         let identity = Identity::generate_with_rng(&mut OsRng);
 
         // Initiator should not be able to build proof
-        let mut initiator = Link::new_outgoing_with_rng(dest_hash, &mut OsRng);
+        let mut initiator = Link::new_outgoing(dest_hash, &mut OsRng);
 
         let result = initiator.build_proof_packet(&identity, 500, 1);
         assert!(matches!(result, Err(LinkError::InvalidState)));
@@ -2246,7 +2191,7 @@ mod tests {
         let dest_identity = Identity::generate_with_rng(&mut OsRng);
 
         // --- Initiator side ---
-        let mut initiator = Link::new_outgoing_with_rng(dest_hash, &mut OsRng);
+        let mut initiator = Link::new_outgoing(dest_hash, &mut OsRng);
         let request_data = initiator.create_link_request();
 
         // Calculate link ID from raw packet
@@ -2261,7 +2206,7 @@ mod tests {
 
         // --- Responder side ---
         let mut responder =
-            Link::new_incoming_with_rng(&request_data, link_id, dest_hash, &mut OsRng).unwrap();
+            Link::new_incoming(&request_data, link_id, dest_hash, &mut OsRng).unwrap();
 
         // Build proof packet
         let proof_packet = responder
@@ -2293,7 +2238,7 @@ mod tests {
         let dest_identity = Identity::generate_with_rng(&mut OsRng);
 
         // Set up links
-        let mut initiator = Link::new_outgoing_with_rng(dest_hash, &mut OsRng);
+        let mut initiator = Link::new_outgoing(dest_hash, &mut OsRng);
         let request_data = initiator.create_link_request();
 
         let mut raw_packet = Vec::new();
@@ -2306,7 +2251,7 @@ mod tests {
         initiator.set_link_id(link_id);
 
         let mut responder =
-            Link::new_incoming_with_rng(&request_data, link_id, dest_hash, &mut OsRng).unwrap();
+            Link::new_incoming(&request_data, link_id, dest_hash, &mut OsRng).unwrap();
 
         // Build and process proof
         let proof_packet = responder
@@ -2318,13 +2263,8 @@ mod tests {
         initiator.process_proof(&proof_packet[19..]).unwrap();
 
         // Initiator builds RTT packet
-        let mut ctx = PlatformContext {
-            rng: OsRng,
-            clock: TestClock::default(),
-            storage: NoStorage,
-        };
         let rtt_seconds = 0.05; // 50ms
-        let rtt_packet = initiator.build_rtt_packet(rtt_seconds, &mut ctx).unwrap();
+        let rtt_packet = initiator.build_rtt_packet(rtt_seconds, &mut OsRng).unwrap();
 
         // Extract encrypted data from RTT packet
         let encrypted_data = &rtt_packet[19..];
@@ -2343,11 +2283,11 @@ mod tests {
         let dest_hash = DestinationHash::new([0x42; TRUNCATED_HASHBYTES]);
         let link_id = LinkId::new([0xAB; TRUNCATED_HASHBYTES]);
 
-        let initiator = Link::new_outgoing_with_rng(dest_hash, &mut OsRng);
+        let initiator = Link::new_outgoing(dest_hash, &mut OsRng);
         let request_data = initiator.create_link_request();
 
         let mut responder =
-            Link::new_incoming_with_rng(&request_data, link_id, dest_hash, &mut OsRng).unwrap();
+            Link::new_incoming(&request_data, link_id, dest_hash, &mut OsRng).unwrap();
 
         // Responder is still in Pending state (no proof built yet)
         let fake_data = [0u8; 64];
@@ -2363,7 +2303,7 @@ mod tests {
         let dest_identity = Identity::generate_with_rng(&mut OsRng);
 
         // Full handshake
-        let mut initiator = Link::new_outgoing_with_rng(dest_hash, &mut OsRng);
+        let mut initiator = Link::new_outgoing(dest_hash, &mut OsRng);
         let request_data = initiator.create_link_request();
 
         let mut raw_packet = Vec::new();
@@ -2376,7 +2316,7 @@ mod tests {
         initiator.set_link_id(link_id);
 
         let mut responder =
-            Link::new_incoming_with_rng(&request_data, link_id, dest_hash, &mut OsRng).unwrap();
+            Link::new_incoming(&request_data, link_id, dest_hash, &mut OsRng).unwrap();
 
         let proof_packet = responder
             .build_proof_packet(&dest_identity, 500, 1)
@@ -2386,12 +2326,7 @@ mod tests {
             .unwrap();
         initiator.process_proof(&proof_packet[19..]).unwrap();
 
-        let mut ctx = PlatformContext {
-            rng: OsRng,
-            clock: TestClock::default(),
-            storage: NoStorage,
-        };
-        let rtt_packet = initiator.build_rtt_packet(0.05, &mut ctx).unwrap();
+        let rtt_packet = initiator.build_rtt_packet(0.05, &mut OsRng).unwrap();
         responder.process_rtt(&rtt_packet[19..]).unwrap();
 
         // Both sides active
@@ -2402,7 +2337,7 @@ mod tests {
         let message1 = b"Hello from initiator!";
         let mut encrypted1 = vec![0u8; Link::encrypted_size(message1.len())];
         let enc_len1 = initiator
-            .encrypt(message1, &mut encrypted1, &mut ctx)
+            .encrypt(message1, &mut encrypted1, &mut OsRng)
             .unwrap();
 
         let mut decrypted1 = vec![0u8; message1.len() + 16];
@@ -2415,7 +2350,7 @@ mod tests {
         let message2 = b"Hello from responder!";
         let mut encrypted2 = vec![0u8; Link::encrypted_size(message2.len())];
         let enc_len2 = responder
-            .encrypt(message2, &mut encrypted2, &mut ctx)
+            .encrypt(message2, &mut encrypted2, &mut OsRng)
             .unwrap();
 
         let mut decrypted2 = vec![0u8; message2.len() + 16];
@@ -2433,7 +2368,7 @@ mod tests {
         let transport_id = [0xAB; TRUNCATED_HASHBYTES];
 
         // Test with transport_id and hops=1 (should still use HEADER_2 because transport_id is set)
-        let mut link1 = Link::new_outgoing_with_rng(dest_hash, &mut OsRng);
+        let mut link1 = Link::new_outgoing(dest_hash, &mut OsRng);
         let packet1 = link1.build_link_request_packet_with_transport(Some(transport_id), 1);
 
         // Should be HEADER_2 (transport_id is set, even with hops=1)
@@ -2445,7 +2380,7 @@ mod tests {
         assert_eq!(link1.hops(), 1);
 
         // Test with hops > 1 and transport_id (should use HEADER_2)
-        let mut link2 = Link::new_outgoing_with_rng(dest_hash, &mut OsRng);
+        let mut link2 = Link::new_outgoing(dest_hash, &mut OsRng);
         let packet2 = link2.build_link_request_packet_with_transport(Some(transport_id), 2);
 
         // Should be HEADER_2 with transport_id
@@ -2457,7 +2392,7 @@ mod tests {
         assert_eq!(link2.hops(), 2);
 
         // Test with no transport_id (should use HEADER_1)
-        let mut link3 = Link::new_outgoing_with_rng(dest_hash, &mut OsRng);
+        let mut link3 = Link::new_outgoing(dest_hash, &mut OsRng);
         let packet3 = link3.build_link_request_packet_with_transport(None, 5);
 
         let parsed3 = Packet::unpack(&packet3).unwrap();
@@ -2472,7 +2407,7 @@ mod tests {
         let dest_hash = DestinationHash::new([0x42; TRUNCATED_HASHBYTES]);
         let transport_id = [0xCD; TRUNCATED_HASHBYTES];
 
-        let mut link = Link::new_outgoing_with_rng(dest_hash, &mut OsRng);
+        let mut link = Link::new_outgoing(dest_hash, &mut OsRng);
         let packet = link.build_link_request_packet_with_transport(Some(transport_id), 3);
 
         // Parse and verify flags byte
@@ -2587,7 +2522,7 @@ mod tests {
     #[test]
     fn test_update_keepalive_from_rtt() {
         let dest_hash = DestinationHash::new([0x42; TRUNCATED_HASHBYTES]);
-        let mut link = Link::new_outgoing_with_rng(dest_hash, &mut OsRng);
+        let mut link = Link::new_outgoing(dest_hash, &mut OsRng);
 
         // Default values
         assert_eq!(link.keepalive_secs(), 360);
@@ -2609,7 +2544,7 @@ mod tests {
         let dest_hash = DestinationHash::new([0x42; TRUNCATED_HASHBYTES]);
 
         // Create initiator and responder
-        let mut initiator = Link::new_outgoing_with_rng(dest_hash, &mut OsRng);
+        let mut initiator = Link::new_outgoing(dest_hash, &mut OsRng);
         let request_data = initiator.create_link_request();
         let link_id = LinkId::new([0xAB; TRUNCATED_HASHBYTES]);
 
@@ -2629,7 +2564,7 @@ mod tests {
 
         // Responder should never proactively send keepalives
         let mut responder =
-            Link::new_incoming_with_rng(&request_data, link_id, dest_hash, &mut OsRng).unwrap();
+            Link::new_incoming(&request_data, link_id, dest_hash, &mut OsRng).unwrap();
         responder.state = LinkState::Active;
         responder.mark_established(1000);
         responder.keepalive_secs = 10;
@@ -2641,7 +2576,7 @@ mod tests {
     #[test]
     fn test_is_stale_and_should_close() {
         let dest_hash = DestinationHash::new([0x42; TRUNCATED_HASHBYTES]);
-        let mut link = Link::new_outgoing_with_rng(dest_hash, &mut OsRng);
+        let mut link = Link::new_outgoing(dest_hash, &mut OsRng);
 
         // Configure for easier testing
         link.keepalive_secs = 10;
@@ -2666,13 +2601,13 @@ mod tests {
         assert!(link.should_close(1026));
     }
 
-    fn setup_active_link_pair() -> (Link, Link, PlatformContext<OsRng, TestClock, NoStorage>) {
+    fn setup_active_link_pair() -> (Link, Link) {
         use crate::identity::Identity;
 
         let dest_hash = DestinationHash::new([0x42; TRUNCATED_HASHBYTES]);
         let dest_identity = Identity::generate_with_rng(&mut OsRng);
 
-        let mut initiator = Link::new_outgoing_with_rng(dest_hash, &mut OsRng);
+        let mut initiator = Link::new_outgoing(dest_hash, &mut OsRng);
         let request_data = initiator.create_link_request();
 
         let mut raw_packet = Vec::new();
@@ -2685,7 +2620,7 @@ mod tests {
         initiator.set_link_id(link_id);
 
         let mut responder =
-            Link::new_incoming_with_rng(&request_data, link_id, dest_hash, &mut OsRng).unwrap();
+            Link::new_incoming(&request_data, link_id, dest_hash, &mut OsRng).unwrap();
 
         let proof_packet = responder
             .build_proof_packet(&dest_identity, 500, 1)
@@ -2695,20 +2630,15 @@ mod tests {
             .unwrap();
         initiator.process_proof(&proof_packet[19..]).unwrap();
 
-        let mut ctx = PlatformContext {
-            rng: OsRng,
-            clock: TestClock::default(),
-            storage: NoStorage,
-        };
-        let rtt_packet = initiator.build_rtt_packet(0.05, &mut ctx).unwrap();
+        let rtt_packet = initiator.build_rtt_packet(0.05, &mut OsRng).unwrap();
         responder.process_rtt(&rtt_packet[19..]).unwrap();
 
-        (initiator, responder, ctx)
+        (initiator, responder)
     }
 
     #[test]
     fn test_build_keepalive_packet() {
-        let (initiator, responder, _ctx) = setup_active_link_pair();
+        let (initiator, responder) = setup_active_link_pair();
 
         // Initiator builds keepalive with 0xFF
         let initiator_ka = initiator.build_keepalive_packet().unwrap();
@@ -2733,7 +2663,7 @@ mod tests {
 
     #[test]
     fn test_process_keepalive() {
-        let (mut initiator, mut responder, _ctx) = setup_active_link_pair();
+        let (mut initiator, mut responder) = setup_active_link_pair();
 
         // Initiator sends keepalive (0xFF)
         let initiator_ka = initiator.build_keepalive_packet().unwrap();
@@ -2754,7 +2684,7 @@ mod tests {
 
     #[test]
     fn test_process_keepalive_wrong_byte() {
-        let (mut initiator, mut responder, _ctx) = setup_active_link_pair();
+        let (mut initiator, mut responder) = setup_active_link_pair();
 
         // Responder builds a keepalive (0xFE)
         let responder_ka = responder.build_keepalive_packet().unwrap();
@@ -2777,9 +2707,9 @@ mod tests {
 
     #[test]
     fn test_build_close_packet() {
-        let (initiator, _responder, mut ctx) = setup_active_link_pair();
+        let (initiator, _responder) = setup_active_link_pair();
 
-        let close_packet = initiator.build_close_packet(&mut ctx).unwrap();
+        let close_packet = initiator.build_close_packet(&mut OsRng).unwrap();
         assert!(!close_packet.is_empty());
 
         // Should have LinkClose context
@@ -2789,10 +2719,10 @@ mod tests {
 
     #[test]
     fn test_process_close_valid() {
-        let (initiator, mut responder, mut ctx) = setup_active_link_pair();
+        let (initiator, mut responder) = setup_active_link_pair();
 
         // Initiator builds close packet
-        let close_packet = initiator.build_close_packet(&mut ctx).unwrap();
+        let close_packet = initiator.build_close_packet(&mut OsRng).unwrap();
         let encrypted_data = &close_packet[19..]; // Skip header
 
         // Responder processes it
@@ -2803,14 +2733,14 @@ mod tests {
 
     #[test]
     fn test_process_close_invalid_link_id() {
-        let (mut initiator, mut responder, mut ctx) = setup_active_link_pair();
+        let (mut initiator, mut responder) = setup_active_link_pair();
 
         // Manually change initiator's link_id to produce invalid close packet
         let original_id = *initiator.id();
         initiator.id = LinkId::new([0xFF; TRUNCATED_HASHBYTES]);
 
         // Build close packet with wrong link_id
-        let close_packet = initiator.build_close_packet(&mut ctx).unwrap();
+        let close_packet = initiator.build_close_packet(&mut OsRng).unwrap();
         let encrypted_data = &close_packet[19..];
 
         // Restore for proper decryption (we want to test link_id mismatch)
@@ -2824,35 +2754,30 @@ mod tests {
 
     #[test]
     fn test_close_from_stale_state() {
-        let (mut initiator, _responder, mut ctx) = setup_active_link_pair();
+        let (mut initiator, _responder) = setup_active_link_pair();
 
         // Transition to Stale
         initiator.set_state(LinkState::Stale);
 
         // Should still be able to build close packet from Stale state
-        let result = initiator.build_close_packet(&mut ctx);
+        let result = initiator.build_close_packet(&mut OsRng);
         assert!(result.is_ok());
     }
 
     #[test]
     fn test_close_from_wrong_state() {
         let dest_hash = DestinationHash::new([0x42; TRUNCATED_HASHBYTES]);
-        let link = Link::new_outgoing_with_rng(dest_hash, &mut OsRng);
+        let link = Link::new_outgoing(dest_hash, &mut OsRng);
 
         // Link is in Pending state
-        let mut ctx = PlatformContext {
-            rng: OsRng,
-            clock: TestClock::default(),
-            storage: NoStorage,
-        };
-        let result = link.build_close_packet(&mut ctx);
+        let result = link.build_close_packet(&mut OsRng);
         assert!(matches!(result, Err(LinkError::InvalidState)));
     }
 
     #[test]
     fn test_link_state_transitions() {
         let dest_hash = DestinationHash::new([0x42; TRUNCATED_HASHBYTES]);
-        let mut link = Link::new_outgoing_with_rng(dest_hash, &mut OsRng);
+        let mut link = Link::new_outgoing(dest_hash, &mut OsRng);
 
         assert_eq!(link.state(), LinkState::Pending);
 
@@ -2871,7 +2796,7 @@ mod tests {
     #[test]
     fn test_record_timestamps() {
         let dest_hash = DestinationHash::new([0x42; TRUNCATED_HASHBYTES]);
-        let mut link = Link::new_outgoing_with_rng(dest_hash, &mut OsRng);
+        let mut link = Link::new_outgoing(dest_hash, &mut OsRng);
 
         link.record_inbound(12345);
         link.record_outbound(12346);
