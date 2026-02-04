@@ -112,6 +112,30 @@ pub const PATHFINDER_RETRIES: u8 = 1;
 pub const PATHFINDER_EXPIRY_SECS: u64 = 60 * 60 * 24 * 7; // 7 days
 pub const PATH_REQUEST_GRACE_SECS: f64 = 0.4;
 
+/// Retry grace period for announce rebroadcast (milliseconds)
+pub const PATHFINDER_G_MS: u64 = 5_000;
+
+/// Random jitter window for announce rebroadcast (milliseconds)
+pub const PATHFINDER_RW_MS: u64 = 500;
+
+/// Maximum number of local (neighbor) rebroadcasts before suppressing
+pub const LOCAL_REBROADCASTS_MAX: u8 = 2;
+
+/// Link table entry timeout for validated links (milliseconds, 15 minutes)
+pub const LINK_TIMEOUT_MS: u64 = 900_000;
+
+/// Grace period before sending a path response (milliseconds)
+pub const PATH_REQUEST_GRACE_MS: u64 = 400;
+
+/// Timeout for path request round-trip (milliseconds)
+pub const PATH_REQUEST_TIMEOUT_MS: u64 = 15_000;
+
+/// Maximum number of path request dedup tags to retain
+pub const MAX_PATH_REQUEST_TAGS: usize = 32_000;
+
+/// Minimum interval between path requests for the same destination (milliseconds)
+pub const PATH_REQUEST_MIN_INTERVAL_MS: u64 = 20_000;
+
 /// Link constants
 pub const LINK_KEEPALIVE_SECS: u64 = 360; // 6 minutes (default/max)
 pub const LINK_KEEPALIVE_MIN_SECS: u64 = 5; // Minimum keepalive interval
@@ -133,8 +157,8 @@ pub const ANNOUNCE_RATE_LIMIT_MS: u64 = 2_000;
 /// Packet cache expiry time (milliseconds)
 pub const PACKET_CACHE_EXPIRY_MS: u64 = 60_000;
 
-/// Reverse table entry expiry time (milliseconds)
-pub const REVERSE_TABLE_EXPIRY_MS: u64 = 60_000;
+/// Reverse table entry expiry time (milliseconds, 8 minutes per Python reference)
+pub const REVERSE_TABLE_EXPIRY_MS: u64 = 480_000;
 
 /// Keepalive packet payload byte sent by initiator
 pub const KEEPALIVE_INITIATOR_BYTE: u8 = 0xFF;

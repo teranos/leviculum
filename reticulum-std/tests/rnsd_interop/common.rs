@@ -6,12 +6,14 @@ use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpStream;
 use tokio::time::timeout;
 
-use reticulum_core::constants::{MTU, TRUNCATED_HASHBYTES};
+use reticulum_core::constants::{MTU, NAME_HASHBYTES, TRUNCATED_HASHBYTES};
 use reticulum_core::crypto::truncated_hash;
 use reticulum_core::destination::{Destination, DestinationType, Direction};
 use reticulum_core::identity::Identity;
 use reticulum_core::link::{Link, LinkId};
-use reticulum_core::packet::{Packet, PacketContext, PacketType};
+use reticulum_core::packet::{
+    HeaderType, Packet, PacketContext, PacketData, PacketFlags, PacketType, TransportType,
+};
 use reticulum_core::traits::{Clock, NoStorage, PlatformContext};
 use reticulum_core::DestinationHash;
 use reticulum_std::interfaces::hdlc::{frame, DeframeResult, Deframer};
@@ -648,4 +650,183 @@ pub async fn wait_for_close_packet(
     }
 
     None
+}
+
+// =========================================================================
+// Transport layer test helpers
+// =========================================================================
+
+/// Wait for a daemon to have a path entry for the given destination hash.
+/// Polls the daemon's path table at regular intervals until the path appears
+/// or the timeout expires.
+pub async fn wait_for_path_on_daemon(
+    daemon: &TestDaemon,
+    dest_hash: &DestinationHash,
+    timeout_duration: Duration,
+) -> bool {
+    let start = std::time::Instant::now();
+    let poll_interval = Duration::from_millis(500);
+
+    while start.elapsed() < timeout_duration {
+        if daemon.has_path(dest_hash).await {
+            return true;
+        }
+        tokio::time::sleep(poll_interval).await;
+    }
+
+    // Final check
+    daemon.has_path(dest_hash).await
+}
+
+/// Build a raw PATH_REQUEST packet.
+///
+/// Path requests are Data packets sent to the well-known "rnstransport.path.request"
+/// PLAIN destination. The payload format is:
+///   dest_hash(16) + request_tag(16)
+///
+/// Returns the raw packed bytes ready for HDLC framing.
+pub fn build_path_request_raw(requested_dest_hash: &[u8; TRUNCATED_HASHBYTES]) -> Vec<u8> {
+    use rand_core::RngCore;
+
+    // Compute path request destination hash (PLAIN destination: name_hash padded to 16 bytes)
+    let name_hash = Destination::compute_name_hash("rnstransport", &["path", "request"]);
+    let mut path_request_dest = [0u8; TRUNCATED_HASHBYTES];
+    path_request_dest[..NAME_HASHBYTES].copy_from_slice(&name_hash);
+
+    // Generate random request tag
+    let mut tag = [0u8; TRUNCATED_HASHBYTES];
+    OsRng.fill_bytes(&mut tag);
+
+    // Build payload: requested_dest_hash(16) + tag(16)
+    let mut payload = Vec::with_capacity(32);
+    payload.extend_from_slice(requested_dest_hash);
+    payload.extend_from_slice(&tag);
+
+    // Build packet
+    let packet = Packet {
+        flags: PacketFlags {
+            ifac_flag: false,
+            header_type: HeaderType::Type1,
+            context_flag: false,
+            transport_type: TransportType::Broadcast,
+            dest_type: DestinationType::Plain,
+            packet_type: PacketType::Data,
+        },
+        hops: 0,
+        transport_id: None,
+        destination_hash: path_request_dest,
+        context: PacketContext::None,
+        data: PacketData::Owned(payload),
+    };
+
+    let mut buf = [0u8; MTU];
+    let len = packet.pack(&mut buf).expect("Failed to pack path request");
+    buf[..len].to_vec()
+}
+
+/// Build a raw PATH_REQUEST packet with a specific tag.
+///
+/// This variant allows specifying the request tag, which is useful for
+/// testing deduplication behavior (same dest_hash + same tag = duplicate).
+pub fn build_path_request_raw_with_tag(
+    requested_dest_hash: &[u8; TRUNCATED_HASHBYTES],
+    tag: &[u8; TRUNCATED_HASHBYTES],
+) -> Vec<u8> {
+    let name_hash = Destination::compute_name_hash("rnstransport", &["path", "request"]);
+    let mut path_request_dest = [0u8; TRUNCATED_HASHBYTES];
+    path_request_dest[..NAME_HASHBYTES].copy_from_slice(&name_hash);
+
+    let mut payload = Vec::with_capacity(32);
+    payload.extend_from_slice(requested_dest_hash);
+    payload.extend_from_slice(tag);
+
+    let packet = Packet {
+        flags: PacketFlags {
+            ifac_flag: false,
+            header_type: HeaderType::Type1,
+            context_flag: false,
+            transport_type: TransportType::Broadcast,
+            dest_type: DestinationType::Plain,
+            packet_type: PacketType::Data,
+        },
+        hops: 0,
+        transport_id: None,
+        destination_hash: path_request_dest,
+        context: PacketContext::None,
+        data: PacketData::Owned(payload),
+    };
+
+    let mut buf = [0u8; MTU];
+    let len = packet.pack(&mut buf).expect("Failed to pack path request");
+    buf[..len].to_vec()
+}
+
+/// Wait for any announce with specific destination hash and return route info.
+/// Similar to wait_for_any_announce_with_route_info but filters by dest_hash.
+pub async fn wait_for_announce_for_dest(
+    stream: &mut TcpStream,
+    deframer: &mut Deframer,
+    dest_hash: &DestinationHash,
+    timeout_duration: Duration,
+) -> Option<AnnounceRouteInfo> {
+    let mut buffer = [0u8; 2048];
+    let start = std::time::Instant::now();
+
+    while start.elapsed() < timeout_duration {
+        match timeout(Duration::from_millis(100), stream.read(&mut buffer)).await {
+            Ok(Ok(0)) => break,
+            Ok(Ok(n)) => {
+                let results = deframer.process(&buffer[..n]);
+                for result in results {
+                    if let DeframeResult::Frame(data) = result {
+                        if let Ok(pkt) = Packet::unpack(&data) {
+                            if pkt.flags.packet_type == PacketType::Announce
+                                && pkt.destination_hash == *dest_hash.as_bytes()
+                            {
+                                return Some(AnnounceRouteInfo {
+                                    transport_id: pkt.transport_id,
+                                    hops: pkt.hops,
+                                    packet: pkt,
+                                });
+                            }
+                        }
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+    None
+}
+
+/// Set up a Rust destination on a daemon connection and announce it.
+/// Returns the destination after sending the announce.
+#[allow(dead_code)]
+pub async fn setup_rust_destination(
+    stream: &mut TcpStream,
+    app_name: &str,
+    aspects: &[&str],
+    app_data: &[u8],
+) -> Destination {
+    let identity = Identity::generate_with_rng(&mut OsRng);
+    let mut dest = Destination::new(
+        Some(identity),
+        Direction::In,
+        DestinationType::Single,
+        app_name,
+        aspects,
+    )
+    .expect("Failed to create destination");
+
+    let mut ctx = make_context();
+    let packet = dest
+        .announce(Some(app_data), &mut ctx)
+        .expect("Failed to create announce");
+
+    let mut raw_packet = [0u8; MTU];
+    let size = packet.pack(&mut raw_packet).expect("Failed to pack packet");
+
+    send_framed(stream, &raw_packet[..size]).await;
+
+    dest
 }

@@ -7,6 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- Transport interop test coverage: data echo through two relays, PATH_REQUEST dedup, link close verification through relay
+- New test `test_path_request_forwarding_to_local_destination` (ignored: blocked by Python Reticulum float division bug in Transport.py:2667 where `TRUNCATED_HASHLENGTH/8` produces float 16.0 instead of int 16)
+- New test `test_path_request_dedup` verifying duplicate PATH_REQUEST suppression
+
 ### Changed
 - Move `proof_strategy` and `dest_signing_key` from `LinkManager`'s per-destination `DestinationEntry` to the `Link` struct, reducing duplicated state across components
 - `LinkManager::accept_link()` now takes a `proof_strategy: ProofStrategy` parameter instead of reading it from destination registration
@@ -18,6 +23,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `DestinationEntry` struct from `LinkManager` — replaced by simple `BTreeSet`
 
 ### Fixed
+- Fix flaky `test_concurrent_links_through_relay` by switching from batch send to sequential per-link send+verify
 - Fix 16 ignored doc-tests across reticulum-core and reticulum-std: 9 made fully runnable, 5 converted to compile-only (`no_run`), 1 made runnable (was `ignore`), 1 converted to `text` block (private function)
 - Fix incorrect types in IFAC module doc example (`String` vs `&str`, missing `Result` handling)
 - Fix missing `Message` trait import in `StreamDataMessage` doc example

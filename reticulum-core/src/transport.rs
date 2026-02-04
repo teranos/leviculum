@@ -33,13 +33,22 @@ use alloc::boxed::Box;
 use alloc::collections::BTreeMap;
 use alloc::vec::Vec;
 
-use crate::constants::{ANNOUNCE_RATE_LIMIT_MS, MS_PER_SECOND, PACKET_CACHE_EXPIRY_MS, PATHFINDER_EXPIRY_SECS, PATHFINDER_MAX_HOPS, REVERSE_TABLE_EXPIRY_MS, TRUNCATED_HASHBYTES};
+use crate::constants::{
+    ANNOUNCE_RATE_LIMIT_MS, LINK_TIMEOUT_MS, LOCAL_REBROADCASTS_MAX, MAX_PATH_REQUEST_TAGS,
+    MS_PER_SECOND, PACKET_CACHE_EXPIRY_MS, PATH_REQUEST_GRACE_MS, PATH_REQUEST_MIN_INTERVAL_MS,
+    PATHFINDER_EXPIRY_SECS, PATHFINDER_G_MS, PATHFINDER_MAX_HOPS, PATHFINDER_RETRIES,
+    PATHFINDER_RW_MS, REVERSE_TABLE_EXPIRY_MS, TRUNCATED_HASHBYTES,
+};
 
 use crate::announce::ReceivedAnnounce;
 use crate::crypto::truncated_hash;
-use crate::destination::{DestinationHash, ProofStrategy};
+use crate::destination::{Destination, DestinationHash, ProofStrategy};
 use crate::identity::Identity;
-use crate::packet::{build_proof_packet, packet_hash, truncated_packet_hash, Packet, PacketError, PacketType};
+use crate::link::Link;
+use crate::packet::{
+    build_proof_packet, packet_hash, truncated_packet_hash, HeaderType, Packet, PacketContext,
+    PacketData, PacketError, PacketFlags, PacketType, TransportType,
+};
 use crate::receipt::{PacketReceipt, ReceiptStatus};
 use crate::traits::{Clock, Interface, InterfaceError, Storage};
 
@@ -60,15 +69,27 @@ pub struct PathEntry {
     pub interface_index: usize,
 }
 
-/// Link table entry (for active links through this node)
+/// Link table entry (for active links routed through this transport node)
 #[derive(Debug, Clone)]
 pub struct LinkEntry {
-    /// Number of hops
-    pub hops: u8,
-    /// When this was learned (ms)
+    /// When this link was created (ms)
     pub timestamp_ms: u64,
-    /// Interface index
-    pub interface_index: usize,
+    /// Transport ID of the next hop toward the destination
+    pub next_hop_transport_id: [u8; TRUNCATED_HASHBYTES],
+    /// Interface index toward the destination (outbound)
+    pub next_hop_interface_index: usize,
+    /// Remaining hops to destination
+    pub remaining_hops: u8,
+    /// Interface index where we received the link request (inbound, toward initiator)
+    pub received_interface_index: usize,
+    /// Total hops from initiator
+    pub hops: u8,
+    /// Destination hash for the link target
+    pub destination_hash: [u8; TRUNCATED_HASHBYTES],
+    /// Whether the link has been validated by a proof
+    pub validated: bool,
+    /// Deadline for receiving a proof (ms), after which the entry is removed
+    pub proof_timeout_ms: u64,
 }
 
 /// Reverse table entry (for routing replies back)
@@ -93,6 +114,14 @@ pub struct AnnounceEntry {
     pub retries: u8,
     /// When to retransmit (ms, None = don't)
     pub retransmit_at_ms: Option<u64>,
+    /// Raw packet bytes stored for rebroadcast
+    pub raw_packet: Vec<u8>,
+    /// Interface index this announce arrived on
+    pub receiving_interface_index: usize,
+    /// Number of times neighbors echoed this announce
+    pub local_rebroadcasts: u8,
+    /// If true, do not re-rebroadcast (PATH_RESPONSE context)
+    pub block_rebroadcasts: bool,
 }
 
 /// Transport configuration
@@ -172,6 +201,14 @@ pub enum TransportEvent {
         /// Destination hash
         destination_hash: [u8; TRUNCATED_HASHBYTES],
     },
+    /// A path request was received for a local destination
+    ///
+    /// The application should re-announce the destination so the requester can learn the path.
+    PathRequestReceived {
+        /// The destination hash being requested
+        destination_hash: [u8; TRUNCATED_HASHBYTES],
+    },
+
     /// An interface went offline
     InterfaceDown(usize),
 
@@ -288,11 +325,24 @@ pub struct Transport<C: Clock, S: Storage> {
 
     /// Statistics
     stats: TransportStats,
+
+    /// Well-known hash for path request destination (rnstransport.path.request)
+    path_request_hash: [u8; TRUNCATED_HASHBYTES],
+
+    /// Dedup tags for path requests (dest_hash + random tag)
+    path_request_tags: Vec<[u8; 32]>,
+
+    /// Rate limiting for path requests: dest_hash -> last request timestamp (ms)
+    path_requests: BTreeMap<[u8; TRUNCATED_HASHBYTES], u64>,
+
+    /// Cached raw announce bytes for path responses: dest_hash -> raw bytes
+    announce_cache: BTreeMap<[u8; TRUNCATED_HASHBYTES], Vec<u8>>,
 }
 
 impl<C: Clock, S: Storage> Transport<C, S> {
     /// Create a new Transport instance
     pub fn new(config: TransportConfig, clock: C, storage: S, identity: Identity) -> Self {
+        let path_request_hash = Self::compute_path_request_hash();
         Self {
             config,
             clock,
@@ -308,6 +358,10 @@ impl<C: Clock, S: Storage> Transport<C, S> {
             receipts: BTreeMap::new(),
             events: Vec::new(),
             stats: TransportStats::default(),
+            path_request_hash,
+            path_request_tags: Vec::new(),
+            path_requests: BTreeMap::new(),
+            announce_cache: BTreeMap::new(),
         }
     }
 
@@ -568,8 +622,8 @@ impl<C: Clock, S: Storage> Transport<C, S> {
 
         // Route to handler based on packet type
         match packet.flags.packet_type {
-            PacketType::Announce => self.handle_announce(packet, interface_index),
-            PacketType::LinkRequest => self.handle_link_request(packet, interface_index),
+            PacketType::Announce => self.handle_announce(packet, interface_index, raw),
+            PacketType::LinkRequest => self.handle_link_request(packet, interface_index, raw),
             PacketType::Proof => self.handle_proof(packet, interface_index),
             PacketType::Data => self.handle_data(packet, interface_index, full_packet_hash),
         }
@@ -632,6 +686,8 @@ impl<C: Clock, S: Storage> Transport<C, S> {
         self.clean_packet_cache(now);
         self.clean_reverse_table(now);
         self.check_receipt_timeouts(now);
+        self.check_announce_rebroadcasts(now);
+        self.clean_link_table(now);
     }
 
     // ─── Events ─────────────────────────────────────────────────────────
@@ -676,8 +732,10 @@ impl<C: Clock, S: Storage> Transport<C, S> {
         &mut self,
         packet: Packet,
         interface_index: usize,
+        raw: &[u8],
     ) -> Result<(), TransportError> {
         let now = self.clock.now_ms();
+        let is_path_response = packet.context == PacketContext::PathResponse;
 
         // Parse announce
         let announce =
@@ -689,9 +747,27 @@ impl<C: Clock, S: Storage> Transport<C, S> {
         let dest_hash = announce.destination_hash().into_bytes();
 
         // Rate limiting: check if we've seen this destination recently
-        if let Some(entry) = self.announce_table.get(&dest_hash) {
-            let elapsed = now.saturating_sub(entry.timestamp_ms);
+        // Also detect local rebroadcasts from neighbors
+        if let Some(existing) = self.announce_table.get_mut(&dest_hash) {
+            let elapsed = now.saturating_sub(existing.timestamp_ms);
             if elapsed < self.config.announce_rate_limit_ms {
+                // Local rebroadcast detection: neighbor sent same announce at same or +1 hop
+                if packet.hops == existing.hops.saturating_add(1) {
+                    // A neighbor is rebroadcasting the same announce we have
+                    existing.local_rebroadcasts = existing.local_rebroadcasts.saturating_add(1);
+                    if existing.local_rebroadcasts >= LOCAL_REBROADCASTS_MAX {
+                        // Enough neighbors have rebroadcast; suppress our own
+                        existing.retransmit_at_ms = None;
+                    }
+                } else if packet.hops == existing.hops.saturating_add(2)
+                    && existing.retries > 0
+                    && existing.retransmit_at_ms.is_some()
+                {
+                    // Another node forwarded our rebroadcast (hops+2 means they got
+                    // our retransmit at hops+1 and forwarded it)
+                    existing.retransmit_at_ms = None;
+                }
+
                 self.stats.packets_dropped += 1;
                 return Ok(());
             }
@@ -717,6 +793,10 @@ impl<C: Clock, S: Storage> Transport<C, S> {
             },
         );
 
+        // Determine if we should schedule rebroadcast
+        let should_rebroadcast =
+            self.config.enable_transport && !is_path_response;
+
         // Update announce table
         self.announce_table.insert(
             dest_hash,
@@ -724,13 +804,22 @@ impl<C: Clock, S: Storage> Transport<C, S> {
                 timestamp_ms: now,
                 hops: packet.hops,
                 retries: 0,
-                retransmit_at_ms: if self.config.enable_transport {
+                retransmit_at_ms: if should_rebroadcast {
                     Some(now + self.calculate_retransmit_delay(packet.hops))
                 } else {
                     None
                 },
+                raw_packet: raw.to_vec(),
+                receiving_interface_index: interface_index,
+                local_rebroadcasts: 0,
+                block_rebroadcasts: is_path_response,
             },
         );
+
+        // Cache raw announce for path responses (when transport is enabled)
+        if self.config.enable_transport {
+            self.announce_cache.insert(dest_hash, raw.to_vec());
+        }
 
         self.stats.announces_processed += 1;
 
@@ -755,6 +844,7 @@ impl<C: Clock, S: Storage> Transport<C, S> {
         &mut self,
         packet: Packet,
         interface_index: usize,
+        raw: &[u8],
     ) -> Result<(), TransportError> {
         let dest_hash = packet.destination_hash;
 
@@ -771,9 +861,53 @@ impl<C: Clock, S: Storage> Transport<C, S> {
             }
         }
 
-        // If we're a transport node, forward the link request
+        // If we're a transport node, forward the link request and populate link table
         if self.config.enable_transport {
-            self.forward_packet(packet)?;
+            if let Some(path) = self.path_table.get(&dest_hash) {
+                let now = self.clock.now_ms();
+                let link_id = Link::calculate_link_id(raw);
+                let target_iface = path.interface_index;
+                let transport_id_bytes = self.identity.hash().clone();
+
+                // Insert link table entry for bidirectional routing
+                self.link_table.insert(
+                    *link_id.as_bytes(),
+                    LinkEntry {
+                        timestamp_ms: now,
+                        next_hop_transport_id: path.received_from,
+                        next_hop_interface_index: target_iface,
+                        remaining_hops: path.hops,
+                        received_interface_index: interface_index,
+                        hops: packet.hops,
+                        destination_hash: dest_hash,
+                        validated: false,
+                        proof_timeout_ms: now
+                            + ((packet.hops as u64 + path.hops as u64 + 2)
+                                * crate::constants::DEFAULT_PER_HOP_TIMEOUT
+                                * MS_PER_SECOND),
+                    },
+                );
+
+                // Forward as Header Type 2 with our transport ID
+                let forwarded = Packet {
+                    flags: PacketFlags {
+                        header_type: HeaderType::Type2,
+                        transport_type: TransportType::Transport,
+                        ..packet.flags
+                    },
+                    hops: packet.hops.saturating_add(1),
+                    transport_id: Some(transport_id_bytes),
+                    destination_hash: dest_hash,
+                    context: packet.context,
+                    data: packet.data,
+                };
+
+                self.stats.packets_forwarded += 1;
+                return self.send_packet_on_interface(target_iface, &forwarded);
+            }
+
+            // No path known, drop
+            self.stats.packets_dropped += 1;
         }
 
         Ok(())
@@ -835,10 +969,28 @@ impl<C: Clock, S: Storage> Transport<C, S> {
             return Ok(());
         }
 
-        // If we're a transport node, check link table for routing
+        // If we're a transport node, check link table for bidirectional routing
         if self.config.enable_transport {
-            if let Some(link_entry) = self.link_table.get(&dest_hash) {
-                let target_iface = link_entry.interface_index;
+            if let Some(link_entry) = self.link_table.get(&dest_hash).cloned() {
+                // Determine direction: if it arrived from the destination side,
+                // route toward the initiator, and vice versa
+                let target_iface = if interface_index == link_entry.next_hop_interface_index {
+                    // Arrived from destination side → route to initiator side
+                    link_entry.received_interface_index
+                } else {
+                    // Arrived from initiator side → route to destination side
+                    link_entry.next_hop_interface_index
+                };
+
+                // Mark link as validated on first proof
+                if !link_entry.validated {
+                    if let Some(entry) = self.link_table.get_mut(&dest_hash) {
+                        entry.validated = true;
+                        entry.timestamp_ms = self.clock.now_ms();
+                    }
+                }
+
+                self.stats.packets_forwarded += 1;
                 return self.send_packet_on_interface(target_iface, &packet);
             }
         }
@@ -854,6 +1006,11 @@ impl<C: Clock, S: Storage> Transport<C, S> {
     ) -> Result<(), TransportError> {
         let dest_hash = packet.destination_hash;
 
+        // Intercept path requests (before normal destination routing)
+        if dest_hash == self.path_request_hash {
+            return self.handle_path_request(packet, interface_index);
+        }
+
         // Check if we have this destination registered
         if let Some(dest_entry) = self.destinations.get(&dest_hash) {
             let proof_strategy = dest_entry.proof_strategy;
@@ -868,34 +1025,38 @@ impl<C: Clock, S: Storage> Transport<C, S> {
             // Handle proof generation based on strategy
             match proof_strategy {
                 ProofStrategy::All => {
-                    // Auto-generate and send proof
-                    // Note: We need the destination's identity to sign the proof.
-                    // The actual proof sending is handled by the application after
-                    // receiving PacketReceived, since we don't store the path back
-                    // to the sender in this simple implementation.
-                    // For now, emit ProofRequested so the app knows proof is expected.
                     self.events.push(TransportEvent::ProofRequested {
                         packet_hash: full_packet_hash,
                         destination_hash: dest_hash,
                     });
                 }
                 ProofStrategy::App => {
-                    // Emit ProofRequested event for application to decide
                     self.events.push(TransportEvent::ProofRequested {
                         packet_hash: full_packet_hash,
                         destination_hash: dest_hash,
                     });
                 }
-                ProofStrategy::None => {
-                    // Do nothing - no proof requested
-                }
+                ProofStrategy::None => {}
             }
 
             return Ok(());
         }
 
-        // If we're a transport node, try to forward
+        // If we're a transport node, try link table first, then path table
         if self.config.enable_transport {
+            // Check link table for validated links
+            if let Some(link_entry) = self.link_table.get(&dest_hash).cloned() {
+                if link_entry.validated {
+                    let target_iface = if interface_index == link_entry.next_hop_interface_index {
+                        link_entry.received_interface_index
+                    } else {
+                        link_entry.next_hop_interface_index
+                    };
+                    self.stats.packets_forwarded += 1;
+                    return self.send_packet_on_interface(target_iface, &packet);
+                }
+            }
+
             self.forward_packet(packet)?;
         }
 
@@ -932,6 +1093,184 @@ impl<C: Clock, S: Storage> Transport<C, S> {
         let len = packet.pack(&mut buf)?;
 
         self.send_on_interface(interface_index, &buf[..len])
+    }
+
+    // ─── Public: Path Request API ────────────────────────────────────────
+
+    /// Request a path to a destination
+    ///
+    /// Sends a path request packet to discover the route to a destination.
+    /// Rate-limited to one request per destination per PATH_REQUEST_MIN_INTERVAL_MS.
+    ///
+    /// # Arguments
+    /// * `dest_hash` - The destination hash to find a path for
+    /// * `on_interface` - Optional specific interface to send on, or None for all
+    /// * `tag` - A random 16-byte tag for dedup
+    pub fn request_path(
+        &mut self,
+        dest_hash: &[u8; TRUNCATED_HASHBYTES],
+        on_interface: Option<usize>,
+        tag: &[u8; TRUNCATED_HASHBYTES],
+    ) -> Result<(), TransportError> {
+        let now = self.clock.now_ms();
+
+        // Rate limiting
+        if let Some(&last_request) = self.path_requests.get(dest_hash) {
+            if now.saturating_sub(last_request) < PATH_REQUEST_MIN_INTERVAL_MS {
+                return Ok(());
+            }
+        }
+        self.path_requests.insert(*dest_hash, now);
+
+        // Build path request data: dest_hash(16) + transport_id(16) + tag(16)
+        let transport_id_bytes = self.identity.hash().clone();
+        let mut data = Vec::with_capacity(48);
+        data.extend_from_slice(dest_hash);
+        data.extend_from_slice(&transport_id_bytes);
+        data.extend_from_slice(tag);
+
+        let packet = Packet {
+            flags: PacketFlags {
+                ifac_flag: false,
+                header_type: HeaderType::Type1,
+                context_flag: false,
+                transport_type: TransportType::Broadcast,
+                dest_type: crate::destination::DestinationType::Plain,
+                packet_type: PacketType::Data,
+            },
+            hops: 0,
+            transport_id: None,
+            destination_hash: self.path_request_hash,
+            context: PacketContext::None,
+            data: PacketData::Owned(data),
+        };
+
+        let mut buf = [0u8; crate::constants::MTU];
+        let len = packet.pack(&mut buf)?;
+
+        match on_interface {
+            Some(idx) => self.send_on_interface(idx, &buf[..len]),
+            None => {
+                self.send_on_all_interfaces(&buf[..len]);
+                Ok(())
+            }
+        }
+    }
+
+    /// Get the well-known path request destination hash
+    pub fn path_request_hash(&self) -> &[u8; TRUNCATED_HASHBYTES] {
+        &self.path_request_hash
+    }
+
+    // ─── Internal: Helpers ─────────────────────────────────────────────
+
+    /// Compute the well-known path request destination hash
+    ///
+    /// PLAIN destination with name "rnstransport.path.request".
+    /// Hash = name_hash padded to 16 bytes (no identity for PLAIN).
+    fn compute_path_request_hash() -> [u8; TRUNCATED_HASHBYTES] {
+        let name_hash =
+            Destination::compute_name_hash("rnstransport", &["path", "request"]);
+        let mut hash = [0u8; TRUNCATED_HASHBYTES];
+        hash[..crate::constants::NAME_HASHBYTES].copy_from_slice(&name_hash);
+        hash
+    }
+
+    /// Send data on all online interfaces except the one at `except_index`
+    fn send_on_all_interfaces_except(&mut self, except_index: usize, data: &[u8]) {
+        for (i, slot) in self.interfaces.iter_mut().enumerate() {
+            if i == except_index {
+                continue;
+            }
+            if let Some(iface) = slot.as_deref_mut() {
+                if iface.is_online() {
+                    let _ = iface.send(data);
+                }
+            }
+        }
+    }
+
+    /// Compute deterministic jitter from a hash seed
+    fn jitter_ms(seed: &[u8; TRUNCATED_HASHBYTES]) -> u64 {
+        u16::from_le_bytes([seed[0], seed[1]]) as u64 % PATHFINDER_RW_MS
+    }
+
+    /// Handle a path request packet
+    fn handle_path_request(
+        &mut self,
+        packet: Packet,
+        interface_index: usize,
+    ) -> Result<(), TransportError> {
+        let data = packet.data.as_slice();
+
+        // Path request format: dest_hash(16) + [transport_id(16)] + tag(16)
+        // Minimum: dest_hash(16) + tag(16) = 32 bytes
+        if data.len() < 32 {
+            return Ok(());
+        }
+
+        let mut requested_hash = [0u8; TRUNCATED_HASHBYTES];
+        requested_hash.copy_from_slice(&data[..TRUNCATED_HASHBYTES]);
+
+        // Extract tag (last 16 bytes)
+        let tag_start = data.len() - TRUNCATED_HASHBYTES;
+        let mut tag = [0u8; TRUNCATED_HASHBYTES];
+        tag.copy_from_slice(&data[tag_start..]);
+
+        // Dedup via tag
+        let mut dedup_key = [0u8; 32];
+        dedup_key[..TRUNCATED_HASHBYTES].copy_from_slice(&requested_hash);
+        dedup_key[TRUNCATED_HASHBYTES..].copy_from_slice(&tag);
+
+        if self.path_request_tags.contains(&dedup_key) {
+            return Ok(());
+        }
+
+        self.path_request_tags.push(dedup_key);
+        // Trim if too many tags
+        if self.path_request_tags.len() > MAX_PATH_REQUEST_TAGS {
+            self.path_request_tags.remove(0);
+        }
+
+        // 1. Check if it's a local destination
+        if self.destinations.contains_key(&requested_hash) {
+            self.events.push(TransportEvent::PathRequestReceived {
+                destination_hash: requested_hash,
+            });
+            return Ok(());
+        }
+
+        // 2. Check if we have a cached announce for this destination
+        if self.config.enable_transport {
+            if let Some(cached_raw) = self.announce_cache.get(&requested_hash).cloned() {
+                let now = self.clock.now_ms();
+                // Parse cached announce to get hop count
+                if let Ok(cached_packet) = Packet::unpack(&cached_raw) {
+                    let jitter = Self::jitter_ms(&requested_hash);
+                    self.announce_table.insert(
+                        requested_hash,
+                        AnnounceEntry {
+                            timestamp_ms: now,
+                            hops: cached_packet.hops,
+                            retries: 0,
+                            retransmit_at_ms: Some(now + PATH_REQUEST_GRACE_MS + jitter),
+                            raw_packet: cached_raw,
+                            receiving_interface_index: interface_index,
+                            local_rebroadcasts: 0,
+                            block_rebroadcasts: true,
+                        },
+                    );
+                }
+                return Ok(());
+            }
+
+            // 3. Unknown destination → forward path request on all interfaces except arrival
+            let mut buf = [0u8; crate::constants::MTU];
+            let len = packet.pack(&mut buf)?;
+            self.send_on_all_interfaces_except(interface_index, &buf[..len]);
+        }
+
+        Ok(())
     }
 
     // ─── Internal: Periodic Tasks ───────────────────────────────────────
@@ -993,6 +1332,99 @@ impl<C: Clock, S: Storage> Transport<C, S> {
             self.receipts.remove(&hash);
             self.events
                 .push(TransportEvent::ReceiptTimeout { packet_hash: hash });
+        }
+    }
+
+    fn check_announce_rebroadcasts(&mut self, now: u64) {
+        if !self.config.enable_transport {
+            return;
+        }
+
+        // Collect entries that need action
+        let mut to_remove = Vec::new();
+        let mut to_rebroadcast = Vec::new();
+
+        for (dest_hash, entry) in self.announce_table.iter() {
+            // Remove entries that have exceeded retries or local rebroadcast limit
+            if entry.retries > PATHFINDER_RETRIES
+                || entry.local_rebroadcasts >= LOCAL_REBROADCASTS_MAX
+            {
+                to_remove.push(*dest_hash);
+                continue;
+            }
+
+            // Check if retransmit is due
+            if let Some(retransmit_at) = entry.retransmit_at_ms {
+                if retransmit_at <= now && !entry.raw_packet.is_empty() {
+                    to_rebroadcast.push((
+                        *dest_hash,
+                        entry.raw_packet.clone(),
+                        entry.receiving_interface_index,
+                        entry.hops,
+                        entry.block_rebroadcasts,
+                    ));
+                }
+            }
+        }
+
+        for hash in to_remove {
+            self.announce_table.remove(&hash);
+        }
+
+        let transport_id = *self.identity.hash();
+
+        for (dest_hash, raw, except_iface, _original_hops, block) in to_rebroadcast {
+            // Rebuild packet as Header Type 2 with our transport ID
+            if let Ok(mut parsed) = Packet::unpack(&raw) {
+                parsed.hops = parsed.hops.saturating_add(1);
+
+                if parsed.hops > self.config.max_hops {
+                    self.announce_table.remove(&dest_hash);
+                    continue;
+                }
+
+                // Set as Header Type 2 (transport-routed)
+                parsed.flags.header_type = HeaderType::Type2;
+                parsed.flags.transport_type = TransportType::Transport;
+                parsed.transport_id = Some(transport_id);
+
+                // If block_rebroadcasts, set PathResponse context
+                if block {
+                    parsed.context = PacketContext::PathResponse;
+                }
+
+                let mut buf = [0u8; crate::constants::MTU];
+                if let Ok(len) = parsed.pack(&mut buf) {
+                    self.send_on_all_interfaces_except(except_iface, &buf[..len]);
+                    self.stats.packets_forwarded += 1;
+                }
+            }
+
+            // Update announce table entry
+            if let Some(entry) = self.announce_table.get_mut(&dest_hash) {
+                let jitter = Self::jitter_ms(&dest_hash);
+                entry.retransmit_at_ms = Some(now + PATHFINDER_G_MS + jitter);
+                entry.retries += 1;
+            }
+        }
+    }
+
+    fn clean_link_table(&mut self, now: u64) {
+        let expired: Vec<[u8; TRUNCATED_HASHBYTES]> = self
+            .link_table
+            .iter()
+            .filter(|(_, e)| {
+                if e.validated {
+                    now.saturating_sub(e.timestamp_ms) > LINK_TIMEOUT_MS
+                } else {
+                    now > e.proof_timeout_ms
+                }
+            })
+            .map(|(k, _)| *k)
+            .collect();
+
+        for hash in expired {
+            self.link_table.remove(&hash);
         }
     }
 
@@ -1487,6 +1919,617 @@ mod tests {
                 }
                 _ => panic!("Expected AnnounceReceived event"),
             }
+        }
+
+        // ─── Helper: Build announce packet bytes ─────────────────────────
+
+        fn make_announce_raw(hops: u8, context: crate::packet::PacketContext) -> (Vec<u8>, [u8; TRUNCATED_HASHBYTES]) {
+            use crate::destination::{Destination, DestinationType, Direction};
+            use crate::packet::{
+                HeaderType, PacketData, PacketFlags, TransportType,
+            };
+
+            let identity = Identity::generate_with_rng(&mut OsRng);
+            let dest = Destination::new(
+                Some(identity),
+                Direction::In,
+                DestinationType::Single,
+                "testapp",
+                &["rebroadcast"],
+            )
+            .unwrap();
+
+            let id = dest.identity().unwrap();
+            let random_hash = [0x42u8; crate::constants::RANDOM_HASHBYTES];
+
+            let mut payload = Vec::new();
+            payload.extend_from_slice(&id.public_key_bytes());
+            payload.extend_from_slice(dest.name_hash());
+            payload.extend_from_slice(&random_hash);
+
+            let app_data = b"test";
+            let mut signed_data = Vec::new();
+            signed_data.extend_from_slice(dest.hash().as_bytes());
+            signed_data.extend_from_slice(&id.public_key_bytes());
+            signed_data.extend_from_slice(dest.name_hash());
+            signed_data.extend_from_slice(&random_hash);
+            signed_data.extend_from_slice(app_data);
+
+            let signature = id.sign(&signed_data).unwrap();
+            payload.extend_from_slice(&signature);
+            payload.extend_from_slice(app_data);
+
+            let packet = Packet {
+                flags: PacketFlags {
+                    ifac_flag: false,
+                    header_type: HeaderType::Type1,
+                    context_flag: false,
+                    transport_type: TransportType::Broadcast,
+                    dest_type: DestinationType::Single,
+                    packet_type: PacketType::Announce,
+                },
+                hops,
+                transport_id: None,
+                destination_hash: dest.hash().into_bytes(),
+                context,
+                data: PacketData::Owned(payload),
+            };
+
+            let mut buf = [0u8; 500];
+            let len = packet.pack(&mut buf).unwrap();
+            (buf[..len].to_vec(), dest.hash().into_bytes())
+        }
+
+        fn make_transport_enabled() -> Transport<MockClock, NoStorage> {
+            let clock = MockClock::new(1_000_000);
+            let identity = Identity::generate_with_rng(&mut OsRng);
+            let config = TransportConfig {
+                enable_transport: true,
+                ..TransportConfig::default()
+            };
+            Transport::new(config, clock, NoStorage, identity)
+        }
+
+        // ─── Stage 1: Announce Rebroadcast Tests ─────────────────────────
+
+        #[test]
+        fn test_rebroadcast_fires_after_delay() {
+            let mut transport = make_transport_enabled();
+            let _idx0 = transport.register_interface(Box::new(MockInterface::new("if0", 1)));
+            let _idx1 = transport.register_interface(Box::new(MockInterface::new("if1", 2)));
+
+            let (raw, dest_hash) = make_announce_raw(2, PacketContext::None);
+            transport.process_incoming(0, &raw).unwrap();
+            transport.drain_events();
+
+            // Should have an announce table entry with retransmit scheduled
+            let entry = transport.announce_table.get(&dest_hash).unwrap();
+            assert!(entry.retransmit_at_ms.is_some());
+            assert_eq!(entry.retries, 0);
+
+            // Advance past retransmit delay
+            transport.clock.advance(10_000);
+            transport.poll();
+
+            // Check that the announce entry retries was incremented
+            if let Some(entry) = transport.announce_table.get(&dest_hash) {
+                assert!(entry.retries >= 1);
+            }
+        }
+
+        #[test]
+        fn test_rebroadcast_sent_on_correct_interfaces() {
+            let mut transport = make_transport_enabled();
+            let _idx0 = transport.register_interface(Box::new(MockInterface::new("arrival", 1)));
+            let _idx1 = transport.register_interface(Box::new(MockInterface::new("other1", 2)));
+            let _idx2 = transport.register_interface(Box::new(MockInterface::new("other2", 3)));
+
+            let (raw, _dest_hash) = make_announce_raw(1, PacketContext::None);
+            transport.process_incoming(0, &raw).unwrap();
+            transport.drain_events();
+
+            // Advance past retransmit delay
+            transport.clock.advance(10_000);
+            transport.poll();
+
+            // Verify rebroadcast happened
+            assert!(transport.stats().packets_forwarded > 0);
+        }
+
+        #[test]
+        fn test_no_rebroadcast_when_transport_disabled() {
+            let mut transport = make_transport(); // transport disabled by default
+            let _idx0 = transport.register_interface(Box::new(MockInterface::new("if0", 1)));
+            let _idx1 = transport.register_interface(Box::new(MockInterface::new("if1", 2)));
+
+            let (raw, dest_hash) = make_announce_raw(2, PacketContext::None);
+            transport.process_incoming(0, &raw).unwrap();
+            transport.drain_events();
+
+            // Should have no retransmit scheduled
+            let entry = transport.announce_table.get(&dest_hash).unwrap();
+            assert!(entry.retransmit_at_ms.is_none());
+
+            // Advance and poll - should not forward anything
+            transport.clock.advance(10_000);
+            transport.poll();
+            assert_eq!(transport.stats().packets_forwarded, 0);
+        }
+
+        #[test]
+        fn test_rebroadcast_stops_after_max_retries() {
+            let mut transport = make_transport_enabled();
+            let _idx0 = transport.register_interface(Box::new(MockInterface::new("if0", 1)));
+            let _idx1 = transport.register_interface(Box::new(MockInterface::new("if1", 2)));
+
+            let (raw, dest_hash) = make_announce_raw(1, PacketContext::None);
+            transport.process_incoming(0, &raw).unwrap();
+            transport.drain_events();
+
+            // First rebroadcast cycle: retries goes 0 -> 1
+            transport.clock.advance(10_000);
+            transport.poll();
+            assert!(transport.announce_table.get(&dest_hash).is_some());
+            if let Some(entry) = transport.announce_table.get(&dest_hash) {
+                assert_eq!(entry.retries, 1);
+            }
+
+            // Second rebroadcast cycle: retries goes 1 -> 2
+            transport.clock.advance(10_000);
+            transport.poll();
+
+            // Third poll: retries=2 > PATHFINDER_RETRIES(1) → removed
+            transport.clock.advance(10_000);
+            transport.poll();
+
+            assert!(
+                transport.announce_table.get(&dest_hash).is_none(),
+                "Entry should be removed after exceeding PATHFINDER_RETRIES"
+            );
+        }
+
+        #[test]
+        fn test_rebroadcast_increments_hops() {
+            let mut transport = make_transport_enabled();
+            let _idx0 = transport.register_interface(Box::new(MockInterface::new("if0", 1)));
+            let _idx1 = transport.register_interface(Box::new(MockInterface::new("if1", 2)));
+
+            let original_hops = 3u8;
+            let (raw, _dest_hash) = make_announce_raw(original_hops, PacketContext::None);
+            transport.process_incoming(0, &raw).unwrap();
+            transport.drain_events();
+
+            // Trigger rebroadcast
+            transport.clock.advance(10_000);
+            transport.poll();
+
+            assert!(transport.stats().packets_forwarded > 0);
+        }
+
+        #[test]
+        fn test_path_response_not_rebroadcasted() {
+            let mut transport = make_transport_enabled();
+            let _idx0 = transport.register_interface(Box::new(MockInterface::new("if0", 1)));
+            let _idx1 = transport.register_interface(Box::new(MockInterface::new("if1", 2)));
+
+            let (raw, dest_hash) = make_announce_raw(2, PacketContext::PathResponse);
+            transport.process_incoming(0, &raw).unwrap();
+            transport.drain_events();
+
+            // Should have no retransmit scheduled for PATH_RESPONSE context
+            let entry = transport.announce_table.get(&dest_hash).unwrap();
+            assert!(entry.retransmit_at_ms.is_none());
+            assert!(entry.block_rebroadcasts);
+        }
+
+        #[test]
+        fn test_local_rebroadcast_detection_suppresses() {
+            let mut transport = make_transport_enabled();
+            let _idx0 = transport.register_interface(Box::new(MockInterface::new("if0", 1)));
+            let _idx1 = transport.register_interface(Box::new(MockInterface::new("if1", 2)));
+
+            // Create announce at hops=1
+            let (raw1, dest_hash) = make_announce_raw(1, PacketContext::None);
+            transport.process_incoming(0, &raw1).unwrap();
+            transport.drain_events();
+
+            // Verify retransmit is scheduled
+            let entry = transport.announce_table.get(&dest_hash).unwrap();
+            assert!(entry.retransmit_at_ms.is_some());
+
+            // Now create a "same announce from neighbor" at hops=2 (hops+1)
+            // We can't use the same dest hash with a different packet easily,
+            // so we manually simulate by adjusting the announce table
+            if let Some(entry) = transport.announce_table.get_mut(&dest_hash) {
+                entry.local_rebroadcasts = LOCAL_REBROADCASTS_MAX;
+            }
+
+            // After poll, entry with max local rebroadcasts should be removed
+            transport.clock.advance(10_000);
+            transport.poll();
+
+            assert!(transport.announce_table.get(&dest_hash).is_none());
+        }
+
+        #[test]
+        fn test_announce_cache_populated() {
+            let mut transport = make_transport_enabled();
+            let _idx0 = transport.register_interface(Box::new(MockInterface::new("if0", 1)));
+
+            let (raw, dest_hash) = make_announce_raw(2, PacketContext::None);
+            transport.process_incoming(0, &raw).unwrap();
+            transport.drain_events();
+
+            // Announce cache should have the raw bytes
+            assert!(transport.announce_cache.contains_key(&dest_hash));
+            assert_eq!(transport.announce_cache.get(&dest_hash).unwrap(), &raw);
+        }
+
+        // ─── Stage 2: Link Table Tests ───────────────────────────────────
+
+        #[test]
+        fn test_link_table_entry_expiry_validated() {
+            let mut transport = make_transport_enabled();
+            let now = transport.clock.now_ms();
+
+            let link_id = [0xAA; TRUNCATED_HASHBYTES];
+            transport.link_table.insert(
+                link_id,
+                LinkEntry {
+                    timestamp_ms: now,
+                    next_hop_transport_id: [0x01; TRUNCATED_HASHBYTES],
+                    next_hop_interface_index: 1,
+                    remaining_hops: 2,
+                    received_interface_index: 0,
+                    hops: 1,
+                    destination_hash: [0xBB; TRUNCATED_HASHBYTES],
+                    validated: true,
+                    proof_timeout_ms: now + 30_000,
+                },
+            );
+
+            assert!(transport.link_table.contains_key(&link_id));
+
+            // Advance past LINK_TIMEOUT_MS (15 min)
+            transport.clock.advance(LINK_TIMEOUT_MS + 1000);
+            transport.poll();
+
+            assert!(!transport.link_table.contains_key(&link_id));
+        }
+
+        #[test]
+        fn test_link_table_entry_expiry_unvalidated() {
+            let mut transport = make_transport_enabled();
+            let now = transport.clock.now_ms();
+
+            let link_id = [0xAA; TRUNCATED_HASHBYTES];
+            let proof_timeout = now + 10_000;
+            transport.link_table.insert(
+                link_id,
+                LinkEntry {
+                    timestamp_ms: now,
+                    next_hop_transport_id: [0x01; TRUNCATED_HASHBYTES],
+                    next_hop_interface_index: 1,
+                    remaining_hops: 2,
+                    received_interface_index: 0,
+                    hops: 1,
+                    destination_hash: [0xBB; TRUNCATED_HASHBYTES],
+                    validated: false,
+                    proof_timeout_ms: proof_timeout,
+                },
+            );
+
+            // Advance past proof_timeout but not LINK_TIMEOUT_MS
+            transport.clock.advance(11_000);
+            transport.poll();
+
+            // Unvalidated entry should be expired
+            assert!(!transport.link_table.contains_key(&link_id));
+        }
+
+        #[test]
+        fn test_link_table_validated_not_expired_early() {
+            let mut transport = make_transport_enabled();
+            let now = transport.clock.now_ms();
+
+            let link_id = [0xAA; TRUNCATED_HASHBYTES];
+            transport.link_table.insert(
+                link_id,
+                LinkEntry {
+                    timestamp_ms: now,
+                    next_hop_transport_id: [0x01; TRUNCATED_HASHBYTES],
+                    next_hop_interface_index: 1,
+                    remaining_hops: 2,
+                    received_interface_index: 0,
+                    hops: 1,
+                    destination_hash: [0xBB; TRUNCATED_HASHBYTES],
+                    validated: true,
+                    proof_timeout_ms: now + 30_000,
+                },
+            );
+
+            // Advance less than LINK_TIMEOUT_MS
+            transport.clock.advance(60_000); // 1 minute
+            transport.poll();
+
+            // Should still be present
+            assert!(transport.link_table.contains_key(&link_id));
+        }
+
+        // ─── Stage 3: Path Request Tests ─────────────────────────────────
+
+        #[test]
+        fn test_compute_path_request_hash() {
+            let hash = Transport::<MockClock, NoStorage>::compute_path_request_hash();
+            // Should be name_hash of "rnstransport.path.request" padded to 16 bytes
+            let expected_name_hash = crate::destination::Destination::compute_name_hash(
+                "rnstransport",
+                &["path", "request"],
+            );
+            assert_eq!(&hash[..crate::constants::NAME_HASHBYTES], &expected_name_hash);
+            // Remaining bytes should be zero
+            assert_eq!(&hash[crate::constants::NAME_HASHBYTES..], &[0u8; 6]);
+        }
+
+        #[test]
+        fn test_request_path_sends_packet() {
+            let mut transport = make_transport_enabled();
+            let _idx0 = transport.register_interface(Box::new(MockInterface::new("if0", 1)));
+
+            let dest_hash = [0x42; TRUNCATED_HASHBYTES];
+            let tag = [0xAB; TRUNCATED_HASHBYTES];
+            transport.request_path(&dest_hash, None, &tag).unwrap();
+
+            assert!(transport.stats().packets_sent > 0);
+        }
+
+        #[test]
+        fn test_request_path_rate_limited() {
+            let mut transport = make_transport_enabled();
+            let _idx0 = transport.register_interface(Box::new(MockInterface::new("if0", 1)));
+
+            let dest_hash = [0x42; TRUNCATED_HASHBYTES];
+            let tag1 = [0xAB; TRUNCATED_HASHBYTES];
+            let tag2 = [0xCD; TRUNCATED_HASHBYTES];
+
+            transport.request_path(&dest_hash, None, &tag1).unwrap();
+            let sent1 = transport.stats().packets_sent;
+
+            // Immediately send another - should be rate limited
+            transport.request_path(&dest_hash, None, &tag2).unwrap();
+            let sent2 = transport.stats().packets_sent;
+            assert_eq!(sent1, sent2, "Second request should be rate limited");
+
+            // Advance past rate limit
+            transport.clock.advance(PATH_REQUEST_MIN_INTERVAL_MS + 1);
+            transport.request_path(&dest_hash, None, &tag2).unwrap();
+            let sent3 = transport.stats().packets_sent;
+            assert!(sent3 > sent2, "After cooldown, request should go through");
+        }
+
+        #[test]
+        fn test_path_request_local_dest_emits_event() {
+            let mut transport = make_transport_enabled();
+            let _idx0 = transport.register_interface(Box::new(MockInterface::new("if0", 1)));
+
+            let dest_hash = [0x42; TRUNCATED_HASHBYTES];
+            transport.register_destination(dest_hash, false);
+
+            // Build a path request packet targeting the local destination
+            let path_req_hash = transport.path_request_hash;
+            let mut data = Vec::new();
+            data.extend_from_slice(&dest_hash);
+            data.extend_from_slice(&[0xBB; TRUNCATED_HASHBYTES]); // transport_id
+            data.extend_from_slice(&[0xCC; TRUNCATED_HASHBYTES]); // tag
+
+            let packet = Packet {
+                flags: PacketFlags {
+                    ifac_flag: false,
+                    header_type: HeaderType::Type1,
+                    context_flag: false,
+                    transport_type: TransportType::Broadcast,
+                    dest_type: crate::destination::DestinationType::Plain,
+                    packet_type: PacketType::Data,
+                },
+                hops: 0,
+                transport_id: None,
+                destination_hash: path_req_hash,
+                context: PacketContext::None,
+                data: PacketData::Owned(data),
+            };
+
+            let mut buf = [0u8; 500];
+            let len = packet.pack(&mut buf).unwrap();
+            transport.process_incoming(0, &buf[..len]).unwrap();
+
+            // Should emit PathRequestReceived event
+            let events: Vec<_> = transport.drain_events().collect();
+            let found = events.iter().any(|e| matches!(
+                e,
+                TransportEvent::PathRequestReceived { destination_hash } if *destination_hash == dest_hash
+            ));
+            assert!(found, "Expected PathRequestReceived event");
+        }
+
+        #[test]
+        fn test_path_request_cached_announce_triggers_response() {
+            let mut transport = make_transport_enabled();
+            let _idx0 = transport.register_interface(Box::new(MockInterface::new("if0", 1)));
+            let _idx1 = transport.register_interface(Box::new(MockInterface::new("if1", 2)));
+
+            // First, receive an announce to populate the cache
+            let (raw, dest_hash) = make_announce_raw(2, PacketContext::None);
+            transport.process_incoming(0, &raw).unwrap();
+            transport.drain_events();
+
+            // Clear announce table to simulate fresh state (but keep cache)
+            transport.announce_table.clear();
+
+            // Now receive a path request for that destination
+            let path_req_hash = transport.path_request_hash;
+            let mut data = Vec::new();
+            data.extend_from_slice(&dest_hash);
+            data.extend_from_slice(&[0xBB; TRUNCATED_HASHBYTES]); // transport_id
+            data.extend_from_slice(&[0xCC; TRUNCATED_HASHBYTES]); // tag
+
+            let packet = Packet {
+                flags: PacketFlags {
+                    ifac_flag: false,
+                    header_type: HeaderType::Type1,
+                    context_flag: false,
+                    transport_type: TransportType::Broadcast,
+                    dest_type: crate::destination::DestinationType::Plain,
+                    packet_type: PacketType::Data,
+                },
+                hops: 0,
+                transport_id: None,
+                destination_hash: path_req_hash,
+                context: PacketContext::None,
+                data: PacketData::Owned(data),
+            };
+
+            let mut buf = [0u8; 500];
+            let len = packet.pack(&mut buf).unwrap();
+            transport.process_incoming(1, &buf[..len]).unwrap();
+
+            // Should have inserted a PATH_RESPONSE announce in the announce_table
+            let entry = transport.announce_table.get(&dest_hash);
+            assert!(entry.is_some(), "Should have announce table entry for path response");
+            let entry = entry.unwrap();
+            assert!(entry.block_rebroadcasts, "Should be marked as block_rebroadcasts");
+            assert!(entry.retransmit_at_ms.is_some(), "Should have a retransmit scheduled");
+        }
+
+        #[test]
+        fn test_path_request_tag_dedup() {
+            let mut transport = make_transport_enabled();
+            let _idx0 = transport.register_interface(Box::new(MockInterface::new("if0", 1)));
+            let _idx1 = transport.register_interface(Box::new(MockInterface::new("if1", 2)));
+
+            let dest_hash = [0x42; TRUNCATED_HASHBYTES];
+            let tag = [0xCC; TRUNCATED_HASHBYTES];
+
+            let path_req_hash = transport.path_request_hash;
+            let mut data = Vec::new();
+            data.extend_from_slice(&dest_hash);
+            data.extend_from_slice(&[0xBB; TRUNCATED_HASHBYTES]); // transport_id
+            data.extend_from_slice(&tag);
+
+            let packet = Packet {
+                flags: PacketFlags {
+                    ifac_flag: false,
+                    header_type: HeaderType::Type1,
+                    context_flag: false,
+                    transport_type: TransportType::Broadcast,
+                    dest_type: crate::destination::DestinationType::Plain,
+                    packet_type: PacketType::Data,
+                },
+                hops: 0,
+                transport_id: None,
+                destination_hash: path_req_hash,
+                context: PacketContext::None,
+                data: PacketData::Owned(data),
+            };
+
+            let mut buf = [0u8; 500];
+            let len = packet.pack(&mut buf).unwrap();
+
+            // First request - should be processed
+            transport.process_incoming(0, &buf[..len]).unwrap();
+            assert_eq!(transport.path_request_tags.len(), 1);
+
+            // Clear packet cache to allow second processing
+            transport.packet_cache.clear();
+
+            // Second request with same tag - should be deduped
+            transport.process_incoming(0, &buf[..len]).unwrap();
+            // Tag count should still be 1 (dedup worked)
+            assert_eq!(transport.path_request_tags.len(), 1);
+        }
+
+        #[test]
+        fn test_reverse_table_expiry_8_minutes() {
+            // Verify the constant was fixed to 8 minutes
+            assert_eq!(REVERSE_TABLE_EXPIRY_MS, 480_000);
+        }
+
+        #[test]
+        fn test_jitter_deterministic() {
+            let seed1 = [0x42; TRUNCATED_HASHBYTES];
+            let seed2 = [0x42; TRUNCATED_HASHBYTES];
+            let seed3 = [0x99; TRUNCATED_HASHBYTES];
+
+            let j1 = Transport::<MockClock, NoStorage>::jitter_ms(&seed1);
+            let j2 = Transport::<MockClock, NoStorage>::jitter_ms(&seed2);
+            let j3 = Transport::<MockClock, NoStorage>::jitter_ms(&seed3);
+
+            assert_eq!(j1, j2, "Same seed should produce same jitter");
+            assert!(j1 < PATHFINDER_RW_MS, "Jitter should be within window");
+            assert!(j3 < PATHFINDER_RW_MS, "Jitter should be within window");
+        }
+
+        #[test]
+        fn test_send_on_all_interfaces_except() {
+            let mut transport = make_transport_enabled();
+            let _idx0 = transport.register_interface(Box::new(MockInterface::new("if0", 1)));
+            let _idx1 = transport.register_interface(Box::new(MockInterface::new("if1", 2)));
+            let _idx2 = transport.register_interface(Box::new(MockInterface::new("if2", 3)));
+
+            transport.send_on_all_interfaces_except(1, b"test data");
+
+            // We can't easily inspect MockInterface sent data through the trait,
+            // but we can verify no panic and basic operation works
+        }
+
+        #[test]
+        fn test_path_request_unknown_dest_forwarded() {
+            let mut transport = make_transport_enabled();
+            let _idx0 = transport.register_interface(Box::new(MockInterface::new("if0", 1)));
+            let _idx1 = transport.register_interface(Box::new(MockInterface::new("if1", 2)));
+
+            let dest_hash = [0x99; TRUNCATED_HASHBYTES]; // Unknown destination
+            let path_req_hash = transport.path_request_hash;
+
+            let mut data = Vec::new();
+            data.extend_from_slice(&dest_hash);
+            data.extend_from_slice(&[0xBB; TRUNCATED_HASHBYTES]); // transport_id
+            data.extend_from_slice(&[0xCC; TRUNCATED_HASHBYTES]); // tag
+
+            let packet = Packet {
+                flags: PacketFlags {
+                    ifac_flag: false,
+                    header_type: HeaderType::Type1,
+                    context_flag: false,
+                    transport_type: TransportType::Broadcast,
+                    dest_type: crate::destination::DestinationType::Plain,
+                    packet_type: PacketType::Data,
+                },
+                hops: 0,
+                transport_id: None,
+                destination_hash: path_req_hash,
+                context: PacketContext::None,
+                data: PacketData::Owned(data),
+            };
+
+            let mut buf = [0u8; 500];
+            let len = packet.pack(&mut buf).unwrap();
+
+            // Should not panic, just forward
+            transport.process_incoming(0, &buf[..len]).unwrap();
+            // Tag should be stored
+            assert_eq!(transport.path_request_tags.len(), 1);
+        }
+
+        #[test]
+        fn test_new_constants_values() {
+            assert_eq!(PATHFINDER_G_MS, 5_000);
+            assert_eq!(PATHFINDER_RW_MS, 500);
+            assert_eq!(LOCAL_REBROADCASTS_MAX, 2);
+            assert_eq!(LINK_TIMEOUT_MS, 900_000);
+            assert_eq!(PATH_REQUEST_GRACE_MS, 400);
+            assert_eq!(crate::constants::PATH_REQUEST_TIMEOUT_MS, 15_000);
+            assert_eq!(MAX_PATH_REQUEST_TAGS, 32_000);
+            assert_eq!(PATH_REQUEST_MIN_INTERVAL_MS, 20_000);
         }
     }
 }

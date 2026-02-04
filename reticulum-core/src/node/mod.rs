@@ -771,6 +771,18 @@ impl<C: Clock, S: Storage> NodeCore<C, S> {
                     error: DeliveryError::Timeout,
                 });
             }
+
+            TransportEvent::PathRequestReceived {
+                destination_hash,
+            } => {
+                // For now, emit as a path found event so the application
+                // can re-announce the destination
+                self.events.push(NodeEvent::PathFound {
+                    destination_hash: DestinationHash::new(destination_hash),
+                    hops: 0,
+                    interface_index: 0,
+                });
+            }
         }
     }
 

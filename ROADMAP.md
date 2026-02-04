@@ -36,7 +36,7 @@ Das Projekt hat Phase 1 vollständig abgeschlossen und Phase 2 ist zu ~90% ferti
 
 **Ratchet & IFAC implementiert:** Forward Secrecy via Ratchets und Interface Access Codes sind vollständig implementiert und gegen Python Reticulum getestet.
 
-**Code-Qualität:** LinkManager intern auf einheitliche Paket-Queue (`PendingPacket` Enum) umgestellt, Timeout-Konstanten zentralisiert, `LinkId` und `DestinationHash` als Newtype-Structs für vollständige Typ-Sicherheit (keine `Deref` mehr, kein `as_bytes_mut()`). Proof-Strategy und Signing-Key von LinkManager's Destination-Map auf den `Link` selbst verschoben — reduziert duplizierte State zwischen Transport, LinkManager und NodeCore. 671 Tests bestehen (421 Core + 20 Std-Lib + 230 Interop).
+**Code-Qualität:** LinkManager intern auf einheitliche Paket-Queue (`PendingPacket` Enum) umgestellt, Timeout-Konstanten zentralisiert, `LinkId` und `DestinationHash` als Newtype-Structs für vollständige Typ-Sicherheit (keine `Deref` mehr, kein `as_bytes_mut()`). Proof-Strategy und Signing-Key von LinkManager's Destination-Map auf den `Link` selbst verschoben — reduziert duplizierte State zwischen Transport, LinkManager und NodeCore. 745 Tests bestehen (475 Core + 20 Std-Lib + 163 Interop + 30 Doctests + 18 Proptest + 31 Test-Vektoren + 7 Std-Unit + 1 FFI).
 
 | Komponente | Status | LOC |
 |------------|--------|-----|
@@ -64,7 +64,7 @@ Das Projekt hat Phase 1 vollständig abgeschlossen und Phase 2 ist zu ~90% ferti
 | reticulum-std | 1.146 | 10.418 |
 | reticulum-ffi | 361 | 404 |
 
-**Test-Abdeckung:** 671 Tests (440 Core-Unit + 18 Proptest + 38 Test-Vektoren + 29 Doctests + 20 Std-Lib + 1 FFI + 140 Interop gegen rnsd)
+**Test-Abdeckung:** 745 Tests (475 Core-Unit + 18 Proptest + 31 Test-Vektoren + 30 Doctests + 20 Std-Lib + 7 Std-Unit + 1 FFI + 163 Interop gegen rnsd)
 
 **Architektur:** Siehe [doc/ARCHITECTURE.md](doc/ARCHITECTURE.md) — no_std/embedded-freundlich, Protocol in Core, I/O via Traits.
 
@@ -265,7 +265,7 @@ Production-ready mit vollständigem Tooling.
 **Deliverable:** Wichtigste Interface-Typen verfügbar
 
 ### Meilenstein 4.3: Qualitätssicherung (Woche 25-26)
-- [x] Integration-Tests gegen rnsd-Daemon (140 Tests)
+- [x] Integration-Tests gegen rnsd-Daemon (163 Tests)
 - [ ] Performance-Optimierung
 - [ ] Speicher-Profiling mit Valgrind
 - [ ] Fuzzing der Paket-Parser
@@ -323,7 +323,7 @@ Testumgebung:
 └─────────────┘      └─────────────┘
 ```
 
-Automatisierte Test-Suite (140 Interop-Tests gegen rnsd):
+Automatisierte Test-Suite (163 Interop-Tests gegen rnsd):
 - ✅ TCP-Verbindung zu rnsd
 - ✅ Pakete empfangen und senden
 - ✅ Announce-Erstellung und -Validierung
@@ -420,7 +420,7 @@ Monat 1    Monat 2    Monat 3       Monat 4       Monat 5    Monat 6
 - [ ] Resource Transfer: Dateien übertragen
 - [ ] `lrnsd` Daemon läuft standalone
 - [ ] TCP Client + Server Interfaces
-- [x] Integration-Tests gegen Python rnsd bestehen (140 Interop-Tests)
+- [x] Integration-Tests gegen Python rnsd bestehen (163 Interop-Tests)
 - [x] no_std-Kompatibilität für reticulum-core (Context-Trait)
 - [x] Forward Secrecy via Ratchets
 - [x] Interface Access Codes (IFAC)
@@ -960,6 +960,6 @@ Für spätere Versionen:
 
 ---
 
-*Stand: 3. Februar 2026*
+*Stand: 4. Februar 2026*
 *Projekt: leviculum*
 *Lizenz: MIT*

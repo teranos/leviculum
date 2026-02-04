@@ -895,6 +895,122 @@ impl TestDaemon {
         Ok(strategy)
     }
 
+    /// Get detailed announce table entries from the daemon.
+    ///
+    /// Returns the full announce_table with rebroadcast info (timestamp,
+    /// retransmit_timeout, retries, received_from, hops, local_rebroadcasts, etc.)
+    #[allow(dead_code)]
+    pub async fn get_announce_table_detail(
+        &self,
+    ) -> Result<HashMap<String, AnnounceTableDetail>, HarnessError> {
+        let result = self
+            .query("get_announce_table_detail", serde_json::json!({}))
+            .await?;
+        let mut table = HashMap::new();
+
+        if let serde_json::Value::Object(map) = result {
+            for (hash, entry) in map {
+                table.insert(
+                    hash,
+                    AnnounceTableDetail {
+                        timestamp: entry.get("timestamp").and_then(|v| v.as_f64()),
+                        retransmit_timeout: entry
+                            .get("retransmit_timeout")
+                            .and_then(|v| v.as_f64()),
+                        retries: entry.get("retries").and_then(|v| v.as_u64()),
+                        received_from: entry
+                            .get("received_from")
+                            .and_then(|v| v.as_str())
+                            .map(|s| s.to_string()),
+                        hops: entry.get("hops").and_then(|v| v.as_u64()),
+                        packet_length: entry.get("packet_length").and_then(|v| v.as_u64()),
+                        local_rebroadcasts: entry
+                            .get("local_rebroadcasts")
+                            .and_then(|v| v.as_u64()),
+                        block_rebroadcasts: entry
+                            .get("block_rebroadcasts")
+                            .and_then(|v| v.as_bool()),
+                    },
+                );
+            }
+        }
+
+        Ok(table)
+    }
+
+    /// Get the reverse table from the daemon.
+    #[allow(dead_code)]
+    pub async fn get_reverse_table(
+        &self,
+    ) -> Result<HashMap<String, ReverseTableEntry>, HarnessError> {
+        let result = self
+            .query("get_reverse_table", serde_json::json!({}))
+            .await?;
+        let mut table = HashMap::new();
+
+        if let serde_json::Value::Object(map) = result {
+            for (hash, entry) in map {
+                table.insert(
+                    hash,
+                    ReverseTableEntry {
+                        received_from: entry
+                            .get("received_from")
+                            .and_then(|v| v.as_str())
+                            .map(|s| s.to_string()),
+                        interface: entry
+                            .get("interface")
+                            .and_then(|v| v.as_str())
+                            .map(|s| s.to_string()),
+                        timestamp: entry.get("timestamp").and_then(|v| v.as_f64()),
+                    },
+                );
+            }
+        }
+
+        Ok(table)
+    }
+
+    /// Trigger a path request for a given destination hash.
+    #[allow(dead_code)]
+    pub async fn trigger_path_request(&self, dest_hash: &str) -> Result<(), HarnessError> {
+        self.query(
+            "trigger_path_request",
+            serde_json::json!({"hash": dest_hash}),
+        )
+        .await?;
+        Ok(())
+    }
+
+    /// Get the announce cache (destination_table) from the daemon.
+    #[allow(dead_code)]
+    pub async fn get_announce_cache(
+        &self,
+    ) -> Result<HashMap<String, AnnounceCacheEntry>, HarnessError> {
+        let result = self
+            .query("get_announce_cache", serde_json::json!({}))
+            .await?;
+        let mut cache = HashMap::new();
+
+        if let serde_json::Value::Object(map) = result {
+            for (hash, entry) in map {
+                cache.insert(
+                    hash,
+                    AnnounceCacheEntry {
+                        timestamp: entry.get("timestamp").and_then(|v| v.as_f64()),
+                        received_from: entry
+                            .get("received_from")
+                            .and_then(|v| v.as_str())
+                            .map(|s| s.to_string()),
+                        hops: entry.get("hops").and_then(|v| v.as_u64()),
+                        expires: entry.get("expires").and_then(|v| v.as_f64()),
+                    },
+                );
+            }
+        }
+
+        Ok(cache)
+    }
+
     /// Wait for a link to reach a specific state.
     ///
     /// # Arguments
@@ -1090,6 +1206,39 @@ pub struct WaitForLinkStateResult {
     pub current: Option<String>,
 }
 
+/// Detailed announce table entry from the Python daemon.
+#[derive(Debug, Clone)]
+#[allow(dead_code)]
+pub struct AnnounceTableDetail {
+    pub timestamp: Option<f64>,
+    pub retransmit_timeout: Option<f64>,
+    pub retries: Option<u64>,
+    pub received_from: Option<String>,
+    pub hops: Option<u64>,
+    pub packet_length: Option<u64>,
+    pub local_rebroadcasts: Option<u64>,
+    pub block_rebroadcasts: Option<bool>,
+}
+
+/// Reverse table entry from the Python daemon.
+#[derive(Debug, Clone)]
+#[allow(dead_code)]
+pub struct ReverseTableEntry {
+    pub received_from: Option<String>,
+    pub interface: Option<String>,
+    pub timestamp: Option<f64>,
+}
+
+/// Announce cache entry from the Python daemon.
+#[derive(Debug, Clone)]
+#[allow(dead_code)]
+pub struct AnnounceCacheEntry {
+    pub timestamp: Option<f64>,
+    pub received_from: Option<String>,
+    pub hops: Option<u64>,
+    pub expires: Option<f64>,
+}
+
 /// Find two distinct available TCP ports.
 ///
 /// This function binds to two ports simultaneously before releasing them,
@@ -1209,6 +1358,47 @@ impl DaemonTopology {
     /// Get a daemon by index.
     pub fn daemon(&self, index: usize) -> Option<&TestDaemon> {
         self.daemons.get(index)
+    }
+
+    /// Create a star topology with a central hub and spoke daemons.
+    ///
+    /// The topology forms a star: D1, D2, ..., Dn all connect to D0 (hub).
+    ///
+    /// ```text
+    ///        ┌─────┐
+    ///        │ Hub │  (D0 - central daemon)
+    ///        └──┬──┘
+    ///       ┌───┼───┐
+    ///       │   │   │
+    ///      D1  D2  D3  (spokes)
+    /// ```
+    ///
+    /// # Arguments
+    /// * `spoke_count` - Number of spoke daemons to create (must be >= 1)
+    #[allow(dead_code)]
+    pub async fn star(spoke_count: usize) -> Result<Self, HarnessError> {
+        if spoke_count < 1 {
+            return Err(HarnessError::ParseError(
+                "Star topology requires at least 1 spoke".to_string(),
+            ));
+        }
+
+        let hub = TestDaemon::start().await?;
+        let mut daemons = vec![hub];
+
+        for i in 0..spoke_count {
+            let spoke = TestDaemon::start().await?;
+            let interface_name = format!("LinkTo_Hub_{}", i);
+            spoke
+                .add_client_interface("127.0.0.1", daemons[0].rns_port(), Some(&interface_name))
+                .await?;
+            daemons.push(spoke);
+        }
+
+        // Wait for connections to stabilize
+        tokio::time::sleep(Duration::from_millis(500)).await;
+
+        Ok(Self { daemons })
     }
 
     /// Get the number of daemons in the topology.

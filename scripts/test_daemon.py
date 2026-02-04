@@ -31,6 +31,11 @@ JSON-RPC methods:
 - close_link: Gracefully close a link by its hash
 - get_link_status: Get detailed status of a link
 - wait_for_link_state: Wait for a link to reach a specific state
+- get_announce_table_detail: Get full announce table entries with rebroadcast info
+- get_reverse_table: Get reverse table entries for reverse-path routing
+- get_path_request_info: Get discovery path request state
+- trigger_path_request: Initiate a path request for a destination hash
+- get_announce_cache: Get cached announces for path response verification
 - shutdown: Gracefully stop the daemon
 """
 
@@ -468,6 +473,13 @@ class TestDaemon:
                     config,
                 )
 
+                # Enable inbound and outbound on the interface.
+                # TCPClientInterface defaults OUT=False, but Transport.outbound()
+                # checks `if interface.OUT:` as the first gate for every outgoing
+                # packet. Without this, no announces or data get sent through it.
+                client_iface.OUT = True
+                client_iface.IN = True
+
                 # Register with Transport
                 RNS.Transport.interfaces.append(client_iface)
 
@@ -674,6 +686,92 @@ class TestDaemon:
                 "strategy": strategy_names.get(dest.proof_strategy, "unknown"),
                 "strategy_value": dest.proof_strategy,
             }}
+
+        elif method == "get_announce_table_detail":
+            # Return full announce_table entries with rebroadcast info
+            # Python format: announce_table[dest_hash] = [timestamp, retransmit_timeout,
+            #   retries, received_from, announce_hops, packet, local_rebroadcasts,
+            #   block_rebroadcasts, attached_interface]
+            try:
+                table = {}
+                for h, entry in Transport.announce_table.items():
+                    detail = {
+                        "timestamp": entry[0] if len(entry) > 0 else None,
+                        "retransmit_timeout": entry[1] if len(entry) > 1 else None,
+                        "retries": entry[2] if len(entry) > 2 else None,
+                        "received_from": entry[3].hex() if len(entry) > 3 and entry[3] is not None else None,
+                        "hops": entry[4] if len(entry) > 4 else None,
+                        "packet_length": len(entry[5].raw) if len(entry) > 5 and entry[5] is not None and hasattr(entry[5], 'raw') else None,
+                        "local_rebroadcasts": entry[6] if len(entry) > 6 else None,
+                        "block_rebroadcasts": entry[7] if len(entry) > 7 else None,
+                    }
+                    table[h.hex()] = detail
+                return {"result": table}
+            except Exception as e:
+                return {"error": f"Failed to get announce table detail: {str(e)}"}
+
+        elif method == "get_reverse_table":
+            # Return reverse_table entries for reverse-path routing verification
+            # Python format: reverse_table[dest_hash] = [received_from, outbound_interface,
+            #   timestamp, ...]
+            try:
+                table = {}
+                if hasattr(Transport, 'reverse_table'):
+                    for h, entry in Transport.reverse_table.items():
+                        detail = {
+                            "received_from": entry[0].hex() if len(entry) > 0 and entry[0] is not None else None,
+                            "interface": str(entry[1]) if len(entry) > 1 and entry[1] is not None else None,
+                            "timestamp": entry[2] if len(entry) > 2 else None,
+                        }
+                        table[h.hex()] = detail
+                return {"result": table}
+            except Exception as e:
+                return {"error": f"Failed to get reverse table: {str(e)}"}
+
+        elif method == "get_path_request_info":
+            # Return discovery_path_requests state
+            try:
+                requests = {}
+                if hasattr(Transport, 'discovery_path_requests'):
+                    for h, entry in Transport.discovery_path_requests.items():
+                        detail = {
+                            "timeout": entry[0] if len(entry) > 0 else None,
+                            "request_tag": entry[1].hex() if len(entry) > 1 and entry[1] is not None else None,
+                        }
+                        requests[h.hex()] = detail
+                return {"result": requests}
+            except Exception as e:
+                return {"error": f"Failed to get path request info: {str(e)}"}
+
+        elif method == "trigger_path_request":
+            # Initiate a path request for a given destination hash
+            dest_hash = params.get("hash")
+            if not dest_hash:
+                return {"error": "hash is required"}
+            try:
+                dest_hash_bytes = bytes.fromhex(dest_hash)
+                Transport.request_path(dest_hash_bytes)
+                return {"result": "path_request_sent"}
+            except Exception as e:
+                return {"error": f"Failed to trigger path request: {str(e)}"}
+
+        elif method == "get_announce_cache":
+            # Return cached announces (destination_table) for path response verification
+            try:
+                cache = {}
+                if hasattr(Transport, 'destination_table'):
+                    for h, entry in Transport.destination_table.items():
+                        detail = {
+                            "timestamp": entry[0] if len(entry) > 0 else None,
+                            "received_from": entry[1].hex() if len(entry) > 1 and entry[1] is not None else None,
+                            "hops": entry[2] if len(entry) > 2 else None,
+                            "expires": entry[3] if len(entry) > 3 else None,
+                            "random_blobs": [b.hex() for b in entry[4]] if len(entry) > 4 and entry[4] is not None else None,
+                        }
+                        cache[h.hex()] = detail
+                return {"result": cache}
+            except Exception as e:
+                return {"error": f"Failed to get announce cache: {str(e)}"}
 
         elif method == "shutdown":
             self.running = False
