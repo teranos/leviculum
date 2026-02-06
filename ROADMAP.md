@@ -35,9 +35,9 @@ Das Projekt hat Phase 1 vollständig abgeschlossen und Phase 2 ist zu ~95% ferti
 
 **Ratchet & IFAC implementiert:** Forward Secrecy via Ratchets und Interface Access Codes sind vollständig implementiert und gegen Python Reticulum getestet.
 
-**Transport Layer vollständig (3.774 LOC):** Announce-Rebroadcast, PATH_REQUEST/PATH_RESPONSE, Reverse-Path-Routing, Link-Tabellenverwaltung, Hop-Count-Validation, Header-Stripping am letzten Hop, Announce-Replay-Schutz, LRPROOF-Validierung, Auto-Re-Announce auf PATH_REQUEST. **Rust Transport Relay** funktioniert vollständig: Announce-Rebroadcast, Link-Routing und Datenweiterleitung zwischen zwei Python-Daemons getestet.
+**Transport Layer vollständig (3.676 LOC):** Announce-Rebroadcast, PATH_REQUEST/PATH_RESPONSE, Reverse-Path-Routing, Link-Tabellenverwaltung, Hop-Count-Validation, Header-Stripping am letzten Hop, Announce-Replay-Schutz, LRPROOF-Validierung, Auto-Re-Announce auf PATH_REQUEST. **Rust Transport Relay** funktioniert vollständig: Announce-Rebroadcast, Link-Routing und Datenweiterleitung zwischen zwei Python-Daemons getestet.
 
-**Code-Qualität:** LinkManager intern auf einheitliche Paket-Queue (`PendingPacket` Enum) umgestellt, Timeout-Konstanten zentralisiert, `LinkId` und `DestinationHash` als Newtype-Structs für vollständige Typ-Sicherheit (keine `Deref` mehr, kein `as_bytes_mut()`). Proof-Strategy und Signing-Key von LinkManager's Destination-Map auf den `Link` selbst verschoben — reduziert duplizierte State zwischen Transport, LinkManager und NodeCore. ~767 Tests bestehen (491 Core-Unit + 22 Std-Lib + 167 Interop + 30 Doctests + 18 Proptest + 31 Test-Vektoren + 7 Core-Integration + 1 FFI).
+**Code-Qualität:** LinkManager intern auf einheitliche Paket-Queue (`PendingPacket` Enum) umgestellt, Timeout-Konstanten zentralisiert, `LinkId` und `DestinationHash` als Newtype-Structs für vollständige Typ-Sicherheit (keine `Deref` mehr, kein `as_bytes_mut()`). Proof-Strategy und Signing-Key von LinkManager's Destination-Map auf den `Link` selbst verschoben — reduziert duplizierte State zwischen Transport, LinkManager und NodeCore. ~763 Tests bestehen (489 Core-Unit + 22 Std-Lib + 166 Interop + 29 Doctests + 18 Proptest + 31 Test-Vektoren + 7 Core-Integration + 1 FFI).
 
 | Komponente | Status | LOC |
 |------------|--------|-----|
@@ -49,23 +49,23 @@ Das Projekt hat Phase 1 vollständig abgeschlossen und Phase 2 ist zu ~95% ferti
 | Ratchet (Forward Secrecy) | ✅ Fertig | 419 |
 | IFAC (Interface Access Codes) | ✅ Fertig | 378 |
 | Link-State-Machine (Handshake, Proof, RTT, Data) | ✅ Initiator + Responder | 1.800 |
-| Transport Layer (Routing, Pfade, Announces, Relay) | ✅ Fertig | 3.774 |
+| Transport Layer (Routing, Pfade, Announces, Relay) | ✅ Fertig | 3.676 |
 | HDLC-Framing (no_std + alloc) | ✅ Fertig | 577 |
 | Interface-Traits + TCP-Client | ✅ Fertig | 623 |
 | Async Runtime (tokio-Wrapper) | ✅ Fertig | 224 |
 | Reticulum-Instanz + Config + Storage | ✅ Fertig | 597 |
 | FFI/C-API | ✅ Grundfunktionen | 361 |
-| Tests (Rust + C) | | ~19.900 |
+| Tests (Rust + C) | | ~19.700 |
 | **Gesamt** | | **~25.000** |
 
 **Crate-Aufteilung:**
 | Crate | src LOC | test LOC |
 |-------|---------|----------|
-| reticulum-core | 22.177 | 1.527 |
-| reticulum-std | 2.194 | 10.418 |
+| reticulum-core | 22.087 | 1.527 |
+| reticulum-std | 2.182 | 10.418 |
 | reticulum-ffi | 361 | 404 |
 
-**Test-Abdeckung:** ~767 Tests (491 Core-Unit + 18 Proptest + 31 Test-Vektoren + 30 Doctests + 22 Std-Lib + 7 Core-Integration + 1 FFI + 167 Interop gegen rnsd)
+**Test-Abdeckung:** ~763 Tests (489 Core-Unit + 18 Proptest + 31 Test-Vektoren + 29 Doctests + 22 Std-Lib + 7 Core-Integration + 1 FFI + 166 Interop gegen rnsd)
 
 **Architektur:** Siehe [doc/ARCHITECTURE.md](doc/ARCHITECTURE.md) — no_std/embedded-freundlich, Protocol in Core, I/O via Traits.
 
@@ -198,7 +198,7 @@ link_manager.close(link_id)?;
 
 ### Meilenstein 2.5: Transport Layer Vervollständigung (Woche 15-16) ✅
 
-3.774 LOC — vollständige Transport-Implementierung:
+3.676 LOC — vollständige Transport-Implementierung:
 
 - [x] Pfad-Tabellenverwaltung (BTreeMap in core Transport)
 - [x] Announce-Verarbeitung und Rebroadcast
@@ -268,7 +268,7 @@ Production-ready: QA, zusätzliche Interfaces, Dokumentation.
 - [ ] Serial Interface
 
 ### Qualitätssicherung
-- [x] Integration-Tests gegen rnsd-Daemon (167 Tests)
+- [x] Integration-Tests gegen rnsd-Daemon (166 Tests)
 - [ ] Performance-Optimierung
 - [ ] Speicher-Profiling mit Valgrind
 - [ ] Fuzzing der Paket-Parser
@@ -329,7 +329,7 @@ Testumgebung:
 └─────────────┘      └─────────────┘
 ```
 
-Automatisierte Test-Suite (167 Interop-Tests in 22 Modulen gegen rnsd):
+Automatisierte Test-Suite (166 Interop-Tests in 22 Modulen gegen rnsd):
 - ✅ TCP-Verbindung zu rnsd
 - ✅ Pakete empfangen und senden
 - ✅ Announce-Erstellung und -Validierung
@@ -367,8 +367,8 @@ Automatisierte Test-Suite (167 Interop-Tests in 22 Modulen gegen rnsd):
 
 | Risiko | Wahrscheinlichkeit | Mitigation |
 |--------|-------------------|------------|
-| Transport Layer komplexer als erwartet | ✅ Gelöst | 3.774 LOC, vollständig implementiert |
-| Interop-Probleme mit Python | Mittel | Frühe und kontinuierliche Tests (167 Interop-Tests) |
+| Transport Layer komplexer als erwartet | ✅ Gelöst | 3.676 LOC, vollständig implementiert |
+| Interop-Probleme mit Python | Mittel | Frühe und kontinuierliche Tests (166 Interop-Tests) |
 | Performance-Probleme bei async | Niedrig | Profiling ab Phase 2 |
 | no_std-Kompatibilitätsprobleme | ✅ Gelöst | Context-Trait entfernt, direkte RNG/time-Parameter |
 | Resource Transfer Komplexität | Mittel | Sliding-Window, Hashmap, Compression — frühzeitig planen |
@@ -425,7 +425,7 @@ Monat 1    Monat 2    Monat 3       Monat 4       Monat 5         Monat 6
 - [ ] Resource Transfer: Dateien übertragen
 - [ ] TCP Server Interface
 - [ ] `lrnsd` Daemon läuft standalone
-- [x] Integration-Tests gegen Python rnsd bestehen (167 Interop-Tests)
+- [x] Integration-Tests gegen Python rnsd bestehen (166 Interop-Tests)
 - [x] no_std-Kompatibilität für reticulum-core
 - [x] Forward Secrecy via Ratchets
 - [x] Interface Access Codes (IFAC)

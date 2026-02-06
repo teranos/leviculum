@@ -7,6 +7,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+- Transport table entry types (`PathEntry`, `LinkEntry`, `ReverseEntry`, `AnnounceEntry`) reduced from `pub` to `pub(crate)`
+- All error types now derive `Debug, Clone, Copy, PartialEq, Eq` and implement `core::fmt::Display`
+- Parameter ordering normalized: `rng` always before `now_ms` in all methods
+- `LinkManager` removed from crate-root re-exports (access via `reticulum_core::link::LinkManager`)
+
+### Removed
+- Unused transport table fields: `PathEntry::received_from`, `PathEntry::timestamp_ms`, `LinkEntry::next_hop_transport_id`, `LinkEntry::destination_hash`, `ReverseEntry::received_from`
+- Unused transport methods: `paths()`, `link_table_entry()`, `link_table_iter()`
+- Unused resource placeholder types: `ResourceState`, `ResourceError`, `ResourceConfig`, `ResourceStats`, `ResourcePart`, `PartHash`
+
+### Fixed
+- Misleading comment in `resource.rs` about protocol implementation location
+
 ## [0.2.9] - 2026-02-06
 
 ### Changed

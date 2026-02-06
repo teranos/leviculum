@@ -12,7 +12,7 @@ A Rust implementation of the [Reticulum](https://reticulum.network/) network sta
 
 ## Status
 
-Version 0.2.9. Phase 2 is ~95% complete — only TCP Server (incoming connections) remains. The transport layer is fully functional with routing, path discovery, announce relay, and multi-hop support. 167 interop tests pass against the Python Reticulum reference implementation.
+Version 0.2.9. Phase 2 is ~95% complete — only TCP Server (incoming connections) remains. The transport layer is fully functional with routing, path discovery, announce relay, and multi-hop support. 166 interop tests pass against the Python Reticulum reference implementation.
 
 **What works:**
 
@@ -45,7 +45,7 @@ Version 0.2.9. Phase 2 is ~95% complete — only TCP Server (incoming connection
 - `lrns` remaining subcommands (status, path, probe, interfaces)
 - UDP, Serial, Local interfaces
 
-**Test coverage:** ~767 tests (491 unit + 18 proptest + 31 test vectors + 30 doctests + 167 interop against rnsd + more).
+**Test coverage:** ~763 tests (489 unit + 18 proptest + 31 test vectors + 29 doctests + 166 interop against rnsd + more).
 
 ## Building
 
