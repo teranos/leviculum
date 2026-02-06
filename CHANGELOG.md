@@ -9,6 +9,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 - Fix clippy warnings: use dereference instead of `.clone()` on `[u8; 16]` (implements Copy) in transport.rs
+- Fix stale README.md: update status, feature lists, test counts, and crate descriptions to reflect v0.2.8 state
+- Fix ROADMAP.md `lrns` subcommand checkboxes: only `identity` is implemented, mark `status`/`path`/`probe`/`interfaces` as incomplete
 
 ## [0.2.8] - 2026-02-04
 

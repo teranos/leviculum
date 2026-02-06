@@ -12,27 +12,40 @@ A Rust implementation of the [Reticulum](https://reticulum.network/) network sta
 
 ## Status
 
-Work in progress. The cryptographic layer is complete and validated against the Python implementation. Packet serialization works for all packet types. Link structure is in place but the transport layer is not yet functional.
+Version 0.2.8. Phase 2 is ~95% complete — only TCP Server (incoming connections) remains. The transport layer is fully functional with routing, path discovery, announce relay, and multi-hop support. 167 interop tests pass against the Python Reticulum reference implementation.
 
 **What works:**
 
 - Cryptographic primitives (X25519, Ed25519, AES-256-CBC, HKDF, HMAC-SHA256)
 - Identity creation, signing, encryption/decryption
 - Packet serialization (all types, Header 1/2, all contexts)
-- Link structure and link ID calculation
-- HDLC framing
+- Destination management (hashing, types, announce creation/validation)
+- Full link establishment (3-packet handshake, initiator + responder)
+- Link encryption, keepalive, stale detection, graceful close
+- Transport layer (routing, path discovery, announce relay, multi-hop)
+- Transport relay (Rust node relays between Python daemons)
+- Ratchets (forward secrecy)
+- IFAC (Interface Access Codes)
+- Channel system (reliable streams, message envelopes)
+- Buffer system (RawChannelReader/Writer, StreamDataMessage)
+- BZ2 compression
+- High-level Node API (NodeCore for no_std, ReticulumNode for async)
+- TCP client interface
+- HDLC framing (no_std)
 - Config and storage system
-- Basic daemon structure (lrnsd)
+- `lrns identity` CLI (generate/show)
+- C-API basics (identity, sign, verify)
 
 **What's missing:**
 
-- Network interfaces (TCP, UDP, Serial)
-- Transport layer (routing, path discovery)
-- Full link establishment flow
-- Resource transfers
-- Channel/Buffer abstractions
+- TCP server interface (incoming connections)
+- Resource transfers (file transfer)
+- Request/Response pattern
+- `lrnsd` daemon (standalone)
+- `lrns` remaining subcommands (status, path, probe, interfaces)
+- UDP, Serial, Local interfaces
 
-**Test coverage:** 198 Rust tests + 13 C tests (unit, property-based, Python test vectors), plus 17 integration tests against a running rnsd.
+**Test coverage:** ~767 tests (491 unit + 18 proptest + 31 test vectors + 30 doctests + 167 interop against rnsd + more).
 
 ## Building
 
@@ -72,17 +85,22 @@ leviculum/
 
 ### reticulum-core
 
-The core library works without the standard library. Contains:
+The core library works without the standard library (`no_std + alloc`). Contains:
 
-- Cryptographic primitives
+- Cryptographic primitives (X25519, Ed25519, AES-256-CBC, HKDF, HMAC-SHA256)
 - Identity, Destination, Link, Packet types
-- State machines for links and resources
+- Announce creation and validation
+- Transport layer (routing, path discovery, relay)
+- Ratchets (forward secrecy) and IFAC
+- Channel and Buffer system
+- NodeCore high-level API
+- HDLC framing
 
 To use without std:
 
 ```toml
 [dependencies]
-reticulum-core = { version = "0.1", default-features = false, features = ["alloc"] }
+reticulum-core = { version = "0.2", default-features = false, features = ["alloc"] }
 ```
 
 ### reticulum-std
@@ -91,8 +109,9 @@ Extensions that require the standard library:
 
 - Config file parsing
 - Persistent storage
-- Network interfaces (WIP)
-- Reticulum instance management
+- TCP client interface
+- Async runtime (tokio wrapper)
+- ReticulumNode high-level async API
 
 ### reticulum-ffi
 
@@ -113,8 +132,8 @@ cbindgen --output reticulum.h
 
 Command-line tools:
 
-- `lrnsd` - Daemon process (equivalent to rnsd)
-- `lrns` - Management utility (planned)
+- `lrnsd` - Daemon process (equivalent to rnsd, planned)
+- `lrns` - Management utility (`identity` subcommand implemented, others pending)
 
 ## License
 
