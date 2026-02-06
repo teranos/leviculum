@@ -399,6 +399,11 @@ pub struct Link {
     proof_strategy: ProofStrategy,
     /// Destination identity signing key for generating proofs (responder only)
     dest_signing_key: Option<ed25519_dalek::SigningKey>,
+    /// Interface this link is attached to (for routing outbound link traffic).
+    ///
+    /// Set from the receiving interface of the link request (responder) or
+    /// the proof (initiator). Mirrors Python's `Link.attached_interface`.
+    attached_interface: Option<usize>,
 }
 
 impl Link {
@@ -442,6 +447,7 @@ impl Link {
             established_at: None,
             proof_strategy: ProofStrategy::None,
             dest_signing_key: None,
+            attached_interface: None,
         }
     }
 
@@ -515,6 +521,7 @@ impl Link {
             established_at: None,
             proof_strategy: ProofStrategy::None,
             dest_signing_key: None,
+            attached_interface: None,
         })
     }
 
@@ -682,6 +689,16 @@ impl Link {
     /// Set the destination identity signing key (for proof generation)
     pub fn set_dest_signing_key(&mut self, key: ed25519_dalek::SigningKey) {
         self.dest_signing_key = Some(key);
+    }
+
+    /// Get the interface this link is attached to
+    pub fn attached_interface(&self) -> Option<usize> {
+        self.attached_interface
+    }
+
+    /// Set the interface this link is attached to
+    pub fn set_attached_interface(&mut self, iface: usize) {
+        self.attached_interface = Some(iface);
     }
 
     /// Get the hop count

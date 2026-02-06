@@ -5,6 +5,31 @@ All notable changes to this project will be documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.3.1] - 2026-02-06
+
+### Added
+- `Link::attached_interface` field mirroring Python's `Link.attached_interface` — tracks which interface a link is bound to for correct outbound routing
+- `interface_index` parameter to `LinkManager::process_packet()` for propagating receiving interface to links
+- Deferred-dispatch docstrings on `connect()`, `accept_connection()`, `send_on_connection()`, `send_single_packet()`
+- 7 new action-coverage tests: `test_forward_on_interface_produces_send_action`, `test_forward_on_all_except_produces_broadcast_action`, `test_send_proof_produces_send_action`, `test_request_path_produces_action`, `test_handle_path_request_produces_broadcast_action`, `test_handle_packet_announce_produces_rebroadcast_action`, `test_connect_queues_send_action`
+
+### Fixed
+- **`send_on_connection()` dropped first packet** — `process_outgoing()` ignored the `Ok(Vec<u8>)` return value; now routes through the Action system via `attached_interface`
+- **`connect()` link request never sent** — returned raw bytes that the caller couldn't dispatch; now routes through transport (path lookup with broadcast fallback)
+- `accept_connection()` proof routing now uses `attached_interface` instead of returning raw bytes
+- `send_pending_packets()` (keepalive, channel, proof) now routes via `attached_interface` instead of always using path lookup
+
+### Changed
+- **Breaking:** `NodeCore::connect()` returns `LinkId` instead of `(LinkId, Vec<u8>)` — packet is now routed internally
+- **Breaking:** `NodeCore::accept_connection()` returns `Result<(), ConnectionError>` instead of `Result<Vec<u8>, ConnectionError>`
+- **Breaking:** `NodeCore::send_on_connection()` returns `Result<(), SendError>` instead of `Result<Vec<u8>, SendError>`
+- **Breaking:** `LinkManager::process_packet()` takes an additional `interface_index: usize` parameter
+- `ReticulumNode::connect()` returns `Result<ConnectionStream, Error>` instead of `Result<(ConnectionStream, Vec<u8>), Error>`
+
+### Removed
+- `Transport::is_interface_online()` — always returned true; driver uses `handle_interface_down()` instead
+- Dead `|| !self.is_interface_online(...)` clauses in `clean_link_table()` and `clean_reverse_table()`
+
 ## [0.3.0] - 2026-02-06
 
 ### Added
@@ -341,7 +366,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Transport layer (routing, paths, deduplication)
 - Full interoperability with Python rnsd
 
-[Unreleased]: https://codeberg.org/Lew_Palm/leviculum/compare/v0.3.0...HEAD
+[Unreleased]: https://codeberg.org/Lew_Palm/leviculum/compare/v0.3.1...HEAD
+[0.3.1]: https://codeberg.org/Lew_Palm/leviculum/compare/v0.3.0...v0.3.1
 [0.3.0]: https://codeberg.org/Lew_Palm/leviculum/compare/v0.2.9...v0.3.0
 [0.2.9]: https://codeberg.org/Lew_Palm/leviculum/compare/v0.2.8...v0.2.9
 [0.2.8]: https://codeberg.org/Lew_Palm/leviculum/compare/v0.2.7...v0.2.8

@@ -572,13 +572,14 @@ impl LinkManager {
         raw_packet: &[u8],
         rng: &mut impl CryptoRngCore,
         now_ms: u64,
+        interface_index: usize,
     ) {
         match packet.flags.packet_type {
             PacketType::LinkRequest => {
-                self.handle_link_request(packet, raw_packet, rng);
+                self.handle_link_request(packet, raw_packet, rng, interface_index);
             }
             PacketType::Proof => {
-                self.handle_proof(packet, rng, now_ms);
+                self.handle_proof(packet, rng, now_ms, interface_index);
             }
             PacketType::Data => {
                 self.handle_data(packet, raw_packet, now_ms);
@@ -777,6 +778,7 @@ impl LinkManager {
         packet: &Packet,
         raw_packet: &[u8],
         rng: &mut impl CryptoRngCore,
+        interface_index: usize,
     ) {
         let dest_hash = DestinationHash::new(packet.destination_hash);
 
@@ -797,9 +799,13 @@ impl LinkManager {
         let request_data = packet.data.as_slice();
 
         // Create the incoming link
-        let Ok(link) = Link::new_incoming(request_data, link_id, dest_hash, rng) else {
+        let Ok(mut link) = Link::new_incoming(request_data, link_id, dest_hash, rng) else {
             return;
         };
+
+        // Set attached interface from the receiving interface (mirrors Python's
+        // link.attached_interface = packet.receiving_interface)
+        link.set_attached_interface(interface_index);
 
         // Extract peer keys for the event
         let peer_keys = PeerKeys {
@@ -818,7 +824,13 @@ impl LinkManager {
         });
     }
 
-    fn handle_proof(&mut self, packet: &Packet, rng: &mut impl CryptoRngCore, now_ms: u64) {
+    fn handle_proof(
+        &mut self,
+        packet: &Packet,
+        rng: &mut impl CryptoRngCore,
+        now_ms: u64,
+        interface_index: usize,
+    ) {
         // PROOF packets are addressed to link_id (not destination hash)
         let link_id = LinkId::new(packet.destination_hash);
 
@@ -844,6 +856,10 @@ impl LinkManager {
         if link.state() != LinkState::Pending || !link.is_initiator() {
             return;
         }
+
+        // Set attached interface from the interface the proof arrived on
+        // (mirrors Python: initiator learns attached_interface from proof)
+        link.set_attached_interface(interface_index);
 
         // Process the proof
         if link.process_proof(proof_data).is_err() {
@@ -1452,7 +1468,7 @@ mod tests {
 
         // Deliver link request to responder
         let packet = Packet::unpack(&link_request_packet).unwrap();
-        responder_mgr.process_packet(&packet, &link_request_packet, &mut OsRng, now_ms);
+        responder_mgr.process_packet(&packet, &link_request_packet, &mut OsRng, now_ms, 0);
 
         // Accept on responder
         let events: Vec<_> = responder_mgr.drain_events().collect();
@@ -1467,13 +1483,13 @@ mod tests {
 
         // Deliver proof to initiator
         let proof = Packet::unpack(&proof_packet).unwrap();
-        initiator_mgr.process_packet(&proof, &proof_packet, &mut OsRng, now_ms);
+        initiator_mgr.process_packet(&proof, &proof_packet, &mut OsRng, now_ms, 0);
         let _ = initiator_mgr.drain_events().collect::<Vec<_>>();
 
         // Deliver RTT packet to responder
         let rtt_packet = initiator_mgr.take_pending_rtt_packet(&link_id).unwrap();
         let rtt = Packet::unpack(&rtt_packet).unwrap();
-        responder_mgr.process_packet(&rtt, &rtt_packet, &mut OsRng, now_ms);
+        responder_mgr.process_packet(&rtt, &rtt_packet, &mut OsRng, now_ms, 0);
         let _ = responder_mgr.drain_events().collect::<Vec<_>>();
 
         assert!(initiator_mgr.is_active(&link_id));
@@ -1534,7 +1550,7 @@ mod tests {
         // Process data on responder
         let data = Packet::unpack(&data_packet).unwrap();
         pair.responder
-            .process_packet(&data, &data_packet, &mut OsRng, pair.now_ms);
+            .process_packet(&data, &data_packet, &mut OsRng, pair.now_ms, 0);
 
         // Should have generated a proof packet
         let proof_packets: Vec<_> = pair.responder.drain_proof_packets();
@@ -1562,7 +1578,7 @@ mod tests {
         // Process data on responder
         let data = Packet::unpack(&data_packet).unwrap();
         pair.responder
-            .process_packet(&data, &data_packet, &mut OsRng, pair.now_ms);
+            .process_packet(&data, &data_packet, &mut OsRng, pair.now_ms, 0);
 
         // Should NOT have generated a proof packet (PROVE_APP waits for app decision)
         let proof_packets: Vec<_> = pair.responder.drain_proof_packets();
@@ -1595,7 +1611,7 @@ mod tests {
         // Process data on responder - this generates the proof
         let data = Packet::unpack(&data_packet).unwrap();
         pair.responder
-            .process_packet(&data, &data_packet, &mut OsRng, pair.now_ms);
+            .process_packet(&data, &data_packet, &mut OsRng, pair.now_ms, 0);
 
         // Get the proof packet
         let proof_packets: Vec<_> = pair.responder.drain_proof_packets();
@@ -1622,7 +1638,7 @@ mod tests {
         );
 
         pair.initiator
-            .process_packet(&data_proof, data_proof_packet, &mut OsRng, pair.now_ms);
+            .process_packet(&data_proof, data_proof_packet, &mut OsRng, pair.now_ms, 0);
 
         // Should have emitted DataDelivered event
         let events: Vec<_> = pair.initiator.drain_events().collect();
@@ -1664,7 +1680,7 @@ mod tests {
         // Process data on responder - should emit ProofRequested
         let data = Packet::unpack(&data_packet).unwrap();
         pair.responder
-            .process_packet(&data, &data_packet, &mut OsRng, pair.now_ms);
+            .process_packet(&data, &data_packet, &mut OsRng, pair.now_ms, 0);
 
         // Find the ProofRequested event
         let events: Vec<_> = pair.responder.drain_events().collect();
@@ -1684,7 +1700,7 @@ mod tests {
         // Deliver proof to initiator
         let data_proof = Packet::unpack(&proof_packet).unwrap();
         pair.initiator
-            .process_packet(&data_proof, &proof_packet, &mut OsRng, pair.now_ms);
+            .process_packet(&data_proof, &proof_packet, &mut OsRng, pair.now_ms, 0);
 
         // Initiator should receive DataDelivered event
         let events: Vec<_> = pair.initiator.drain_events().collect();

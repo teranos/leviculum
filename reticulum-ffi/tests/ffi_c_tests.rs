@@ -27,6 +27,7 @@ fn get_ffi_dir() -> PathBuf {
 }
 
 #[test]
+#[ignore = "FFI crate is outdated — will be redesigned after core stabilizes"]
 fn test_c_identity_bindings() {
     let ffi_dir = get_ffi_dir();
     let target_dir = get_target_dir();

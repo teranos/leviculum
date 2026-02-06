@@ -1676,11 +1676,7 @@ impl<C: Clock, S: Storage> Transport<C, S> {
         let expired: Vec<[u8; TRUNCATED_HASHBYTES]> = self
             .reverse_table
             .iter()
-            .filter(|(_, e)| {
-                now.saturating_sub(e.timestamp_ms) > REVERSE_TABLE_EXPIRY_MS
-                    || !self.is_interface_online(e.receiving_interface_index)
-                    || !self.is_interface_online(e.outbound_interface_index)
-            })
+            .filter(|(_, e)| now.saturating_sub(e.timestamp_ms) > REVERSE_TABLE_EXPIRY_MS)
             .map(|(k, _)| *k)
             .collect();
 
@@ -1777,27 +1773,16 @@ impl<C: Clock, S: Storage> Transport<C, S> {
 
     /// Check if an interface is considered online
     ///
-    /// In the sans-I/O architecture, the driver manages interface state.
-    /// Core always assumes interfaces are online; the driver calls
-    /// `handle_interface_down()` when one goes offline, which removes
-    /// routing entries referencing that interface.
-    fn is_interface_online(&self, _index: usize) -> bool {
-        true
-    }
-
     fn clean_link_table(&mut self, now: u64) {
         let expired: Vec<[u8; TRUNCATED_HASHBYTES]> = self
             .link_table
             .iter()
             .filter(|(_, e)| {
-                let time_expired = if e.validated {
+                if e.validated {
                     now.saturating_sub(e.timestamp_ms) > LINK_TIMEOUT_MS
                 } else {
                     now > e.proof_timeout_ms
-                };
-                time_expired
-                    || !self.is_interface_online(e.next_hop_interface_index)
-                    || !self.is_interface_online(e.received_interface_index)
+                }
             })
             .map(|(k, _)| *k)
             .collect();
@@ -4154,6 +4139,239 @@ mod tests {
                     other => panic!("expected Broadcast action, got {:?}", other),
                 }
             }
+        }
+
+        // ─── Sans-I/O Audit: Action coverage tests ──────────────────────────
+
+        #[test]
+        fn test_forward_on_interface_produces_send_action() {
+            // A transport-mode data packet destined for a link_table entry
+            // should produce a SendPacket action on the correct next-hop interface.
+            use crate::destination::DestinationType;
+            use crate::packet::{HeaderType, PacketData, PacketFlags, TransportType};
+
+            let mut transport = make_transport_enabled();
+            let _idx0 = transport.register_interface(Box::new(MockInterface::new("if0", 1)));
+            let _idx1 = transport.register_interface(Box::new(MockInterface::new("if1", 2)));
+
+            // Insert a validated link_table entry: link_hash routes from if0 → if1
+            let link_hash = [0xAA; TRUNCATED_HASHBYTES];
+            transport.link_table.insert(
+                link_hash,
+                LinkEntry {
+                    timestamp_ms: transport.clock.now_ms(),
+                    next_hop_interface_index: 1, // toward destination
+                    remaining_hops: 1,
+                    received_interface_index: 0, // toward initiator
+                    hops: 1,
+                    validated: true,
+                    proof_timeout_ms: u64::MAX,
+                },
+            );
+
+            // Build a data packet addressed to link_hash, arriving on if0 (initiator side)
+            let packet = Packet {
+                flags: PacketFlags {
+                    ifac_flag: false,
+                    header_type: HeaderType::Type1,
+                    context_flag: false,
+                    transport_type: TransportType::Broadcast,
+                    dest_type: DestinationType::Link,
+                    packet_type: PacketType::Data,
+                },
+                hops: 1, // matches link_entry.hops
+                transport_id: None,
+                destination_hash: link_hash,
+                context: PacketContext::None,
+                data: PacketData::Owned(b"test payload".to_vec()),
+            };
+            let mut buf = [0u8; MTU];
+            let len = packet.pack(&mut buf).unwrap();
+
+            // Process the packet arriving on if0
+            let _ = transport.process_incoming(0, &buf[..len]);
+            let actions = transport.drain_actions();
+
+            // Should produce a SendPacket on if1 (the next_hop_interface_index)
+            assert!(
+                actions.iter().any(|a| matches!(
+                    a,
+                    Action::SendPacket { iface, .. } if *iface == InterfaceId(1)
+                )),
+                "forward_on_interface should produce SendPacket on iface 1, got: {:?}",
+                actions
+            );
+        }
+
+        #[test]
+        fn test_forward_on_all_except_produces_broadcast_action() {
+            // A path request arriving on if0 with no cached announce should
+            // be forwarded as a Broadcast excluding if0 (transport mode only).
+            let mut transport = make_transport_enabled();
+            let _idx0 = transport.register_interface(Box::new(MockInterface::new("if0", 1)));
+            let _idx1 = transport.register_interface(Box::new(MockInterface::new("if1", 2)));
+
+            // Build a path request for an unknown destination
+            let unknown_hash = [0xBB; TRUNCATED_HASHBYTES];
+            let tag = [0xCC; TRUNCATED_HASHBYTES];
+            let transport_id = [0xDD; TRUNCATED_HASHBYTES];
+
+            let mut data = Vec::new();
+            data.extend_from_slice(&unknown_hash);
+            data.extend_from_slice(&transport_id);
+            data.extend_from_slice(&tag);
+
+            let path_req_hash = *transport.path_request_hash();
+
+            let packet = Packet {
+                flags: PacketFlags {
+                    ifac_flag: false,
+                    header_type: HeaderType::Type1,
+                    context_flag: false,
+                    transport_type: TransportType::Broadcast,
+                    dest_type: crate::destination::DestinationType::Plain,
+                    packet_type: PacketType::Data,
+                },
+                hops: 0,
+                transport_id: None,
+                destination_hash: path_req_hash,
+                context: PacketContext::None,
+                data: PacketData::Owned(data),
+            };
+            let mut buf = [0u8; MTU];
+            let len = packet.pack(&mut buf).unwrap();
+
+            let _ = transport.process_incoming(0, &buf[..len]);
+            let actions = transport.drain_actions();
+
+            assert!(
+                actions.iter().any(|a| matches!(
+                    a,
+                    Action::Broadcast { exclude_iface: Some(iface), .. }
+                        if *iface == InterfaceId(0)
+                )),
+                "path request forwarding should produce Broadcast excluding iface 0, got: {:?}",
+                actions
+            );
+        }
+
+        #[test]
+        fn test_send_proof_produces_send_action() {
+            let mut transport = make_transport();
+            let idx = transport.register_interface(Box::new(MockInterface::new("if0", 1)));
+
+            // Insert a path so send_proof can route
+            let dest_hash = [0x42; TRUNCATED_HASHBYTES];
+            transport.path_table.insert(
+                dest_hash,
+                PathEntry {
+                    hops: 1,
+                    expires_ms: u64::MAX,
+                    interface_index: idx,
+                    random_blobs: Vec::new(),
+                },
+            );
+
+            let identity = Identity::generate(&mut OsRng);
+            let packet_hash = [0xAA; 32];
+
+            transport
+                .send_proof(&packet_hash, &dest_hash, &identity)
+                .unwrap();
+
+            let actions = transport.drain_actions();
+            assert!(
+                actions.iter().any(|a| matches!(
+                    a,
+                    Action::SendPacket { iface, .. } if *iface == InterfaceId(idx)
+                )),
+                "send_proof should produce SendPacket action, got: {:?}",
+                actions
+            );
+        }
+
+        #[test]
+        fn test_request_path_produces_action() {
+            let mut transport = make_transport();
+            let _idx = transport.register_interface(Box::new(MockInterface::new("if0", 1)));
+
+            let dest_hash = [0x42; TRUNCATED_HASHBYTES];
+            let tag = [0xCC; TRUNCATED_HASHBYTES];
+
+            // Request path on all interfaces (None)
+            transport.request_path(&dest_hash, None, &tag).unwrap();
+
+            let actions = transport.drain_actions();
+            assert!(
+                !actions.is_empty(),
+                "request_path should produce at least one action"
+            );
+            assert!(
+                actions
+                    .iter()
+                    .any(|a| matches!(a, Action::Broadcast { .. })),
+                "request_path with no specific interface should broadcast, got: {:?}",
+                actions
+            );
+        }
+
+        #[test]
+        fn test_handle_path_request_produces_broadcast_action() {
+            // Register a destination and cache an announce, then process a path
+            // request. The announce should be scheduled for rebroadcast.
+            let mut transport = make_transport_enabled();
+            let _idx0 = transport.register_interface(Box::new(MockInterface::new("if0", 1)));
+            let _idx1 = transport.register_interface(Box::new(MockInterface::new("if1", 2)));
+
+            // First, create an announce and process it to populate the cache
+            let (raw, dest_hash) = make_announce_raw(1, PacketContext::None);
+            let _ = transport.process_incoming(0, &raw);
+            let _ = transport.drain_actions();
+            let _ = transport.drain_events();
+
+            // Now send a path request for that destination from a different interface
+            let tag = [0xCC; TRUNCATED_HASHBYTES];
+            let requester_id = [0xDD; TRUNCATED_HASHBYTES];
+
+            let mut data = Vec::new();
+            data.extend_from_slice(&dest_hash);
+            data.extend_from_slice(&requester_id);
+            data.extend_from_slice(&tag);
+
+            let path_req_hash = *transport.path_request_hash();
+
+            let packet = Packet {
+                flags: PacketFlags {
+                    ifac_flag: false,
+                    header_type: HeaderType::Type1,
+                    context_flag: false,
+                    transport_type: TransportType::Broadcast,
+                    dest_type: crate::destination::DestinationType::Plain,
+                    packet_type: PacketType::Data,
+                },
+                hops: 0,
+                transport_id: None,
+                destination_hash: path_req_hash,
+                context: PacketContext::None,
+                data: PacketData::Owned(data),
+            };
+            let mut buf = [0u8; MTU];
+            let len = packet.pack(&mut buf).unwrap();
+
+            let _ = transport.process_incoming(1, &buf[..len]);
+            let _ = transport.drain_actions();
+
+            // Advance time past the grace period + jitter to trigger rebroadcast
+            transport
+                .clock
+                .advance(PATH_REQUEST_GRACE_MS + PATHFINDER_RW_MS + 1000);
+            transport.poll();
+
+            let actions = transport.drain_actions();
+            assert!(
+                !actions.is_empty(),
+                "handle_path_request should schedule announce rebroadcast that produces actions"
+            );
         }
     }
 }

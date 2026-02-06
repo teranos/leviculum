@@ -24,7 +24,7 @@ use reticulum_core::link::LinkId;
 /// # let node = ReticulumNodeBuilder::new().build().await?;
 /// # let dest_hash = reticulum_core::DestinationHash::new([0; 16]);
 /// # let signing_key = [0u8; 32];
-/// let (mut stream, packet) = node.connect(&dest_hash, &signing_key).await?;
+/// let mut stream = node.connect(&dest_hash, &signing_key).await?;
 ///
 /// // Write data
 /// stream.send(b"Hello!").await?;

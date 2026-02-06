@@ -260,20 +260,17 @@ impl ReticulumNode {
     /// Connect to a remote destination
     ///
     /// Establishes a Link to the destination and returns a ConnectionStream
-    /// for async read/write operations.
+    /// for async read/write operations. The link request packet is queued
+    /// internally and dispatched by the event loop.
     ///
     /// # Arguments
     /// * `dest_hash` - The destination hash to connect to
     /// * `dest_signing_key` - The destination's signing key (from announce)
-    ///
-    /// # Returns
-    /// A tuple of (ConnectionStream, packet_to_send). The packet must be sent
-    /// via an interface to initiate the connection handshake.
     pub async fn connect(
         &self,
         dest_hash: &DestinationHash,
         dest_signing_key: &[u8; 32],
-    ) -> Result<(ConnectionStream, Vec<u8>), Error> {
+    ) -> Result<ConnectionStream, Error> {
         // Create oneshot channel to receive notification when connection is established
         let (tx, rx) = oneshot::channel();
 
@@ -284,7 +281,9 @@ impl ReticulumNode {
         }
 
         // Request connection from NodeCore
-        let (link_id, packet) = {
+        // Actions are now queued in transport.pending_actions;
+        // the event loop will flush them on next iteration
+        let link_id = {
             let mut inner = self.inner.lock().unwrap();
             inner.connect(*dest_hash, dest_signing_key)
         };
@@ -312,7 +311,7 @@ impl ReticulumNode {
             let _ = rx.await;
         });
 
-        Ok((ConnectionStream::new(link_id, out_tx, in_rx), packet))
+        Ok(ConnectionStream::new(link_id, out_tx, in_rx))
     }
 
     /// Take the event receiver

@@ -121,7 +121,7 @@ async fn establish_link_as_initiator(
         .ok_or("No proof received")?;
 
     // Process proof
-    manager.process_packet(&proof_packet, &[], &mut OsRng, clock.now_ms());
+    manager.process_packet(&proof_packet, &[], &mut OsRng, clock.now_ms(), 0);
 
     // Check for LinkEstablished
     let events: Vec<_> = manager.drain_events().collect();
@@ -295,7 +295,7 @@ async fn establish_rust_to_rust_link(daemon: &TestDaemon) -> Result<RustToRustLi
 
     let request_pkt =
         Packet::unpack(&raw_request).map_err(|e| format!("Failed to unpack: {:?}", e))?;
-    manager_a.process_packet(&request_pkt, &raw_request, &mut OsRng, clock.now_ms());
+    manager_a.process_packet(&request_pkt, &raw_request, &mut OsRng, clock.now_ms(), 0);
 
     // A accepts the link
     let _: Vec<_> = manager_a.drain_events().collect();
@@ -316,7 +316,7 @@ async fn establish_rust_to_rust_link(daemon: &TestDaemon) -> Result<RustToRustLi
     .await
     .ok_or("B should receive proof")?;
 
-    manager_b.process_packet(&proof_pkt, &[], &mut OsRng, clock.now_ms());
+    manager_b.process_packet(&proof_pkt, &[], &mut OsRng, clock.now_ms(), 0);
 
     // B should have LinkEstablished
     let events_b: Vec<_> = manager_b.drain_events().collect();
@@ -357,7 +357,7 @@ async fn establish_rust_to_rust_link(daemon: &TestDaemon) -> Result<RustToRustLi
     rtt_raw.extend_from_slice(&rtt_data);
 
     let rtt_pkt = Packet::unpack(&rtt_raw).map_err(|e| format!("Failed to unpack RTT: {:?}", e))?;
-    manager_a.process_packet(&rtt_pkt, &rtt_raw, &mut OsRng, clock.now_ms());
+    manager_a.process_packet(&rtt_pkt, &rtt_raw, &mut OsRng, clock.now_ms(), 0);
 
     // A should have LinkEstablished
     let events_a: Vec<_> = manager_a.drain_events().collect();
@@ -504,7 +504,7 @@ async fn test_python_graceful_close_received_by_rust() {
             .expect("Should receive LINKCLOSE packet from Python");
 
     let close_pkt = Packet::unpack(&close_raw).expect("Failed to unpack close packet");
-    manager.process_packet(&close_pkt, &close_raw, &mut OsRng, clock.now_ms());
+    manager.process_packet(&close_pkt, &close_raw, &mut OsRng, clock.now_ms(), 0);
 
     // Check for LinkClosed event with PeerClosed reason
     let events: Vec<_> = manager.drain_events().collect();
@@ -574,6 +574,7 @@ async fn test_link_stale_detection_no_inbound() {
         &link_request_packet,
         &mut OsRng,
         responder_clock.now_ms(),
+        0,
     );
 
     // Responder accepts
@@ -589,7 +590,13 @@ async fn test_link_stale_detection_no_inbound() {
 
     // Deliver proof to initiator
     let proof = Packet::unpack(&proof_packet).unwrap();
-    initiator_mgr.process_packet(&proof, &proof_packet, &mut OsRng, initiator_clock.now_ms());
+    initiator_mgr.process_packet(
+        &proof,
+        &proof_packet,
+        &mut OsRng,
+        initiator_clock.now_ms(),
+        0,
+    );
 
     // Initiator sends RTT
     let _: Vec<_> = initiator_mgr.drain_events().collect();
@@ -597,7 +604,7 @@ async fn test_link_stale_detection_no_inbound() {
 
     // Deliver RTT to responder
     let rtt = Packet::unpack(&rtt_packet).unwrap();
-    responder_mgr.process_packet(&rtt, &rtt_packet, &mut OsRng, responder_clock.now_ms());
+    responder_mgr.process_packet(&rtt, &rtt_packet, &mut OsRng, responder_clock.now_ms(), 0);
     let _: Vec<_> = responder_mgr.drain_events().collect();
 
     // Verify link is active on initiator
@@ -704,6 +711,7 @@ async fn test_stale_link_closes_after_timeout() {
         &link_request_packet,
         &mut OsRng,
         responder_clock.now_ms(),
+        0,
     );
 
     // Responder accepts
@@ -719,7 +727,13 @@ async fn test_stale_link_closes_after_timeout() {
 
     // Deliver proof to initiator
     let proof = Packet::unpack(&proof_packet).unwrap();
-    initiator_mgr.process_packet(&proof, &proof_packet, &mut OsRng, initiator_clock.now_ms());
+    initiator_mgr.process_packet(
+        &proof,
+        &proof_packet,
+        &mut OsRng,
+        initiator_clock.now_ms(),
+        0,
+    );
 
     // Initiator sends RTT
     let _: Vec<_> = initiator_mgr.drain_events().collect();
@@ -727,7 +741,7 @@ async fn test_stale_link_closes_after_timeout() {
 
     // Deliver RTT to responder
     let rtt = Packet::unpack(&rtt_packet).unwrap();
-    responder_mgr.process_packet(&rtt, &rtt_packet, &mut OsRng, responder_clock.now_ms());
+    responder_mgr.process_packet(&rtt, &rtt_packet, &mut OsRng, responder_clock.now_ms(), 0);
     let _: Vec<_> = responder_mgr.drain_events().collect();
 
     // Verify link is active on initiator
@@ -844,6 +858,7 @@ async fn test_keepalive_resets_stale_timer() {
         &link_request_packet,
         &mut OsRng,
         responder_clock.now_ms(),
+        0,
     );
 
     // Responder accepts
@@ -859,7 +874,13 @@ async fn test_keepalive_resets_stale_timer() {
 
     // Deliver proof to initiator
     let proof = Packet::unpack(&proof_packet).unwrap();
-    initiator_mgr.process_packet(&proof, &proof_packet, &mut OsRng, initiator_clock.now_ms());
+    initiator_mgr.process_packet(
+        &proof,
+        &proof_packet,
+        &mut OsRng,
+        initiator_clock.now_ms(),
+        0,
+    );
 
     // Initiator sends RTT
     let _: Vec<_> = initiator_mgr.drain_events().collect();
@@ -867,7 +888,7 @@ async fn test_keepalive_resets_stale_timer() {
 
     // Deliver RTT to responder
     let rtt = Packet::unpack(&rtt_packet).unwrap();
-    responder_mgr.process_packet(&rtt, &rtt_packet, &mut OsRng, responder_clock.now_ms());
+    responder_mgr.process_packet(&rtt, &rtt_packet, &mut OsRng, responder_clock.now_ms(), 0);
     let _: Vec<_> = responder_mgr.drain_events().collect();
 
     // Verify link is active
@@ -964,7 +985,7 @@ async fn test_rust_initiator_sends_keepalive_python_echoes() {
         let echo_pkt = Packet::unpack(&echo_data).expect("Failed to unpack echo");
 
         // Process the echo (keepalive bookkeeping happens internally)
-        manager.process_packet(&echo_pkt, &echo_data, &mut OsRng, clock.now_ms());
+        manager.process_packet(&echo_pkt, &echo_data, &mut OsRng, clock.now_ms(), 0);
 
         // Drain any events (keepalives no longer emit events, but link should stay active)
         let _: Vec<_> = manager.drain_events().collect();
@@ -1040,7 +1061,7 @@ async fn test_python_initiator_sends_keepalive_rust_echoes() {
 
     // Process link request
     let packet = Packet::unpack(&raw_packet).expect("Failed to unpack");
-    manager.process_packet(&packet, &raw_packet, &mut OsRng, clock.now_ms());
+    manager.process_packet(&packet, &raw_packet, &mut OsRng, clock.now_ms(), 0);
 
     // Accept the link
     let _: Vec<_> = manager.drain_events().collect();
@@ -1069,7 +1090,7 @@ async fn test_python_initiator_sends_keepalive_rust_echoes() {
     rtt_raw.extend_from_slice(&rtt_data);
 
     let rtt_pkt = Packet::unpack(&rtt_raw).expect("Failed to unpack RTT");
-    manager.process_packet(&rtt_pkt, &rtt_raw, &mut OsRng, clock.now_ms());
+    manager.process_packet(&rtt_pkt, &rtt_raw, &mut OsRng, clock.now_ms(), 0);
 
     // Drain establishment events
     let _: Vec<_> = manager.drain_events().collect();
@@ -1277,7 +1298,7 @@ async fn test_multi_hop_keepalive_through_python_relay() {
     // 4. A processes keepalive and generates echo
     let ka_pkt = Packet::unpack(&ka_raw).expect("Failed to unpack keepalive");
     link.manager_a
-        .process_packet(&ka_pkt, &ka_raw, &mut OsRng, clock.now_ms());
+        .process_packet(&ka_pkt, &ka_raw, &mut OsRng, clock.now_ms(), 0);
 
     // 5. Drain echo packets from A and send them
     let echo_packets: Vec<_> = link.manager_a.drain_keepalive_packets();
@@ -1306,7 +1327,7 @@ async fn test_multi_hop_keepalive_through_python_relay() {
     // 7. B processes echo (keepalive bookkeeping happens internally)
     let echo_pkt = Packet::unpack(&echo_raw).expect("Failed to unpack echo");
     link.manager_b
-        .process_packet(&echo_pkt, &echo_raw, &mut OsRng, clock.now_ms());
+        .process_packet(&echo_pkt, &echo_raw, &mut OsRng, clock.now_ms(), 0);
 
     // 8. Verify link is still active after keepalive round-trip
     let _: Vec<_> = link.manager_b.drain_events().collect();
@@ -1400,7 +1421,7 @@ async fn test_multi_hop_graceful_close_through_relay() {
     // 6. A processes close packet
     let close_pkt = Packet::unpack(&close_raw).expect("Failed to unpack close packet");
     link.manager_a
-        .process_packet(&close_pkt, &close_raw, &mut OsRng, clock.now_ms());
+        .process_packet(&close_pkt, &close_raw, &mut OsRng, clock.now_ms(), 0);
 
     // 7. Verify A emits LinkClosed with PeerClosed reason
     let events_a: Vec<_> = link.manager_a.drain_events().collect();

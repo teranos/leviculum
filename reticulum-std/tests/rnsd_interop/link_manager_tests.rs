@@ -127,7 +127,7 @@ async fn establish_manager_initiator_link(
 
     // Process proof via manager
     let now_ms = TestClock.now_ms();
-    manager.process_packet(&proof_packet, &[], rng, now_ms);
+    manager.process_packet(&proof_packet, &[], rng, now_ms, 0);
 
     // Check for LinkEstablished event
     let events: Vec<_> = manager.drain_events().collect();
@@ -175,7 +175,7 @@ async fn establish_manager_responder_link(
     let packet = Packet::unpack(&raw_packet)
         .map_err(|_| HarnessError::ParseError("Failed to unpack packet".to_string()))?;
     let now_ms = TestClock.now_ms();
-    manager.process_packet(&packet, &raw_packet, rng, now_ms);
+    manager.process_packet(&packet, &raw_packet, rng, now_ms, 0);
 
     // Check for LinkRequestReceived event
     let events: Vec<_> = manager.drain_events().collect();
@@ -214,7 +214,7 @@ async fn establish_manager_responder_link(
     let rtt_packet = Packet::unpack(&rtt_raw)
         .map_err(|_| HarnessError::ParseError("Failed to unpack RTT".to_string()))?;
     let now_ms = TestClock.now_ms();
-    manager.process_packet(&rtt_packet, &rtt_raw, rng, now_ms);
+    manager.process_packet(&rtt_packet, &rtt_raw, rng, now_ms, 0);
 
     // Check for LinkEstablished event
     let events: Vec<_> = manager.drain_events().collect();
@@ -274,7 +274,7 @@ where
                     if let DeframeResult::Frame(data) = result {
                         if let Ok(pkt) = Packet::unpack(&data) {
                             let now_ms = TestClock.now_ms();
-                            manager.process_packet(&pkt, &data, rng, now_ms);
+                            manager.process_packet(&pkt, &data, rng, now_ms, 0);
                         }
                     }
                 }
@@ -560,7 +560,7 @@ async fn test_manager_initiator_concurrent_links() {
                         if let Ok(pkt) = Packet::unpack(&data) {
                             if pkt.flags.packet_type == PacketType::Proof {
                                 let now_ms = TestClock.now_ms();
-                                manager.process_packet(&pkt, &data, &mut rng, now_ms);
+                                manager.process_packet(&pkt, &data, &mut rng, now_ms, 0);
                             }
                         }
                     }
@@ -740,7 +740,7 @@ async fn test_manager_responder_reject_link() {
     // Process the packet
     let packet = Packet::unpack(&raw_packet).unwrap();
     let now_ms = TestClock.now_ms();
-    manager.process_packet(&packet, &raw_packet, &mut OsRng, now_ms);
+    manager.process_packet(&packet, &raw_packet, &mut OsRng, now_ms, 0);
 
     // Check for LinkRequestReceived
     let events: Vec<_> = manager.drain_events().collect();
@@ -834,7 +834,7 @@ async fn test_manager_responder_data_exchange() {
 
     let data_pkt = Packet::unpack(&data_raw).unwrap();
     let now_ms = TestClock.now_ms();
-    manager.process_packet(&data_pkt, &data_raw, &mut OsRng, now_ms);
+    manager.process_packet(&data_pkt, &data_raw, &mut OsRng, now_ms, 0);
 
     // Check for DataReceived event
     let events: Vec<_> = manager.drain_events().collect();
@@ -1051,7 +1051,7 @@ async fn test_rust_to_rust_via_daemon() {
 
     let request_pkt = Packet::unpack(&raw_request).unwrap();
     let now_ms = TestClock.now_ms();
-    manager_a.process_packet(&request_pkt, &raw_request, &mut rng_a, now_ms);
+    manager_a.process_packet(&request_pkt, &raw_request, &mut rng_a, now_ms, 0);
 
     // A accepts the link
     let _: Vec<_> = manager_a.drain_events().collect();
@@ -1074,7 +1074,7 @@ async fn test_rust_to_rust_via_daemon() {
     .expect("B should receive proof");
 
     let now_ms = TestClock.now_ms();
-    manager_b.process_packet(&proof_pkt, &[], &mut rng_b, now_ms);
+    manager_b.process_packet(&proof_pkt, &[], &mut rng_b, now_ms, 0);
 
     // B should have LinkEstablished
     let events_b: Vec<_> = manager_b.drain_events().collect();
@@ -1112,7 +1112,7 @@ async fn test_rust_to_rust_via_daemon() {
 
     let rtt_pkt = Packet::unpack(&rtt_raw).unwrap();
     let now_ms = TestClock.now_ms();
-    manager_a.process_packet(&rtt_pkt, &rtt_raw, &mut rng_a, now_ms);
+    manager_a.process_packet(&rtt_pkt, &rtt_raw, &mut rng_a, now_ms, 0);
 
     // A should have LinkEstablished
     let events_a: Vec<_> = manager_a.drain_events().collect();
@@ -1147,7 +1147,7 @@ async fn test_rust_to_rust_via_daemon() {
 
     let data_pkt_a = Packet::unpack(&data_raw_a).unwrap();
     let now_ms = TestClock.now_ms();
-    manager_a.process_packet(&data_pkt_a, &data_raw_a, &mut rng_a, now_ms);
+    manager_a.process_packet(&data_pkt_a, &data_raw_a, &mut rng_a, now_ms, 0);
 
     let events_a: Vec<_> = manager_a.drain_events().collect();
     let received_a = events_a.iter().find_map(|e| {
@@ -1177,7 +1177,7 @@ async fn test_rust_to_rust_via_daemon() {
 
     let data_pkt_b = Packet::unpack(&data_raw_b).unwrap();
     let now_ms = TestClock.now_ms();
-    manager_b.process_packet(&data_pkt_b, &data_raw_b, &mut rng_b, now_ms);
+    manager_b.process_packet(&data_pkt_b, &data_raw_b, &mut rng_b, now_ms, 0);
 
     let events_b: Vec<_> = manager_b.drain_events().collect();
     let received_b = events_b.iter().find_map(|e| {
@@ -1279,7 +1279,7 @@ async fn test_rust_to_rust_multiple_messages() {
 
     let request_pkt = Packet::unpack(&raw_request).unwrap();
     let now_ms = TestClock.now_ms();
-    manager_a.process_packet(&request_pkt, &raw_request, &mut rng_a, now_ms);
+    manager_a.process_packet(&request_pkt, &raw_request, &mut rng_a, now_ms, 0);
     let _: Vec<_> = manager_a.drain_events().collect();
 
     let now_ms = TestClock.now_ms();
@@ -1297,7 +1297,7 @@ async fn test_rust_to_rust_multiple_messages() {
     .await
     .unwrap();
     let now_ms = TestClock.now_ms();
-    manager_b.process_packet(&proof_pkt, &[], &mut rng_b, now_ms);
+    manager_b.process_packet(&proof_pkt, &[], &mut rng_b, now_ms, 0);
     let _: Vec<_> = manager_b.drain_events().collect();
 
     let rtt_packet = manager_b.take_pending_rtt_packet(&link_id_b).unwrap();
@@ -1321,7 +1321,7 @@ async fn test_rust_to_rust_multiple_messages() {
 
     let rtt_pkt = Packet::unpack(&rtt_raw).unwrap();
     let now_ms = TestClock.now_ms();
-    manager_a.process_packet(&rtt_pkt, &rtt_raw, &mut rng_a, now_ms);
+    manager_a.process_packet(&rtt_pkt, &rtt_raw, &mut rng_a, now_ms, 0);
     let _: Vec<_> = manager_a.drain_events().collect();
 
     // Exchange 10+ messages in both directions
@@ -1362,7 +1362,7 @@ async fn test_rust_to_rust_multiple_messages() {
                                 && pkt.context == PacketContext::None
                             {
                                 let now_ms = TestClock.now_ms();
-                                manager_a.process_packet(&pkt, &data, &mut rng_a, now_ms);
+                                manager_a.process_packet(&pkt, &data, &mut rng_a, now_ms, 0);
                             }
                         }
                     }
@@ -1380,7 +1380,7 @@ async fn test_rust_to_rust_multiple_messages() {
                                 && pkt.context == PacketContext::None
                             {
                                 let now_ms = TestClock.now_ms();
-                                manager_b.process_packet(&pkt, &data, &mut rng_b, now_ms);
+                                manager_b.process_packet(&pkt, &data, &mut rng_b, now_ms, 0);
                             }
                         }
                     }
@@ -1543,7 +1543,7 @@ async fn test_manager_responder_timeout() {
     let link_id = reticulum_core::link::Link::calculate_link_id(&raw_packet);
 
     let packet = Packet::unpack(&raw_packet).unwrap();
-    manager.process_packet(&packet, &raw_packet, &mut rng, clock.now_ms());
+    manager.process_packet(&packet, &raw_packet, &mut rng, clock.now_ms(), 0);
 
     // Accept the link
     let _: Vec<_> = manager.drain_events().collect();
@@ -1626,7 +1626,7 @@ async fn test_manager_many_simultaneous_links() {
                         if let Ok(pkt) = Packet::unpack(&data) {
                             if pkt.flags.packet_type == PacketType::Proof {
                                 let now_ms = TestClock.now_ms();
-                                manager.process_packet(&pkt, &data, &mut rng, now_ms);
+                                manager.process_packet(&pkt, &data, &mut rng, now_ms, 0);
                             }
                         }
                     }
@@ -1832,7 +1832,7 @@ async fn test_manager_interleaved_operations() {
                         if let Ok(pkt) = Packet::unpack(&data) {
                             if pkt.flags.packet_type == PacketType::Proof {
                                 let now_ms = TestClock.now_ms();
-                                manager.process_packet(&pkt, &data, &mut rng, now_ms);
+                                manager.process_packet(&pkt, &data, &mut rng, now_ms, 0);
                             }
                         }
                     }

@@ -232,16 +232,17 @@ impl<R: CryptoRngCore, C: Clock, S: Storage> NodeCore<R, C, S> {
 
     /// Initiate a connection to a destination
     ///
-    /// Returns the link ID and the packet bytes to send.
+    /// # Deferred dispatch
+    ///
+    /// This method queues I/O actions internally. The actions are not executed
+    /// until the driver calls [`handle_packet()`] or [`handle_timeout()`],
+    /// which drain all pending actions. Callers must ensure the event loop
+    /// runs promptly after calling this method.
     ///
     /// # Arguments
     /// * `dest_hash` - The destination to connect to
     /// * `dest_signing_key` - The destination's signing key (from announce)
-    pub fn connect(
-        &mut self,
-        dest_hash: DestinationHash,
-        dest_signing_key: &[u8; 32],
-    ) -> (LinkId, Vec<u8>) {
+    pub fn connect(&mut self, dest_hash: DestinationHash, dest_signing_key: &[u8; 32]) -> LinkId {
         // Check if we have path info for this destination
         let (next_hop, hops) = if let Some(path) = self.transport.path(dest_hash.as_bytes()) {
             // Multi-hop: need transport_id
@@ -270,12 +271,26 @@ impl<R: CryptoRngCore, C: Clock, S: Storage> NodeCore<R, C, S> {
         let conn = Connection::new(link_id, dest_hash, true);
         self.connections.insert(link_id, conn);
 
-        (link_id, packet)
+        // Route through transport: path lookup first, broadcast if no path
+        if self
+            .transport
+            .send_to_destination(dest_hash.as_bytes(), &packet)
+            .is_err()
+        {
+            self.transport.send_on_all_interfaces(&packet);
+        }
+
+        link_id
     }
 
     /// Accept an incoming connection request
     ///
-    /// Returns the proof packet to send back to the initiator.
+    /// # Deferred dispatch
+    ///
+    /// This method queues I/O actions internally. The actions are not executed
+    /// until the driver calls [`handle_packet()`] or [`handle_timeout()`],
+    /// which drain all pending actions. Callers must ensure the event loop
+    /// runs promptly after calling this method.
     ///
     /// # Arguments
     /// * `link_id` - The link ID from the ConnectionRequest event
@@ -284,7 +299,7 @@ impl<R: CryptoRngCore, C: Clock, S: Storage> NodeCore<R, C, S> {
         &mut self,
         link_id: &LinkId,
         identity: &Identity,
-    ) -> Result<Vec<u8>, ConnectionError> {
+    ) -> Result<(), ConnectionError> {
         // Look up proof strategy from the destination
         let proof_strategy = self
             .link_manager
@@ -306,7 +321,25 @@ impl<R: CryptoRngCore, C: Clock, S: Storage> NodeCore<R, C, S> {
             self.connections.insert(*link_id, conn);
         }
 
-        Ok(proof)
+        // Route proof on attached interface (matching Python Link.prove())
+        let attached = self
+            .link_manager
+            .link(link_id)
+            .and_then(|l| l.attached_interface());
+        debug_assert!(
+            attached.is_some(),
+            "accept_connection: link {:?} has no attached_interface — \
+             process_packet() should have set this",
+            link_id
+        );
+        if let Some(iface_idx) = attached {
+            let _ = self.transport.send_on_interface(iface_idx, &proof);
+        } else {
+            // Fallback: broadcast if attached_interface was not set
+            self.transport.send_on_all_interfaces(&proof);
+        }
+
+        Ok(())
     }
 
     /// Reject an incoming connection request
@@ -421,6 +454,17 @@ impl<R: CryptoRngCore, C: Clock, S: Storage> NodeCore<R, C, S> {
     /// Use this when you've already determined that single-packet delivery
     /// is appropriate via `send()`.
     ///
+    /// # Deferred dispatch
+    ///
+    /// This method queues I/O actions internally. The actions are not executed
+    /// until the driver calls [`handle_packet()`] or [`handle_timeout()`],
+    /// which drain all pending actions. Callers must ensure the event loop
+    /// runs promptly after calling this method.
+    ///
+    /// NOTE: The packet is not sent immediately. It is queued as an Action
+    /// and will be dispatched when the driver next calls handle_packet() or
+    /// handle_timeout(). The returned packet hash can be used for receipt tracking.
+    ///
     /// # Arguments
     /// * `dest_hash` - The destination to send to
     /// * `data` - The data to send
@@ -478,17 +522,21 @@ impl<R: CryptoRngCore, C: Clock, S: Storage> NodeCore<R, C, S> {
     /// This sends data via the Channel on an established connection,
     /// providing reliable, ordered delivery.
     ///
+    /// # Deferred dispatch
+    ///
+    /// This method queues I/O actions internally. The actions are not executed
+    /// until the driver calls [`handle_packet()`] or [`handle_timeout()`],
+    /// which drain all pending actions. Callers must ensure the event loop
+    /// runs promptly after calling this method.
+    ///
     /// # Arguments
     /// * `link_id` - The connection to send on
     /// * `data` - The data to send
-    ///
-    /// # Returns
-    /// The packet data to transmit, or an error
     pub fn send_on_connection(
         &mut self,
         link_id: &LinkId,
         data: &[u8],
-    ) -> Result<Vec<u8>, send::SendError> {
+    ) -> Result<(), send::SendError> {
         // Get the connection and link
         let connection = self
             .connections
@@ -500,10 +548,13 @@ impl<R: CryptoRngCore, C: Clock, S: Storage> NodeCore<R, C, S> {
             .link(link_id)
             .ok_or(send::SendError::NoConnection)?;
 
+        let attached_iface = link.attached_interface();
+        let dest_hash = *link.destination_hash();
+
         let now_ms = self.transport.clock().now_ms();
 
-        // Send via connection
-        connection
+        // Send via connection (builds encrypted channel packet)
+        let packet_bytes = connection
             .send_bytes(link, data, &mut self.rng, now_ms)
             .map_err(|e| match e {
                 ConnectionError::ChannelError(crate::link::channel::ChannelError::WindowFull) => {
@@ -513,7 +564,19 @@ impl<R: CryptoRngCore, C: Clock, S: Storage> NodeCore<R, C, S> {
                     send::SendError::TooLarge
                 }
                 _ => send::SendError::ConnectionFailed,
-            })
+            })?;
+
+        // Route via attached interface (matching Python's LINK routing)
+        if let Some(iface_idx) = attached_iface {
+            let _ = self.transport.send_on_interface(iface_idx, &packet_bytes);
+        } else {
+            // Fallback: path lookup
+            let _ = self
+                .transport
+                .send_to_destination(dest_hash.as_bytes(), &packet_bytes);
+        }
+
+        Ok(())
     }
 
     /// Find an existing connection to a destination
@@ -773,8 +836,13 @@ impl<R: CryptoRngCore, C: Clock, S: Storage> NodeCore<R, C, S> {
                     // Route to link manager
                     let raw = self.repack_packet(&packet);
                     let now_ms = self.transport.clock().now_ms();
-                    self.link_manager
-                        .process_packet(&packet, &raw, &mut self.rng, now_ms);
+                    self.link_manager.process_packet(
+                        &packet,
+                        &raw,
+                        &mut self.rng,
+                        now_ms,
+                        interface_index,
+                    );
                 } else {
                     // Regular packet event
                     self.events.push(NodeEvent::PacketReceived {
@@ -934,12 +1002,16 @@ impl<R: CryptoRngCore, C: Clock, S: Storage> NodeCore<R, C, S> {
                 PendingPacket::Keepalive { link_id, data }
                 | PendingPacket::Channel { link_id, data }
                 | PendingPacket::Proof { link_id, data } => {
-                    // Route to destination via transport
+                    // Route via attached interface if known, otherwise path lookup
                     if let Some(link) = self.link_manager.link(&link_id) {
-                        let dest_hash = *link.destination_hash();
-                        let _ = self
-                            .transport
-                            .send_to_destination(dest_hash.as_bytes(), &data);
+                        if let Some(iface_idx) = link.attached_interface() {
+                            let _ = self.transport.send_on_interface(iface_idx, &data);
+                        } else {
+                            let dest_hash = *link.destination_hash();
+                            let _ = self
+                                .transport
+                                .send_to_destination(dest_hash.as_bytes(), &data);
+                        }
                     }
                 }
             }
@@ -1346,5 +1418,113 @@ mod tests {
         // May or may not produce actions depending on jitter calculation,
         // but the mechanism is tested - just verify no panics and the pipeline works
         let _ = output;
+    }
+
+    // ─── Sans-I/O Audit: Deferred-dispatch tests ────────────────────────────
+
+    #[test]
+    fn test_handle_packet_announce_produces_rebroadcast_action() {
+        use crate::transport::{Action, InterfaceId};
+
+        let clock = MockClock::new(1_000_000);
+        let mut node = NodeCoreBuilder::new()
+            .enable_transport(true)
+            .build(OsRng, clock, NoStorage)
+            .unwrap();
+
+        // Create a valid announce from a remote destination
+        let identity = Identity::generate(&mut OsRng);
+        let mut dest = Destination::new(
+            Some(identity),
+            Direction::In,
+            DestinationType::Single,
+            "testapp",
+            &["actiontest"],
+        )
+        .unwrap();
+
+        let announce_packet = dest.announce(None, &mut OsRng, 1_000_000).unwrap();
+        let mut buf = [0u8; crate::constants::MTU];
+        let len = announce_packet.pack(&mut buf).unwrap();
+
+        // Feed announce on interface 0
+        let _ = node.handle_packet(InterfaceId(0), &buf[..len]);
+
+        // Advance time well past the retransmit delay window
+        node.transport().clock().0.set(1_000_000 + 100_000);
+        let output = node.handle_timeout();
+
+        // Should have at least one Broadcast action (the rebroadcast) with
+        // the originating interface excluded
+        let has_rebroadcast = output.actions.iter().any(|a| {
+            matches!(
+                a,
+                Action::Broadcast {
+                    exclude_iface: Some(iface),
+                    ..
+                } if *iface == InterfaceId(0)
+            )
+        });
+        assert!(
+            has_rebroadcast,
+            "transport-enabled node should produce Broadcast action for announce rebroadcast, \
+             got: {:?}",
+            output.actions
+        );
+    }
+
+    #[test]
+    fn test_connect_queues_send_action() {
+        use crate::transport::{Action, InterfaceId};
+
+        let clock = MockClock::new(1_000_000);
+        let mut node = NodeCoreBuilder::new()
+            .enable_transport(true)
+            .build(OsRng, clock, NoStorage)
+            .unwrap();
+
+        // Create a remote identity and announce to establish a path
+        let remote_identity = Identity::generate(&mut OsRng);
+        let remote_signing_key = remote_identity.ed25519_verifying().to_bytes();
+        let mut remote_dest = Destination::new(
+            Some(remote_identity),
+            Direction::In,
+            DestinationType::Single,
+            "testapp",
+            &["connect"],
+        )
+        .unwrap();
+
+        let announce_packet = remote_dest.announce(None, &mut OsRng, 1_000_000).unwrap();
+        let mut buf = [0u8; crate::constants::MTU];
+        let len = announce_packet.pack(&mut buf).unwrap();
+
+        // Process announce to create a path via interface 0
+        let _ = node.handle_packet(InterfaceId(0), &buf[..len]);
+        // Drain the announce rebroadcast actions
+        let _ = node.handle_timeout();
+
+        // Verify path exists
+        let dest_hash = *remote_dest.hash();
+        assert!(node.has_path(&dest_hash), "should have path from announce");
+
+        // Call connect() — this should queue Actions internally
+        let link_id = node.connect(dest_hash, &remote_signing_key);
+
+        // Now call handle_timeout() which drains all pending actions
+        let output = node.handle_timeout();
+
+        // The link request should have been queued as an Action (SendPacket
+        // to the path's interface since we have a path, or Broadcast if no path)
+        let has_send = output
+            .actions
+            .iter()
+            .any(|a| matches!(a, Action::SendPacket { .. } | Action::Broadcast { .. }));
+        assert!(
+            has_send,
+            "connect() should queue an Action flushed by handle_timeout(), \
+             link_id={:?}, actions={:?}",
+            link_id, output.actions
+        );
     }
 }
