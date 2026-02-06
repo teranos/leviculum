@@ -1132,9 +1132,7 @@ async fn test_rust_to_rust_via_daemon() {
 
     // B sends to A
     let msg_b_to_a = b"Hello from B to A!";
-    let data_b = manager_b
-        .send(&link_id_b, msg_b_to_a, &mut rng_b)
-        .unwrap();
+    let data_b = manager_b.send(&link_id_b, msg_b_to_a, &mut rng_b).unwrap();
     send_framed(&mut stream_b, &data_b).await;
 
     // A receives
@@ -1164,9 +1162,7 @@ async fn test_rust_to_rust_via_daemon() {
 
     // A sends to B
     let msg_a_to_b = b"Hello from A to B!";
-    let data_a = manager_a
-        .send(&link_id_a, msg_a_to_b, &mut rng_a)
-        .unwrap();
+    let data_a = manager_a.send(&link_id_a, msg_a_to_b, &mut rng_a).unwrap();
     send_framed(&mut stream_a, &data_a).await;
 
     // B receives
@@ -1438,7 +1434,8 @@ async fn test_manager_handshake_timeout() {
     let signing_key = [0x33; 32];
 
     // Initiate link to non-existent destination
-    let (link_id, _packet) = manager.initiate(dest_hash.into(), &signing_key, &mut rng, clock.now_ms());
+    let (link_id, _packet) =
+        manager.initiate(dest_hash.into(), &signing_key, &mut rng, clock.now_ms());
 
     // Verify pending
     assert_eq!(manager.pending_link_count(), 1);
@@ -1608,8 +1605,7 @@ async fn test_manager_many_simultaneous_links() {
         let dest_hash: [u8; 16] = hex::decode(&dest.hash).unwrap().try_into().unwrap();
 
         let now_ms = TestClock.now_ms();
-        let (link_id, packet) =
-            manager.initiate(dest_hash.into(), &signing_key, &mut rng, now_ms);
+        let (link_id, packet) = manager.initiate(dest_hash.into(), &signing_key, &mut rng, now_ms);
         link_ids.push(link_id);
         send_framed(&mut stream, &packet).await;
     }
@@ -1799,16 +1795,14 @@ async fn test_manager_interleaved_operations() {
     let mut deframer = Deframer::new();
 
     // Helper to initiate
-    let initiate = |manager: &mut LinkManager,
-                    dest: &DestinationInfo,
-                    rng: &mut OsRng|
-     -> (LinkId, Vec<u8>) {
-        let pub_key_bytes = hex::decode(&dest.public_key).unwrap();
-        let signing_key: [u8; 32] = pub_key_bytes[32..64].try_into().unwrap();
-        let dest_hash: [u8; 16] = hex::decode(&dest.hash).unwrap().try_into().unwrap();
-        let now_ms = TestClock.now_ms();
-        manager.initiate(dest_hash.into(), &signing_key, rng, now_ms)
-    };
+    let initiate =
+        |manager: &mut LinkManager, dest: &DestinationInfo, rng: &mut OsRng| -> (LinkId, Vec<u8>) {
+            let pub_key_bytes = hex::decode(&dest.public_key).unwrap();
+            let signing_key: [u8; 32] = pub_key_bytes[32..64].try_into().unwrap();
+            let dest_hash: [u8; 16] = hex::decode(&dest.hash).unwrap().try_into().unwrap();
+            let now_ms = TestClock.now_ms();
+            manager.initiate(dest_hash.into(), &signing_key, rng, now_ms)
+        };
 
     // Interleave: initiate 1, initiate 2, wait for proof 1, initiate 3, etc.
     let (link_id1, packet1) = initiate(&mut manager, &dest1, &mut rng);

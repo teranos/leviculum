@@ -569,12 +569,22 @@ async fn test_link_stale_detection_no_inbound() {
 
     // Deliver link request to responder
     let packet = Packet::unpack(&link_request_packet).unwrap();
-    responder_mgr.process_packet(&packet, &link_request_packet, &mut OsRng, responder_clock.now_ms());
+    responder_mgr.process_packet(
+        &packet,
+        &link_request_packet,
+        &mut OsRng,
+        responder_clock.now_ms(),
+    );
 
     // Responder accepts
     let _: Vec<_> = responder_mgr.drain_events().collect();
     let proof_packet = responder_mgr
-        .accept_link(&link_id, &dest_identity, ProofStrategy::None, responder_clock.now_ms())
+        .accept_link(
+            &link_id,
+            &dest_identity,
+            ProofStrategy::None,
+            responder_clock.now_ms(),
+        )
         .unwrap();
 
     // Deliver proof to initiator
@@ -689,12 +699,22 @@ async fn test_stale_link_closes_after_timeout() {
 
     // Deliver link request to responder
     let packet = Packet::unpack(&link_request_packet).unwrap();
-    responder_mgr.process_packet(&packet, &link_request_packet, &mut OsRng, responder_clock.now_ms());
+    responder_mgr.process_packet(
+        &packet,
+        &link_request_packet,
+        &mut OsRng,
+        responder_clock.now_ms(),
+    );
 
     // Responder accepts
     let _: Vec<_> = responder_mgr.drain_events().collect();
     let proof_packet = responder_mgr
-        .accept_link(&link_id, &dest_identity, ProofStrategy::None, responder_clock.now_ms())
+        .accept_link(
+            &link_id,
+            &dest_identity,
+            ProofStrategy::None,
+            responder_clock.now_ms(),
+        )
         .unwrap();
 
     // Deliver proof to initiator
@@ -819,12 +839,22 @@ async fn test_keepalive_resets_stale_timer() {
 
     // Deliver link request to responder
     let packet = Packet::unpack(&link_request_packet).unwrap();
-    responder_mgr.process_packet(&packet, &link_request_packet, &mut OsRng, responder_clock.now_ms());
+    responder_mgr.process_packet(
+        &packet,
+        &link_request_packet,
+        &mut OsRng,
+        responder_clock.now_ms(),
+    );
 
     // Responder accepts
     let _: Vec<_> = responder_mgr.drain_events().collect();
     let proof_packet = responder_mgr
-        .accept_link(&link_id, &dest_identity, ProofStrategy::None, responder_clock.now_ms())
+        .accept_link(
+            &link_id,
+            &dest_identity,
+            ProofStrategy::None,
+            responder_clock.now_ms(),
+        )
         .unwrap();
 
     // Deliver proof to initiator
@@ -939,7 +969,10 @@ async fn test_rust_initiator_sends_keepalive_python_echoes() {
         // Drain any events (keepalives no longer emit events, but link should stay active)
         let _: Vec<_> = manager.drain_events().collect();
 
-        assert!(manager.is_active(&link_id), "Link should still be active after keepalive echo");
+        assert!(
+            manager.is_active(&link_id),
+            "Link should still be active after keepalive echo"
+        );
         println!("Keepalive echo received from Python");
     } else {
         panic!("No keepalive echo received from Python - link not working properly");

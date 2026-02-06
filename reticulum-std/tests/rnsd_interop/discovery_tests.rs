@@ -470,8 +470,8 @@ async fn test_multiple_daemon_announces() {
                 );
                 received_hashes.push(hash);
             }
-            Ok(Some(_)) => {} // Other event types, continue
-            Ok(None) => break, // Channel closed
+            Ok(Some(_)) => {}   // Other event types, continue
+            Ok(None) => break,  // Channel closed
             Err(_) => continue, // Timeout, try again
         }
     }

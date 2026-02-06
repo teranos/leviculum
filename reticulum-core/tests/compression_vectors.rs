@@ -173,7 +173,10 @@ fn test_edge_cases() {
     // Empty data
     let empty = compress(b"").expect("Empty compression failed");
     let decompressed = decompress_auto(&empty, 1024).expect("Empty decompression failed");
-    assert!(decompressed.is_empty(), "Empty data should decompress to empty");
+    assert!(
+        decompressed.is_empty(),
+        "Empty data should decompress to empty"
+    );
 
     // Single byte
     let single = compress(b"x").expect("Single byte compression failed");

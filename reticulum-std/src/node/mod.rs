@@ -162,14 +162,7 @@ impl ReticulumNode {
 
         // Spawn the runner
         let runner_handle = tokio::spawn(async move {
-            run_event_loop(
-                inner,
-                event_tx,
-                connections,
-                pending_connects,
-                shutdown_rx,
-            )
-            .await;
+            run_event_loop(inner, event_tx, connections, pending_connects, shutdown_rx).await;
         });
 
         self.runner_handle = Some(runner_handle);
@@ -188,22 +181,17 @@ impl ReticulumNode {
 
             match config.interface_type.as_str() {
                 "TCPClientInterface" => {
-                    let target_host = config
-                        .target_host
-                        .as_ref()
-                        .ok_or_else(|| Error::Config("TCPClientInterface requires target_host".to_string()))?;
-                    let target_port = config
-                        .target_port
-                        .ok_or_else(|| Error::Config("TCPClientInterface requires target_port".to_string()))?;
+                    let target_host = config.target_host.as_ref().ok_or_else(|| {
+                        Error::Config("TCPClientInterface requires target_host".to_string())
+                    })?;
+                    let target_port = config.target_port.ok_or_else(|| {
+                        Error::Config("TCPClientInterface requires target_port".to_string())
+                    })?;
 
                     let addr = format!("{}:{}", target_host, target_port);
                     let iface_name = format!("tcp_client_{}", idx);
 
-                    match TcpClientInterface::connect(
-                        &iface_name,
-                        &addr,
-                        Duration::from_secs(10),
-                    ) {
+                    match TcpClientInterface::connect(&iface_name, &addr, Duration::from_secs(10)) {
                         Ok(iface) => {
                             tracing::info!("Connected to TCP interface: {}", addr);
                             interfaces.push(Box::new(iface));
@@ -355,7 +343,11 @@ impl ReticulumNode {
 
     /// Check if transport mode (relay/routing) is enabled
     pub fn is_transport_enabled(&self) -> bool {
-        self.inner.lock().unwrap().transport_config().enable_transport
+        self.inner
+            .lock()
+            .unwrap()
+            .transport_config()
+            .enable_transport
     }
 }
 

@@ -18,7 +18,6 @@ use crate::link::{LinkCloseReason, LinkId, PeerKeys};
 #[derive(Debug)]
 pub enum NodeEvent {
     // ─── Path Discovery Events ─────────────────────────────────────────────────
-
     /// A new announce was received and validated
     AnnounceReceived {
         /// Parsed announce data
@@ -44,7 +43,6 @@ pub enum NodeEvent {
     },
 
     // ─── Single-Packet Events ──────────────────────────────────────────────────
-
     /// Incoming single-packet data (not via a Link)
     PacketReceived {
         /// Source destination hash (if known)
@@ -70,7 +68,6 @@ pub enum NodeEvent {
     },
 
     // ─── Connection Events ─────────────────────────────────────────────────────
-
     /// Incoming connection request (Link establishment request)
     ConnectionRequest {
         /// The link/connection ID
@@ -124,7 +121,6 @@ pub enum NodeEvent {
     },
 
     // ─── Proof Events ──────────────────────────────────────────────────────────
-
     /// Application should decide whether to prove this packet
     ///
     /// Emitted when a packet is received at a destination with `ProofStrategy::App`.
@@ -158,7 +154,6 @@ pub enum NodeEvent {
     },
 
     // ─── Interface Events ──────────────────────────────────────────────────────
-
     /// An interface went offline
     InterfaceDown(usize),
 }

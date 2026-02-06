@@ -81,11 +81,7 @@ impl PacketReceipt {
     /// let dest_hash = DestinationHash::new([0x01u8; 16]);
     /// let receipt = PacketReceipt::new(packet_hash, dest_hash, 1000);
     /// ```
-    pub fn new(
-        packet_hash: [u8; 32],
-        destination_hash: DestinationHash,
-        sent_at_ms: u64,
-    ) -> Self {
+    pub fn new(packet_hash: [u8; 32], destination_hash: DestinationHash, sent_at_ms: u64) -> Self {
         let truncated = truncated_hash(&packet_hash);
         Self {
             packet_hash,

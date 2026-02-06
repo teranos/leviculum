@@ -63,7 +63,9 @@ use crate::identity::Identity;
 use crate::link::{LinkEvent, LinkId, LinkManager};
 use crate::packet::Packet;
 use crate::traits::{Clock, Interface, Storage};
-use crate::transport::{Transport, TransportConfig, TransportError, TransportEvent, TransportStats};
+use crate::transport::{
+    Transport, TransportConfig, TransportError, TransportEvent, TransportStats,
+};
 use rand_core::CryptoRngCore;
 
 /// Send options for controlling how data is delivered
@@ -220,18 +222,12 @@ impl<R: CryptoRngCore, C: Clock, S: Storage> NodeCore<R, C, S> {
     }
 
     /// Get a registered destination
-    pub fn destination(
-        &self,
-        hash: &DestinationHash,
-    ) -> Option<&Destination> {
+    pub fn destination(&self, hash: &DestinationHash) -> Option<&Destination> {
         self.destinations.get(hash)
     }
 
     /// Get a mutable reference to a registered destination
-    pub fn destination_mut(
-        &mut self,
-        hash: &DestinationHash,
-    ) -> Option<&mut Destination> {
+    pub fn destination_mut(&mut self, hash: &DestinationHash) -> Option<&mut Destination> {
         self.destinations.get_mut(hash)
     }
 
@@ -477,7 +473,9 @@ impl<R: CryptoRngCore, C: Clock, S: Storage> NodeCore<R, C, S> {
 
         // Pack the packet
         let mut buf = [0u8; crate::constants::MTU];
-        let len = packet.pack(&mut buf).map_err(|_| send::SendError::TooLarge)?;
+        let len = packet
+            .pack(&mut buf)
+            .map_err(|_| send::SendError::TooLarge)?;
 
         // Send via transport
         self.transport
@@ -578,7 +576,8 @@ impl<R: CryptoRngCore, C: Clock, S: Storage> NodeCore<R, C, S> {
         dest_hash: &DestinationHash,
         data: &[u8],
     ) -> Result<(), TransportError> {
-        self.transport.send_to_destination(dest_hash.as_bytes(), data)
+        self.transport
+            .send_to_destination(dest_hash.as_bytes(), data)
     }
 
     // ─── Polling ───────────────────────────────────────────────────────────────
@@ -750,8 +749,9 @@ impl<R: CryptoRngCore, C: Clock, S: Storage> NodeCore<R, C, S> {
             }
 
             TransportEvent::PathLost { destination_hash } => {
-                self.events
-                    .push(NodeEvent::PathLost { destination_hash: DestinationHash::new(destination_hash) });
+                self.events.push(NodeEvent::PathLost {
+                    destination_hash: DestinationHash::new(destination_hash),
+                });
             }
 
             TransportEvent::PacketReceived {
@@ -763,12 +763,16 @@ impl<R: CryptoRngCore, C: Clock, S: Storage> NodeCore<R, C, S> {
                 if packet.flags.packet_type == crate::packet::PacketType::LinkRequest
                     || packet.flags.packet_type == crate::packet::PacketType::Proof
                     || (packet.flags.packet_type == crate::packet::PacketType::Data
-                        && self.link_manager.link(&LinkId::new(destination_hash)).is_some())
+                        && self
+                            .link_manager
+                            .link(&LinkId::new(destination_hash))
+                            .is_some())
                 {
                     // Route to link manager
                     let raw = self.repack_packet(&packet);
                     let now_ms = self.transport.clock().now_ms();
-                    self.link_manager.process_packet(&packet, &raw, &mut self.rng, now_ms);
+                    self.link_manager
+                        .process_packet(&packet, &raw, &mut self.rng, now_ms);
                 } else {
                     // Regular packet event
                     self.events.push(NodeEvent::PacketReceived {
@@ -815,9 +819,7 @@ impl<R: CryptoRngCore, C: Clock, S: Storage> NodeCore<R, C, S> {
                 });
             }
 
-            TransportEvent::PathRequestReceived {
-                destination_hash,
-            } => {
+            TransportEvent::PathRequestReceived { destination_hash } => {
                 // For now, emit as a path found event so the application
                 // can re-announce the destination
                 self.events.push(NodeEvent::PathFound {
@@ -933,7 +935,9 @@ impl<R: CryptoRngCore, C: Clock, S: Storage> NodeCore<R, C, S> {
                     // Route to destination via transport
                     if let Some(link) = self.link_manager.link(&link_id) {
                         let dest_hash = *link.destination_hash();
-                        let _ = self.transport.send_to_destination(dest_hash.as_bytes(), &data);
+                        let _ = self
+                            .transport
+                            .send_to_destination(dest_hash.as_bytes(), &data);
                     }
                 }
             }
@@ -946,7 +950,6 @@ impl<R: CryptoRngCore, C: Clock, S: Storage> NodeCore<R, C, S> {
         buf[..len].to_vec()
     }
 }
-
 
 #[cfg(test)]
 mod tests {

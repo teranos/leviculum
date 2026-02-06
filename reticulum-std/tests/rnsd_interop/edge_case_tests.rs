@@ -413,7 +413,6 @@ async fn test_data_on_aes_block_boundary() {
 
     link.process_proof(proof.data.as_slice()).unwrap();
 
-    
     let rtt_packet = link.build_rtt_packet(0.05, &mut OsRng).unwrap();
     framed.clear();
     frame(&rtt_packet, &mut framed);
@@ -519,7 +518,6 @@ async fn test_empty_data_packet() {
 
     link.process_proof(proof.data.as_slice()).unwrap();
 
-    
     let rtt_packet = link.build_rtt_packet(0.05, &mut OsRng).unwrap();
     framed.clear();
     frame(&rtt_packet, &mut framed);
@@ -604,7 +602,6 @@ async fn test_large_payload_near_mtu() {
 
     link.process_proof(proof.data.as_slice()).unwrap();
 
-    
     let rtt_packet = link.build_rtt_packet(0.05, &mut OsRng).unwrap();
     framed.clear();
     frame(&rtt_packet, &mut framed);

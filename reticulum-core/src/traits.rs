@@ -233,7 +233,6 @@ pub mod categories {
     pub const CACHE: &str = "cache";
 }
 
-
 #[cfg(test)]
 mod tests {
     use super::*;

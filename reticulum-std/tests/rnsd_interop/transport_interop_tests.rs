@@ -63,25 +63,20 @@ async fn test_announce_rebroadcast_two_hop() {
     );
 
     // D1 receives the announce directly (should have path entry almost immediately)
-    let d1_has_path = wait_for_path_on_daemon(
-        topology.exit_daemon(),
-        &dest_hash,
-        Duration::from_secs(3),
-    )
-    .await;
-    assert!(d1_has_path, "D1 should have path for directly received announce");
+    let d1_has_path =
+        wait_for_path_on_daemon(topology.exit_daemon(), &dest_hash, Duration::from_secs(3)).await;
+    assert!(
+        d1_has_path,
+        "D1 should have path for directly received announce"
+    );
 
     let d1_paths = topology.exit_daemon().get_path_table().await.unwrap();
     let d1_path = d1_paths.get(&hex::encode(dest_hash));
     println!("D1 path: hops={:?}", d1_path.map(|p| p.hops));
 
     // Wait for rebroadcast propagation to D0 (generous timeout for PATHFINDER_G + jitter)
-    let d0_has_path = wait_for_path_on_daemon(
-        topology.entry_daemon(),
-        &dest_hash,
-        Duration::from_secs(20),
-    )
-    .await;
+    let d0_has_path =
+        wait_for_path_on_daemon(topology.entry_daemon(), &dest_hash, Duration::from_secs(20)).await;
 
     assert!(
         d0_has_path,
@@ -144,18 +139,17 @@ async fn test_announce_rebroadcast_three_hop() {
 
     // D2 should have the path immediately
     let d2_has_path = topology.exit_daemon().has_path(&dest_hash).await;
-    assert!(d2_has_path, "D2 should have path for directly received announce");
+    assert!(
+        d2_has_path,
+        "D2 should have path for directly received announce"
+    );
 
     // Check propagation through topology (generous timeout)
     let propagation_timeout = Duration::from_secs(25);
 
     // Check D1 (middle daemon)
-    let d1_has_path = wait_for_path_on_daemon(
-        topology.daemon(1).unwrap(),
-        &dest_hash,
-        propagation_timeout,
-    )
-    .await;
+    let d1_has_path =
+        wait_for_path_on_daemon(topology.daemon(1).unwrap(), &dest_hash, propagation_timeout).await;
 
     // Check all daemons' state
     for i in 0..3 {
@@ -176,12 +170,8 @@ async fn test_announce_rebroadcast_three_hop() {
     println!("D1 received rebroadcast from D2");
 
     // Check D0
-    let d0_has_path = wait_for_path_on_daemon(
-        topology.entry_daemon(),
-        &dest_hash,
-        Duration::from_secs(20),
-    )
-    .await;
+    let d0_has_path =
+        wait_for_path_on_daemon(topology.entry_daemon(), &dest_hash, Duration::from_secs(20)).await;
 
     assert!(
         d0_has_path,
@@ -209,9 +199,7 @@ async fn test_announce_rebroadcast_three_hop() {
 /// "local rebroadcasts" and eventually suppressed.
 #[tokio::test]
 async fn test_local_rebroadcast_suppression() {
-    let daemon = TestDaemon::start()
-        .await
-        .expect("Failed to start daemon");
+    let daemon = TestDaemon::start().await.expect("Failed to start daemon");
 
     // Build the same announce
     let (raw, dest_hash, _dest) =
@@ -237,7 +225,10 @@ async fn test_local_rebroadcast_suppression() {
     // Check daemon's path table
     let has_path = daemon.has_path(&dest_hash).await;
     println!("Daemon has_path={}", has_path);
-    assert!(has_path, "Daemon should have path for the announced destination");
+    assert!(
+        has_path,
+        "Daemon should have path for the announced destination"
+    );
 
     // Verify only one path entry exists (dedup)
     let paths = daemon
@@ -398,14 +389,13 @@ async fn test_announce_rebroadcast_idempotent() {
     );
 
     // Wait for D0 to receive the rebroadcast
-    let d0_has_path = wait_for_path_on_daemon(
-        topology.entry_daemon(),
-        &dest_hash,
-        Duration::from_secs(20),
-    )
-    .await;
+    let d0_has_path =
+        wait_for_path_on_daemon(topology.entry_daemon(), &dest_hash, Duration::from_secs(20)).await;
 
-    assert!(d0_has_path, "D0 should have path after announce propagation");
+    assert!(
+        d0_has_path,
+        "D0 should have path after announce propagation"
+    );
 
     // Verify D0 has exactly one path entry (dedup by destination hash)
     let d0_paths = topology
@@ -465,10 +455,14 @@ async fn test_link_through_single_python_relay() {
 
     // Receive proof
     let mut deframer = Deframer::new();
-    let proof_packet =
-        receive_proof_for_link(&mut stream, &mut deframer, link.id(), Duration::from_secs(10))
-            .await
-            .expect("Should receive proof");
+    let proof_packet = receive_proof_for_link(
+        &mut stream,
+        &mut deframer,
+        link.id(),
+        Duration::from_secs(10),
+    )
+    .await
+    .expect("Should receive proof");
 
     link.process_proof(proof_packet.data.as_slice())
         .expect("Proof should validate");
@@ -569,15 +563,15 @@ async fn test_link_through_two_python_relays() {
     );
 
     // Build link request with transport routing
-    let signing_key = announce_info.signing_key().expect("Announce should have signing key");
+    let signing_key = announce_info
+        .signing_key()
+        .expect("Announce should have signing key");
 
     let mut link = Link::new_outgoing(dest_hash, &mut OsRng);
     link.set_destination_keys(&signing_key).unwrap();
 
-    let raw_request = link.build_link_request_packet_with_transport(
-        announce_info.transport_id,
-        announce_info.hops,
-    );
+    let raw_request = link
+        .build_link_request_packet_with_transport(announce_info.transport_id, announce_info.hops);
     send_framed(&mut stream_a, &raw_request).await;
 
     // Wait for proof (routed back through D0->D1)
@@ -608,7 +602,11 @@ async fn test_link_through_two_python_relays() {
     // Verify link tables
     let d0_lt = topology.entry_daemon().get_link_table().await.unwrap();
     let d1_lt = topology.exit_daemon().get_link_table().await.unwrap();
-    println!("D0 link table: {} entries, D1 link table: {} entries", d0_lt.len(), d1_lt.len());
+    println!(
+        "D0 link table: {} entries, D1 link table: {} entries",
+        d0_lt.len(),
+        d1_lt.len()
+    );
 
     // Send data and verify echo through two relays
     let test_msg = b"Data through two relays!";
@@ -617,9 +615,17 @@ async fn test_link_through_two_python_relays() {
         .expect("Failed to build data packet");
     send_framed(&mut stream_a, &data_pkt).await;
 
-    let echoed =
-        receive_link_data(&mut stream_a, &mut deframer_a, &link, Duration::from_secs(10)).await;
-    assert!(echoed.is_some(), "Should receive echoed data through two relays");
+    let echoed = receive_link_data(
+        &mut stream_a,
+        &mut deframer_a,
+        &link,
+        Duration::from_secs(10),
+    )
+    .await;
+    assert!(
+        echoed.is_some(),
+        "Should receive echoed data through two relays"
+    );
     assert_eq!(echoed.unwrap(), test_msg, "Echoed data should match");
 
     println!("SUCCESS: Link through two Python relays with data echo verified");
@@ -654,10 +660,14 @@ async fn test_link_data_routing_bidirectional() {
     let req = link.build_link_request_packet();
     send_framed(&mut stream, &req).await;
 
-    let proof =
-        receive_proof_for_link(&mut stream, &mut deframer, link.id(), Duration::from_secs(10))
-            .await
-            .expect("Should receive proof");
+    let proof = receive_proof_for_link(
+        &mut stream,
+        &mut deframer,
+        link.id(),
+        Duration::from_secs(10),
+    )
+    .await
+    .expect("Should receive proof");
     link.process_proof(proof.data.as_slice()).unwrap();
     assert_eq!(link.state(), LinkState::Active);
 
@@ -701,7 +711,10 @@ async fn test_multiple_links_through_same_relay() {
         .await
         .expect("Failed to register dest2");
 
-    println!("Registered dest1={}, dest2={}", dest1_info.hash, dest2_info.hash);
+    println!(
+        "Registered dest1={}, dest2={}",
+        dest1_info.hash, dest2_info.hash
+    );
 
     // Connect Rust-A
     let mut stream = connect_to_daemon(&daemon).await;
@@ -718,10 +731,14 @@ async fn test_multiple_links_through_same_relay() {
     let req1 = link1.build_link_request_packet();
     send_framed(&mut stream, &req1).await;
 
-    let proof1 =
-        receive_proof_for_link(&mut stream, &mut deframer, link1.id(), Duration::from_secs(10))
-            .await
-            .expect("Should receive proof for link1");
+    let proof1 = receive_proof_for_link(
+        &mut stream,
+        &mut deframer,
+        link1.id(),
+        Duration::from_secs(10),
+    )
+    .await
+    .expect("Should receive proof for link1");
     link1
         .process_proof(proof1.data.as_slice())
         .expect("Proof1 should validate");
@@ -742,10 +759,14 @@ async fn test_multiple_links_through_same_relay() {
     let req2 = link2.build_link_request_packet();
     send_framed(&mut stream, &req2).await;
 
-    let proof2 =
-        receive_proof_for_link(&mut stream, &mut deframer, link2.id(), Duration::from_secs(10))
-            .await
-            .expect("Should receive proof for link2");
+    let proof2 = receive_proof_for_link(
+        &mut stream,
+        &mut deframer,
+        link2.id(),
+        Duration::from_secs(10),
+    )
+    .await
+    .expect("Should receive proof for link2");
     link2
         .process_proof(proof2.data.as_slice())
         .expect("Proof2 should validate");
@@ -770,10 +791,8 @@ async fn test_multiple_links_through_same_relay() {
     send_framed(&mut stream, &data2).await;
 
     // Receive echoes (may arrive in either order)
-    let echo1 =
-        receive_link_data(&mut stream, &mut deframer, &link1, Duration::from_secs(5)).await;
-    let echo2 =
-        receive_link_data(&mut stream, &mut deframer, &link2, Duration::from_secs(5)).await;
+    let echo1 = receive_link_data(&mut stream, &mut deframer, &link1, Duration::from_secs(5)).await;
+    let echo2 = receive_link_data(&mut stream, &mut deframer, &link2, Duration::from_secs(5)).await;
 
     // At least one should succeed (both should work but timing may vary)
     assert!(
@@ -824,12 +843,8 @@ async fn test_path_request_known_destination() {
     );
 
     // Wait for D0 to cache the announce
-    let d0_has_path = wait_for_path_on_daemon(
-        topology.entry_daemon(),
-        &dest_hash,
-        Duration::from_secs(20),
-    )
-    .await;
+    let d0_has_path =
+        wait_for_path_on_daemon(topology.entry_daemon(), &dest_hash, Duration::from_secs(20)).await;
 
     assert!(
         d0_has_path,
@@ -909,12 +924,8 @@ async fn test_path_request_forwarding() {
     );
 
     // Wait for D0 to receive the announce (two hops: D2->D1->D0)
-    let d0_has_path = wait_for_path_on_daemon(
-        topology.entry_daemon(),
-        &dest_hash,
-        Duration::from_secs(25),
-    )
-    .await;
+    let d0_has_path =
+        wait_for_path_on_daemon(topology.entry_daemon(), &dest_hash, Duration::from_secs(25)).await;
 
     assert!(
         d0_has_path,
@@ -1133,15 +1144,15 @@ async fn test_full_discovery_and_link_cycle() {
     );
 
     // Create link with transport routing
-    let signing_key = announce_info.signing_key().expect("Announce should have signing key");
+    let signing_key = announce_info
+        .signing_key()
+        .expect("Announce should have signing key");
 
     let mut link = Link::new_outgoing(dest_hash, &mut OsRng);
     link.set_destination_keys(&signing_key).unwrap();
 
-    let raw_request = link.build_link_request_packet_with_transport(
-        announce_info.transport_id,
-        announce_info.hops,
-    );
+    let raw_request = link
+        .build_link_request_packet_with_transport(announce_info.transport_id, announce_info.hops);
     send_framed(&mut stream_a, &raw_request).await;
 
     // Wait for proof (routed back through D0->D1->D2)
@@ -1160,7 +1171,6 @@ async fn test_full_discovery_and_link_cycle() {
 
     println!("Step 4: Link established through 3 daemons! Sending RTT...");
 
-    
     let rtt = link.build_rtt_packet(0.05, &mut OsRng).unwrap();
     send_framed(&mut stream_a, &rtt).await;
     tokio::time::sleep(Duration::from_millis(500)).await;
@@ -1173,8 +1183,13 @@ async fn test_full_discovery_and_link_cycle() {
     send_framed(&mut stream_a, &data_pkt).await;
 
     // Receive echo
-    let echoed =
-        receive_link_data(&mut stream_a, &mut deframer_a, &link, Duration::from_secs(10)).await;
+    let echoed = receive_link_data(
+        &mut stream_a,
+        &mut deframer_a,
+        &link,
+        Duration::from_secs(10),
+    )
+    .await;
     assert!(echoed.is_some(), "Should receive echo through relay chain");
     assert_eq!(echoed.unwrap(), test_msg, "Echo should match");
 
@@ -1195,10 +1210,7 @@ async fn test_full_discovery_and_link_cycle() {
         println!("Step 7: Link removed from D2's tracking after close");
     } else {
         // Some Python versions may keep the link in a "closed" state briefly
-        let link_status = topology
-            .exit_daemon()
-            .get_link_status(&link_hash_hex)
-            .await;
+        let link_status = topology.exit_daemon().get_link_status(&link_hash_hex).await;
         if let Ok(status) = link_status {
             println!(
                 "Step 7: Link still tracked on D2 with state={:?}, status={}",
@@ -1246,12 +1258,8 @@ async fn test_path_discovery_then_link() {
     );
 
     // Wait for D0 to cache the announce
-    let d0_has_path = wait_for_path_on_daemon(
-        topology.entry_daemon(),
-        &dest_hash,
-        Duration::from_secs(20),
-    )
-    .await;
+    let d0_has_path =
+        wait_for_path_on_daemon(topology.entry_daemon(), &dest_hash, Duration::from_secs(20)).await;
 
     assert!(
         d0_has_path,
@@ -1290,15 +1298,15 @@ async fn test_path_discovery_then_link() {
     );
 
     // Create link using routing info from path response
-    let signing_key = response.signing_key().expect("Path response should have signing key");
+    let signing_key = response
+        .signing_key()
+        .expect("Path response should have signing key");
 
     let mut link = Link::new_outgoing(dest_hash, &mut OsRng);
     link.set_destination_keys(&signing_key).unwrap();
 
-    let raw_request = link.build_link_request_packet_with_transport(
-        response.transport_id,
-        response.hops,
-    );
+    let raw_request =
+        link.build_link_request_packet_with_transport(response.transport_id, response.hops);
     send_framed(&mut stream_a, &raw_request).await;
 
     let proof = receive_proof_for_link(
@@ -1314,7 +1322,6 @@ async fn test_path_discovery_then_link() {
         .expect("Proof validation failed");
     assert_eq!(link.state(), LinkState::Active);
 
-    
     let rtt = link.build_rtt_packet(0.05, &mut OsRng).unwrap();
     send_framed(&mut stream_a, &rtt).await;
     tokio::time::sleep(Duration::from_millis(500)).await;
@@ -1324,9 +1331,17 @@ async fn test_path_discovery_then_link() {
     let data_pkt = link.build_data_packet(test_msg, &mut OsRng).unwrap();
     send_framed(&mut stream_a, &data_pkt).await;
 
-    let echoed =
-        receive_link_data(&mut stream_a, &mut deframer_a, &link, Duration::from_secs(5)).await;
-    assert!(echoed.is_some(), "Should receive echo after path-discovery link");
+    let echoed = receive_link_data(
+        &mut stream_a,
+        &mut deframer_a,
+        &link,
+        Duration::from_secs(5),
+    )
+    .await;
+    assert!(
+        echoed.is_some(),
+        "Should receive echo after path-discovery link"
+    );
     assert_eq!(echoed.unwrap(), test_msg);
 
     println!("SUCCESS: Path discovery then link through relay verified");
@@ -1346,14 +1361,15 @@ async fn test_path_discovery_then_link() {
 /// Verify all destinations have path entries on D0 and daemon stays healthy.
 #[tokio::test]
 async fn test_rapid_announce_flood() {
-    let daemon = TestDaemon::start()
-        .await
-        .expect("Failed to start daemon");
+    let daemon = TestDaemon::start().await.expect("Failed to start daemon");
 
     let announce_count = 10;
     let mut dest_hashes = Vec::new();
 
-    println!("Sending {} announces to D0 via separate connections...", announce_count);
+    println!(
+        "Sending {} announces to D0 via separate connections...",
+        announce_count
+    );
 
     // Open separate connections and send one announce per connection
     // (matching the pattern used in test_multiple_connections_concurrent)
@@ -1399,7 +1415,10 @@ async fn test_rapid_announce_flood() {
     );
 
     // Verify daemon still responsive
-    daemon.ping().await.expect("Daemon should still be responsive");
+    daemon
+        .ping()
+        .await
+        .expect("Daemon should still be responsive");
 
     println!("SUCCESS: Rapid announce flood test passed");
 }
@@ -1428,7 +1447,6 @@ async fn test_concurrent_links_through_relay() {
     // Connect Rust-A
     let mut stream = connect_to_daemon(&daemon).await;
     let mut deframer = Deframer::new();
-    
 
     // Establish all links
     let mut links = Vec::new();
@@ -1444,10 +1462,14 @@ async fn test_concurrent_links_through_relay() {
         let req = link.build_link_request_packet();
         send_framed(&mut stream, &req).await;
 
-        let proof =
-            receive_proof_for_link(&mut stream, &mut deframer, link.id(), Duration::from_secs(10))
-                .await
-                .expect(&format!("Should receive proof for link {}", i));
+        let proof = receive_proof_for_link(
+            &mut stream,
+            &mut deframer,
+            link.id(),
+            Duration::from_secs(10),
+        )
+        .await
+        .expect(&format!("Should receive proof for link {}", i));
         link.process_proof(proof.data.as_slice())
             .expect(&format!("Proof {} should validate", i));
         assert_eq!(link.state(), LinkState::Active);
@@ -1475,17 +1497,12 @@ async fn test_concurrent_links_through_relay() {
     // different links than expected, causing receive_link_data to miss them.
     for (i, link) in links.iter().enumerate() {
         let msg = format!("Data for link {}", i);
-        let data_pkt = link
-            .build_data_packet(msg.as_bytes(), &mut OsRng)
-            .unwrap();
+        let data_pkt = link.build_data_packet(msg.as_bytes(), &mut OsRng).unwrap();
         send_framed(&mut stream, &data_pkt).await;
 
         let echoed =
             receive_link_data(&mut stream, &mut deframer, link, Duration::from_secs(5)).await;
-        assert!(
-            echoed.is_some(),
-            "Should receive echo for link {}", i
-        );
+        assert!(echoed.is_some(), "Should receive echo for link {}", i);
     }
 
     println!("Received all {}/{} echoes", link_count, link_count);
@@ -1523,14 +1540,17 @@ async fn test_link_survives_idle_through_relay() {
     let req = link.build_link_request_packet();
     send_framed(&mut stream, &req).await;
 
-    let proof =
-        receive_proof_for_link(&mut stream, &mut deframer, link.id(), Duration::from_secs(10))
-            .await
-            .expect("Should receive proof");
+    let proof = receive_proof_for_link(
+        &mut stream,
+        &mut deframer,
+        link.id(),
+        Duration::from_secs(10),
+    )
+    .await
+    .expect("Should receive proof");
     link.process_proof(proof.data.as_slice()).unwrap();
     assert_eq!(link.state(), LinkState::Active);
 
-    
     let rtt = link.build_rtt_packet(0.05, &mut OsRng).unwrap();
     send_framed(&mut stream, &rtt).await;
     tokio::time::sleep(Duration::from_millis(300)).await;
@@ -1553,8 +1573,7 @@ async fn test_link_survives_idle_through_relay() {
     let data_pkt = link.build_data_packet(test_msg, &mut OsRng).unwrap();
     send_framed(&mut stream, &data_pkt).await;
 
-    let echoed =
-        receive_link_data(&mut stream, &mut deframer, &link, Duration::from_secs(5)).await;
+    let echoed = receive_link_data(&mut stream, &mut deframer, &link, Duration::from_secs(5)).await;
     assert!(echoed.is_some(), "Link should still work after 10s idle");
     assert_eq!(echoed.unwrap(), test_msg);
 
@@ -1601,7 +1620,10 @@ async fn test_announce_with_max_hops() {
 
     // D0 should NOT have the path (announce dropped at max hops)
     let d0_has_path = topology.entry_daemon().has_path(&dest_hash).await;
-    println!("D0 has path: {} (expected false - max hops reached)", d0_has_path);
+    println!(
+        "D0 has path: {} (expected false - max hops reached)",
+        d0_has_path
+    );
 
     // The announce should not be accepted past max hops
     if !d0_has_path {
@@ -1640,9 +1662,13 @@ async fn test_link_request_to_unreachable_destination() {
     );
 
     // Wait - should NOT receive proof
-    let proof =
-        receive_proof_for_link(&mut stream, &mut deframer, link.id(), Duration::from_secs(5))
-            .await;
+    let proof = receive_proof_for_link(
+        &mut stream,
+        &mut deframer,
+        link.id(),
+        Duration::from_secs(5),
+    )
+    .await;
 
     assert!(
         proof.is_none(),
@@ -1703,15 +1729,9 @@ async fn test_announce_rebroadcast_timing_accuracy() {
 
     let elapsed = start.elapsed();
 
-    assert!(
-        has_path,
-        "D0 should have received path from D1 within 15s"
-    );
+    assert!(has_path, "D0 should have received path from D1 within 15s");
 
-    println!(
-        "D0 received path after {:.2}s",
-        elapsed.as_secs_f64()
-    );
+    println!("D0 received path after {:.2}s", elapsed.as_secs_f64());
 
     // D1's announce goes directly to D0 via TCP, should arrive within ~12s
     // (PATHFINDER_G rebroadcast delay + jitter)
@@ -1812,12 +1832,8 @@ async fn test_path_request_forwarding_to_local_destination() {
     );
 
     // D1 should now have a path entry
-    let d1_has_path_after = wait_for_path_on_daemon(
-        topology.exit_daemon(),
-        &dest_hash,
-        Duration::from_secs(5),
-    )
-    .await;
+    let d1_has_path_after =
+        wait_for_path_on_daemon(topology.exit_daemon(), &dest_hash, Duration::from_secs(5)).await;
     assert!(
         d1_has_path_after,
         "D1 should have path after path response propagation"
@@ -1863,12 +1879,8 @@ async fn test_path_request_dedup() {
     );
 
     // Wait for D0 to cache the announce
-    let d0_has_path = wait_for_path_on_daemon(
-        topology.entry_daemon(),
-        &dest_hash,
-        Duration::from_secs(20),
-    )
-    .await;
+    let d0_has_path =
+        wait_for_path_on_daemon(topology.entry_daemon(), &dest_hash, Duration::from_secs(20)).await;
 
     assert!(
         d0_has_path,

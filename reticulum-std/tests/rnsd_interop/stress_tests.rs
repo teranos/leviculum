@@ -94,7 +94,6 @@ async fn test_extended_exchange_100_messages() {
     link.process_proof(proof.data.as_slice()).unwrap();
     assert_eq!(link.state(), LinkState::Active);
 
-    
     let rtt_packet = link.build_rtt_packet(0.05, &mut OsRng).unwrap();
     framed.clear();
     frame(&rtt_packet, &mut framed);
@@ -256,7 +255,7 @@ async fn test_rapid_link_creation_teardown() {
         }
 
         // Send one message
-        
+
         let msg = format!("Rapid link {}", i);
         let data_packet = link.build_data_packet(msg.as_bytes(), &mut OsRng).unwrap();
 
@@ -387,7 +386,7 @@ async fn test_concurrent_links_to_daemon() {
             }
 
             // Send RTT
-            
+
             let rtt_packet = link.build_rtt_packet(0.05, &mut OsRng).unwrap();
             framed.clear();
             frame(&rtt_packet, &mut framed);
@@ -502,7 +501,6 @@ async fn test_large_payload_variety() {
 
     link.process_proof(proof.data.as_slice()).unwrap();
 
-    
     let rtt_packet = link.build_rtt_packet(0.05, &mut OsRng).unwrap();
     framed.clear();
     frame(&rtt_packet, &mut framed);
@@ -631,7 +629,6 @@ async fn test_extended_exchange_rapid_fire() {
 
     link.process_proof(proof.data.as_slice()).unwrap();
 
-    
     let rtt_packet = link.build_rtt_packet(0.05, &mut OsRng).unwrap();
     framed.clear();
     frame(&rtt_packet, &mut framed);

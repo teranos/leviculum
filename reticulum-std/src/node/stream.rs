@@ -193,12 +193,10 @@ impl AsyncWrite for ConnectionStream {
                         cx.waker().wake_by_ref();
                         Poll::Pending
                     }
-                    Err(mpsc::error::TrySendError::Closed(_)) => {
-                        Poll::Ready(Err(io::Error::new(
-                            io::ErrorKind::BrokenPipe,
-                            "send channel closed",
-                        )))
-                    }
+                    Err(mpsc::error::TrySendError::Closed(_)) => Poll::Ready(Err(io::Error::new(
+                        io::ErrorKind::BrokenPipe,
+                        "send channel closed",
+                    ))),
                 }
             }
         }

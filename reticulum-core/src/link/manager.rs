@@ -39,15 +39,20 @@
 use alloc::collections::{BTreeMap, BTreeSet};
 use alloc::vec::Vec;
 
-use crate::constants::{DATA_RECEIPT_TIMEOUT_MS, LINK_PENDING_TIMEOUT_MS, MODE_AES256_CBC, MS_PER_SECOND, MTU, PROOF_DATA_SIZE, TRUNCATED_HASHBYTES};
+use crate::constants::{
+    DATA_RECEIPT_TIMEOUT_MS, LINK_PENDING_TIMEOUT_MS, MODE_AES256_CBC, MS_PER_SECOND, MTU,
+    PROOF_DATA_SIZE, TRUNCATED_HASHBYTES,
+};
 use crate::destination::ProofStrategy;
 use crate::identity::Identity;
 use crate::packet::{packet_hash, Packet, PacketContext, PacketType};
 use rand_core::CryptoRngCore;
 
-use crate::destination::DestinationHash;
 use super::channel::{Channel, Message};
-use super::{Link, LinkCloseReason, LinkError, LinkEvent, LinkId, LinkState, PeerKeys, PendingPacket};
+use super::{
+    Link, LinkCloseReason, LinkError, LinkEvent, LinkId, LinkState, PeerKeys, PendingPacket,
+};
+use crate::destination::DestinationHash;
 
 /// Extract packets matching a predicate from the unified queue, returning (link_id, data) pairs.
 fn drain_packets_by_kind(
@@ -561,7 +566,13 @@ impl LinkManager {
     /// * `raw_packet` - The raw packet bytes (needed for link ID calculation)
     /// * `rng` - Random number generator
     /// * `now_ms` - Current time in milliseconds
-    pub fn process_packet(&mut self, packet: &Packet, raw_packet: &[u8], rng: &mut impl CryptoRngCore, now_ms: u64) {
+    pub fn process_packet(
+        &mut self,
+        packet: &Packet,
+        raw_packet: &[u8],
+        rng: &mut impl CryptoRngCore,
+        now_ms: u64,
+    ) {
         match packet.flags.packet_type {
             PacketType::LinkRequest => {
                 self.handle_link_request(packet, raw_packet, rng);
@@ -639,10 +650,12 @@ impl LinkManager {
     ///
     /// Returns None if there's no pending RTT packet for this link.
     pub fn take_pending_rtt_packet(&mut self, link_id: &LinkId) -> Option<Vec<u8>> {
-        let pos = self.pending_packets.iter().position(|p| matches!(
-            p,
-            PendingPacket::Rtt { link_id: id, .. } if id == link_id
-        ))?;
+        let pos = self.pending_packets.iter().position(|p| {
+            matches!(
+                p,
+                PendingPacket::Rtt { link_id: id, .. } if id == link_id
+            )
+        })?;
         match self.pending_packets.remove(pos) {
             PendingPacket::Rtt { data, .. } => Some(data),
             _ => unreachable!(),
@@ -686,7 +699,12 @@ impl LinkManager {
 
     // --- Internal: Packet Handlers ---
 
-    fn handle_link_request(&mut self, packet: &Packet, raw_packet: &[u8], rng: &mut impl CryptoRngCore) {
+    fn handle_link_request(
+        &mut self,
+        packet: &Packet,
+        raw_packet: &[u8],
+        rng: &mut impl CryptoRngCore,
+    ) {
         let dest_hash = DestinationHash::new(packet.destination_hash);
 
         // Check if we accept links for this destination
@@ -998,12 +1016,10 @@ impl LinkManager {
                     ProofStrategy::All => {
                         // Automatically generate and queue proof using the link's signing key
                         if let Some(signing_key) = link.dest_signing_key() {
-                            if let Ok(proof_packet) = link
-                                .build_data_proof_packet_with_signing_key(
-                                    &full_packet_hash,
-                                    signing_key,
-                                )
-                            {
+                            if let Ok(proof_packet) = link.build_data_proof_packet_with_signing_key(
+                                &full_packet_hash,
+                                signing_key,
+                            ) {
                                 self.pending_packets.push(PendingPacket::Proof {
                                     link_id,
                                     data: proof_packet,
@@ -1063,8 +1079,9 @@ impl LinkManager {
         }
 
         // Clean up expired data receipts
-        self.data_receipts
-            .retain(|_, receipt| now_ms.saturating_sub(receipt.sent_at_ms) <= DATA_RECEIPT_TIMEOUT_MS);
+        self.data_receipts.retain(|_, receipt| {
+            now_ms.saturating_sub(receipt.sent_at_ms) <= DATA_RECEIPT_TIMEOUT_MS
+        });
     }
 
     /// Collect link IDs that have timed out from a pending map
@@ -1078,7 +1095,9 @@ impl LinkManager {
     {
         pending
             .iter()
-            .filter(|(_, entry)| now_ms.saturating_sub(get_timestamp(entry)) > LINK_PENDING_TIMEOUT_MS)
+            .filter(|(_, entry)| {
+                now_ms.saturating_sub(get_timestamp(entry)) > LINK_PENDING_TIMEOUT_MS
+            })
             .map(|(id, _)| *id)
             .collect()
     }
@@ -1259,7 +1278,8 @@ mod tests {
         let dest_hash = DestinationHash::new([0x42; 16]);
         let dest_signing_key = [0x33; 32];
 
-        let (link_id, packet) = manager.initiate(dest_hash, &dest_signing_key, &mut OsRng, INITIAL_TIME_MS);
+        let (link_id, packet) =
+            manager.initiate(dest_hash, &dest_signing_key, &mut OsRng, INITIAL_TIME_MS);
 
         // Should have created a pending link
         assert_eq!(manager.pending_link_count(), 1);
@@ -1276,7 +1296,8 @@ mod tests {
         let dest_hash = DestinationHash::new([0x42; 16]);
         let dest_signing_key = [0x33; 32];
 
-        let (link_id, _) = manager.initiate(dest_hash, &dest_signing_key, &mut OsRng, INITIAL_TIME_MS);
+        let (link_id, _) =
+            manager.initiate(dest_hash, &dest_signing_key, &mut OsRng, INITIAL_TIME_MS);
         assert_eq!(manager.pending_link_count(), 1);
 
         // Advance time past timeout
@@ -1308,7 +1329,8 @@ mod tests {
         let dest_hash = DestinationHash::new([0x42; 16]);
         let dest_signing_key = [0x33; 32];
 
-        let (link_id, _) = manager.initiate(dest_hash, &dest_signing_key, &mut OsRng, INITIAL_TIME_MS);
+        let (link_id, _) =
+            manager.initiate(dest_hash, &dest_signing_key, &mut OsRng, INITIAL_TIME_MS);
 
         // Use close_local for this test (graceful close requires active link with encryption key)
         manager.close_local(&link_id, LinkCloseReason::Normal);
@@ -1410,12 +1432,18 @@ mod tests {
         assert!(link.dest_signing_key().is_some());
 
         let pair_app = establish_link_pair(ProofStrategy::App);
-        let link_app = pair_app.responder.link(&pair_app.responder_link_id).unwrap();
+        let link_app = pair_app
+            .responder
+            .link(&pair_app.responder_link_id)
+            .unwrap();
         assert_eq!(link_app.proof_strategy(), ProofStrategy::App);
         assert!(link_app.dest_signing_key().is_some());
 
         let pair_none = establish_link_pair(ProofStrategy::None);
-        let link_none = pair_none.responder.link(&pair_none.responder_link_id).unwrap();
+        let link_none = pair_none
+            .responder
+            .link(&pair_none.responder_link_id)
+            .unwrap();
         assert_eq!(link_none.proof_strategy(), ProofStrategy::None);
         assert!(link_none.dest_signing_key().is_none());
     }
@@ -1442,7 +1470,9 @@ mod tests {
 
         // Should have emitted DataReceived event
         let events: Vec<_> = pair.responder.drain_events().collect();
-        let has_data_received = events.iter().any(|e| matches!(e, LinkEvent::DataReceived { .. }));
+        let has_data_received = events
+            .iter()
+            .any(|e| matches!(e, LinkEvent::DataReceived { .. }));
         assert!(has_data_received, "Expected DataReceived event");
     }
 
@@ -1624,8 +1654,7 @@ mod tests {
 
         // Advance time past the receipt timeout
         let expired_ms = pair.now_ms + DATA_RECEIPT_TIMEOUT_MS + 1;
-        pair.initiator
-            .poll(&mut OsRng, expired_ms);
+        pair.initiator.poll(&mut OsRng, expired_ms);
 
         // Receipt should have been cleaned up
         assert_eq!(

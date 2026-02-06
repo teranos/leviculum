@@ -348,7 +348,10 @@ impl TestDaemon {
         if let serde_json::Value::Object(map) = result {
             for (hash, entry) in map {
                 let timestamp = entry.get("timestamp").and_then(|v| v.as_f64());
-                let next_hop = entry.get("next_hop").and_then(|v| v.as_str()).map(|s| s.to_string());
+                let next_hop = entry
+                    .get("next_hop")
+                    .and_then(|v| v.as_str())
+                    .map(|s| s.to_string());
                 let hops = entry.get("hops").and_then(|v| v.as_u64()).map(|v| v as u8);
                 let expires = entry.get("expires").and_then(|v| v.as_f64());
 

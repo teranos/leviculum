@@ -214,7 +214,10 @@ async fn test_announce_propagates_between_connections() {
     )
     .await;
 
-    println!("Sent announce on conn1, dest: {:02x?}...", &dest_hash.as_bytes()[..4]);
+    println!(
+        "Sent announce on conn1, dest: {:02x?}...",
+        &dest_hash.as_bytes()[..4]
+    );
 
     // Wait for announce on conn2
     let found = wait_for_announce(&mut conn2, &dest_hash, Duration::from_secs(10)).await;
@@ -413,7 +416,8 @@ async fn test_hash_derivation_matches_daemon() {
     println!("Computed name hash: {}", hex::encode(name_hash));
 
     // Compute destination hash
-    let computed_dest_hash = Destination::compute_destination_hash(&name_hash, &identity_hash).into_bytes();
+    let computed_dest_hash =
+        Destination::compute_destination_hash(&name_hash, &identity_hash).into_bytes();
     let computed_hex = hex::encode(computed_dest_hash);
 
     println!("Daemon destination hash:   {}", dest_info.hash);
@@ -627,7 +631,10 @@ async fn test_reconnect_after_disconnect() {
         daemon.has_path(&dest1).await,
         "First announce should create path"
     );
-    println!("First announce accepted, dest: {:02x?}...", &dest1.as_bytes()[..4]);
+    println!(
+        "First announce accepted, dest: {:02x?}...",
+        &dest1.as_bytes()[..4]
+    );
 
     // Drop connection
     drop(stream1);
@@ -717,8 +724,7 @@ async fn test_multiple_connections_concurrent() {
     assert_eq!(
         found_count, num_connections,
         "All paths must be created. Got {}/{}",
-        found_count,
-        num_connections
+        found_count, num_connections
     );
 
     println!("All connections verified");

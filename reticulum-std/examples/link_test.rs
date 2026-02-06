@@ -157,7 +157,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                                         Ok(()) => {
                                             println!("Link established successfully!");
                                             println!("Link state: {:?}", link.state());
-                                            println!("Link ID: {}", bytes_to_hex(link.id().as_bytes()));
+                                            println!(
+                                                "Link ID: {}",
+                                                bytes_to_hex(link.id().as_bytes())
+                                            );
                                             if let Some(key) = link.link_key() {
                                                 println!("Link key: {}", bytes_to_hex(key));
                                             }

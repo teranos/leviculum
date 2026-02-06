@@ -187,15 +187,13 @@ impl ReticulumNodeBuilder {
         let clock = SystemClock::new();
 
         // Merge interface configs from file
-        let mut interfaces = config
-            .interfaces
-            .into_values()
-            .collect::<Vec<_>>();
+        let mut interfaces = config.interfaces.into_values().collect::<Vec<_>>();
         interfaces.extend(self.interfaces);
 
         // Build NodeCore directly from the core builder
         let enable_transport = self.core_builder.is_transport_enabled();
-        let node_core = self.core_builder
+        let node_core = self
+            .core_builder
             .build(rand_core::OsRng, clock, storage)
             .map_err(|e| Error::Transport(format!("{:?}", e)))?;
 

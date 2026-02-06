@@ -86,7 +86,8 @@ pub fn aes256_cbc_encrypt(
     let total_len = pkcs7_pad(plaintext, output);
 
     // Create cipher and encrypt in place
-    let mut cipher = Aes256CbcEnc::new_from_slices(key, iv).expect("key/iv lengths validated above");
+    let mut cipher =
+        Aes256CbcEnc::new_from_slices(key, iv).expect("key/iv lengths validated above");
 
     // Encrypt block by block
     for chunk in output[..total_len].chunks_exact_mut(AES_BLOCK_SIZE) {
@@ -122,7 +123,8 @@ pub fn aes256_cbc_decrypt(
     output[..ciphertext.len()].copy_from_slice(ciphertext);
 
     // Create cipher and decrypt in place
-    let mut cipher = Aes256CbcDec::new_from_slices(key, iv).expect("key/iv lengths validated above");
+    let mut cipher =
+        Aes256CbcDec::new_from_slices(key, iv).expect("key/iv lengths validated above");
 
     // Decrypt block by block
     for chunk in output[..ciphertext.len()].chunks_exact_mut(AES_BLOCK_SIZE) {

@@ -407,10 +407,7 @@ impl Link {
     /// # Arguments
     /// * `destination_hash` - The destination to connect to
     /// * `rng` - Random number generator for key generation
-    pub fn new_outgoing(
-        destination_hash: DestinationHash,
-        rng: &mut impl CryptoRngCore,
-    ) -> Self {
+    pub fn new_outgoing(destination_hash: DestinationHash, rng: &mut impl CryptoRngCore) -> Self {
         let ephemeral_private = x25519_dalek::StaticSecret::random_from_rng(&mut *rng);
         let ephemeral_public = x25519_dalek::PublicKey::from(&ephemeral_private);
 
@@ -1421,7 +1418,8 @@ impl Link {
         };
 
         // Packet format: [flags (1)] [hops (1)] [link_id (16)] [context (1)] [proof_data]
-        let mut packet = alloc::vec::Vec::with_capacity(1 + 1 + TRUNCATED_HASHBYTES + 1 + PROOF_DATA_SIZE);
+        let mut packet =
+            alloc::vec::Vec::with_capacity(1 + 1 + TRUNCATED_HASHBYTES + 1 + PROOF_DATA_SIZE);
         packet.push(flags.to_byte());
         packet.push(0); // hops = 0
         packet.extend_from_slice(self.id.as_bytes());
@@ -1509,7 +1507,9 @@ impl Link {
         };
 
         // Packet format: [flags (1)] [hops (1)] [link_id (16)] [context (1)] [payload (1)]
-        let mut packet = alloc::vec::Vec::with_capacity(1 + 1 + TRUNCATED_HASHBYTES + 1 + KEEPALIVE_PAYLOAD_SIZE);
+        let mut packet = alloc::vec::Vec::with_capacity(
+            1 + 1 + TRUNCATED_HASHBYTES + 1 + KEEPALIVE_PAYLOAD_SIZE,
+        );
         packet.push(flags.to_byte());
         packet.push(0); // hops = 0
         packet.extend_from_slice(self.id.as_bytes());
@@ -2093,8 +2093,7 @@ mod tests {
         let link_id = Link::calculate_link_id(&raw_packet);
 
         // Create responder's link
-        let responder =
-            Link::new_incoming(&request_data, link_id, dest_hash, &mut OsRng).unwrap();
+        let responder = Link::new_incoming(&request_data, link_id, dest_hash, &mut OsRng).unwrap();
 
         assert_eq!(responder.state(), LinkState::Pending);
         assert!(!responder.is_initiator());

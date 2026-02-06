@@ -63,48 +63,76 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let event_handle = tokio::spawn(async move {
         while let Some(event) = events.recv().await {
             match event {
-                NodeEvent::AnnounceReceived { announce, interface_index } => {
+                NodeEvent::AnnounceReceived {
+                    announce,
+                    interface_index,
+                } => {
                     println!();
-                    println!("[ANNOUNCE] Destination {:02x?} on interface {}",
-                             &announce.destination_hash().as_bytes()[..4], interface_index);
+                    println!(
+                        "[ANNOUNCE] Destination {:02x?} on interface {}",
+                        &announce.destination_hash().as_bytes()[..4],
+                        interface_index
+                    );
                     if let Some(app_data) = announce.app_data_string() {
                         println!("           App: {}", app_data);
                     }
                     print!("> ");
                     io::stdout().flush().ok();
                 }
-                NodeEvent::PathFound { destination_hash, hops, .. } => {
+                NodeEvent::PathFound {
+                    destination_hash,
+                    hops,
+                    ..
+                } => {
                     println!();
-                    println!("[PATH] Found route to {:02x?} ({} hops)",
-                             &destination_hash.as_bytes()[..4], hops);
+                    println!(
+                        "[PATH] Found route to {:02x?} ({} hops)",
+                        &destination_hash.as_bytes()[..4],
+                        hops
+                    );
                     print!("> ");
                     io::stdout().flush().ok();
                 }
-                NodeEvent::ConnectionEstablished { link_id, is_initiator } => {
+                NodeEvent::ConnectionEstablished {
+                    link_id,
+                    is_initiator,
+                } => {
                     println!();
-                    println!("[CONNECTED] Link {:02x?} (initiator: {})",
-                             &link_id.as_bytes()[..4], is_initiator);
+                    println!(
+                        "[CONNECTED] Link {:02x?} (initiator: {})",
+                        &link_id.as_bytes()[..4],
+                        is_initiator
+                    );
                     print!("> ");
                     io::stdout().flush().ok();
                 }
                 NodeEvent::DataReceived { link_id, data } => {
                     println!();
-                    println!("[MESSAGE] From {:02x?}: {}",
-                             &link_id.as_bytes()[..4], String::from_utf8_lossy(&data));
+                    println!(
+                        "[MESSAGE] From {:02x?}: {}",
+                        &link_id.as_bytes()[..4],
+                        String::from_utf8_lossy(&data)
+                    );
                     print!("> ");
                     io::stdout().flush().ok();
                 }
                 NodeEvent::MessageReceived { link_id, data, .. } => {
                     println!();
-                    println!("[MESSAGE] From {:02x?}: {}",
-                             &link_id.as_bytes()[..4], String::from_utf8_lossy(&data));
+                    println!(
+                        "[MESSAGE] From {:02x?}: {}",
+                        &link_id.as_bytes()[..4],
+                        String::from_utf8_lossy(&data)
+                    );
                     print!("> ");
                     io::stdout().flush().ok();
                 }
                 NodeEvent::ConnectionClosed { link_id, reason } => {
                     println!();
-                    println!("[DISCONNECTED] Link {:02x?}: {:?}",
-                             &link_id.as_bytes()[..4], reason);
+                    println!(
+                        "[DISCONNECTED] Link {:02x?}: {:?}",
+                        &link_id.as_bytes()[..4],
+                        reason
+                    );
                     print!("> ");
                     io::stdout().flush().ok();
                 }

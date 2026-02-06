@@ -393,7 +393,9 @@ fn test_envelope_unpack_message() {
     let envelope = Envelope::new(TestMessage::MSGTYPE, 0, msg.pack());
 
     // Unpack using typed API
-    let unpacked: TestMessage = envelope.unpack_message().expect("Should unpack successfully");
+    let unpacked: TestMessage = envelope
+        .unpack_message()
+        .expect("Should unpack successfully");
     assert_eq!(unpacked.data, vec![1, 2, 3]);
 }
 

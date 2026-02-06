@@ -45,9 +45,7 @@ pub use buffer::{
     ReadResult, MAX_CHUNK_LEN,
 };
 #[cfg(feature = "compression")]
-pub use buffer::{
-    CompressingWriter, COMPRESSION_MIN_SIZE, COMPRESSION_TRIES, MAX_DECOMPRESS_SIZE,
-};
+pub use buffer::{CompressingWriter, COMPRESSION_MIN_SIZE, COMPRESSION_TRIES, MAX_DECOMPRESS_SIZE};
 pub use envelope::Envelope;
 pub use error::ChannelError;
 pub use stream::StreamDataMessage;

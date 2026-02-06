@@ -191,12 +191,12 @@ mod tests {
     fn test_routing_unreliable_prefers_existing() {
         let link_id = LinkId::new([0x42; 16]);
         let decision = decide_routing(
-            100,             // data_len
-            false,           // reliable
-            true,            // prefer_existing
-            true,            // has_path
-            Some(link_id),   // existing_connection
-            500,             // max_single_packet_size
+            100,           // data_len
+            false,         // reliable
+            true,          // prefer_existing
+            true,          // has_path
+            Some(link_id), // existing_connection
+            500,           // max_single_packet_size
         );
         assert_eq!(decision, RoutingDecision::UseExistingConnection(link_id));
     }
@@ -231,12 +231,12 @@ mod tests {
     #[test]
     fn test_routing_reliable_no_existing_with_path() {
         let decision = decide_routing(
-            100,   // data_len
-            true,  // reliable
-            true,  // prefer_existing
-            true,  // has_path
-            None,  // existing_connection
-            500,   // max_single_packet_size
+            100,  // data_len
+            true, // reliable
+            true, // prefer_existing
+            true, // has_path
+            None, // existing_connection
+            500,  // max_single_packet_size
         );
         assert_eq!(decision, RoutingDecision::EstablishConnection);
     }

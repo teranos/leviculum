@@ -36,9 +36,9 @@ use alloc::vec::Vec;
 
 use crate::constants::{
     ANNOUNCE_RATE_LIMIT_MS, LINK_TIMEOUT_MS, LOCAL_REBROADCASTS_MAX, MAX_PATH_REQUEST_TAGS,
-    MS_PER_SECOND, MTU, PACKET_CACHE_EXPIRY_MS, PATH_REQUEST_GRACE_MS,
-    PATH_REQUEST_MIN_INTERVAL_MS, PATHFINDER_EXPIRY_SECS, PATHFINDER_G_MS, PATHFINDER_MAX_HOPS,
-    PATHFINDER_RETRIES, PATHFINDER_RW_MS, REVERSE_TABLE_EXPIRY_MS, TRUNCATED_HASHBYTES,
+    MS_PER_SECOND, MTU, PACKET_CACHE_EXPIRY_MS, PATHFINDER_EXPIRY_SECS, PATHFINDER_G_MS,
+    PATHFINDER_MAX_HOPS, PATHFINDER_RETRIES, PATHFINDER_RW_MS, PATH_REQUEST_GRACE_MS,
+    PATH_REQUEST_MIN_INTERVAL_MS, REVERSE_TABLE_EXPIRY_MS, TRUNCATED_HASHBYTES,
 };
 
 use crate::announce::ReceivedAnnounce;
@@ -57,11 +57,7 @@ use crate::traits::{Clock, Interface, InterfaceError, Storage};
 
 /// Path table entry
 #[derive(Debug, Clone)]
-pub struct PathEntry {
-    /// When this path was learned (ms since clock epoch)
-    pub timestamp_ms: u64,
-    /// Hash of the interface that told us about this path
-    pub received_from: [u8; TRUNCATED_HASHBYTES],
+pub(crate) struct PathEntry {
     /// Number of hops to destination
     pub hops: u8,
     /// When this path expires (ms since clock epoch)
@@ -74,11 +70,9 @@ pub struct PathEntry {
 
 /// Link table entry (for active links routed through this transport node)
 #[derive(Debug, Clone)]
-pub struct LinkEntry {
+pub(crate) struct LinkEntry {
     /// When this link was created (ms)
     pub timestamp_ms: u64,
-    /// Transport ID of the next hop toward the destination
-    pub next_hop_transport_id: [u8; TRUNCATED_HASHBYTES],
     /// Interface index toward the destination (outbound)
     pub next_hop_interface_index: usize,
     /// Remaining hops to destination
@@ -87,8 +81,6 @@ pub struct LinkEntry {
     pub received_interface_index: usize,
     /// Total hops from initiator
     pub hops: u8,
-    /// Destination hash for the link target
-    pub destination_hash: [u8; TRUNCATED_HASHBYTES],
     /// Whether the link has been validated by a proof
     pub validated: bool,
     /// Deadline for receiving a proof (ms), after which the entry is removed
@@ -97,11 +89,9 @@ pub struct LinkEntry {
 
 /// Reverse table entry (for routing replies back)
 #[derive(Debug, Clone)]
-pub struct ReverseEntry {
+pub(crate) struct ReverseEntry {
     /// When this was learned (ms)
     pub timestamp_ms: u64,
-    /// Who sent this to us
-    pub received_from: [u8; TRUNCATED_HASHBYTES],
     /// Interface index where the original packet was received
     pub receiving_interface_index: usize,
     /// Interface index where the packet was forwarded to
@@ -110,7 +100,7 @@ pub struct ReverseEntry {
 
 /// Announce table entry (for rate limiting and rebroadcast tracking)
 #[derive(Debug, Clone)]
-pub struct AnnounceEntry {
+pub(crate) struct AnnounceEntry {
     /// When we received this announce (ms)
     pub timestamp_ms: u64,
     /// Number of hops when received
@@ -509,7 +499,7 @@ impl<C: Clock, S: Storage> Transport<C, S> {
     }
 
     /// Get a path entry
-    pub fn path(&self, dest_hash: &[u8; TRUNCATED_HASHBYTES]) -> Option<&PathEntry> {
+    pub(crate) fn path(&self, dest_hash: &[u8; TRUNCATED_HASHBYTES]) -> Option<&PathEntry> {
         self.path_table.get(dest_hash)
     }
 
@@ -552,7 +542,12 @@ impl<C: Clock, S: Storage> Transport<C, S> {
     ) -> [u8; TRUNCATED_HASHBYTES] {
         let hash = packet_hash(raw_packet);
         let now = self.clock.now_ms();
-        let receipt = PacketReceipt::with_timeout(hash, DestinationHash::new(destination_hash), now, timeout_ms);
+        let receipt = PacketReceipt::with_timeout(
+            hash,
+            DestinationHash::new(destination_hash),
+            now,
+            timeout_ms,
+        );
         let truncated = receipt.truncated_hash;
         self.receipts.insert(truncated, receipt);
         truncated
@@ -639,9 +634,13 @@ impl<C: Clock, S: Storage> Transport<C, S> {
         // outbound interface index needed for proof routing.
         match packet.flags.packet_type {
             PacketType::Announce => self.handle_announce(packet, interface_index, raw),
-            PacketType::LinkRequest => self.handle_link_request(packet, interface_index, raw, dedup_hash),
+            PacketType::LinkRequest => {
+                self.handle_link_request(packet, interface_index, raw, dedup_hash)
+            }
             PacketType::Proof => self.handle_proof(packet, interface_index),
-            PacketType::Data => self.handle_data(packet, interface_index, full_packet_hash, dedup_hash),
+            PacketType::Data => {
+                self.handle_data(packet, interface_index, full_packet_hash, dedup_hash)
+            }
         }
     }
 
@@ -777,26 +776,9 @@ impl<C: Clock, S: Storage> Transport<C, S> {
         &self.clock
     }
 
-    /// Iterate over all path table entries
-    pub fn paths(&self) -> impl Iterator<Item = (&[u8; TRUNCATED_HASHBYTES], &PathEntry)> {
-        self.path_table.iter()
-    }
-
     /// Number of active entries in the link relay table
     pub fn link_table_count(&self) -> usize {
         self.link_table.len()
-    }
-
-    /// Get a link table entry by link ID hash
-    pub fn link_table_entry(&self, link_id: &[u8; TRUNCATED_HASHBYTES]) -> Option<&LinkEntry> {
-        self.link_table.get(link_id)
-    }
-
-    /// Iterate over all link table entries
-    pub fn link_table_iter(
-        &self,
-    ) -> impl Iterator<Item = (&[u8; TRUNCATED_HASHBYTES], &LinkEntry)> {
-        self.link_table.iter()
     }
 
     /// Number of pending announce rebroadcasts
@@ -862,13 +844,6 @@ impl<C: Clock, S: Storage> Transport<C, S> {
 
         // Update path table
         let is_new_path = !self.path_table.contains_key(&dest_hash);
-        let iface_hash = self
-            .interfaces
-            .get(interface_index)
-            .and_then(|i| i.as_ref())
-            .map(|i| i.hash())
-            .unwrap_or([0u8; TRUNCATED_HASHBYTES]);
-
         // Preserve existing random_blobs and add the new one
         let mut random_blobs = self
             .path_table
@@ -880,8 +855,6 @@ impl<C: Clock, S: Storage> Transport<C, S> {
         self.path_table.insert(
             dest_hash,
             PathEntry {
-                timestamp_ms: now,
-                received_from: iface_hash,
                 hops: packet.hops,
                 expires_ms: now + (self.config.path_expiry_secs * 1000),
                 interface_index,
@@ -890,8 +863,7 @@ impl<C: Clock, S: Storage> Transport<C, S> {
         );
 
         // Determine if we should schedule rebroadcast
-        let should_rebroadcast =
-            self.config.enable_transport && !is_path_response;
+        let should_rebroadcast = self.config.enable_transport && !is_path_response;
 
         // Update announce table
         self.announce_table.insert(
@@ -969,7 +941,6 @@ impl<C: Clock, S: Storage> Transport<C, S> {
                 let now = self.clock.now_ms();
                 let link_id = Link::calculate_link_id(raw);
                 let target_iface = path.interface_index;
-                let iface_hash = path.received_from;
                 let transport_id_bytes = *self.identity.hash();
 
                 // Insert link table entry for bidirectional routing
@@ -977,12 +948,10 @@ impl<C: Clock, S: Storage> Transport<C, S> {
                     *link_id.as_bytes(),
                     LinkEntry {
                         timestamp_ms: now,
-                        next_hop_transport_id: iface_hash,
                         next_hop_interface_index: target_iface,
                         remaining_hops: path.hops,
                         received_interface_index: interface_index,
                         hops: packet.hops,
-                        destination_hash: dest_hash,
                         validated: false,
                         proof_timeout_ms: now
                             + ((packet.hops as u64 + path.hops as u64 + 2)
@@ -992,17 +961,11 @@ impl<C: Clock, S: Storage> Transport<C, S> {
                 );
 
                 // Populate reverse table at forwarding time
-                let recv_iface_hash = self
-                    .interfaces
-                    .get(interface_index)
-                    .and_then(|i| i.as_ref())
-                    .map(|i| i.hash())
-                    .unwrap_or([0u8; TRUNCATED_HASHBYTES]);
+
                 self.reverse_table.insert(
                     dedup_hash,
                     ReverseEntry {
                         timestamp_ms: now,
-                        received_from: recv_iface_hash,
                         receiving_interface_index: interface_index,
                         outbound_interface_index: target_iface,
                     },
@@ -1070,7 +1033,8 @@ impl<C: Clock, S: Storage> Transport<C, S> {
             if let Some(receipt) = self.receipts.get(&truncated) {
                 // Get the destination identity to verify the signature
                 // The proof should be signed by the destination that received our packet
-                if let Some(dest_entry) = self.destinations.get(receipt.destination_hash.as_bytes()) {
+                if let Some(dest_entry) = self.destinations.get(receipt.destination_hash.as_bytes())
+                {
                     if let Some(ref identity) = dest_entry.identity {
                         let is_valid = receipt.validate_proof(proof_data, identity);
                         if is_valid {
@@ -1110,24 +1074,23 @@ impl<C: Clock, S: Storage> Transport<C, S> {
         if self.config.enable_transport {
             if let Some(link_entry) = self.link_table.get(&dest_hash).cloned() {
                 // Determine direction with hop count validation
-                let target_iface =
-                    if interface_index == link_entry.next_hop_interface_index {
-                        // From destination side: check remaining_hops
-                        if packet.hops != link_entry.remaining_hops {
-                            self.stats.packets_dropped += 1;
-                            return Ok(());
-                        }
-                        link_entry.received_interface_index
-                    } else if interface_index == link_entry.received_interface_index {
-                        // From initiator side: check taken hops
-                        if packet.hops != link_entry.hops {
-                            self.stats.packets_dropped += 1;
-                            return Ok(());
-                        }
-                        link_entry.next_hop_interface_index
-                    } else {
-                        return Ok(()); // Unknown direction
-                    };
+                let target_iface = if interface_index == link_entry.next_hop_interface_index {
+                    // From destination side: check remaining_hops
+                    if packet.hops != link_entry.remaining_hops {
+                        self.stats.packets_dropped += 1;
+                        return Ok(());
+                    }
+                    link_entry.received_interface_index
+                } else if interface_index == link_entry.received_interface_index {
+                    // From initiator side: check taken hops
+                    if packet.hops != link_entry.hops {
+                        self.stats.packets_dropped += 1;
+                        return Ok(());
+                    }
+                    link_entry.next_hop_interface_index
+                } else {
+                    return Ok(()); // Unknown direction
+                };
 
                 // LRPROOF validation: check proof data size before forwarding
                 if packet.context == PacketContext::Lrproof {
@@ -1225,36 +1188,28 @@ impl<C: Clock, S: Storage> Transport<C, S> {
             // Check link table for validated links
             if let Some(link_entry) = self.link_table.get(&dest_hash).cloned() {
                 if link_entry.validated {
-                    let target_iface =
-                        if interface_index == link_entry.next_hop_interface_index {
-                            // From destination side: check remaining_hops
-                            if packet.hops != link_entry.remaining_hops {
-                                return Ok(());
-                            }
-                            link_entry.received_interface_index
-                        } else if interface_index == link_entry.received_interface_index {
-                            // From initiator side: check taken hops
-                            if packet.hops != link_entry.hops {
-                                return Ok(());
-                            }
-                            link_entry.next_hop_interface_index
-                        } else {
-                            return Ok(()); // Unknown direction
-                        };
+                    let target_iface = if interface_index == link_entry.next_hop_interface_index {
+                        // From destination side: check remaining_hops
+                        if packet.hops != link_entry.remaining_hops {
+                            return Ok(());
+                        }
+                        link_entry.received_interface_index
+                    } else if interface_index == link_entry.received_interface_index {
+                        // From initiator side: check taken hops
+                        if packet.hops != link_entry.hops {
+                            return Ok(());
+                        }
+                        link_entry.next_hop_interface_index
+                    } else {
+                        return Ok(()); // Unknown direction
+                    };
 
                     // Populate reverse table for link-routed data packets
                     let now = self.clock.now_ms();
-                    let recv_iface_hash = self
-                        .interfaces
-                        .get(interface_index)
-                        .and_then(|i| i.as_ref())
-                        .map(|i| i.hash())
-                        .unwrap_or([0u8; TRUNCATED_HASHBYTES]);
                     self.reverse_table.insert(
                         dedup_hash,
                         ReverseEntry {
                             timestamp_ms: now,
-                            received_from: recv_iface_hash,
                             receiving_interface_index: interface_index,
                             outbound_interface_index: target_iface,
                         },
@@ -1286,17 +1241,11 @@ impl<C: Clock, S: Storage> Transport<C, S> {
 
             // Populate reverse table at forwarding time
             let now = self.clock.now_ms();
-            let recv_iface_hash = self
-                .interfaces
-                .get(source_interface_index)
-                .and_then(|i| i.as_ref())
-                .map(|i| i.hash())
-                .unwrap_or([0u8; TRUNCATED_HASHBYTES]);
+
             self.reverse_table.insert(
                 dedup_hash,
                 ReverseEntry {
                     timestamp_ms: now,
-                    received_from: recv_iface_hash,
                     receiving_interface_index: source_interface_index,
                     outbound_interface_index: target_iface,
                 },
@@ -1328,11 +1277,7 @@ impl<C: Clock, S: Storage> Transport<C, S> {
 
     /// Forward a packet on all interfaces except one.
     /// Always increments hops, checks TTL, and updates stats.
-    fn forward_on_all_except(
-        &mut self,
-        except_index: usize,
-        packet: &mut Packet,
-    ) {
+    fn forward_on_all_except(&mut self, except_index: usize, packet: &mut Packet) {
         packet.hops = packet.hops.saturating_add(1);
         if packet.hops > self.config.max_hops {
             self.stats.packets_dropped += 1;
@@ -1430,8 +1375,7 @@ impl<C: Clock, S: Storage> Transport<C, S> {
     /// PLAIN destination with name "rnstransport.path.request".
     /// Hash = full_hash(name_hash)[:16], matching Python Reticulum.
     fn compute_path_request_hash() -> [u8; TRUNCATED_HASHBYTES] {
-        let name_hash =
-            Destination::compute_name_hash("rnstransport", &["path", "request"]);
+        let name_hash = Destination::compute_name_hash("rnstransport", &["path", "request"]);
         truncated_hash(&name_hash)
     }
 
@@ -1822,11 +1766,7 @@ mod tests {
         }
 
         impl CaptureMockInterface {
-            fn new(
-                name: &'static str,
-                id: u8,
-                sent: Arc<Mutex<Vec<Vec<u8>>>>,
-            ) -> Self {
+            fn new(name: &'static str, id: u8, sent: Arc<Mutex<Vec<Vec<u8>>>>) -> Self {
                 let mut hash = [0u8; TRUNCATED_HASHBYTES];
                 hash[0] = id;
                 Self {
@@ -1921,8 +1861,6 @@ mod tests {
             transport.path_table.insert(
                 hash,
                 PathEntry {
-                    timestamp_ms: now,
-                    received_from: [0; TRUNCATED_HASHBYTES],
                     hops: 3,
                     expires_ms: now + 3_600_000,
                     interface_index: 0,
@@ -1944,8 +1882,6 @@ mod tests {
             transport.path_table.insert(
                 hash,
                 PathEntry {
-                    timestamp_ms: now,
-                    received_from: [0; TRUNCATED_HASHBYTES],
                     hops: 1,
                     expires_ms: now + 1000, // Expires in 1 second
                     interface_index: 0,
@@ -2267,11 +2203,12 @@ mod tests {
 
         // ─── Helper: Build announce packet bytes ─────────────────────────
 
-        fn make_announce_raw(hops: u8, context: crate::packet::PacketContext) -> (Vec<u8>, [u8; TRUNCATED_HASHBYTES]) {
+        fn make_announce_raw(
+            hops: u8,
+            context: crate::packet::PacketContext,
+        ) -> (Vec<u8>, [u8; TRUNCATED_HASHBYTES]) {
             use crate::destination::{Destination, DestinationType, Direction};
-            use crate::packet::{
-                HeaderType, PacketData, PacketFlags, TransportType,
-            };
+            use crate::packet::{HeaderType, PacketData, PacketFlags, TransportType};
 
             let identity = Identity::generate(&mut OsRng);
             let dest = Destination::new(
@@ -2514,10 +2451,8 @@ mod tests {
         #[test]
         fn test_link_table_entry_expiry_validated() {
             let mut transport = make_transport_enabled();
-            let _idx0 =
-                transport.register_interface(Box::new(MockInterface::new("if0", 1)));
-            let _idx1 =
-                transport.register_interface(Box::new(MockInterface::new("if1", 2)));
+            let _idx0 = transport.register_interface(Box::new(MockInterface::new("if0", 1)));
+            let _idx1 = transport.register_interface(Box::new(MockInterface::new("if1", 2)));
             let now = transport.clock.now_ms();
 
             let link_id = [0xAA; TRUNCATED_HASHBYTES];
@@ -2525,12 +2460,10 @@ mod tests {
                 link_id,
                 LinkEntry {
                     timestamp_ms: now,
-                    next_hop_transport_id: [0x01; TRUNCATED_HASHBYTES],
                     next_hop_interface_index: 1,
                     remaining_hops: 2,
                     received_interface_index: 0,
                     hops: 1,
-                    destination_hash: [0xBB; TRUNCATED_HASHBYTES],
                     validated: true,
                     proof_timeout_ms: now + 30_000,
                 },
@@ -2548,10 +2481,8 @@ mod tests {
         #[test]
         fn test_link_table_entry_expiry_unvalidated() {
             let mut transport = make_transport_enabled();
-            let _idx0 =
-                transport.register_interface(Box::new(MockInterface::new("if0", 1)));
-            let _idx1 =
-                transport.register_interface(Box::new(MockInterface::new("if1", 2)));
+            let _idx0 = transport.register_interface(Box::new(MockInterface::new("if0", 1)));
+            let _idx1 = transport.register_interface(Box::new(MockInterface::new("if1", 2)));
             let now = transport.clock.now_ms();
 
             let link_id = [0xAA; TRUNCATED_HASHBYTES];
@@ -2560,12 +2491,10 @@ mod tests {
                 link_id,
                 LinkEntry {
                     timestamp_ms: now,
-                    next_hop_transport_id: [0x01; TRUNCATED_HASHBYTES],
                     next_hop_interface_index: 1,
                     remaining_hops: 2,
                     received_interface_index: 0,
                     hops: 1,
-                    destination_hash: [0xBB; TRUNCATED_HASHBYTES],
                     validated: false,
                     proof_timeout_ms: proof_timeout,
                 },
@@ -2582,10 +2511,8 @@ mod tests {
         #[test]
         fn test_link_table_validated_not_expired_early() {
             let mut transport = make_transport_enabled();
-            let _idx0 =
-                transport.register_interface(Box::new(MockInterface::new("if0", 1)));
-            let _idx1 =
-                transport.register_interface(Box::new(MockInterface::new("if1", 2)));
+            let _idx0 = transport.register_interface(Box::new(MockInterface::new("if0", 1)));
+            let _idx1 = transport.register_interface(Box::new(MockInterface::new("if1", 2)));
             let now = transport.clock.now_ms();
 
             let link_id = [0xAA; TRUNCATED_HASHBYTES];
@@ -2593,12 +2520,10 @@ mod tests {
                 link_id,
                 LinkEntry {
                     timestamp_ms: now,
-                    next_hop_transport_id: [0x01; TRUNCATED_HASHBYTES],
                     next_hop_interface_index: 1,
                     remaining_hops: 2,
                     received_interface_index: 0,
                     hops: 1,
-                    destination_hash: [0xBB; TRUNCATED_HASHBYTES],
                     validated: true,
                     proof_timeout_ms: now + 30_000,
                 },
@@ -2749,10 +2674,19 @@ mod tests {
 
             // Should have inserted a PATH_RESPONSE announce in the announce_table
             let entry = transport.announce_table.get(&dest_hash);
-            assert!(entry.is_some(), "Should have announce table entry for path response");
+            assert!(
+                entry.is_some(),
+                "Should have announce table entry for path response"
+            );
             let entry = entry.unwrap();
-            assert!(entry.block_rebroadcasts, "Should be marked as block_rebroadcasts");
-            assert!(entry.retransmit_at_ms.is_some(), "Should have a retransmit scheduled");
+            assert!(
+                entry.block_rebroadcasts,
+                "Should be marked as block_rebroadcasts"
+            );
+            assert!(
+                entry.retransmit_at_ms.is_some(),
+                "Should have a retransmit scheduled"
+            );
         }
 
         #[test]
@@ -2892,8 +2826,7 @@ mod tests {
         #[test]
         fn test_announce_replay_detected_via_random_blob() {
             let mut transport = make_transport_enabled();
-            let _idx0 =
-                transport.register_interface(Box::new(MockInterface::new("if0", 1)));
+            let _idx0 = transport.register_interface(Box::new(MockInterface::new("if0", 1)));
 
             let (raw, _dest_hash) = make_announce_raw(2, PacketContext::None);
             transport.process_incoming(0, &raw).unwrap();
@@ -2906,7 +2839,8 @@ mod tests {
             // Replay exact same announce (same random_hash)
             transport.process_incoming(0, &raw).unwrap();
             assert_eq!(
-                transport.stats().announces_processed, 1,
+                transport.stats().announces_processed,
+                1,
                 "Replayed announce should be dropped"
             );
         }
@@ -2914,8 +2848,7 @@ mod tests {
         #[test]
         fn test_different_random_blob_accepted() {
             let mut transport = make_transport_enabled();
-            let _idx0 =
-                transport.register_interface(Box::new(MockInterface::new("if0", 1)));
+            let _idx0 = transport.register_interface(Box::new(MockInterface::new("if0", 1)));
 
             let (raw1, _dest_hash) = make_announce_raw(2, PacketContext::None);
             transport.process_incoming(0, &raw1).unwrap();
@@ -2932,7 +2865,8 @@ mod tests {
             // This is a different destination, so it should be processed
             transport.process_incoming(0, &raw2).unwrap();
             assert_eq!(
-                transport.stats().announces_processed, 2,
+                transport.stats().announces_processed,
+                2,
                 "Different destination should be accepted"
             );
         }
@@ -2942,8 +2876,7 @@ mod tests {
         #[test]
         fn test_identity_stored_from_announce() {
             let mut transport = make_transport_enabled();
-            let _idx0 =
-                transport.register_interface(Box::new(MockInterface::new("if0", 1)));
+            let _idx0 = transport.register_interface(Box::new(MockInterface::new("if0", 1)));
 
             let (raw, dest_hash) = make_announce_raw(2, PacketContext::None);
             transport.process_incoming(0, &raw).unwrap();
@@ -2957,10 +2890,8 @@ mod tests {
         #[test]
         fn test_lrproof_invalid_length_not_forwarded() {
             let mut transport = make_transport_enabled();
-            let _idx0 =
-                transport.register_interface(Box::new(MockInterface::new("if0", 1)));
-            let _idx1 =
-                transport.register_interface(Box::new(MockInterface::new("if1", 2)));
+            let _idx0 = transport.register_interface(Box::new(MockInterface::new("if0", 1)));
+            let _idx1 = transport.register_interface(Box::new(MockInterface::new("if1", 2)));
 
             let link_id = [0xAA; TRUNCATED_HASHBYTES];
             let now = transport.clock.now_ms();
@@ -2969,12 +2900,10 @@ mod tests {
                 link_id,
                 LinkEntry {
                     timestamp_ms: now,
-                    next_hop_transport_id: [0x01; TRUNCATED_HASHBYTES],
                     next_hop_interface_index: 1,
                     remaining_hops: 2,
                     received_interface_index: 0,
                     hops: 1,
-                    destination_hash: [0xBB; TRUNCATED_HASHBYTES],
                     validated: false,
                     proof_timeout_ms: now + 30_000,
                 },
@@ -3002,7 +2931,8 @@ mod tests {
             transport.process_incoming(1, &buf[..len]).unwrap();
 
             assert_eq!(
-                transport.stats().packets_forwarded, 0,
+                transport.stats().packets_forwarded,
+                0,
                 "LRPROOF with invalid length should not be forwarded"
             );
             assert!(
@@ -3016,8 +2946,7 @@ mod tests {
         #[test]
         fn test_path_request_local_dest_schedules_rebroadcast() {
             let mut transport = make_transport_enabled();
-            let _idx0 =
-                transport.register_interface(Box::new(MockInterface::new("if0", 1)));
+            let _idx0 = transport.register_interface(Box::new(MockInterface::new("if0", 1)));
 
             let dest_hash = [0x42; TRUNCATED_HASHBYTES];
             transport.register_destination(dest_hash, false);
@@ -3056,10 +2985,9 @@ mod tests {
             // Should still emit PathRequestReceived event
             let events: Vec<_> = transport.drain_events().collect();
             assert!(
-                events.iter().any(|e| matches!(
-                    e,
-                    TransportEvent::PathRequestReceived { .. }
-                )),
+                events
+                    .iter()
+                    .any(|e| matches!(e, TransportEvent::PathRequestReceived { .. })),
                 "Should emit PathRequestReceived event"
             );
 
@@ -3075,10 +3003,8 @@ mod tests {
         #[test]
         fn test_link_table_cleaned_when_interface_offline() {
             let mut transport = make_transport_enabled();
-            let _idx0 =
-                transport.register_interface(Box::new(MockInterface::new("if0", 1)));
-            let idx1 =
-                transport.register_interface(Box::new(MockInterface::new("if1", 2)));
+            let _idx0 = transport.register_interface(Box::new(MockInterface::new("if0", 1)));
+            let idx1 = transport.register_interface(Box::new(MockInterface::new("if1", 2)));
 
             let link_id = [0xAA; TRUNCATED_HASHBYTES];
             let now = transport.clock.now_ms();
@@ -3086,12 +3012,10 @@ mod tests {
                 link_id,
                 LinkEntry {
                     timestamp_ms: now,
-                    next_hop_transport_id: [0x01; TRUNCATED_HASHBYTES],
                     next_hop_interface_index: 1,
                     remaining_hops: 2,
                     received_interface_index: 0,
                     hops: 1,
-                    destination_hash: [0xBB; TRUNCATED_HASHBYTES],
                     validated: true,
                     proof_timeout_ms: now + 30_000,
                 },
@@ -3110,10 +3034,8 @@ mod tests {
         #[test]
         fn test_reverse_table_cleaned_when_interface_offline() {
             let mut transport = make_transport_enabled();
-            let _idx0 =
-                transport.register_interface(Box::new(MockInterface::new("if0", 1)));
-            let idx1 =
-                transport.register_interface(Box::new(MockInterface::new("if1", 2)));
+            let _idx0 = transport.register_interface(Box::new(MockInterface::new("if0", 1)));
+            let idx1 = transport.register_interface(Box::new(MockInterface::new("if1", 2)));
 
             let hash = [0xAA; TRUNCATED_HASHBYTES];
             let now = transport.clock.now_ms();
@@ -3121,7 +3043,6 @@ mod tests {
                 hash,
                 ReverseEntry {
                     timestamp_ms: now,
-                    received_from: [0x01; TRUNCATED_HASHBYTES],
                     receiving_interface_index: 0,
                     outbound_interface_index: 1,
                 },
@@ -3142,14 +3063,15 @@ mod tests {
         #[test]
         fn test_link_request_stripped_to_type1_at_final_hop() {
             let mut transport = make_transport_enabled();
-            let _idx0 =
-                transport.register_interface(Box::new(MockInterface::new("if0", 1)));
+            let _idx0 = transport.register_interface(Box::new(MockInterface::new("if0", 1)));
 
             // Use CaptureMockInterface on if1 so we can inspect sent packets
             let sent_buf: Arc<Mutex<Vec<Vec<u8>>>> = Arc::new(Mutex::new(Vec::new()));
-            let _idx1 = transport.register_interface(Box::new(
-                CaptureMockInterface::new("if1", 2, sent_buf.clone()),
-            ));
+            let _idx1 = transport.register_interface(Box::new(CaptureMockInterface::new(
+                "if1",
+                2,
+                sent_buf.clone(),
+            )));
 
             // Path with hops=1 (destination directly connected to if1)
             let dest_hash = [0xBB; TRUNCATED_HASHBYTES];
@@ -3157,9 +3079,7 @@ mod tests {
             transport.path_table.insert(
                 dest_hash,
                 PathEntry {
-                    received_from: [0x02; TRUNCATED_HASHBYTES],
                     hops: 1,
-                    timestamp_ms: now,
                     expires_ms: now + 100_000,
                     interface_index: 1,
                     random_blobs: Vec::new(),
@@ -3195,13 +3115,14 @@ mod tests {
         #[test]
         fn test_link_request_type2_when_not_final_hop() {
             let mut transport = make_transport_enabled();
-            let _idx0 =
-                transport.register_interface(Box::new(MockInterface::new("if0", 1)));
+            let _idx0 = transport.register_interface(Box::new(MockInterface::new("if0", 1)));
 
             let sent_buf: Arc<Mutex<Vec<Vec<u8>>>> = Arc::new(Mutex::new(Vec::new()));
-            let _idx1 = transport.register_interface(Box::new(
-                CaptureMockInterface::new("if1", 2, sent_buf.clone()),
-            ));
+            let _idx1 = transport.register_interface(Box::new(CaptureMockInterface::new(
+                "if1",
+                2,
+                sent_buf.clone(),
+            )));
 
             // Path with hops=3 (destination is multiple hops away)
             let dest_hash = [0xBB; TRUNCATED_HASHBYTES];
@@ -3209,9 +3130,7 @@ mod tests {
             transport.path_table.insert(
                 dest_hash,
                 PathEntry {
-                    received_from: [0x02; TRUNCATED_HASHBYTES],
                     hops: 3,
-                    timestamp_ms: now,
                     expires_ms: now + 100_000,
                     interface_index: 1,
                     random_blobs: Vec::new(),
@@ -3255,12 +3174,16 @@ mod tests {
             let sent_if0: Arc<Mutex<Vec<Vec<u8>>>> = Arc::new(Mutex::new(Vec::new()));
             let sent_if1: Arc<Mutex<Vec<Vec<u8>>>> = Arc::new(Mutex::new(Vec::new()));
 
-            let _idx0 = transport.register_interface(Box::new(
-                CaptureMockInterface::new("if0", 1, sent_if0.clone()),
-            ));
-            let _idx1 = transport.register_interface(Box::new(
-                CaptureMockInterface::new("if1", 2, sent_if1.clone()),
-            ));
+            let _idx0 = transport.register_interface(Box::new(CaptureMockInterface::new(
+                "if0",
+                1,
+                sent_if0.clone(),
+            )));
+            let _idx1 = transport.register_interface(Box::new(CaptureMockInterface::new(
+                "if1",
+                2,
+                sent_if1.clone(),
+            )));
 
             // Create a path entry for dest_hash with hops=0 (directly connected
             // to if1), meaning the relay is the final hop.
@@ -3269,9 +3192,7 @@ mod tests {
             transport.path_table.insert(
                 dest_hash,
                 PathEntry {
-                    received_from: [0x02; TRUNCATED_HASHBYTES],
                     hops: 0,
-                    timestamp_ms: now,
                     expires_ms: now + 100_000,
                     interface_index: 1,
                     random_blobs: Vec::new(),
@@ -3322,10 +3243,7 @@ mod tests {
                     forwarded_pkt.transport_id.is_none(),
                     "Type1 must have no transport_id"
                 );
-                assert_eq!(
-                    forwarded_pkt.hops, 1,
-                    "Hops should be incremented by 1"
-                );
+                assert_eq!(forwarded_pkt.hops, 1, "Hops should be incremented by 1");
 
                 // Verify data payload is intact (the 64-byte link request data)
                 assert_eq!(
@@ -3380,7 +3298,10 @@ mod tests {
             // Verify the forwarded packet on if1
             {
                 let sent = sent_if1.lock().unwrap();
-                assert!(!sent.is_empty(), "Should have sent a forwarded packet on if1");
+                assert!(
+                    !sent.is_empty(),
+                    "Should have sent a forwarded packet on if1"
+                );
                 let forwarded_raw = &sent[0];
                 let forwarded_pkt = Packet::unpack(forwarded_raw)
                     .expect("Forwarded Type2->Type1 packet must be parseable");
@@ -3403,10 +3324,7 @@ mod tests {
                     forwarded_pkt.transport_id.is_none(),
                     "Type1 must strip transport_id"
                 );
-                assert_eq!(
-                    forwarded_pkt.hops, 1,
-                    "Hops should be original (0) + 1 = 1"
-                );
+                assert_eq!(forwarded_pkt.hops, 1, "Hops should be original (0) + 1 = 1");
 
                 // Verify data payload is intact (the 64-byte link request data)
                 assert_eq!(
@@ -3425,9 +3343,7 @@ mod tests {
             transport.path_table.insert(
                 dest_hash,
                 PathEntry {
-                    received_from: [0x02; TRUNCATED_HASHBYTES],
                     hops: 3,
-                    timestamp_ms: now,
                     expires_ms: now + 100_000,
                     interface_index: 1,
                     random_blobs: Vec::new(),
@@ -3436,10 +3352,8 @@ mod tests {
 
             let mut link_c = Link::new_outgoing(dest_hash.into(), &mut OsRng);
             let original_request_data_c = link_c.create_link_request();
-            let raw_type2_multi = link_c.build_link_request_packet_with_transport(
-                Some(fake_transport_id),
-                3,
-            );
+            let raw_type2_multi =
+                link_c.build_link_request_packet_with_transport(Some(fake_transport_id), 3);
 
             let forwarded_before = transport.stats().packets_forwarded;
             transport.process_incoming(0, &raw_type2_multi).unwrap();
@@ -3508,20 +3422,13 @@ mod tests {
                     entry.received_interface_index, 0,
                     "Link entry should record if0 as received interface"
                 );
-                assert_eq!(
-                    entry.destination_hash, dest_hash,
-                    "Link entry should record correct destination hash"
-                );
             }
         }
 
         // ─── Stage 4: Hop count validation ──────────────────────────────
 
         /// Build a data packet with the given destination hash and hop count
-        fn build_link_data_packet(
-            dest_hash: [u8; TRUNCATED_HASHBYTES],
-            hops: u8,
-        ) -> Packet {
+        fn build_link_data_packet(dest_hash: [u8; TRUNCATED_HASHBYTES], hops: u8) -> Packet {
             Packet {
                 flags: PacketFlags {
                     ifac_flag: false,
@@ -3542,10 +3449,8 @@ mod tests {
         #[test]
         fn test_link_data_wrong_hops_dropped() {
             let mut transport = make_transport_enabled();
-            let _idx0 =
-                transport.register_interface(Box::new(MockInterface::new("if0", 1)));
-            let _idx1 =
-                transport.register_interface(Box::new(MockInterface::new("if1", 2)));
+            let _idx0 = transport.register_interface(Box::new(MockInterface::new("if0", 1)));
+            let _idx1 = transport.register_interface(Box::new(MockInterface::new("if1", 2)));
 
             let link_id = [0xAA; TRUNCATED_HASHBYTES];
             let now = transport.clock.now_ms();
@@ -3553,12 +3458,10 @@ mod tests {
                 link_id,
                 LinkEntry {
                     timestamp_ms: now,
-                    next_hop_transport_id: [0x01; TRUNCATED_HASHBYTES],
                     next_hop_interface_index: 1,
                     remaining_hops: 3,
                     received_interface_index: 0,
                     hops: 2,
-                    destination_hash: [0xBB; TRUNCATED_HASHBYTES],
                     validated: true,
                     proof_timeout_ms: now + 30_000,
                 },
@@ -3570,7 +3473,8 @@ mod tests {
             let len = pkt.pack(&mut buf).unwrap();
             transport.process_incoming(1, &buf[..len]).unwrap();
             assert_eq!(
-                transport.stats().packets_forwarded, 0,
+                transport.stats().packets_forwarded,
+                0,
                 "Wrong hops should be dropped"
             );
         }
@@ -3578,10 +3482,8 @@ mod tests {
         #[test]
         fn test_link_data_correct_hops_forwarded() {
             let mut transport = make_transport_enabled();
-            let _idx0 =
-                transport.register_interface(Box::new(MockInterface::new("if0", 1)));
-            let _idx1 =
-                transport.register_interface(Box::new(MockInterface::new("if1", 2)));
+            let _idx0 = transport.register_interface(Box::new(MockInterface::new("if0", 1)));
+            let _idx1 = transport.register_interface(Box::new(MockInterface::new("if1", 2)));
 
             let link_id = [0xAA; TRUNCATED_HASHBYTES];
             let now = transport.clock.now_ms();
@@ -3589,12 +3491,10 @@ mod tests {
                 link_id,
                 LinkEntry {
                     timestamp_ms: now,
-                    next_hop_transport_id: [0x01; TRUNCATED_HASHBYTES],
                     next_hop_interface_index: 1,
                     remaining_hops: 3,
                     received_interface_index: 0,
                     hops: 2,
-                    destination_hash: [0xBB; TRUNCATED_HASHBYTES],
                     validated: true,
                     proof_timeout_ms: now + 30_000,
                 },
@@ -3614,10 +3514,8 @@ mod tests {
         #[test]
         fn test_link_data_correct_hops_from_initiator() {
             let mut transport = make_transport_enabled();
-            let _idx0 =
-                transport.register_interface(Box::new(MockInterface::new("if0", 1)));
-            let _idx1 =
-                transport.register_interface(Box::new(MockInterface::new("if1", 2)));
+            let _idx0 = transport.register_interface(Box::new(MockInterface::new("if0", 1)));
+            let _idx1 = transport.register_interface(Box::new(MockInterface::new("if1", 2)));
 
             let link_id = [0xAA; TRUNCATED_HASHBYTES];
             let now = transport.clock.now_ms();
@@ -3625,12 +3523,10 @@ mod tests {
                 link_id,
                 LinkEntry {
                     timestamp_ms: now,
-                    next_hop_transport_id: [0x01; TRUNCATED_HASHBYTES],
                     next_hop_interface_index: 1,
                     remaining_hops: 3,
                     received_interface_index: 0,
                     hops: 2,
-                    destination_hash: [0xBB; TRUNCATED_HASHBYTES],
                     validated: true,
                     proof_timeout_ms: now + 30_000,
                 },
@@ -3652,10 +3548,8 @@ mod tests {
         #[test]
         fn test_regular_proof_routed_via_reverse_table() {
             let mut transport = make_transport_enabled();
-            let _idx0 =
-                transport.register_interface(Box::new(MockInterface::new("if0", 1)));
-            let _idx1 =
-                transport.register_interface(Box::new(MockInterface::new("if1", 2)));
+            let _idx0 = transport.register_interface(Box::new(MockInterface::new("if0", 1)));
+            let _idx1 = transport.register_interface(Box::new(MockInterface::new("if1", 2)));
 
             // Simulate a data packet that was forwarded from if0 to if1,
             // creating a reverse table entry keyed by truncated_packet_hash
@@ -3665,7 +3559,6 @@ mod tests {
                 packet_hash,
                 ReverseEntry {
                     timestamp_ms: now,
-                    received_from: [0x01; TRUNCATED_HASHBYTES],
                     receiving_interface_index: 0, // received on if0
                     outbound_interface_index: 1,  // forwarded to if1
                 },
@@ -3685,9 +3578,7 @@ mod tests {
                 transport_id: None,
                 destination_hash: packet_hash,
                 context: PacketContext::None,
-                data: PacketData::Owned(
-                    alloc::vec![0x55; crate::constants::PROOF_DATA_SIZE],
-                ),
+                data: PacketData::Owned(alloc::vec![0x55; crate::constants::PROOF_DATA_SIZE]),
             };
 
             let mut buf = [0u8; crate::constants::MTU];
@@ -3734,8 +3625,7 @@ mod tests {
         #[test]
         fn test_path_request_tags_uses_efficient_deque() {
             let mut transport = make_transport_enabled();
-            let _idx0 =
-                transport.register_interface(Box::new(MockInterface::new("if0", 1)));
+            let _idx0 = transport.register_interface(Box::new(MockInterface::new("if0", 1)));
 
             let path_req_hash = transport.path_request_hash;
 

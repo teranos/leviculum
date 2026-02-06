@@ -67,7 +67,8 @@ async fn wait_for_proof_packet(
                     if let DeframeResult::Frame(data) = result {
                         if let Ok(pkt) = Packet::unpack(&data) {
                             if pkt.flags.packet_type == PacketType::Proof
-                                && pkt.destination_hash == *dest_hash {
+                                && pkt.destination_hash == *dest_hash
+                            {
                                 return Some(pkt);
                             }
                         }
@@ -480,7 +481,9 @@ async fn test_prove_all_link_traffic_comprehensive() {
         .try_into()
         .expect("Wrong length");
     let pub_key_bytes = hex::decode(&dest_info.public_key).expect("Invalid public key hex");
-    let signing_key: [u8; 32] = pub_key_bytes[32..64].try_into().expect("Wrong signing key length");
+    let signing_key: [u8; 32] = pub_key_bytes[32..64]
+        .try_into()
+        .expect("Wrong signing key length");
 
     // Create and send link request
     let mut link = Link::new_outgoing(dest_hash.into(), &mut OsRng);
@@ -490,7 +493,10 @@ async fn test_prove_all_link_traffic_comprehensive() {
     let link_request = link.build_link_request_packet();
     let mut framed = Vec::new();
     frame(&link_request, &mut framed);
-    stream.write_all(&framed).await.expect("Failed to send link request");
+    stream
+        .write_all(&framed)
+        .await
+        .expect("Failed to send link request");
     stream.flush().await.expect("Failed to flush");
 
     // Wait for link proof
@@ -543,7 +549,10 @@ async fn test_prove_all_link_traffic_comprehensive() {
 
     tokio::time::sleep(Duration::from_millis(200)).await;
 
-    println!("link established, sending {} packets with PROVE_ALL", NUM_PACKETS);
+    println!(
+        "link established, sending {} packets with PROVE_ALL",
+        NUM_PACKETS
+    );
 
     // Track sent packets and their hashes
     let mut sent_packet_hashes: Vec<[u8; 32]> = Vec::with_capacity(NUM_PACKETS);
@@ -565,7 +574,10 @@ async fn test_prove_all_link_traffic_comprehensive() {
 
         framed.clear();
         frame(&data_packet, &mut framed);
-        stream.write_all(&framed).await.expect("Failed to send data");
+        stream
+            .write_all(&framed)
+            .await
+            .expect("Failed to send data");
         stream.flush().await.expect("Failed to flush");
 
         // Wait for proof (with short timeout since it should come quickly)
@@ -588,7 +600,11 @@ async fn test_prove_all_link_traffic_comprehensive() {
             } else {
                 // Provide detailed error for debugging
                 if proof_data.len() < PROOF_DATA_SIZE {
-                    println!("  packet {}: proof too short ({} bytes)", i, proof_data.len());
+                    println!(
+                        "  packet {}: proof too short ({} bytes)",
+                        i,
+                        proof_data.len()
+                    );
                 } else {
                     let proof_hash: [u8; 32] = proof_data[..32].try_into().unwrap();
                     if proof_hash != expected_hash {
@@ -624,5 +640,8 @@ async fn test_prove_all_link_traffic_comprehensive() {
     );
 
     // Verify daemon is still healthy
-    daemon.ping().await.expect("Daemon should still be responsive");
+    daemon
+        .ping()
+        .await
+        .expect("Daemon should still be responsive");
 }

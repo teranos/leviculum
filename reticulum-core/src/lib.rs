@@ -108,9 +108,9 @@ pub use compression::{compress, decompress, decompress_auto, CompressionError};
 pub use destination::{Destination, DestinationHash, ProofStrategy};
 pub use identity::Identity;
 pub use ifac::{IfacConfig, IfacError};
-pub use link::channel::{Channel, ChannelAction, ChannelError, Envelope, Message, MessageState};
 #[cfg(feature = "compression")]
 pub use link::channel::CompressingWriter;
+pub use link::channel::{Channel, ChannelAction, ChannelError, Envelope, Message, MessageState};
 pub use link::{Link, LinkCloseReason, LinkError, LinkEvent, LinkId, LinkState, PeerKeys};
 pub use node::{
     BuildError, CloseReason, Connection, ConnectionError, DeliveryError, NodeCore, NodeCoreBuilder,
@@ -121,4 +121,6 @@ pub use ratchet::{KnownRatchets, Ratchet, RatchetError};
 pub use receipt::{PacketReceipt, ReceiptStatus};
 
 // Re-export traits
-pub use traits::{Clock, Interface, InterfaceError, InterfaceMode, NoStorage, Storage, StorageError};
+pub use traits::{
+    Clock, Interface, InterfaceError, InterfaceMode, NoStorage, Storage, StorageError,
+};

@@ -42,7 +42,10 @@ async fn test_node_creation_and_startup() {
     node.stop().await.expect("Failed to stop node");
 
     // Verify node is stopped
-    assert!(!node.is_running(), "Node should not be running after stop()");
+    assert!(
+        !node.is_running(),
+        "Node should not be running after stop()"
+    );
 }
 
 /// Test that a node can receive announce events from Python daemon
@@ -80,11 +83,7 @@ async fn test_node_receives_announce_from_daemon() {
     let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
     let mut found = false;
     while tokio::time::Instant::now() < deadline {
-        let event_result = timeout(
-            deadline - tokio::time::Instant::now(),
-            events.recv(),
-        )
-        .await;
+        let event_result = timeout(deadline - tokio::time::Instant::now(), events.recv()).await;
 
         match event_result {
             Ok(Some(NodeEvent::AnnounceReceived { announce, .. })) => {
@@ -104,7 +103,10 @@ async fn test_node_receives_announce_from_daemon() {
             Err(_) => break,
         }
     }
-    assert!(found, "Should receive AnnounceReceived event within timeout");
+    assert!(
+        found,
+        "Should receive AnnounceReceived event within timeout"
+    );
 
     // Clean up
     node.stop().await.expect("Failed to stop node");
@@ -165,7 +167,7 @@ async fn test_node_receives_multiple_announces() {
             Ok(Some(_)) => {
                 // Other event types, continue
             }
-            Ok(None) => break, // Channel closed
+            Ok(None) => break,  // Channel closed
             Err(_) => continue, // Timeout, try again
         }
     }
@@ -233,10 +235,7 @@ async fn test_node_graceful_shutdown() {
         .register_destination("shutdown_test", &["app"])
         .await
         .expect("Failed to register");
-    daemon
-        .announce_destination(&dest.hash, b"data")
-        .await
-        .ok();
+    daemon.announce_destination(&dest.hash, b"data").await.ok();
 
     // Let one event come through
     let _ = timeout(Duration::from_secs(2), events.recv()).await;
@@ -244,14 +243,8 @@ async fn test_node_graceful_shutdown() {
     // Stop should complete without hanging
     let stop_result = timeout(Duration::from_secs(5), node.stop()).await;
 
-    assert!(
-        stop_result.is_ok(),
-        "Stop should complete within timeout"
-    );
-    assert!(
-        stop_result.unwrap().is_ok(),
-        "Stop should succeed"
-    );
+    assert!(stop_result.is_ok(), "Stop should complete within timeout");
+    assert!(stop_result.unwrap().is_ok(), "Stop should succeed");
 }
 
 /// Test that node can be started and stopped multiple times
@@ -344,7 +337,10 @@ async fn test_node_learns_path_from_announce() {
         let dest_hash = reticulum_core::DestinationHash::new(dest_hash_bytes);
 
         let has_path = core.has_path(&dest_hash);
-        assert!(has_path, "Node should have a path to the announced destination");
+        assert!(
+            has_path,
+            "Node should have a path to the announced destination"
+        );
     } // Lock is dropped here before await
 
     node.stop().await.expect("Failed to stop node");
@@ -365,5 +361,9 @@ async fn test_node_builder_creates_node_without_interfaces() {
 
     // Verify identity exists
     let identity = core.identity();
-    assert_eq!(identity.hash().len(), 16, "Identity hash should be 16 bytes");
+    assert_eq!(
+        identity.hash().len(),
+        16,
+        "Identity hash should be 16 bytes"
+    );
 }

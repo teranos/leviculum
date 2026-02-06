@@ -308,11 +308,7 @@ impl Identity {
     ///
     /// # Returns
     /// Ciphertext that can be decrypted by the holder of this identity's private key
-    pub fn encrypt<R: rand_core::CryptoRngCore>(
-        &self,
-        plaintext: &[u8],
-        rng: &mut R,
-    ) -> Vec<u8> {
+    pub fn encrypt<R: rand_core::CryptoRngCore>(&self, plaintext: &[u8], rng: &mut R) -> Vec<u8> {
         // Generate ephemeral X25519 key pair
         let ephemeral_private = x25519_dalek::StaticSecret::random_from_rng(&mut *rng);
 
@@ -1076,11 +1072,8 @@ mod tests {
 
         // Encrypt for Alice's identity using ratchet
         let plaintext = b"Secret for Alice";
-        let ciphertext = alice.encrypt_for_destination(
-            plaintext,
-            Some(&ratchet.public_key_bytes()),
-            &mut OsRng,
-        );
+        let ciphertext =
+            alice.encrypt_for_destination(plaintext, Some(&ratchet.public_key_bytes()), &mut OsRng);
 
         // Bob cannot decrypt even with the same ratchet (different identity hash used in HKDF)
         let ratchets = [ratchet];

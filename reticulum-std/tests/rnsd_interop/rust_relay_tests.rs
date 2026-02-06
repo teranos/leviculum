@@ -34,12 +34,8 @@ use crate::harness::TestDaemon;
 #[tokio::test]
 async fn test_rust_relay_announce_and_link_data() {
     // Step 1: Start two independent Python daemons
-    let daemon_a = TestDaemon::start()
-        .await
-        .expect("Failed to start daemon A");
-    let daemon_b = TestDaemon::start()
-        .await
-        .expect("Failed to start daemon B");
+    let daemon_a = TestDaemon::start().await.expect("Failed to start daemon A");
+    let daemon_b = TestDaemon::start().await.expect("Failed to start daemon B");
 
     // Step 2: Build Rust node with transport enabled, connecting to both daemons
     let mut relay = ReticulumNodeBuilder::new()
@@ -88,10 +84,8 @@ async fn test_rust_relay_announce_and_link_data() {
         .expect("Failed to announce dest_B");
 
     // Step 5: Wait for cross-visibility via Rust relay
-    let a_sees_b =
-        wait_for_path_on_daemon(&daemon_a, &dest_b_hash, Duration::from_secs(20)).await;
-    let b_sees_a =
-        wait_for_path_on_daemon(&daemon_b, &dest_a_hash, Duration::from_secs(20)).await;
+    let a_sees_b = wait_for_path_on_daemon(&daemon_a, &dest_b_hash, Duration::from_secs(20)).await;
+    let b_sees_a = wait_for_path_on_daemon(&daemon_b, &dest_a_hash, Duration::from_secs(20)).await;
 
     assert!(
         a_sees_b,

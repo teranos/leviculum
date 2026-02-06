@@ -759,7 +759,9 @@ mod tests {
         )
         .unwrap();
 
-        let packet = dest.announce(Some(b"hello"), &mut OsRng, TEST_TIME_MS).unwrap();
+        let packet = dest
+            .announce(Some(b"hello"), &mut OsRng, TEST_TIME_MS)
+            .unwrap();
 
         // Verify packet structure
         assert_eq!(packet.flags.packet_type, PacketType::Announce);
@@ -844,7 +846,9 @@ mod tests {
         )
         .unwrap();
 
-        let packet = dest.announce(Some(b"app-data"), &mut OsRng, TEST_TIME_MS).unwrap();
+        let packet = dest
+            .announce(Some(b"app-data"), &mut OsRng, TEST_TIME_MS)
+            .unwrap();
 
         // Full validation should pass
         let announce = ReceivedAnnounce::from_packet(&packet).unwrap();
@@ -1280,7 +1284,9 @@ mod tests {
 
         dest.enable_ratchets(&mut OsRng, TEST_TIME_MS).unwrap();
 
-        let packet = dest.announce(Some(b"test-data"), &mut OsRng, TEST_TIME_MS).unwrap();
+        let packet = dest
+            .announce(Some(b"test-data"), &mut OsRng, TEST_TIME_MS)
+            .unwrap();
 
         // context_flag should be set
         assert!(packet.flags.context_flag);
@@ -1312,7 +1318,9 @@ mod tests {
 
         // Don't enable ratchets
 
-        let packet = dest.announce(Some(b"test-data"), &mut OsRng, TEST_TIME_MS).unwrap();
+        let packet = dest
+            .announce(Some(b"test-data"), &mut OsRng, TEST_TIME_MS)
+            .unwrap();
 
         // context_flag should NOT be set
         assert!(!packet.flags.context_flag);

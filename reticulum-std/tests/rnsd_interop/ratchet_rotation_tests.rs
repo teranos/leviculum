@@ -113,7 +113,7 @@ async fn test_rotation_during_active_link() {
     assert_eq!(link.state(), LinkState::Active);
 
     // Send RTT
-    
+
     let rtt_packet = link.build_rtt_packet(0.05, &mut OsRng).unwrap();
     framed.clear();
     frame(&rtt_packet, &mut framed);
@@ -522,7 +522,7 @@ async fn test_link_to_ratcheted_destination() {
     );
 
     // Send RTT
-    
+
     let rtt_packet = link.build_rtt_packet(0.05, &mut OsRng).unwrap();
     framed.clear();
     frame(&rtt_packet, &mut framed);

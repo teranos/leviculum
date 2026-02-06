@@ -93,11 +93,7 @@ impl Connection {
     /// * `link_id` - The ID of the underlying link
     /// * `destination_hash` - The destination this connection is to
     /// * `is_initiator` - Whether we initiated this connection
-    pub fn new(
-        link_id: LinkId,
-        destination_hash: DestinationHash,
-        is_initiator: bool,
-    ) -> Self {
+    pub fn new(link_id: LinkId, destination_hash: DestinationHash, is_initiator: bool) -> Self {
         Self {
             link_id,
             destination_hash,
@@ -267,7 +263,9 @@ impl Connection {
         decrypted_data: &[u8],
     ) -> Result<Option<M>, ConnectionError> {
         let channel = self.get_or_create_channel(rtt_ms);
-        channel.receive_message::<M>(decrypted_data).map_err(Into::into)
+        channel
+            .receive_message::<M>(decrypted_data)
+            .map_err(Into::into)
     }
 
     /// Receive raw bytes from decrypted channel data

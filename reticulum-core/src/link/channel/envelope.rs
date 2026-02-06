@@ -235,7 +235,10 @@ mod tests {
     #[test]
     fn test_envelope_unpack_too_short() {
         let short = [0x00, 0x01, 0x00];
-        assert_eq!(Envelope::unpack(&short), Err(ChannelError::EnvelopeTooShort));
+        assert_eq!(
+            Envelope::unpack(&short),
+            Err(ChannelError::EnvelopeTooShort)
+        );
     }
 
     #[test]

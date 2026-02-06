@@ -254,8 +254,7 @@ mod tests {
         // BZ2 data starts with "BZ" magic
         assert_eq!(&compressed[0..2], b"BZ");
 
-        let decompressed =
-            decompress(&compressed, original.len() * 2).expect("decompress failed");
+        let decompressed = decompress(&compressed, original.len() * 2).expect("decompress failed");
         assert_eq!(decompressed, original);
     }
 
@@ -309,7 +308,8 @@ mod tests {
         let compressed = compress(original).expect("compress failed");
 
         // Auto-size should work without knowing exact size
-        let decompressed = decompress_auto(&compressed, 1024 * 1024).expect("decompress_auto failed");
+        let decompressed =
+            decompress_auto(&compressed, 1024 * 1024).expect("decompress_auto failed");
         assert_eq!(decompressed, original);
     }
 
