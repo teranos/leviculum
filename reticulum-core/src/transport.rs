@@ -249,7 +249,7 @@ pub enum TransportEvent {
 // ─── Error Types ────────────────────────────────────────────────────────────
 
 /// Transport error type
-#[derive(Debug)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TransportError {
     /// No path to destination
     NoPath,
