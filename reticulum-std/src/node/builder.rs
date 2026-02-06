@@ -153,6 +153,46 @@ impl ReticulumNodeBuilder {
         self
     }
 
+    /// Build the ReticulumNode synchronously
+    ///
+    /// Same as `build()` but does not require an async context.
+    /// Useful when constructing a node outside of an async runtime.
+    pub fn build_sync(self) -> Result<ReticulumNode, Error> {
+        // Load config if specified
+        let config = if let Some(ref path) = self.config_path {
+            if path.exists() {
+                Config::load(path)?
+            } else {
+                Config::default()
+            }
+        } else {
+            Config::default()
+        };
+
+        // Determine storage path
+        let storage_path = self
+            .storage_path
+            .or_else(|| config.reticulum.storage_path.clone())
+            .unwrap_or_else(|| Config::default_config_dir().join("storage"));
+
+        // Initialize storage
+        let storage = Storage::new(&storage_path)?;
+        let clock = SystemClock::new();
+
+        // Merge interface configs from file
+        let mut interfaces = config.interfaces.into_values().collect::<Vec<_>>();
+        interfaces.extend(self.interfaces);
+
+        // Build NodeCore directly from the core builder
+        let enable_transport = self.core_builder.is_transport_enabled();
+        let node_core = self
+            .core_builder
+            .build(rand_core::OsRng, clock, storage)
+            .map_err(|e| Error::Transport(format!("{:?}", e)))?;
+
+        Ok(ReticulumNode::new(node_core, interfaces, enable_transport))
+    }
+
     /// Build the ReticulumNode
     ///
     /// This creates the node, initializes storage, and prepares interfaces.

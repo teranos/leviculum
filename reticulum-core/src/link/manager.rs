@@ -643,6 +643,79 @@ impl LinkManager {
         self.pending_outgoing.len() + self.pending_incoming.len()
     }
 
+    /// Compute the earliest deadline across all link-layer timers
+    ///
+    /// Returns `None` if there are no pending deadlines (no links, no pending
+    /// handshakes, no data receipts). The returned value is in milliseconds.
+    pub fn next_deadline(&self, now_ms: u64) -> Option<u64> {
+        let now_secs = now_ms / MS_PER_SECOND;
+        let mut earliest: Option<u64> = None;
+
+        let mut update = |deadline_ms: u64| {
+            earliest = Some(match earliest {
+                Some(e) => core::cmp::min(e, deadline_ms),
+                None => deadline_ms,
+            });
+        };
+
+        // Pending outgoing handshake timeouts
+        for p in self.pending_outgoing.values() {
+            update(p.created_at_ms.saturating_add(LINK_PENDING_TIMEOUT_MS));
+        }
+
+        // Pending incoming handshake timeouts
+        for p in self.pending_incoming.values() {
+            update(p.proof_sent_at_ms.saturating_add(LINK_PENDING_TIMEOUT_MS));
+        }
+
+        // Data receipt timeouts
+        for receipt in self.data_receipts.values() {
+            update(receipt.sent_at_ms.saturating_add(DATA_RECEIPT_TIMEOUT_MS));
+        }
+
+        // Active link keepalive and stale deadlines
+        for link in self.links.values() {
+            match link.state() {
+                LinkState::Active => {
+                    // Next keepalive (initiator only)
+                    if link.is_initiator() {
+                        let base = if link.last_keepalive_secs() > 0 {
+                            link.last_keepalive_secs()
+                        } else {
+                            link.established_at_secs().unwrap_or(now_secs)
+                        };
+                        let next_keepalive_secs = base.saturating_add(link.keepalive_secs());
+                        update(next_keepalive_secs.saturating_mul(MS_PER_SECOND));
+                    }
+
+                    // Next stale check
+                    if link.last_inbound_secs() > 0 {
+                        let stale_at_secs = link
+                            .last_inbound_secs()
+                            .saturating_add(link.stale_time_secs());
+                        update(stale_at_secs.saturating_mul(MS_PER_SECOND));
+                    }
+                }
+                LinkState::Stale => {
+                    // Already stale — deadline is when it should be closed
+                    // We can't compute this exactly without RTT, so use a short deadline
+                    // to ensure check_stale_links runs soon
+                    update(now_ms.saturating_add(MS_PER_SECOND));
+                }
+                _ => {}
+            }
+        }
+
+        // Channel retransmit deadlines — channels track their own timeouts
+        // but we don't have a direct accessor. Use a short deadline if channels exist.
+        if !self.channels.is_empty() {
+            // Ensure we poll channels at least every second
+            update(now_ms.saturating_add(MS_PER_SECOND));
+        }
+
+        earliest
+    }
+
     /// Take the pending RTT packet for a link (if any)
     ///
     /// After processing a PROOF packet, the initiator needs to send an RTT

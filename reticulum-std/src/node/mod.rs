@@ -4,13 +4,18 @@
 //! with the Reticulum network. It wraps the no_std `NodeCore` from reticulum-core
 //! and provides async/await methods for common operations.
 //!
-//! # Overview
+//! # Architecture (Sans-I/O)
 //!
-//! `ReticulumNode` simplifies working with Reticulum by:
-//! - Managing the event loop internally
-//! - Providing async methods for send/receive operations
-//! - Handling interface management (TCP, etc.)
-//! - Supporting connection streams with AsyncRead/AsyncWrite
+//! `NodeCore` from reticulum-core is a pure state machine that never performs I/O
+//! directly. Instead, it returns `Action` values (SendPacket, Broadcast) that this
+//! driver dispatches to the actual network interfaces.
+//!
+//! The event loop:
+//! 1. Polls interfaces for incoming data (non-blocking)
+//! 2. Feeds packets to `NodeCore::handle_packet()` → gets `TickOutput`
+//! 3. Periodically calls `NodeCore::handle_timeout()` → gets `TickOutput`
+//! 4. Dispatches `Action`s from `TickOutput` to interfaces
+//! 5. Forwards `NodeEvent`s to the application
 //!
 //! # Example
 //!
@@ -52,10 +57,11 @@ use std::time::Duration;
 
 use tokio::sync::{mpsc, oneshot, watch};
 
-use reticulum_core::constants::TRUNCATED_HASHBYTES;
+use reticulum_core::constants::{MTU, TRUNCATED_HASHBYTES};
 use reticulum_core::link::LinkId;
 use reticulum_core::node::{NodeCore, NodeEvent};
-use reticulum_core::traits::Interface;
+use reticulum_core::traits::{Clock, Interface, InterfaceError};
+use reticulum_core::transport::{Action, InterfaceId, TickOutput};
 use reticulum_core::{Destination, DestinationHash};
 
 use crate::clock::SystemClock;
@@ -67,7 +73,7 @@ use crate::storage::Storage;
 /// Type alias for the concrete NodeCore used by std platforms
 pub type StdNodeCore = NodeCore<rand_core::OsRng, SystemClock, Storage>;
 
-/// Default poll interval in milliseconds
+/// Default poll interval in milliseconds (fallback when no deadline is set)
 const DEFAULT_POLL_INTERVAL_MS: u64 = 50;
 
 /// Event channel capacity
@@ -142,14 +148,8 @@ impl ReticulumNode {
             return Err(Error::Transport("Node already running".to_string()));
         }
 
-        // Initialize interfaces and register them with NodeCore
+        // Initialize interfaces — the driver owns them, NOT NodeCore
         let interfaces = self.initialize_interfaces().await?;
-        {
-            let mut core = self.inner.lock().unwrap();
-            for iface in interfaces {
-                core.register_interface(iface);
-            }
-        }
 
         let (shutdown_tx, shutdown_rx) = watch::channel(false);
         self.shutdown_tx = Some(shutdown_tx);
@@ -162,7 +162,15 @@ impl ReticulumNode {
 
         // Spawn the runner
         let runner_handle = tokio::spawn(async move {
-            run_event_loop(inner, event_tx, connections, pending_connects, shutdown_rx).await;
+            run_event_loop(
+                inner,
+                interfaces,
+                event_tx,
+                connections,
+                pending_connects,
+                shutdown_rx,
+            )
+            .await;
         });
 
         self.runner_handle = Some(runner_handle);
@@ -351,42 +359,111 @@ impl ReticulumNode {
     }
 }
 
-/// Run the internal event loop
+// ─── Sans-I/O Event Loop ────────────────────────────────────────────────────
+
+/// Run the internal event loop (sans-I/O architecture)
+///
+/// The driver owns the interfaces and acts as the I/O bridge between the
+/// pure state machine (`NodeCore`) and the actual network.
 async fn run_event_loop(
     inner: Arc<Mutex<StdNodeCore>>,
+    mut interfaces: Vec<Box<dyn Interface + Send>>,
     event_tx: mpsc::Sender<NodeEvent>,
     connections: Arc<Mutex<HashMap<LinkId, ConnectionChannels>>>,
     pending_connects: Arc<Mutex<HashMap<[u8; TRUNCATED_HASHBYTES], oneshot::Sender<LinkId>>>>,
     mut shutdown: watch::Receiver<bool>,
 ) {
-    let poll_interval = Duration::from_millis(DEFAULT_POLL_INTERVAL_MS);
-    let mut interval = tokio::time::interval(poll_interval);
+    let default_interval = Duration::from_millis(DEFAULT_POLL_INTERVAL_MS);
+    let mut recv_buf = [0u8; MTU];
 
     loop {
+        // Compute how long to sleep: use next_deadline or default interval
+        let sleep_duration = {
+            let core = inner.lock().unwrap();
+            if let Some(deadline_ms) = core.next_deadline() {
+                let now_ms = core.transport().clock().now_ms();
+                if deadline_ms <= now_ms {
+                    Duration::ZERO
+                } else {
+                    let wait_ms = deadline_ms - now_ms;
+                    Duration::from_millis(wait_ms).min(default_interval)
+                }
+            } else {
+                default_interval
+            }
+        };
+
         tokio::select! {
-            _ = interval.tick() => {
-                // Process outgoing data from connections
+            _ = tokio::time::sleep(sleep_duration) => {
+                // 1. Process outgoing data from connection streams
                 process_outgoing(&inner, &connections);
 
-                // Drive node for one tick, collecting all events
-                let events = {
-                    let mut core = inner.lock().unwrap();
-                    core.tick()
-                };
+                // 2. Poll each interface and process packets immediately.
+                //    Process-and-dispatch per packet before reading the next,
+                //    matching old poll_interfaces() semantics where forwarded
+                //    packets are sent before reading subsequent interfaces.
+                let num_interfaces = interfaces.len();
+                let mut disconnected: Vec<InterfaceId> = Vec::new();
 
-                // Handle events
-                for event in events {
-                    handle_event(
-                        &event,
+                for idx in 0..num_interfaces {
+                    loop {
+                        let result = interfaces[idx].recv(&mut recv_buf);
+                        match result {
+                            Ok(len) if len > 0 => {
+                                let data = recv_buf[..len].to_vec();
+                                let output = {
+                                    let mut core = inner.lock().unwrap();
+                                    core.handle_packet(InterfaceId(idx), &data)
+                                };
+                                dispatch_output(
+                                    output,
+                                    &mut interfaces,
+                                    &event_tx,
+                                    &connections,
+                                    &pending_connects,
+                                );
+                            }
+                            Ok(_) | Err(InterfaceError::WouldBlock) => break,
+                            Err(InterfaceError::Disconnected) => {
+                                tracing::warn!("Interface {} disconnected", idx);
+                                disconnected.push(InterfaceId(idx));
+                                break;
+                            }
+                            Err(e) => {
+                                tracing::debug!("Interface {} recv error: {:?}", idx, e);
+                                break;
+                            }
+                        }
+                    }
+                }
+
+                // 3. Handle disconnected interfaces
+                for iface_id in disconnected {
+                    let output = {
+                        let mut core = inner.lock().unwrap();
+                        core.handle_interface_down(iface_id)
+                    };
+                    dispatch_output(
+                        output,
+                        &mut interfaces,
+                        &event_tx,
                         &connections,
                         &pending_connects,
                     );
-
-                    // Forward to external receiver
-                    if event_tx.try_send(event).is_err() {
-                        tracing::warn!("Event channel full, dropping event");
-                    }
                 }
+
+                // 4. Run periodic maintenance
+                let output = {
+                    let mut core = inner.lock().unwrap();
+                    core.handle_timeout()
+                };
+                dispatch_output(
+                    output,
+                    &mut interfaces,
+                    &event_tx,
+                    &connections,
+                    &pending_connects,
+                );
             }
             _ = shutdown.changed() => {
                 if *shutdown.borrow() {
@@ -395,6 +472,50 @@ async fn run_event_loop(
                 }
             }
         }
+    }
+}
+
+/// Dispatch a TickOutput: execute Actions on interfaces and forward Events
+fn dispatch_output(
+    output: TickOutput,
+    interfaces: &mut [Box<dyn Interface + Send>],
+    event_tx: &mpsc::Sender<NodeEvent>,
+    connections: &Arc<Mutex<HashMap<LinkId, ConnectionChannels>>>,
+    pending_connects: &Arc<Mutex<HashMap<[u8; TRUNCATED_HASHBYTES], oneshot::Sender<LinkId>>>>,
+) {
+    // Execute I/O actions
+    for action in &output.actions {
+        match action {
+            Action::SendPacket { iface, data } => {
+                if let Some(iface_obj) = interfaces.get_mut(iface.0) {
+                    if iface_obj.is_online() {
+                        if let Err(e) = iface_obj.send(data) {
+                            tracing::debug!("Send error on {}: {:?}", iface, e);
+                        }
+                    }
+                }
+            }
+            Action::Broadcast {
+                data,
+                exclude_iface,
+            } => {
+                for (idx, iface_obj) in interfaces.iter_mut().enumerate() {
+                    if Some(InterfaceId(idx)) == *exclude_iface {
+                        continue;
+                    }
+                    if iface_obj.is_online() {
+                        let _ = iface_obj.send(data); // Best effort
+                    }
+                }
+            }
+        }
+    }
+
+    // Forward events: handle internal routing and send to application
+    for event in output.events {
+        handle_event(&event, connections, pending_connects);
+        // Forward to external event receiver (best effort — drop if full)
+        let _ = event_tx.try_send(event);
     }
 }
 
@@ -425,9 +546,6 @@ fn handle_event(
 ) {
     match event {
         NodeEvent::ConnectionEstablished { link_id, .. } => {
-            // Note: We can't easily look up the destination hash from just the link_id
-            // This would require changes to NodeCore to include destination_hash in the event
-            // For now, the connection will be set up when the user explicitly calls connect()
             tracing::debug!("Connection established: {:?}", link_id);
         }
         NodeEvent::DataReceived { link_id, data } => {

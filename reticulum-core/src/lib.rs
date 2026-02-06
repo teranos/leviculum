@@ -119,6 +119,7 @@ pub use node::{
 pub use packet::Packet;
 pub use ratchet::{KnownRatchets, Ratchet, RatchetError};
 pub use receipt::{PacketReceipt, ReceiptStatus};
+pub use transport::{Action, InterfaceId, TickOutput};
 
 // Re-export traits
 pub use traits::{

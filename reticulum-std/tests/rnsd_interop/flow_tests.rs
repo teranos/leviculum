@@ -29,11 +29,11 @@ use rand_core::OsRng;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::time::timeout;
 
-use reticulum_core::constants::{MTU, TRUNCATED_HASHBYTES};
+use reticulum_core::constants::TRUNCATED_HASHBYTES;
 use reticulum_core::identity::Identity;
 use reticulum_core::link::{Link, LinkState};
 use reticulum_core::packet::{Packet, PacketType};
-use reticulum_core::traits::{Clock, Interface, InterfaceError, NoStorage};
+use reticulum_core::traits::{Clock, NoStorage};
 use reticulum_core::transport::{Transport, TransportConfig, TransportEvent};
 use reticulum_std::interfaces::hdlc::{frame, DeframeResult, Deframer};
 
@@ -55,63 +55,15 @@ impl Clock for TestClock {
     }
 }
 
-/// Mock interface for Transport tests
-struct MockInterface {
-    name: String,
-    hash: [u8; TRUNCATED_HASHBYTES],
-    online: bool,
-    sent_packets: Vec<Vec<u8>>,
-}
-
-impl MockInterface {
-    fn new(name: &str) -> Self {
-        let mut hash = [0u8; TRUNCATED_HASHBYTES];
-        rand_core::RngCore::fill_bytes(&mut OsRng, &mut hash);
-        Self {
-            name: name.to_string(),
-            hash,
-            online: true,
-            sent_packets: Vec::new(),
-        }
-    }
-}
-
-impl Interface for MockInterface {
-    fn name(&self) -> &str {
-        &self.name
-    }
-
-    fn mtu(&self) -> usize {
-        MTU
-    }
-
-    fn hash(&self) -> [u8; TRUNCATED_HASHBYTES] {
-        self.hash
-    }
-
-    fn send(&mut self, data: &[u8]) -> Result<(), InterfaceError> {
-        self.sent_packets.push(data.to_vec());
-        Ok(())
-    }
-
-    fn recv(&mut self, _buf: &mut [u8]) -> Result<usize, InterfaceError> {
-        Err(InterfaceError::WouldBlock)
-    }
-
-    fn is_online(&self) -> bool {
-        self.online
-    }
-}
-
-/// Create a Transport with a mock interface for testing
+/// Create a Transport for testing (sans-I/O, no interfaces registered)
 fn create_test_transport() -> (Transport<TestClock, NoStorage>, usize) {
     let clock = TestClock;
     let identity = Identity::generate(&mut OsRng);
     let config = TransportConfig::default();
-    let mut transport = Transport::new(config, clock, NoStorage, identity);
-    let mock = MockInterface::new("FlowTestMock");
-    let idx = transport.register_interface(Box::new(mock));
-    (transport, idx)
+    let transport = Transport::new(config, clock, NoStorage, identity);
+    // Interface index 0 is used when feeding packets to process_incoming.
+    // In sans-I/O, Transport doesn't own interfaces — it just stores the index.
+    (transport, 0)
 }
 
 /// Receive an announce packet from the daemon stream.

@@ -8,9 +8,17 @@
 //!
 //! | Trait | Purpose | `std` example | Embedded example |
 //! |-------|---------|---------------|------------------|
-//! | [`Interface`] | Network I/O | `TcpInterface` | LoRa / BLE driver |
 //! | [`Clock`] | Monotonic time | `SystemClock` | Hardware timer |
 //! | [`Storage`] | Key-value persistence | `FileStorage` | Flash storage |
+//! | [`Interface`] | Network I/O (driver-side) | `TcpInterface` | LoRa / BLE driver |
+//!
+//! # Sans-I/O Architecture
+//!
+//! The core protocol engine (`NodeCore`, `Transport`) never performs I/O
+//! directly. Instead, it accepts incoming packets and emits [`Action`](crate::transport::Action)
+//! values for the driver to execute. The [`Interface`] trait is provided here
+//! as a common definition for driver implementations — it is **not** used by
+//! the core engine itself.
 //!
 //! # Platform Dependencies
 //!
@@ -69,6 +77,12 @@ pub struct InterfaceMode {
 }
 
 /// A network interface that can send and receive packets
+///
+/// This trait is implemented by **driver** code (in `reticulum-std` or
+/// embedded crates). The core engine (`NodeCore`, `Transport`) does not
+/// call these methods — it emits [`Action`](crate::transport::Action) values
+/// instead. The driver dispatches actions to interfaces and feeds received
+/// packets back into core via `handle_packet()`.
 ///
 /// Implementations provide the actual I/O:
 /// - `std`: TCP, UDP, Serial

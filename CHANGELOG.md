@@ -5,15 +5,38 @@ All notable changes to this project will be documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [0.3.0] - 2026-02-06
+
+### Added
+- **Sans-I/O architecture** for `reticulum-core`: core is now a pure state machine that never performs I/O directly
+- `InterfaceId` newtype for opaque interface identification in core
+- `Action` enum (`SendPacket`, `Broadcast`) for expressing outbound I/O as return values
+- `TickOutput` struct separating I/O actions from protocol events
+- `NodeCore::handle_packet(iface, data)` — feed incoming packets to the core engine
+- `NodeCore::handle_timeout()` — run periodic maintenance (path expiry, keepalives, rebroadcasts)
+- `NodeCore::next_deadline()` — query when the next timeout should fire
+- `NodeCore::handle_interface_down(iface)` — notify core of interface disconnection
+- `ReticulumNodeBuilder::build_sync()` — synchronous builder for non-async contexts
 
 ### Changed
+- **Breaking:** `Transport` no longer holds `Box<dyn Interface + Send>` — interfaces are owned by the driver
+- **Breaking:** `NodeCore::tick()`, `poll()`, `poll_interfaces()` removed — use `handle_packet()` + `handle_timeout()` instead
+- **Breaking:** `NodeCore::register_interface()`, `unregister_interface()` removed — driver manages interfaces directly
+- **Breaking:** `NodeCore::send_on_interface()`, `send_to_destination()`, `receive_packet()` removed — use `handle_packet()` and dispatch returned `Action` values
+- **Breaking:** `TransportRunner` removed from `reticulum-std` — use `ReticulumNode` instead
+- `Transport::send_on_interface()` now emits `Action::SendPacket` instead of calling `Interface::send()`
+- `Transport::send_on_all_interfaces()` now emits `Action::Broadcast` instead of iterating interfaces
+- `Reticulum` type now wraps `ReticulumNode` instead of the removed `TransportRunner`
+- `ReticulumNode` event loop rewritten as sans-I/O driver: polls interfaces, feeds packets to core, dispatches actions
 - Transport table entry types (`PathEntry`, `LinkEntry`, `ReverseEntry`, `AnnounceEntry`) reduced from `pub` to `pub(crate)`
 - All error types now derive `Debug, Clone, Copy, PartialEq, Eq` and implement `core::fmt::Display`
 - Parameter ordering normalized: `rng` always before `now_ms` in all methods
 - `LinkManager` removed from crate-root re-exports (access via `reticulum_core::link::LinkManager`)
 
 ### Removed
+- `TransportRunner` from `reticulum-std` (superseded by `ReticulumNode`)
+- `Transport::poll_interfaces()` and `Transport::tick()` (driver's responsibility)
+- `InterfaceError` and `InvalidInterface` variants from `TransportError`
 - Unused transport table fields: `PathEntry::received_from`, `PathEntry::timestamp_ms`, `LinkEntry::next_hop_transport_id`, `LinkEntry::destination_hash`, `ReverseEntry::received_from`
 - Unused transport methods: `paths()`, `link_table_entry()`, `link_table_iter()`
 - Unused resource placeholder types: `ResourceState`, `ResourceError`, `ResourceConfig`, `ResourceStats`, `ResourcePart`, `PartHash`
@@ -318,7 +341,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Transport layer (routing, paths, deduplication)
 - Full interoperability with Python rnsd
 
-[Unreleased]: https://codeberg.org/Lew_Palm/leviculum/compare/v0.2.9...HEAD
+[Unreleased]: https://codeberg.org/Lew_Palm/leviculum/compare/v0.3.0...HEAD
+[0.3.0]: https://codeberg.org/Lew_Palm/leviculum/compare/v0.2.9...v0.3.0
 [0.2.9]: https://codeberg.org/Lew_Palm/leviculum/compare/v0.2.8...v0.2.9
 [0.2.8]: https://codeberg.org/Lew_Palm/leviculum/compare/v0.2.7...v0.2.8
 [0.2.7]: https://codeberg.org/Lew_Palm/leviculum/compare/v0.2.6...v0.2.7

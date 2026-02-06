@@ -29,15 +29,17 @@
 
 ## Aktueller Stand
 
-Das Projekt hat Phase 1 vollständig abgeschlossen und Phase 2 ist zu ~95% fertig — nur TCP Server (Meilenstein 2.4) fehlt noch. Meilensteine 2.1 (Destination API), 2.2 (Link-Responder), 2.3 (High-Level Link API inkl. Keepalive) und 2.5 (Transport Layer) sind abgeschlossen. Meilenstein 3.2 (Channel-System inkl. Buffer-System) ist ebenfalls fertig — StreamDataMessage für binäre Streams und RawChannelReader/Writer für gepufferte I/O sind implementiert. **High-Level Node API** (`NodeCore` in reticulum-core, `ReticulumNode` in reticulum-std) bietet eine einheitliche async-kompatible Schnittstelle mit Smart Routing, Connection-Abstraktion und symmetrischer Channel-API. Die Architektur wurde grundlegend umgebaut: alle Protokolllogik lebt in `reticulum-core` (no_std + alloc), plattformspezifische I/O in `reticulum-std` via Traits. Vollständige Interoperabilität mit Python rnsd ist nachgewiesen. **CLI-Tool `lrns`** existiert mit Subcommands: `status`, `path`, `identity`, `probe`, `interfaces` (nur `identity` ist voll implementiert, die anderen sind Gerüste mit "Not implemented yet").
+Das Projekt hat Phase 1 vollständig abgeschlossen und Phase 2 ist zu ~95% fertig — nur TCP Server (Meilenstein 2.4) fehlt noch. Meilensteine 2.1 (Destination API), 2.2 (Link-Responder), 2.3 (High-Level Link API inkl. Keepalive) und 2.5 (Transport Layer) sind abgeschlossen. Meilenstein 3.2 (Channel-System inkl. Buffer-System) ist ebenfalls fertig — StreamDataMessage für binäre Streams und RawChannelReader/Writer für gepufferte I/O sind implementiert. **High-Level Node API** (`NodeCore` in reticulum-core, `ReticulumNode` in reticulum-std) bietet eine einheitliche async-kompatible Schnittstelle mit Smart Routing, Connection-Abstraktion und symmetrischer Channel-API. Vollständige Interoperabilität mit Python rnsd ist nachgewiesen. **CLI-Tool `lrns`** existiert mit Subcommands: `status`, `path`, `identity`, `probe`, `interfaces` (nur `identity` ist voll implementiert, die anderen sind Gerüste mit "Not implemented yet").
 
-**Architektur-Migration abgeschlossen:** `NodeCore` besitzt RNG intern als generischen Parameter (`NodeCore<R, C, S>`). Alle Runtime-Methoden (`tick()`, `connect()`, etc.) benötigen keinen `Context`-Parameter mehr. Die `Context`-Trait-Abstraktion wurde vollständig entfernt — Funktionen nehmen direkt `rng: &mut R` und `now_ms: u64` als Parameter. Alle `#[cfg(feature = "alloc")]` wurden entfernt — `alloc` ist immer verfügbar. Das `std` Feature aktiviert nur noch optimierte Crypto-Implementierungen.
+**Sans-I/O-Architektur abgeschlossen:** `reticulum-core` ist jetzt ein reiner Zustandsautomat ohne jegliche direkte I/O-Operationen. `NodeCore` nimmt eingehende Pakete via `handle_packet()` entgegen und gibt `Action`-Werte (`SendPacket`, `Broadcast`) zurück, die der Treiber ausführt. Der Treiber in `reticulum-std` besitzt die Interfaces, liest Pakete, speist sie in den Core, und dispatcht die resultierenden Actions. `TransportRunner` wurde entfernt; `ReticulumNode` ist der einheitliche Treiber. Diese Architektur ermöglicht den Einsatz auf Embedded-Plattformen ohne `std`.
+
+**Architektur-Migration abgeschlossen:** `NodeCore` besitzt RNG intern als generischen Parameter (`NodeCore<R, C, S>`). Alle Runtime-Methoden (`handle_packet()`, `connect()`, etc.) benötigen keinen `Context`-Parameter mehr. Die `Context`-Trait-Abstraktion wurde vollständig entfernt — Funktionen nehmen direkt `rng: &mut R` und `now_ms: u64` als Parameter. Alle `#[cfg(feature = "alloc")]` wurden entfernt — `alloc` ist immer verfügbar. Das `std` Feature aktiviert nur noch optimierte Crypto-Implementierungen.
 
 **Ratchet & IFAC implementiert:** Forward Secrecy via Ratchets und Interface Access Codes sind vollständig implementiert und gegen Python Reticulum getestet.
 
 **Transport Layer vollständig (3.676 LOC):** Announce-Rebroadcast, PATH_REQUEST/PATH_RESPONSE, Reverse-Path-Routing, Link-Tabellenverwaltung, Hop-Count-Validation, Header-Stripping am letzten Hop, Announce-Replay-Schutz, LRPROOF-Validierung, Auto-Re-Announce auf PATH_REQUEST. **Rust Transport Relay** funktioniert vollständig: Announce-Rebroadcast, Link-Routing und Datenweiterleitung zwischen zwei Python-Daemons getestet.
 
-**Code-Qualität:** LinkManager intern auf einheitliche Paket-Queue (`PendingPacket` Enum) umgestellt, Timeout-Konstanten zentralisiert, `LinkId` und `DestinationHash` als Newtype-Structs für vollständige Typ-Sicherheit (keine `Deref` mehr, kein `as_bytes_mut()`). Proof-Strategy und Signing-Key von LinkManager's Destination-Map auf den `Link` selbst verschoben — reduziert duplizierte State zwischen Transport, LinkManager und NodeCore. ~763 Tests bestehen (489 Core-Unit + 22 Std-Lib + 166 Interop + 29 Doctests + 18 Proptest + 31 Test-Vektoren + 7 Core-Integration + 1 FFI).
+**Code-Qualität:** LinkManager intern auf einheitliche Paket-Queue (`PendingPacket` Enum) umgestellt, Timeout-Konstanten zentralisiert, `LinkId` und `DestinationHash` als Newtype-Structs für vollständige Typ-Sicherheit (keine `Deref` mehr, kein `as_bytes_mut()`). Proof-Strategy und Signing-Key von LinkManager's Destination-Map auf den `Link` selbst verschoben — reduziert duplizierte State zwischen Transport, LinkManager und NodeCore. ~787 Tests bestehen (515 Core-Unit + 20 Std-Lib + 166 Interop + 29 Doctests + 18 Proptest + 31 Test-Vektoren + 7 Core-Integration + 1 FFI).
 
 | Komponente | Status | LOC |
 |------------|--------|-----|
@@ -52,7 +54,7 @@ Das Projekt hat Phase 1 vollständig abgeschlossen und Phase 2 ist zu ~95% ferti
 | Transport Layer (Routing, Pfade, Announces, Relay) | ✅ Fertig | 3.676 |
 | HDLC-Framing (no_std + alloc) | ✅ Fertig | 577 |
 | Interface-Traits + TCP-Client | ✅ Fertig | 623 |
-| Async Runtime (tokio-Wrapper) | ✅ Fertig | 224 |
+| Sans-I/O Driver (tokio-Wrapper) | ✅ Fertig | 224 |
 | Reticulum-Instanz + Config + Storage | ✅ Fertig | 597 |
 | FFI/C-API | ✅ Grundfunktionen | 361 |
 | Tests (Rust + C) | | ~19.700 |
@@ -65,9 +67,9 @@ Das Projekt hat Phase 1 vollständig abgeschlossen und Phase 2 ist zu ~95% ferti
 | reticulum-std | 2.182 | 10.418 |
 | reticulum-ffi | 361 | 404 |
 
-**Test-Abdeckung:** ~763 Tests (489 Core-Unit + 18 Proptest + 31 Test-Vektoren + 29 Doctests + 22 Std-Lib + 7 Core-Integration + 1 FFI + 166 Interop gegen rnsd)
+**Test-Abdeckung:** ~787 Tests (515 Core-Unit + 18 Proptest + 31 Test-Vektoren + 29 Doctests + 20 Std-Lib + 7 Core-Integration + 1 FFI + 166 Interop gegen rnsd)
 
-**Architektur:** Siehe [doc/ARCHITECTURE.md](doc/ARCHITECTURE.md) — no_std/embedded-freundlich, Protocol in Core, I/O via Traits.
+**Architektur:** Siehe [doc/ARCHITECTURE.md](doc/ARCHITECTURE.md) — no_std/embedded-freundlich, sans-I/O Core (reine Zustandsmaschine), I/O via Action-Rückgabewerte an den Treiber.
 
 ---
 

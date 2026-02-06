@@ -954,6 +954,21 @@ impl Link {
         self.stale_time_secs
     }
 
+    /// Get the last keepalive sent timestamp in seconds
+    pub fn last_keepalive_secs(&self) -> u64 {
+        self.last_keepalive
+    }
+
+    /// Get the established-at timestamp in seconds (if established)
+    pub fn established_at_secs(&self) -> Option<u64> {
+        self.established_at
+    }
+
+    /// Get the last inbound packet timestamp in seconds
+    pub fn last_inbound_secs(&self) -> u64 {
+        self.last_inbound
+    }
+
     /// Set the link state
     pub fn set_state(&mut self, state: LinkState) {
         self.state = state;

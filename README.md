@@ -12,7 +12,7 @@ A Rust implementation of the [Reticulum](https://reticulum.network/) network sta
 
 ## Status
 
-Version 0.2.9. Phase 2 is ~95% complete — only TCP Server (incoming connections) remains. The transport layer is fully functional with routing, path discovery, announce relay, and multi-hop support. 166 interop tests pass against the Python Reticulum reference implementation.
+Version 0.3.0. The core uses a sans-I/O architecture — `reticulum-core` is a pure state machine that never performs I/O directly, making it suitable for embedded targets (`no_std + alloc`). The transport layer is fully functional with routing, path discovery, announce relay, and multi-hop support. 166 interop tests pass against the Python Reticulum reference implementation.
 
 **What works:**
 
@@ -29,6 +29,7 @@ Version 0.2.9. Phase 2 is ~95% complete — only TCP Server (incoming connection
 - Channel system (reliable streams, message envelopes)
 - Buffer system (RawChannelReader/Writer, StreamDataMessage)
 - BZ2 compression
+- Sans-I/O architecture (core returns Action values, driver dispatches I/O)
 - High-level Node API (NodeCore for no_std, ReticulumNode for async)
 - TCP client interface
 - HDLC framing (no_std)
@@ -45,7 +46,7 @@ Version 0.2.9. Phase 2 is ~95% complete — only TCP Server (incoming connection
 - `lrns` remaining subcommands (status, path, probe, interfaces)
 - UDP, Serial, Local interfaces
 
-**Test coverage:** ~763 tests (489 unit + 18 proptest + 31 test vectors + 29 doctests + 166 interop against rnsd + more).
+**Test coverage:** ~787 tests (515 unit + 18 proptest + 31 test vectors + 29 doctests + 166 interop against rnsd + more).
 
 ## Building
 
@@ -100,7 +101,7 @@ To use without std:
 
 ```toml
 [dependencies]
-reticulum-core = { version = "0.2", default-features = false, features = ["alloc"] }
+reticulum-core = { version = "0.3", default-features = false, features = ["alloc"] }
 ```
 
 ### reticulum-std
@@ -110,7 +111,7 @@ Extensions that require the standard library:
 - Config file parsing
 - Persistent storage
 - TCP client interface
-- Async runtime (tokio wrapper)
+- Sans-I/O driver (event loop dispatching Action values)
 - ReticulumNode high-level async API
 
 ### reticulum-ffi

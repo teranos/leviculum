@@ -1,33 +1,24 @@
 //! Main Reticulum instance
 //!
 //! High-level entry point that wires together configuration, storage,
-//! core Transport, and the async runtime.
+//! core NodeCore, and the async runtime (via `ReticulumNode`).
 
-use std::sync::{Arc, Mutex};
+use reticulum_core::node::NodeEvent;
 
-use tokio::sync::{mpsc, watch};
+use tokio::sync::mpsc;
 
-use reticulum_core::identity::Identity;
-use reticulum_core::transport::{Transport, TransportConfig, TransportEvent};
-
-use crate::clock::SystemClock;
 use crate::config::Config;
-use crate::error::{Error, Result};
-use crate::runtime::{StdTransport, TransportRunner};
-use crate::storage::Storage;
+use crate::error::Result;
+use crate::node::{ReticulumNode, ReticulumNodeBuilder};
 
 /// Main Reticulum instance
+///
+/// Wraps a `ReticulumNode` with configuration-driven setup.
 pub struct Reticulum {
     /// Configuration
     config: Config,
-    /// Handle to the core transport (shared with the runner)
-    transport: Arc<Mutex<StdTransport>>,
-    /// Event receiver
-    event_rx: Option<mpsc::Receiver<TransportEvent>>,
-    /// Shutdown sender
-    shutdown_tx: watch::Sender<bool>,
-    /// Runner task handle
-    runner_handle: Option<tokio::task::JoinHandle<()>>,
+    /// The underlying node
+    node: ReticulumNode,
 }
 
 impl Reticulum {
@@ -45,63 +36,40 @@ impl Reticulum {
 
     /// Create a new Reticulum instance with custom configuration
     pub fn with_config(config: Config) -> Result<Self> {
-        let storage_path = config
-            .reticulum
-            .storage_path
-            .clone()
-            .unwrap_or_else(|| Config::default_config_dir().join("storage"));
+        let mut builder = ReticulumNodeBuilder::new();
 
-        let storage = Storage::new(&storage_path)?;
-        let clock = SystemClock::new();
-        let identity = Identity::generate(&mut rand_core::OsRng);
+        if config.reticulum.enable_transport {
+            builder = builder.enable_transport(true);
+        }
 
-        let transport_config = TransportConfig {
-            enable_transport: config.reticulum.enable_transport,
-            ..TransportConfig::default()
-        };
+        // Note: Interface configuration from config file would be added here
+        // when config-driven interface setup is implemented.
 
-        let transport = Transport::new(transport_config, clock, storage, identity);
-        let (runner, event_rx) = TransportRunner::new(transport);
-        let transport_handle = runner.transport();
-
-        let (shutdown_tx, shutdown_rx) = watch::channel(false);
-
-        // Spawn the runner
-        let runner_handle = tokio::spawn(async move {
-            runner.run(shutdown_rx).await;
-        });
-
+        // We can't use async in a sync context, so we build synchronously
+        // and defer start() to the caller or to an async context.
+        // For now, create the builder and store config.
         Ok(Self {
             config,
-            transport: transport_handle,
-            event_rx: Some(event_rx),
-            shutdown_tx,
-            runner_handle: Some(runner_handle),
+            node: builder.build_sync()?,
         })
+    }
+
+    /// Start the Reticulum instance (spawns the event loop)
+    pub async fn start(&mut self) -> Result<()> {
+        self.node.start().await?;
+        Ok(())
     }
 
     /// Stop the Reticulum instance
     pub async fn stop(&mut self) -> Result<()> {
-        // Signal shutdown
-        let _ = self.shutdown_tx.send(true);
-
-        // Wait for runner to finish
-        if let Some(handle) = self.runner_handle.take() {
-            handle
-                .await
-                .map_err(|e| Error::Transport(format!("Runner panicked: {e}")))?;
-        }
-
+        self.node.stop().await?;
         tracing::info!("Reticulum stopped");
         Ok(())
     }
 
     /// Check if the instance is running
     pub fn is_running(&self) -> bool {
-        self.runner_handle
-            .as_ref()
-            .map(|h| !h.is_finished())
-            .unwrap_or(false)
+        self.node.is_running()
     }
 
     /// Get the configuration
@@ -114,18 +82,9 @@ impl Reticulum {
         self.config.reticulum.enable_transport
     }
 
-    /// Get a handle to the core transport
-    ///
-    /// Use this to register interfaces, destinations, query paths, etc.
-    pub fn transport(&self) -> Arc<Mutex<StdTransport>> {
-        Arc::clone(&self.transport)
-    }
-
     /// Take the event receiver (can only be called once)
-    ///
-    /// Use this to consume transport events (announces, packets, etc.).
-    pub fn take_event_receiver(&mut self) -> Option<mpsc::Receiver<TransportEvent>> {
-        self.event_rx.take()
+    pub fn take_event_receiver(&mut self) -> Option<mpsc::Receiver<NodeEvent>> {
+        self.node.take_event_receiver()
     }
 }
 
@@ -137,15 +96,11 @@ mod tests {
     async fn test_create_instance() {
         let config = Config::default();
         let mut rns = Reticulum::with_config(config).unwrap();
+
+        // Start the node
+        rns.start().await.unwrap();
         assert!(rns.is_running());
         assert!(!rns.is_transport_enabled());
-
-        // Verify transport is accessible
-        {
-            let handle = rns.transport();
-            let t = handle.lock().unwrap();
-            assert_eq!(t.interface_count(), 0);
-        }
 
         // Can take event receiver
         let rx = rns.take_event_receiver();

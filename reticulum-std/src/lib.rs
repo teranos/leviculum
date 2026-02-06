@@ -28,5 +28,5 @@ pub use error::{Error, Result};
 pub use interfaces::TcpClientInterface;
 pub use node::{ConnectionStream, ReticulumNode, ReticulumNodeBuilder, StdNodeCore};
 pub use reticulum::Reticulum;
-pub use runtime::{StdTransport, TransportRunner};
+pub use runtime::StdTransport;
 pub use storage::Storage;

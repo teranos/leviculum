@@ -1,31 +1,35 @@
-//! Transport layer - routing, path discovery, packet handling
+//! Transport layer - routing, path discovery, packet handling (sans-I/O)
 //!
 //! The Transport is the heart of the Reticulum protocol. It manages:
-//! - Interface registration and packet I/O
 //! - Packet routing based on destination hash
 //! - Path discovery via announce propagation
 //! - Link table management
 //! - Duplicate packet detection
 //!
-//! # Design
+//! # Sans-I/O Design
 //!
-//! Transport is generic over platform traits (`Clock`, `Storage`) so the same
-//! protocol logic runs on std (Linux, macOS) and no_std (ESP32, nRF52).
+//! Transport never performs I/O directly. Instead it:
+//! - Accepts incoming packets via `process_incoming(iface_index, data)`
+//! - Emits outbound I/O as `Action` values (`SendPacket`, `Broadcast`)
+//! - Emits protocol events via `drain_events()`
 //!
-//! The Transport uses a sync/polling model. Platform crates wrap it with
-//! their async runtime (tokio, embassy, etc.).
+//! The driver (in `reticulum-std` or an embedded crate) owns the interfaces,
+//! handles framing, and dispatches Actions to the network.
 //!
 //! ```text
 //! use reticulum_core::transport::{Transport, TransportConfig};
 //!
 //! let mut transport = Transport::new(config, clock, storage, identity);
-//! let idx = transport.register_interface(interface);
 //!
-//! // Main loop:
-//! transport.process_incoming(idx, &raw_data)?;
-//! for event in transport.drain_events() {
-//!     // handle event
+//! // Driver feeds incoming packets:
+//! transport.process_incoming(iface_index, &raw_data)?;
+//!
+//! // Driver dispatches outbound actions:
+//! for action in transport.drain_actions() {
+//!     // send via interface
 //! }
+//!
+//! // Driver runs periodic maintenance:
 //! transport.poll();
 //! ```
 
@@ -51,7 +55,80 @@ use crate::packet::{
     PacketData, PacketError, PacketFlags, PacketType, TransportType,
 };
 use crate::receipt::{PacketReceipt, ReceiptStatus};
-use crate::traits::{Clock, Interface, InterfaceError, Storage};
+use crate::traits::{Clock, Storage};
+
+// ─── Sans-I/O Types ─────────────────────────────────────────────────────────
+
+/// Opaque interface identifier
+///
+/// Core never inspects what an `InterfaceId` refers to — it stores and returns
+/// them so the driver can map them back to actual interface objects.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct InterfaceId(pub usize);
+
+impl core::fmt::Display for InterfaceId {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        write!(f, "iface:{}", self.0)
+    }
+}
+
+/// I/O action for the driver to execute
+///
+/// Core never performs I/O directly — instead it returns `Action` values that
+/// describe what the driver should do. The driver matches on these and
+/// dispatches to the appropriate interface.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Action {
+    /// Send a packet on a specific interface
+    SendPacket {
+        /// The target interface
+        iface: InterfaceId,
+        /// The packet data (already framed for the wire)
+        data: Vec<u8>,
+    },
+    /// Broadcast a packet on all online interfaces, optionally excluding one
+    Broadcast {
+        /// The packet data (already framed for the wire)
+        data: Vec<u8>,
+        /// Interface to skip (typically the one the packet arrived on)
+        exclude_iface: Option<InterfaceId>,
+    },
+}
+
+/// Output from any core method that may produce I/O or events
+///
+/// Returned by `handle_packet()`, `handle_timeout()`, and other methods that
+/// may trigger outbound I/O or application-visible events.
+pub struct TickOutput {
+    /// I/O actions for the driver to execute
+    pub actions: Vec<Action>,
+    /// Application-visible events
+    pub events: Vec<super::node::NodeEvent>,
+}
+
+impl TickOutput {
+    /// Create an empty TickOutput
+    pub fn empty() -> Self {
+        Self {
+            actions: Vec::new(),
+            events: Vec::new(),
+        }
+    }
+
+    /// Check if this output contains no actions or events
+    pub fn is_empty(&self) -> bool {
+        self.actions.is_empty() && self.events.is_empty()
+    }
+}
+
+impl core::fmt::Debug for TickOutput {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.debug_struct("TickOutput")
+            .field("actions", &self.actions.len())
+            .field("events", &self.events.len())
+            .finish()
+    }
+}
 
 // ─── Data Structures (always available) ─────────────────────────────────────
 
@@ -247,10 +324,6 @@ pub enum TransportError {
     PacketError(PacketError),
     /// Announce validation error
     AnnounceError(crate::announce::AnnounceError),
-    /// Interface I/O error
-    InterfaceError(InterfaceError),
-    /// Interface index out of range
-    InvalidInterface,
 }
 
 impl core::fmt::Display for TransportError {
@@ -259,8 +332,6 @@ impl core::fmt::Display for TransportError {
             TransportError::NoPath => write!(f, "no path to destination"),
             TransportError::PacketError(e) => write!(f, "packet error: {}", e),
             TransportError::AnnounceError(e) => write!(f, "announce error: {}", e),
-            TransportError::InterfaceError(e) => write!(f, "interface error: {}", e),
-            TransportError::InvalidInterface => write!(f, "interface index out of range"),
         }
     }
 }
@@ -268,12 +339,6 @@ impl core::fmt::Display for TransportError {
 impl From<PacketError> for TransportError {
     fn from(e: PacketError) -> Self {
         TransportError::PacketError(e)
-    }
-}
-
-impl From<InterfaceError> for TransportError {
-    fn from(e: InterfaceError) -> Self {
-        TransportError::InterfaceError(e)
     }
 }
 
@@ -291,9 +356,11 @@ struct DestinationEntry {
 
 // ─── Transport ──────────────────────────────────────────────────────────────
 
-/// The Transport layer
+/// The Transport layer (sans-I/O state machine)
 ///
 /// Generic over platform traits so the same protocol logic runs everywhere.
+/// Transport never performs I/O directly — all outbound data is expressed as
+/// `Action` values that the driver dispatches to actual network interfaces.
 ///
 /// - `C`: Clock implementation for timestamps
 /// - `S`: Storage implementation for persistence
@@ -302,9 +369,6 @@ pub struct Transport<C: Clock, S: Storage> {
     clock: C,
     _storage: S,
     identity: Identity,
-
-    /// Registered interfaces (indices are stable; removed interfaces become None)
-    interfaces: Vec<Option<Box<dyn Interface + Send>>>,
 
     /// Path table: destination_hash -> path info
     path_table: BTreeMap<[u8; TRUNCATED_HASHBYTES], PathEntry>,
@@ -347,6 +411,13 @@ pub struct Transport<C: Clock, S: Storage> {
 
     /// Known identities from received announces: dest_hash -> Identity
     identity_table: BTreeMap<[u8; TRUNCATED_HASHBYTES], Identity>,
+
+    /// Pending I/O actions for the driver (sans-I/O buffer)
+    pending_actions: Vec<Action>,
+
+    /// Interfaces for test use only (not used in production sans-I/O path)
+    #[cfg(test)]
+    interfaces: Vec<Option<Box<dyn crate::traits::Interface + Send>>>,
 }
 
 impl<C: Clock, S: Storage> Transport<C, S> {
@@ -358,7 +429,6 @@ impl<C: Clock, S: Storage> Transport<C, S> {
             clock,
             _storage: storage,
             identity,
-            interfaces: Vec::new(),
             path_table: BTreeMap::new(),
             announce_table: BTreeMap::new(),
             link_table: BTreeMap::new(),
@@ -373,44 +443,53 @@ impl<C: Clock, S: Storage> Transport<C, S> {
             path_requests: BTreeMap::new(),
             announce_cache: BTreeMap::new(),
             identity_table: BTreeMap::new(),
+            pending_actions: Vec::new(),
+            #[cfg(test)]
+            interfaces: Vec::new(),
         }
     }
 
-    // ─── Interface Management ───────────────────────────────────────────
+    // ─── Test-only Interface Management ───────────────────────────────
+    //
+    // These methods exist only in test builds to support existing protocol
+    // tests that use MockInterface. In production, Transport is sans-I/O
+    // and does not own interfaces.
 
-    /// Register an interface, returns its stable index
-    pub fn register_interface(&mut self, interface: Box<dyn Interface + Send>) -> usize {
+    /// Register an interface (test-only)
+    #[cfg(test)]
+    pub fn register_interface(
+        &mut self,
+        interface: Box<dyn crate::traits::Interface + Send>,
+    ) -> usize {
         let index = self.interfaces.len();
         self.interfaces.push(Some(interface));
         index
     }
 
-    /// Unregister an interface by index
+    /// Unregister an interface (test-only)
+    #[cfg(test)]
     pub fn unregister_interface(&mut self, index: usize) {
         if let Some(slot) = self.interfaces.get_mut(index) {
             *slot = None;
         }
     }
 
-    /// Get a mutable reference to an interface
-    pub fn interface_mut(&mut self, index: usize) -> Option<&mut (dyn Interface + '_)> {
+    /// Get interface count (test-only)
+    #[cfg(test)]
+    pub fn interface_count(&self) -> usize {
+        self.interfaces.iter().filter(|i| i.is_some()).count()
+    }
+
+    /// Get mutable interface reference (test-only)
+    #[cfg(test)]
+    pub fn interface_mut(
+        &mut self,
+        index: usize,
+    ) -> Option<&mut (dyn crate::traits::Interface + '_)> {
         match self.interfaces.get_mut(index) {
             Some(Some(iface)) => Some(iface.as_mut()),
             _ => None,
         }
-    }
-
-    /// Get an immutable reference to an interface
-    pub fn interface_ref(&self, index: usize) -> Option<&(dyn Interface + '_)> {
-        match self.interfaces.get(index) {
-            Some(Some(iface)) => Some(iface.as_ref()),
-            _ => None,
-        }
-    }
-
-    /// Get the number of registered interfaces
-    pub fn interface_count(&self) -> usize {
-        self.interfaces.iter().filter(|i| i.is_some()).count()
     }
 
     // ─── Destination Management ─────────────────────────────────────────
@@ -650,25 +729,21 @@ impl<C: Clock, S: Storage> Transport<C, S> {
         interface_index: usize,
         data: &[u8],
     ) -> Result<(), TransportError> {
-        let iface = self
-            .interfaces
-            .get_mut(interface_index)
-            .and_then(|slot| slot.as_deref_mut())
-            .ok_or(TransportError::InvalidInterface)?;
-
-        iface.send(data)?;
+        self.pending_actions.push(Action::SendPacket {
+            iface: InterfaceId(interface_index),
+            data: data.to_vec(),
+        });
         self.stats.packets_sent += 1;
         Ok(())
     }
 
-    /// Send raw data on all online interfaces
+    /// Send raw data on all online interfaces (emits Broadcast action)
     pub fn send_on_all_interfaces(&mut self, data: &[u8]) {
-        for iface in self.interfaces.iter_mut().flatten() {
-            if iface.is_online() {
-                let _ = iface.send(data); // Best effort
-            }
-        }
         self.stats.packets_sent += 1;
+        self.pending_actions.push(Action::Broadcast {
+            data: data.to_vec(),
+            exclude_iface: None,
+        });
     }
 
     /// Send a packet to a destination via its known path
@@ -687,41 +762,6 @@ impl<C: Clock, S: Storage> Transport<C, S> {
     }
 
     // ─── Polling ────────────────────────────────────────────────────────
-
-    /// Poll registered interfaces for incoming data and process any received packets.
-    ///
-    /// This reads from each registered interface and feeds received data into
-    /// `process_incoming()`. The borrow on each interface is scoped so that
-    /// `process_incoming()` can access other interfaces for forwarding.
-    pub fn poll_interfaces(&mut self) {
-        let mut recv_buf = [0u8; MTU];
-        for idx in 0..self.interfaces.len() {
-            loop {
-                let len = {
-                    let iface = match self.interfaces.get_mut(idx) {
-                        Some(Some(iface)) => iface.as_mut(),
-                        _ => break,
-                    };
-                    match iface.recv(&mut recv_buf) {
-                        Ok(len) if len > 0 => len,
-                        _ => break,
-                    }
-                };
-                // Interface borrow dropped — safe to call process_incoming
-                let data = recv_buf[..len].to_vec();
-                let _ = self.process_incoming(idx, &data);
-            }
-        }
-    }
-
-    /// Drive the transport layer for one tick.
-    ///
-    /// Polls interfaces for incoming data, then runs periodic maintenance.
-    /// This is the preferred single entry point for the transport layer.
-    pub fn tick(&mut self) {
-        self.poll_interfaces();
-        self.poll();
-    }
 
     /// Poll for periodic work
     ///
@@ -754,6 +794,76 @@ impl<C: Clock, S: Storage> Transport<C, S> {
         self.events.len()
     }
 
+    // ─── Actions (Sans-I/O) ─────────────────────────────────────────────
+
+    /// Drain pending I/O actions
+    ///
+    /// Returns all actions that have accumulated since the last drain.
+    /// The driver should execute these (send packets on interfaces).
+    pub fn drain_actions(&mut self) -> Vec<Action> {
+        core::mem::take(&mut self.pending_actions)
+    }
+
+    /// Number of pending I/O actions
+    pub fn pending_action_count(&self) -> usize {
+        self.pending_actions.len()
+    }
+
+    /// Compute the earliest deadline across all transport-layer timers
+    ///
+    /// Returns `None` if there are no pending deadlines. The returned
+    /// value is an absolute timestamp in milliseconds.
+    pub fn next_deadline(&self) -> Option<u64> {
+        let now = self.clock.now_ms();
+        let mut earliest: Option<u64> = None;
+
+        let mut update = |deadline_ms: u64| {
+            earliest = Some(match earliest {
+                Some(e) => core::cmp::min(e, deadline_ms),
+                None => deadline_ms,
+            });
+        };
+
+        // Path expiry deadlines
+        for entry in self.path_table.values() {
+            update(entry.expires_ms);
+        }
+
+        // Receipt timeout deadlines
+        for receipt in self.receipts.values() {
+            if receipt.status == ReceiptStatus::Sent {
+                update(receipt.sent_at_ms.saturating_add(receipt.timeout_ms));
+            }
+        }
+
+        // Announce rebroadcast deadlines
+        if self.config.enable_transport {
+            for entry in self.announce_table.values() {
+                if let Some(retransmit_at) = entry.retransmit_at_ms {
+                    update(retransmit_at);
+                }
+            }
+        }
+
+        // Link table expiry deadlines
+        for entry in self.link_table.values() {
+            if entry.validated {
+                update(entry.timestamp_ms.saturating_add(LINK_TIMEOUT_MS));
+            } else {
+                update(entry.proof_timeout_ms);
+            }
+        }
+
+        // Packet cache cleanup and reverse table cleanup are background —
+        // use a fixed interval rather than scanning every entry
+        if !self.packet_cache.is_empty() || !self.reverse_table.is_empty() {
+            let cleanup_interval = 60_000; // Check every 60s
+            update(now.saturating_add(cleanup_interval));
+        }
+
+        earliest
+    }
+
     // ─── Accessors ──────────────────────────────────────────────────────
 
     /// Get transport statistics
@@ -784,6 +894,46 @@ impl<C: Clock, S: Storage> Transport<C, S> {
     /// Number of pending announce rebroadcasts
     pub fn announce_table_count(&self) -> usize {
         self.announce_table.len()
+    }
+
+    /// Read-only access to the path table (for sans-I/O deadline computation)
+    pub(crate) fn path_table(&self) -> &BTreeMap<[u8; TRUNCATED_HASHBYTES], PathEntry> {
+        &self.path_table
+    }
+
+    /// Remove a path entry by destination hash
+    pub(crate) fn remove_path(&mut self, hash: &[u8; TRUNCATED_HASHBYTES]) {
+        self.path_table.remove(hash);
+    }
+
+    /// Remove link table entries referencing a specific interface
+    pub(crate) fn remove_link_entries_for_interface(&mut self, iface_idx: usize) {
+        let to_remove: Vec<_> = self
+            .link_table
+            .iter()
+            .filter(|(_, e)| {
+                e.next_hop_interface_index == iface_idx || e.received_interface_index == iface_idx
+            })
+            .map(|(k, _)| *k)
+            .collect();
+        for hash in to_remove {
+            self.link_table.remove(&hash);
+        }
+    }
+
+    /// Remove reverse table entries referencing a specific interface
+    pub(crate) fn remove_reverse_entries_for_interface(&mut self, iface_idx: usize) {
+        let to_remove: Vec<_> = self
+            .reverse_table
+            .iter()
+            .filter(|(_, e)| {
+                e.receiving_interface_index == iface_idx || e.outbound_interface_index == iface_idx
+            })
+            .map(|(k, _)| *k)
+            .collect();
+        for hash in to_remove {
+            self.reverse_table.remove(&hash);
+        }
     }
 
     // ─── Internal: Packet Handlers ──────────────────────────────────────
@@ -1379,18 +1529,12 @@ impl<C: Clock, S: Storage> Transport<C, S> {
         truncated_hash(&name_hash)
     }
 
-    /// Send data on all online interfaces except the one at `except_index`
+    /// Send data on all online interfaces except the one at `except_index` (emits Broadcast action)
     fn send_on_all_interfaces_except(&mut self, except_index: usize, data: &[u8]) {
-        for (i, slot) in self.interfaces.iter_mut().enumerate() {
-            if i == except_index {
-                continue;
-            }
-            if let Some(iface) = slot.as_deref_mut() {
-                if iface.is_online() {
-                    let _ = iface.send(data);
-                }
-            }
-        }
+        self.pending_actions.push(Action::Broadcast {
+            data: data.to_vec(),
+            exclude_iface: Some(InterfaceId(except_index)),
+        });
     }
 
     /// Compute deterministic jitter from a hash seed
@@ -1631,13 +1775,14 @@ impl<C: Clock, S: Storage> Transport<C, S> {
         }
     }
 
-    /// Check if an interface slot is present and online
-    fn is_interface_online(&self, index: usize) -> bool {
-        self.interfaces
-            .get(index)
-            .and_then(|slot| slot.as_ref())
-            .map(|iface| iface.is_online())
-            .unwrap_or(false)
+    /// Check if an interface is considered online
+    ///
+    /// In the sans-I/O architecture, the driver manages interface state.
+    /// Core always assumes interfaces are online; the driver calls
+    /// `handle_interface_down()` when one goes offline, which removes
+    /// routing entries referencing that interface.
+    fn is_interface_online(&self, _index: usize) -> bool {
+        true
     }
 
     fn clean_link_table(&mut self, now: u64) {
@@ -1683,13 +1828,153 @@ mod tests {
         assert_eq!(config.max_hops, PATHFINDER_MAX_HOPS);
     }
 
+    // ─── Sans-I/O Type Tests ────────────────────────────────────────────
+
+    mod sans_io_types {
+        use super::*;
+        extern crate alloc;
+        use alloc::vec;
+
+        #[test]
+        fn test_interface_id_basics() {
+            let id = InterfaceId(0);
+            let id2 = InterfaceId(0);
+            let id3 = InterfaceId(1);
+
+            // PartialEq, Eq
+            assert_eq!(id, id2);
+            assert_ne!(id, id3);
+
+            // Ord
+            assert!(id < id3);
+
+            // Copy
+            let copied = id;
+            assert_eq!(copied, id);
+
+            // Debug
+            extern crate std;
+            let debug_str = std::format!("{:?}", id);
+            assert!(debug_str.contains("InterfaceId"));
+
+            // Display
+            let display_str = std::format!("{}", id);
+            assert_eq!(display_str, "iface:0");
+        }
+
+        #[test]
+        fn test_interface_id_hash() {
+            // Verify InterfaceId can be used as BTreeMap key
+            let mut map = alloc::collections::BTreeMap::new();
+            map.insert(InterfaceId(0), "first");
+            map.insert(InterfaceId(1), "second");
+            assert_eq!(map.get(&InterfaceId(0)), Some(&"first"));
+            assert_eq!(map.get(&InterfaceId(1)), Some(&"second"));
+            assert_eq!(map.get(&InterfaceId(2)), None);
+        }
+
+        #[test]
+        fn test_action_send_packet() {
+            let action = Action::SendPacket {
+                iface: InterfaceId(3),
+                data: vec![1, 2, 3],
+            };
+
+            // Clone
+            let cloned = action.clone();
+            assert_eq!(action, cloned);
+
+            // Debug
+            extern crate std;
+            let debug = std::format!("{:?}", action);
+            assert!(debug.contains("SendPacket"));
+            assert!(debug.contains("InterfaceId(3)"));
+        }
+
+        #[test]
+        fn test_action_broadcast() {
+            let action_no_exclude = Action::Broadcast {
+                data: vec![10, 20],
+                exclude_iface: None,
+            };
+            let action_with_exclude = Action::Broadcast {
+                data: vec![10, 20],
+                exclude_iface: Some(InterfaceId(2)),
+            };
+
+            assert_ne!(action_no_exclude, action_with_exclude);
+
+            // Same data but different exclude
+            let action_no_exclude2 = Action::Broadcast {
+                data: vec![10, 20],
+                exclude_iface: None,
+            };
+            assert_eq!(action_no_exclude, action_no_exclude2);
+        }
+
+        #[test]
+        fn test_action_variants_not_equal() {
+            let send = Action::SendPacket {
+                iface: InterfaceId(0),
+                data: vec![1],
+            };
+            let broadcast = Action::Broadcast {
+                data: vec![1],
+                exclude_iface: None,
+            };
+            assert_ne!(send, broadcast);
+        }
+
+        #[test]
+        fn test_tick_output_empty() {
+            let output = TickOutput::empty();
+            assert!(output.is_empty());
+            assert!(output.actions.is_empty());
+            assert!(output.events.is_empty());
+        }
+
+        #[test]
+        fn test_tick_output_with_actions() {
+            let output = TickOutput {
+                actions: vec![Action::SendPacket {
+                    iface: InterfaceId(0),
+                    data: vec![42],
+                }],
+                events: Vec::new(),
+            };
+            assert!(!output.is_empty());
+            assert_eq!(output.actions.len(), 1);
+        }
+
+        #[test]
+        fn test_tick_output_debug() {
+            let output = TickOutput {
+                actions: vec![
+                    Action::SendPacket {
+                        iface: InterfaceId(0),
+                        data: vec![1],
+                    },
+                    Action::Broadcast {
+                        data: vec![2],
+                        exclude_iface: None,
+                    },
+                ],
+                events: Vec::new(),
+            };
+
+            extern crate std;
+            let debug = std::format!("{:?}", output);
+            assert!(debug.contains("actions: 2"));
+            assert!(debug.contains("events: 0"));
+        }
+    }
+
     mod transport_tests {
         use super::*;
-        use crate::traits::NoStorage;
+        use crate::traits::{Interface, InterfaceError, NoStorage};
         use rand_core::OsRng;
 
         extern crate std;
-        use std::sync::{Arc, Mutex};
 
         // Mock clock for deterministic testing
         struct MockClock {
@@ -1757,49 +2042,6 @@ mod tests {
             }
         }
 
-        /// Mock interface with shared send buffer for inspecting sent packets
-        struct CaptureMockInterface {
-            name: &'static str,
-            hash: [u8; TRUNCATED_HASHBYTES],
-            sent: Arc<Mutex<Vec<Vec<u8>>>>,
-            online: bool,
-        }
-
-        impl CaptureMockInterface {
-            fn new(name: &'static str, id: u8, sent: Arc<Mutex<Vec<Vec<u8>>>>) -> Self {
-                let mut hash = [0u8; TRUNCATED_HASHBYTES];
-                hash[0] = id;
-                Self {
-                    name,
-                    hash,
-                    sent,
-                    online: true,
-                }
-            }
-        }
-
-        impl Interface for CaptureMockInterface {
-            fn name(&self) -> &str {
-                self.name
-            }
-            fn mtu(&self) -> usize {
-                500
-            }
-            fn hash(&self) -> [u8; TRUNCATED_HASHBYTES] {
-                self.hash
-            }
-            fn send(&mut self, data: &[u8]) -> Result<(), InterfaceError> {
-                self.sent.lock().unwrap().push(data.to_vec());
-                Ok(())
-            }
-            fn recv(&mut self, _buf: &mut [u8]) -> Result<usize, InterfaceError> {
-                Err(InterfaceError::WouldBlock)
-            }
-            fn is_online(&self) -> bool {
-                self.online
-            }
-        }
-
         fn make_transport() -> Transport<MockClock, NoStorage> {
             let clock = MockClock::new(1_000_000);
             let identity = Identity::generate(&mut OsRng);
@@ -1812,6 +2054,15 @@ mod tests {
             assert_eq!(transport.interface_count(), 0);
             assert_eq!(transport.path_count(), 0);
             assert_eq!(transport.pending_events(), 0);
+            assert_eq!(transport.pending_action_count(), 0);
+        }
+
+        #[test]
+        fn test_drain_actions_initially_empty() {
+            let mut transport = make_transport();
+            let actions = transport.drain_actions();
+            assert!(actions.is_empty());
+            assert_eq!(transport.pending_action_count(), 0);
         }
 
         #[test]
@@ -1920,10 +2171,21 @@ mod tests {
         }
 
         #[test]
-        fn test_send_on_invalid_interface() {
+        fn test_send_on_unregistered_interface_emits_action() {
             let mut transport = make_transport();
+            // Sending on an unregistered interface still emits an Action
+            // (the driver is responsible for dispatching to real interfaces)
             let result = transport.send_on_interface(99, b"test");
-            assert!(matches!(result, Err(TransportError::InvalidInterface)));
+            assert!(result.is_ok());
+            assert_eq!(transport.pending_action_count(), 1);
+            let actions = transport.drain_actions();
+            assert_eq!(
+                actions[0],
+                Action::SendPacket {
+                    iface: InterfaceId(99),
+                    data: b"test".to_vec()
+                }
+            );
         }
 
         #[test]
@@ -3001,10 +3263,8 @@ mod tests {
         // ─── Stage 6: Interface validation in table cleanup ─────────────
 
         #[test]
-        fn test_link_table_cleaned_when_interface_offline() {
+        fn test_link_table_cleaned_when_interface_down() {
             let mut transport = make_transport_enabled();
-            let _idx0 = transport.register_interface(Box::new(MockInterface::new("if0", 1)));
-            let idx1 = transport.register_interface(Box::new(MockInterface::new("if1", 2)));
 
             let link_id = [0xAA; TRUNCATED_HASHBYTES];
             let now = transport.clock.now_ms();
@@ -3021,21 +3281,18 @@ mod tests {
                 },
             );
 
-            // Take interface 1 offline
-            transport.unregister_interface(idx1);
+            // Notify that interface 1 is down (sans-I/O: driver calls this)
+            transport.remove_link_entries_for_interface(1);
 
-            transport.poll();
             assert!(
                 !transport.link_table.contains_key(&link_id),
-                "Link entry should be removed when interface goes offline"
+                "Link entry should be removed when interface goes down"
             );
         }
 
         #[test]
-        fn test_reverse_table_cleaned_when_interface_offline() {
+        fn test_reverse_table_cleaned_when_interface_down() {
             let mut transport = make_transport_enabled();
-            let _idx0 = transport.register_interface(Box::new(MockInterface::new("if0", 1)));
-            let idx1 = transport.register_interface(Box::new(MockInterface::new("if1", 2)));
 
             let hash = [0xAA; TRUNCATED_HASHBYTES];
             let now = transport.clock.now_ms();
@@ -3048,13 +3305,12 @@ mod tests {
                 },
             );
 
-            // Take interface 1 offline
-            transport.unregister_interface(idx1);
+            // Notify that interface 1 is down (sans-I/O: driver calls this)
+            transport.remove_reverse_entries_for_interface(1);
 
-            transport.poll();
             assert!(
                 !transport.reverse_table.contains_key(&hash),
-                "Reverse entry should be removed when outbound interface goes offline"
+                "Reverse entry should be removed when interface goes down"
             );
         }
 
@@ -3064,14 +3320,7 @@ mod tests {
         fn test_link_request_stripped_to_type1_at_final_hop() {
             let mut transport = make_transport_enabled();
             let _idx0 = transport.register_interface(Box::new(MockInterface::new("if0", 1)));
-
-            // Use CaptureMockInterface on if1 so we can inspect sent packets
-            let sent_buf: Arc<Mutex<Vec<Vec<u8>>>> = Arc::new(Mutex::new(Vec::new()));
-            let _idx1 = transport.register_interface(Box::new(CaptureMockInterface::new(
-                "if1",
-                2,
-                sent_buf.clone(),
-            )));
+            let _idx1 = transport.register_interface(Box::new(MockInterface::new("if1", 2)));
 
             // Path with hops=1 (destination directly connected to if1)
             let dest_hash = [0xBB; TRUNCATED_HASHBYTES];
@@ -3097,9 +3346,14 @@ mod tests {
             );
 
             // Verify forwarded packet is Type1 (no transport_id)
-            let sent = sent_buf.lock().unwrap();
-            assert!(!sent.is_empty(), "Should have sent a packet on if1");
-            let forwarded_raw = &sent[0];
+            let actions = transport.drain_actions();
+            let forwarded_raw = actions
+                .iter()
+                .find_map(|a| match a {
+                    Action::SendPacket { iface, data } if iface.0 == 1 => Some(data.as_slice()),
+                    _ => None,
+                })
+                .expect("Should have a SendPacket action for iface 1");
             let forwarded_pkt = Packet::unpack(forwarded_raw).unwrap();
             assert_eq!(
                 forwarded_pkt.flags.header_type,
@@ -3116,13 +3370,7 @@ mod tests {
         fn test_link_request_type2_when_not_final_hop() {
             let mut transport = make_transport_enabled();
             let _idx0 = transport.register_interface(Box::new(MockInterface::new("if0", 1)));
-
-            let sent_buf: Arc<Mutex<Vec<Vec<u8>>>> = Arc::new(Mutex::new(Vec::new()));
-            let _idx1 = transport.register_interface(Box::new(CaptureMockInterface::new(
-                "if1",
-                2,
-                sent_buf.clone(),
-            )));
+            let _idx1 = transport.register_interface(Box::new(MockInterface::new("if1", 2)));
 
             // Path with hops=3 (destination is multiple hops away)
             let dest_hash = [0xBB; TRUNCATED_HASHBYTES];
@@ -3148,9 +3396,14 @@ mod tests {
             );
 
             // Verify forwarded packet is Type2 (with transport_id)
-            let sent = sent_buf.lock().unwrap();
-            assert!(!sent.is_empty(), "Should have sent a packet on if1");
-            let forwarded_raw = &sent[0];
+            let actions = transport.drain_actions();
+            let forwarded_raw = actions
+                .iter()
+                .find_map(|a| match a {
+                    Action::SendPacket { iface, data } if iface.0 == 1 => Some(data.as_slice()),
+                    _ => None,
+                })
+                .expect("Should have a SendPacket action for iface 1");
             let forwarded_pkt = Packet::unpack(forwarded_raw).unwrap();
             assert_eq!(
                 forwarded_pkt.flags.header_type,
@@ -3167,23 +3420,11 @@ mod tests {
 
         #[test]
         fn test_link_request_forward_type2_to_type1_payload_intact() {
-            // Setup: transport with 2 CaptureMockInterfaces so we can inspect
-            // what is sent on each interface.
+            // Setup: transport with 2 MockInterfaces; inspect via drain_actions()
             let mut transport = make_transport_enabled();
 
-            let sent_if0: Arc<Mutex<Vec<Vec<u8>>>> = Arc::new(Mutex::new(Vec::new()));
-            let sent_if1: Arc<Mutex<Vec<Vec<u8>>>> = Arc::new(Mutex::new(Vec::new()));
-
-            let _idx0 = transport.register_interface(Box::new(CaptureMockInterface::new(
-                "if0",
-                1,
-                sent_if0.clone(),
-            )));
-            let _idx1 = transport.register_interface(Box::new(CaptureMockInterface::new(
-                "if1",
-                2,
-                sent_if1.clone(),
-            )));
+            let _idx0 = transport.register_interface(Box::new(MockInterface::new("if0", 1)));
+            let _idx1 = transport.register_interface(Box::new(MockInterface::new("if1", 2)));
 
             // Create a path entry for dest_hash with hops=0 (directly connected
             // to if1), meaning the relay is the final hop.
@@ -3219,9 +3460,14 @@ mod tests {
 
             // Verify the forwarded packet on if1
             {
-                let sent = sent_if1.lock().unwrap();
-                assert!(!sent.is_empty(), "Should have sent a packet on if1");
-                let forwarded_raw = &sent[0];
+                let actions = transport.drain_actions();
+                let forwarded_raw = actions
+                    .iter()
+                    .find_map(|a| match a {
+                        Action::SendPacket { iface, data } if iface.0 == 1 => Some(data.as_slice()),
+                        _ => None,
+                    })
+                    .expect("Should have a SendPacket action for iface 1");
                 let forwarded_pkt = Packet::unpack(forwarded_raw)
                     .expect("Forwarded packet must be parseable by Packet::unpack");
 
@@ -3251,21 +3497,21 @@ mod tests {
                     &original_request_data_a[..],
                     "Link request payload must be preserved exactly"
                 );
-            }
 
-            // Nothing should be sent on if0 (the receiving interface)
-            {
-                let sent = sent_if0.lock().unwrap();
+                // Nothing should be sent on if0 (the receiving interface)
                 assert!(
-                    sent.is_empty(),
+                    !actions.iter().any(|a| matches!(
+                        a,
+                        Action::SendPacket { iface, .. } if iface.0 == 0
+                    )),
                     "No packets should be sent back on the receiving interface"
                 );
             }
 
             // ── Part B: Type2 link request arriving on if0, forwarded to if1 ──
 
-            // Clear previous state
-            sent_if1.lock().unwrap().clear();
+            // Clear previous actions and packet cache
+            transport.drain_actions();
             transport.packet_cache.clear(); // allow processing
 
             // Build a Type2 link request (with transport_id set)
@@ -3297,12 +3543,14 @@ mod tests {
 
             // Verify the forwarded packet on if1
             {
-                let sent = sent_if1.lock().unwrap();
-                assert!(
-                    !sent.is_empty(),
-                    "Should have sent a forwarded packet on if1"
-                );
-                let forwarded_raw = &sent[0];
+                let actions = transport.drain_actions();
+                let forwarded_raw = actions
+                    .iter()
+                    .find_map(|a| match a {
+                        Action::SendPacket { iface, data } if iface.0 == 1 => Some(data.as_slice()),
+                        _ => None,
+                    })
+                    .expect("Should have a SendPacket action for iface 1");
                 let forwarded_pkt = Packet::unpack(forwarded_raw)
                     .expect("Forwarded Type2->Type1 packet must be parseable");
 
@@ -3336,7 +3584,7 @@ mod tests {
 
             // ── Part C: Type2 arriving, multi-hop (hops=3), stays Type2 ──
 
-            sent_if1.lock().unwrap().clear();
+            transport.drain_actions();
             transport.packet_cache.clear();
 
             // Update path to multi-hop
@@ -3364,9 +3612,14 @@ mod tests {
             );
 
             {
-                let sent = sent_if1.lock().unwrap();
-                assert!(!sent.is_empty(), "Should have sent a packet on if1");
-                let forwarded_raw = &sent[0];
+                let actions = transport.drain_actions();
+                let forwarded_raw = actions
+                    .iter()
+                    .find_map(|a| match a {
+                        Action::SendPacket { iface, data } if iface.0 == 1 => Some(data.as_slice()),
+                        _ => None,
+                    })
+                    .expect("Should have a SendPacket action for iface 1");
                 let forwarded_pkt = Packet::unpack(forwarded_raw)
                     .expect("Multi-hop forwarded packet must be parseable");
 
@@ -3671,6 +3924,236 @@ mod tests {
                 MAX_PATH_REQUEST_TAGS,
                 "path_request_tags should be capped at MAX_PATH_REQUEST_TAGS"
             );
+        }
+
+        // ─── Stage 2: Dual-write verification tests ────────────────────────
+
+        #[test]
+        fn test_send_on_interface_produces_action() {
+            let mut transport = make_transport();
+            let idx = transport.register_interface(Box::new(MockInterface::new("if0", 1)));
+
+            let data = b"hello world";
+            transport.send_on_interface(idx, data).unwrap();
+
+            let actions = transport.drain_actions();
+            assert_eq!(actions.len(), 1);
+            assert_eq!(
+                actions[0],
+                Action::SendPacket {
+                    iface: InterfaceId(idx),
+                    data: data.to_vec(),
+                }
+            );
+        }
+
+        #[test]
+        fn test_send_on_interface_no_registered_iface_still_emits_action() {
+            let mut transport = make_transport();
+
+            // No interfaces registered; action is still emitted for sans-I/O driver
+            let result = transport.send_on_interface(99, b"data");
+            assert!(result.is_ok());
+
+            assert_eq!(transport.pending_action_count(), 1);
+            let actions = transport.drain_actions();
+            assert_eq!(
+                actions[0],
+                Action::SendPacket {
+                    iface: InterfaceId(99),
+                    data: b"data".to_vec()
+                }
+            );
+        }
+
+        #[test]
+        fn test_send_on_all_interfaces_produces_broadcast_action() {
+            let mut transport = make_transport();
+            let _idx0 = transport.register_interface(Box::new(MockInterface::new("if0", 1)));
+            let _idx1 = transport.register_interface(Box::new(MockInterface::new("if1", 2)));
+
+            let data = b"broadcast data";
+            transport.send_on_all_interfaces(data);
+
+            let actions = transport.drain_actions();
+            assert_eq!(actions.len(), 1);
+            assert_eq!(
+                actions[0],
+                Action::Broadcast {
+                    data: data.to_vec(),
+                    exclude_iface: None,
+                }
+            );
+        }
+
+        #[test]
+        fn test_send_on_all_interfaces_except_produces_broadcast_action() {
+            let mut transport = make_transport_enabled();
+            let _idx0 = transport.register_interface(Box::new(MockInterface::new("if0", 1)));
+            let _idx1 = transport.register_interface(Box::new(MockInterface::new("if1", 2)));
+            let _idx2 = transport.register_interface(Box::new(MockInterface::new("if2", 3)));
+
+            let data = b"selective broadcast";
+            transport.send_on_all_interfaces_except(1, data);
+
+            let actions = transport.drain_actions();
+            assert_eq!(actions.len(), 1);
+            assert_eq!(
+                actions[0],
+                Action::Broadcast {
+                    data: data.to_vec(),
+                    exclude_iface: Some(InterfaceId(1)),
+                }
+            );
+        }
+
+        #[test]
+        fn test_send_to_destination_produces_send_action() {
+            let mut transport = make_transport();
+            let idx = transport.register_interface(Box::new(MockInterface::new("if0", 1)));
+
+            // Manually insert a path
+            let dest_hash = [0x42; TRUNCATED_HASHBYTES];
+            transport.path_table.insert(
+                dest_hash,
+                PathEntry {
+                    hops: 1,
+                    expires_ms: u64::MAX,
+                    interface_index: idx,
+                    random_blobs: Vec::new(),
+                },
+            );
+
+            let data = b"routed packet";
+            transport.send_to_destination(&dest_hash, data).unwrap();
+
+            let actions = transport.drain_actions();
+            assert_eq!(actions.len(), 1);
+            assert_eq!(
+                actions[0],
+                Action::SendPacket {
+                    iface: InterfaceId(idx),
+                    data: data.to_vec(),
+                }
+            );
+        }
+
+        #[test]
+        fn test_send_to_destination_no_path_no_action() {
+            let mut transport = make_transport();
+            let _idx = transport.register_interface(Box::new(MockInterface::new("if0", 1)));
+
+            let dest_hash = [0x42; TRUNCATED_HASHBYTES];
+            let result = transport.send_to_destination(&dest_hash, b"data");
+            assert!(result.is_err());
+
+            assert_eq!(transport.pending_action_count(), 0);
+        }
+
+        #[test]
+        fn test_drain_actions_clears_buffer() {
+            let mut transport = make_transport();
+            let idx = transport.register_interface(Box::new(MockInterface::new("if0", 1)));
+
+            transport.send_on_interface(idx, b"first").unwrap();
+            transport.send_on_interface(idx, b"second").unwrap();
+
+            assert_eq!(transport.pending_action_count(), 2);
+
+            let actions = transport.drain_actions();
+            assert_eq!(actions.len(), 2);
+
+            // Buffer should be empty after drain
+            assert_eq!(transport.pending_action_count(), 0);
+            let actions2 = transport.drain_actions();
+            assert!(actions2.is_empty());
+        }
+
+        #[test]
+        fn test_multiple_sends_accumulate_actions() {
+            let mut transport = make_transport();
+            let idx0 = transport.register_interface(Box::new(MockInterface::new("if0", 1)));
+            let idx1 = transport.register_interface(Box::new(MockInterface::new("if1", 2)));
+
+            // Mix of different send types
+            transport.send_on_interface(idx0, b"unicast").unwrap();
+            transport.send_on_all_interfaces(b"broadcast");
+            transport.send_on_interface(idx1, b"unicast2").unwrap();
+            transport.send_on_all_interfaces_except(0, b"selective");
+
+            let actions = transport.drain_actions();
+            assert_eq!(actions.len(), 4);
+
+            assert_eq!(
+                actions[0],
+                Action::SendPacket {
+                    iface: InterfaceId(0),
+                    data: b"unicast".to_vec(),
+                }
+            );
+            assert_eq!(
+                actions[1],
+                Action::Broadcast {
+                    data: b"broadcast".to_vec(),
+                    exclude_iface: None,
+                }
+            );
+            assert_eq!(
+                actions[2],
+                Action::SendPacket {
+                    iface: InterfaceId(1),
+                    data: b"unicast2".to_vec(),
+                }
+            );
+            assert_eq!(
+                actions[3],
+                Action::Broadcast {
+                    data: b"selective".to_vec(),
+                    exclude_iface: Some(InterfaceId(0)),
+                }
+            );
+        }
+
+        #[test]
+        fn test_announce_rebroadcast_produces_action() {
+            // When an announce is rebroadcast, it should produce a Broadcast action
+            let mut transport = make_transport_enabled();
+            let _idx0 = transport.register_interface(Box::new(MockInterface::new("if0", 1)));
+            let _idx1 = transport.register_interface(Box::new(MockInterface::new("if1", 2)));
+
+            let (raw, _dest_hash) = make_announce_raw(1, PacketContext::None);
+            let _ = transport.process_incoming(0, &raw);
+
+            // Drain actions from the initial processing (no rebroadcast yet)
+            let _ = transport.drain_actions();
+
+            // Advance time past the retransmit delay
+            transport.clock.advance(PATHFINDER_RW_MS + 1000);
+            transport.poll();
+
+            // Should have a Broadcast action for the rebroadcast
+            let actions = transport.drain_actions();
+            assert!(
+                !actions.is_empty(),
+                "announce rebroadcast should produce actions"
+            );
+
+            // All rebroadcast actions should be Broadcast with exclude
+            for action in &actions {
+                match action {
+                    Action::Broadcast {
+                        exclude_iface,
+                        data: _,
+                    } => {
+                        assert_eq!(
+                            *exclude_iface,
+                            Some(InterfaceId(0)),
+                            "rebroadcast should exclude the receiving interface"
+                        );
+                    }
+                    other => panic!("expected Broadcast action, got {:?}", other),
+                }
+            }
         }
     }
 }
