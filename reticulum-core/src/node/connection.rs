@@ -185,8 +185,8 @@ impl Connection {
     /// # Arguments
     /// * `link` - The underlying link (for encryption and MDU)
     /// * `message` - The message to send
-    /// * `now_ms` - Current time in milliseconds
     /// * `rng` - Random number generator
+    /// * `now_ms` - Current time in milliseconds
     ///
     /// # Returns
     /// The encrypted packet bytes ready for transmission
@@ -194,8 +194,8 @@ impl Connection {
         &mut self,
         link: &Link,
         message: &M,
-        now_ms: u64,
         rng: &mut impl CryptoRngCore,
+        now_ms: u64,
     ) -> Result<Vec<u8>, ConnectionError> {
         if link.state() != LinkState::Active {
             return Err(ConnectionError::InvalidState);
@@ -222,16 +222,16 @@ impl Connection {
     /// # Arguments
     /// * `link` - The underlying link
     /// * `data` - The raw bytes to send
-    /// * `now_ms` - Current time in milliseconds
     /// * `rng` - Random number generator
+    /// * `now_ms` - Current time in milliseconds
     pub fn send_bytes(
         &mut self,
         link: &Link,
         data: &[u8],
-        now_ms: u64,
         rng: &mut impl CryptoRngCore,
+        now_ms: u64,
     ) -> Result<Vec<u8>, ConnectionError> {
-        self.send_message(link, &RawBytesMessage(data.to_vec()), now_ms, rng)
+        self.send_message(link, &RawBytesMessage(data.to_vec()), rng, now_ms)
     }
 
     /// Check if the channel is ready to send more messages

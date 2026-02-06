@@ -283,8 +283,8 @@ impl<R: CryptoRngCore, C: Clock, S: Storage> NodeCore<R, C, S> {
             dest_signing_key,
             next_hop,
             hops,
-            now_ms,
             &mut self.rng,
+            now_ms,
         );
 
         // Create connection wrapper
@@ -523,7 +523,7 @@ impl<R: CryptoRngCore, C: Clock, S: Storage> NodeCore<R, C, S> {
 
         // Send via connection
         connection
-            .send_bytes(link, data, now_ms, &mut self.rng)
+            .send_bytes(link, data, &mut self.rng, now_ms)
             .map_err(|e| match e {
                 ConnectionError::ChannelError(crate::link::channel::ChannelError::WindowFull) => {
                     send::SendError::WindowFull
@@ -592,7 +592,7 @@ impl<R: CryptoRngCore, C: Clock, S: Storage> NodeCore<R, C, S> {
 
         let now_ms = self.transport.clock().now_ms();
         self.transport.poll();
-        self.link_manager.poll(now_ms, &mut self.rng);
+        self.link_manager.poll(&mut self.rng, now_ms);
 
         let transport_events: Vec<_> = self.transport.drain_events().collect();
         for event in transport_events {
@@ -631,7 +631,7 @@ impl<R: CryptoRngCore, C: Clock, S: Storage> NodeCore<R, C, S> {
         self.transport.poll();
 
         // Poll link manager
-        self.link_manager.poll(now_ms, &mut self.rng);
+        self.link_manager.poll(&mut self.rng, now_ms);
 
         // Collect transport events first to avoid borrow issues
         let transport_events: Vec<_> = self.transport.drain_events().collect();
@@ -768,7 +768,7 @@ impl<R: CryptoRngCore, C: Clock, S: Storage> NodeCore<R, C, S> {
                     // Route to link manager
                     let raw = self.repack_packet(&packet);
                     let now_ms = self.transport.clock().now_ms();
-                    self.link_manager.process_packet(&packet, &raw, now_ms, &mut self.rng);
+                    self.link_manager.process_packet(&packet, &raw, &mut self.rng, now_ms);
                 } else {
                     // Regular packet event
                     self.events.push(NodeEvent::PacketReceived {

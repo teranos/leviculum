@@ -24,7 +24,7 @@
 //! let dest_hash = DestinationHash::new([0x33u8; 16]);
 //! let dest_signing_key = [0x11u8; 32];
 //! let now_ms = 1_000_000u64;
-//! let (link_id, packet) = manager.initiate(dest_hash, &dest_signing_key, now_ms, &mut OsRng);
+//! let (link_id, packet) = manager.initiate(dest_hash, &dest_signing_key, &mut OsRng, now_ms);
 //!
 //! // Handle events
 //! for event in manager.drain_events() {
@@ -144,16 +144,16 @@ impl LinkManager {
     /// # Arguments
     /// * `dest_hash` - The destination hash to connect to
     /// * `dest_signing_key` - The destination's Ed25519 signing key (from announce)
-    /// * `now_ms` - Current time in milliseconds
     /// * `rng` - Random number generator
+    /// * `now_ms` - Current time in milliseconds
     pub fn initiate(
         &mut self,
         dest_hash: DestinationHash,
         dest_signing_key: &[u8; 32],
-        now_ms: u64,
         rng: &mut impl CryptoRngCore,
+        now_ms: u64,
     ) -> (LinkId, Vec<u8>) {
-        self.initiate_with_path(dest_hash, dest_signing_key, None, 1, now_ms, rng)
+        self.initiate_with_path(dest_hash, dest_signing_key, None, 1, rng, now_ms)
     }
 
     /// Start establishing a link to a destination with explicit path information.
@@ -170,8 +170,8 @@ impl LinkManager {
     /// * `dest_signing_key` - The destination's Ed25519 signing key (from announce)
     /// * `next_hop` - The transport_id (identity hash) of the next hop node, if routing through a relay
     /// * `hops` - Number of hops to the destination
-    /// * `now_ms` - Current time in milliseconds
     /// * `rng` - Random number generator
+    /// * `now_ms` - Current time in milliseconds
     ///
     /// # Example
     /// ```
@@ -192,8 +192,8 @@ impl LinkManager {
     ///     &signing_key,
     ///     Some(transport_id),
     ///     hops,
-    ///     1_000_000,
     ///     &mut OsRng,
+    ///     1_000_000,
     /// );
     /// assert!(!packet.is_empty());
     /// ```
@@ -203,8 +203,8 @@ impl LinkManager {
         dest_signing_key: &[u8; 32],
         next_hop: Option<[u8; TRUNCATED_HASHBYTES]>,
         hops: u8,
-        now_ms: u64,
         rng: &mut impl CryptoRngCore,
+        now_ms: u64,
     ) -> (LinkId, Vec<u8>) {
         // Create new outgoing link
         let mut link = Link::new_outgoing(dest_hash, rng);
@@ -354,8 +354,8 @@ impl LinkManager {
         &mut self,
         link_id: &LinkId,
         data: &[u8],
-        now_ms: u64,
         rng: &mut impl CryptoRngCore,
+        now_ms: u64,
     ) -> Result<(Vec<u8>, [u8; 32]), LinkError> {
         let link = self.links.get(link_id).ok_or(LinkError::NotFound)?;
 
@@ -507,8 +507,8 @@ impl LinkManager {
         &mut self,
         link_id: &LinkId,
         message: &M,
-        now_ms: u64,
         rng: &mut impl CryptoRngCore,
+        now_ms: u64,
     ) -> Result<Vec<u8>, LinkError> {
         // First check if link exists and is active
         let link = self.links.get(link_id).ok_or(LinkError::NotFound)?;
@@ -559,15 +559,15 @@ impl LinkManager {
     /// # Arguments
     /// * `packet` - The parsed packet
     /// * `raw_packet` - The raw packet bytes (needed for link ID calculation)
-    /// * `now_ms` - Current time in milliseconds
     /// * `rng` - Random number generator
-    pub fn process_packet(&mut self, packet: &Packet, raw_packet: &[u8], now_ms: u64, rng: &mut impl CryptoRngCore) {
+    /// * `now_ms` - Current time in milliseconds
+    pub fn process_packet(&mut self, packet: &Packet, raw_packet: &[u8], rng: &mut impl CryptoRngCore, now_ms: u64) {
         match packet.flags.packet_type {
             PacketType::LinkRequest => {
                 self.handle_link_request(packet, raw_packet, rng);
             }
             PacketType::Proof => {
-                self.handle_proof(packet, now_ms, rng);
+                self.handle_proof(packet, rng, now_ms);
             }
             PacketType::Data => {
                 self.handle_data(packet, raw_packet, now_ms);
@@ -589,14 +589,14 @@ impl LinkManager {
     /// - Checks if stale links should be closed
     ///
     /// # Arguments
-    /// * `now_ms` - Current time in milliseconds
     /// * `rng` - Random number generator (for building close packets)
-    pub fn poll(&mut self, now_ms: u64, rng: &mut impl CryptoRngCore) {
+    /// * `now_ms` - Current time in milliseconds
+    pub fn poll(&mut self, rng: &mut impl CryptoRngCore, now_ms: u64) {
         self.check_timeouts(now_ms);
         let now_secs = now_ms / MS_PER_SECOND;
         self.check_keepalives(now_secs);
         self.check_stale_links(now_secs, rng);
-        self.check_channel_timeouts(now_ms, rng);
+        self.check_channel_timeouts(rng, now_ms);
     }
 
     /// Drain pending events
@@ -727,7 +727,7 @@ impl LinkManager {
         });
     }
 
-    fn handle_proof(&mut self, packet: &Packet, now_ms: u64, rng: &mut impl CryptoRngCore) {
+    fn handle_proof(&mut self, packet: &Packet, rng: &mut impl CryptoRngCore, now_ms: u64) {
         // PROOF packets are addressed to link_id (not destination hash)
         let link_id = LinkId::new(packet.destination_hash);
 
@@ -1159,7 +1159,7 @@ impl LinkManager {
     // --- Internal: Channel Timeout Handling ---
 
     /// Check for channel envelope timeouts and queue retransmissions
-    fn check_channel_timeouts(&mut self, now_ms: u64, rng: &mut impl CryptoRngCore) {
+    fn check_channel_timeouts(&mut self, rng: &mut impl CryptoRngCore, now_ms: u64) {
         use super::channel::ChannelAction;
 
         // Collect link IDs that have channels
@@ -1259,7 +1259,7 @@ mod tests {
         let dest_hash = DestinationHash::new([0x42; 16]);
         let dest_signing_key = [0x33; 32];
 
-        let (link_id, packet) = manager.initiate(dest_hash, &dest_signing_key, INITIAL_TIME_MS, &mut OsRng);
+        let (link_id, packet) = manager.initiate(dest_hash, &dest_signing_key, &mut OsRng, INITIAL_TIME_MS);
 
         // Should have created a pending link
         assert_eq!(manager.pending_link_count(), 1);
@@ -1276,12 +1276,12 @@ mod tests {
         let dest_hash = DestinationHash::new([0x42; 16]);
         let dest_signing_key = [0x33; 32];
 
-        let (link_id, _) = manager.initiate(dest_hash, &dest_signing_key, INITIAL_TIME_MS, &mut OsRng);
+        let (link_id, _) = manager.initiate(dest_hash, &dest_signing_key, &mut OsRng, INITIAL_TIME_MS);
         assert_eq!(manager.pending_link_count(), 1);
 
         // Advance time past timeout
         let now_ms = INITIAL_TIME_MS + LINK_PENDING_TIMEOUT_MS + 1;
-        manager.poll(now_ms, &mut OsRng);
+        manager.poll(&mut OsRng, now_ms);
 
         // Link should be removed
         assert_eq!(manager.pending_link_count(), 0);
@@ -1308,7 +1308,7 @@ mod tests {
         let dest_hash = DestinationHash::new([0x42; 16]);
         let dest_signing_key = [0x33; 32];
 
-        let (link_id, _) = manager.initiate(dest_hash, &dest_signing_key, INITIAL_TIME_MS, &mut OsRng);
+        let (link_id, _) = manager.initiate(dest_hash, &dest_signing_key, &mut OsRng, INITIAL_TIME_MS);
 
         // Use close_local for this test (graceful close requires active link with encryption key)
         manager.close_local(&link_id, LinkCloseReason::Normal);
@@ -1353,11 +1353,11 @@ mod tests {
 
         // Initiator starts link
         let (link_id, link_request_packet) =
-            initiator_mgr.initiate(dest_hash, &dest_signing_key, now_ms, &mut OsRng);
+            initiator_mgr.initiate(dest_hash, &dest_signing_key, &mut OsRng, now_ms);
 
         // Deliver link request to responder
         let packet = Packet::unpack(&link_request_packet).unwrap();
-        responder_mgr.process_packet(&packet, &link_request_packet, now_ms, &mut OsRng);
+        responder_mgr.process_packet(&packet, &link_request_packet, &mut OsRng, now_ms);
 
         // Accept on responder
         let events: Vec<_> = responder_mgr.drain_events().collect();
@@ -1372,13 +1372,13 @@ mod tests {
 
         // Deliver proof to initiator
         let proof = Packet::unpack(&proof_packet).unwrap();
-        initiator_mgr.process_packet(&proof, &proof_packet, now_ms, &mut OsRng);
+        initiator_mgr.process_packet(&proof, &proof_packet, &mut OsRng, now_ms);
         let _ = initiator_mgr.drain_events().collect::<Vec<_>>();
 
         // Deliver RTT packet to responder
         let rtt_packet = initiator_mgr.take_pending_rtt_packet(&link_id).unwrap();
         let rtt = Packet::unpack(&rtt_packet).unwrap();
-        responder_mgr.process_packet(&rtt, &rtt_packet, now_ms, &mut OsRng);
+        responder_mgr.process_packet(&rtt, &rtt_packet, &mut OsRng, now_ms);
         let _ = responder_mgr.drain_events().collect::<Vec<_>>();
 
         assert!(initiator_mgr.is_active(&link_id));
@@ -1433,7 +1433,7 @@ mod tests {
         // Process data on responder
         let data = Packet::unpack(&data_packet).unwrap();
         pair.responder
-            .process_packet(&data, &data_packet, pair.now_ms, &mut OsRng);
+            .process_packet(&data, &data_packet, &mut OsRng, pair.now_ms);
 
         // Should have generated a proof packet
         let proof_packets: Vec<_> = pair.responder.drain_proof_packets();
@@ -1459,7 +1459,7 @@ mod tests {
         // Process data on responder
         let data = Packet::unpack(&data_packet).unwrap();
         pair.responder
-            .process_packet(&data, &data_packet, pair.now_ms, &mut OsRng);
+            .process_packet(&data, &data_packet, &mut OsRng, pair.now_ms);
 
         // Should NOT have generated a proof packet (PROVE_APP waits for app decision)
         let proof_packets: Vec<_> = pair.responder.drain_proof_packets();
@@ -1483,7 +1483,7 @@ mod tests {
         // Send data with receipt tracking
         let (data_packet, sent_hash) = pair
             .initiator
-            .send_with_receipt(&pair.initiator_link_id, b"hello", pair.now_ms, &mut OsRng)
+            .send_with_receipt(&pair.initiator_link_id, b"hello", &mut OsRng, pair.now_ms)
             .unwrap();
 
         // Should have created a receipt
@@ -1492,7 +1492,7 @@ mod tests {
         // Process data on responder - this generates the proof
         let data = Packet::unpack(&data_packet).unwrap();
         pair.responder
-            .process_packet(&data, &data_packet, pair.now_ms, &mut OsRng);
+            .process_packet(&data, &data_packet, &mut OsRng, pair.now_ms);
 
         // Get the proof packet
         let proof_packets: Vec<_> = pair.responder.drain_proof_packets();
@@ -1519,7 +1519,7 @@ mod tests {
         );
 
         pair.initiator
-            .process_packet(&data_proof, data_proof_packet, pair.now_ms, &mut OsRng);
+            .process_packet(&data_proof, data_proof_packet, &mut OsRng, pair.now_ms);
 
         // Should have emitted DataDelivered event
         let events: Vec<_> = pair.initiator.drain_events().collect();
@@ -1553,15 +1553,15 @@ mod tests {
             .send_with_receipt(
                 &pair.initiator_link_id,
                 b"prove_app_test",
-                pair.now_ms,
                 &mut OsRng,
+                pair.now_ms,
             )
             .unwrap();
 
         // Process data on responder - should emit ProofRequested
         let data = Packet::unpack(&data_packet).unwrap();
         pair.responder
-            .process_packet(&data, &data_packet, pair.now_ms, &mut OsRng);
+            .process_packet(&data, &data_packet, &mut OsRng, pair.now_ms);
 
         // Find the ProofRequested event
         let events: Vec<_> = pair.responder.drain_events().collect();
@@ -1581,7 +1581,7 @@ mod tests {
         // Deliver proof to initiator
         let data_proof = Packet::unpack(&proof_packet).unwrap();
         pair.initiator
-            .process_packet(&data_proof, &proof_packet, pair.now_ms, &mut OsRng);
+            .process_packet(&data_proof, &proof_packet, &mut OsRng, pair.now_ms);
 
         // Initiator should receive DataDelivered event
         let events: Vec<_> = pair.initiator.drain_events().collect();
@@ -1614,8 +1614,8 @@ mod tests {
             .send_with_receipt(
                 &pair.initiator_link_id,
                 b"will expire",
-                pair.now_ms,
                 &mut OsRng,
+                pair.now_ms,
             )
             .unwrap();
 
@@ -1625,7 +1625,7 @@ mod tests {
         // Advance time past the receipt timeout
         let expired_ms = pair.now_ms + DATA_RECEIPT_TIMEOUT_MS + 1;
         pair.initiator
-            .poll(expired_ms, &mut OsRng);
+            .poll(&mut OsRng, expired_ms);
 
         // Receipt should have been cleaned up
         assert_eq!(
