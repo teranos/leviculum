@@ -174,6 +174,16 @@ pub enum DeliveryError {
     ConnectionFailed,
 }
 
+impl core::fmt::Display for DeliveryError {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        match self {
+            DeliveryError::NoPath => write!(f, "no path to destination"),
+            DeliveryError::Timeout => write!(f, "delivery timed out"),
+            DeliveryError::ConnectionFailed => write!(f, "connection failed during delivery"),
+        }
+    }
+}
+
 /// Reason why a connection was closed
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CloseReason {

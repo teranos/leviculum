@@ -139,6 +139,22 @@ pub enum LinkError {
     NotFound,
 }
 
+impl core::fmt::Display for LinkError {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        match self {
+            LinkError::InvalidState => write!(f, "invalid state for operation"),
+            LinkError::Timeout => write!(f, "timeout waiting for response"),
+            LinkError::InvalidProof => write!(f, "invalid proof received"),
+            LinkError::KeyExchangeFailed => write!(f, "key exchange failed"),
+            LinkError::NoDestination => write!(f, "no destination"),
+            LinkError::InvalidRequest => write!(f, "invalid link request data"),
+            LinkError::NoIdentity => write!(f, "no identity to sign with"),
+            LinkError::InvalidRtt => write!(f, "invalid RTT packet"),
+            LinkError::NotFound => write!(f, "link not found"),
+        }
+    }
+}
+
 /// Reason why a link was closed
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum LinkCloseReason {

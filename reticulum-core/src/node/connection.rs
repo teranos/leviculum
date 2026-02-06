@@ -27,6 +27,18 @@ pub enum ConnectionError {
     NotFound,
 }
 
+impl core::fmt::Display for ConnectionError {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        match self {
+            ConnectionError::InvalidState => write!(f, "invalid connection state"),
+            ConnectionError::LinkError(e) => write!(f, "link error: {}", e),
+            ConnectionError::ChannelError(e) => write!(f, "channel error: {}", e),
+            ConnectionError::TooLarge => write!(f, "data too large for connection MDU"),
+            ConnectionError::NotFound => write!(f, "connection not found"),
+        }
+    }
+}
+
 impl From<LinkError> for ConnectionError {
     fn from(e: LinkError) -> Self {
         ConnectionError::LinkError(e)

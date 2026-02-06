@@ -16,3 +16,16 @@ pub enum ChannelError {
     /// Channel window is full
     WindowFull,
 }
+
+impl core::fmt::Display for ChannelError {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        match self {
+            ChannelError::InvalidMsgType => write!(f, "invalid message type"),
+            ChannelError::TooLarge => write!(f, "message too large for link MDU"),
+            ChannelError::EnvelopeTooShort => write!(f, "envelope header too short"),
+            ChannelError::EnvelopeTruncated => write!(f, "envelope data truncated"),
+            ChannelError::InvalidStreamId => write!(f, "invalid stream ID"),
+            ChannelError::WindowFull => write!(f, "channel window full"),
+        }
+    }
+}

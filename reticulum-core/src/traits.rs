@@ -44,6 +44,19 @@ pub enum InterfaceError {
     Other,
 }
 
+impl core::fmt::Display for InterfaceError {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        match self {
+            InterfaceError::WouldBlock => write!(f, "would block"),
+            InterfaceError::Disconnected => write!(f, "disconnected"),
+            InterfaceError::BufferTooSmall => write!(f, "buffer too small"),
+            InterfaceError::InvalidData => write!(f, "invalid data"),
+            InterfaceError::NotReady => write!(f, "interface not ready"),
+            InterfaceError::Other => write!(f, "interface error"),
+        }
+    }
+}
+
 /// Interface mode flags
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub struct InterfaceMode {
@@ -168,6 +181,17 @@ pub enum StorageError {
     IoError,
     /// Data corruption
     Corrupted,
+}
+
+impl core::fmt::Display for StorageError {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        match self {
+            StorageError::Full => write!(f, "storage full"),
+            StorageError::NotFound => write!(f, "key not found"),
+            StorageError::IoError => write!(f, "I/O error"),
+            StorageError::Corrupted => write!(f, "data corrupted"),
+        }
+    }
 }
 
 /// No-op storage for devices without persistence

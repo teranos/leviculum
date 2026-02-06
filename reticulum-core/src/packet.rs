@@ -208,6 +208,18 @@ pub enum PacketError {
     PayloadTooLarge,
 }
 
+impl core::fmt::Display for PacketError {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        match self {
+            PacketError::TooShort => write!(f, "packet too short"),
+            PacketError::TooLong => write!(f, "packet too long"),
+            PacketError::InvalidFlags => write!(f, "invalid flags byte"),
+            PacketError::InvalidContext => write!(f, "invalid context byte"),
+            PacketError::PayloadTooLarge => write!(f, "payload too large"),
+        }
+    }
+}
+
 /// A Reticulum packet (unpacked form)
 #[derive(Debug)]
 pub struct Packet {

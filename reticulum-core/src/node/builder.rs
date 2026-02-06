@@ -19,6 +19,15 @@ pub enum BuildError {
     InvalidConfig,
 }
 
+impl core::fmt::Display for BuildError {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        match self {
+            BuildError::NoIdentity => write!(f, "no identity provided"),
+            BuildError::InvalidConfig => write!(f, "invalid configuration"),
+        }
+    }
+}
+
 /// Builder for creating [`NodeCore`] instances
 ///
 /// # Example

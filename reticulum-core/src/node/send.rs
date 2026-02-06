@@ -62,6 +62,20 @@ pub enum SendError {
     InvalidDestination,
 }
 
+impl core::fmt::Display for SendError {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        match self {
+            SendError::NoPath => write!(f, "no path to destination"),
+            SendError::TooLarge => write!(f, "data too large for single packet"),
+            SendError::NoConnection => write!(f, "no connection available"),
+            SendError::ConnectionFailed => write!(f, "connection failed"),
+            SendError::WindowFull => write!(f, "channel window full"),
+            SendError::Timeout => write!(f, "operation timed out"),
+            SendError::InvalidDestination => write!(f, "invalid destination"),
+        }
+    }
+}
+
 /// Routing decision for a send operation
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RoutingDecision {

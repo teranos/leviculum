@@ -27,6 +27,18 @@ pub enum TokenError {
     BufferTooSmall,
 }
 
+impl core::fmt::Display for TokenError {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        match self {
+            TokenError::InvalidKeyLength => write!(f, "invalid key length"),
+            TokenError::TokenTooShort => write!(f, "token too short"),
+            TokenError::HmacVerificationFailed => write!(f, "HMAC verification failed"),
+            TokenError::DecryptionFailed => write!(f, "decryption failed"),
+            TokenError::BufferTooSmall => write!(f, "buffer too small"),
+        }
+    }
+}
+
 /// Minimum token size: IV (16) + at least one block (16) + HMAC (32) = 64 bytes
 pub const MIN_TOKEN_SIZE: usize = AES_BLOCK_SIZE + AES_BLOCK_SIZE + HMAC_SIZE;
 

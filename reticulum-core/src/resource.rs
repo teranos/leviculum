@@ -74,6 +74,20 @@ pub enum ResourceError {
     Cancelled,
 }
 
+impl core::fmt::Display for ResourceError {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        match self {
+            ResourceError::TooLarge => write!(f, "resource too large"),
+            ResourceError::InvalidState => write!(f, "invalid state for operation"),
+            ResourceError::Timeout => write!(f, "transfer timeout"),
+            ResourceError::HashMismatch => write!(f, "hash verification failed"),
+            ResourceError::NoLink => write!(f, "link not available"),
+            ResourceError::Rejected => write!(f, "rejected by receiver"),
+            ResourceError::Cancelled => write!(f, "transfer cancelled"),
+        }
+    }
+}
+
 /// Resource configuration
 #[derive(Debug, Clone)]
 pub struct ResourceConfig {

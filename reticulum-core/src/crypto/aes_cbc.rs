@@ -21,6 +21,17 @@ pub enum AesError {
     DecryptionFailed,
 }
 
+impl core::fmt::Display for AesError {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        match self {
+            AesError::InvalidKeyLength => write!(f, "invalid key length"),
+            AesError::InvalidIvLength => write!(f, "invalid IV length"),
+            AesError::BufferTooSmall => write!(f, "buffer too small"),
+            AesError::DecryptionFailed => write!(f, "decryption failed"),
+        }
+    }
+}
+
 /// Apply PKCS7 padding to a buffer
 fn pkcs7_pad(data: &[u8], output: &mut [u8]) -> usize {
     let padding_len = AES_BLOCK_SIZE - (data.len() % AES_BLOCK_SIZE);

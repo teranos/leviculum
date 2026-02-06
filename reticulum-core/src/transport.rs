@@ -263,6 +263,18 @@ pub enum TransportError {
     InvalidInterface,
 }
 
+impl core::fmt::Display for TransportError {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        match self {
+            TransportError::NoPath => write!(f, "no path to destination"),
+            TransportError::PacketError(e) => write!(f, "packet error: {}", e),
+            TransportError::AnnounceError(e) => write!(f, "announce error: {}", e),
+            TransportError::InterfaceError(e) => write!(f, "interface error: {}", e),
+            TransportError::InvalidInterface => write!(f, "interface index out of range"),
+        }
+    }
+}
+
 impl From<PacketError> for TransportError {
     fn from(e: PacketError) -> Self {
         TransportError::PacketError(e)

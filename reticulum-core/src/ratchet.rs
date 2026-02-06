@@ -56,7 +56,7 @@ impl core::fmt::Display for RatchetError {
             RatchetError::InvalidLength => write!(f, "Invalid ratchet data length"),
             RatchetError::Expired => write!(f, "Ratchet has expired"),
             RatchetError::DecryptionFailed => write!(f, "Decryption failed with all ratchets"),
-            RatchetError::StorageError(e) => write!(f, "Storage error: {:?}", e),
+            RatchetError::StorageError(e) => write!(f, "Storage error: {}", e),
         }
     }
 }
