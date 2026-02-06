@@ -146,9 +146,9 @@ pub struct ResourcePart {
     pub retries: u8,
 }
 
-// The actual Resource implementation will be in reticulum-std
-// since it needs async runtime, link access, etc.
-// This module defines the data structures.
+// Resource transfer protocol logic belongs here in reticulum-core.
+// Only the async driver (scheduling, I/O) belongs in reticulum-std.
+// This module currently defines the data structures.
 
 #[cfg(test)]
 mod tests {
