@@ -111,9 +111,7 @@ pub use ifac::{IfacConfig, IfacError};
 pub use link::channel::{Channel, ChannelAction, ChannelError, Envelope, Message, MessageState};
 #[cfg(feature = "compression")]
 pub use link::channel::CompressingWriter;
-pub use link::{
-    Link, LinkCloseReason, LinkError, LinkEvent, LinkId, LinkManager, LinkState, PeerKeys,
-};
+pub use link::{Link, LinkCloseReason, LinkError, LinkEvent, LinkId, LinkState, PeerKeys};
 pub use node::{
     BuildError, CloseReason, Connection, ConnectionError, DeliveryError, NodeCore, NodeCoreBuilder,
     NodeEvent, RoutingDecision, SendError, SendHandle, SendMethod, SendOptions, SendResult,
