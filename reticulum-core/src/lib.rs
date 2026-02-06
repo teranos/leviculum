@@ -4,7 +4,7 @@
 //! `reticulum-core` implements all protocol logic as `no_std + alloc`, making it
 //! suitable for both full operating systems (Linux, macOS, Windows) and bare-metal
 //! embedded targets (ESP32, nRF52, STM32). Platform-specific I/O is injected via
-//! the [`Context`] trait — see the [`traits`] module.
+//! the [`Clock`] and [`Storage`] traits — see the [`traits`] module.
 //!
 //! # Core Concepts
 //!
@@ -27,29 +27,18 @@
 //! 5. Open a [`Channel`] on the link for reliable messaging
 //! 6. Exchange [`Message`]s over the channel
 //!
-//! # The Context Pattern
+//! # Platform Dependencies
 //!
-//! All functions that need RNG, time, or storage take `&mut impl Context`
-//! rather than concrete types. [`PlatformContext`] bundles the three platform
-//! dependencies ([`CryptoRngCore`](rand_core::CryptoRngCore), [`Clock`],
-//! [`Storage`]) into a single value.
+//! Functions that need platform services take explicit parameters:
+//! - `rng: &mut impl CryptoRngCore` - for randomness
+//! - `now_ms: u64` - for timestamps
+//! - `storage: &mut impl Storage` - for persistence
 //!
 //! ```
 //! use rand_core::OsRng;
 //! use reticulum_core::identity::Identity;
-//! use reticulum_core::traits::{Clock, PlatformContext, NoStorage};
 //!
-//! struct SimpleClock;
-//! impl Clock for SimpleClock {
-//!     fn now_ms(&self) -> u64 { 0 }
-//! }
-//!
-//! let mut ctx = PlatformContext {
-//!     rng: OsRng,
-//!     clock: SimpleClock,
-//!     storage: NoStorage,
-//! };
-//! let identity = Identity::generate(&mut ctx);
+//! let identity = Identity::generate(&mut OsRng);
 //! ```
 //!
 //! # Crate Hierarchy
@@ -134,7 +123,4 @@ pub use ratchet::{KnownRatchets, Ratchet, RatchetError};
 pub use receipt::{PacketReceipt, ReceiptStatus};
 
 // Re-export traits
-pub use traits::{
-    Clock, Context, Interface, InterfaceError, InterfaceMode, NoStorage, PlatformContext, Storage,
-    StorageError,
-};
+pub use traits::{Clock, Interface, InterfaceError, InterfaceMode, NoStorage, Storage, StorageError};

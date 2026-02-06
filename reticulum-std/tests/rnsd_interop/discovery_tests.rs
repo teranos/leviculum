@@ -109,7 +109,7 @@ impl Interface for MockInterface {
 /// Create a Transport with a mock interface for testing
 fn create_test_transport() -> (Transport<TestClock, NoStorage>, usize) {
     let clock = TestClock;
-    let identity = Identity::generate_with_rng(&mut OsRng);
+    let identity = Identity::generate(&mut OsRng);
     let config = TransportConfig::default();
     let mut transport = Transport::new(config, clock, NoStorage, identity);
     let mock = MockInterface::new("TestMock");

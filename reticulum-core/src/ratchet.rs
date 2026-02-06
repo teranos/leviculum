@@ -23,7 +23,8 @@ use crate::constants::{
 };
 use crate::crypto::sha256;
 use crate::destination::DestinationHash;
-use crate::traits::{Clock, Context, Storage, StorageError};
+use crate::traits::{Storage, StorageError};
+use rand_core::CryptoRngCore;
 
 use alloc::collections::BTreeMap;
 
@@ -83,44 +84,25 @@ impl Ratchet {
     /// Generate a new ratchet key pair
     ///
     /// # Arguments
-    /// * `ctx` - Platform context providing RNG and clock
+    /// * `rng` - Random number generator
+    /// * `now_ms` - Current timestamp in milliseconds
     ///
     /// # Example
     /// ```
     /// use reticulum_core::ratchet::Ratchet;
-    /// use reticulum_core::traits::{PlatformContext, NoStorage, Clock};
     /// use rand_core::OsRng;
     ///
-    /// struct SimpleClock;
-    /// impl Clock for SimpleClock {
-    ///     fn now_ms(&self) -> u64 { 1704067200000 }
-    /// }
-    ///
-    /// let mut ctx = PlatformContext { rng: OsRng, clock: SimpleClock, storage: NoStorage };
-    /// let ratchet = Ratchet::generate(&mut ctx);
+    /// let ratchet = Ratchet::generate(&mut OsRng, 1704067200000);
     /// assert_eq!(ratchet.public_key_bytes().len(), 32);
     /// ```
-    pub fn generate(ctx: &mut impl Context) -> Self {
-        let private_key = x25519_dalek::StaticSecret::random_from_rng(ctx.rng());
-        let public_key = x25519_dalek::PublicKey::from(&private_key);
-        let created_at_ms = ctx.clock().now_ms();
-
-        Self {
-            private_key,
-            public_key,
-            created_at_ms,
-        }
-    }
-
-    /// Generate a ratchet with a specific RNG (for testing)
-    pub fn generate_with_rng<R: rand_core::CryptoRngCore>(rng: &mut R, created_at_ms: u64) -> Self {
+    pub fn generate<R: CryptoRngCore>(rng: &mut R, now_ms: u64) -> Self {
         let private_key = x25519_dalek::StaticSecret::random_from_rng(rng);
         let public_key = x25519_dalek::PublicKey::from(&private_key);
 
         Self {
             private_key,
             public_key,
-            created_at_ms,
+            created_at_ms: now_ms,
         }
     }
 
@@ -394,31 +376,13 @@ impl core::fmt::Debug for KnownRatchets {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::traits::{NoStorage, PlatformContext};
     use rand_core::OsRng;
-
-    // Mock clock for tests
-    struct MockClock(u64);
-    impl crate::traits::Clock for MockClock {
-        fn now_ms(&self) -> u64 {
-            self.0
-        }
-    }
-
-    fn make_context(time_ms: u64) -> PlatformContext<OsRng, MockClock, NoStorage> {
-        PlatformContext {
-            rng: OsRng,
-            clock: MockClock(time_ms),
-            storage: NoStorage,
-        }
-    }
 
     // ─── Ratchet Tests ─────────────────────────────────────────────────────────
 
     #[test]
     fn test_ratchet_generation() {
-        let mut ctx = make_context(1704067200000);
-        let ratchet = Ratchet::generate(&mut ctx);
+        let ratchet = Ratchet::generate(&mut OsRng, 1704067200000);
 
         assert_eq!(ratchet.public_key_bytes().len(), RATCHET_SIZE);
         assert_eq!(ratchet.id().len(), RATCHET_ID_SIZE);
@@ -427,9 +391,8 @@ mod tests {
 
     #[test]
     fn test_ratchet_unique_keys() {
-        let mut ctx = make_context(1704067200000);
-        let ratchet1 = Ratchet::generate(&mut ctx);
-        let ratchet2 = Ratchet::generate(&mut ctx);
+        let ratchet1 = Ratchet::generate(&mut OsRng, 1704067200000);
+        let ratchet2 = Ratchet::generate(&mut OsRng, 1704067200000);
 
         // Each ratchet should have unique keys
         assert_ne!(ratchet1.public_key_bytes(), ratchet2.public_key_bytes());
@@ -438,8 +401,7 @@ mod tests {
 
     #[test]
     fn test_ratchet_serialization() {
-        let mut ctx = make_context(1704067200000);
-        let original = Ratchet::generate(&mut ctx);
+        let original = Ratchet::generate(&mut OsRng, 1704067200000);
 
         let bytes = original.to_bytes();
         assert_eq!(bytes.len(), SERIALIZED_RATCHET_SIZE);
@@ -465,8 +427,7 @@ mod tests {
     #[test]
     fn test_ratchet_expiry() {
         let created_at = 1704067200000u64; // 2024-01-01 00:00:00 UTC
-        let mut ctx = make_context(created_at);
-        let ratchet = Ratchet::generate(&mut ctx);
+        let ratchet = Ratchet::generate(&mut OsRng, created_at);
 
         // Not expired immediately
         assert!(!ratchet.is_expired(created_at));
@@ -482,12 +443,10 @@ mod tests {
 
     #[test]
     fn test_ratchet_ecdh() {
-        let mut ctx = make_context(1704067200000);
-
         // Test actual ECDH scenario: sender creates ephemeral, receiver uses ratchet
-        let ratchet = Ratchet::generate(&mut ctx);
+        let ratchet = Ratchet::generate(&mut OsRng, 1704067200000);
 
-        let ephemeral_private = x25519_dalek::StaticSecret::random_from_rng(ctx.rng());
+        let ephemeral_private = x25519_dalek::StaticSecret::random_from_rng(&mut OsRng);
         let ephemeral_public = x25519_dalek::PublicKey::from(&ephemeral_private);
 
         // Receiver uses their ratchet private key with sender's ephemeral public
@@ -502,7 +461,7 @@ mod tests {
         assert_eq!(receiver_shared, sender_shared_bytes);
 
         // Test with different ephemeral produces different shared secret
-        let ephemeral_private2 = x25519_dalek::StaticSecret::random_from_rng(ctx.rng());
+        let ephemeral_private2 = x25519_dalek::StaticSecret::random_from_rng(&mut OsRng);
         let ephemeral_public2 = x25519_dalek::PublicKey::from(&ephemeral_private2);
 
         let receiver_shared2 = ratchet.derive_shared_secret(ephemeral_public2.as_bytes());

@@ -30,21 +30,10 @@ use reticulum_core::constants::{MTU, RATCHET_SIZE};
 use reticulum_core::destination::{Destination, DestinationType, Direction};
 use reticulum_core::identity::Identity;
 use reticulum_core::packet::{Packet, PacketType};
-use reticulum_core::traits::{NoStorage, PlatformContext};
 use reticulum_std::interfaces::hdlc::{frame, DeframeResult, Deframer};
-use reticulum_std::SystemClock;
 
-use crate::common::{connect_to_daemon, ParsedAnnounce, DAEMON_PROCESS_TIME};
+use crate::common::{connect_to_daemon, now_ms, ParsedAnnounce, DAEMON_PROCESS_TIME};
 use crate::harness::TestDaemon;
-
-/// Create a platform context for tests
-fn make_context() -> PlatformContext<OsRng, SystemClock, NoStorage> {
-    PlatformContext {
-        rng: OsRng,
-        clock: SystemClock::new(),
-        storage: NoStorage,
-    }
-}
 
 // =========================================================================
 // Receiving ratcheted announces from Python
@@ -150,7 +139,7 @@ async fn test_send_ratcheted_announce_from_rust() {
     let daemon = TestDaemon::start().await.expect("Failed to start daemon");
 
     // Create Rust destination with ratchets
-    let identity = Identity::generate_with_rng(&mut OsRng);
+    let identity = Identity::generate(&mut OsRng);
     let mut dest = Destination::new(
         Some(identity),
         Direction::In,
@@ -161,8 +150,7 @@ async fn test_send_ratcheted_announce_from_rust() {
     .expect("Failed to create destination");
 
     // Enable ratchets
-    let mut ctx = make_context();
-    dest.enable_ratchets(&mut ctx)
+    dest.enable_ratchets(&mut OsRng, now_ms())
         .expect("Failed to enable ratchets");
 
     assert!(
@@ -175,7 +163,7 @@ async fn test_send_ratcheted_announce_from_rust() {
 
     // Build and send announce with ratchet
     let packet = dest
-        .announce(Some(b"rust-ratchet-test"), &mut ctx)
+        .announce(Some(b"rust-ratchet-test"), &mut OsRng, now_ms())
         .expect("Failed to create announce");
 
     // Verify context_flag is set
@@ -234,7 +222,7 @@ async fn test_rust_to_rust_ratcheted_announce_via_python() {
     let daemon = TestDaemon::start().await.expect("Failed to start daemon");
 
     // Create Rust A's destination with ratchets
-    let identity_a = Identity::generate_with_rng(&mut OsRng);
+    let identity_a = Identity::generate(&mut OsRng);
     let mut dest_a = Destination::new(
         Some(identity_a),
         Direction::In,
@@ -244,13 +232,12 @@ async fn test_rust_to_rust_ratcheted_announce_via_python() {
     )
     .expect("Failed to create destination A");
 
-    let mut ctx_a = make_context();
     dest_a
-        .enable_ratchets(&mut ctx_a)
+        .enable_ratchets(&mut OsRng, now_ms())
         .expect("Failed to enable ratchets for A");
 
     // Create Rust B's destination with ratchets
-    let identity_b = Identity::generate_with_rng(&mut OsRng);
+    let identity_b = Identity::generate(&mut OsRng);
     let mut dest_b = Destination::new(
         Some(identity_b),
         Direction::In,
@@ -260,9 +247,8 @@ async fn test_rust_to_rust_ratcheted_announce_via_python() {
     )
     .expect("Failed to create destination B");
 
-    let mut ctx_b = make_context();
     dest_b
-        .enable_ratchets(&mut ctx_b)
+        .enable_ratchets(&mut OsRng, now_ms())
         .expect("Failed to enable ratchets for B");
 
     // Open two connections
@@ -271,7 +257,7 @@ async fn test_rust_to_rust_ratcheted_announce_via_python() {
 
     // A announces
     let packet_a = dest_a
-        .announce(Some(b"from-a"), &mut ctx_a)
+        .announce(Some(b"from-a"), &mut OsRng, now_ms())
         .expect("Failed to create announce A");
 
     let mut raw_a = [0u8; MTU];
@@ -290,7 +276,7 @@ async fn test_rust_to_rust_ratcheted_announce_via_python() {
 
     // B announces
     let packet_b = dest_b
-        .announce(Some(b"from-b"), &mut ctx_b)
+        .announce(Some(b"from-b"), &mut OsRng, now_ms())
         .expect("Failed to create announce B");
 
     let mut raw_b = [0u8; MTU];
@@ -355,7 +341,7 @@ async fn test_context_flag_indicates_ratchet() {
     let daemon = TestDaemon::start().await.expect("Failed to start daemon");
 
     // Create destination WITHOUT ratchets
-    let identity1 = Identity::generate_with_rng(&mut OsRng);
+    let identity1 = Identity::generate(&mut OsRng);
     let mut dest_no_ratchet = Destination::new(
         Some(identity1),
         Direction::In,
@@ -365,9 +351,8 @@ async fn test_context_flag_indicates_ratchet() {
     )
     .expect("Failed to create destination");
 
-    let mut ctx = make_context();
     let packet_no_ratchet = dest_no_ratchet
-        .announce(Some(b"no-ratchet"), &mut ctx)
+        .announce(Some(b"no-ratchet"), &mut OsRng, now_ms())
         .expect("Failed to create announce");
 
     assert!(
@@ -376,7 +361,7 @@ async fn test_context_flag_indicates_ratchet() {
     );
 
     // Create destination WITH ratchets
-    let identity2 = Identity::generate_with_rng(&mut OsRng);
+    let identity2 = Identity::generate(&mut OsRng);
     let mut dest_with_ratchet = Destination::new(
         Some(identity2),
         Direction::In,
@@ -387,11 +372,11 @@ async fn test_context_flag_indicates_ratchet() {
     .expect("Failed to create destination");
 
     dest_with_ratchet
-        .enable_ratchets(&mut ctx)
+        .enable_ratchets(&mut OsRng, now_ms())
         .expect("Failed to enable ratchets");
 
     let packet_with_ratchet = dest_with_ratchet
-        .announce(Some(b"with-ratchet"), &mut ctx)
+        .announce(Some(b"with-ratchet"), &mut OsRng, now_ms())
         .expect("Failed to create announce");
 
     assert!(

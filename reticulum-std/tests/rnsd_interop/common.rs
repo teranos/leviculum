@@ -130,7 +130,7 @@ pub async fn build_and_send_announce(
     aspects: &[&str],
     app_data: &[u8],
 ) -> (DestinationHash, Destination) {
-    let identity = Identity::generate_with_rng(&mut OsRng);
+    let identity = Identity::generate(&mut OsRng);
     let mut dest = Destination::new(
         Some(identity),
         Direction::In,
@@ -140,12 +140,9 @@ pub async fn build_and_send_announce(
     )
     .expect("Failed to create destination");
 
-    let packet = {
-        use reticulum_core::traits::{NoStorage, PlatformContext};
-        let mut ctx = PlatformContext { rng: OsRng, clock: TestClock, storage: NoStorage };
-        dest.announce(Some(app_data), &mut ctx)
-            .expect("Failed to create announce")
-    };
+    let packet = dest
+        .announce(Some(app_data), &mut OsRng, now_ms())
+        .expect("Failed to create announce");
 
     let mut raw_packet = [0u8; MTU];
     let size = packet.pack(&mut raw_packet).expect("Failed to pack packet");
@@ -166,7 +163,7 @@ pub fn build_announce_raw(
     aspects: &[&str],
     app_data: &[u8],
 ) -> (Vec<u8>, DestinationHash, Destination) {
-    let identity = Identity::generate_with_rng(&mut OsRng);
+    let identity = Identity::generate(&mut OsRng);
     let mut dest = Destination::new(
         Some(identity),
         Direction::In,
@@ -176,12 +173,9 @@ pub fn build_announce_raw(
     )
     .expect("Failed to create destination");
 
-    let packet = {
-        use reticulum_core::traits::{NoStorage, PlatformContext};
-        let mut ctx = PlatformContext { rng: OsRng, clock: TestClock, storage: NoStorage };
-        dest.announce(Some(app_data), &mut ctx)
-            .expect("Failed to create announce")
-    };
+    let packet = dest
+        .announce(Some(app_data), &mut OsRng, now_ms())
+        .expect("Failed to create announce");
 
     let mut raw_packet = [0u8; MTU];
     let size = packet.pack(&mut raw_packet).expect("Failed to pack packet");
@@ -796,7 +790,7 @@ pub async fn setup_rust_destination(
     aspects: &[&str],
     app_data: &[u8],
 ) -> Destination {
-    let identity = Identity::generate_with_rng(&mut OsRng);
+    let identity = Identity::generate(&mut OsRng);
     let mut dest = Destination::new(
         Some(identity),
         Direction::In,
@@ -806,12 +800,9 @@ pub async fn setup_rust_destination(
     )
     .expect("Failed to create destination");
 
-    let packet = {
-        use reticulum_core::traits::{NoStorage, PlatformContext};
-        let mut ctx = PlatformContext { rng: OsRng, clock: TestClock, storage: NoStorage };
-        dest.announce(Some(app_data), &mut ctx)
-            .expect("Failed to create announce")
-    };
+    let packet = dest
+        .announce(Some(app_data), &mut OsRng, now_ms())
+        .expect("Failed to create announce");
 
     let mut raw_packet = [0u8; MTU];
     let size = packet.pack(&mut raw_packet).expect("Failed to pack packet");

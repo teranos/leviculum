@@ -2107,7 +2107,7 @@ mod tests {
         let dest_hash = DestinationHash::new([0x42; TRUNCATED_HASHBYTES]);
 
         // Create destination identity
-        let identity = Identity::generate_with_rng(&mut OsRng);
+        let identity = Identity::generate(&mut OsRng);
 
         // Create initiator's link request
         let initiator = Link::new_outgoing(dest_hash, &mut OsRng);
@@ -2150,7 +2150,7 @@ mod tests {
         use crate::identity::Identity;
 
         let dest_hash = DestinationHash::new([0x42; TRUNCATED_HASHBYTES]);
-        let identity = Identity::generate_with_rng(&mut OsRng);
+        let identity = Identity::generate(&mut OsRng);
 
         let initiator = Link::new_outgoing(dest_hash, &mut OsRng);
         let request_data = initiator.create_link_request();
@@ -2172,7 +2172,7 @@ mod tests {
         use crate::identity::Identity;
 
         let dest_hash = DestinationHash::new([0x42; TRUNCATED_HASHBYTES]);
-        let identity = Identity::generate_with_rng(&mut OsRng);
+        let identity = Identity::generate(&mut OsRng);
 
         // Initiator should not be able to build proof
         let mut initiator = Link::new_outgoing(dest_hash, &mut OsRng);
@@ -2188,7 +2188,7 @@ mod tests {
         let dest_hash = DestinationHash::new([0x42; TRUNCATED_HASHBYTES]);
 
         // --- Destination setup ---
-        let dest_identity = Identity::generate_with_rng(&mut OsRng);
+        let dest_identity = Identity::generate(&mut OsRng);
 
         // --- Initiator side ---
         let mut initiator = Link::new_outgoing(dest_hash, &mut OsRng);
@@ -2235,7 +2235,7 @@ mod tests {
         use crate::identity::Identity;
 
         let dest_hash = DestinationHash::new([0x42; TRUNCATED_HASHBYTES]);
-        let dest_identity = Identity::generate_with_rng(&mut OsRng);
+        let dest_identity = Identity::generate(&mut OsRng);
 
         // Set up links
         let mut initiator = Link::new_outgoing(dest_hash, &mut OsRng);
@@ -2300,7 +2300,7 @@ mod tests {
         use crate::identity::Identity;
 
         let dest_hash = DestinationHash::new([0x42; TRUNCATED_HASHBYTES]);
-        let dest_identity = Identity::generate_with_rng(&mut OsRng);
+        let dest_identity = Identity::generate(&mut OsRng);
 
         // Full handshake
         let mut initiator = Link::new_outgoing(dest_hash, &mut OsRng);
@@ -2605,7 +2605,7 @@ mod tests {
         use crate::identity::Identity;
 
         let dest_hash = DestinationHash::new([0x42; TRUNCATED_HASHBYTES]);
-        let dest_identity = Identity::generate_with_rng(&mut OsRng);
+        let dest_identity = Identity::generate(&mut OsRng);
 
         let mut initiator = Link::new_outgoing(dest_hash, &mut OsRng);
         let request_data = initiator.create_link_request();

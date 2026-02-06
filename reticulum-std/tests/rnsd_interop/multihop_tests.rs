@@ -101,7 +101,7 @@ async fn test_two_hop_announce_propagation() {
     );
 
     // Create Rust destination and announce to entry daemon
-    let identity = Identity::generate_with_rng(&mut OsRng);
+    let identity = Identity::generate(&mut OsRng);
     let mut dest = Destination::new(
         Some(identity),
         Direction::In,
@@ -111,11 +111,9 @@ async fn test_two_hop_announce_propagation() {
     )
     .expect("Failed to create destination");
 
-    let packet = {
-        use reticulum_core::traits::{NoStorage, PlatformContext};
-        let mut ctx = PlatformContext { rng: OsRng, clock: crate::common::TestClock, storage: NoStorage };
-        dest.announce(Some(b"two-hop-test"), &mut ctx).expect("Failed to create announce")
-    };
+    let packet = dest
+        .announce(Some(b"two-hop-test"), &mut OsRng, crate::common::now_ms())
+        .expect("Failed to create announce");
 
     // Send announce to entry daemon
     let mut stream = connect_to_daemon(topology.entry_daemon()).await;
@@ -226,7 +224,7 @@ async fn test_three_hop_topology_setup() {
     }
 
     // Create Rust destination and announce
-    let identity = Identity::generate_with_rng(&mut OsRng);
+    let identity = Identity::generate(&mut OsRng);
     let mut dest = Destination::new(
         Some(identity),
         Direction::In,
@@ -236,11 +234,9 @@ async fn test_three_hop_topology_setup() {
     )
     .expect("Failed to create destination");
 
-    let packet = {
-        use reticulum_core::traits::{NoStorage, PlatformContext};
-        let mut ctx = PlatformContext { rng: OsRng, clock: crate::common::TestClock, storage: NoStorage };
-        dest.announce(Some(b"three-hop-test"), &mut ctx).expect("Failed to create announce")
-    };
+    let packet = dest
+        .announce(Some(b"three-hop-test"), &mut OsRng, crate::common::now_ms())
+        .expect("Failed to create announce");
 
     // Send announce to entry daemon
     let mut stream = connect_to_daemon(topology.entry_daemon()).await;
@@ -408,7 +404,7 @@ async fn test_path_table_in_topology() {
         .expect("Failed to create topology");
 
     // Create Rust destination and announce
-    let identity = Identity::generate_with_rng(&mut OsRng);
+    let identity = Identity::generate(&mut OsRng);
     let mut dest = Destination::new(
         Some(identity),
         Direction::In,
@@ -418,11 +414,9 @@ async fn test_path_table_in_topology() {
     )
     .expect("Failed to create destination");
 
-    let packet = {
-        use reticulum_core::traits::{NoStorage, PlatformContext};
-        let mut ctx = PlatformContext { rng: OsRng, clock: crate::common::TestClock, storage: NoStorage };
-        dest.announce(Some(b"path-test"), &mut ctx).expect("Failed to create announce")
-    };
+    let packet = dest
+        .announce(Some(b"path-test"), &mut OsRng, crate::common::now_ms())
+        .expect("Failed to create announce");
 
     // Send announce to entry daemon
     let mut stream = connect_to_daemon(topology.entry_daemon()).await;

@@ -34,7 +34,7 @@ pub enum BuildError {
 /// # impl Clock for MyClock { fn now_ms(&self) -> u64 { self.0.get() } }
 ///
 /// # fn example() {
-/// let my_identity = Identity::generate_with_rng(&mut rand_core::OsRng);
+/// let my_identity = Identity::generate(&mut rand_core::OsRng);
 ///
 /// let node = NodeCoreBuilder::new()
 ///     .identity(my_identity)
@@ -143,7 +143,7 @@ impl NodeCoreBuilder {
         // Get or generate identity
         let identity = match self.identity {
             Some(id) => id,
-            None => Identity::generate_with_rng(&mut rng),
+            None => Identity::generate(&mut rng),
         };
 
         Ok(NodeCore::new(
@@ -191,7 +191,7 @@ mod tests {
 
     #[test]
     fn test_builder_with_identity() {
-        let identity = Identity::generate_with_rng(&mut OsRng);
+        let identity = Identity::generate(&mut OsRng);
         let id_hash = *identity.hash();
         let clock = MockClock::new(1_000_000);
 
@@ -231,7 +231,7 @@ mod tests {
 
     #[test]
     fn test_builder_chaining() {
-        let identity = Identity::generate_with_rng(&mut OsRng);
+        let identity = Identity::generate(&mut OsRng);
         let clock = MockClock::new(1_000_000);
 
         let node = NodeCoreBuilder::new()

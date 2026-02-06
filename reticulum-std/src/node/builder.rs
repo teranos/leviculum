@@ -216,7 +216,7 @@ mod tests {
 
     #[test]
     fn test_builder_with_identity() {
-        let identity = Identity::generate_with_rng(&mut rand_core::OsRng);
+        let identity = Identity::generate(&mut rand_core::OsRng);
         let _builder = ReticulumNodeBuilder::new().identity(identity);
         // Identity is consumed by NodeCoreBuilder, verified by the build test
     }

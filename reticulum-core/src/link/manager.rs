@@ -1344,7 +1344,7 @@ mod tests {
         let mut responder_mgr = LinkManager::new();
         let now_ms = INITIAL_TIME_MS;
 
-        let dest_identity = Identity::generate_with_rng(&mut OsRng);
+        let dest_identity = Identity::generate(&mut OsRng);
         let dest_hash = DestinationHash::new([0x42; 16]);
         let dest_signing_key = dest_identity.ed25519_verifying().to_bytes();
 

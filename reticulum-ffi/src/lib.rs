@@ -65,7 +65,7 @@ pub extern "C" fn lrns_version() -> *const c_char {
 /// Create a new random identity
 #[no_mangle]
 pub extern "C" fn lrns_identity_new() -> *mut LrnsIdentity {
-    let identity = reticulum_core::Identity::generate_with_rng(&mut rand_core::OsRng);
+    let identity = reticulum_core::Identity::generate(&mut rand_core::OsRng);
     Box::into_raw(Box::new(LrnsIdentity { inner: identity }))
 }
 
@@ -281,7 +281,7 @@ pub unsafe extern "C" fn lrns_identity_encrypt(
     let identity = &(*identity).inner;
     let plaintext = std::slice::from_raw_parts(plaintext, plaintext_len);
 
-    let ciphertext = identity.encrypt_with_rng(plaintext, &mut rand_core::OsRng);
+    let ciphertext = identity.encrypt(plaintext, &mut rand_core::OsRng);
 
     if *out_len < ciphertext.len() {
         *out_len = ciphertext.len();

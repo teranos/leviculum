@@ -82,7 +82,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("Connecting to: {}", host_port);
 
     // Create link
-    let mut link = Link::new_outgoing_with_rng(DestinationHash::new(dest_hash), &mut rand_core::OsRng);
+    let mut link = Link::new_outgoing(DestinationHash::new(dest_hash), &mut rand_core::OsRng);
     link.set_destination_keys(&signing_key)
         .map_err(|e| format!("Failed to set destination keys: {:?}", e))?;
 

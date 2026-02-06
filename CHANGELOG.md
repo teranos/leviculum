@@ -7,10 +7,37 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.2.9] - 2026-02-06
+
+### Changed
+- **Breaking:** Remove `Context` trait and `PlatformContext` struct entirely — all functions now take direct `rng: &mut impl CryptoRngCore` and `now_ms: u64` parameters
+- **Breaking:** `Identity::generate(ctx)` replaced by `Identity::generate(rng)` (unified with former `generate_with_rng`)
+- **Breaking:** `Identity::encrypt(plaintext, ctx)` replaced by `Identity::encrypt(plaintext, rng)` (unified with former `encrypt_with_rng`)
+- **Breaking:** `Identity::encrypt_for_destination(plaintext, ratchet, ctx)` replaced by `Identity::encrypt_for_destination(plaintext, ratchet, rng)` (unified with former `encrypt_for_destination_with_rng`)
+- **Breaking:** `Destination::announce(app_data, ctx)` now takes `announce(app_data, rng, now_ms)`
+- **Breaking:** `Destination::enable_ratchets(ctx)` now takes `enable_ratchets(rng, now_ms)`
+- **Breaking:** `Destination::rotate_ratchet_if_needed(ctx)` now takes `rotate_ratchet_if_needed(rng, now_ms)`
+- **Breaking:** `Destination::encrypt(plaintext, ratchet, ctx)` now takes `encrypt(plaintext, ratchet, rng)`
+- **Breaking:** `Ratchet::generate(ctx)` replaced by `Ratchet::generate(rng, now_ms)` (unified with former `generate_with_rng`)
+- **Breaking:** `generate_random_hash(ctx)` now takes `generate_random_hash(rng, now_ms)`
+- **Breaking:** `build_announce_payload(..., ctx)` now takes `build_announce_payload(..., rng, now_ms)`
+- **Breaking:** `Link::new_outgoing_with_rng(dest, rng)` renamed to `Link::new_outgoing(dest, rng)`
+- Remove `Context` and `PlatformContext` from `reticulum-core` public re-exports
+
+### Removed
+- `Context` trait from `traits.rs`
+- `PlatformContext` struct and its `impl Context`
+- `Identity::generate_with_rng()` — `generate()` now takes RNG directly
+- `Identity::encrypt_with_rng()` — `encrypt()` now takes RNG directly
+- `Identity::encrypt_for_destination_with_rng()` — `encrypt_for_destination()` now takes RNG directly
+- `Ratchet::generate_with_rng()` — `generate()` now takes RNG and timestamp directly
+- `Link::new_outgoing_with_rng()` — `new_outgoing()` now takes RNG directly
+
 ### Fixed
 - Fix clippy warnings: use dereference instead of `.clone()` on `[u8; 16]` (implements Copy) in transport.rs
 - Fix stale README.md: update status, feature lists, test counts, and crate descriptions to reflect v0.2.8 state
 - Fix ROADMAP.md `lrns` subcommand checkboxes: only `identity` is implemented, mark `status`/`path`/`probe`/`interfaces` as incomplete
+- Add `#[allow(dead_code)]` on `PathEntry::next_hop` in test harness
 
 ## [0.2.8] - 2026-02-04
 
@@ -277,7 +304,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Transport layer (routing, paths, deduplication)
 - Full interoperability with Python rnsd
 
-[Unreleased]: https://codeberg.org/Lew_Palm/leviculum/compare/v0.2.8...HEAD
+[Unreleased]: https://codeberg.org/Lew_Palm/leviculum/compare/v0.2.9...HEAD
+[0.2.9]: https://codeberg.org/Lew_Palm/leviculum/compare/v0.2.8...v0.2.9
 [0.2.8]: https://codeberg.org/Lew_Palm/leviculum/compare/v0.2.7...v0.2.8
 [0.2.7]: https://codeberg.org/Lew_Palm/leviculum/compare/v0.2.6...v0.2.7
 [0.2.6]: https://codeberg.org/Lew_Palm/leviculum/compare/v0.2.5...v0.2.6

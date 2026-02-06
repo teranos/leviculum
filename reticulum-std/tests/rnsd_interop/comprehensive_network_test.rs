@@ -190,7 +190,7 @@ impl RustTestNode {
         // Wait for interface to settle
         tokio::time::sleep(DAEMON_SETTLE_TIME).await;
 
-        let identity = Identity::generate_with_rng(&mut OsRng);
+        let identity = Identity::generate(&mut OsRng);
         let destination = Destination::new(
             Some(identity),
             Direction::In,
@@ -220,13 +220,10 @@ impl RustTestNode {
 
     /// Send announce with optional app_data
     async fn announce(&mut self, app_data: &[u8]) {
-        let packet = {
-            use reticulum_core::traits::{NoStorage, PlatformContext};
-            let mut ctx = PlatformContext { rng: OsRng, clock: TestClock, storage: NoStorage };
-            self.destination
-                .announce(Some(app_data), &mut ctx)
-                .expect("Failed to create announce")
-        };
+        let packet = self
+            .destination
+            .announce(Some(app_data), &mut OsRng, now_ms())
+            .expect("Failed to create announce");
 
         let mut raw = [0u8; MTU];
         let size = packet.pack(&mut raw).expect("Failed to pack");

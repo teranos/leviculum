@@ -11,18 +11,17 @@
 //! | [`Interface`] | Network I/O | `TcpInterface` | LoRa / BLE driver |
 //! | [`Clock`] | Monotonic time | `SystemClock` | Hardware timer |
 //! | [`Storage`] | Key-value persistence | `FileStorage` | Flash storage |
-//! | [`Context`] | Bundles RNG + Clock + Storage | `PlatformContext<OsRng, ..>` | `PlatformContext<HwRng, ..>` |
 //!
-//! # The Context Pattern
+//! # Platform Dependencies
 //!
-//! Instead of passing three separate parameters for RNG, clock, and storage,
-//! protocol functions accept a single `&mut impl Context`. The concrete type
-//! [`PlatformContext`] provides this by composing any implementations of the
-//! three underlying traits. For devices that do not need persistence, use
-//! [`NoStorage`].
+//! Functions that need platform services take explicit parameters:
+//! - `rng: &mut impl CryptoRngCore` - for randomness
+//! - `now_ms: u64` - for timestamps
+//! - `storage: &mut impl Storage` - for persistence
+//!
+//! For devices that do not need persistence, use [`NoStorage`].
 
 use crate::constants::TRUNCATED_HASHBYTES;
-use rand_core::CryptoRngCore;
 
 extern crate alloc;
 
@@ -210,78 +209,6 @@ pub mod categories {
     pub const CACHE: &str = "cache";
 }
 
-/// Platform context trait that bundles all platform-specific dependencies
-///
-/// This is the central abstraction that allows protocol code to run
-/// on any platform. Functions that need platform services take
-/// `ctx: &mut impl Context`.
-///
-/// The trait is stable: new capabilities can be added without
-/// breaking existing function signatures.
-pub trait Context {
-    type Rng: CryptoRngCore;
-    type Clock: Clock;
-    type Storage: Storage;
-
-    fn rng(&mut self) -> &mut Self::Rng;
-    fn clock(&self) -> &Self::Clock;
-    fn storage(&mut self) -> &mut Self::Storage;
-}
-
-/// Standard implementation of [`Context`]
-///
-/// # Example
-/// ```
-/// use rand_core::OsRng;
-/// use reticulum_core::identity::Identity;
-/// use reticulum_core::traits::{Clock, PlatformContext, NoStorage};
-///
-/// // Define a simple clock (in practice, use your platform's clock)
-/// struct SimpleClock;
-/// impl Clock for SimpleClock {
-///     fn now_ms(&self) -> u64 { 0 }
-/// }
-///
-/// let mut ctx = PlatformContext {
-///     rng: OsRng,
-///     clock: SimpleClock,
-///     storage: NoStorage,
-/// };
-/// let identity = Identity::generate(&mut ctx);
-/// ```
-///
-/// # Embedded Example
-///
-/// On embedded platforms, provide platform-specific implementations:
-///
-/// ```text
-/// let mut ctx = PlatformContext {
-///     rng: Stm32Rng::new(),      // Hardware RNG
-///     clock: Tim2Clock::new(),   // Timer-based clock
-///     storage: FlashStorage::new(),
-/// };
-/// ```
-pub struct PlatformContext<R: CryptoRngCore, C: Clock, S: Storage> {
-    pub rng: R,
-    pub clock: C,
-    pub storage: S,
-}
-
-impl<R: CryptoRngCore, C: Clock, S: Storage> Context for PlatformContext<R, C, S> {
-    type Rng = R;
-    type Clock = C;
-    type Storage = S;
-
-    fn rng(&mut self) -> &mut Self::Rng {
-        &mut self.rng
-    }
-    fn clock(&self) -> &Self::Clock {
-        &self.clock
-    }
-    fn storage(&mut self) -> &mut Self::Storage {
-        &mut self.storage
-    }
-}
 
 #[cfg(test)]
 mod tests {

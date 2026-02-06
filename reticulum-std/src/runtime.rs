@@ -171,7 +171,7 @@ mod tests {
         let storage_path =
             std::env::temp_dir().join(format!("reticulum_runner_test_{}", std::process::id()));
         let storage = Storage::new(&storage_path).unwrap();
-        let identity = Identity::generate_with_rng(&mut rand_core::OsRng);
+        let identity = Identity::generate(&mut rand_core::OsRng);
         let config = TransportConfig::default();
 
         let transport = Transport::new(config, clock, storage, identity);
@@ -191,7 +191,7 @@ mod tests {
         let storage_path =
             std::env::temp_dir().join(format!("reticulum_runner_shutdown_{}", std::process::id()));
         let storage = Storage::new(&storage_path).unwrap();
-        let identity = Identity::generate_with_rng(&mut rand_core::OsRng);
+        let identity = Identity::generate(&mut rand_core::OsRng);
         let config = TransportConfig::default();
 
         let transport = Transport::new(config, clock, storage, identity);

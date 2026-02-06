@@ -87,7 +87,7 @@ async fn test_better_path_replaces_worse() {
     let daemon = TestDaemon::start().await.expect("Failed to start daemon");
 
     // First, create a destination
-    let identity = Identity::generate_with_rng(&mut OsRng);
+    let identity = Identity::generate(&mut OsRng);
     let mut dest = Destination::new(
         Some(identity),
         Direction::In,
@@ -97,11 +97,9 @@ async fn test_better_path_replaces_worse() {
     )
     .expect("Failed to create destination");
 
-    let packet = {
-        use reticulum_core::traits::{NoStorage, PlatformContext};
-        let mut ctx = PlatformContext { rng: OsRng, clock: crate::common::TestClock, storage: NoStorage };
-        dest.announce(Some(b"path-test"), &mut ctx).expect("Failed to create announce")
-    };
+    let packet = dest
+        .announce(Some(b"path-test"), &mut OsRng, crate::common::now_ms())
+        .expect("Failed to create announce");
 
     // Pack and manually set hops=3
     let mut raw1 = [0u8; MTU];
@@ -150,7 +148,7 @@ async fn test_worse_path_does_not_replace() {
     let daemon = TestDaemon::start().await.expect("Failed to start daemon");
 
     // Create destination
-    let identity = Identity::generate_with_rng(&mut OsRng);
+    let identity = Identity::generate(&mut OsRng);
     let mut dest = Destination::new(
         Some(identity),
         Direction::In,
@@ -160,11 +158,9 @@ async fn test_worse_path_does_not_replace() {
     )
     .expect("Failed to create destination");
 
-    let packet = {
-        use reticulum_core::traits::{NoStorage, PlatformContext};
-        let mut ctx = PlatformContext { rng: OsRng, clock: crate::common::TestClock, storage: NoStorage };
-        dest.announce(Some(b"path-test"), &mut ctx).expect("Failed to create announce")
-    };
+    let packet = dest
+        .announce(Some(b"path-test"), &mut OsRng, crate::common::now_ms())
+        .expect("Failed to create announce");
 
     // Send first announce with hops=1 (good path)
     let mut raw1 = [0u8; MTU];

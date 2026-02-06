@@ -864,7 +864,7 @@ checksum = "7a2d987857b319362043e95f5353c0535c1f58eec5336fdfcf626430af7def58"
 
 [[package]]
 name = "reticulum-cli"
-version = "0.2.8"
+version = "0.2.9"
 dependencies = [
  "clap",
  "rand_core 0.6.4",
@@ -877,7 +877,7 @@ dependencies = [
 
 [[package]]
 name = "reticulum-core"
-version = "0.2.8"
+version = "0.2.9"
 dependencies = [
  "aes",
  "cbc",
@@ -898,7 +898,7 @@ dependencies = [
 
 [[package]]
 name = "reticulum-ffi"
-version = "0.2.8"
+version = "0.2.9"
 dependencies = [
  "cbindgen",
  "libc",
@@ -910,7 +910,7 @@ dependencies = [
 
 [[package]]
 name = "reticulum-std"
-version = "0.2.8"
+version = "0.2.9"
 dependencies = [
  "bytes",
  "hex",

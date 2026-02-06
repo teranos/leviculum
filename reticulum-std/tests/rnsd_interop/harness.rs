@@ -1116,6 +1116,7 @@ impl Drop for TestDaemon {
 #[derive(Debug, Clone)]
 pub struct PathEntry {
     pub timestamp: Option<f64>,
+    #[allow(dead_code)]
     pub next_hop: Option<String>,
     pub hops: Option<u8>,
     #[allow(dead_code)]

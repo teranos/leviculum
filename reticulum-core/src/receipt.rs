@@ -193,7 +193,7 @@ mod tests {
     use rand_core::OsRng;
 
     fn new_identity() -> Identity {
-        Identity::generate_with_rng(&mut OsRng)
+        Identity::generate(&mut OsRng)
     }
 
     #[test]

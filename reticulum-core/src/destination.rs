@@ -23,10 +23,10 @@ use crate::packet::{
     HeaderType, Packet, PacketContext, PacketData, PacketFlags, PacketType, TransportType,
 };
 use crate::ratchet::{Ratchet, DEFAULT_INTERVAL_MS, DEFAULT_RETAINED_RATCHETS};
-use crate::traits::{Clock, Context};
 
 use alloc::string::String;
 use alloc::vec::Vec;
+use rand_core::CryptoRngCore;
 
 /// Error type for destination operations
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -371,7 +371,8 @@ impl Destination {
     /// ratchet public key, and packets must be encrypted with that ratchet.
     ///
     /// # Arguments
-    /// * `ctx` - Platform context providing RNG and clock
+    /// * `rng` - Random number generator
+    /// * `now_ms` - Current timestamp in milliseconds
     ///
     /// # Errors
     /// Returns error if called on an OUT destination.
@@ -380,15 +381,9 @@ impl Destination {
     /// ```
     /// use reticulum_core::destination::{Destination, DestinationType, Direction};
     /// use reticulum_core::identity::Identity;
-    /// use reticulum_core::traits::{PlatformContext, NoStorage, Clock};
     /// use rand_core::OsRng;
     ///
-    /// struct SimpleClock;
-    /// impl Clock for SimpleClock {
-    ///     fn now_ms(&self) -> u64 { 1704067200000 }
-    /// }
-    ///
-    /// let identity = Identity::generate_with_rng(&mut OsRng);
+    /// let identity = Identity::generate(&mut OsRng);
     /// let mut dest = Destination::new(
     ///     Some(identity),
     ///     Direction::In,
@@ -397,18 +392,21 @@ impl Destination {
     ///     &["echo"],
     /// ).unwrap();
     ///
-    /// let mut ctx = PlatformContext { rng: OsRng, clock: SimpleClock, storage: NoStorage };
-    /// dest.enable_ratchets(&mut ctx).unwrap();
+    /// dest.enable_ratchets(&mut OsRng, 1704067200000).unwrap();
     /// assert!(dest.ratchets_enabled());
     /// ```
-    pub fn enable_ratchets(&mut self, ctx: &mut impl Context) -> Result<(), DestinationError> {
+    pub fn enable_ratchets(
+        &mut self,
+        rng: &mut impl CryptoRngCore,
+        now_ms: u64,
+    ) -> Result<(), DestinationError> {
         if self.direction == Direction::Out {
             return Err(DestinationError::CannotEnableRatchetsOnOut);
         }
 
         // Generate initial ratchet
-        let ratchet = Ratchet::generate(ctx);
-        self.last_ratchet_time_ms = ctx.clock().now_ms();
+        let ratchet = Ratchet::generate(rng, now_ms);
+        self.last_ratchet_time_ms = now_ms;
         self.ratchets.insert(0, ratchet);
         self.ratchets_enabled = true;
 
@@ -434,24 +432,27 @@ impl Destination {
     ///
     /// Call this before creating an announce to ensure the ratchet is current.
     ///
+    /// # Arguments
+    /// * `rng` - Random number generator
+    /// * `now_ms` - Current timestamp in milliseconds
+    ///
     /// # Returns
     /// True if a new ratchet was generated.
-    pub fn rotate_ratchet_if_needed(&mut self, ctx: &mut impl Context) -> bool {
+    pub fn rotate_ratchet_if_needed(&mut self, rng: &mut impl CryptoRngCore, now_ms: u64) -> bool {
         if !self.ratchets_enabled {
             return false;
         }
 
-        let current_time = ctx.clock().now_ms();
-        let elapsed = current_time.saturating_sub(self.last_ratchet_time_ms);
+        let elapsed = now_ms.saturating_sub(self.last_ratchet_time_ms);
 
         if elapsed < self.ratchet_interval_ms {
             return false;
         }
 
         // Generate new ratchet and add to front
-        let ratchet = Ratchet::generate(ctx);
+        let ratchet = Ratchet::generate(rng, now_ms);
         self.ratchets.insert(0, ratchet);
-        self.last_ratchet_time_ms = current_time;
+        self.last_ratchet_time_ms = now_ms;
 
         // Trim old ratchets if exceeding limit
         if self.ratchets.len() > self.retained_ratchet_count {
@@ -554,7 +555,7 @@ impl Destination {
     /// # Arguments
     /// * `plaintext` - Data to encrypt
     /// * `ratchet_public` - Optional ratchet public key from target's announce
-    /// * `ctx` - Platform context providing RNG
+    /// * `rng` - Random number generator
     ///
     /// # Returns
     /// Ciphertext that can be decrypted by the target destination.
@@ -565,11 +566,11 @@ impl Destination {
         &self,
         plaintext: &[u8],
         ratchet_public: Option<&[u8; RATCHET_SIZE]>,
-        ctx: &mut impl Context,
+        rng: &mut impl CryptoRngCore,
     ) -> Result<Vec<u8>, DestinationError> {
         let identity = self.identity.as_ref().ok_or(DestinationError::NoIdentity)?;
 
-        Ok(identity.encrypt_for_destination(plaintext, ratchet_public, ctx))
+        Ok(identity.encrypt_for_destination(plaintext, ratchet_public, rng))
     }
 
     /// Compute the name hash from app_name and aspects.
@@ -612,7 +613,8 @@ impl Destination {
     ///
     /// # Arguments
     /// * `app_data` - Optional application-specific data (max ~350 bytes)
-    /// * `ctx` - Platform context for RNG and clock
+    /// * `rng` - Random number generator
+    /// * `now_ms` - Current timestamp in milliseconds
     ///
     /// # Errors
     /// * `OnlySingleCanAnnounce` - Only SINGLE destinations can announce
@@ -624,15 +626,9 @@ impl Destination {
     /// ```
     /// use reticulum_core::destination::{Destination, DestinationType, Direction};
     /// use reticulum_core::identity::Identity;
-    /// use reticulum_core::traits::{PlatformContext, NoStorage};
     /// use rand_core::OsRng;
     ///
-    /// struct SimpleClock;
-    /// impl reticulum_core::traits::Clock for SimpleClock {
-    ///     fn now_ms(&self) -> u64 { 1704067200000 }
-    /// }
-    ///
-    /// let identity = Identity::generate_with_rng(&mut OsRng);
+    /// let identity = Identity::generate(&mut OsRng);
     /// let mut dest = Destination::new(
     ///     Some(identity),
     ///     Direction::In,
@@ -641,14 +637,14 @@ impl Destination {
     ///     &["echo"],
     /// ).unwrap();
     ///
-    /// let mut ctx = PlatformContext { rng: OsRng, clock: SimpleClock, storage: NoStorage };
-    /// let packet = dest.announce(Some(b"my-data"), &mut ctx).unwrap();
+    /// let packet = dest.announce(Some(b"my-data"), &mut OsRng, 1704067200000).unwrap();
     /// assert_eq!(packet.destination_hash, *dest.hash());
     /// ```
     pub fn announce(
         &mut self,
         app_data: Option<&[u8]>,
-        ctx: &mut impl Context,
+        rng: &mut impl CryptoRngCore,
+        now_ms: u64,
     ) -> Result<Packet, AnnounceError> {
         // Only SINGLE destinations can announce (per Python Reticulum spec)
         if self.dest_type != DestinationType::Single {
@@ -666,7 +662,7 @@ impl Destination {
         }
 
         // Rotate ratchet if needed
-        self.rotate_ratchet_if_needed(ctx);
+        self.rotate_ratchet_if_needed(rng, now_ms);
 
         // Get current ratchet (if enabled)
         let ratchet = self.current_ratchet_public();
@@ -682,7 +678,8 @@ impl Destination {
             &self.name_hash,
             ratchet.as_ref(),
             app_data,
-            ctx,
+            rng,
+            now_ms,
         )?;
 
         // Create the packet
@@ -710,28 +707,13 @@ impl Destination {
 mod tests {
     use super::*;
     use crate::announce::ReceivedAnnounce;
-    use crate::traits::{NoStorage, PlatformContext};
     use rand_core::OsRng;
 
-    // Mock clock for tests
-    struct MockClock(u64);
-    impl crate::traits::Clock for MockClock {
-        fn now_ms(&self) -> u64 {
-            self.0
-        }
-    }
-
-    fn make_context() -> PlatformContext<OsRng, MockClock, NoStorage> {
-        PlatformContext {
-            rng: OsRng,
-            clock: MockClock(1704067200000), // 2024-01-01 00:00:00 UTC
-            storage: NoStorage,
-        }
-    }
+    const TEST_TIME_MS: u64 = 1704067200000; // 2024-01-01 00:00:00 UTC
 
     #[test]
     fn test_destination_creation() {
-        let identity = Identity::generate_with_rng(&mut OsRng);
+        let identity = Identity::generate(&mut OsRng);
         let dest = Destination::new(
             Some(identity),
             Direction::In,
@@ -767,7 +749,7 @@ mod tests {
 
     #[test]
     fn test_destination_announce_creates_valid_packet() {
-        let identity = Identity::generate_with_rng(&mut OsRng);
+        let identity = Identity::generate(&mut OsRng);
         let mut dest = Destination::new(
             Some(identity),
             Direction::In,
@@ -777,8 +759,7 @@ mod tests {
         )
         .unwrap();
 
-        let mut ctx = make_context();
-        let packet = dest.announce(Some(b"hello"), &mut ctx).unwrap();
+        let packet = dest.announce(Some(b"hello"), &mut OsRng, TEST_TIME_MS).unwrap();
 
         // Verify packet structure
         assert_eq!(packet.flags.packet_type, PacketType::Announce);
@@ -798,7 +779,7 @@ mod tests {
 
     #[test]
     fn test_destination_announce_out_direction_fails() {
-        let identity = Identity::generate_with_rng(&mut OsRng);
+        let identity = Identity::generate(&mut OsRng);
         let mut dest = Destination::new(
             Some(identity),
             Direction::Out, // OUT cannot announce
@@ -808,8 +789,7 @@ mod tests {
         )
         .unwrap();
 
-        let mut ctx = make_context();
-        let result = dest.announce(None, &mut ctx);
+        let result = dest.announce(None, &mut OsRng, TEST_TIME_MS);
 
         assert!(matches!(result, Err(AnnounceError::WrongDirection)));
     }
@@ -826,8 +806,7 @@ mod tests {
         )
         .unwrap();
 
-        let mut ctx = make_context();
-        let result = dest.announce(None, &mut ctx);
+        let result = dest.announce(None, &mut OsRng, TEST_TIME_MS);
 
         // PLAIN destinations can't announce - OnlySingleCanAnnounce takes priority
         assert!(matches!(result, Err(AnnounceError::OnlySingleCanAnnounce)));
@@ -835,7 +814,7 @@ mod tests {
 
     #[test]
     fn test_destination_announce_without_app_data() {
-        let identity = Identity::generate_with_rng(&mut OsRng);
+        let identity = Identity::generate(&mut OsRng);
         let mut dest = Destination::new(
             Some(identity),
             Direction::In,
@@ -845,8 +824,7 @@ mod tests {
         )
         .unwrap();
 
-        let mut ctx = make_context();
-        let packet = dest.announce(None, &mut ctx).unwrap();
+        let packet = dest.announce(None, &mut OsRng, TEST_TIME_MS).unwrap();
 
         let announce = ReceivedAnnounce::from_packet(&packet).unwrap();
         assert!(announce.app_data().is_empty());
@@ -856,7 +834,7 @@ mod tests {
     #[test]
     fn test_destination_announce_validates_correctly() {
         // Create destination and announce
-        let identity = Identity::generate_with_rng(&mut OsRng);
+        let identity = Identity::generate(&mut OsRng);
         let mut dest = Destination::new(
             Some(identity),
             Direction::In,
@@ -866,8 +844,7 @@ mod tests {
         )
         .unwrap();
 
-        let mut ctx = make_context();
-        let packet = dest.announce(Some(b"app-data"), &mut ctx).unwrap();
+        let packet = dest.announce(Some(b"app-data"), &mut OsRng, TEST_TIME_MS).unwrap();
 
         // Full validation should pass
         let announce = ReceivedAnnounce::from_packet(&packet).unwrap();
@@ -881,7 +858,7 @@ mod tests {
 
     #[test]
     fn test_plain_destination_cannot_have_identity() {
-        let identity = Identity::generate_with_rng(&mut OsRng);
+        let identity = Identity::generate(&mut OsRng);
         let result = Destination::new(
             Some(identity),
             Direction::In,
@@ -939,7 +916,7 @@ mod tests {
 
     #[test]
     fn test_only_single_can_announce() {
-        let identity = Identity::generate_with_rng(&mut OsRng);
+        let identity = Identity::generate(&mut OsRng);
 
         // GROUP destination cannot announce
         let mut group_dest = Destination::new(
@@ -951,14 +928,13 @@ mod tests {
         )
         .unwrap();
 
-        let mut ctx = make_context();
-        let result = group_dest.announce(None, &mut ctx);
+        let result = group_dest.announce(None, &mut OsRng, TEST_TIME_MS);
         assert!(matches!(result, Err(AnnounceError::OnlySingleCanAnnounce)));
     }
 
     #[test]
     fn test_single_in_can_announce() {
-        let identity = Identity::generate_with_rng(&mut OsRng);
+        let identity = Identity::generate(&mut OsRng);
         let mut dest = Destination::new(
             Some(identity),
             Direction::In,
@@ -968,8 +944,7 @@ mod tests {
         )
         .unwrap();
 
-        let mut ctx = make_context();
-        let result = dest.announce(None, &mut ctx);
+        let result = dest.announce(None, &mut OsRng, TEST_TIME_MS);
         assert!(result.is_ok());
     }
 
@@ -1002,7 +977,7 @@ mod tests {
 
     #[test]
     fn test_group_in_allowed_with_identity() {
-        let identity = Identity::generate_with_rng(&mut OsRng);
+        let identity = Identity::generate(&mut OsRng);
         let result = Destination::new(
             Some(identity),
             Direction::In,
@@ -1030,7 +1005,7 @@ mod tests {
 
     #[test]
     fn test_enable_ratchets() {
-        let identity = Identity::generate_with_rng(&mut OsRng);
+        let identity = Identity::generate(&mut OsRng);
         let mut dest = Destination::new(
             Some(identity),
             Direction::In,
@@ -1044,8 +1019,7 @@ mod tests {
         assert!(dest.current_ratchet_public().is_none());
         assert_eq!(dest.ratchet_count(), 0);
 
-        let mut ctx = make_context();
-        dest.enable_ratchets(&mut ctx).unwrap();
+        dest.enable_ratchets(&mut OsRng, TEST_TIME_MS).unwrap();
 
         assert!(dest.ratchets_enabled());
         assert!(dest.current_ratchet_public().is_some());
@@ -1054,7 +1028,7 @@ mod tests {
 
     #[test]
     fn test_enable_ratchets_on_out_fails() {
-        let identity = Identity::generate_with_rng(&mut OsRng);
+        let identity = Identity::generate(&mut OsRng);
         let mut dest = Destination::new(
             Some(identity),
             Direction::Out,
@@ -1064,8 +1038,7 @@ mod tests {
         )
         .unwrap();
 
-        let mut ctx = make_context();
-        let result = dest.enable_ratchets(&mut ctx);
+        let result = dest.enable_ratchets(&mut OsRng, TEST_TIME_MS);
 
         assert!(matches!(
             result,
@@ -1075,7 +1048,7 @@ mod tests {
 
     #[test]
     fn test_ratchet_rotation() {
-        let identity = Identity::generate_with_rng(&mut OsRng);
+        let identity = Identity::generate(&mut OsRng);
         let mut dest = Destination::new(
             Some(identity),
             Direction::In,
@@ -1088,20 +1061,20 @@ mod tests {
         // Use a shorter interval for testing
         dest.set_ratchet_interval(1000); // 1 second
 
-        let mut ctx = make_context();
-        dest.enable_ratchets(&mut ctx).unwrap();
+        let mut time_ms = TEST_TIME_MS;
+        dest.enable_ratchets(&mut OsRng, time_ms).unwrap();
 
         let first_ratchet = dest.current_ratchet_public().unwrap();
 
         // No rotation needed yet
-        assert!(!dest.rotate_ratchet_if_needed(&mut ctx));
+        assert!(!dest.rotate_ratchet_if_needed(&mut OsRng, time_ms));
         assert_eq!(dest.current_ratchet_public().unwrap(), first_ratchet);
 
         // Advance time past interval
-        ctx.clock.0 += 2000; // 2 seconds later
+        time_ms += 2000; // 2 seconds later
 
         // Rotation should happen
-        assert!(dest.rotate_ratchet_if_needed(&mut ctx));
+        assert!(dest.rotate_ratchet_if_needed(&mut OsRng, time_ms));
         let second_ratchet = dest.current_ratchet_public().unwrap();
         assert_ne!(first_ratchet, second_ratchet);
 
@@ -1111,7 +1084,7 @@ mod tests {
 
     #[test]
     fn test_retained_ratchet_limit() {
-        let identity = Identity::generate_with_rng(&mut OsRng);
+        let identity = Identity::generate(&mut OsRng);
         let mut dest = Destination::new(
             Some(identity),
             Direction::In,
@@ -1125,14 +1098,14 @@ mod tests {
         dest.set_retained_ratchets(3);
         dest.set_ratchet_interval(1000);
 
-        let mut ctx = make_context();
-        dest.enable_ratchets(&mut ctx).unwrap();
+        let mut time_ms = TEST_TIME_MS;
+        dest.enable_ratchets(&mut OsRng, time_ms).unwrap();
         assert_eq!(dest.ratchet_count(), 1);
 
         // Rotate 5 times
         for _ in 1..=5 {
-            ctx.clock.0 += 2000;
-            dest.rotate_ratchet_if_needed(&mut ctx);
+            time_ms += 2000;
+            dest.rotate_ratchet_if_needed(&mut OsRng, time_ms);
         }
 
         // Should only have 3 ratchets (limit enforced)
@@ -1141,7 +1114,7 @@ mod tests {
 
     #[test]
     fn test_encrypt_decrypt_with_ratchet() {
-        let identity = Identity::generate_with_rng(&mut OsRng);
+        let identity = Identity::generate(&mut OsRng);
         let mut dest = Destination::new(
             Some(identity),
             Direction::In,
@@ -1151,8 +1124,7 @@ mod tests {
         )
         .unwrap();
 
-        let mut ctx = make_context();
-        dest.enable_ratchets(&mut ctx).unwrap();
+        dest.enable_ratchets(&mut OsRng, TEST_TIME_MS).unwrap();
 
         // Get ratchet public key (simulating what a sender would get from announce)
         let ratchet_pub = dest.current_ratchet_public().unwrap();
@@ -1160,7 +1132,7 @@ mod tests {
         // Encrypt using the destination's identity and ratchet
         let plaintext = b"Hello with forward secrecy!";
         let ciphertext = dest
-            .encrypt(plaintext, Some(&ratchet_pub), &mut ctx)
+            .encrypt(plaintext, Some(&ratchet_pub), &mut OsRng)
             .unwrap();
 
         // Decrypt
@@ -1170,7 +1142,7 @@ mod tests {
 
     #[test]
     fn test_decrypt_with_old_ratchet() {
-        let identity = Identity::generate_with_rng(&mut OsRng);
+        let identity = Identity::generate(&mut OsRng);
         let mut dest = Destination::new(
             Some(identity),
             Direction::In,
@@ -1182,19 +1154,19 @@ mod tests {
 
         dest.set_ratchet_interval(1000);
 
-        let mut ctx = make_context();
-        dest.enable_ratchets(&mut ctx).unwrap();
+        let mut time_ms = TEST_TIME_MS;
+        dest.enable_ratchets(&mut OsRng, time_ms).unwrap();
 
         // Encrypt with current ratchet
         let first_ratchet = dest.current_ratchet_public().unwrap();
         let plaintext = b"Message encrypted with first ratchet";
         let ciphertext = dest
-            .encrypt(plaintext, Some(&first_ratchet), &mut ctx)
+            .encrypt(plaintext, Some(&first_ratchet), &mut OsRng)
             .unwrap();
 
         // Rotate ratchet
-        ctx.clock.0 += 2000;
-        dest.rotate_ratchet_if_needed(&mut ctx);
+        time_ms += 2000;
+        dest.rotate_ratchet_if_needed(&mut OsRng, time_ms);
 
         // Should still be able to decrypt with old ratchet
         let decrypted = dest.decrypt(&ciphertext).unwrap();
@@ -1203,7 +1175,7 @@ mod tests {
 
     #[test]
     fn test_enforce_ratchets() {
-        let identity = Identity::generate_with_rng(&mut OsRng);
+        let identity = Identity::generate(&mut OsRng);
         let mut dest = Destination::new(
             Some(identity),
             Direction::In,
@@ -1213,13 +1185,12 @@ mod tests {
         )
         .unwrap();
 
-        let mut ctx = make_context();
-        dest.enable_ratchets(&mut ctx).unwrap();
+        dest.enable_ratchets(&mut OsRng, TEST_TIME_MS).unwrap();
         dest.set_enforce_ratchets(true);
 
         // Encrypt WITHOUT ratchet (using identity key)
         let plaintext = b"No ratchet used";
-        let ciphertext = dest.encrypt(plaintext, None, &mut ctx).unwrap();
+        let ciphertext = dest.encrypt(plaintext, None, &mut OsRng).unwrap();
 
         // Should fail because ratchets are enforced
         let result = dest.decrypt(&ciphertext);
@@ -1228,7 +1199,7 @@ mod tests {
 
     #[test]
     fn test_decrypt_without_ratchet_when_not_enforced() {
-        let identity = Identity::generate_with_rng(&mut OsRng);
+        let identity = Identity::generate(&mut OsRng);
         let mut dest = Destination::new(
             Some(identity),
             Direction::In,
@@ -1238,12 +1209,11 @@ mod tests {
         )
         .unwrap();
 
-        let mut ctx = make_context();
-        dest.enable_ratchets(&mut ctx).unwrap();
+        dest.enable_ratchets(&mut OsRng, TEST_TIME_MS).unwrap();
 
         // Encrypt WITHOUT ratchet (using identity key)
         let plaintext = b"No ratchet used";
-        let ciphertext = dest.encrypt(plaintext, None, &mut ctx).unwrap();
+        let ciphertext = dest.encrypt(plaintext, None, &mut OsRng).unwrap();
 
         // Should succeed because ratchets are not enforced
         let decrypted = dest.decrypt(&ciphertext).unwrap();
@@ -1252,7 +1222,7 @@ mod tests {
 
     #[test]
     fn test_ratchet_settings() {
-        let identity = Identity::generate_with_rng(&mut OsRng);
+        let identity = Identity::generate(&mut OsRng);
         let mut dest = Destination::new(
             Some(identity),
             Direction::In,
@@ -1279,7 +1249,7 @@ mod tests {
 
     #[test]
     fn test_no_rotation_when_ratchets_disabled() {
-        let identity = Identity::generate_with_rng(&mut OsRng);
+        let identity = Identity::generate(&mut OsRng);
         let mut dest = Destination::new(
             Some(identity),
             Direction::In,
@@ -1289,18 +1259,16 @@ mod tests {
         )
         .unwrap();
 
-        let mut ctx = make_context();
-
         // Don't enable ratchets
-        ctx.clock.0 += 100000000; // Far in future
-        assert!(!dest.rotate_ratchet_if_needed(&mut ctx));
+        let far_future = TEST_TIME_MS + 100000000;
+        assert!(!dest.rotate_ratchet_if_needed(&mut OsRng, far_future));
     }
 
     // ─── Ratcheted Announce Tests ──────────────────────────────────────────────
 
     #[test]
     fn test_announce_with_ratchet() {
-        let identity = Identity::generate_with_rng(&mut OsRng);
+        let identity = Identity::generate(&mut OsRng);
         let mut dest = Destination::new(
             Some(identity),
             Direction::In,
@@ -1310,10 +1278,9 @@ mod tests {
         )
         .unwrap();
 
-        let mut ctx = make_context();
-        dest.enable_ratchets(&mut ctx).unwrap();
+        dest.enable_ratchets(&mut OsRng, TEST_TIME_MS).unwrap();
 
-        let packet = dest.announce(Some(b"test-data"), &mut ctx).unwrap();
+        let packet = dest.announce(Some(b"test-data"), &mut OsRng, TEST_TIME_MS).unwrap();
 
         // context_flag should be set
         assert!(packet.flags.context_flag);
@@ -1333,7 +1300,7 @@ mod tests {
 
     #[test]
     fn test_announce_without_ratchet_when_disabled() {
-        let identity = Identity::generate_with_rng(&mut OsRng);
+        let identity = Identity::generate(&mut OsRng);
         let mut dest = Destination::new(
             Some(identity),
             Direction::In,
@@ -1343,10 +1310,9 @@ mod tests {
         )
         .unwrap();
 
-        let mut ctx = make_context();
         // Don't enable ratchets
 
-        let packet = dest.announce(Some(b"test-data"), &mut ctx).unwrap();
+        let packet = dest.announce(Some(b"test-data"), &mut OsRng, TEST_TIME_MS).unwrap();
 
         // context_flag should NOT be set
         assert!(!packet.flags.context_flag);
@@ -1360,7 +1326,7 @@ mod tests {
 
     #[test]
     fn test_announce_rotates_ratchet() {
-        let identity = Identity::generate_with_rng(&mut OsRng);
+        let identity = Identity::generate(&mut OsRng);
         let mut dest = Destination::new(
             Some(identity),
             Direction::In,
@@ -1372,21 +1338,21 @@ mod tests {
 
         dest.set_ratchet_interval(1000);
 
-        let mut ctx = make_context();
-        dest.enable_ratchets(&mut ctx).unwrap();
+        let mut time_ms = TEST_TIME_MS;
+        dest.enable_ratchets(&mut OsRng, time_ms).unwrap();
 
         let first_ratchet = dest.current_ratchet_public().unwrap();
 
         // First announce - uses first ratchet
-        let packet1 = dest.announce(None, &mut ctx).unwrap();
+        let packet1 = dest.announce(None, &mut OsRng, time_ms).unwrap();
         let announce1 = ReceivedAnnounce::from_packet(&packet1).unwrap();
         assert_eq!(announce1.ratchet().unwrap(), &first_ratchet);
 
         // Advance time to trigger rotation
-        ctx.clock.0 += 2000;
+        time_ms += 2000;
 
         // Second announce - should rotate and use new ratchet
-        let packet2 = dest.announce(None, &mut ctx).unwrap();
+        let packet2 = dest.announce(None, &mut OsRng, time_ms).unwrap();
         let announce2 = ReceivedAnnounce::from_packet(&packet2).unwrap();
 
         let second_ratchet = dest.current_ratchet_public().unwrap();
@@ -1398,7 +1364,7 @@ mod tests {
 
     #[test]
     fn test_proof_strategy_default() {
-        let identity = Identity::generate_with_rng(&mut OsRng);
+        let identity = Identity::generate(&mut OsRng);
         let dest = Destination::new(
             Some(identity),
             Direction::In,
@@ -1413,7 +1379,7 @@ mod tests {
 
     #[test]
     fn test_proof_strategy_setter() {
-        let identity = Identity::generate_with_rng(&mut OsRng);
+        let identity = Identity::generate(&mut OsRng);
         let mut dest = Destination::new(
             Some(identity),
             Direction::In,

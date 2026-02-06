@@ -53,10 +53,9 @@ const OFFSET_APP_DATA_RATCHETED: usize = OFFSET_SIG_RATCHETED + ED25519_SIGNATUR
 use crate::crypto::truncated_hash;
 use crate::identity::{Identity, IdentityError};
 use crate::packet::{Packet, PacketType};
-use crate::traits::{Clock, Context};
 
 use alloc::vec::Vec;
-use rand_core::RngCore;
+use rand_core::CryptoRngCore;
 
 /// Build the signed data for announce signature creation and verification.
 ///
@@ -105,13 +104,12 @@ pub const ANNOUNCE_RATCHETED_MIN_SIZE: usize = ANNOUNCE_MIN_SIZE + RATCHET_SIZE;
 ///
 /// The random hash ensures announce uniqueness even for the same destination.
 /// Format: 5 bytes from truncated_hash(random_16) + 5 bytes from timestamp_ms.
-pub fn generate_random_hash(ctx: &mut impl Context) -> [u8; RANDOM_HASHBYTES] {
+pub fn generate_random_hash(rng: &mut impl CryptoRngCore, now_ms: u64) -> [u8; RANDOM_HASHBYTES] {
     let mut random_16 = [0u8; 16];
-    ctx.rng().fill_bytes(&mut random_16);
+    rng.fill_bytes(&mut random_16);
     let random_part = truncated_hash(&random_16);
 
-    let timestamp_ms = ctx.clock().now_ms();
-    let timestamp_bytes = timestamp_ms.to_be_bytes();
+    let timestamp_bytes = now_ms.to_be_bytes();
 
     let mut result = [0u8; RANDOM_HASHBYTES]; // 10 bytes
     result[..RANDOM_HASH_RANDOM_SIZE].copy_from_slice(&random_part[..RANDOM_HASH_RANDOM_SIZE]);
@@ -137,10 +135,11 @@ pub(crate) fn build_announce_payload(
     name_hash: &[u8; NAME_HASHBYTES],
     ratchet: Option<&[u8; RATCHET_SIZE]>,
     app_data: Option<&[u8]>,
-    ctx: &mut impl Context,
+    rng: &mut impl CryptoRngCore,
+    now_ms: u64,
 ) -> Result<Vec<u8>, AnnounceError> {
     let public_key = identity.public_key_bytes();
-    let random_hash = generate_random_hash(ctx);
+    let random_hash = generate_random_hash(rng, now_ms);
     let app_data_bytes = app_data.unwrap_or(&[]);
 
     // Build signed data using helper
@@ -436,25 +435,10 @@ mod tests {
     use super::*;
     use crate::destination::DestinationType;
     use crate::packet::{HeaderType, PacketContext, PacketData, PacketFlags, TransportType};
-    use crate::traits::{NoStorage, PlatformContext};
     use alloc::vec;
     use rand_core::OsRng;
 
-    // Mock clock for tests
-    struct MockClock(u64);
-    impl crate::traits::Clock for MockClock {
-        fn now_ms(&self) -> u64 {
-            self.0
-        }
-    }
-
-    fn make_context() -> PlatformContext<OsRng, MockClock, NoStorage> {
-        PlatformContext {
-            rng: OsRng,
-            clock: MockClock(1704067200000), // 2024-01-01 00:00:00 UTC
-            storage: NoStorage,
-        }
-    }
+    const TEST_TIME_MS: u64 = 1704067200000; // 2024-01-01 00:00:00 UTC
 
     fn create_test_announce_payload(with_ratchet: bool) -> Vec<u8> {
         let mut payload = Vec::new();
@@ -625,7 +609,7 @@ mod tests {
         use rand_core::OsRng;
 
         // Create a real identity and destination
-        let identity = Identity::generate_with_rng(&mut OsRng);
+        let identity = Identity::generate(&mut OsRng);
         let dest = Destination::new(
             Some(identity),
             Direction::In,
@@ -690,8 +674,7 @@ mod tests {
 
     #[test]
     fn test_generate_random_hash_format() {
-        let mut ctx = make_context();
-        let hash = generate_random_hash(&mut ctx);
+        let hash = generate_random_hash(&mut OsRng, TEST_TIME_MS);
 
         // Should be 10 bytes
         assert_eq!(hash.len(), RANDOM_HASHBYTES);
@@ -705,15 +688,14 @@ mod tests {
 
     #[test]
     fn test_generate_random_hash_different_each_call() {
-        let mut ctx = make_context();
-        let hash1 = generate_random_hash(&mut ctx);
-        let hash2 = generate_random_hash(&mut ctx);
+        let hash1 = generate_random_hash(&mut OsRng, TEST_TIME_MS);
+        let hash2 = generate_random_hash(&mut OsRng, TEST_TIME_MS);
 
         // First 5 bytes (random) should be different
         // (with overwhelming probability)
         assert_ne!(&hash1[0..5], &hash2[0..5]);
 
-        // Last 5 bytes (timestamp) should be the same (same mock clock)
+        // Last 5 bytes (timestamp) should be the same (same now_ms)
         assert_eq!(&hash1[5..10], &hash2[5..10]);
     }
 }

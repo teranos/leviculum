@@ -37,7 +37,7 @@ use reticulum_core::destination::{Destination, DestinationType, Direction, Proof
 use reticulum_core::identity::Identity;
 use reticulum_core::link::{LinkCloseReason, LinkEvent, LinkId, LinkManager, LinkState};
 use reticulum_core::packet::{Packet, PacketContext, PacketType};
-use reticulum_core::traits::{Clock, NoStorage, PlatformContext};
+use reticulum_core::traits::Clock;
 use reticulum_std::interfaces::hdlc::{frame, Deframer};
 
 use crate::common::{
@@ -153,12 +153,7 @@ async fn setup_rust_destination(
     aspects: &[&str],
     app_data: &[u8],
 ) -> (Destination, String) {
-    let mut ctx = PlatformContext {
-        rng: OsRng,
-        clock: TestClock,
-        storage: NoStorage,
-    };
-    let identity = Identity::generate(&mut ctx);
+    let identity = Identity::generate(&mut OsRng);
     let public_key_hex = hex::encode(identity.public_key_bytes());
 
     let mut destination = Destination::new(
@@ -172,7 +167,7 @@ async fn setup_rust_destination(
 
     // Create and send announce
     let packet = destination
-        .announce(Some(app_data), &mut ctx)
+        .announce(Some(app_data), &mut OsRng, crate::common::now_ms())
         .expect("Failed to create announce");
 
     let mut raw_packet = [0u8; 500];
@@ -553,18 +548,11 @@ async fn test_link_stale_detection_no_inbound() {
     let initiator_clock = MockClock::new(initial_time_secs * MS_PER_SECOND);
     let responder_clock = MockClock::new(initial_time_secs * MS_PER_SECOND);
 
-    // PlatformContext only needed for Identity::generate
-    let mut gen_ctx = PlatformContext {
-        rng: OsRng,
-        clock: TestClock,
-        storage: NoStorage,
-    };
-
     let mut initiator_mgr = LinkManager::new();
     let mut responder_mgr = LinkManager::new();
 
     // Create destination identity for responder
-    let dest_identity = Identity::generate(&mut gen_ctx);
+    let dest_identity = Identity::generate(&mut OsRng);
     let dest_hash = [0x42u8; 16];
     let dest_signing_key = dest_identity.ed25519_verifying().to_bytes();
 
@@ -680,18 +668,11 @@ async fn test_stale_link_closes_after_timeout() {
     let initiator_clock = MockClock::new(initial_time_secs * MS_PER_SECOND);
     let responder_clock = MockClock::new(initial_time_secs * MS_PER_SECOND);
 
-    // PlatformContext only needed for Identity::generate
-    let mut gen_ctx = PlatformContext {
-        rng: OsRng,
-        clock: TestClock,
-        storage: NoStorage,
-    };
-
     let mut initiator_mgr = LinkManager::new();
     let mut responder_mgr = LinkManager::new();
 
     // Create destination identity for responder
-    let dest_identity = Identity::generate(&mut gen_ctx);
+    let dest_identity = Identity::generate(&mut OsRng);
     let dest_hash = [0x42u8; 16];
     let dest_signing_key = dest_identity.ed25519_verifying().to_bytes();
 
@@ -817,18 +798,11 @@ async fn test_keepalive_resets_stale_timer() {
     let initiator_clock = MockClock::new(initial_time_secs * MS_PER_SECOND);
     let responder_clock = MockClock::new(initial_time_secs * MS_PER_SECOND);
 
-    // PlatformContext only needed for Identity::generate
-    let mut gen_ctx = PlatformContext {
-        rng: OsRng,
-        clock: TestClock,
-        storage: NoStorage,
-    };
-
     let mut initiator_mgr = LinkManager::new();
     let mut responder_mgr = LinkManager::new();
 
     // Create destination identity for responder
-    let dest_identity = Identity::generate(&mut gen_ctx);
+    let dest_identity = Identity::generate(&mut OsRng);
     let dest_hash = [0x42u8; 16];
     let dest_signing_key = dest_identity.ed25519_verifying().to_bytes();
 

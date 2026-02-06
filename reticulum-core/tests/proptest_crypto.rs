@@ -13,7 +13,7 @@ use reticulum_core::identity::Identity;
 
 // Helper to create identity in tests
 fn new_identity() -> Identity {
-    Identity::generate_with_rng(&mut OsRng)
+    Identity::generate(&mut OsRng)
 }
 
 // ==================== AES-256-CBC PROPERTY TESTS ====================
@@ -194,7 +194,7 @@ proptest! {
     ) {
         let identity = new_identity();
 
-        let ciphertext = identity.encrypt_with_rng(&plaintext, &mut OsRng);
+        let ciphertext = identity.encrypt(&plaintext, &mut OsRng);
         let decrypted = identity.decrypt(&ciphertext).unwrap();
 
         prop_assert_eq!(decrypted, plaintext);
@@ -217,7 +217,7 @@ proptest! {
         let alice = new_identity();
         let bob = new_identity();
 
-        let ciphertext = alice.encrypt_with_rng(&plaintext, &mut OsRng);
+        let ciphertext = alice.encrypt(&plaintext, &mut OsRng);
         let result = bob.decrypt(&ciphertext);
 
         prop_assert!(result.is_err());
@@ -242,8 +242,8 @@ proptest! {
     ) {
         let identity = new_identity();
 
-        let ct1 = identity.encrypt_with_rng(&plaintext, &mut OsRng);
-        let ct2 = identity.encrypt_with_rng(&plaintext, &mut OsRng);
+        let ct1 = identity.encrypt(&plaintext, &mut OsRng);
+        let ct2 = identity.encrypt(&plaintext, &mut OsRng);
 
         // Ciphertexts should be different (different ephemeral keys)
         prop_assert!(ct1 != ct2);

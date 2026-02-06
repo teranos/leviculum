@@ -54,30 +54,17 @@ pub struct Identity {
 }
 
 impl Identity {
-    /// Create a new identity with random keys from a Context
+    /// Create a new identity with random keys
     ///
     /// # Example
     /// ```
     /// use reticulum_core::identity::Identity;
-    /// use reticulum_core::traits::{PlatformContext, NoStorage};
     /// use rand_core::OsRng;
     ///
-    /// // Simple clock implementation for the example
-    /// struct SimpleClock;
-    /// impl reticulum_core::traits::Clock for SimpleClock {
-    ///     fn now_ms(&self) -> u64 { 0 }
-    /// }
-    ///
-    /// let mut ctx = PlatformContext { rng: OsRng, clock: SimpleClock, storage: NoStorage };
-    /// let identity = Identity::generate(&mut ctx);
+    /// let identity = Identity::generate(&mut OsRng);
     /// assert_eq!(identity.hash().len(), 16);
     /// ```
-    pub fn generate(ctx: &mut impl crate::traits::Context) -> Self {
-        Self::generate_with_rng(ctx.rng())
-    }
-
-    /// Create a new identity with a provided RNG
-    pub fn generate_with_rng<R: rand_core::CryptoRngCore>(rng: &mut R) -> Self {
+    pub fn generate<R: rand_core::CryptoRngCore>(rng: &mut R) -> Self {
         let x25519_private = x25519_dalek::StaticSecret::random_from_rng(&mut *rng);
         let x25519_public = x25519_dalek::PublicKey::from(&x25519_private);
 
@@ -242,7 +229,7 @@ impl Identity {
     /// use reticulum_core::identity::Identity;
     /// use rand_core::OsRng;
     ///
-    /// let identity = Identity::generate_with_rng(&mut OsRng);
+    /// let identity = Identity::generate(&mut OsRng);
     /// let packet_hash = [0x42u8; 32];
     /// let proof = identity.create_proof(&packet_hash).unwrap();
     /// assert_eq!(proof.len(), 96);
@@ -310,23 +297,18 @@ impl Identity {
     /// Derived key length for encryption (64 bytes: 32 signing + 32 encryption)
     const DERIVED_KEY_LENGTH: usize = 64;
 
-    /// Encrypt data for this identity using a Context
+    /// Encrypt data for this identity
     ///
     /// Uses ephemeral ECDH key exchange followed by token encryption.
     /// Format: [ephemeral_pub (32)] [token (variable)]
     ///
     /// # Arguments
     /// * `plaintext` - Data to encrypt
-    /// * `ctx` - Platform context providing RNG
+    /// * `rng` - Random number generator
     ///
     /// # Returns
     /// Ciphertext that can be decrypted by the holder of this identity's private key
-    pub fn encrypt(&self, plaintext: &[u8], ctx: &mut impl crate::traits::Context) -> Vec<u8> {
-        self.encrypt_with_rng(plaintext, ctx.rng())
-    }
-
-    /// Encrypt data for this identity with a provided RNG
-    pub fn encrypt_with_rng<R: rand_core::CryptoRngCore>(
+    pub fn encrypt<R: rand_core::CryptoRngCore>(
         &self,
         plaintext: &[u8],
         rng: &mut R,
@@ -352,7 +334,7 @@ impl Identity {
         self.encrypt_impl(&ephemeral_private, plaintext, iv)
     }
 
-    /// Internal encryption implementation used by both encrypt_with_rng and encrypt_with_keys
+    /// Internal encryption implementation used by both encrypt and encrypt_with_keys
     fn encrypt_impl(
         &self,
         ephemeral_private: &x25519_dalek::StaticSecret,
@@ -447,7 +429,7 @@ impl Identity {
     /// # Arguments
     /// * `plaintext` - Data to encrypt
     /// * `ratchet_public` - Optional ratchet public key (32 bytes)
-    /// * `ctx` - Platform context providing RNG
+    /// * `rng` - Random number generator
     ///
     /// # Returns
     /// Ciphertext that can be decrypted by the destination
@@ -456,17 +438,7 @@ impl Identity {
     /// `[ephemeral_pub (32)] [token (variable)]`
     ///
     /// The token contains: `[IV (16)] [ciphertext (variable)] [HMAC (32)]`
-    pub fn encrypt_for_destination(
-        &self,
-        plaintext: &[u8],
-        ratchet_public: Option<&[u8; crate::constants::RATCHET_SIZE]>,
-        ctx: &mut impl crate::traits::Context,
-    ) -> Vec<u8> {
-        self.encrypt_for_destination_with_rng(plaintext, ratchet_public, ctx.rng())
-    }
-
-    /// Encrypt data for a destination with a provided RNG
-    pub fn encrypt_for_destination_with_rng<R: rand_core::CryptoRngCore>(
+    pub fn encrypt_for_destination<R: rand_core::CryptoRngCore>(
         &self,
         plaintext: &[u8],
         ratchet_public: Option<&[u8; crate::constants::RATCHET_SIZE]>,
@@ -620,7 +592,7 @@ mod tests {
 
     // Helper to create identity in tests (uses OsRng directly)
     fn new_identity() -> Identity {
-        Identity::generate_with_rng(&mut OsRng)
+        Identity::generate(&mut OsRng)
     }
 
     #[test]
@@ -679,7 +651,7 @@ mod tests {
 
         // Encrypt something for this identity
         let plaintext = b"Secret message";
-        let ciphertext = identity.encrypt_with_rng(plaintext, &mut OsRng);
+        let ciphertext = identity.encrypt(plaintext, &mut OsRng);
 
         // Public-only identity should not be able to decrypt
         let result = pub_only.decrypt(&ciphertext);
@@ -703,7 +675,7 @@ mod tests {
 
         // Encrypt for Alice
         let plaintext = b"Secret for Alice";
-        let ciphertext = alice.encrypt_with_rng(plaintext, &mut OsRng);
+        let ciphertext = alice.encrypt(plaintext, &mut OsRng);
 
         // Bob should not be able to decrypt
         let result = bob.decrypt(&ciphertext);
@@ -737,7 +709,7 @@ mod tests {
         let identity = new_identity();
         let plaintext: &[u8] = b"";
 
-        let ciphertext = identity.encrypt_with_rng(plaintext, &mut OsRng);
+        let ciphertext = identity.encrypt(plaintext, &mut OsRng);
         let decrypted = identity.decrypt(&ciphertext).unwrap();
 
         assert_eq!(decrypted.len(), 0);
@@ -757,7 +729,7 @@ mod tests {
         let identity = new_identity();
         let plaintext = [0xab; 100000]; // 100KB
 
-        let ciphertext = identity.encrypt_with_rng(&plaintext, &mut OsRng);
+        let ciphertext = identity.encrypt(&plaintext, &mut OsRng);
         let decrypted = identity.decrypt(&ciphertext).unwrap();
 
         assert_eq!(decrypted.len(), plaintext.len());
@@ -805,7 +777,7 @@ mod tests {
         let identity = new_identity();
         let plaintext = b"Secret message";
 
-        let mut ciphertext = identity.encrypt_with_rng(plaintext, &mut OsRng);
+        let mut ciphertext = identity.encrypt(plaintext, &mut OsRng);
         // Corrupt the ephemeral public key (first 32 bytes)
         ciphertext[0] ^= 0x01;
 
@@ -819,7 +791,7 @@ mod tests {
         let identity = new_identity();
         let plaintext = b"Secret message";
 
-        let mut ciphertext = identity.encrypt_with_rng(plaintext, &mut OsRng);
+        let mut ciphertext = identity.encrypt(plaintext, &mut OsRng);
         // Corrupt the token part (after ephemeral key)
         ciphertext[40] ^= 0x01;
 
@@ -832,7 +804,7 @@ mod tests {
         let identity = new_identity();
         let plaintext = b"Secret message";
 
-        let ciphertext = identity.encrypt_with_rng(plaintext, &mut OsRng);
+        let ciphertext = identity.encrypt(plaintext, &mut OsRng);
         // Truncate to less than minimum size
         let truncated = &ciphertext[..32];
 
@@ -876,8 +848,8 @@ mod tests {
         let identity = new_identity();
         let plaintext = b"Same message";
 
-        let ct1 = identity.encrypt_with_rng(plaintext, &mut OsRng);
-        let ct2 = identity.encrypt_with_rng(plaintext, &mut OsRng);
+        let ct1 = identity.encrypt(plaintext, &mut OsRng);
+        let ct2 = identity.encrypt(plaintext, &mut OsRng);
 
         // Ciphertexts should be different
         assert_ne!(ct1, ct2);
@@ -895,7 +867,7 @@ mod tests {
         let pub_only = Identity::from_public_key_bytes(&pub_bytes).unwrap();
 
         let plaintext = b"Secret message";
-        let ciphertext = pub_only.encrypt_with_rng(plaintext, &mut OsRng);
+        let ciphertext = pub_only.encrypt(plaintext, &mut OsRng);
 
         // Original identity (with private key) should be able to decrypt
         let decrypted = identity.decrypt(&ciphertext).unwrap();
@@ -908,7 +880,7 @@ mod tests {
 
         for i in 0..10 {
             let plaintext = alloc::format!("Message number {}", i);
-            let ciphertext = identity.encrypt_with_rng(plaintext.as_bytes(), &mut OsRng);
+            let ciphertext = identity.encrypt(plaintext.as_bytes(), &mut OsRng);
             let decrypted = identity.decrypt(&ciphertext).unwrap();
             assert_eq!(&decrypted[..], plaintext.as_bytes());
         }
@@ -940,7 +912,7 @@ mod tests {
         let identity = new_identity();
         let plaintext = [0xaa];
 
-        let ciphertext = identity.encrypt_with_rng(&plaintext, &mut OsRng);
+        let ciphertext = identity.encrypt(&plaintext, &mut OsRng);
         let decrypted = identity.decrypt(&ciphertext).unwrap();
 
         assert_eq!(decrypted.len(), 1);
@@ -976,7 +948,7 @@ mod tests {
         let identity = new_identity();
         let plaintext = b"Hello without ratchet";
 
-        let ciphertext = identity.encrypt_for_destination_with_rng(plaintext, None, &mut OsRng);
+        let ciphertext = identity.encrypt_for_destination(plaintext, None, &mut OsRng);
 
         // Should be decryptable with normal decrypt
         let decrypted = identity.decrypt(&ciphertext).unwrap();
@@ -986,32 +958,19 @@ mod tests {
     #[test]
     fn test_encrypt_for_destination_with_ratchet() {
         use crate::ratchet::Ratchet;
-        use crate::traits::{NoStorage, PlatformContext};
 
-        // Mock clock for ratchet
-        struct MockClock;
-        impl crate::traits::Clock for MockClock {
-            fn now_ms(&self) -> u64 {
-                1704067200000
-            }
-        }
-
-        let mut ctx = PlatformContext {
-            rng: OsRng,
-            clock: MockClock,
-            storage: NoStorage,
-        };
+        const TEST_TIME_MS: u64 = 1704067200000;
 
         // Create identity and ratchet
-        let identity = Identity::generate(&mut ctx);
-        let ratchet = Ratchet::generate(&mut ctx);
+        let identity = Identity::generate(&mut OsRng);
+        let ratchet = Ratchet::generate(&mut OsRng, TEST_TIME_MS);
 
         let plaintext = b"Hello with ratchet!";
         let ratchet_pub = ratchet.public_key_bytes();
 
         // Encrypt with ratchet
         let ciphertext =
-            identity.encrypt_for_destination_with_rng(plaintext, Some(&ratchet_pub), &mut OsRng);
+            identity.encrypt_for_destination(plaintext, Some(&ratchet_pub), &mut OsRng);
 
         // Should NOT be decryptable with normal decrypt (uses identity key)
         let result = identity.decrypt(&ciphertext);
@@ -1031,31 +990,19 @@ mod tests {
     #[test]
     fn test_decrypt_with_multiple_ratchets() {
         use crate::ratchet::Ratchet;
-        use crate::traits::{NoStorage, PlatformContext};
 
-        struct MockClock;
-        impl crate::traits::Clock for MockClock {
-            fn now_ms(&self) -> u64 {
-                1704067200000
-            }
-        }
+        const TEST_TIME_MS: u64 = 1704067200000;
 
-        let mut ctx = PlatformContext {
-            rng: OsRng,
-            clock: MockClock,
-            storage: NoStorage,
-        };
-
-        let identity = Identity::generate(&mut ctx);
+        let identity = Identity::generate(&mut OsRng);
 
         // Create multiple ratchets
-        let ratchet1 = Ratchet::generate(&mut ctx);
-        let ratchet2 = Ratchet::generate(&mut ctx);
-        let ratchet3 = Ratchet::generate(&mut ctx);
+        let ratchet1 = Ratchet::generate(&mut OsRng, TEST_TIME_MS);
+        let ratchet2 = Ratchet::generate(&mut OsRng, TEST_TIME_MS);
+        let ratchet3 = Ratchet::generate(&mut OsRng, TEST_TIME_MS);
 
         // Encrypt with ratchet2
         let plaintext = b"Encrypted with ratchet 2";
-        let ciphertext = identity.encrypt_for_destination_with_rng(
+        let ciphertext = identity.encrypt_for_destination(
             plaintext,
             Some(&ratchet2.public_key_bytes()),
             &mut OsRng,
@@ -1074,27 +1021,15 @@ mod tests {
     #[test]
     fn test_decrypt_with_identity_fallback() {
         use crate::ratchet::Ratchet;
-        use crate::traits::{NoStorage, PlatformContext};
 
-        struct MockClock;
-        impl crate::traits::Clock for MockClock {
-            fn now_ms(&self) -> u64 {
-                1704067200000
-            }
-        }
+        const TEST_TIME_MS: u64 = 1704067200000;
 
-        let mut ctx = PlatformContext {
-            rng: OsRng,
-            clock: MockClock,
-            storage: NoStorage,
-        };
-
-        let identity = Identity::generate(&mut ctx);
-        let ratchet = Ratchet::generate(&mut ctx);
+        let identity = Identity::generate(&mut OsRng);
+        let ratchet = Ratchet::generate(&mut OsRng, TEST_TIME_MS);
 
         // Encrypt WITHOUT ratchet (uses identity key)
         let plaintext = b"Encrypted with identity key";
-        let ciphertext = identity.encrypt_for_destination_with_rng(plaintext, None, &mut OsRng);
+        let ciphertext = identity.encrypt_for_destination(plaintext, None, &mut OsRng);
 
         // Try decrypting with ratchet (will fail) then fallback to identity
         let ratchets = [ratchet];
@@ -1118,7 +1053,7 @@ mod tests {
         let plaintext = b"Encrypted with identity";
 
         // Encrypt with identity
-        let ciphertext = identity.encrypt_for_destination_with_rng(plaintext, None, &mut OsRng);
+        let ciphertext = identity.encrypt_for_destination(plaintext, None, &mut OsRng);
 
         // Empty ratchets list with fallback
         let (decrypted, ratchet_id) = identity
@@ -1132,28 +1067,16 @@ mod tests {
     #[test]
     fn test_decrypt_with_ratchets_wrong_identity() {
         use crate::ratchet::Ratchet;
-        use crate::traits::{NoStorage, PlatformContext};
 
-        struct MockClock;
-        impl crate::traits::Clock for MockClock {
-            fn now_ms(&self) -> u64 {
-                1704067200000
-            }
-        }
+        const TEST_TIME_MS: u64 = 1704067200000;
 
-        let mut ctx = PlatformContext {
-            rng: OsRng,
-            clock: MockClock,
-            storage: NoStorage,
-        };
-
-        let alice = Identity::generate(&mut ctx);
-        let bob = Identity::generate(&mut ctx);
-        let ratchet = Ratchet::generate(&mut ctx);
+        let alice = Identity::generate(&mut OsRng);
+        let bob = Identity::generate(&mut OsRng);
+        let ratchet = Ratchet::generate(&mut OsRng, TEST_TIME_MS);
 
         // Encrypt for Alice's identity using ratchet
         let plaintext = b"Secret for Alice";
-        let ciphertext = alice.encrypt_for_destination_with_rng(
+        let ciphertext = alice.encrypt_for_destination(
             plaintext,
             Some(&ratchet.public_key_bytes()),
             &mut OsRng,
@@ -1168,24 +1091,12 @@ mod tests {
     #[test]
     fn test_encrypt_for_destination_public_only_identity() {
         use crate::ratchet::Ratchet;
-        use crate::traits::{NoStorage, PlatformContext};
 
-        struct MockClock;
-        impl crate::traits::Clock for MockClock {
-            fn now_ms(&self) -> u64 {
-                1704067200000
-            }
-        }
-
-        let mut ctx = PlatformContext {
-            rng: OsRng,
-            clock: MockClock,
-            storage: NoStorage,
-        };
+        const TEST_TIME_MS: u64 = 1704067200000;
 
         // Create identity with private keys
-        let full_identity = Identity::generate(&mut ctx);
-        let ratchet = Ratchet::generate(&mut ctx);
+        let full_identity = Identity::generate(&mut OsRng);
+        let ratchet = Ratchet::generate(&mut OsRng, TEST_TIME_MS);
 
         // Create public-only identity
         let pub_bytes = full_identity.public_key_bytes();
@@ -1193,7 +1104,7 @@ mod tests {
 
         // Encrypt using public-only identity with ratchet
         let plaintext = b"Encrypted by sender using public identity";
-        let ciphertext = pub_only.encrypt_for_destination_with_rng(
+        let ciphertext = pub_only.encrypt_for_destination(
             plaintext,
             Some(&ratchet.public_key_bytes()),
             &mut OsRng,

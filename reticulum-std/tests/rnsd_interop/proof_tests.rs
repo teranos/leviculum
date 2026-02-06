@@ -157,7 +157,7 @@ fn test_build_proof_packet() {
 
 #[test]
 fn test_create_and_verify_proof() {
-    let identity = Identity::generate_with_rng(&mut OsRng);
+    let identity = Identity::generate(&mut OsRng);
     let packet_hash = [0x42u8; 32];
 
     // Create proof
@@ -181,7 +181,7 @@ fn test_proof_strategy_values() {
 
 #[test]
 fn test_destination_proof_strategy() {
-    let identity = Identity::generate_with_rng(&mut OsRng);
+    let identity = Identity::generate(&mut OsRng);
     let mut dest = Destination::new(
         Some(identity),
         Direction::In,
@@ -240,7 +240,7 @@ async fn test_python_prove_all_sends_proof() {
     tokio::time::sleep(DAEMON_SETTLE_TIME).await;
 
     // Create our identity for receiving the proof
-    let our_identity = Identity::generate_with_rng(&mut OsRng);
+    let our_identity = Identity::generate(&mut OsRng);
     let mut our_dest = Destination::new(
         Some(our_identity),
         Direction::In,
@@ -251,11 +251,9 @@ async fn test_python_prove_all_sends_proof() {
     .unwrap();
 
     // Send our announce so Python knows where to send the proof
-    let announce_packet = {
-        use reticulum_core::traits::{NoStorage, PlatformContext};
-        let mut ctx = PlatformContext { rng: OsRng, clock: crate::common::TestClock, storage: NoStorage };
-        our_dest.announce(None, &mut ctx).expect("Failed to create announce")
-    };
+    let announce_packet = our_dest
+        .announce(None, &mut OsRng, crate::common::now_ms())
+        .expect("Failed to create announce");
 
     let mut announce_raw = [0u8; MTU];
     let announce_len = announce_packet.pack(&mut announce_raw).unwrap();
@@ -345,7 +343,7 @@ async fn test_python_prove_none_no_proof() {
 /// Test proof validation - verify a proof we create is valid
 #[tokio::test]
 async fn test_proof_creation_and_validation() {
-    let identity = Identity::generate_with_rng(&mut OsRng);
+    let identity = Identity::generate(&mut OsRng);
 
     // Simulate receiving a packet
     let packet_data = b"Test packet content for proof";

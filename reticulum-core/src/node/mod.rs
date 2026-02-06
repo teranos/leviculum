@@ -24,7 +24,7 @@
 //! # impl Clock for MyClock { fn now_ms(&self) -> u64 { self.0.get() } }
 //!
 //! # fn example() {
-//! let my_identity = Identity::generate_with_rng(&mut rand_core::OsRng);
+//! let my_identity = Identity::generate(&mut rand_core::OsRng);
 //!
 //! // Build a node
 //! let mut node = NodeCoreBuilder::new()
@@ -984,7 +984,7 @@ mod tests {
 
     #[test]
     fn test_nodecore_builder_with_identity() {
-        let identity = Identity::generate_with_rng(&mut OsRng);
+        let identity = Identity::generate(&mut OsRng);
         let id_hash = *identity.hash();
         let clock = MockClock::new(1_000_000);
 
@@ -1003,7 +1003,7 @@ mod tests {
             .build(OsRng, clock, NoStorage)
             .unwrap();
 
-        let identity = Identity::generate_with_rng(&mut OsRng);
+        let identity = Identity::generate(&mut OsRng);
         let dest = Destination::new(
             Some(identity),
             Direction::In,

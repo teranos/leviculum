@@ -38,13 +38,14 @@ use reticulum_core::destination::{Destination, DestinationType, Direction, Proof
 use reticulum_core::identity::Identity;
 use reticulum_core::link::{LinkCloseReason, LinkEvent, LinkId, LinkManager};
 use reticulum_core::packet::{Packet, PacketContext, PacketType};
-use reticulum_core::traits::{Clock, NoStorage, PlatformContext};
+use reticulum_core::traits::Clock;
 use reticulum_core::DestinationHash;
 use reticulum_std::interfaces::hdlc::{frame, DeframeResult, Deframer};
 
 use crate::common::{
-    connect_to_daemon, receive_proof_for_link, send_framed, wait_for_any_announce_with_route_info,
-    wait_for_data_packet, wait_for_link_request, wait_for_rtt_packet, TestClock,
+    connect_to_daemon, now_ms, receive_proof_for_link, send_framed,
+    wait_for_any_announce_with_route_info, wait_for_data_packet, wait_for_link_request,
+    wait_for_rtt_packet, TestClock,
 };
 use crate::harness::{DestinationInfo, HarnessError, TestDaemon};
 
@@ -301,13 +302,7 @@ async fn setup_rust_destination(
     aspects: &[&str],
     app_data: &[u8],
 ) -> (Destination, String) {
-    // Identity::generate still needs a context, use PlatformContext for announce
-    let mut ctx = PlatformContext {
-        rng: OsRng,
-        clock: TestClock,
-        storage: NoStorage,
-    };
-    let identity = Identity::generate(&mut ctx);
+    let identity = Identity::generate(&mut OsRng);
     let public_key_hex = hex::encode(identity.public_key_bytes());
 
     let mut destination = Destination::new(
@@ -321,7 +316,7 @@ async fn setup_rust_destination(
 
     // Create and send announce
     let packet = destination
-        .announce(Some(app_data), &mut ctx)
+        .announce(Some(app_data), &mut OsRng, now_ms())
         .expect("Failed to create announce");
 
     let mut raw_packet = [0u8; MTU];
@@ -1499,7 +1494,7 @@ async fn test_manager_send_on_inactive_link() {
 async fn test_manager_operations_on_unknown_link() {
     let mut rng = OsRng;
     let mut manager = LinkManager::new();
-    let identity = Identity::generate_with_rng(&mut rng);
+    let identity = Identity::generate(&mut rng);
 
     let unknown_link_id = LinkId::new([0xFF; 16]);
 
@@ -1530,7 +1525,7 @@ async fn test_manager_operations_on_unknown_link() {
 async fn test_manager_responder_timeout() {
     let clock = MockClock::new(1_000_000);
     let mut rng = OsRng;
-    let identity = Identity::generate_with_rng(&mut rng);
+    let identity = Identity::generate(&mut rng);
 
     let mut manager = LinkManager::new();
     let dest_hash = [0x42; 16];

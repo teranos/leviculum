@@ -121,7 +121,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 use rand_core::OsRng;
                 use reticulum_core::Identity;
 
-                let identity = Identity::generate_with_rng(&mut OsRng);
+                let identity = Identity::generate(&mut OsRng);
                 let hash = identity.hash();
                 let hash_hex = hex_encode(hash);
 
