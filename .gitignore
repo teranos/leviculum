@@ -1,5 +1,7 @@
 # Build artifacts
 /target/
+reticulum-nrf/target/
+reticulum-nrf/Cargo.lock
 **/*.rs.bk
 
 # Generated headers (cbindgen)

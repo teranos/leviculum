@@ -1,162 +1,95 @@
 //! Network interfaces
 //!
 //! Interfaces handle the physical layer communication for Reticulum.
-//! Each interface type handles a specific transport medium.
-//!
-//! `AnyInterface` is an enum over all concrete interface types, and
-//! `InterfaceSet` manages a collection of interfaces with async readability
-//! notification via `next_packet()`.
+//! Each interface type runs as a spawned tokio task communicating through
+//! channels. `InterfaceHandle` represents the event loop's end of the
+//! channel pair, and `InterfaceRegistry` manages all active handles.
 
 pub mod hdlc;
-pub mod tcp;
+pub(crate) mod tcp;
 
-pub use tcp::TcpClientInterface;
-
-use std::task::{Context, Poll};
-
-use reticulum_core::traits::{Interface, InterfaceError};
 use reticulum_core::transport::InterfaceId;
+use reticulum_net::{IncomingPacket, InterfaceInfo, OutgoingPacket};
+use tokio::sync::mpsc;
 
-/// Enum over all concrete interface types
-///
-/// Avoids trait objects and enables the event loop to poll for async
-/// readability via `poll_recv_packet()`.
-pub enum AnyInterface {
-    Tcp(TcpClientInterface),
+/// Incoming channel capacity for TCP interfaces
+pub(crate) const TCP_INCOMING_CAPACITY: usize = 32;
+
+/// Outgoing channel capacity for TCP interfaces
+pub(crate) const TCP_OUTGOING_CAPACITY: usize = 16;
+
+/// Event loop's handle to a spawned interface task
+pub(crate) struct InterfaceHandle {
+    pub info: InterfaceInfo,
+    pub incoming: mpsc::Receiver<IncomingPacket>,
+    pub outgoing: mpsc::Sender<OutgoingPacket>,
 }
 
-impl AnyInterface {
-    /// Poll for the next deframed packet (async waker registration)
-    pub fn poll_recv_packet(
-        &mut self,
-        cx: &mut Context<'_>,
-    ) -> Poll<Result<Vec<u8>, InterfaceError>> {
-        match self {
-            AnyInterface::Tcp(tcp) => tcp.poll_recv_packet(cx),
-        }
-    }
-
-    /// Send a framed packet (non-blocking try_write)
-    pub fn send(&mut self, data: &[u8]) -> Result<(), InterfaceError> {
-        match self {
-            AnyInterface::Tcp(tcp) => tcp.send(data),
-        }
-    }
-
-    /// Check if the interface is online
-    pub fn is_online(&self) -> bool {
-        match self {
-            AnyInterface::Tcp(tcp) => tcp.is_online(),
-        }
-    }
-
-    /// Get the interface name
-    pub fn name(&self) -> &str {
-        match self {
-            AnyInterface::Tcp(tcp) => tcp.name(),
-        }
-    }
-}
-
-/// Collection of interfaces with round-robin async packet polling
-pub struct InterfaceSet {
-    interfaces: Vec<(InterfaceId, AnyInterface)>,
+/// Registry of active interface handles with round-robin polling
+pub(crate) struct InterfaceRegistry {
+    handles: Vec<InterfaceHandle>,
     /// Round-robin start index to prevent busy interfaces from starving others
     poll_start: usize,
 }
 
-impl Default for InterfaceSet {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
-impl InterfaceSet {
-    /// Create an empty interface set
-    pub fn new() -> Self {
+impl InterfaceRegistry {
+    /// Create an empty registry
+    pub(crate) fn new() -> Self {
         Self {
-            interfaces: Vec::new(),
+            handles: Vec::new(),
             poll_start: 0,
         }
     }
 
-    /// Add an interface and return its assigned ID
-    pub fn add(&mut self, iface: AnyInterface) -> InterfaceId {
-        let id = InterfaceId(self.interfaces.len());
-        self.interfaces.push((id, iface));
-        id
+    /// Register a new interface handle
+    pub(crate) fn register(&mut self, handle: InterfaceHandle) {
+        self.handles.push(handle);
     }
 
-    /// Number of interfaces
-    pub fn len(&self) -> usize {
-        self.interfaces.len()
+    /// Get the outgoing sender for a specific interface
+    pub(crate) fn get_sender(&self, id: InterfaceId) -> Option<&mpsc::Sender<OutgoingPacket>> {
+        self.handles
+            .iter()
+            .find(|h| h.info.id == id)
+            .map(|h| &h.outgoing)
     }
 
-    /// Whether the set is empty
-    pub fn is_empty(&self) -> bool {
-        self.interfaces.is_empty()
-    }
-
-    /// Await until any interface has a packet ready
-    ///
-    /// Returns `(InterfaceId, Ok(data))` for a complete packet, or
-    /// `(InterfaceId, Err(Disconnected))` when an interface goes down.
-    ///
-    /// Uses round-robin polling to prevent busy interfaces from starving others.
-    /// If all interfaces are offline, returns `Poll::Pending` forever (the event
-    /// loop timer branch will still fire).
-    pub async fn next_packet(&mut self) -> (InterfaceId, Result<Vec<u8>, InterfaceError>) {
-        let len = self.interfaces.len();
-        std::future::poll_fn(|cx| {
-            for offset in 0..len {
-                let idx = (self.poll_start + offset) % len;
-                let (id, iface) = &mut self.interfaces[idx];
-                if !iface.is_online() {
-                    continue;
-                }
-                match iface.poll_recv_packet(cx) {
-                    Poll::Ready(result) => {
-                        self.poll_start = (idx + 1) % len;
-                        return Poll::Ready((*id, result));
-                    }
-                    Poll::Pending => {}
-                }
-            }
-            Poll::Pending
-        })
-        .await
-    }
-
-    /// Send on a specific interface (synchronous try_write)
-    pub fn send(&mut self, iface: InterfaceId, data: &[u8]) -> Result<(), InterfaceError> {
-        if let Some((_, iface_obj)) = self.interfaces.get_mut(iface.0) {
-            if iface_obj.is_online() {
-                iface_obj.send(data)
-            } else {
-                Err(InterfaceError::Disconnected)
-            }
-        } else {
-            Err(InterfaceError::Other)
+    /// Remove an interface by ID, returns true if found
+    pub(crate) fn remove(&mut self, id: InterfaceId) -> bool {
+        let before = self.handles.len();
+        self.handles.retain(|h| h.info.id != id);
+        let removed = self.handles.len() < before;
+        if removed && !self.handles.is_empty() {
+            self.poll_start %= self.handles.len();
+        } else if self.handles.is_empty() {
+            self.poll_start = 0;
         }
+        removed
     }
 
-    /// Get the name of an interface by ID, or "unknown" if not found
-    pub fn name_of(&self, iface: InterfaceId) -> &str {
-        self.interfaces
-            .get(iface.0)
-            .map(|(_, i)| i.name())
+    /// Whether the registry has no interfaces
+    pub(crate) fn is_empty(&self) -> bool {
+        self.handles.is_empty()
+    }
+
+    /// Get the name of an interface by ID
+    pub(crate) fn name_of(&self, id: InterfaceId) -> &str {
+        self.handles
+            .iter()
+            .find(|h| h.info.id == id)
+            .map(|h| h.info.name.as_str())
             .unwrap_or("unknown")
     }
 
-    /// Broadcast on all interfaces except excluded (best effort)
-    pub fn broadcast(&mut self, data: &[u8], exclude: Option<InterfaceId>) {
-        for (id, iface) in self.interfaces.iter_mut() {
-            if Some(*id) == exclude {
-                continue;
-            }
-            if iface.is_online() {
-                let _ = iface.send(data);
-            }
-        }
+    /// Iterator over all interface IDs and their outgoing senders (for broadcast)
+    pub(crate) fn senders(
+        &self,
+    ) -> impl Iterator<Item = (InterfaceId, &mpsc::Sender<OutgoingPacket>)> {
+        self.handles.iter().map(|h| (h.info.id, &h.outgoing))
+    }
+
+    /// Mutable access to handles and poll_start for recv_any
+    pub(crate) fn handles_mut(&mut self) -> (&mut Vec<InterfaceHandle>, &mut usize) {
+        (&mut self.handles, &mut self.poll_start)
     }
 }

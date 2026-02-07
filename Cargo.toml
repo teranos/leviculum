@@ -2,13 +2,19 @@
 resolver = "2"
 members = [
     "reticulum-core",
+    "reticulum-net",
     "reticulum-std",
     "reticulum-ffi",
     "reticulum-cli",
 ]
 
+# reticulum-nrf requires cross-compilation (thumbv7em-none-eabihf) and
+# cannot build with --workspace on the host.
+# Build with: cargo build -p reticulum-nrf --target thumbv7em-none-eabihf
+exclude = ["reticulum-nrf"]
+
 [workspace.package]
-version = "0.3.2"
+version = "0.4.0"
 edition = "2021"
 authors = ["Lew Palm"]
 license = "MIT"

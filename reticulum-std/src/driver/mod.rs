@@ -54,6 +54,7 @@ pub use stream::ConnectionStream;
 
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
+use std::task::Poll;
 use std::time::Duration;
 
 use tokio::sync::{mpsc, oneshot, watch};
@@ -62,17 +63,22 @@ use reticulum_core::constants::TRUNCATED_HASHBYTES;
 use reticulum_core::link::LinkId;
 use reticulum_core::node::{NodeCore, NodeEvent};
 use reticulum_core::traits::Clock;
-use reticulum_core::transport::{Action, TickOutput};
+use reticulum_core::transport::{Action, InterfaceId, TickOutput};
 use reticulum_core::{Destination, DestinationHash};
+use reticulum_net::{IncomingPacket, OutgoingPacket};
 
 use crate::clock::SystemClock;
 use crate::config::InterfaceConfig;
 use crate::error::Error;
-use crate::interfaces::{AnyInterface, InterfaceSet, TcpClientInterface};
+use crate::interfaces::tcp::spawn_tcp_interface;
+use crate::interfaces::InterfaceRegistry;
 use crate::storage::Storage;
 
 /// Type alias for the concrete NodeCore used by std platforms
 pub type StdNodeCore = NodeCore<rand_core::OsRng, SystemClock, Storage>;
+
+/// Alias for `ReticulumNode` (preserves backward compatibility)
+pub type ReticulumNode = ReticulumNodeImpl;
 
 /// Event channel capacity
 const EVENT_CHANNEL_CAPACITY: usize = 256;
@@ -83,12 +89,20 @@ const CONNECTION_CHANNEL_CAPACITY: usize = 64;
 /// Map from link ID to the channel for delivering incoming data to the connection stream
 type ConnectionMap = HashMap<LinkId, mpsc::Sender<Vec<u8>>>;
 
+/// Event received from any interface
+enum RecvEvent {
+    /// A complete packet from an interface
+    Packet(InterfaceId, IncomingPacket),
+    /// An interface disconnected (its incoming channel closed)
+    Disconnected(InterfaceId),
+}
+
 /// High-level async Reticulum node
 ///
-/// `ReticulumNode` provides an async API for interacting with the Reticulum network.
-/// It manages the internal event loop and provides methods for sending data,
-/// establishing connections, and handling incoming messages.
-pub struct ReticulumNode {
+/// `ReticulumNodeImpl` provides an async API for interacting with the Reticulum
+/// network. It manages the internal event loop and provides methods for sending
+/// data, establishing connections, and handling incoming messages.
+pub struct ReticulumNodeImpl {
     /// Handle to the core node
     inner: Arc<Mutex<StdNodeCore>>,
     /// Interface configurations
@@ -109,7 +123,7 @@ pub struct ReticulumNode {
     outgoing_tx: mpsc::Sender<(LinkId, Vec<u8>)>,
 }
 
-impl ReticulumNode {
+impl ReticulumNodeImpl {
     /// Create a new ReticulumNode (internal use - use ReticulumNodeBuilder)
     pub(crate) fn new(core: StdNodeCore, interfaces: Vec<InterfaceConfig>) -> Self {
         let (event_tx, event_rx) = mpsc::channel(EVENT_CHANNEL_CAPACITY);
@@ -139,7 +153,7 @@ impl ReticulumNode {
         }
 
         // Initialize interfaces — the driver owns them, NOT NodeCore
-        let interface_set = self.initialize_interfaces().await?;
+        let registry = self.initialize_interfaces()?;
 
         let (shutdown_tx, shutdown_rx) = watch::channel(false);
         self.shutdown_tx = Some(shutdown_tx);
@@ -158,7 +172,7 @@ impl ReticulumNode {
         let runner_handle = tokio::spawn(async move {
             run_event_loop(
                 inner,
-                interface_set,
+                registry,
                 event_tx,
                 connections,
                 pending_connects,
@@ -174,8 +188,8 @@ impl ReticulumNode {
     }
 
     /// Initialize interfaces from configuration
-    async fn initialize_interfaces(&self) -> Result<InterfaceSet, Error> {
-        let mut set = InterfaceSet::new();
+    fn initialize_interfaces(&self) -> Result<InterfaceRegistry, Error> {
+        let mut registry = InterfaceRegistry::new();
 
         for (idx, config) in self.interfaces.iter().enumerate() {
             if !config.enabled {
@@ -193,11 +207,17 @@ impl ReticulumNode {
 
                     let addr = format!("{}:{}", target_host, target_port);
                     let iface_name = format!("tcp_client_{}", idx);
+                    let id = InterfaceId(idx);
 
-                    match TcpClientInterface::connect(&iface_name, &addr, Duration::from_secs(10)) {
-                        Ok(iface) => {
+                    match spawn_tcp_interface(
+                        id,
+                        iface_name,
+                        &addr as &str,
+                        Duration::from_secs(10),
+                    ) {
+                        Ok(handle) => {
                             tracing::info!("Connected to TCP interface: {}", addr);
-                            set.add(AnyInterface::Tcp(iface));
+                            registry.register(handle);
                         }
                         Err(e) => {
                             tracing::warn!("Failed to connect to {}: {:?}", addr, e);
@@ -215,7 +235,7 @@ impl ReticulumNode {
             }
         }
 
-        Ok(set)
+        Ok(registry)
     }
 
     /// Stop the node
@@ -352,6 +372,43 @@ impl ReticulumNode {
 
 // ─── Sans-I/O Event Loop ────────────────────────────────────────────────────
 
+/// Poll all interface channels with round-robin fairness
+///
+/// Returns `RecvEvent::Packet` when a complete packet is available, or
+/// `RecvEvent::Disconnected` when an interface's incoming channel closes.
+/// Returns `Poll::Pending` when no interface has data ready.
+async fn recv_any(registry: &mut InterfaceRegistry) -> RecvEvent {
+    if registry.is_empty() {
+        // No interfaces — pend forever (timer branch will still fire)
+        std::future::pending().await
+    } else {
+        std::future::poll_fn(|cx| {
+            let (handles, poll_start) = registry.handles_mut();
+            let len = handles.len();
+
+            for offset in 0..len {
+                let idx = (*poll_start + offset) % len;
+                let handle = &mut handles[idx];
+                let id = handle.info.id;
+
+                match handle.incoming.poll_recv(cx) {
+                    Poll::Ready(Some(pkt)) => {
+                        *poll_start = (idx + 1) % len;
+                        return Poll::Ready(RecvEvent::Packet(id, pkt));
+                    }
+                    Poll::Ready(None) => {
+                        *poll_start = (idx + 1) % len;
+                        return Poll::Ready(RecvEvent::Disconnected(id));
+                    }
+                    Poll::Pending => {}
+                }
+            }
+            Poll::Pending
+        })
+        .await
+    }
+}
+
 /// Run the internal event loop (sans-I/O architecture)
 ///
 /// The driver owns the interfaces and acts as the I/O bridge between the
@@ -359,7 +416,7 @@ impl ReticulumNode {
 /// to wake immediately on socket readability, outgoing data, or timer expiry.
 async fn run_event_loop(
     inner: Arc<Mutex<StdNodeCore>>,
-    mut interface_set: InterfaceSet,
+    mut registry: InterfaceRegistry,
     event_tx: mpsc::Sender<NodeEvent>,
     connections: Arc<Mutex<ConnectionMap>>,
     pending_connects: Arc<Mutex<HashMap<[u8; TRUNCATED_HASHBYTES], oneshot::Sender<LinkId>>>>,
@@ -385,34 +442,35 @@ async fn run_event_loop(
 
         tokio::select! {
             // Branch 1: Packet from any interface
-            (iface_id, result) = interface_set.next_packet() => {
-                match result {
-                    Ok(data) => {
+            event = recv_any(&mut registry) => {
+                match event {
+                    RecvEvent::Packet(iface_id, pkt) => {
                         let output = {
                             let mut core = inner.lock().unwrap();
-                            core.handle_packet(iface_id, &data)
+                            core.handle_packet(iface_id, &pkt.data)
                         };
                         dispatch_output(
                             output,
-                            &mut interface_set,
+                            &registry,
                             &event_tx,
                             &connections,
                             &pending_connects,
                         );
                     }
-                    Err(_) => {
-                        tracing::warn!("Interface {} ({}) disconnected", iface_id, interface_set.name_of(iface_id));
+                    RecvEvent::Disconnected(iface_id) => {
+                        tracing::warn!("Interface {} ({}) disconnected", iface_id, registry.name_of(iface_id));
                         let output = {
                             let mut core = inner.lock().unwrap();
                             core.handle_interface_down(iface_id)
                         };
                         dispatch_output(
                             output,
-                            &mut interface_set,
+                            &registry,
                             &event_tx,
                             &connections,
                             &pending_connects,
                         );
+                        registry.remove(iface_id);
                     }
                 }
             }
@@ -434,7 +492,7 @@ async fn run_event_loop(
                 };
                 dispatch_output(
                     output,
-                    &mut interface_set,
+                    &registry,
                     &event_tx,
                     &connections,
                     &pending_connects,
@@ -449,7 +507,7 @@ async fn run_event_loop(
                 };
                 dispatch_output(
                     output,
-                    &mut interface_set,
+                    &registry,
                     &event_tx,
                     &connections,
                     &pending_connects,
@@ -467,10 +525,10 @@ async fn run_event_loop(
     }
 }
 
-/// Dispatch a TickOutput: execute Actions on interfaces and forward Events
+/// Dispatch a TickOutput: execute Actions on interface channels and forward Events
 fn dispatch_output(
     output: TickOutput,
-    interface_set: &mut InterfaceSet,
+    registry: &InterfaceRegistry,
     event_tx: &mpsc::Sender<NodeEvent>,
     connections: &Arc<Mutex<ConnectionMap>>,
     pending_connects: &Arc<Mutex<HashMap<[u8; TRUNCATED_HASHBYTES], oneshot::Sender<LinkId>>>>,
@@ -479,15 +537,24 @@ fn dispatch_output(
     for action in &output.actions {
         match action {
             Action::SendPacket { iface, data } => {
-                if let Err(e) = interface_set.send(*iface, data) {
-                    tracing::debug!("Send error on {}: {:?}", iface, e);
+                if let Some(sender) = registry.get_sender(*iface) {
+                    if let Err(e) = sender.try_send(OutgoingPacket { data: data.clone() }) {
+                        tracing::debug!("Send error on {}: {:?}", iface, e);
+                    }
+                } else {
+                    tracing::debug!("No interface {} for SendPacket", iface);
                 }
             }
             Action::Broadcast {
                 data,
                 exclude_iface,
             } => {
-                interface_set.broadcast(data, *exclude_iface);
+                for (id, sender) in registry.senders() {
+                    if Some(id) == *exclude_iface {
+                        continue;
+                    }
+                    let _ = sender.try_send(OutgoingPacket { data: data.clone() });
+                }
             }
         }
     }

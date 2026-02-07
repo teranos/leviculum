@@ -346,7 +346,7 @@ async fn test_transport_path_from_daemon_announce() {
 /// - Announces don't interfere with each other
 ///
 /// Uses the high-level ReticulumNode API which handles HDLC deframing
-/// correctly via TcpClientInterface's internal recv_queue.
+/// correctly via the spawned TCP interface task's HDLC deframing.
 #[tokio::test]
 async fn test_multiple_daemon_announces() {
     let daemon = TestDaemon::start().await.expect("Failed to start daemon");

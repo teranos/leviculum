@@ -33,7 +33,9 @@ Das Projekt hat Phase 1 vollständig abgeschlossen und Phase 2 ist zu ~95% ferti
 
 **Sans-I/O-Architektur abgeschlossen:** `reticulum-core` ist jetzt ein reiner Zustandsautomat ohne jegliche direkte I/O-Operationen. `NodeCore` nimmt eingehende Pakete via `handle_packet()` entgegen und gibt `Action`-Werte (`SendPacket`, `Broadcast`) zurück, die der Treiber ausführt. Der Treiber in `reticulum-std` besitzt die Interfaces, liest Pakete, speist sie in den Core, und dispatcht die resultierenden Actions. `TransportRunner` wurde entfernt; `ReticulumNode` ist der einheitliche Treiber. Diese Architektur ermöglicht den Einsatz auf Embedded-Plattformen ohne `std`.
 
-**Async Event Loop (v0.3.2):** Die Event-Loop in `reticulum-std` nutzt jetzt `tokio::select!` statt 50ms-Polling. Der Treiber wacht sofort auf bei Socket-Lesbarkeit, ausgehenden Daten oder Timer-Ablauf — ohne Latenz-Overhead und mit minimalem CPU-Verbrauch im Leerlauf. Interfaces werden über ein konkretes `AnyInterface`-Enum (statt Trait-Objekte) mit `InterfaceSet` verwaltet.
+**Async Event Loop (v0.3.2):** Die Event-Loop in `reticulum-std` nutzt jetzt `tokio::select!` statt 50ms-Polling. Der Treiber wacht sofort auf bei Socket-Lesbarkeit, ausgehenden Daten oder Timer-Ablauf — ohne Latenz-Overhead und mit minimalem CPU-Verbrauch im Leerlauf.
+
+**Channel-Bridge-Architektur (v0.4.0):** Interfaces laufen jetzt als eigenständige Tokio-Tasks und kommunizieren über `mpsc`-Channels mit der Event-Loop. `reticulum-net` (neues `no_std`-Crate) definiert die gemeinsamen Datentypen (`IncomingPacket`, `OutgoingPacket`, `InterfaceInfo`), die sowohl auf std- als auch Embedded-Plattformen funktionieren. `reticulum-nrf` ist ein Embassy-basiertes Firmware-Skeleton für den Heltec Mesh Node T114 (nRF52840 + SX1262) mit vollständigen Pin-Mappings und On-Device-Tests.
 
 **Deferred-Dispatch-Modell (v0.3.1):** Applikationsmethoden (`connect()`, `accept_connection()`, `send_on_connection()`) routen Pakete jetzt intern über das Action-System statt rohe Bytes zurückzugeben. Actions werden beim nächsten `handle_packet()`/`handle_timeout()` geflusht. `Link.attached_interface` (analog zu Python) steuert das Routing für Link-gebundenen Verkehr.
 
@@ -57,7 +59,8 @@ Das Projekt hat Phase 1 vollständig abgeschlossen und Phase 2 ist zu ~95% ferti
 | Link-State-Machine (Handshake, Proof, RTT, Data) | ✅ Initiator + Responder | 1.800 |
 | Transport Layer (Routing, Pfade, Announces, Relay) | ✅ Fertig | 3.676 |
 | HDLC-Framing (no_std + alloc) | ✅ Fertig | 577 |
-| Interface-Traits + TCP-Client | ✅ Fertig | 623 |
+| Interface-Traits + TCP-Client (Channel-basiert) | ✅ Fertig | 623 |
+| reticulum-net (Shared Interface-Datentypen, no_std) | ✅ Fertig | 48 |
 | Sans-I/O Driver (async select!, kein Polling) | ✅ Fertig | 224 |
 | Reticulum-Instanz + Config + Storage | ✅ Fertig | 597 |
 | FFI/C-API | ✅ Grundfunktionen | 361 |
@@ -65,11 +68,13 @@ Das Projekt hat Phase 1 vollständig abgeschlossen und Phase 2 ist zu ~95% ferti
 | **Gesamt** | | **~25.000** |
 
 **Crate-Aufteilung:**
-| Crate | src LOC | test LOC |
-|-------|---------|----------|
-| reticulum-core | 22.087 | 1.527 |
-| reticulum-std | 2.182 | 10.418 |
-| reticulum-ffi | 361 | 404 |
+| Crate | src LOC | test LOC | Beschreibung |
+|-------|---------|----------|-------------|
+| reticulum-core | 22.087 | 1.527 | Protokoll-Logik (no_std) |
+| reticulum-net | 48 | — | Shared Interface-Datentypen (no_std) |
+| reticulum-std | 2.182 | 10.418 | Plattform-Glue (tokio, TCP) |
+| reticulum-nrf | ~200 | ~100 | Embedded-Firmware (Embassy, nRF52840) |
+| reticulum-ffi | 361 | 404 | C-API |
 
 **Test-Abdeckung:** ~793 Tests (522 Core-Unit + 18 Proptest + 31 Test-Vektoren + 26 Doctests + 20 Std-Lib + 7 Core-Integration + 3 Std-Integration + 1 FFI + 166 Interop gegen rnsd)
 

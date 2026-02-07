@@ -5,6 +5,27 @@ All notable changes to this project will be documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.4.0] - 2026-02-07
+
+### Added
+- **`reticulum-net` crate** — new `no_std + alloc` crate with shared interface data types (`IncomingPacket`, `OutgoingPacket`, `InterfaceInfo`, `InterfaceKind`) for the boundary between interface tasks and the event loop
+- **`reticulum-nrf` embedded skeleton** — Embassy-based firmware crate for Heltec Mesh Node T114 (nRF52840 + SX1262) with complete pin mappings, heartbeat firmware, and 4 on-device `defmt-test` tests
+- `InterfaceHandle` and `InterfaceRegistry` in `reticulum-std` — channel-based interface dispatch replacing the previous enum-based `AnyInterface`/`InterfaceSet`
+- `spawn_tcp_interface()` — connects synchronously, then spawns a tokio task for bidirectional HDLC-framed I/O through channels
+- `recv_any()` — round-robin channel poller for the event loop using `poll_fn` + `poll_recv`
+
+### Changed
+- **Breaking:** `TcpClientInterface` removed from public API — interface I/O is now internal to spawned tasks, accessed only through channels
+- **Breaking:** `interfaces::tcp` module visibility changed from `pub` to `pub(crate)`
+- TCP interface I/O now runs as an independent tokio task instead of being polled by the event loop directly — enables better separation of concerns and prepares for multi-platform interface dispatch
+- Event loop `dispatch_output()` uses `try_send()` on interface channels instead of direct `InterfaceSet::send()`/`broadcast()` calls
+
+### Removed
+- `AnyInterface` enum — replaced by spawned interface tasks communicating through channels
+- `InterfaceSet` struct — replaced by `InterfaceRegistry` with channel-based handles
+- `TcpClientInterface` struct — responsibilities absorbed into `spawn_tcp_interface()` + `tcp_interface_task()`
+- `pub use interfaces::TcpClientInterface` re-export from `reticulum-std`
+
 ## [0.3.2] - 2026-02-07
 
 ### Changed
@@ -378,7 +399,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Transport layer (routing, paths, deduplication)
 - Full interoperability with Python rnsd
 
-[Unreleased]: https://codeberg.org/Lew_Palm/leviculum/compare/v0.3.2...HEAD
+[Unreleased]: https://codeberg.org/Lew_Palm/leviculum/compare/v0.4.0...HEAD
+[0.4.0]: https://codeberg.org/Lew_Palm/leviculum/compare/v0.3.2...v0.4.0
 [0.3.2]: https://codeberg.org/Lew_Palm/leviculum/compare/v0.3.1...v0.3.2
 [0.3.1]: https://codeberg.org/Lew_Palm/leviculum/compare/v0.3.0...v0.3.1
 [0.3.0]: https://codeberg.org/Lew_Palm/leviculum/compare/v0.2.9...v0.3.0
