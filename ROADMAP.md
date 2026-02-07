@@ -277,6 +277,7 @@ Production-ready: QA, zusätzliche Interfaces, Dokumentation.
 - [ ] UDP Interface
 - [ ] LocalInterface (IPC)
 - [ ] Serial Interface
+- [ ] Async interface connect path — `spawn_tcp_interface()` connects synchronously (blocking on tokio thread), which is fine at startup but blocks the event loop for runtime hot-plug. Prerequisite for USB and BLE interface support. The channel-based `InterfaceRegistry` already supports dynamic `register()`, only the connect step needs an async variant.
 
 ### Qualitätssicherung
 - [x] Integration-Tests gegen rnsd-Daemon (166 Tests)
