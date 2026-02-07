@@ -9,7 +9,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 - **`reticulum-net` crate** — new `no_std + alloc` crate with shared interface data types (`IncomingPacket`, `OutgoingPacket`, `InterfaceInfo`, `InterfaceKind`) for the boundary between interface tasks and the event loop
-- **`reticulum-nrf` embedded skeleton** — Embassy-based firmware crate for Heltec Mesh Node T114 (nRF52840 + SX1262) with complete pin mappings, heartbeat firmware, and 4 on-device `defmt-test` tests
+- **`reticulum-nrf` embedded skeleton** — Embassy-based firmware crate for Heltec Mesh Node T114 (nRF52840 + SX1262) with complete pin mappings and heartbeat firmware
+- **USB composite CDC-ACM** in `reticulum-nrf` — two USB serial ports (debug log output + Reticulum transport placeholder) replacing defmt/RTT, enabling probeless debug logging via `picocom /dev/ttyACM0`
+- `info!`/`warn!` logging macros for embedded firmware — fixed 256-byte messages, bounded channel (capacity 16), non-blocking `try_send`, no heap allocation in the log path
+- FICR-based unique USB serial number from nRF52840 factory-programmed device ID
+- udev rules (`udev/99-leviculum.rules`) for stable `/dev/leviculum-debug` and `/dev/leviculum-transport` symlinks
+- `tools/flash-and-read.sh` — flash firmware and verify debug output against expected pattern with configurable timeout
+- Smart USB port detection in `tools/uf2-runner.sh` — identifies debug and transport ports by VID:PID (`1209:0001`) and USB interface number
 - `InterfaceHandle` and `InterfaceRegistry` in `reticulum-std` — channel-based interface dispatch replacing the previous enum-based `AnyInterface`/`InterfaceSet`
 - `spawn_tcp_interface()` — connects synchronously, then spawns a tokio task for bidirectional HDLC-framed I/O through channels
 - `recv_any()` — round-robin channel poller for the event loop using `poll_fn` + `poll_recv`
@@ -25,6 +31,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `InterfaceSet` struct — replaced by `InterfaceRegistry` with channel-based handles
 - `TcpClientInterface` struct — responsibilities absorbed into `spawn_tcp_interface()` + `tcp_interface_task()`
 - `pub use interfaces::TcpClientInterface` re-export from `reticulum-std`
+- `defmt`, `defmt-rtt`, `panic-probe` dependencies from `reticulum-nrf` — replaced by USB CDC-ACM logging
+- `tests/on_device.rs` defmt-test harness from `reticulum-nrf` — requires SWD debug probe, to be rewritten over USB-CDC
 
 ## [0.3.2] - 2026-02-07
 

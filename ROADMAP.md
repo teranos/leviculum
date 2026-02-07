@@ -35,7 +35,7 @@ Das Projekt hat Phase 1 vollständig abgeschlossen und Phase 2 ist zu ~95% ferti
 
 **Async Event Loop (v0.3.2):** Die Event-Loop in `reticulum-std` nutzt jetzt `tokio::select!` statt 50ms-Polling. Der Treiber wacht sofort auf bei Socket-Lesbarkeit, ausgehenden Daten oder Timer-Ablauf — ohne Latenz-Overhead und mit minimalem CPU-Verbrauch im Leerlauf.
 
-**Channel-Bridge-Architektur (v0.4.0):** Interfaces laufen jetzt als eigenständige Tokio-Tasks und kommunizieren über `mpsc`-Channels mit der Event-Loop. `reticulum-net` (neues `no_std`-Crate) definiert die gemeinsamen Datentypen (`IncomingPacket`, `OutgoingPacket`, `InterfaceInfo`), die sowohl auf std- als auch Embedded-Plattformen funktionieren. `reticulum-nrf` ist ein Embassy-basiertes Firmware-Skeleton für den Heltec Mesh Node T114 (nRF52840 + SX1262) mit vollständigen Pin-Mappings und On-Device-Tests.
+**Channel-Bridge-Architektur (v0.4.0):** Interfaces laufen jetzt als eigenständige Tokio-Tasks und kommunizieren über `mpsc`-Channels mit der Event-Loop. `reticulum-net` (neues `no_std`-Crate) definiert die gemeinsamen Datentypen (`IncomingPacket`, `OutgoingPacket`, `InterfaceInfo`), die sowohl auf std- als auch Embedded-Plattformen funktionieren. `reticulum-nrf` ist ein Embassy-basiertes Firmware-Crate für den Heltec Mesh Node T114 (nRF52840 + SX1262) mit vollständigen Pin-Mappings, USB Composite CDC-ACM (Debug-Log + Reticulum-Transport als zwei serielle Ports), `info!`/`warn!`-Logging-Makros, FICR-basierter USB-Seriennummer, udev-Regeln für stabile Gerätesymlinks, und einem automatisierten Flash-und-Verify-Testharnisch (`tools/flash-and-read.sh`).
 
 **Deferred-Dispatch-Modell (v0.3.1):** Applikationsmethoden (`connect()`, `accept_connection()`, `send_on_connection()`) routen Pakete jetzt intern über das Action-System statt rohe Bytes zurückzugeben. Actions werden beim nächsten `handle_packet()`/`handle_timeout()` geflusht. `Link.attached_interface` (analog zu Python) steuert das Routing für Link-gebundenen Verkehr.
 
@@ -73,7 +73,7 @@ Das Projekt hat Phase 1 vollständig abgeschlossen und Phase 2 ist zu ~95% ferti
 | reticulum-core | 22.087 | 1.527 | Protokoll-Logik (no_std) |
 | reticulum-net | 48 | — | Shared Interface-Datentypen (no_std) |
 | reticulum-std | 2.182 | 10.418 | Plattform-Glue (tokio, TCP) |
-| reticulum-nrf | ~200 | ~100 | Embedded-Firmware (Embassy, nRF52840) |
+| reticulum-nrf | ~400 | — | Embedded-Firmware (Embassy, nRF52840, USB CDC-ACM) |
 | reticulum-ffi | 361 | 404 | C-API |
 
 **Test-Abdeckung:** ~793 Tests (522 Core-Unit + 18 Proptest + 31 Test-Vektoren + 26 Doctests + 20 Std-Lib + 7 Core-Integration + 3 Std-Integration + 1 FFI + 166 Interop gegen rnsd)

@@ -1,12 +1,15 @@
 //! Reticulum firmware support for nRF52840-based boards
 //!
-//! Provides heap allocator setup and board-specific pin mappings.
+//! Provides heap allocator setup, board-specific pin mappings,
+//! USB CDC-ACM debug logging, and Reticulum transport interface.
 
 #![no_std]
 
 extern crate alloc;
 
 pub mod boards;
+pub mod log;
+pub mod usb;
 
 use core::mem::MaybeUninit;
 use embedded_alloc::LlffHeap as Heap;
@@ -28,5 +31,18 @@ pub fn init_heap() {
     unsafe {
         let heap_start = core::ptr::addr_of!(HEAP_MEM) as usize;
         HEAP.init(heap_start, HEAP_SIZE);
+    }
+}
+
+#[cfg(not(test))]
+mod panic_handler {
+    use core::panic::PanicInfo;
+
+    #[panic_handler]
+    fn panic(_info: &PanicInfo) -> ! {
+        // TODO: blink LED fast as visual panic indicator
+        loop {
+            cortex_m::asm::wfi();
+        }
     }
 }

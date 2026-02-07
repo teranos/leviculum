@@ -183,7 +183,7 @@ echo "==> Deploying firmware.uf2..."
 cp "$UF2_FILE" "$UF2_DRIVE/NEW.UF2"
 sync
 
-# --- Step 9: Boot verification ----------------------------------------------
+# --- Step 8: Boot verification ----------------------------------------------
 
 echo "==> Waiting for device to boot..."
 
@@ -195,29 +195,96 @@ for _ in $(seq 1 20); do
     sleep 0.5
 done
 
-# Wait for ttyACM device to appear (application booted)
+# Wait for our USB device to appear — match by VID:PID 1209:0001
 BOOT_TIMEOUT=20  # ticks at 0.5s each = 10 seconds
 boot_tick=0
-TTY_PORT=""
+OUR_PORTS=""
 while [ "$boot_tick" -lt "$BOOT_TIMEOUT" ]; do
+    OUR_PORTS=""
     for tty in /dev/ttyACM*; do
-        if [ -c "$tty" ]; then
-            TTY_PORT="$tty"
-            break 2
+        [ -c "$tty" ] || continue
+        vid="$(udevadm info -q property "$tty" 2>/dev/null | grep '^ID_VENDOR_ID=' | cut -d= -f2 || true)"
+        pid="$(udevadm info -q property "$tty" 2>/dev/null | grep '^ID_MODEL_ID=' | cut -d= -f2 || true)"
+        if [ "$vid" = "1209" ] && [ "$pid" = "0001" ]; then
+            OUR_PORTS="${OUR_PORTS:+$OUR_PORTS }$tty"
         fi
     done
+    if [ -n "$OUR_PORTS" ]; then
+        # Wait for udev to settle and create symlinks
+        sleep 0.5
+        break
+    fi
     sleep 0.5
     boot_tick=$((boot_tick + 1))
 done
 
-if [ -n "$TTY_PORT" ]; then
-    echo "==> Device booted: $TTY_PORT"
+# --- Step 9: Identify ports ------------------------------------------------
+
+DEBUG_PORT=""
+TRANSPORT_PORT=""
+SERIAL=""
+
+if [ -n "$OUR_PORTS" ]; then
+    for port in $OUR_PORTS; do
+        iface="$(udevadm info -q property "$port" 2>/dev/null | grep '^ID_USB_INTERFACE_NUM=' | cut -d= -f2 || true)"
+        case "$iface" in
+            00) DEBUG_PORT="$port" ;;
+            02) TRANSPORT_PORT="$port" ;;
+        esac
+        if [ -z "$SERIAL" ]; then
+            SERIAL="$(udevadm info -q property "$port" 2>/dev/null | grep '^ID_SERIAL_SHORT=' | cut -d= -f2 || true)"
+        fi
+    done
+
+    # Check for udev symlinks
+    DEBUG_SYMLINK=""
+    TRANSPORT_SYMLINK=""
+    if [ -L "/dev/leviculum-debug" ]; then
+        DEBUG_SYMLINK="/dev/leviculum-debug"
+    fi
+    if [ -L "/dev/leviculum-transport" ]; then
+        TRANSPORT_SYMLINK="/dev/leviculum-transport"
+    fi
+
+    if [ -n "$SERIAL" ]; then
+        echo "==> Firmware booted (serial: $SERIAL)"
+    else
+        echo "==> Firmware booted"
+    fi
+
+    if [ -n "$DEBUG_PORT" ]; then
+        if [ -n "$DEBUG_SYMLINK" ]; then
+            echo "    Debug:     $DEBUG_PORT ($DEBUG_SYMLINK)"
+        else
+            echo "    Debug:     $DEBUG_PORT"
+        fi
+    fi
+
+    if [ -n "$TRANSPORT_PORT" ]; then
+        if [ -n "$TRANSPORT_SYMLINK" ]; then
+            echo "    Transport: $TRANSPORT_PORT ($TRANSPORT_SYMLINK)"
+        else
+            echo "    Transport: $TRANSPORT_PORT"
+        fi
+    fi
+
+    if [ -z "$DEBUG_SYMLINK" ] && [ -z "$TRANSPORT_SYMLINK" ]; then
+        echo "    Tip: install udev/99-leviculum.rules for stable /dev/leviculum-* symlinks"
+    fi
+
+    # Write debug port to target/debug-port for tooling (prefer udev symlink)
+    mkdir -p "$TARGET_DIR"
+    if [ -n "$DEBUG_SYMLINK" ]; then
+        echo "$DEBUG_SYMLINK" > "$TARGET_DIR/debug-port"
+    elif [ -n "$DEBUG_PORT" ]; then
+        echo "$DEBUG_PORT" > "$TARGET_DIR/debug-port"
+    fi
 else
-    echo "==> Warning: Device did not enumerate a serial port within 10s." >&2
+    echo "==> Warning: Device did not enumerate serial ports within 10s." >&2
     echo "    Firmware may have crashed, or USB CDC-ACM is not enabled." >&2
 fi
 
-# --- Step 10: Clean up ------------------------------------------------------
+# --- Step 11: Clean up ------------------------------------------------------
 
 rm -f "$BIN_FILE"
 
