@@ -111,16 +111,20 @@ fn test_rust_compress_decompress_roundtrip() {
         let original = hex_decode(&vector.uncompressed_hex);
 
         // Compress with Rust
-        let compressed = compress(&original).expect(&format!(
-            "Failed to compress vector '{}': {}",
-            vector.name, vector.description
-        ));
+        let compressed = compress(&original).unwrap_or_else(|e| {
+            panic!(
+                "Failed to compress vector '{}': {}: {e}",
+                vector.name, vector.description
+            )
+        });
 
         // Decompress with Rust
-        let decompressed = decompress_auto(&compressed, 1024 * 1024).expect(&format!(
-            "Failed to decompress vector '{}': {}",
-            vector.name, vector.description
-        ));
+        let decompressed = decompress_auto(&compressed, 1024 * 1024).unwrap_or_else(|e| {
+            panic!(
+                "Failed to decompress vector '{}': {}: {e}",
+                vector.name, vector.description
+            )
+        });
 
         assert_eq!(
             decompressed, original,

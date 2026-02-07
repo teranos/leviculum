@@ -1469,9 +1469,9 @@ async fn test_concurrent_links_through_relay() {
             Duration::from_secs(10),
         )
         .await
-        .expect(&format!("Should receive proof for link {}", i));
+        .unwrap_or_else(|| panic!("Should receive proof for link {}", i));
         link.process_proof(proof.data.as_slice())
-            .expect(&format!("Proof {} should validate", i));
+            .unwrap_or_else(|_| panic!("Proof {} should validate", i));
         assert_eq!(link.state(), LinkState::Active);
 
         let rtt = link.build_rtt_packet(0.05, &mut OsRng).unwrap();

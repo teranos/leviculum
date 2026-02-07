@@ -623,7 +623,7 @@ async fn test_manager_responder_accept_link() {
 
     // Register destination in manager
     let mut manager = LinkManager::new();
-    manager.register_destination(dest_hash.into());
+    manager.register_destination(dest_hash);
 
     // Wait for daemon to process announce
     tokio::time::sleep(Duration::from_millis(500)).await;
@@ -700,7 +700,7 @@ async fn test_manager_responder_reject_link() {
 
     // Register destination in manager
     let mut manager = LinkManager::new();
-    manager.register_destination(dest_hash.into());
+    manager.register_destination(dest_hash);
 
     tokio::time::sleep(Duration::from_millis(500)).await;
 
@@ -775,7 +775,7 @@ async fn test_manager_responder_data_exchange() {
     let identity = destination.identity().expect("Should have identity");
 
     let mut manager = LinkManager::new();
-    manager.register_destination(dest_hash.into());
+    manager.register_destination(dest_hash);
 
     tokio::time::sleep(Duration::from_millis(500)).await;
 
@@ -887,7 +887,7 @@ async fn test_manager_responder_multiple_incoming() {
     let identity = destination.identity().expect("Should have identity");
 
     let mut manager = LinkManager::new();
-    manager.register_destination(dest_hash.into());
+    manager.register_destination(dest_hash);
 
     tokio::time::sleep(Duration::from_millis(500)).await;
 

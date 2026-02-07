@@ -483,10 +483,7 @@ async fn phase2_link_establishment(network: &mut MultiNodeTestNetwork) {
             )
             .await;
 
-            if announce_info.is_none() {
-                println!("  L1: SKIPPED (Rust-A did not receive announce)");
-            } else {
-                let announce_info = announce_info.unwrap();
+            if let Some(announce_info) = announce_info {
                 println!(
                     "  L1: Rust-A received announce: hops={}, transport_id={:?}",
                     announce_info.hops,
@@ -552,6 +549,8 @@ async fn phase2_link_establishment(network: &mut MultiNodeTestNetwork) {
                 } else {
                     println!("  L1: SKIPPED (proof timeout - star topology routing may differ)");
                 }
+            } else {
+                println!("  L1: SKIPPED (Rust-A did not receive announce)");
             }
         }
     }
@@ -1022,7 +1021,7 @@ async fn phase4_stream_buffer(network: &mut MultiNodeTestNetwork) {
     {
         let total_data = vec![0xABu8; 5000]; // 5KB of data
         let chunk_size = 400; // Typical chunk size
-        let total_chunks = (total_data.len() + chunk_size - 1) / chunk_size;
+        let total_chunks = total_data.len().div_ceil(chunk_size);
 
         let mut received_chunks: Vec<Vec<u8>> = vec![Vec::new(); total_chunks];
 
@@ -1105,7 +1104,7 @@ async fn phase5_proof_strategies(network: &mut MultiNodeTestNetwork) {
 
     // Verify proof strategies can be queried on Rust nodes' links
     println!("Checking link states...");
-    for (name, _link_info) in &network.active_links {
+    for name in network.active_links.keys() {
         println!("  {} - Link active", name);
     }
 

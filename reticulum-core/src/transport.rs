@@ -2597,7 +2597,7 @@ mod tests {
             // First rebroadcast cycle: retries goes 0 -> 1
             transport.clock.advance(10_000);
             transport.poll();
-            assert!(transport.announce_table.get(&dest_hash).is_some());
+            assert!(transport.announce_table.contains_key(&dest_hash));
             if let Some(entry) = transport.announce_table.get(&dest_hash) {
                 assert_eq!(entry.retries, 1);
             }
@@ -2611,7 +2611,7 @@ mod tests {
             transport.poll();
 
             assert!(
-                transport.announce_table.get(&dest_hash).is_none(),
+                !transport.announce_table.contains_key(&dest_hash),
                 "Entry should be removed after exceeding PATHFINDER_RETRIES"
             );
         }
@@ -2676,7 +2676,7 @@ mod tests {
             transport.clock.advance(10_000);
             transport.poll();
 
-            assert!(transport.announce_table.get(&dest_hash).is_none());
+            assert!(!transport.announce_table.contains_key(&dest_hash));
         }
 
         #[test]
@@ -3651,7 +3651,7 @@ mod tests {
             );
 
             // All link table entries should point to interface 1 as next hop
-            for (_link_id, entry) in &transport.link_table {
+            for entry in transport.link_table.values() {
                 assert_eq!(
                     entry.next_hop_interface_index, 1,
                     "Link entry should route toward if1"

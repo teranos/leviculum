@@ -446,7 +446,7 @@ mod tests {
         // Test actual ECDH scenario: sender creates ephemeral, receiver uses ratchet
         let ratchet = Ratchet::generate(&mut OsRng, 1704067200000);
 
-        let ephemeral_private = x25519_dalek::StaticSecret::random_from_rng(&mut OsRng);
+        let ephemeral_private = x25519_dalek::StaticSecret::random_from_rng(OsRng);
         let ephemeral_public = x25519_dalek::PublicKey::from(&ephemeral_private);
 
         // Receiver uses their ratchet private key with sender's ephemeral public
@@ -461,7 +461,7 @@ mod tests {
         assert_eq!(receiver_shared, sender_shared_bytes);
 
         // Test with different ephemeral produces different shared secret
-        let ephemeral_private2 = x25519_dalek::StaticSecret::random_from_rng(&mut OsRng);
+        let ephemeral_private2 = x25519_dalek::StaticSecret::random_from_rng(OsRng);
         let ephemeral_public2 = x25519_dalek::PublicKey::from(&ephemeral_private2);
 
         let receiver_shared2 = ratchet.derive_shared_secret(ephemeral_public2.as_bytes());
