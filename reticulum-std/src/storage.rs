@@ -169,15 +169,6 @@ impl reticulum_core::traits::Storage for Storage {
     }
 }
 
-/// Storage categories used by Reticulum
-pub mod categories {
-    pub const IDENTITIES: &str = "identities";
-    pub const DESTINATIONS: &str = "destinations";
-    pub const RATCHETS: &str = "ratchets";
-    pub const CACHE: &str = "cache";
-    pub const RESOURCES: &str = "resources";
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;

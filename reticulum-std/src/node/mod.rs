@@ -80,6 +80,9 @@ const EVENT_CHANNEL_CAPACITY: usize = 256;
 /// Connection channel capacity
 const CONNECTION_CHANNEL_CAPACITY: usize = 64;
 
+/// Map from link ID to the channel for delivering incoming data to the connection stream
+type ConnectionMap = HashMap<LinkId, mpsc::Sender<Vec<u8>>>;
+
 /// High-level async Reticulum node
 ///
 /// `ReticulumNode` provides an async API for interacting with the Reticulum network.
@@ -90,9 +93,6 @@ pub struct ReticulumNode {
     inner: Arc<Mutex<StdNodeCore>>,
     /// Interface configurations
     interfaces: Vec<InterfaceConfig>,
-    /// Whether transport mode is enabled
-    #[allow(dead_code)]
-    enable_transport: bool,
     /// Event sender for the runner
     event_tx: mpsc::Sender<NodeEvent>,
     /// Event receiver for consuming events
@@ -101,27 +101,17 @@ pub struct ReticulumNode {
     shutdown_tx: Option<watch::Sender<bool>>,
     /// Runner task handle
     runner_handle: Option<tokio::task::JoinHandle<()>>,
-    /// Active connection streams (link_id -> channels)
-    connections: Arc<Mutex<HashMap<LinkId, ConnectionChannels>>>,
+    /// Active connection streams (link_id -> incoming data sender)
+    connections: Arc<Mutex<ConnectionMap>>,
     /// Pending connection requests
     pending_connects: Arc<Mutex<HashMap<[u8; TRUNCATED_HASHBYTES], oneshot::Sender<LinkId>>>>,
     /// Shared outgoing channel sender (cloned to each ConnectionStream)
     outgoing_tx: mpsc::Sender<(LinkId, Vec<u8>)>,
 }
 
-/// Internal channels for a connection (incoming direction only)
-struct ConnectionChannels {
-    /// Incoming data to the stream
-    incoming_tx: mpsc::Sender<Vec<u8>>,
-}
-
 impl ReticulumNode {
     /// Create a new ReticulumNode (internal use - use ReticulumNodeBuilder)
-    pub(crate) fn new(
-        core: StdNodeCore,
-        interfaces: Vec<InterfaceConfig>,
-        enable_transport: bool,
-    ) -> Self {
+    pub(crate) fn new(core: StdNodeCore, interfaces: Vec<InterfaceConfig>) -> Self {
         let (event_tx, event_rx) = mpsc::channel(EVENT_CHANNEL_CAPACITY);
         // Create a dummy outgoing channel; the real one is created in start()
         let (outgoing_tx, _) = mpsc::channel(1);
@@ -129,7 +119,6 @@ impl ReticulumNode {
         Self {
             inner: Arc::new(Mutex::new(core)),
             interfaces,
-            enable_transport,
             event_tx,
             event_rx: Some(event_rx),
             shutdown_tx: None,
@@ -300,7 +289,7 @@ impl ReticulumNode {
         // Register the connection channels
         {
             let mut connections = self.connections.lock().unwrap();
-            connections.insert(link_id, ConnectionChannels { incoming_tx: in_tx });
+            connections.insert(link_id, in_tx);
         }
 
         // Store the oneshot receiver for when connection completes
@@ -372,7 +361,7 @@ async fn run_event_loop(
     inner: Arc<Mutex<StdNodeCore>>,
     mut interface_set: InterfaceSet,
     event_tx: mpsc::Sender<NodeEvent>,
-    connections: Arc<Mutex<HashMap<LinkId, ConnectionChannels>>>,
+    connections: Arc<Mutex<ConnectionMap>>,
     pending_connects: Arc<Mutex<HashMap<[u8; TRUNCATED_HASHBYTES], oneshot::Sender<LinkId>>>>,
     mut outgoing_rx: mpsc::Receiver<(LinkId, Vec<u8>)>,
     mut shutdown: watch::Receiver<bool>,
@@ -483,7 +472,7 @@ fn dispatch_output(
     output: TickOutput,
     interface_set: &mut InterfaceSet,
     event_tx: &mpsc::Sender<NodeEvent>,
-    connections: &Arc<Mutex<HashMap<LinkId, ConnectionChannels>>>,
+    connections: &Arc<Mutex<ConnectionMap>>,
     pending_connects: &Arc<Mutex<HashMap<[u8; TRUNCATED_HASHBYTES], oneshot::Sender<LinkId>>>>,
 ) {
     // Execute I/O actions
@@ -514,7 +503,7 @@ fn dispatch_output(
 /// Handle a node event
 fn handle_event(
     event: &NodeEvent,
-    connections: &Arc<Mutex<HashMap<LinkId, ConnectionChannels>>>,
+    connections: &Arc<Mutex<ConnectionMap>>,
     _pending_connects: &Arc<Mutex<HashMap<[u8; TRUNCATED_HASHBYTES], oneshot::Sender<LinkId>>>>,
 ) {
     match event {
@@ -524,8 +513,8 @@ fn handle_event(
         NodeEvent::DataReceived { link_id, data } => {
             // Forward data to the connection stream
             let conns = connections.lock().unwrap();
-            if let Some(channels) = conns.get(link_id) {
-                if channels.incoming_tx.try_send(data.clone()).is_err() {
+            if let Some(tx) = conns.get(link_id) {
+                if tx.try_send(data.clone()).is_err() {
                     tracing::warn!(
                         "Connection channel full for {:?}, dropping {} bytes",
                         link_id,

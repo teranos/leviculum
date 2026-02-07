@@ -37,6 +37,9 @@ pub const DEFAULT_RETAINED_RATCHETS: usize = 512;
 /// Serialized ratchet size: 32 (private key) + 8 (timestamp)
 const SERIALIZED_RATCHET_SIZE: usize = RATCHET_SIZE + 8;
 
+/// Storage category key for ratchet data
+const RATCHETS_CATEGORY: &str = "ratchets";
+
 /// Error types for ratchet operations
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RatchetError {
@@ -313,14 +316,12 @@ impl KnownRatchets {
     /// - Key: destination_hash (16 bytes)
     /// - Value: ratchet_public (32 bytes) + received_at (8 bytes)
     pub fn save(&self, storage: &mut impl Storage) -> Result<(), RatchetError> {
-        use crate::traits::categories::RATCHETS;
-
         for (dest_hash, (ratchet, received_at)) in &self.cache {
             let mut value = [0u8; RATCHET_SIZE + 8];
             value[..RATCHET_SIZE].copy_from_slice(ratchet);
             value[RATCHET_SIZE..].copy_from_slice(&received_at.to_be_bytes());
 
-            storage.store(RATCHETS, dest_hash.as_bytes(), &value)?;
+            storage.store(RATCHETS_CATEGORY, dest_hash.as_bytes(), &value)?;
         }
 
         Ok(())
@@ -328,11 +329,9 @@ impl KnownRatchets {
 
     /// Load from storage
     pub fn load(storage: &impl Storage) -> Self {
-        use crate::traits::categories::RATCHETS;
-
         let mut cache = BTreeMap::new();
 
-        for key in storage.list_keys(RATCHETS) {
+        for key in storage.list_keys(RATCHETS_CATEGORY) {
             if key.len() != TRUNCATED_HASHBYTES {
                 continue;
             }
@@ -341,7 +340,7 @@ impl KnownRatchets {
             dest_bytes.copy_from_slice(&key);
             let dest_hash = DestinationHash::new(dest_bytes);
 
-            if let Some(value) = storage.load(RATCHETS, &key) {
+            if let Some(value) = storage.load(RATCHETS_CATEGORY, &key) {
                 if value.len() == RATCHET_SIZE + 8 {
                     let mut ratchet = [0u8; RATCHET_SIZE];
                     ratchet.copy_from_slice(&value[..RATCHET_SIZE]);

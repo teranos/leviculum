@@ -233,20 +233,6 @@ impl Storage for NoStorage {
     }
 }
 
-/// Storage categories used by the protocol
-pub mod categories {
-    /// Stored identities (private keys)
-    pub const IDENTITIES: &str = "identities";
-    /// Known destinations (from announces)
-    pub const DESTINATIONS: &str = "destinations";
-    /// Learned network paths
-    pub const PATHS: &str = "paths";
-    /// Ratchet keys for forward secrecy
-    pub const RATCHETS: &str = "ratchets";
-    /// Cached data (packet dedup, etc.)
-    pub const CACHE: &str = "cache";
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
