@@ -12,7 +12,7 @@
 //! cargo run --example echo_server
 //! ```
 
-use reticulum_std::node::ReticulumNodeBuilder;
+use reticulum_std::driver::ReticulumNodeBuilder;
 use reticulum_std::NodeEvent;
 
 #[tokio::main]

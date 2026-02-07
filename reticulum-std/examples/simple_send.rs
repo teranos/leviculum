@@ -14,7 +14,7 @@
 
 use std::time::Duration;
 
-use reticulum_std::node::ReticulumNodeBuilder;
+use reticulum_std::driver::ReticulumNodeBuilder;
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {

@@ -14,7 +14,7 @@
 use std::time::Duration;
 
 use reticulum_core::constants::TRUNCATED_HASHBYTES;
-use reticulum_std::node::ReticulumNodeBuilder;
+use reticulum_std::driver::ReticulumNodeBuilder;
 
 use crate::common::wait_for_path_on_daemon;
 use crate::harness::TestDaemon;

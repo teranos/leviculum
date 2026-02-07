@@ -11,7 +11,7 @@
 //! cargo run --example relay_daemon -- 127.0.0.1:4242
 //! ```
 
-use reticulum_std::node::ReticulumNodeBuilder;
+use reticulum_std::driver::ReticulumNodeBuilder;
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {

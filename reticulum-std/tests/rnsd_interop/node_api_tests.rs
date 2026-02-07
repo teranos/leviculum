@@ -15,7 +15,7 @@ use std::time::Duration;
 
 use tokio::time::timeout;
 
-use reticulum_std::node::ReticulumNodeBuilder;
+use reticulum_std::driver::ReticulumNodeBuilder;
 use reticulum_std::NodeEvent;
 
 use crate::harness::TestDaemon;

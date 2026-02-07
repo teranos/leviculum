@@ -33,8 +33,8 @@ use reticulum_core::packet::{Packet, PacketType};
 use reticulum_core::traits::{Clock, NoStorage};
 use reticulum_core::transport::{Transport, TransportConfig, TransportEvent};
 use reticulum_core::DestinationHash;
+use reticulum_std::driver::ReticulumNodeBuilder;
 use reticulum_std::interfaces::hdlc::{DeframeResult, Deframer};
-use reticulum_std::node::ReticulumNodeBuilder;
 use reticulum_std::NodeEvent;
 
 use crate::common::*;

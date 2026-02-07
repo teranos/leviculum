@@ -21,7 +21,7 @@ use super::ReticulumNode;
 /// # Example
 ///
 /// ```no_run
-/// use reticulum_std::node::ReticulumNodeBuilder;
+/// use reticulum_std::driver::ReticulumNodeBuilder;
 ///
 /// # async fn example() -> Result<(), Box<dyn std::error::Error>> {
 /// let node = ReticulumNodeBuilder::new()

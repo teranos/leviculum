@@ -280,6 +280,7 @@ Production-ready: QA, zusätzliche Interfaces, Dokumentation.
 - [ ] Fuzzing der Paket-Parser
 - [ ] Dokumentation vervollständigen
 - [x] CI/CD-Pipeline mit no_std-Checks
+- [ ] Fix incomplete `pending_connects` lifecycle in std driver (entries are inserted during connect() but never removed on establishment or timeout — oneshot receiver is fire-and-forget)
 - [x] `LinkId` Newtype (Typ-Sicherheit statt `[u8; 16]` Alias)
 - [x] `DestinationHash` Newtype (analog zu `LinkId`, verhindert Verwechslung von Link-IDs und Destination-Hashes)
 - [x] `LinkId::Deref` entfernen (nach `DestinationHash`-Migration, für vollständige Typ-Sicherheit)

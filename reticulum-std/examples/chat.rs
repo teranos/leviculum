@@ -19,7 +19,7 @@
 
 use std::io::{self, BufRead, Write};
 
-use reticulum_std::node::ReticulumNodeBuilder;
+use reticulum_std::driver::ReticulumNodeBuilder;
 use reticulum_std::NodeEvent;
 
 #[tokio::main]

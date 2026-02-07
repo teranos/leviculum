@@ -1,8 +1,8 @@
-//! High-level async node API for Reticulum
+//! Sans-I/O driver for Reticulum
 //!
-//! This module provides `ReticulumNode`, a high-level async API for interacting
-//! with the Reticulum network. It wraps the no_std `NodeCore` from reticulum-core
-//! and provides async/await methods for common operations.
+//! This module provides `ReticulumNode`, the async I/O driver that bridges the
+//! pure state machine (`NodeCore` from reticulum-core) with actual network
+//! interfaces. It owns the interfaces and dispatches `Action` values.
 //!
 //! # Architecture (Sans-I/O)
 //!
@@ -21,7 +21,7 @@
 //! # Example
 //!
 //! ```no_run
-//! use reticulum_std::node::ReticulumNodeBuilder;
+//! use reticulum_std::driver::ReticulumNodeBuilder;
 //!
 //! #[tokio::main]
 //! async fn main() -> Result<(), Box<dyn std::error::Error>> {

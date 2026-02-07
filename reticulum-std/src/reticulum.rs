@@ -8,8 +8,8 @@ use reticulum_core::node::NodeEvent;
 use tokio::sync::mpsc;
 
 use crate::config::Config;
+use crate::driver::{ReticulumNode, ReticulumNodeBuilder};
 use crate::error::Result;
-use crate::node::{ReticulumNode, ReticulumNodeBuilder};
 
 /// Main Reticulum instance
 ///

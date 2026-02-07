@@ -14,9 +14,9 @@
 
 pub mod clock;
 pub mod config;
+pub mod driver;
 pub mod error;
 pub mod interfaces;
-pub mod node;
 pub mod reticulum;
 pub mod storage;
 
@@ -25,8 +25,8 @@ pub use reticulum_core::*;
 
 pub use clock::SystemClock;
 pub use config::{Config, InterfaceConfig, ReticulumConfig};
+pub use driver::{ConnectionStream, ReticulumNode, ReticulumNodeBuilder, StdNodeCore};
 pub use error::{Error, Result};
 pub use interfaces::TcpClientInterface;
-pub use node::{ConnectionStream, ReticulumNode, ReticulumNodeBuilder, StdNodeCore};
 pub use reticulum::Reticulum;
 pub use storage::Storage;

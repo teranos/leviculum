@@ -23,7 +23,7 @@ use reticulum_core::link::LinkId;
 /// # Example
 ///
 /// ```no_run
-/// # use reticulum_std::node::{ReticulumNodeBuilder, ConnectionStream};
+/// # use reticulum_std::driver::{ReticulumNodeBuilder, ConnectionStream};
 /// # async fn example() -> Result<(), Box<dyn std::error::Error>> {
 /// # let node = ReticulumNodeBuilder::new().build().await?;
 /// # let dest_hash = reticulum_core::DestinationHash::new([0; 16]);
