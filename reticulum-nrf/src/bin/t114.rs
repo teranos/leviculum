@@ -10,7 +10,7 @@ extern crate alloc;
 
 use defmt::info;
 use embassy_executor::Spawner;
-use embassy_nrf::gpio::Level;
+use embassy_nrf::gpio::{Level, Output};
 use embassy_time::Timer;
 use {defmt_rtt as _, panic_probe as _};
 
@@ -29,6 +29,9 @@ async fn main(_spawner: Spawner) {
     let v: alloc::vec::Vec<u8> = alloc::vec![1, 2, 3];
     info!("Heap OK: allocated {} bytes", v.len());
 
+    // Disable VEXT power rail — cuts power to NeoPixel LEDs and external peripherals
+    let _vext = Output::new(p.P0_21, Level::Low, embassy_nrf::gpio::OutputDrive::Standard);
+
     let mut led = t114::led(p.P1_03);
 
     loop {
@@ -36,6 +39,6 @@ async fn main(_spawner: Spawner) {
         led.set_level(Level::Low);
         Timer::after_millis(100).await;
         led.set_level(Level::High);
-        Timer::after_millis(900).await;
+        Timer::after_millis(500).await;
     }
 }
