@@ -16,6 +16,10 @@ use reticulum_core::link::LinkId;
 /// ConnectionStream provides async read/write operations for a connection.
 /// It implements tokio's AsyncRead and AsyncWrite traits.
 ///
+/// All outgoing data is tagged with the stream's `LinkId` and sent through
+/// a shared channel back to the event loop, which dispatches it to the
+/// appropriate link via `NodeCore::send_on_connection()`.
+///
 /// # Example
 ///
 /// ```no_run
@@ -39,8 +43,8 @@ use reticulum_core::link::LinkId;
 pub struct ConnectionStream {
     /// Link ID for this connection
     link_id: LinkId,
-    /// Channel for outgoing data
-    outgoing_tx: mpsc::Sender<Vec<u8>>,
+    /// Channel for outgoing data (shared, tagged with LinkId)
+    outgoing_tx: mpsc::Sender<(LinkId, Vec<u8>)>,
     /// Channel for incoming data
     incoming_rx: mpsc::Receiver<Vec<u8>>,
     /// Buffer for partial reads
@@ -55,7 +59,7 @@ impl ConnectionStream {
     /// Create a new ConnectionStream
     pub(crate) fn new(
         link_id: LinkId,
-        outgoing_tx: mpsc::Sender<Vec<u8>>,
+        outgoing_tx: mpsc::Sender<(LinkId, Vec<u8>)>,
         incoming_rx: mpsc::Receiver<Vec<u8>>,
     ) -> Self {
         Self {
@@ -87,7 +91,7 @@ impl ConnectionStream {
         }
 
         self.outgoing_tx
-            .send(data.to_vec())
+            .send((self.link_id, data.to_vec()))
             .await
             .map_err(|_| io::Error::new(io::ErrorKind::BrokenPipe, "send channel closed"))
     }
@@ -186,8 +190,8 @@ impl AsyncWrite for ConnectionStream {
                 Poll::Pending
             }
             _ => {
-                // Try to send
-                match self.outgoing_tx.try_send(buf.to_vec()) {
+                // Try to send (tagged with LinkId)
+                match self.outgoing_tx.try_send((self.link_id, buf.to_vec())) {
                     Ok(()) => Poll::Ready(Ok(buf.len())),
                     Err(mpsc::error::TrySendError::Full(_)) => {
                         cx.waker().wake_by_ref();
@@ -227,7 +231,8 @@ mod tests {
 
         // Test send
         stream.send(b"hello").await.unwrap();
-        let sent = out_rx.recv().await.unwrap();
+        let (recv_link_id, sent) = out_rx.recv().await.unwrap();
+        assert_eq!(recv_link_id, LinkId::from(link_id));
         assert_eq!(sent, b"hello");
 
         // Test recv

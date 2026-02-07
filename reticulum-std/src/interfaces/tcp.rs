@@ -7,8 +7,9 @@
 //! matching Python Reticulum's `TCPClientInterface`.
 
 use std::collections::VecDeque;
-use std::io::{self, Read, Write};
-use std::net::{TcpStream, ToSocketAddrs};
+use std::io;
+use std::net::ToSocketAddrs;
+use std::task::{Context, Poll};
 use std::time::Duration;
 
 use reticulum_core::constants::{MTU, TRUNCATED_HASHBYTES};
@@ -28,8 +29,8 @@ pub struct TcpClientInterface {
     name: String,
     /// Unique hash for routing
     hash: [u8; TRUNCATED_HASHBYTES],
-    /// TCP connection
-    stream: TcpStream,
+    /// TCP connection (tokio async stream)
+    stream: tokio::net::TcpStream,
     /// HDLC deframer for incoming data
     deframer: Deframer,
     /// Queue of complete deframed packets waiting to be returned by recv()
@@ -44,6 +45,10 @@ pub struct TcpClientInterface {
 
 impl TcpClientInterface {
     /// Connect to a TCP server
+    ///
+    /// Uses a synchronous connect with timeout, then converts to tokio TcpStream.
+    /// This keeps construction synchronous for compatibility with the existing
+    /// `initialize_interfaces` flow and interop tests.
     ///
     /// # Arguments
     /// * `name` - Human-readable name for logging
@@ -60,9 +65,11 @@ impl TcpClientInterface {
             .next()
             .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "no addresses found"))?;
 
-        let stream = TcpStream::connect_timeout(&addr, connect_timeout)?;
-        stream.set_nonblocking(true)?;
-        stream.set_nodelay(true)?;
+        // Use std connect_timeout, then convert to tokio
+        let std_stream = std::net::TcpStream::connect_timeout(&addr, connect_timeout)?;
+        std_stream.set_nonblocking(true)?;
+        std_stream.set_nodelay(true)?;
+        let stream = tokio::net::TcpStream::from_std(std_stream)?;
 
         // Compute interface hash from name
         let hash = truncated_hash(name.as_bytes());
@@ -81,14 +88,16 @@ impl TcpClientInterface {
 
     /// Create from an already-connected TCP stream (e.g. from `TcpListener::accept()`)
     ///
-    /// Sets the stream to non-blocking mode and enables TCP_NODELAY.
+    /// Sets the stream to non-blocking mode and enables TCP_NODELAY,
+    /// then converts to a tokio TcpStream.
     ///
     /// # Arguments
     /// * `name` - Human-readable name for logging
-    /// * `stream` - An already-connected `TcpStream`
-    pub fn from_stream(name: &str, stream: TcpStream) -> io::Result<Self> {
+    /// * `stream` - An already-connected `std::net::TcpStream`
+    pub fn from_stream(name: &str, stream: std::net::TcpStream) -> io::Result<Self> {
         stream.set_nonblocking(true)?;
         stream.set_nodelay(true)?;
+        let stream = tokio::net::TcpStream::from_std(stream)?;
         let hash = truncated_hash(name.as_bytes());
         Ok(Self {
             name: name.to_string(),
@@ -102,21 +111,10 @@ impl TcpClientInterface {
         })
     }
 
-    /// Try to dequeue a packet from the receive queue into the provided buffer.
-    /// Returns Some(Ok(len)) if a packet was dequeued, Some(Err) on error, None if queue is empty.
-    fn try_dequeue(&mut self, buf: &mut [u8]) -> Option<Result<usize, InterfaceError>> {
-        let packet = self.recv_queue.pop_front()?;
-        if packet.len() > buf.len() {
-            return Some(Err(InterfaceError::BufferTooSmall));
-        }
-        buf[..packet.len()].copy_from_slice(&packet);
-        Some(Ok(packet.len()))
-    }
-
-    /// Try to read from the socket and deframe any complete packets
-    fn poll_read(&mut self) {
+    /// Try to read from the socket using non-blocking try_read and deframe packets
+    fn poll_read_sync(&mut self) {
         loop {
-            match self.stream.read(&mut self.read_buf) {
+            match self.stream.try_read(&mut self.read_buf) {
                 Ok(0) => {
                     // Connection closed
                     self.online = false;
@@ -137,6 +135,66 @@ impl TcpClientInterface {
                     self.online = false;
                     break;
                 }
+            }
+        }
+    }
+
+    /// Poll for the next complete deframed packet (async)
+    ///
+    /// Registers waker with tokio for socket readability. Returns `Poll::Ready`
+    /// when a complete HDLC frame is available, or `Poll::Pending` if the socket
+    /// has no data yet.
+    pub fn poll_recv_packet(
+        &mut self,
+        cx: &mut Context<'_>,
+    ) -> Poll<Result<Vec<u8>, InterfaceError>> {
+        // Return queued frame immediately
+        if let Some(frame) = self.recv_queue.pop_front() {
+            return Poll::Ready(Ok(frame));
+        }
+        if !self.online {
+            return Poll::Ready(Err(InterfaceError::Disconnected));
+        }
+        // Poll socket readability, read + deframe
+        loop {
+            match self.stream.poll_read_ready(cx) {
+                Poll::Ready(Ok(())) => {
+                    match self.stream.try_read(&mut self.read_buf) {
+                        Ok(0) => {
+                            self.online = false;
+                            return Poll::Ready(Err(InterfaceError::Disconnected));
+                        }
+                        Ok(n) => {
+                            let results = self.deframer.process(&self.read_buf[..n]);
+                            for r in results {
+                                if let DeframeResult::Frame(data) = r {
+                                    self.recv_queue.push_back(data);
+                                }
+                            }
+                            if let Some(frame) = self.recv_queue.pop_front() {
+                                return Poll::Ready(Ok(frame));
+                            }
+                            // Got bytes but no complete frame — try reading more
+                            continue;
+                        }
+                        Err(ref e) if e.kind() == io::ErrorKind::WouldBlock => {
+                            // Socket not actually ready — loop back to
+                            // poll_read_ready to register waker for next
+                            // readiness notification (required by tokio's
+                            // edge-triggered I/O model).
+                            continue;
+                        }
+                        Err(_) => {
+                            self.online = false;
+                            return Poll::Ready(Err(InterfaceError::Disconnected));
+                        }
+                    }
+                }
+                Poll::Ready(Err(_)) => {
+                    self.online = false;
+                    return Poll::Ready(Err(InterfaceError::Disconnected));
+                }
+                Poll::Pending => return Poll::Pending,
             }
         }
     }
@@ -162,8 +220,9 @@ impl Interface for TcpClientInterface {
 
         frame(data, &mut self.frame_buf);
 
-        match self.stream.write_all(&self.frame_buf) {
-            Ok(()) => Ok(()),
+        match self.stream.try_write(&self.frame_buf) {
+            Ok(n) if n == self.frame_buf.len() => Ok(()),
+            Ok(_) => Err(InterfaceError::WouldBlock), // Partial write
             Err(ref e) if e.kind() == io::ErrorKind::WouldBlock => Err(InterfaceError::WouldBlock),
             Err(_) => {
                 self.online = false;
@@ -178,16 +237,27 @@ impl Interface for TcpClientInterface {
         }
 
         // If we have queued packets, return the first one
-        if let Some(result) = self.try_dequeue(buf) {
-            return result;
+        if let Some(packet) = self.recv_queue.pop_front() {
+            if packet.len() > buf.len() {
+                return Err(InterfaceError::BufferTooSmall);
+            }
+            buf[..packet.len()].copy_from_slice(&packet);
+            return Ok(packet.len());
         }
 
-        // Try to read more from the socket
-        self.poll_read();
+        // Try to read more from the socket (non-blocking)
+        self.poll_read_sync();
 
         // Check again after reading
-        self.try_dequeue(buf)
-            .unwrap_or(Err(InterfaceError::WouldBlock))
+        if let Some(packet) = self.recv_queue.pop_front() {
+            if packet.len() > buf.len() {
+                return Err(InterfaceError::BufferTooSmall);
+            }
+            buf[..packet.len()].copy_from_slice(&packet);
+            Ok(packet.len())
+        } else {
+            Err(InterfaceError::WouldBlock)
+        }
     }
 
     fn is_online(&self) -> bool {
@@ -200,7 +270,6 @@ impl Interface for TcpClientInterface {
 
     fn down(&mut self) -> Result<(), InterfaceError> {
         self.online = false;
-        let _ = self.stream.shutdown(std::net::Shutdown::Both);
         Ok(())
     }
 }
@@ -217,13 +286,13 @@ mod tests {
         assert!(result.is_err());
     }
 
-    #[test]
-    fn test_from_stream() {
+    #[tokio::test]
+    async fn test_from_stream() {
         // Start a listener, connect, then wrap the accepted stream
         let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
         let addr = listener.local_addr().unwrap();
 
-        let client = TcpStream::connect(addr).unwrap();
+        let client = std::net::TcpStream::connect(addr).unwrap();
         let (server_stream, _peer) = listener.accept().unwrap();
 
         let iface = TcpClientInterface::from_stream("test_server", server_stream).unwrap();

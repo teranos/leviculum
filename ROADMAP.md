@@ -33,6 +33,8 @@ Das Projekt hat Phase 1 vollständig abgeschlossen und Phase 2 ist zu ~95% ferti
 
 **Sans-I/O-Architektur abgeschlossen:** `reticulum-core` ist jetzt ein reiner Zustandsautomat ohne jegliche direkte I/O-Operationen. `NodeCore` nimmt eingehende Pakete via `handle_packet()` entgegen und gibt `Action`-Werte (`SendPacket`, `Broadcast`) zurück, die der Treiber ausführt. Der Treiber in `reticulum-std` besitzt die Interfaces, liest Pakete, speist sie in den Core, und dispatcht die resultierenden Actions. `TransportRunner` wurde entfernt; `ReticulumNode` ist der einheitliche Treiber. Diese Architektur ermöglicht den Einsatz auf Embedded-Plattformen ohne `std`.
 
+**Async Event Loop (v0.3.2):** Die Event-Loop in `reticulum-std` nutzt jetzt `tokio::select!` statt 50ms-Polling. Der Treiber wacht sofort auf bei Socket-Lesbarkeit, ausgehenden Daten oder Timer-Ablauf — ohne Latenz-Overhead und mit minimalem CPU-Verbrauch im Leerlauf. Interfaces werden über ein konkretes `AnyInterface`-Enum (statt Trait-Objekte) mit `InterfaceSet` verwaltet.
+
 **Deferred-Dispatch-Modell (v0.3.1):** Applikationsmethoden (`connect()`, `accept_connection()`, `send_on_connection()`) routen Pakete jetzt intern über das Action-System statt rohe Bytes zurückzugeben. Actions werden beim nächsten `handle_packet()`/`handle_timeout()` geflusht. `Link.attached_interface` (analog zu Python) steuert das Routing für Link-gebundenen Verkehr.
 
 **Architektur-Migration abgeschlossen:** `NodeCore` besitzt RNG intern als generischen Parameter (`NodeCore<R, C, S>`). Alle Runtime-Methoden (`handle_packet()`, `connect()`, etc.) benötigen keinen `Context`-Parameter mehr. Die `Context`-Trait-Abstraktion wurde vollständig entfernt — Funktionen nehmen direkt `rng: &mut R` und `now_ms: u64` als Parameter. Alle `#[cfg(feature = "alloc")]` wurden entfernt — `alloc` ist immer verfügbar. Das `std` Feature aktiviert nur noch optimierte Crypto-Implementierungen.
@@ -56,7 +58,7 @@ Das Projekt hat Phase 1 vollständig abgeschlossen und Phase 2 ist zu ~95% ferti
 | Transport Layer (Routing, Pfade, Announces, Relay) | ✅ Fertig | 3.676 |
 | HDLC-Framing (no_std + alloc) | ✅ Fertig | 577 |
 | Interface-Traits + TCP-Client | ✅ Fertig | 623 |
-| Sans-I/O Driver (tokio-Wrapper) | ✅ Fertig | 224 |
+| Sans-I/O Driver (async select!, kein Polling) | ✅ Fertig | 224 |
 | Reticulum-Instanz + Config + Storage | ✅ Fertig | 597 |
 | FFI/C-API | ✅ Grundfunktionen | 361 |
 | Tests (Rust + C) | | ~19.700 |
@@ -966,6 +968,6 @@ Für spätere Versionen:
 
 ---
 
-*Stand: 6. Februar 2026*
+*Stand: 7. Februar 2026*
 *Projekt: leviculum*
 *Lizenz: MIT*

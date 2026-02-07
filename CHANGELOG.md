@@ -5,6 +5,18 @@ All notable changes to this project will be documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.3.2] - 2026-02-07
+
+### Changed
+- **Event loop rewritten with async `select!`** — replaces 50ms polling with immediate wakeup on socket readability, outgoing data, or timer expiry; eliminates up to 50ms latency per packet and reduces idle CPU usage
+- `TcpClientInterface` now uses `tokio::net::TcpStream` instead of `std::net::TcpStream`, enabling async readability notification via `poll_recv_packet()`
+- Interface dispatch uses concrete `AnyInterface` enum and `InterfaceSet` instead of `Vec<Box<dyn Interface + Send>>` trait objects
+- `ConnectionStream` outgoing channel is now shared (`mpsc::Sender<(LinkId, Vec<u8>)>`) instead of per-connection, waking the event loop immediately when data is sent
+
+### Removed
+- `DEFAULT_POLL_INTERVAL_MS` constant (no longer needed — event loop wakes on demand)
+- `process_outgoing()` function (outgoing data now handled via dedicated `select!` branch)
+
 ## [0.3.1] - 2026-02-06
 
 ### Added
@@ -366,7 +378,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Transport layer (routing, paths, deduplication)
 - Full interoperability with Python rnsd
 
-[Unreleased]: https://codeberg.org/Lew_Palm/leviculum/compare/v0.3.1...HEAD
+[Unreleased]: https://codeberg.org/Lew_Palm/leviculum/compare/v0.3.2...HEAD
+[0.3.2]: https://codeberg.org/Lew_Palm/leviculum/compare/v0.3.1...v0.3.2
 [0.3.1]: https://codeberg.org/Lew_Palm/leviculum/compare/v0.3.0...v0.3.1
 [0.3.0]: https://codeberg.org/Lew_Palm/leviculum/compare/v0.2.9...v0.3.0
 [0.2.9]: https://codeberg.org/Lew_Palm/leviculum/compare/v0.2.8...v0.2.9
