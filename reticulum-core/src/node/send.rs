@@ -101,7 +101,7 @@ pub enum RoutingDecision {
 ///
 /// # Returns
 /// The routing decision to use
-pub fn decide_routing(
+pub(super) fn decide_routing(
     data_len: usize,
     reliable: bool,
     prefer_existing: bool,

@@ -148,7 +148,7 @@ impl Config {
 mod dirs {
     use std::path::PathBuf;
 
-    pub fn home_dir() -> Option<PathBuf> {
+    pub(super) fn home_dir() -> Option<PathBuf> {
         std::env::var_os("HOME").map(PathBuf::from)
     }
 }

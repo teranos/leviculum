@@ -80,6 +80,7 @@
 //! [`traits`], [`constants`]
 
 #![no_std]
+#![warn(unreachable_pub)]
 
 extern crate alloc;
 

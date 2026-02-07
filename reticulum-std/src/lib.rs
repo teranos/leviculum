@@ -10,13 +10,14 @@
 //! Use reticulum-core for the no_std compatible core functionality,
 //! including the buffer system types (RawChannelReader, RawChannelWriter).
 
+#![warn(unreachable_pub)]
+
 pub mod clock;
 pub mod config;
 pub mod error;
 pub mod interfaces;
 pub mod node;
 pub mod reticulum;
-pub mod runtime;
 pub mod storage;
 
 // Re-export all core types and modules
@@ -28,5 +29,4 @@ pub use error::{Error, Result};
 pub use interfaces::TcpClientInterface;
 pub use node::{ConnectionStream, ReticulumNode, ReticulumNodeBuilder, StdNodeCore};
 pub use reticulum::Reticulum;
-pub use runtime::StdTransport;
 pub use storage::Storage;

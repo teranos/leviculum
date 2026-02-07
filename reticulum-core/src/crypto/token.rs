@@ -40,7 +40,7 @@ impl core::fmt::Display for TokenError {
 }
 
 /// Minimum token size: IV (16) + at least one block (16) + HMAC (32) = 64 bytes
-pub const MIN_TOKEN_SIZE: usize = AES_BLOCK_SIZE + AES_BLOCK_SIZE + HMAC_SIZE;
+pub(crate) const MIN_TOKEN_SIZE: usize = AES_BLOCK_SIZE + AES_BLOCK_SIZE + HMAC_SIZE;
 
 /// Encrypt data to a token
 ///

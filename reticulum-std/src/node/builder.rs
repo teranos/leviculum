@@ -184,13 +184,12 @@ impl ReticulumNodeBuilder {
         interfaces.extend(self.interfaces);
 
         // Build NodeCore directly from the core builder
-        let enable_transport = self.core_builder.is_transport_enabled();
         let node_core = self
             .core_builder
             .build(rand_core::OsRng, clock, storage)
             .map_err(|e| Error::Transport(format!("{:?}", e)))?;
 
-        Ok(ReticulumNode::new(node_core, interfaces, enable_transport))
+        Ok(ReticulumNode::new(node_core, interfaces))
     }
 
     /// Build the ReticulumNode
@@ -231,13 +230,12 @@ impl ReticulumNodeBuilder {
         interfaces.extend(self.interfaces);
 
         // Build NodeCore directly from the core builder
-        let enable_transport = self.core_builder.is_transport_enabled();
         let node_core = self
             .core_builder
             .build(rand_core::OsRng, clock, storage)
             .map_err(|e| Error::Transport(format!("{:?}", e)))?;
 
-        Ok(ReticulumNode::new(node_core, interfaces, enable_transport))
+        Ok(ReticulumNode::new(node_core, interfaces))
     }
 }
 

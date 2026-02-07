@@ -179,11 +179,6 @@ impl<R: CryptoRngCore, C: Clock, S: Storage> NodeCore<R, C, S> {
         }
     }
 
-    /// Create a NodeCore builder for fluent configuration
-    pub fn builder() -> NodeCoreBuilder {
-        NodeCoreBuilder::new()
-    }
-
     // ─── Destination Management ────────────────────────────────────────────────
 
     /// Register a destination to receive packets and/or connections
@@ -762,29 +757,9 @@ impl<R: CryptoRngCore, C: Clock, S: Storage> NodeCore<R, C, S> {
         self.transport.stats().clone()
     }
 
-    /// Get the number of links being relayed through this node
-    pub fn relayed_link_count(&self) -> usize {
-        self.transport.link_table_count()
-    }
-
     /// Access the underlying transport (for advanced use cases)
     pub fn transport(&self) -> &Transport<C, S> {
         &self.transport
-    }
-
-    /// Access the underlying transport mutably
-    pub fn transport_mut(&mut self) -> &mut Transport<C, S> {
-        &mut self.transport
-    }
-
-    /// Access the underlying link manager (for advanced use cases)
-    pub fn link_manager(&self) -> &LinkManager {
-        &self.link_manager
-    }
-
-    /// Access the underlying link manager mutably
-    pub fn link_manager_mut(&mut self) -> &mut LinkManager {
-        &mut self.link_manager
     }
 
     // ─── Internal: Event Handling ──────────────────────────────────────────────

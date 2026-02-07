@@ -492,6 +492,18 @@ impl<C: Clock, S: Storage> Transport<C, S> {
         }
     }
 
+    /// Number of pending events (test-only)
+    #[cfg(test)]
+    pub fn pending_events(&self) -> usize {
+        self.events.len()
+    }
+
+    /// Number of pending I/O actions (test-only)
+    #[cfg(test)]
+    pub fn pending_action_count(&self) -> usize {
+        self.pending_actions.len()
+    }
+
     // ─── Destination Management ─────────────────────────────────────────
 
     /// Register a destination to receive packets
@@ -532,27 +544,6 @@ impl<C: Clock, S: Storage> Transport<C, S> {
                 identity,
             },
         );
-    }
-
-    /// Set the proof strategy for an existing destination
-    ///
-    /// # Arguments
-    /// * `hash` - The destination hash
-    /// * `strategy` - The new proof strategy
-    ///
-    /// # Returns
-    /// `true` if the destination exists and was updated
-    pub fn set_destination_proof_strategy(
-        &mut self,
-        hash: &[u8; TRUNCATED_HASHBYTES],
-        strategy: ProofStrategy,
-    ) -> bool {
-        if let Some(entry) = self.destinations.get_mut(hash) {
-            entry.proof_strategy = strategy;
-            true
-        } else {
-            false
-        }
     }
 
     /// Unregister a destination
@@ -638,11 +629,6 @@ impl<C: Clock, S: Storage> Transport<C, S> {
         truncated_hash: &[u8; TRUNCATED_HASHBYTES],
     ) -> Option<&PacketReceipt> {
         self.receipts.get(truncated_hash)
-    }
-
-    /// Get the number of pending receipts
-    pub fn receipt_count(&self) -> usize {
-        self.receipts.len()
     }
 
     /// Send a proof for a received packet
@@ -789,11 +775,6 @@ impl<C: Clock, S: Storage> Transport<C, S> {
         self.events.drain(..)
     }
 
-    /// Number of pending events
-    pub fn pending_events(&self) -> usize {
-        self.events.len()
-    }
-
     // ─── Actions (Sans-I/O) ─────────────────────────────────────────────
 
     /// Drain pending I/O actions
@@ -802,11 +783,6 @@ impl<C: Clock, S: Storage> Transport<C, S> {
     /// The driver should execute these (send packets on interfaces).
     pub fn drain_actions(&mut self) -> Vec<Action> {
         core::mem::take(&mut self.pending_actions)
-    }
-
-    /// Number of pending I/O actions
-    pub fn pending_action_count(&self) -> usize {
-        self.pending_actions.len()
     }
 
     /// Compute the earliest deadline across all transport-layer timers
@@ -884,16 +860,6 @@ impl<C: Clock, S: Storage> Transport<C, S> {
     /// Access the clock
     pub fn clock(&self) -> &C {
         &self.clock
-    }
-
-    /// Number of active entries in the link relay table
-    pub fn link_table_count(&self) -> usize {
-        self.link_table.len()
-    }
-
-    /// Number of pending announce rebroadcasts
-    pub fn announce_table_count(&self) -> usize {
-        self.announce_table.len()
     }
 
     /// Read-only access to the path table (for sans-I/O deadline computation)

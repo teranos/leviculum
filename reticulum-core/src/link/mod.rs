@@ -1005,16 +1005,6 @@ impl Link {
         }
     }
 
-    /// Require that we are the initiator (client side)
-    #[allow(dead_code)]
-    fn require_initiator(&self) -> Result<(), LinkError> {
-        if self.initiator {
-            Ok(())
-        } else {
-            Err(LinkError::InvalidState)
-        }
-    }
-
     /// Require that we are the responder (server side)
     fn require_responder(&self) -> Result<(), LinkError> {
         if !self.initiator {

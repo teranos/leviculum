@@ -10,6 +10,7 @@
 //! - Memory allocated by the library must be freed using the corresponding free function
 
 #![allow(clippy::missing_safety_doc)]
+#![warn(unreachable_pub)]
 
 use std::ffi::CString;
 use std::os::raw::{c_char, c_int};
