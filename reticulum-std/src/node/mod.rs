@@ -412,7 +412,7 @@ async fn run_event_loop(
                         );
                     }
                     Err(_) => {
-                        tracing::warn!("Interface {} disconnected", iface_id);
+                        tracing::warn!("Interface {} ({}) disconnected", iface_id, interface_set.name_of(iface_id));
                         let output = {
                             let mut core = inner.lock().unwrap();
                             core.handle_interface_down(iface_id)
@@ -432,10 +432,14 @@ async fn run_event_loop(
             Some((link_id, data)) = outgoing_rx.recv() => {
                 let output = {
                     let mut core = inner.lock().unwrap();
-                    let _ = core.send_on_connection(&link_id, &data);
+                    if let Err(e) = core.send_on_connection(&link_id, &data) {
+                        tracing::debug!("send_on_connection failed for {:?}: {}", link_id, e);
+                    }
                     // Drain any more queued messages before flushing
                     while let Ok((lid, d)) = outgoing_rx.try_recv() {
-                        let _ = core.send_on_connection(&lid, &d);
+                        if let Err(e) = core.send_on_connection(&lid, &d) {
+                            tracing::debug!("send_on_connection failed for {:?}: {}", lid, e);
+                        }
                     }
                     core.handle_timeout() // flush deferred actions
                 };
@@ -522,7 +526,11 @@ fn handle_event(
             let conns = connections.lock().unwrap();
             if let Some(channels) = conns.get(link_id) {
                 if channels.incoming_tx.try_send(data.clone()).is_err() {
-                    tracing::warn!("Connection channel full, dropping data");
+                    tracing::warn!(
+                        "Connection channel full for {:?}, dropping {} bytes",
+                        link_id,
+                        data.len()
+                    );
                 }
             }
         }

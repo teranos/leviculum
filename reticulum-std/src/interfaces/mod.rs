@@ -140,6 +140,14 @@ impl InterfaceSet {
         }
     }
 
+    /// Get the name of an interface by ID, or "unknown" if not found
+    pub fn name_of(&self, iface: InterfaceId) -> &str {
+        self.interfaces
+            .get(iface.0)
+            .map(|(_, i)| i.name())
+            .unwrap_or("unknown")
+    }
+
     /// Broadcast on all interfaces except excluded (best effort)
     pub fn broadcast(&mut self, data: &[u8], exclude: Option<InterfaceId>) {
         for (id, iface) in self.interfaces.iter_mut() {
