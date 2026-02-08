@@ -196,6 +196,10 @@ pub enum AnnounceError {
     WrongDirection,
     /// Only SINGLE destinations can announce
     OnlySingleCanAnnounce,
+    /// Packet too large to fit in MTU
+    PacketTooLarge,
+    /// Destination not registered
+    DestinationNotFound,
 }
 
 impl core::fmt::Display for AnnounceError {
@@ -211,6 +215,10 @@ impl core::fmt::Display for AnnounceError {
             AnnounceError::WrongDirection => write!(f, "OUT destinations cannot announce"),
             AnnounceError::OnlySingleCanAnnounce => {
                 write!(f, "Only SINGLE destinations can announce")
+            }
+            AnnounceError::PacketTooLarge => write!(f, "Announce packet too large for MTU"),
+            AnnounceError::DestinationNotFound => {
+                write!(f, "Destination not registered on this node")
             }
         }
     }

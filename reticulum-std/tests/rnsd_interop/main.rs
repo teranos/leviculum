@@ -37,6 +37,7 @@ mod common;
 mod comprehensive_network_test;
 mod discovery_tests;
 mod edge_case_tests;
+mod flood_tests;
 mod flow_tests;
 mod harness;
 mod link_keepalive_close_tests;

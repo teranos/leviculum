@@ -725,6 +725,13 @@ impl<C: Clock, S: Storage> Transport<C, S> {
 
     /// Send raw data on all online interfaces (emits Broadcast action)
     pub fn send_on_all_interfaces(&mut self, data: &[u8]) {
+        // Cache outbound packet hash so echoes returning via redundant paths
+        // are dropped by the dedup check in process_incoming() (line 688).
+        // This matches Python Reticulum's Transport.py:1168-1169.
+        let dedup_hash = truncated_packet_hash(data);
+        let now = self.clock.now_ms();
+        self.packet_cache.insert(dedup_hash, now);
+
         self.stats.packets_sent += 1;
         self.pending_actions.push(Action::Broadcast {
             data: data.to_vec(),
@@ -3956,6 +3963,50 @@ mod tests {
                     exclude_iface: Some(InterfaceId(1)),
                 }
             );
+        }
+
+        #[test]
+        fn test_send_on_all_interfaces_caches_packet_for_dedup() {
+            let mut transport = make_transport();
+            transport.register_interface(Box::new(MockInterface::new("if0", 1)));
+            transport.register_interface(Box::new(MockInterface::new("if1", 2)));
+
+            let hash = [0x42; TRUNCATED_HASHBYTES];
+            transport.register_destination(hash, false);
+
+            // Build a valid data packet
+            use crate::destination::DestinationType;
+
+            let packet = Packet {
+                flags: PacketFlags {
+                    ifac_flag: false,
+                    header_type: HeaderType::Type1,
+                    context_flag: false,
+                    transport_type: TransportType::Broadcast,
+                    dest_type: DestinationType::Single,
+                    packet_type: PacketType::Data,
+                },
+                hops: 0,
+                transport_id: None,
+                destination_hash: hash,
+                context: PacketContext::None,
+                data: PacketData::Owned(b"echo test".to_vec()),
+            };
+
+            let mut buf = [0u8; 500];
+            let len = packet.pack(&mut buf).unwrap();
+            let raw = &buf[..len];
+
+            // Broadcast the packet (simulates originating node sending)
+            transport.send_on_all_interfaces(raw);
+            transport.drain_actions();
+
+            // Simulate the same packet echoing back on a different interface
+            transport.process_incoming(1, raw).unwrap();
+
+            // The echo must be dropped by dedup
+            assert_eq!(transport.stats().packets_dropped, 1);
+            assert_eq!(transport.pending_events(), 0);
         }
 
         #[test]

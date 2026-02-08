@@ -5,6 +5,18 @@ All notable changes to this project will be documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.4.1] - 2026-02-08
+
+### Added
+- `NodeCore::announce_destination()` for broadcasting registered destinations on all interfaces, with deferred dispatch via the Action system
+- `ReticulumNodeImpl::announce_destination()` driver-level wrapper for the new core API
+- `AnnounceError::PacketTooLarge` and `AnnounceError::DestinationNotFound` error variants
+- 4 flood/loop prevention interop tests (`flood_tests` module): triangle echo prevention, diamond originator echo, diamond link redundant paths, announce destination smoke
+- Unit test `test_send_on_all_interfaces_caches_packet_for_dedup` for outbound dedup cache
+
+### Fixed
+- **Outbound packets not cached for dedup** — `send_on_all_interfaces()` did not add the packet hash to `packet_cache`, so echoes returning via redundant network paths were processed instead of dropped, causing the node to learn a path to itself. Now matches Python Reticulum's `Transport.py:1168-1169`.
+
 ## [0.4.0] - 2026-02-07
 
 ### Added
@@ -407,7 +419,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Transport layer (routing, paths, deduplication)
 - Full interoperability with Python rnsd
 
-[Unreleased]: https://codeberg.org/Lew_Palm/leviculum/compare/v0.4.0...HEAD
+[Unreleased]: https://codeberg.org/Lew_Palm/leviculum/compare/v0.4.1...HEAD
+[0.4.1]: https://codeberg.org/Lew_Palm/leviculum/compare/v0.4.0...v0.4.1
 [0.4.0]: https://codeberg.org/Lew_Palm/leviculum/compare/v0.3.2...v0.4.0
 [0.3.2]: https://codeberg.org/Lew_Palm/leviculum/compare/v0.3.1...v0.3.2
 [0.3.1]: https://codeberg.org/Lew_Palm/leviculum/compare/v0.3.0...v0.3.1

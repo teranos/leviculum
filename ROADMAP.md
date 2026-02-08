@@ -45,7 +45,7 @@ Das Projekt hat Phase 1 vollständig abgeschlossen und Phase 2 ist zu ~95% ferti
 
 **Transport Layer vollständig (3.676 LOC):** Announce-Rebroadcast, PATH_REQUEST/PATH_RESPONSE, Reverse-Path-Routing, Link-Tabellenverwaltung, Hop-Count-Validation, Header-Stripping am letzten Hop, Announce-Replay-Schutz, LRPROOF-Validierung, Auto-Re-Announce auf PATH_REQUEST. **Rust Transport Relay** funktioniert vollständig: Announce-Rebroadcast, Link-Routing und Datenweiterleitung zwischen zwei Python-Daemons getestet.
 
-**Code-Qualität:** LinkManager intern auf einheitliche Paket-Queue (`PendingPacket` Enum) umgestellt, Timeout-Konstanten zentralisiert, `LinkId` und `DestinationHash` als Newtype-Structs für vollständige Typ-Sicherheit (keine `Deref` mehr, kein `as_bytes_mut()`). Proof-Strategy und Signing-Key von LinkManager's Destination-Map auf den `Link` selbst verschoben — reduziert duplizierte State zwischen Transport, LinkManager und NodeCore. ~793 Tests bestehen (522 Core-Unit + 20 Std-Lib + 166 Interop + 26 Doctests + 18 Proptest + 31 Test-Vektoren + 7 Core-Integration + 3 Std-Integration + 1 FFI).
+**Code-Qualität:** LinkManager intern auf einheitliche Paket-Queue (`PendingPacket` Enum) umgestellt, Timeout-Konstanten zentralisiert, `LinkId` und `DestinationHash` als Newtype-Structs für vollständige Typ-Sicherheit (keine `Deref` mehr, kein `as_bytes_mut()`). Proof-Strategy und Signing-Key von LinkManager's Destination-Map auf den `Link` selbst verschoben — reduziert duplizierte State zwischen Transport, LinkManager und NodeCore. ~798 Tests bestehen (523 Core-Unit + 20 Std-Lib + 170 Interop + 25 Doctests + 18 Proptest + 31 Test-Vektoren + 7 Core-Integration + 3 Std-Integration + 1 FFI).
 
 | Komponente | Status | LOC |
 |------------|--------|-----|
@@ -76,7 +76,7 @@ Das Projekt hat Phase 1 vollständig abgeschlossen und Phase 2 ist zu ~95% ferti
 | reticulum-nrf | ~400 | — | Embedded-Firmware (Embassy, nRF52840, USB CDC-ACM) |
 | reticulum-ffi | 361 | 404 | C-API |
 
-**Test-Abdeckung:** ~793 Tests (522 Core-Unit + 18 Proptest + 31 Test-Vektoren + 26 Doctests + 20 Std-Lib + 7 Core-Integration + 3 Std-Integration + 1 FFI + 166 Interop gegen rnsd)
+**Test-Abdeckung:** ~798 Tests (523 Core-Unit + 18 Proptest + 31 Test-Vektoren + 25 Doctests + 20 Std-Lib + 7 Core-Integration + 3 Std-Integration + 1 FFI + 170 Interop gegen rnsd)
 
 **Architektur:** Siehe [doc/ARCHITECTURE.md](doc/ARCHITECTURE.md) — no_std/embedded-freundlich, sans-I/O Core (reine Zustandsmaschine), I/O via Action-Rückgabewerte an den Treiber.
 
@@ -280,7 +280,7 @@ Production-ready: QA, zusätzliche Interfaces, Dokumentation.
 - [ ] Async interface connect path — `spawn_tcp_interface()` connects synchronously (blocking on tokio thread), which is fine at startup but blocks the event loop for runtime hot-plug. Prerequisite for USB and BLE interface support. The channel-based `InterfaceRegistry` already supports dynamic `register()`, only the connect step needs an async variant.
 
 ### Qualitätssicherung
-- [x] Integration-Tests gegen rnsd-Daemon (166 Tests)
+- [x] Integration-Tests gegen rnsd-Daemon (170 Tests)
 - [ ] Performance-Optimierung
 - [ ] Speicher-Profiling mit Valgrind
 - [ ] Fuzzing der Paket-Parser
@@ -342,7 +342,7 @@ Testumgebung:
 └─────────────┘      └─────────────┘
 ```
 
-Automatisierte Test-Suite (166 Interop-Tests in 22 Modulen gegen rnsd):
+Automatisierte Test-Suite (170 Interop-Tests in 23 Modulen gegen rnsd):
 - ✅ TCP-Verbindung zu rnsd
 - ✅ Pakete empfangen und senden
 - ✅ Announce-Erstellung und -Validierung
@@ -359,6 +359,7 @@ Automatisierte Test-Suite (166 Interop-Tests in 22 Modulen gegen rnsd):
 - ✅ Transport Relay (Rust-Node leitet Announces, Links und Daten zwischen zwei Python-Daemons)
 - ✅ Link Keepalive und Close
 - ✅ Proof-Strategien
+- ✅ Flood/Loop-Prevention (Triangle, Diamond, redundante Pfade)
 - Resource Transfer
 - Error Recovery
 
@@ -381,7 +382,7 @@ Automatisierte Test-Suite (166 Interop-Tests in 22 Modulen gegen rnsd):
 | Risiko | Wahrscheinlichkeit | Mitigation |
 |--------|-------------------|------------|
 | Transport Layer komplexer als erwartet | ✅ Gelöst | 3.676 LOC, vollständig implementiert |
-| Interop-Probleme mit Python | Mittel | Frühe und kontinuierliche Tests (166 Interop-Tests) |
+| Interop-Probleme mit Python | Mittel | Frühe und kontinuierliche Tests (170 Interop-Tests) |
 | Performance-Probleme bei async | Niedrig | Profiling ab Phase 2 |
 | no_std-Kompatibilitätsprobleme | ✅ Gelöst | Context-Trait entfernt, direkte RNG/time-Parameter |
 | Resource Transfer Komplexität | Mittel | Sliding-Window, Hashmap, Compression — frühzeitig planen |
@@ -438,7 +439,7 @@ Monat 1    Monat 2    Monat 3       Monat 4       Monat 5         Monat 6
 - [ ] Resource Transfer: Dateien übertragen
 - [ ] TCP Server Interface
 - [ ] `lrnsd` Daemon läuft standalone
-- [x] Integration-Tests gegen Python rnsd bestehen (166 Interop-Tests)
+- [x] Integration-Tests gegen Python rnsd bestehen (170 Interop-Tests)
 - [x] no_std-Kompatibilität für reticulum-core
 - [x] Forward Secrecy via Ratchets
 - [x] Interface Access Codes (IFAC)
@@ -975,6 +976,6 @@ Für spätere Versionen:
 
 ---
 
-*Stand: 7. Februar 2026*
+*Stand: 8. Februar 2026*
 *Projekt: leviculum*
 *Lizenz: MIT*

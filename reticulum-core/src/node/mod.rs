@@ -56,6 +56,7 @@ pub use send::{RoutingDecision, SendError, SendHandle, SendMethod, SendResult};
 use alloc::collections::BTreeMap;
 use alloc::vec::Vec;
 
+use crate::announce::AnnounceError;
 use crate::constants::TRUNCATED_HASHBYTES;
 use crate::destination::{Destination, DestinationHash, ProofStrategy};
 use crate::identity::Identity;
@@ -221,6 +222,45 @@ impl<R: CryptoRngCore, C: Clock, S: Storage> NodeCore<R, C, S> {
     /// Get a mutable reference to a registered destination
     pub fn destination_mut(&mut self, hash: &DestinationHash) -> Option<&mut Destination> {
         self.destinations.get_mut(hash)
+    }
+
+    /// Announce a registered destination on all interfaces
+    ///
+    /// Builds the announce packet and broadcasts it. The announce is queued
+    /// as a Broadcast action, dispatched by the next [`handle_timeout()`] or
+    /// [`handle_packet()`] call.
+    ///
+    /// # Deferred dispatch
+    ///
+    /// This method queues I/O actions internally. The actions are not executed
+    /// until the driver calls [`handle_packet()`] or [`handle_timeout()`],
+    /// which drain all pending actions. Callers must ensure the event loop
+    /// runs promptly after calling this method.
+    ///
+    /// # Arguments
+    /// * `dest_hash` - Hash of the registered destination to announce
+    /// * `app_data` - Optional application data to include in the announce
+    pub fn announce_destination(
+        &mut self,
+        dest_hash: &DestinationHash,
+        app_data: Option<&[u8]>,
+    ) -> Result<(), AnnounceError> {
+        let now_ms = self.transport.clock().now_ms();
+
+        let dest = self
+            .destinations
+            .get_mut(dest_hash)
+            .ok_or(AnnounceError::DestinationNotFound)?;
+
+        let packet = dest.announce(app_data, &mut self.rng, now_ms)?;
+
+        let mut buf = [0u8; crate::constants::MTU];
+        let len = packet
+            .pack(&mut buf)
+            .map_err(|_| AnnounceError::PacketTooLarge)?;
+
+        self.transport.send_on_all_interfaces(&buf[..len]);
+        Ok(())
     }
 
     // ─── Connection Management ─────────────────────────────────────────────────

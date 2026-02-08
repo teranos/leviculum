@@ -360,6 +360,25 @@ impl ReticulumNodeImpl {
         self.inner.lock().unwrap().transport_stats()
     }
 
+    /// Announce a registered destination on all interfaces
+    ///
+    /// Builds the announce packet and queues it as a Broadcast action.
+    /// The event loop dispatches the action on the next iteration.
+    ///
+    /// # Arguments
+    /// * `dest_hash` - Hash of the registered destination to announce
+    /// * `app_data` - Optional application data to include in the announce
+    pub fn announce_destination(
+        &self,
+        dest_hash: &reticulum_core::DestinationHash,
+        app_data: Option<&[u8]>,
+    ) -> Result<(), reticulum_core::AnnounceError> {
+        self.inner
+            .lock()
+            .unwrap()
+            .announce_destination(dest_hash, app_data)
+    }
+
     /// Check if transport mode (relay/routing) is enabled
     pub fn is_transport_enabled(&self) -> bool {
         self.inner
