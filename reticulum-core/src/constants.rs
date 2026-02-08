@@ -154,6 +154,9 @@ pub const DATA_RECEIPT_TIMEOUT_MS: u64 = 30_000;
 /// Default announce rate limit interval (milliseconds)
 pub const ANNOUNCE_RATE_LIMIT_MS: u64 = 2_000;
 
+/// Maximum number of random blobs to retain per destination (matches Python MAX_RANDOM_BLOBS)
+pub const MAX_RANDOM_BLOBS: usize = 64;
+
 /// Packet cache expiry time (milliseconds)
 pub const PACKET_CACHE_EXPIRY_MS: u64 = 60_000;
 

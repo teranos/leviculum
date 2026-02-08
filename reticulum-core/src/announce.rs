@@ -119,6 +119,33 @@ pub fn generate_random_hash(rng: &mut impl CryptoRngCore, now_ms: u64) -> [u8; R
     result
 }
 
+/// Extract the emission timebase from a random_hash.
+///
+/// The random_hash is 10 bytes: 5 random + 5 timestamp. This reads bytes 5..10
+/// as a big-endian integer, matching Python's `int.from_bytes(random_blob[5:10], "big")`
+/// (Transport.py:2935-2936). The result is a 40-bit value used only for
+/// relative comparison — not a full millisecond timestamp.
+pub fn emission_from_random_hash(random_hash: &[u8; RANDOM_HASHBYTES]) -> u64 {
+    let ts = &random_hash[RANDOM_HASH_RANDOM_SIZE..];
+    // Read 5 bytes big-endian into u64
+    ((ts[0] as u64) << 32)
+        | ((ts[1] as u64) << 24)
+        | ((ts[2] as u64) << 16)
+        | ((ts[3] as u64) << 8)
+        | (ts[4] as u64)
+}
+
+/// Get the maximum emission timestamp from a list of random_hashes.
+///
+/// Matches Python `Transport.timebase_from_random_blobs()` (Transport.py:2939).
+pub fn max_emission_from_blobs(blobs: &[[u8; RANDOM_HASHBYTES]]) -> u64 {
+    blobs
+        .iter()
+        .map(emission_from_random_hash)
+        .max()
+        .unwrap_or(0)
+}
+
 /// Build an announce payload (internal helper for Destination::announce).
 ///
 /// # Payload format (without ratchet)
@@ -705,5 +732,46 @@ mod tests {
 
         // Last 5 bytes (timestamp) should be the same (same now_ms)
         assert_eq!(&hash1[5..10], &hash2[5..10]);
+    }
+
+    #[test]
+    fn test_emission_from_random_hash_consistency() {
+        // emission_from_random_hash extracts a 40-bit timebase, not the full
+        // u64 timestamp. Two hashes with the same now_ms produce the same
+        // timebase, and different timestamps produce ordered timebases.
+        let h1 = generate_random_hash(&mut OsRng, TEST_TIME_MS);
+        let h2 = generate_random_hash(&mut OsRng, TEST_TIME_MS);
+        assert_eq!(
+            emission_from_random_hash(&h1),
+            emission_from_random_hash(&h2),
+            "Same timestamp should produce same timebase"
+        );
+    }
+
+    #[test]
+    fn test_emission_from_random_hash_ordering() {
+        let t1 = 1_000_000u64;
+        let t2 = 2_000_000u64;
+        let h1 = generate_random_hash(&mut OsRng, t1);
+        let h2 = generate_random_hash(&mut OsRng, t2);
+        assert!(
+            emission_from_random_hash(&h2) > emission_from_random_hash(&h1),
+            "Later timestamp should produce larger timebase"
+        );
+    }
+
+    #[test]
+    fn test_max_emission_from_blobs_empty() {
+        let blobs: &[[u8; RANDOM_HASHBYTES]] = &[];
+        assert_eq!(max_emission_from_blobs(blobs), 0);
+    }
+
+    #[test]
+    fn test_max_emission_from_blobs_picks_latest() {
+        let h1 = generate_random_hash(&mut OsRng, 1_000_000);
+        let h2 = generate_random_hash(&mut OsRng, 3_000_000);
+        let h3 = generate_random_hash(&mut OsRng, 2_000_000);
+        let blobs = [h1, h2, h3];
+        assert_eq!(max_emission_from_blobs(&blobs), 3_000_000);
     }
 }

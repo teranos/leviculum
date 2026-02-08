@@ -40,12 +40,13 @@ use alloc::vec::Vec;
 
 use crate::constants::{
     ANNOUNCE_RATE_LIMIT_MS, LINK_TIMEOUT_MS, LOCAL_REBROADCASTS_MAX, MAX_PATH_REQUEST_TAGS,
-    MS_PER_SECOND, MTU, PACKET_CACHE_EXPIRY_MS, PATHFINDER_EXPIRY_SECS, PATHFINDER_G_MS,
-    PATHFINDER_MAX_HOPS, PATHFINDER_RETRIES, PATHFINDER_RW_MS, PATH_REQUEST_GRACE_MS,
-    PATH_REQUEST_MIN_INTERVAL_MS, REVERSE_TABLE_EXPIRY_MS, TRUNCATED_HASHBYTES,
+    MAX_RANDOM_BLOBS, MS_PER_SECOND, MTU, PACKET_CACHE_EXPIRY_MS, PATHFINDER_EXPIRY_SECS,
+    PATHFINDER_G_MS, PATHFINDER_MAX_HOPS, PATHFINDER_RETRIES, PATHFINDER_RW_MS,
+    PATH_REQUEST_GRACE_MS, PATH_REQUEST_MIN_INTERVAL_MS, REVERSE_TABLE_EXPIRY_MS,
+    TRUNCATED_HASHBYTES,
 };
 
-use crate::announce::ReceivedAnnounce;
+use crate::announce::{emission_from_random_hash, max_emission_from_blobs, ReceivedAnnounce};
 use crate::crypto::truncated_hash;
 use crate::destination::{Destination, DestinationHash, ProofStrategy};
 use crate::identity::Identity;
@@ -143,6 +144,8 @@ pub(crate) struct PathEntry {
     pub interface_index: usize,
     /// Random blobs seen for this destination (for replay detection)
     pub random_blobs: Vec<[u8; crate::constants::RANDOM_HASHBYTES]>,
+    /// Identity hash of the next relay hop (from announce transport_id)
+    pub next_hop: Option<[u8; TRUNCATED_HASHBYTES]>,
 }
 
 /// Link table entry (for active links routed through this transport node)
@@ -965,73 +968,109 @@ impl<C: Clock, S: Storage> Transport<C, S> {
             }
         }
 
-        // Update path table
+        // Determine whether to update the path table (hop count comparison).
+        // Matches Python Transport.py:1620-1681 logic:
+        // - Equal or fewer hops: accept if emission timestamp is newer
+        // - More hops: accept only if path is expired or emission timestamp is newer
         let is_new_path = !self.path_table.contains_key(&dest_hash);
-        // Preserve existing random_blobs and add the new one
-        let mut random_blobs = self
-            .path_table
-            .get(&dest_hash)
-            .map(|p| p.random_blobs.clone())
-            .unwrap_or_default();
-        random_blobs.push(random_hash);
+        let should_update = if let Some(existing) = self.path_table.get(&dest_hash) {
+            let announce_emitted = emission_from_random_hash(&random_hash);
+            let path_timebase = max_emission_from_blobs(&existing.random_blobs);
+            if packet.hops <= existing.hops {
+                // Equal or fewer hops: accept if emission is newer
+                announce_emitted > path_timebase
+            } else {
+                // More hops than current path: accept only if path expired
+                // or emission timestamp is newer
+                now >= existing.expires_ms || announce_emitted > path_timebase
+            }
+        } else {
+            true // New destination
+        };
 
-        self.path_table.insert(
-            dest_hash,
-            PathEntry {
-                hops: packet.hops,
-                expires_ms: now + (self.config.path_expiry_secs * 1000),
-                interface_index,
-                random_blobs,
-            },
-        );
+        if should_update {
+            // Preserve existing random_blobs and add the new one
+            let mut random_blobs = self
+                .path_table
+                .get(&dest_hash)
+                .map(|p| p.random_blobs.clone())
+                .unwrap_or_default();
+            random_blobs.push(random_hash);
 
-        // Determine if we should schedule rebroadcast
-        let should_rebroadcast = self.config.enable_transport && !is_path_response;
+            // Cap random_blobs to prevent unbounded growth (matches Python MAX_RANDOM_BLOBS)
+            if random_blobs.len() > MAX_RANDOM_BLOBS {
+                let excess = random_blobs.len() - MAX_RANDOM_BLOBS;
+                random_blobs.drain(..excess);
+            }
 
-        // Update announce table
-        self.announce_table.insert(
-            dest_hash,
-            AnnounceEntry {
-                timestamp_ms: now,
-                hops: packet.hops,
-                retries: 0,
-                retransmit_at_ms: if should_rebroadcast {
-                    Some(now + self.calculate_retransmit_delay(packet.hops))
-                } else {
-                    None
+            self.path_table.insert(
+                dest_hash,
+                PathEntry {
+                    hops: packet.hops,
+                    expires_ms: now + (self.config.path_expiry_secs * 1000),
+                    interface_index,
+                    random_blobs,
+                    next_hop: None,
                 },
-                raw_packet: raw.to_vec(),
-                receiving_interface_index: interface_index,
-                local_rebroadcasts: 0,
-                block_rebroadcasts: is_path_response,
-            },
-        );
+            );
 
-        // Cache raw announce for path responses (when transport is enabled)
-        if self.config.enable_transport {
-            self.announce_cache.insert(dest_hash, raw.to_vec());
-        }
+            // Determine if we should schedule rebroadcast
+            let should_rebroadcast = self.config.enable_transport && !is_path_response;
 
-        // Store identity from announce for proof validation
-        if let Ok(identity) = announce.to_identity() {
-            self.identity_table.insert(dest_hash, identity);
-        }
+            // Update announce table
+            self.announce_table.insert(
+                dest_hash,
+                AnnounceEntry {
+                    timestamp_ms: now,
+                    hops: packet.hops,
+                    retries: 0,
+                    retransmit_at_ms: if should_rebroadcast {
+                        Some(now + self.calculate_retransmit_delay(packet.hops))
+                    } else {
+                        None
+                    },
+                    raw_packet: raw.to_vec(),
+                    receiving_interface_index: interface_index,
+                    local_rebroadcasts: 0,
+                    block_rebroadcasts: is_path_response,
+                },
+            );
 
-        self.stats.announces_processed += 1;
+            // Cache raw announce for path responses (when transport is enabled)
+            if self.config.enable_transport {
+                self.announce_cache.insert(dest_hash, raw.to_vec());
+            }
 
-        // Emit events
-        if is_new_path {
-            self.events.push(TransportEvent::PathFound {
-                destination_hash: dest_hash,
-                hops: packet.hops,
+            // Store identity from announce for proof validation
+            if let Ok(identity) = announce.to_identity() {
+                self.identity_table.insert(dest_hash, identity);
+            }
+
+            self.stats.announces_processed += 1;
+
+            // Emit events
+            if is_new_path {
+                self.events.push(TransportEvent::PathFound {
+                    destination_hash: dest_hash,
+                    hops: packet.hops,
+                    interface_index,
+                });
+            }
+
+            self.events.push(TransportEvent::AnnounceReceived {
+                announce,
                 interface_index,
             });
+        } else {
+            // Path not updated, but still record the random_blob for replay detection
+            if let Some(existing) = self.path_table.get_mut(&dest_hash) {
+                existing.random_blobs.push(random_hash);
+                if existing.random_blobs.len() > MAX_RANDOM_BLOBS {
+                    let excess = existing.random_blobs.len() - MAX_RANDOM_BLOBS;
+                    existing.random_blobs.drain(..excess);
+                }
+            }
         }
-
-        self.events.push(TransportEvent::AnnounceReceived {
-            announce,
-            interface_index,
-        });
 
         Ok(())
     }
@@ -1361,6 +1400,8 @@ impl<C: Clock, S: Storage> Transport<C, S> {
         // Look up path
         if let Some(path) = self.path_table.get(&packet.destination_hash) {
             let target_iface = path.interface_index;
+            let remaining_hops = path.hops;
+            let next_hop = path.next_hop;
 
             // Populate reverse table at forwarding time
             let now = self.clock.now_ms();
@@ -1373,6 +1414,22 @@ impl<C: Clock, S: Storage> Transport<C, S> {
                     outbound_interface_index: target_iface,
                 },
             );
+
+            // Header transformation (mirrors handle_link_request L1136-1166)
+            if remaining_hops > 1 {
+                // Intermediate relay: keep Type2, replace transport_id with next hop
+                if let Some(nh) = next_hop {
+                    packet.flags.header_type = HeaderType::Type2;
+                    packet.flags.transport_type = TransportType::Transport;
+                    packet.transport_id = Some(nh);
+                }
+            } else if remaining_hops == 1 {
+                // Final relay: strip to Type1
+                packet.flags.header_type = HeaderType::Type1;
+                packet.flags.transport_type = TransportType::Broadcast;
+                packet.transport_id = None;
+            }
+            // remaining_hops == 0: forward as-is
 
             return self.forward_on_interface(target_iface, &mut packet);
         }
@@ -2074,6 +2131,7 @@ mod tests {
                     expires_ms: now + 3_600_000,
                     interface_index: 0,
                     random_blobs: Vec::new(),
+                    next_hop: None,
                 },
             );
 
@@ -2095,6 +2153,7 @@ mod tests {
                     expires_ms: now + 1000, // Expires in 1 second
                     interface_index: 0,
                     random_blobs: Vec::new(),
+                    next_hop: None,
                 },
             );
 
@@ -2599,12 +2658,29 @@ mod tests {
             let (raw, _dest_hash) = make_announce_raw(original_hops, PacketContext::None);
             transport.process_incoming(0, &raw).unwrap();
             transport.drain_events();
+            let _ = transport.drain_actions(); // clear initial actions
 
             // Trigger rebroadcast
             transport.clock.advance(10_000);
             transport.poll();
 
             assert!(transport.stats().packets_forwarded > 0);
+
+            // Parse the rebroadcasted packet and verify hops was incremented
+            let actions = transport.drain_actions();
+            let broadcast_data = actions
+                .iter()
+                .find_map(|a| match a {
+                    Action::Broadcast { data, .. } => Some(data.as_slice()),
+                    _ => None,
+                })
+                .expect("Should have a Broadcast action for the rebroadcast");
+            let rebroadcasted = Packet::unpack(broadcast_data).unwrap();
+            assert_eq!(
+                rebroadcasted.hops,
+                original_hops + 1,
+                "Rebroadcasted announce should have hops incremented by 1"
+            );
         }
 
         #[test]
@@ -3290,6 +3366,7 @@ mod tests {
                     expires_ms: now + 100_000,
                     interface_index: 1,
                     random_blobs: Vec::new(),
+                    next_hop: None,
                 },
             );
 
@@ -3340,6 +3417,7 @@ mod tests {
                     expires_ms: now + 100_000,
                     interface_index: 1,
                     random_blobs: Vec::new(),
+                    next_hop: None,
                 },
             );
 
@@ -3395,6 +3473,7 @@ mod tests {
                     expires_ms: now + 100_000,
                     interface_index: 1,
                     random_blobs: Vec::new(),
+                    next_hop: None,
                 },
             );
 
@@ -3553,6 +3632,7 @@ mod tests {
                     expires_ms: now + 100_000,
                     interface_index: 1,
                     random_blobs: Vec::new(),
+                    next_hop: None,
                 },
             );
 
@@ -3720,6 +3800,23 @@ mod tests {
                 transport.stats().packets_forwarded > 0,
                 "Correct hops should be forwarded"
             );
+
+            // Parse forwarded packet and verify hops incremented, header type preserved
+            let actions = transport.drain_actions();
+            let forwarded_raw = actions
+                .iter()
+                .find_map(|a| match a {
+                    Action::SendPacket { data, .. } => Some(data.as_slice()),
+                    _ => None,
+                })
+                .expect("Should have a SendPacket action");
+            let forwarded = Packet::unpack(forwarded_raw).unwrap();
+            assert_eq!(forwarded.hops, 4, "Forwarded hops should be 3+1=4");
+            assert_eq!(
+                forwarded.flags.header_type,
+                HeaderType::Type1,
+                "Link-routed data should stay Type1"
+            );
         }
 
         #[test]
@@ -3752,6 +3849,18 @@ mod tests {
                 transport.stats().packets_forwarded > 0,
                 "Correct hops from initiator should be forwarded"
             );
+
+            // Parse forwarded packet and verify hops incremented
+            let actions = transport.drain_actions();
+            let forwarded_raw = actions
+                .iter()
+                .find_map(|a| match a {
+                    Action::SendPacket { data, .. } => Some(data.as_slice()),
+                    _ => None,
+                })
+                .expect("Should have a SendPacket action");
+            let forwarded = Packet::unpack(forwarded_raw).unwrap();
+            assert_eq!(forwarded.hops, 3, "Forwarded hops should be 2+1=3");
         }
 
         // ─── Stage 3: Reverse table proof routing ──────────────────────
@@ -3806,6 +3915,210 @@ mod tests {
             assert!(
                 !transport.reverse_table.contains_key(&packet_hash),
                 "Reverse table entry should be consumed after proof routing"
+            );
+
+            // Parse forwarded proof and verify target interface, hops, and packet type
+            let actions = transport.drain_actions();
+            let (target_iface, forwarded_raw) = actions
+                .iter()
+                .find_map(|a| match a {
+                    Action::SendPacket { iface, data } => Some((*iface, data.as_slice())),
+                    _ => None,
+                })
+                .expect("Should have a SendPacket action for routed proof");
+            assert_eq!(
+                target_iface,
+                InterfaceId(0),
+                "Proof should be routed back to receiving interface (if0)"
+            );
+            let forwarded = Packet::unpack(forwarded_raw).unwrap();
+            assert_eq!(forwarded.hops, 1, "Forwarded proof hops should be 0+1=1");
+            assert_eq!(
+                forwarded.flags.packet_type,
+                PacketType::Proof,
+                "Forwarded packet should still be a Proof"
+            );
+        }
+
+        // ─── Bug #12: Path-table data forwarding header promotion ────────
+
+        #[test]
+        fn test_path_table_forward_header2_replaces_transport_id() {
+            // A HEADER_2 data packet forwarded via path table should have its
+            // transport_id replaced with next_hop from the path entry (remaining > 1).
+            use crate::destination::DestinationType;
+            use crate::packet::{HeaderType, PacketData, PacketFlags, TransportType};
+
+            let mut transport = make_transport_enabled();
+            let _idx0 = transport.register_interface(Box::new(MockInterface::new("if0", 1)));
+            let _idx1 = transport.register_interface(Box::new(MockInterface::new("if1", 2)));
+
+            let dest_hash = [0xCC; TRUNCATED_HASHBYTES];
+            let next_hop_hash = [0xDD; TRUNCATED_HASHBYTES];
+            let now = transport.clock.now_ms();
+
+            // Path entry with hops=2 (multi-hop: not the final relay)
+            transport.path_table.insert(
+                dest_hash,
+                PathEntry {
+                    hops: 2,
+                    expires_ms: now + 100_000,
+                    interface_index: 1,
+                    random_blobs: Vec::new(),
+                    next_hop: Some(next_hop_hash),
+                },
+            );
+
+            // Build a HEADER_2 data packet addressed to dest_hash, with our own
+            // transport_id (as if we are the current relay in the chain).
+            let packet = Packet {
+                flags: PacketFlags {
+                    ifac_flag: false,
+                    header_type: HeaderType::Type2,
+                    context_flag: false,
+                    transport_type: TransportType::Transport,
+                    dest_type: DestinationType::Single,
+                    packet_type: PacketType::Data,
+                },
+                hops: 1,
+                transport_id: Some(*transport.identity.hash()),
+                destination_hash: dest_hash,
+                context: PacketContext::None,
+                data: PacketData::Owned(b"multi-hop payload".to_vec()),
+            };
+
+            let mut buf = [0u8; crate::constants::MTU];
+            let len = packet.pack(&mut buf).unwrap();
+            transport.process_incoming(0, &buf[..len]).unwrap();
+
+            assert!(
+                transport.stats().packets_forwarded > 0,
+                "Packet should be forwarded via path table"
+            );
+
+            let actions = transport.drain_actions();
+            let forwarded_raw = actions
+                .iter()
+                .find_map(|a| match a {
+                    Action::SendPacket { iface, data } if iface.0 == 1 => Some(data.as_slice()),
+                    _ => None,
+                })
+                .expect("Should have a SendPacket action for iface 1");
+            let forwarded = Packet::unpack(forwarded_raw).unwrap();
+
+            // Hops should be incremented
+            assert_eq!(forwarded.hops, 2, "Forwarded hops should be 1+1=2");
+            // Destination hash should be preserved
+            assert_eq!(
+                forwarded.destination_hash, dest_hash,
+                "Destination hash must be preserved"
+            );
+            // Should still be Type2 (multi-hop, remaining > 1)
+            assert_eq!(
+                forwarded.flags.header_type,
+                HeaderType::Type2,
+                "Multi-hop forward should stay Type2"
+            );
+            // transport_id should be replaced with next_hop (BUG: currently stays as own hash)
+            assert_eq!(
+                forwarded.transport_id,
+                Some(next_hop_hash),
+                "transport_id should be replaced with next_hop from path entry"
+            );
+            // Data payload should be intact
+            assert_eq!(
+                forwarded.data.as_slice(),
+                b"multi-hop payload",
+                "Data payload must be preserved"
+            );
+        }
+
+        #[test]
+        fn test_path_table_forward_header2_strips_to_type1_at_final_hop() {
+            // When a HEADER_2 data packet reaches the final relay (path hops == 1),
+            // it should be stripped to HEADER_1 with no transport_id.
+            use crate::destination::DestinationType;
+            use crate::packet::{HeaderType, PacketData, PacketFlags, TransportType};
+
+            let mut transport = make_transport_enabled();
+            let _idx0 = transport.register_interface(Box::new(MockInterface::new("if0", 1)));
+            let _idx1 = transport.register_interface(Box::new(MockInterface::new("if1", 2)));
+
+            let dest_hash = [0xCC; TRUNCATED_HASHBYTES];
+            let next_hop_hash = [0xDD; TRUNCATED_HASHBYTES];
+            let now = transport.clock.now_ms();
+
+            // Path entry with hops=1 (we are the final relay before destination)
+            transport.path_table.insert(
+                dest_hash,
+                PathEntry {
+                    hops: 1,
+                    expires_ms: now + 100_000,
+                    interface_index: 1,
+                    random_blobs: Vec::new(),
+                    next_hop: Some(next_hop_hash),
+                },
+            );
+
+            // Build a HEADER_2 data packet addressed to dest_hash
+            let packet = Packet {
+                flags: PacketFlags {
+                    ifac_flag: false,
+                    header_type: HeaderType::Type2,
+                    context_flag: false,
+                    transport_type: TransportType::Transport,
+                    dest_type: DestinationType::Single,
+                    packet_type: PacketType::Data,
+                },
+                hops: 1,
+                transport_id: Some(*transport.identity.hash()),
+                destination_hash: dest_hash,
+                context: PacketContext::None,
+                data: PacketData::Owned(b"final-hop payload".to_vec()),
+            };
+
+            let mut buf = [0u8; crate::constants::MTU];
+            let len = packet.pack(&mut buf).unwrap();
+            transport.process_incoming(0, &buf[..len]).unwrap();
+
+            assert!(
+                transport.stats().packets_forwarded > 0,
+                "Packet should be forwarded via path table"
+            );
+
+            let actions = transport.drain_actions();
+            let forwarded_raw = actions
+                .iter()
+                .find_map(|a| match a {
+                    Action::SendPacket { iface, data } if iface.0 == 1 => Some(data.as_slice()),
+                    _ => None,
+                })
+                .expect("Should have a SendPacket action for iface 1");
+            let forwarded = Packet::unpack(forwarded_raw).unwrap();
+
+            // Hops should be incremented
+            assert_eq!(forwarded.hops, 2, "Forwarded hops should be 1+1=2");
+            // Destination hash should be preserved
+            assert_eq!(
+                forwarded.destination_hash, dest_hash,
+                "Destination hash must be preserved"
+            );
+            // Should be stripped to Type1 (final hop: BUG: currently stays Type2)
+            assert_eq!(
+                forwarded.flags.header_type,
+                HeaderType::Type1,
+                "Final-hop forward should strip to Type1"
+            );
+            // transport_id should be None (BUG: currently stays Some(own hash))
+            assert_eq!(
+                forwarded.transport_id, None,
+                "Final-hop forward should have no transport_id"
+            );
+            // Data payload should be intact
+            assert_eq!(
+                forwarded.data.as_slice(),
+                b"final-hop payload",
+                "Data payload must be preserved"
             );
         }
 
@@ -4023,6 +4336,7 @@ mod tests {
                     expires_ms: u64::MAX,
                     interface_index: idx,
                     random_blobs: Vec::new(),
+                    next_hop: None,
                 },
             );
 
@@ -4140,17 +4454,34 @@ mod tests {
                 "announce rebroadcast should produce actions"
             );
 
-            // All rebroadcast actions should be Broadcast with exclude
+            // All rebroadcast actions should be Broadcast with exclude,
+            // and the rebroadcasted packet should be Type2/Transport with our transport_id
             for action in &actions {
                 match action {
                     Action::Broadcast {
                         exclude_iface,
-                        data: _,
+                        data,
                     } => {
                         assert_eq!(
                             *exclude_iface,
                             Some(InterfaceId(0)),
                             "rebroadcast should exclude the receiving interface"
+                        );
+                        let pkt = Packet::unpack(data).unwrap();
+                        assert_eq!(
+                            pkt.flags.header_type,
+                            HeaderType::Type2,
+                            "rebroadcast announce should be Header Type 2"
+                        );
+                        assert_eq!(
+                            pkt.flags.transport_type,
+                            TransportType::Transport,
+                            "rebroadcast announce should have Transport transport_type"
+                        );
+                        assert_eq!(
+                            pkt.transport_id,
+                            Some(*transport.identity.hash()),
+                            "rebroadcast announce transport_id should be our identity hash"
                         );
                     }
                     other => panic!("expected Broadcast action, got {:?}", other),
@@ -4286,6 +4617,7 @@ mod tests {
                     expires_ms: u64::MAX,
                     interface_index: idx,
                     random_blobs: Vec::new(),
+                    next_hop: None,
                 },
             );
 
@@ -4389,6 +4721,444 @@ mod tests {
                 !actions.is_empty(),
                 "handle_path_request should schedule announce rebroadcast that produces actions"
             );
+        }
+
+        // ─── Helper: Build announce for a specific destination ──────────
+
+        /// Build a raw announce packet for a given destination at a specific
+        /// hop count. Each call produces a new random_hash (different timestamp
+        /// from MockClock, different random bytes from OsRng), so the resulting
+        /// packet hash is unique and passes packet_cache dedup.
+        fn make_announce_raw_for_dest(
+            dest: &crate::destination::Destination,
+            hops: u8,
+            now_ms: u64,
+        ) -> Vec<u8> {
+            use crate::announce::build_announce_payload;
+            use crate::packet::{HeaderType, PacketData, PacketFlags, TransportType};
+
+            let identity = dest.identity().unwrap();
+            let payload = build_announce_payload(
+                identity,
+                dest.hash().as_bytes(),
+                dest.name_hash(),
+                None, // no ratchet
+                Some(b"test"),
+                &mut OsRng,
+                now_ms,
+            )
+            .unwrap();
+
+            let packet = Packet {
+                flags: PacketFlags {
+                    ifac_flag: false,
+                    header_type: HeaderType::Type1,
+                    context_flag: false,
+                    transport_type: TransportType::Broadcast,
+                    dest_type: crate::destination::DestinationType::Single,
+                    packet_type: PacketType::Announce,
+                },
+                hops,
+                transport_id: None,
+                destination_hash: dest.hash().into_bytes(),
+                context: PacketContext::None,
+                data: PacketData::Owned(payload),
+            };
+
+            let mut buf = [0u8; MTU];
+            let len = packet.pack(&mut buf).unwrap();
+            buf[..len].to_vec()
+        }
+
+        // ─── Stage 10: Hop count comparison in handle_announce ──────────
+
+        #[test]
+        fn test_worse_hop_announce_with_newer_emission_updates_path() {
+            // Per Python Transport.py:1664-1668: a worse-hop announce with a
+            // newer emission timestamp DOES update the path, even if not expired.
+            use crate::destination::{Destination, DestinationType, Direction};
+
+            let mut transport = make_transport_enabled();
+            let _idx0 = transport.register_interface(Box::new(MockInterface::new("if0", 1)));
+
+            let identity = Identity::generate(&mut OsRng);
+            let dest = Destination::new(
+                Some(identity),
+                Direction::In,
+                DestinationType::Single,
+                "testapp",
+                &["hops"],
+            )
+            .unwrap();
+            let dest_hash = dest.hash().into_bytes();
+
+            // Inject announce at hops=1
+            let now1 = transport.clock.now_ms();
+            let a1 = make_announce_raw_for_dest(&dest, 1, now1);
+            transport.process_incoming(0, &a1).unwrap();
+            assert_eq!(transport.hops_to(&dest_hash), Some(1));
+
+            // Advance past rate limit so second announce isn't rate-limited
+            transport.clock.advance(ANNOUNCE_RATE_LIMIT_MS + 1);
+
+            // Inject announce at hops=3 (worse) with newer timestamp
+            let now2 = transport.clock.now_ms();
+            let a2 = make_announce_raw_for_dest(&dest, 3, now2);
+            transport.process_incoming(0, &a2).unwrap();
+
+            // Per Python: newer emission overwrites regardless of hop count
+            assert_eq!(
+                transport.hops_to(&dest_hash),
+                Some(3),
+                "Worse-hop announce with newer emission should update path (per Python)"
+            );
+        }
+
+        #[test]
+        fn test_better_hop_announce_replaces_worse_path() {
+            use crate::destination::{Destination, DestinationType, Direction};
+
+            let mut transport = make_transport_enabled();
+            let _idx0 = transport.register_interface(Box::new(MockInterface::new("if0", 1)));
+
+            let identity = Identity::generate(&mut OsRng);
+            let dest = Destination::new(
+                Some(identity),
+                Direction::In,
+                DestinationType::Single,
+                "testapp",
+                &["hops"],
+            )
+            .unwrap();
+            let dest_hash = dest.hash().into_bytes();
+
+            // Inject announce at hops=3
+            let now1 = transport.clock.now_ms();
+            let a1 = make_announce_raw_for_dest(&dest, 3, now1);
+            transport.process_incoming(0, &a1).unwrap();
+            assert_eq!(transport.hops_to(&dest_hash), Some(3));
+
+            // Advance past rate limit
+            transport.clock.advance(ANNOUNCE_RATE_LIMIT_MS + 1);
+
+            // Inject announce at hops=1 (better) with newer timestamp
+            let now2 = transport.clock.now_ms();
+            let a2 = make_announce_raw_for_dest(&dest, 1, now2);
+            transport.process_incoming(0, &a2).unwrap();
+
+            // Path should be updated to hops=1
+            assert_eq!(
+                transport.hops_to(&dest_hash),
+                Some(1),
+                "Better-hop announce should replace worse path"
+            );
+        }
+
+        #[test]
+        fn test_worse_hop_announce_accepted_when_path_expired() {
+            use crate::destination::{Destination, DestinationType, Direction};
+
+            let mut transport = make_transport_enabled();
+            let _idx0 = transport.register_interface(Box::new(MockInterface::new("if0", 1)));
+
+            let identity = Identity::generate(&mut OsRng);
+            let dest = Destination::new(
+                Some(identity),
+                Direction::In,
+                DestinationType::Single,
+                "testapp",
+                &["hops"],
+            )
+            .unwrap();
+            let dest_hash = dest.hash().into_bytes();
+
+            // Inject announce at hops=1
+            let now1 = transport.clock.now_ms();
+            let a1 = make_announce_raw_for_dest(&dest, 1, now1);
+            transport.process_incoming(0, &a1).unwrap();
+            assert_eq!(transport.hops_to(&dest_hash), Some(1));
+
+            // Advance past path expiry (path_expiry_secs * 1000) + rate limit
+            let expiry_ms = transport.config.path_expiry_secs * 1000;
+            transport
+                .clock
+                .advance(expiry_ms + ANNOUNCE_RATE_LIMIT_MS + 1);
+
+            // Inject announce at hops=3 (worse) — should be accepted because path expired
+            let now2 = transport.clock.now_ms();
+            let a2 = make_announce_raw_for_dest(&dest, 3, now2);
+            transport.process_incoming(0, &a2).unwrap();
+
+            assert_eq!(
+                transport.hops_to(&dest_hash),
+                Some(3),
+                "Worse-hop announce should be accepted when path is expired"
+            );
+        }
+
+        #[test]
+        fn test_equal_hop_announce_with_newer_emission_updates_path() {
+            use crate::destination::{Destination, DestinationType, Direction};
+
+            let mut transport = make_transport_enabled();
+            let _idx0 = transport.register_interface(Box::new(MockInterface::new("if0", 1)));
+            let _idx1 = transport.register_interface(Box::new(MockInterface::new("if1", 2)));
+
+            let identity = Identity::generate(&mut OsRng);
+            let dest = Destination::new(
+                Some(identity),
+                Direction::In,
+                DestinationType::Single,
+                "testapp",
+                &["hops"],
+            )
+            .unwrap();
+            let dest_hash = dest.hash().into_bytes();
+
+            // Inject announce at hops=2 via interface 0
+            let now1 = transport.clock.now_ms();
+            let a1 = make_announce_raw_for_dest(&dest, 2, now1);
+            transport.process_incoming(0, &a1).unwrap();
+            assert_eq!(transport.hops_to(&dest_hash), Some(2));
+            assert_eq!(transport.path(&dest_hash).unwrap().interface_index, 0);
+
+            // Advance past rate limit
+            transport.clock.advance(ANNOUNCE_RATE_LIMIT_MS + 1);
+
+            // Inject equal-hop announce via interface 1 with newer timestamp
+            let now2 = transport.clock.now_ms();
+            let a2 = make_announce_raw_for_dest(&dest, 2, now2);
+            transport.process_incoming(1, &a2).unwrap();
+
+            // Should update to the newer path (interface 1)
+            assert_eq!(
+                transport.path(&dest_hash).unwrap().interface_index,
+                1,
+                "Equal-hop announce with newer emission should update path"
+            );
+        }
+
+        #[test]
+        fn test_equal_hop_announce_with_same_emission_does_not_update() {
+            // Per Python Transport.py:1627: equal hops require announce_emitted > path_timebase.
+            // If emission is the same (not newer), path should NOT update.
+            use crate::destination::{Destination, DestinationType, Direction};
+
+            let mut transport = make_transport_enabled();
+            let _idx0 = transport.register_interface(Box::new(MockInterface::new("if0", 1)));
+            let _idx1 = transport.register_interface(Box::new(MockInterface::new("if1", 2)));
+
+            let identity = Identity::generate(&mut OsRng);
+            let dest = Destination::new(
+                Some(identity),
+                Direction::In,
+                DestinationType::Single,
+                "testapp",
+                &["hops"],
+            )
+            .unwrap();
+            let dest_hash = dest.hash().into_bytes();
+
+            // Inject announce at hops=2 via interface 0 at time T
+            let now = transport.clock.now_ms();
+            let a1 = make_announce_raw_for_dest(&dest, 2, now);
+            transport.process_incoming(0, &a1).unwrap();
+            assert_eq!(transport.hops_to(&dest_hash), Some(2));
+            assert_eq!(transport.path(&dest_hash).unwrap().interface_index, 0);
+
+            // Advance past rate limit but use SAME timestamp for announce
+            transport.clock.advance(ANNOUNCE_RATE_LIMIT_MS + 1);
+
+            // Inject equal-hop announce via interface 1 but with SAME emission time
+            let a2 = make_announce_raw_for_dest(&dest, 2, now); // same now_ms!
+            transport.process_incoming(1, &a2).unwrap();
+
+            // Path should NOT update — emission is not newer
+            assert_eq!(
+                transport.path(&dest_hash).unwrap().interface_index,
+                0,
+                "Equal-hop announce with same emission should not update path"
+            );
+        }
+
+        // ─── Stage 10b: Random blobs cap ────────────────────────────────
+
+        #[test]
+        fn test_random_blobs_capped_at_max() {
+            use crate::constants::MAX_RANDOM_BLOBS;
+            use crate::destination::{Destination, DestinationType, Direction};
+
+            let mut transport = make_transport_enabled();
+            let _idx0 = transport.register_interface(Box::new(MockInterface::new("if0", 1)));
+
+            let identity = Identity::generate(&mut OsRng);
+            let dest = Destination::new(
+                Some(identity),
+                Direction::In,
+                DestinationType::Single,
+                "testapp",
+                &["blobs"],
+            )
+            .unwrap();
+            let dest_hash = dest.hash().into_bytes();
+
+            // Inject MAX_RANDOM_BLOBS + 10 announces, advancing clock each time
+            for i in 0..(MAX_RANDOM_BLOBS + 10) {
+                transport.clock.advance(ANNOUNCE_RATE_LIMIT_MS + 1);
+                let now = transport.clock.now_ms();
+                let raw = make_announce_raw_for_dest(&dest, 1, now);
+                transport.process_incoming(0, &raw).unwrap();
+
+                // Verify path exists after first announce
+                if i == 0 {
+                    assert!(transport.has_path(&dest_hash));
+                }
+            }
+
+            let path = transport.path(&dest_hash).unwrap();
+            assert!(
+                path.random_blobs.len() <= MAX_RANDOM_BLOBS,
+                "random_blobs should be capped at {}, got {}",
+                MAX_RANDOM_BLOBS,
+                path.random_blobs.len()
+            );
+        }
+
+        // ─── Stage 10c: Out-of-order announce arrival ────────────────────
+
+        #[test]
+        fn test_stale_worse_hop_announce_does_not_overwrite_fresher_better_path() {
+            // Models mesh out-of-order arrival: destination D announces at T=5M
+            // (propagates via slow 3-hop path) then again at T=10M (propagates
+            // via fast 1-hop path). Receiver gets the 1-hop fresh announce
+            // first, then the 3-hop stale announce later.
+            use crate::destination::{Destination, DestinationType, Direction};
+
+            let mut transport = make_transport_enabled();
+            let _idx0 = transport.register_interface(Box::new(MockInterface::new("if0", 1)));
+            let _idx1 = transport.register_interface(Box::new(MockInterface::new("if1", 2)));
+
+            let identity = Identity::generate(&mut OsRng);
+            let dest = Destination::new(
+                Some(identity),
+                Direction::In,
+                DestinationType::Single,
+                "testapp",
+                &["ooo"],
+            )
+            .unwrap();
+            let dest_hash = dest.hash().into_bytes();
+
+            // Build both announces with decoupled emission timestamps
+            let a_stale = make_announce_raw_for_dest(&dest, 3, 5_000_000); // old emission, long path
+            let a_fresh = make_announce_raw_for_dest(&dest, 1, 10_000_000); // newer emission, short path
+
+            // Fresh announce arrives first at T=12M via iface_0
+            transport.clock.time_ms.set(12_000_000);
+            transport.process_incoming(0, &a_fresh).unwrap();
+            assert_eq!(transport.hops_to(&dest_hash), Some(1));
+            assert_eq!(transport.path(&dest_hash).unwrap().interface_index, 0);
+
+            // Drain and verify PathFound + AnnounceReceived events
+            let events: Vec<_> = transport.drain_events().collect();
+            assert!(
+                events.len() >= 2,
+                "Expected PathFound + AnnounceReceived, got {} events",
+                events.len()
+            );
+            let initial_processed = transport.stats().announces_processed;
+            assert_eq!(initial_processed, 1);
+
+            // Stale announce arrives later at T=15M via iface_1
+            // (past rate limit relative to the fresh announce)
+            transport.clock.time_ms.set(15_000_000);
+            transport.process_incoming(1, &a_stale).unwrap();
+
+            // Path must NOT be overwritten: older emission (5M < 10M),
+            // worse hops (3 > 1), path not expired → rejected
+            assert_eq!(
+                transport.hops_to(&dest_hash),
+                Some(1),
+                "Stale worse-hop announce must not overwrite fresher better path"
+            );
+            assert_eq!(
+                transport.path(&dest_hash).unwrap().interface_index,
+                0,
+                "Interface must remain iface_0 (fresh path), not iface_1 (stale)"
+            );
+
+            // Random blob still recorded for replay detection (both announces)
+            assert_eq!(
+                transport.path(&dest_hash).unwrap().random_blobs.len(),
+                2,
+                "Both random blobs should be recorded for replay detection"
+            );
+
+            // announces_processed should NOT increment for the rejected announce
+            assert_eq!(
+                transport.stats().announces_processed,
+                initial_processed,
+                "Rejected stale announce must not increment announces_processed"
+            );
+
+            // No new events emitted for the rejected announce
+            let stale_events: Vec<_> = transport.drain_events().collect();
+            assert!(
+                stale_events.is_empty(),
+                "Rejected stale announce must not emit events, got {} events",
+                stale_events.len()
+            );
+        }
+
+        #[test]
+        fn test_stale_arrives_first_then_fresh_replaces() {
+            // Inverse scenario: stale 3-hop announce arrives first, then fresh
+            // 1-hop announce arrives and correctly replaces the path.
+            use crate::destination::{Destination, DestinationType, Direction};
+
+            let mut transport = make_transport_enabled();
+            let _idx0 = transport.register_interface(Box::new(MockInterface::new("if0", 1)));
+            let _idx1 = transport.register_interface(Box::new(MockInterface::new("if1", 2)));
+
+            let identity = Identity::generate(&mut OsRng);
+            let dest = Destination::new(
+                Some(identity),
+                Direction::In,
+                DestinationType::Single,
+                "testapp",
+                &["ooo"],
+            )
+            .unwrap();
+            let dest_hash = dest.hash().into_bytes();
+
+            // Same two announces as above
+            let a_stale = make_announce_raw_for_dest(&dest, 3, 5_000_000);
+            let a_fresh = make_announce_raw_for_dest(&dest, 1, 10_000_000);
+
+            // Stale announce arrives first at T=8M via iface_1
+            transport.clock.time_ms.set(8_000_000);
+            transport.process_incoming(1, &a_stale).unwrap();
+            assert_eq!(transport.hops_to(&dest_hash), Some(3));
+            assert_eq!(transport.path(&dest_hash).unwrap().interface_index, 1);
+
+            // Fresh announce arrives later at T=12M via iface_0
+            transport.clock.time_ms.set(12_000_000);
+            transport.process_incoming(0, &a_fresh).unwrap();
+
+            // Path should be updated: newer emission (10M > 5M), better hops (1 < 3)
+            assert_eq!(
+                transport.hops_to(&dest_hash),
+                Some(1),
+                "Fresh better-hop announce must replace stale worse path"
+            );
+            assert_eq!(
+                transport.path(&dest_hash).unwrap().interface_index,
+                0,
+                "Interface must be updated to iface_0 (fresh path)"
+            );
+
+            // Both announces processed
+            assert_eq!(transport.stats().announces_processed, 2);
         }
     }
 }
