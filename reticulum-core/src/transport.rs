@@ -1010,7 +1010,7 @@ impl<C: Clock, S: Storage> Transport<C, S> {
                     expires_ms: now + (self.config.path_expiry_secs * 1000),
                     interface_index,
                     random_blobs,
-                    next_hop: None,
+                    next_hop: packet.transport_id,
                 },
             );
 
