@@ -5,6 +5,21 @@ All notable changes to this project will be documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.4.2] - 2026-02-09
+
+### Added
+- **Path recovery mechanism** matching Python Reticulum's `Transport.py:618-699` — when unvalidated link entries expire, the transport layer marks paths as unresponsive and triggers path rediscovery
+- `PathState` enum (`Unknown`, `Unresponsive`, `Responsive`) for tracking path quality
+- Path state API: `mark_path_unresponsive()`, `mark_path_responsive()`, `mark_path_unknown_state()`, `path_is_unresponsive()`, `expire_path()`
+- `TransportEvent::PathRediscoveryNeeded` for signalling the driver to issue `request_path()` on appropriate interfaces, with optional `blocked_iface` to exclude the failed interface
+- Unresponsive path acceptance in `handle_announce()`: when a path is marked unresponsive, same-emission announces with higher hop counts are accepted as alternative routes
+- Automatic path state reset to `Unknown` when a normal announce updates the path table
+- Orphan `path_states` cleanup during `poll()` for destinations no longer in `path_table`
+- `destination_hash` field in `LinkEntry` for path rediscovery (link table keys are link IDs, not destination hashes)
+- Path rediscovery sub-cases in `clean_link_table()`: missing path, local client link, 1-hop destination, 1-hop initiator — each with appropriate `mark_path_unresponsive` and `blocked_iface` behavior
+- Non-transport nodes call `expire_path()` on unvalidated link expiry to allow accepting higher-hop-count announces
+- 15 new transport unit tests covering the full path recovery mechanism
+
 ## [0.4.1] - 2026-02-08
 
 ### Added
@@ -419,7 +434,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Transport layer (routing, paths, deduplication)
 - Full interoperability with Python rnsd
 
-[Unreleased]: https://codeberg.org/Lew_Palm/leviculum/compare/v0.4.1...HEAD
+[Unreleased]: https://codeberg.org/Lew_Palm/leviculum/compare/v0.4.2...HEAD
+[0.4.2]: https://codeberg.org/Lew_Palm/leviculum/compare/v0.4.1...v0.4.2
 [0.4.1]: https://codeberg.org/Lew_Palm/leviculum/compare/v0.4.0...v0.4.1
 [0.4.0]: https://codeberg.org/Lew_Palm/leviculum/compare/v0.3.2...v0.4.0
 [0.3.2]: https://codeberg.org/Lew_Palm/leviculum/compare/v0.3.1...v0.3.2
