@@ -913,12 +913,6 @@ impl<R: CryptoRngCore, C: Clock, S: Storage> NodeCore<R, C, S> {
                     interface_index: 0,
                 });
             }
-
-            TransportEvent::PathRediscoveryNeeded { .. } => {
-                // Path rediscovery is handled by the driver (reticulum-std),
-                // which calls request_path() on appropriate interfaces.
-                // NodeCore passes this event through for the driver to handle.
-            }
         }
     }
 

@@ -331,19 +331,6 @@ pub enum TransportEvent {
         /// Truncated hash identifying the receipt
         packet_hash: [u8; TRUNCATED_HASHBYTES],
     },
-
-    /// Path rediscovery needed after unvalidated link expiry
-    ///
-    /// Emitted when an unvalidated link expires and the destination may need
-    /// a new path. The driver should call `request_path()` on appropriate
-    /// interfaces.
-    PathRediscoveryNeeded {
-        /// The destination hash to rediscover
-        destination_hash: [u8; TRUNCATED_HASHBYTES],
-        /// If Some, request path on all interfaces EXCEPT this one.
-        /// If None, request path on all interfaces.
-        blocked_iface: Option<usize>,
-    },
 }
 
 // ─── Error Types ────────────────────────────────────────────────────────────
@@ -2016,7 +2003,6 @@ impl<C: Clock, S: Storage> Transport<C, S> {
             };
 
             let mut should_request_path = false;
-            let mut blocked_iface: Option<usize> = None;
 
             if !self.path_table.contains_key(&dest_hash) {
                 // Sub-case 1: Path missing — unconditionally try to rediscover
@@ -2030,7 +2016,6 @@ impl<C: Clock, S: Storage> Transport<C, S> {
                 // Sub-case 3: Destination was 1-hop away.
                 // Python Transport.py:660-676.
                 should_request_path = true;
-                blocked_iface = Some(entry.received_interface_index);
                 if self.config.enable_transport {
                     self.mark_path_unresponsive(&dest_hash);
                 }
@@ -2038,7 +2023,6 @@ impl<C: Clock, S: Storage> Transport<C, S> {
                 // Sub-case 4: Initiator was 1-hop away.
                 // Python Transport.py:682-689.
                 should_request_path = true;
-                blocked_iface = Some(entry.received_interface_index);
                 if self.config.enable_transport {
                     self.mark_path_unresponsive(&dest_hash);
                 }
@@ -2052,10 +2036,13 @@ impl<C: Clock, S: Storage> Transport<C, S> {
                     self.expire_path(&dest_hash);
                 }
 
-                self.events.push(TransportEvent::PathRediscoveryNeeded {
-                    destination_hash: dest_hash,
-                    blocked_iface,
-                });
+                // Request path directly — deterministic tag from clock + dest_hash
+                // ensures uniqueness per (destination, time) for dedup.
+                let mut tag = [0u8; TRUNCATED_HASHBYTES];
+                let now_bytes = now.to_be_bytes();
+                tag[..8].copy_from_slice(&now_bytes);
+                tag[8..16].copy_from_slice(&dest_hash[..8]);
+                let _ = self.request_path(&dest_hash, None, &tag);
             }
         }
     }
@@ -2800,6 +2787,22 @@ mod tests {
                 ..TransportConfig::default()
             };
             Transport::new(config, clock, NoStorage, identity)
+        }
+
+        /// Check if actions contain a path request broadcast for the given destination.
+        /// Path request packet (Type1): flags(1) + hops(1) + path_request_hash(16) + context(1) = 19 header bytes
+        /// Payload: target_dest_hash(16) + transport_id(16) + tag(16) = 48 bytes
+        fn has_path_request_broadcast(
+            actions: &[Action],
+            dest_hash: &[u8; TRUNCATED_HASHBYTES],
+        ) -> bool {
+            actions.iter().any(|a| match a {
+                Action::Broadcast { data, .. } => {
+                    data.len() >= 19 + TRUNCATED_HASHBYTES
+                        && data[19..19 + TRUNCATED_HASHBYTES] == *dest_hash
+                }
+                _ => false,
+            })
         }
 
         // ─── Stage 1: Announce Rebroadcast Tests ─────────────────────────
@@ -6666,7 +6669,7 @@ mod tests {
         }
 
         #[test]
-        fn test_link_table_expiry_unvalidated_emits_rediscovery_event() {
+        fn test_link_table_expiry_unvalidated_sends_path_request() {
             let mut transport = make_transport_enabled();
             let _idx0 = transport.register_interface(Box::new(MockInterface::new("if0", 1)));
             let _idx1 = transport.register_interface(Box::new(MockInterface::new("if1", 2)));
@@ -6702,30 +6705,22 @@ mod tests {
                 },
             );
 
-            // Drain any events from setup
+            // Drain any events/actions from setup
             transport.drain_events();
+            transport.drain_actions();
 
             transport.clock.advance(1001);
             transport.poll();
 
-            let events: Vec<_> = transport.drain_events().collect();
-            let has_rediscovery = events.iter().any(|e| {
-                matches!(
-                    e,
-                    TransportEvent::PathRediscoveryNeeded {
-                        destination_hash,
-                        blocked_iface: Some(0),
-                    } if *destination_hash == dest_hash
-                )
-            });
+            let actions = transport.drain_actions();
             assert!(
-                has_rediscovery,
-                "Should emit PathRediscoveryNeeded with blocked_iface=Some(0)"
+                has_path_request_broadcast(&actions, &dest_hash),
+                "Should send path request broadcast for unvalidated link expiry"
             );
         }
 
         #[test]
-        fn test_link_table_expiry_unvalidated_path_missing_emits_event() {
+        fn test_link_table_expiry_unvalidated_path_missing_sends_path_request() {
             let mut transport = make_transport_enabled();
             let _idx0 = transport.register_interface(Box::new(MockInterface::new("if0", 1)));
 
@@ -6749,22 +6744,14 @@ mod tests {
             );
 
             transport.drain_events();
+            transport.drain_actions();
             transport.clock.advance(1001);
             transport.poll();
 
-            let events: Vec<_> = transport.drain_events().collect();
-            let has_rediscovery = events.iter().any(|e| {
-                matches!(
-                    e,
-                    TransportEvent::PathRediscoveryNeeded {
-                        destination_hash,
-                        blocked_iface: None,
-                    } if *destination_hash == dest_hash
-                )
-            });
+            let actions = transport.drain_actions();
             assert!(
-                has_rediscovery,
-                "Should emit PathRediscoveryNeeded with blocked_iface=None when path is missing"
+                has_path_request_broadcast(&actions, &dest_hash),
+                "Should send path request broadcast when path is missing"
             );
         }
 
@@ -6805,21 +6792,19 @@ mod tests {
             );
 
             transport.drain_events();
+            transport.drain_actions();
 
             // Advance past LINK_TIMEOUT_MS
             transport.clock.advance(LINK_TIMEOUT_MS + 1000);
             transport.poll();
 
-            // Link removed, but NO rediscovery event
+            // Link removed, but NO path request
             assert!(!transport.link_table.contains_key(&link_id));
 
-            let events: Vec<_> = transport.drain_events().collect();
-            let has_rediscovery = events
-                .iter()
-                .any(|e| matches!(e, TransportEvent::PathRediscoveryNeeded { .. }));
+            let actions = transport.drain_actions();
             assert!(
-                !has_rediscovery,
-                "Validated link expiry should NOT emit PathRediscoveryNeeded"
+                !has_path_request_broadcast(&actions, &dest_hash),
+                "Validated link expiry should NOT send path request"
             );
 
             // Path state unchanged
@@ -6934,6 +6919,7 @@ mod tests {
             );
 
             transport.drain_events();
+            transport.drain_actions();
 
             transport.clock.advance(1001);
             transport.poll();
@@ -6954,14 +6940,11 @@ mod tests {
             });
             assert!(has_path_lost, "Should emit PathLost");
 
-            let has_rediscovery = events.iter().any(|e| {
-                matches!(
-                    e,
-                    TransportEvent::PathRediscoveryNeeded { destination_hash, .. }
-                    if *destination_hash == dest_hash
-                )
-            });
-            assert!(has_rediscovery, "Should emit PathRediscoveryNeeded");
+            let actions = transport.drain_actions();
+            assert!(
+                has_path_request_broadcast(&actions, &dest_hash),
+                "Should send path request broadcast"
+            );
         }
 
         #[test]
@@ -7010,12 +6993,12 @@ mod tests {
                 "Path should be marked unresponsive after unvalidated link expiry"
             );
 
-            // Check PathRediscoveryNeeded event was emitted
-            let events: Vec<_> = transport.drain_events().collect();
-            let has_rediscovery = events
-                .iter()
-                .any(|e| matches!(e, TransportEvent::PathRediscoveryNeeded { .. }));
-            assert!(has_rediscovery, "Should emit PathRediscoveryNeeded");
+            // Check path request broadcast was emitted
+            let actions = transport.drain_actions();
+            assert!(
+                has_path_request_broadcast(&actions, &dest_hash),
+                "Should send path request broadcast"
+            );
 
             // Step 5: Clear packet cache and advance past rate limit
             transport.packet_cache.clear();

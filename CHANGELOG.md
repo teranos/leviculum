@@ -5,6 +5,14 @@ All notable changes to this project will be documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.4.3] - 2026-02-10
+
+### Fixed
+- **Path rediscovery was dead code** — `TransportEvent::PathRediscoveryNeeded` was emitted by `clean_link_table()` but the node layer had an empty match arm and no driver handler existed, so path rediscovery never actually triggered. Now `request_path()` is called directly from core during link table cleanup, making the path recovery mechanism from v0.4.2 functional.
+
+### Removed
+- `TransportEvent::PathRediscoveryNeeded` variant — path rediscovery is now handled entirely within core via direct `request_path()` calls, eliminating the unnecessary core/driver boundary crossing
+
 ## [0.4.2] - 2026-02-09
 
 ### Added
@@ -434,7 +442,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Transport layer (routing, paths, deduplication)
 - Full interoperability with Python rnsd
 
-[Unreleased]: https://codeberg.org/Lew_Palm/leviculum/compare/v0.4.2...HEAD
+[Unreleased]: https://codeberg.org/Lew_Palm/leviculum/compare/v0.4.3...HEAD
+[0.4.3]: https://codeberg.org/Lew_Palm/leviculum/compare/v0.4.2...v0.4.3
 [0.4.2]: https://codeberg.org/Lew_Palm/leviculum/compare/v0.4.1...v0.4.2
 [0.4.1]: https://codeberg.org/Lew_Palm/leviculum/compare/v0.4.0...v0.4.1
 [0.4.0]: https://codeberg.org/Lew_Palm/leviculum/compare/v0.3.2...v0.4.0
