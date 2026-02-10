@@ -121,14 +121,18 @@ pub struct ReticulumNodeImpl {
     pending_connects: Arc<Mutex<HashMap<[u8; TRUNCATED_HASHBYTES], oneshot::Sender<LinkId>>>>,
     /// Shared outgoing channel sender (cloned to each ConnectionStream)
     outgoing_tx: mpsc::Sender<(LinkId, Vec<u8>)>,
+    /// Channel for dispatching TickOutput from outside the event loop
+    /// (used by connect() and announce_destination())
+    action_dispatch_tx: mpsc::Sender<TickOutput>,
 }
 
 impl ReticulumNodeImpl {
     /// Create a new ReticulumNode (internal use - use ReticulumNodeBuilder)
     pub(crate) fn new(core: StdNodeCore, interfaces: Vec<InterfaceConfig>) -> Self {
         let (event_tx, event_rx) = mpsc::channel(EVENT_CHANNEL_CAPACITY);
-        // Create a dummy outgoing channel; the real one is created in start()
+        // Create dummy channels; real ones are created in start()
         let (outgoing_tx, _) = mpsc::channel(1);
+        let (action_dispatch_tx, _) = mpsc::channel(1);
 
         Self {
             inner: Arc::new(Mutex::new(core)),
@@ -140,6 +144,7 @@ impl ReticulumNodeImpl {
             connections: Arc::new(Mutex::new(HashMap::new())),
             pending_connects: Arc::new(Mutex::new(HashMap::new())),
             outgoing_tx,
+            action_dispatch_tx,
         }
     }
 
@@ -162,6 +167,15 @@ impl ReticulumNodeImpl {
         let (outgoing_tx, outgoing_rx) = mpsc::channel(EVENT_CHANNEL_CAPACITY);
         self.outgoing_tx = outgoing_tx;
 
+        // Channel for dispatching TickOutput from outside the event loop.
+        // connect() and announce_destination() produce actions that must reach
+        // the event loop for interface dispatch.  Capacity 256 is generous —
+        // each call produces exactly one TickOutput, and the event loop drains
+        // them on every iteration, so the queue only backs up if the event
+        // loop is blocked (which also stalls all other I/O).
+        let (action_dispatch_tx, action_dispatch_rx) = mpsc::channel(EVENT_CHANNEL_CAPACITY);
+        self.action_dispatch_tx = action_dispatch_tx;
+
         // Clone handles for the runner
         let inner = Arc::clone(&self.inner);
         let event_tx = self.event_tx.clone();
@@ -177,6 +191,7 @@ impl ReticulumNodeImpl {
                 connections,
                 pending_connects,
                 outgoing_rx,
+                action_dispatch_rx,
                 shutdown_rx,
             )
             .await;
@@ -296,12 +311,15 @@ impl ReticulumNodeImpl {
         }
 
         // Request connection from NodeCore
-        // Actions are now queued in transport.pending_actions;
-        // the event loop will flush them on next iteration
-        let link_id = {
+        let (link_id, output) = {
             let mut inner = self.inner.lock().unwrap();
             inner.connect(*dest_hash, dest_signing_key)
         };
+        // Send output to event loop for dispatch (backpressure — waits if full)
+        self.action_dispatch_tx
+            .send(output)
+            .await
+            .map_err(|_| Error::Transport("event loop shut down".to_string()))?;
 
         // Create incoming channel (per-connection)
         let (in_tx, in_rx) = mpsc::channel(CONNECTION_CHANNEL_CAPACITY);
@@ -372,11 +390,20 @@ impl ReticulumNodeImpl {
         &self,
         dest_hash: &reticulum_core::DestinationHash,
         app_data: Option<&[u8]>,
-    ) -> Result<(), reticulum_core::AnnounceError> {
-        self.inner
+    ) -> Result<(), Error> {
+        let output = self
+            .inner
             .lock()
             .unwrap()
             .announce_destination(dest_hash, app_data)
+            .map_err(|e| Error::Transport(e.to_string()))?;
+        // Send output to event loop for dispatch.
+        // try_send fails only if the channel is full (event loop stalled)
+        // or closed (event loop shut down). Either way, the caller must know.
+        self.action_dispatch_tx
+            .try_send(output)
+            .map_err(|_| Error::Transport("action dispatch channel full or closed".to_string()))?;
+        Ok(())
     }
 
     /// Check if transport mode (relay/routing) is enabled
@@ -433,6 +460,7 @@ async fn recv_any(registry: &mut InterfaceRegistry) -> RecvEvent {
 /// The driver owns the interfaces and acts as the I/O bridge between the
 /// pure state machine (`NodeCore`) and the actual network. Uses `select!`
 /// to wake immediately on socket readability, outgoing data, or timer expiry.
+#[allow(clippy::too_many_arguments)]
 async fn run_event_loop(
     inner: Arc<Mutex<StdNodeCore>>,
     mut registry: InterfaceRegistry,
@@ -440,6 +468,7 @@ async fn run_event_loop(
     connections: Arc<Mutex<ConnectionMap>>,
     pending_connects: Arc<Mutex<HashMap<[u8; TRUNCATED_HASHBYTES], oneshot::Sender<LinkId>>>>,
     mut outgoing_rx: mpsc::Receiver<(LinkId, Vec<u8>)>,
+    mut action_dispatch_rx: mpsc::Receiver<TickOutput>,
     mut shutdown: watch::Receiver<bool>,
 ) {
     loop {
@@ -496,19 +525,33 @@ async fn run_event_loop(
 
             // Branch 2: Outgoing data from ConnectionStreams
             Some((link_id, data)) = outgoing_rx.recv() => {
-                let output = {
+                let mut combined = TickOutput::default();
+                {
                     let mut core = inner.lock().unwrap();
-                    if let Err(e) = core.send_on_connection(&link_id, &data) {
-                        tracing::debug!("send_on_connection failed for {:?}: {}", link_id, e);
+                    match core.send_on_connection(&link_id, &data) {
+                        Ok(output) => combined.merge(output),
+                        Err(e) => tracing::debug!("send_on_connection failed for {:?}: {}", link_id, e),
                     }
-                    // Drain any more queued messages before flushing
+                    // Drain any more queued messages before dispatching
                     while let Ok((lid, d)) = outgoing_rx.try_recv() {
-                        if let Err(e) = core.send_on_connection(&lid, &d) {
-                            tracing::debug!("send_on_connection failed for {:?}: {}", lid, e);
+                        match core.send_on_connection(&lid, &d) {
+                            Ok(output) => combined.merge(output),
+                            Err(e) => tracing::debug!("send_on_connection failed for {:?}: {}", lid, e),
                         }
                     }
-                    core.handle_timeout() // flush deferred actions
                 };
+                dispatch_output(
+                    combined,
+                    &registry,
+                    &event_tx,
+                    &connections,
+                    &pending_connects,
+                );
+            }
+
+            // Branch 3: Dispatch TickOutput from outside the event loop
+            // (connect() and announce_destination() send their output here)
+            Some(output) = action_dispatch_rx.recv() => {
                 dispatch_output(
                     output,
                     &registry,
@@ -518,7 +561,7 @@ async fn run_event_loop(
                 );
             }
 
-            // Branch 3: Timer deadline
+            // Branch 4: Timer deadline
             _ = tokio::time::sleep_until(deadline) => {
                 let output = {
                     let mut core = inner.lock().unwrap();
@@ -533,7 +576,7 @@ async fn run_event_loop(
                 );
             }
 
-            // Branch 4: Shutdown
+            // Branch 5: Shutdown
             _ = shutdown.changed() => {
                 if *shutdown.borrow() {
                     tracing::info!("Node shutdown requested");

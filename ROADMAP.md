@@ -37,7 +37,7 @@ Das Projekt hat Phase 1 vollständig abgeschlossen und Phase 2 ist zu ~95% ferti
 
 **Channel-Bridge-Architektur (v0.4.0):** Interfaces laufen jetzt als eigenständige Tokio-Tasks und kommunizieren über `mpsc`-Channels mit der Event-Loop. `reticulum-net` (neues `no_std`-Crate) definiert die gemeinsamen Datentypen (`IncomingPacket`, `OutgoingPacket`, `InterfaceInfo`), die sowohl auf std- als auch Embedded-Plattformen funktionieren. `reticulum-nrf` ist ein Embassy-basiertes Firmware-Crate für den Heltec Mesh Node T114 (nRF52840 + SX1262) mit vollständigen Pin-Mappings, USB Composite CDC-ACM (Debug-Log + Reticulum-Transport als zwei serielle Ports), `info!`/`warn!`-Logging-Makros, FICR-basierter USB-Seriennummer, udev-Regeln für stabile Gerätesymlinks, und einem automatisierten Flash-und-Verify-Testharnisch (`tools/flash-and-read.sh`).
 
-**Deferred-Dispatch-Modell (v0.3.1):** Applikationsmethoden (`connect()`, `accept_connection()`, `send_on_connection()`) routen Pakete jetzt intern über das Action-System statt rohe Bytes zurückzugeben. Actions werden beim nächsten `handle_packet()`/`handle_timeout()` geflusht. `Link.attached_interface` (analog zu Python) steuert das Routing für Link-gebundenen Verkehr.
+**Sofortige Action-Rückgabe (v0.5.0, vormals Deferred-Dispatch v0.3.1):** Alle Applikationsmethoden (`connect()`, `accept_connection()`, `send_on_connection()`, `close_connection()`, `send_single_packet()`, `announce_destination()`) geben `TickOutput` direkt zurück — Actions werden sofort geflusht statt erst beim nächsten `handle_timeout()`. Der Treiber dispatcht die zurückgegebenen Actions genauso wie bei `handle_packet()`/`handle_timeout()`. `Link.attached_interface` (analog zu Python) steuert das Routing für Link-gebundenen Verkehr.
 
 **Architektur-Migration abgeschlossen:** `NodeCore` besitzt RNG intern als generischen Parameter (`NodeCore<R, C, S>`). Alle Runtime-Methoden (`handle_packet()`, `connect()`, etc.) benötigen keinen `Context`-Parameter mehr. Die `Context`-Trait-Abstraktion wurde vollständig entfernt — Funktionen nehmen direkt `rng: &mut R` und `now_ms: u64` als Parameter. Alle `#[cfg(feature = "alloc")]` wurden entfernt — `alloc` ist immer verfügbar. Das `std` Feature aktiviert nur noch optimierte Crypto-Implementierungen.
 
@@ -45,7 +45,7 @@ Das Projekt hat Phase 1 vollständig abgeschlossen und Phase 2 ist zu ~95% ferti
 
 **Transport Layer vollständig (3.676 LOC):** Announce-Rebroadcast, PATH_REQUEST/PATH_RESPONSE, Reverse-Path-Routing, Link-Tabellenverwaltung, Hop-Count-Validation, Header-Stripping am letzten Hop, Announce-Replay-Schutz, LRPROOF-Validierung, Auto-Re-Announce auf PATH_REQUEST. **Path Recovery** (v0.4.2/v0.4.3): Pfad-Zustandsverfolgung (`PathState`), automatische Markierung als unresponsive bei abgelaufenen unvalidierten Links, Akzeptanz von Same-Emission-Announces über Alternativrouten, direkte `request_path()`-Aufrufe aus dem Core für Pfad-Neuentdeckung. **Announce Rate Limiting** (v0.4.4): Per-Destination-Violation/Grace/Penalty-Eskalationsmechanismus analog zu Python Transport.py:1692-1719, blockiert nur Rebroadcast (nicht Pfad-Updates), konfigurierbar und standardmäßig deaktiviert. **Rust Transport Relay** funktioniert vollständig: Announce-Rebroadcast, Link-Routing und Datenweiterleitung zwischen zwei Python-Daemons getestet.
 
-**Code-Qualität:** LinkManager intern auf einheitliche Paket-Queue (`PendingPacket` Enum) umgestellt, Timeout-Konstanten zentralisiert, `LinkId` und `DestinationHash` als Newtype-Structs für vollständige Typ-Sicherheit (keine `Deref` mehr, kein `as_bytes_mut()`). Proof-Strategy und Signing-Key von LinkManager's Destination-Map auf den `Link` selbst verschoben — reduziert duplizierte State zwischen Transport, LinkManager und NodeCore. ~843 Tests bestehen (568 Core-Unit + 20 Std-Lib + 170 Interop + 26 Doctests + 18 Proptest + 31 Test-Vektoren + 7 Core-Integration + 3 Std-Integration + 1 FFI).
+**Code-Qualität:** LinkManager intern auf einheitliche Paket-Queue (`PendingPacket` Enum) umgestellt, Timeout-Konstanten zentralisiert, `LinkId` und `DestinationHash` als Newtype-Structs für vollständige Typ-Sicherheit (keine `Deref` mehr, kein `as_bytes_mut()`). Proof-Strategy und Signing-Key von LinkManager's Destination-Map auf den `Link` selbst verschoben — reduziert duplizierte State zwischen Transport, LinkManager und NodeCore. ~857 Tests bestehen (582 Core-Unit + 20 Std-Lib + 170 Interop + 26 Doctests + 18 Proptest + 31 Test-Vektoren + 7 Core-Integration + 3 Std-Integration + 1 FFI).
 
 | Komponente | Status | LOC |
 |------------|--------|-----|
@@ -76,7 +76,7 @@ Das Projekt hat Phase 1 vollständig abgeschlossen und Phase 2 ist zu ~95% ferti
 | reticulum-nrf | ~400 | — | Embedded-Firmware (Embassy, nRF52840, USB CDC-ACM) |
 | reticulum-ffi | 361 | 404 | C-API |
 
-**Test-Abdeckung:** ~843 Tests (568 Core-Unit + 18 Proptest + 31 Test-Vektoren + 26 Doctests + 20 Std-Lib + 7 Core-Integration + 3 Std-Integration + 1 FFI + 170 Interop gegen rnsd)
+**Test-Abdeckung:** ~857 Tests (582 Core-Unit + 18 Proptest + 31 Test-Vektoren + 26 Doctests + 20 Std-Lib + 7 Core-Integration + 3 Std-Integration + 1 FFI + 170 Interop gegen rnsd)
 
 **Architektur:** Siehe [doc/ARCHITECTURE.md](doc/ARCHITECTURE.md) — no_std/embedded-freundlich, sans-I/O Core (reine Zustandsmaschine), I/O via Action-Rückgabewerte an den Treiber.
 
@@ -976,6 +976,6 @@ Für spätere Versionen:
 
 ---
 
-*Stand: 10. Februar 2026*
+*Stand: 11. Februar 2026*
 *Projekt: leviculum*
 *Lizenz: MIT*

@@ -100,6 +100,7 @@ pub enum Action {
 ///
 /// Returned by `handle_packet()`, `handle_timeout()`, and other methods that
 /// may trigger outbound I/O or application-visible events.
+#[derive(Default)]
 pub struct TickOutput {
     /// I/O actions for the driver to execute
     pub actions: Vec<Action>,
@@ -110,15 +111,20 @@ pub struct TickOutput {
 impl TickOutput {
     /// Create an empty TickOutput
     pub fn empty() -> Self {
-        Self {
-            actions: Vec::new(),
-            events: Vec::new(),
-        }
+        Self::default()
     }
 
     /// Check if this output contains no actions or events
     pub fn is_empty(&self) -> bool {
         self.actions.is_empty() && self.events.is_empty()
+    }
+
+    /// Merge another TickOutput into this one
+    ///
+    /// Appends all actions and events from `other` to `self`.
+    pub fn merge(&mut self, other: TickOutput) {
+        self.actions.extend(other.actions);
+        self.events.extend(other.events);
     }
 }
 

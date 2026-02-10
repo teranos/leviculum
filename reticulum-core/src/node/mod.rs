@@ -60,7 +60,7 @@ use crate::announce::AnnounceError;
 use crate::constants::TRUNCATED_HASHBYTES;
 use crate::destination::{Destination, DestinationHash, ProofStrategy};
 use crate::identity::Identity;
-use crate::link::{LinkEvent, LinkId, LinkManager};
+use crate::link::{LinkCloseReason, LinkEvent, LinkId, LinkManager};
 use crate::packet::Packet;
 use crate::traits::{Clock, Storage};
 use crate::transport::{Transport, TransportConfig, TransportEvent, TransportStats};
@@ -240,11 +240,16 @@ impl<R: CryptoRngCore, C: Clock, S: Storage> NodeCore<R, C, S> {
     /// # Arguments
     /// * `dest_hash` - Hash of the registered destination to announce
     /// * `app_data` - Optional application data to include in the announce
+    ///
+    /// # Returns
+    /// A `TickOutput` containing the broadcast action. The driver must
+    /// dispatch this output the same way it handles output from
+    /// `handle_packet()` / `handle_timeout()`.
     pub fn announce_destination(
         &mut self,
         dest_hash: &DestinationHash,
         app_data: Option<&[u8]>,
-    ) -> Result<(), AnnounceError> {
+    ) -> Result<crate::transport::TickOutput, AnnounceError> {
         let now_ms = self.transport.clock().now_ms();
 
         let dest = self
@@ -260,24 +265,26 @@ impl<R: CryptoRngCore, C: Clock, S: Storage> NodeCore<R, C, S> {
             .map_err(|_| AnnounceError::PacketTooLarge)?;
 
         self.transport.send_on_all_interfaces(&buf[..len]);
-        Ok(())
+        Ok(self.process_events_and_actions())
     }
 
     // ─── Connection Management ─────────────────────────────────────────────────
 
     /// Initiate a connection to a destination
     ///
-    /// # Deferred dispatch
-    ///
-    /// This method queues I/O actions internally. The actions are not executed
-    /// until the driver calls [`handle_packet()`] or [`handle_timeout()`],
-    /// which drain all pending actions. Callers must ensure the event loop
-    /// runs promptly after calling this method.
-    ///
     /// # Arguments
     /// * `dest_hash` - The destination to connect to
     /// * `dest_signing_key` - The destination's signing key (from announce)
-    pub fn connect(&mut self, dest_hash: DestinationHash, dest_signing_key: &[u8; 32]) -> LinkId {
+    ///
+    /// # Returns
+    /// The `LinkId` for the new connection and a `TickOutput` containing the
+    /// link request action. The driver must dispatch this output the same way
+    /// it handles output from `handle_packet()` / `handle_timeout()`.
+    pub fn connect(
+        &mut self,
+        dest_hash: DestinationHash,
+        dest_signing_key: &[u8; 32],
+    ) -> (LinkId, crate::transport::TickOutput) {
         // Check if we have path info for this destination
         let (next_hop, hops) = if let Some(path) = self.transport.path(dest_hash.as_bytes()) {
             // Multi-hop: need transport_id
@@ -315,26 +322,25 @@ impl<R: CryptoRngCore, C: Clock, S: Storage> NodeCore<R, C, S> {
             self.transport.send_on_all_interfaces(&packet);
         }
 
-        link_id
+        let output = self.process_events_and_actions();
+        (link_id, output)
     }
 
     /// Accept an incoming connection request
     ///
-    /// # Deferred dispatch
-    ///
-    /// This method queues I/O actions internally. The actions are not executed
-    /// until the driver calls [`handle_packet()`] or [`handle_timeout()`],
-    /// which drain all pending actions. Callers must ensure the event loop
-    /// runs promptly after calling this method.
-    ///
     /// # Arguments
     /// * `link_id` - The link ID from the ConnectionRequest event
     /// * `identity` - The destination's identity (for signing the proof)
+    ///
+    /// # Returns
+    /// A `TickOutput` containing the link proof action. The driver must
+    /// dispatch this output the same way it handles output from
+    /// `handle_packet()` / `handle_timeout()`.
     pub fn accept_connection(
         &mut self,
         link_id: &LinkId,
         identity: &Identity,
-    ) -> Result<(), ConnectionError> {
+    ) -> Result<crate::transport::TickOutput, ConnectionError> {
         // Look up proof strategy from the destination
         let proof_strategy = self
             .link_manager
@@ -374,7 +380,7 @@ impl<R: CryptoRngCore, C: Clock, S: Storage> NodeCore<R, C, S> {
             self.transport.send_on_all_interfaces(&proof);
         }
 
-        Ok(())
+        Ok(self.process_events_and_actions())
     }
 
     /// Reject an incoming connection request
@@ -383,9 +389,15 @@ impl<R: CryptoRngCore, C: Clock, S: Storage> NodeCore<R, C, S> {
     }
 
     /// Close a connection gracefully
-    pub fn close_connection(&mut self, link_id: &LinkId) {
+    ///
+    /// # Returns
+    /// A `TickOutput` containing the close packet action. The driver must
+    /// dispatch this output the same way it handles output from
+    /// `handle_packet()` / `handle_timeout()`.
+    pub fn close_connection(&mut self, link_id: &LinkId) -> crate::transport::TickOutput {
         self.link_manager.close(link_id, &mut self.rng);
         self.connections.remove(link_id);
+        self.process_events_and_actions()
     }
 
     /// Get a connection by link ID
@@ -489,28 +501,20 @@ impl<R: CryptoRngCore, C: Clock, S: Storage> NodeCore<R, C, S> {
     /// Use this when you've already determined that single-packet delivery
     /// is appropriate via `send()`.
     ///
-    /// # Deferred dispatch
-    ///
-    /// This method queues I/O actions internally. The actions are not executed
-    /// until the driver calls [`handle_packet()`] or [`handle_timeout()`],
-    /// which drain all pending actions. Callers must ensure the event loop
-    /// runs promptly after calling this method.
-    ///
-    /// NOTE: The packet is not sent immediately. It is queued as an Action
-    /// and will be dispatched when the driver next calls handle_packet() or
-    /// handle_timeout(). The returned packet hash can be used for receipt tracking.
-    ///
     /// # Arguments
     /// * `dest_hash` - The destination to send to
     /// * `data` - The data to send
     ///
     /// # Returns
-    /// The packet hash for tracking delivery (if proofs are enabled)
+    /// The packet hash for tracking delivery (if proofs are enabled) and
+    /// a `TickOutput` containing the send action. The driver must dispatch
+    /// this output the same way it handles output from `handle_packet()` /
+    /// `handle_timeout()`.
     pub fn send_single_packet(
         &mut self,
         dest_hash: &DestinationHash,
         data: &[u8],
-    ) -> Result<[u8; TRUNCATED_HASHBYTES], send::SendError> {
+    ) -> Result<([u8; TRUNCATED_HASHBYTES], crate::transport::TickOutput), send::SendError> {
         // Build a data packet
         use crate::destination::DestinationType;
         use crate::packet::{
@@ -549,7 +553,8 @@ impl<R: CryptoRngCore, C: Clock, S: Storage> NodeCore<R, C, S> {
             .transport
             .create_receipt(&buf[..len], dest_hash.into_bytes());
 
-        Ok(packet_hash)
+        let output = self.process_events_and_actions();
+        Ok((packet_hash, output))
     }
 
     /// Send data on an existing connection
@@ -557,21 +562,19 @@ impl<R: CryptoRngCore, C: Clock, S: Storage> NodeCore<R, C, S> {
     /// This sends data via the Channel on an established connection,
     /// providing reliable, ordered delivery.
     ///
-    /// # Deferred dispatch
-    ///
-    /// This method queues I/O actions internally. The actions are not executed
-    /// until the driver calls [`handle_packet()`] or [`handle_timeout()`],
-    /// which drain all pending actions. Callers must ensure the event loop
-    /// runs promptly after calling this method.
-    ///
     /// # Arguments
     /// * `link_id` - The connection to send on
     /// * `data` - The data to send
+    ///
+    /// # Returns
+    /// A `TickOutput` containing the send action. The driver must dispatch
+    /// this output the same way it handles output from `handle_packet()` /
+    /// `handle_timeout()`.
     pub fn send_on_connection(
         &mut self,
         link_id: &LinkId,
         data: &[u8],
-    ) -> Result<(), send::SendError> {
+    ) -> Result<crate::transport::TickOutput, send::SendError> {
         // Get the connection and link
         let connection = self
             .connections
@@ -611,7 +614,7 @@ impl<R: CryptoRngCore, C: Clock, S: Storage> NodeCore<R, C, S> {
                 .send_to_destination(dest_hash.as_bytes(), &packet_bytes);
         }
 
-        Ok(())
+        Ok(self.process_events_and_actions())
     }
 
     /// Find an existing connection to a destination
@@ -972,7 +975,31 @@ impl<R: CryptoRngCore, C: Clock, S: Storage> NodeCore<R, C, S> {
             }
 
             LinkEvent::LinkClosed { link_id, reason } => {
-                self.connections.remove(&link_id);
+                // Extract connection info BEFORE removing
+                let connection = self.connections.remove(&link_id);
+
+                // Path recovery for locally-initiated links that never activated
+                // (Python Transport.py:472-494). When an initiator link times out
+                // on a non-transport node, expire the stale path and request a
+                // fresh one so the application can retry.
+                if reason == LinkCloseReason::Timeout {
+                    if let Some(conn) = &connection {
+                        if conn.is_initiator() && !self.transport.config().enable_transport {
+                            let dest_hash = conn.destination_hash().into_bytes();
+                            self.transport.expire_path(&dest_hash);
+
+                            // Tag = [now_ms (8 bytes)] [dest_hash prefix (8 bytes)]
+                            // Same pattern as clean_link_table() for dedup.
+                            let now = self.transport.clock().now_ms();
+                            let mut tag = [0u8; TRUNCATED_HASHBYTES];
+                            let now_bytes = now.to_be_bytes();
+                            tag[..8].copy_from_slice(&now_bytes);
+                            tag[8..16].copy_from_slice(&dest_hash[..8]);
+                            let _ = self.transport.request_path(&dest_hash, None, &tag);
+                        }
+                    }
+                }
+
                 self.events.push(NodeEvent::ConnectionClosed {
                     link_id,
                     reason: reason.into(),
@@ -1523,13 +1550,10 @@ mod tests {
         let dest_hash = *remote_dest.hash();
         assert!(node.has_path(&dest_hash), "should have path from announce");
 
-        // Call connect() — this should queue Actions internally
-        let link_id = node.connect(dest_hash, &remote_signing_key);
+        // Call connect() — actions are returned immediately in TickOutput
+        let (link_id, output) = node.connect(dest_hash, &remote_signing_key);
 
-        // Now call handle_timeout() which drains all pending actions
-        let output = node.handle_timeout();
-
-        // The link request should have been queued as an Action (SendPacket
+        // The link request should have been returned as an Action (SendPacket
         // to the path's interface since we have a path, or Broadcast if no path)
         let has_send = output
             .actions
@@ -1537,9 +1561,233 @@ mod tests {
             .any(|a| matches!(a, Action::SendPacket { .. } | Action::Broadcast { .. }));
         assert!(
             has_send,
-            "connect() should queue an Action flushed by handle_timeout(), \
+            "connect() should return an Action in TickOutput, \
              link_id={:?}, actions={:?}",
             link_id, output.actions
+        );
+    }
+
+    // ─── Pending-Link Path Recovery Tests ────────────────────────────────────
+
+    /// Helper: create a non-transport node, announce a remote destination,
+    /// and call connect(). Returns (node, dest_hash, link_id).
+    fn setup_pending_link(
+        enable_transport: bool,
+    ) -> (
+        NodeCore<OsRng, MockClock, NoStorage>,
+        DestinationHash,
+        LinkId,
+    ) {
+        use crate::transport::InterfaceId;
+
+        let clock = MockClock::new(1_000_000);
+        let mut node = NodeCoreBuilder::new()
+            .enable_transport(enable_transport)
+            .build(OsRng, clock, NoStorage)
+            .unwrap();
+
+        // Create remote identity and announce to establish a path
+        let remote_identity = Identity::generate(&mut OsRng);
+        let remote_signing_key = remote_identity.ed25519_verifying().to_bytes();
+        let mut remote_dest = Destination::new(
+            Some(remote_identity),
+            Direction::In,
+            DestinationType::Single,
+            "testapp",
+            &["recovery"],
+        )
+        .unwrap();
+
+        let announce_packet = remote_dest.announce(None, &mut OsRng, 1_000_000).unwrap();
+        let mut buf = [0u8; crate::constants::MTU];
+        let len = announce_packet.pack(&mut buf).unwrap();
+
+        // Process announce on interface 0 to create path
+        let _ = node.handle_packet(InterfaceId(0), &buf[..len]);
+        // Drain the announce rebroadcast actions
+        let _ = node.handle_timeout();
+
+        let dest_hash = *remote_dest.hash();
+        assert!(node.has_path(&dest_hash), "should have path from announce");
+
+        // Initiate connection — actions returned in output
+        let (link_id, _output) = node.connect(dest_hash, &remote_signing_key);
+
+        (node, dest_hash, link_id)
+    }
+
+    #[test]
+    fn test_pending_link_timeout_triggers_path_recovery() {
+        use crate::constants::LINK_PENDING_TIMEOUT_MS;
+        use crate::transport::Action;
+
+        let (mut node, dest_hash, _link_id) = setup_pending_link(false);
+
+        // Path should exist before timeout
+        assert!(node.has_path(&dest_hash));
+
+        // Advance clock past the pending link timeout
+        node.transport()
+            .clock()
+            .0
+            .set(1_000_000 + LINK_PENDING_TIMEOUT_MS + 1);
+        let output = node.handle_timeout();
+
+        // Path should have been expired
+        assert!(
+            !node.has_path(&dest_hash),
+            "path should be expired after pending link timeout"
+        );
+
+        // Should have a Broadcast action (the path request)
+        let has_broadcast = output
+            .actions
+            .iter()
+            .any(|a| matches!(a, Action::Broadcast { .. }));
+        assert!(
+            has_broadcast,
+            "should emit a Broadcast action for path request, got: {:?}",
+            output.actions
+        );
+
+        // Should have ConnectionClosed event with Timeout reason
+        let has_closed = output.events.iter().any(|e| {
+            matches!(
+                e,
+                NodeEvent::ConnectionClosed {
+                    reason: CloseReason::Timeout,
+                    ..
+                }
+            )
+        });
+        assert!(has_closed, "should emit ConnectionClosed with Timeout");
+    }
+
+    #[test]
+    fn test_pending_link_timeout_no_recovery_for_transport_nodes() {
+        use crate::constants::LINK_PENDING_TIMEOUT_MS;
+
+        let (mut node, dest_hash, _link_id) = setup_pending_link(true);
+
+        // Advance clock past the pending link timeout
+        node.transport()
+            .clock()
+            .0
+            .set(1_000_000 + LINK_PENDING_TIMEOUT_MS + 1);
+        let _output = node.handle_timeout();
+
+        // Transport nodes should NOT expire the path — they handle recovery
+        // via clean_link_table() instead
+        assert!(
+            node.has_path(&dest_hash),
+            "transport node should NOT expire path on pending link timeout"
+        );
+    }
+
+    #[test]
+    fn test_pending_link_normal_close_no_recovery() {
+        let (mut node, dest_hash, link_id) = setup_pending_link(false);
+
+        // Close the connection normally (before timeout)
+        let _ = node.close_connection(&link_id);
+
+        // Advance clock and run maintenance
+        node.transport().clock().0.set(1_000_000 + 5_000);
+        let _output = node.handle_timeout();
+
+        // Path should still exist — normal close doesn't trigger recovery
+        assert!(
+            node.has_path(&dest_hash),
+            "path should NOT be expired after normal close"
+        );
+    }
+
+    #[test]
+    fn test_pending_link_recovery_rate_limited() {
+        use crate::constants::LINK_PENDING_TIMEOUT_MS;
+        use crate::transport::{Action, InterfaceId};
+
+        let clock = MockClock::new(1_000_000);
+        let mut node = NodeCoreBuilder::new()
+            .enable_transport(false)
+            .build(OsRng, clock, NoStorage)
+            .unwrap();
+
+        // Create two remote destinations
+        let remote1 = Identity::generate(&mut OsRng);
+        let signing1 = remote1.ed25519_verifying().to_bytes();
+        let mut dest1 = Destination::new(
+            Some(remote1),
+            Direction::In,
+            DestinationType::Single,
+            "testapp",
+            &["rate1"],
+        )
+        .unwrap();
+
+        let remote2 = Identity::generate(&mut OsRng);
+        let signing2 = remote2.ed25519_verifying().to_bytes();
+        let mut dest2 = Destination::new(
+            Some(remote2),
+            Direction::In,
+            DestinationType::Single,
+            "testapp",
+            &["rate2"],
+        )
+        .unwrap();
+
+        let ann1 = dest1.announce(None, &mut OsRng, 1_000_000).unwrap();
+        let ann2 = dest2.announce(None, &mut OsRng, 1_000_000).unwrap();
+        let mut buf = [0u8; crate::constants::MTU];
+
+        let len1 = ann1.pack(&mut buf).unwrap();
+        let _ = node.handle_packet(InterfaceId(0), &buf[..len1]);
+        let len2 = ann2.pack(&mut buf).unwrap();
+        let _ = node.handle_packet(InterfaceId(0), &buf[..len2]);
+        let _ = node.handle_timeout();
+
+        let hash1 = *dest1.hash();
+        let hash2 = *dest2.hash();
+
+        // Connect to both destinations — actions returned in output
+        let (_link1, _output1) = node.connect(hash1, &signing1);
+        let (_link2, _output2) = node.connect(hash2, &signing2);
+
+        // Advance past timeout — both links will time out simultaneously
+        node.transport()
+            .clock()
+            .0
+            .set(1_000_000 + LINK_PENDING_TIMEOUT_MS + 1);
+        let output = node.handle_timeout();
+
+        // Both paths should be expired
+        assert!(!node.has_path(&hash1), "path 1 should be expired");
+        assert!(!node.has_path(&hash2), "path 2 should be expired");
+
+        // Both should produce ConnectionClosed events
+        let closed_count = output
+            .events
+            .iter()
+            .filter(|e| matches!(e, NodeEvent::ConnectionClosed { .. }))
+            .count();
+        assert_eq!(
+            closed_count, 2,
+            "should have 2 ConnectionClosed events, got {}",
+            closed_count
+        );
+
+        // Both path requests should succeed since they're for different
+        // destinations (rate limiting is per-destination in request_path).
+        // Count Broadcast actions — should have at least 2 (one per dest).
+        let broadcast_count = output
+            .actions
+            .iter()
+            .filter(|a| matches!(a, Action::Broadcast { .. }))
+            .count();
+        assert!(
+            broadcast_count >= 2,
+            "should have at least 2 Broadcast actions for path requests, got {}",
+            broadcast_count
         );
     }
 }

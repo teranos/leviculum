@@ -5,6 +5,26 @@ All notable changes to this project will be documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.5.0] - 2026-02-11
+
+### Changed
+- **Breaking:** `NodeCore::connect()` returns `(LinkId, TickOutput)` instead of `LinkId` — actions are flushed and returned immediately
+- **Breaking:** `NodeCore::accept_connection()` returns `Result<TickOutput, ConnectionError>` instead of `Result<(), ConnectionError>`
+- **Breaking:** `NodeCore::close_connection()` returns `TickOutput` instead of `()`
+- **Breaking:** `NodeCore::send_on_connection()` returns `Result<TickOutput, SendError>` instead of `Result<(), SendError>`
+- **Breaking:** `NodeCore::send_single_packet()` returns `Result<([u8; 16], TickOutput), SendError>` instead of `Result<[u8; 16], SendError>`
+- **Breaking:** `NodeCore::announce_destination()` returns `Result<TickOutput, AnnounceError>` instead of `Result<(), AnnounceError>`
+- **Breaking:** `ReticulumNodeImpl::announce_destination()` returns `Result<(), Error>` instead of `Result<(), AnnounceError>` — the driver-level method now propagates dispatch failures alongside core errors
+- `TickOutput` now implements `Default` (replaces manual `empty()` constructor for trait compliance)
+- Event loop Branch 2 (`send_on_connection`) no longer uses `handle_timeout()` as a flush workaround — dispatches returned `TickOutput` directly
+
+### Added
+- `TickOutput::merge()` for combining multiple outputs when batching operations
+- `action_dispatch_tx` channel in std driver for dispatching `TickOutput` from `connect()` and `announce_destination()` (called outside the event loop) to the event loop for immediate interface dispatch
+
+### Removed
+- "Deferred dispatch" docstrings from the six affected methods — callers now receive actions directly instead of relying on a subsequent `handle_timeout()` to flush them
+
 ## [0.4.4] - 2026-02-10
 
 ### Added
@@ -454,7 +474,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Transport layer (routing, paths, deduplication)
 - Full interoperability with Python rnsd
 
-[Unreleased]: https://codeberg.org/Lew_Palm/leviculum/compare/v0.4.4...HEAD
+[Unreleased]: https://codeberg.org/Lew_Palm/leviculum/compare/v0.5.0...HEAD
+[0.5.0]: https://codeberg.org/Lew_Palm/leviculum/compare/v0.4.4...v0.5.0
 [0.4.4]: https://codeberg.org/Lew_Palm/leviculum/compare/v0.4.3...v0.4.4
 [0.4.3]: https://codeberg.org/Lew_Palm/leviculum/compare/v0.4.2...v0.4.3
 [0.4.2]: https://codeberg.org/Lew_Palm/leviculum/compare/v0.4.1...v0.4.2
