@@ -5,6 +5,18 @@ All notable changes to this project will be documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.4.4] - 2026-02-10
+
+### Added
+- **Per-destination announce rate limiting** matching Python Transport.py:1692-1719 — tracks violations when a destination announces too frequently and blocks rebroadcast after exceeding a configurable grace threshold, with optional penalty-based blocking window extension
+- `AnnounceRateEntry` struct for per-destination rate tracking (violations, blocking window)
+- `TransportConfig` fields: `announce_rate_target_ms` (None = disabled, default), `announce_rate_grace`, `announce_rate_penalty_ms`
+- `Transport::check_announce_rate()` implementing the Python violation/grace/penalty escalation algorithm
+- `Transport::clean_announce_rate_table()` for cleanup during `poll()` (removes entries for expired paths)
+- `Transport::announce_rate_table_count()` public accessor for stats/testing
+- `ANNOUNCE_RATE_GRACE` and `ANNOUNCE_RATE_PENALTY_MS` constants
+- 10 new transport unit tests covering rate acceptance, grace-exceeded blocking, penalty extension, per-destination independence, violation decrement, recovery after block expiry, disabled-by-default behavior, PATH_RESPONSE exemption, table cleanup, and last_ms anchoring
+
 ## [0.4.3] - 2026-02-10
 
 ### Fixed
@@ -442,7 +454,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Transport layer (routing, paths, deduplication)
 - Full interoperability with Python rnsd
 
-[Unreleased]: https://codeberg.org/Lew_Palm/leviculum/compare/v0.4.3...HEAD
+[Unreleased]: https://codeberg.org/Lew_Palm/leviculum/compare/v0.4.4...HEAD
+[0.4.4]: https://codeberg.org/Lew_Palm/leviculum/compare/v0.4.3...v0.4.4
 [0.4.3]: https://codeberg.org/Lew_Palm/leviculum/compare/v0.4.2...v0.4.3
 [0.4.2]: https://codeberg.org/Lew_Palm/leviculum/compare/v0.4.1...v0.4.2
 [0.4.1]: https://codeberg.org/Lew_Palm/leviculum/compare/v0.4.0...v0.4.1

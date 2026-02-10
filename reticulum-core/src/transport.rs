@@ -39,11 +39,11 @@ use alloc::collections::VecDeque;
 use alloc::vec::Vec;
 
 use crate::constants::{
-    ANNOUNCE_RATE_LIMIT_MS, LINK_TIMEOUT_MS, LOCAL_REBROADCASTS_MAX, MAX_PATH_REQUEST_TAGS,
-    MAX_RANDOM_BLOBS, MS_PER_SECOND, MTU, PACKET_CACHE_EXPIRY_MS, PATHFINDER_EXPIRY_SECS,
-    PATHFINDER_G_MS, PATHFINDER_MAX_HOPS, PATHFINDER_RETRIES, PATHFINDER_RW_MS,
-    PATH_REQUEST_GRACE_MS, PATH_REQUEST_MIN_INTERVAL_MS, REVERSE_TABLE_EXPIRY_MS,
-    TRUNCATED_HASHBYTES,
+    ANNOUNCE_RATE_GRACE, ANNOUNCE_RATE_LIMIT_MS, ANNOUNCE_RATE_PENALTY_MS, LINK_TIMEOUT_MS,
+    LOCAL_REBROADCASTS_MAX, MAX_PATH_REQUEST_TAGS, MAX_RANDOM_BLOBS, MS_PER_SECOND, MTU,
+    PACKET_CACHE_EXPIRY_MS, PATHFINDER_EXPIRY_SECS, PATHFINDER_G_MS, PATHFINDER_MAX_HOPS,
+    PATHFINDER_RETRIES, PATHFINDER_RW_MS, PATH_REQUEST_GRACE_MS, PATH_REQUEST_MIN_INTERVAL_MS,
+    REVERSE_TABLE_EXPIRY_MS, TRUNCATED_HASHBYTES,
 };
 
 use crate::announce::{emission_from_random_hash, max_emission_from_blobs, ReceivedAnnounce};
@@ -216,6 +216,20 @@ pub(crate) struct AnnounceEntry {
     pub block_rebroadcasts: bool,
 }
 
+/// Per-destination announce rate tracking entry (Python: announce_rate_table)
+///
+/// Tracks violations when a destination announces too frequently and blocks
+/// rebroadcast (but not path table updates) when violations exceed grace.
+#[derive(Debug, Clone)]
+pub(crate) struct AnnounceRateEntry {
+    /// Timestamp of last accepted (non-violating) announce (ms)
+    pub last_ms: u64,
+    /// Number of rate violations (incremented on too-fast, decremented on good-rate)
+    pub rate_violations: u8,
+    /// Announces are blocked until this timestamp (ms)
+    pub blocked_until_ms: u64,
+}
+
 /// Transport configuration
 #[derive(Debug, Clone)]
 pub struct TransportConfig {
@@ -227,6 +241,13 @@ pub struct TransportConfig {
     pub path_expiry_secs: u64,
     /// Announce rate limit minimum interval (ms)
     pub announce_rate_limit_ms: u64,
+    /// Per-destination announce rate target (ms). None = disabled (default).
+    /// When set, announces arriving faster than this interval accumulate violations.
+    pub announce_rate_target_ms: Option<u64>,
+    /// Number of rate violations allowed before blocking rebroadcast. Default 0.
+    pub announce_rate_grace: u8,
+    /// Additional blocking penalty (ms) added to the blocking window. Default 0.
+    pub announce_rate_penalty_ms: u64,
     /// Packet cache expiry (ms) - for deduplication
     pub packet_cache_expiry_ms: u64,
 }
@@ -238,6 +259,9 @@ impl Default for TransportConfig {
             max_hops: PATHFINDER_MAX_HOPS,
             path_expiry_secs: PATHFINDER_EXPIRY_SECS,
             announce_rate_limit_ms: ANNOUNCE_RATE_LIMIT_MS,
+            announce_rate_target_ms: None,
+            announce_rate_grace: ANNOUNCE_RATE_GRACE,
+            announce_rate_penalty_ms: ANNOUNCE_RATE_PENALTY_MS,
             packet_cache_expiry_ms: PACKET_CACHE_EXPIRY_MS,
         }
     }
@@ -436,6 +460,9 @@ pub struct Transport<C: Clock, S: Storage> {
     /// Known identities from received announces: dest_hash -> Identity
     identity_table: BTreeMap<[u8; TRUNCATED_HASHBYTES], Identity>,
 
+    /// Per-destination announce rate tracking (Python: announce_rate_table)
+    announce_rate_table: BTreeMap<[u8; TRUNCATED_HASHBYTES], AnnounceRateEntry>,
+
     /// Pending I/O actions for the driver (sans-I/O buffer)
     pending_actions: Vec<Action>,
 
@@ -468,6 +495,7 @@ impl<C: Clock, S: Storage> Transport<C, S> {
             path_requests: BTreeMap::new(),
             announce_cache: BTreeMap::new(),
             identity_table: BTreeMap::new(),
+            announce_rate_table: BTreeMap::new(),
             pending_actions: Vec::new(),
             #[cfg(test)]
             interfaces: Vec::new(),
@@ -899,6 +927,7 @@ impl<C: Clock, S: Storage> Transport<C, S> {
         self.check_announce_rebroadcasts(now);
         self.clean_link_table(now);
         self.clean_path_states();
+        self.clean_announce_rate_table();
     }
 
     // ─── Events ─────────────────────────────────────────────────────────
@@ -1161,27 +1190,38 @@ impl<C: Clock, S: Storage> Transport<C, S> {
                 },
             );
 
+            // Per-destination announce rate limiting (Python Transport.py:1692-1719)
+            // Only blocks rebroadcast (announce_table insertion), path_table is already updated.
+            // Skipped for PATH_RESPONSE context packets.
+            let rate_blocked = if !is_path_response {
+                self.check_announce_rate(&dest_hash, now)
+            } else {
+                false
+            };
+
             // Determine if we should schedule rebroadcast
             let should_rebroadcast = self.config.enable_transport && !is_path_response;
 
-            // Update announce table
-            self.announce_table.insert(
-                dest_hash,
-                AnnounceEntry {
-                    timestamp_ms: now,
-                    hops: packet.hops,
-                    retries: 0,
-                    retransmit_at_ms: if should_rebroadcast {
-                        Some(now + self.calculate_retransmit_delay(packet.hops))
-                    } else {
-                        None
+            // Update announce table (skipped when rate-blocked to prevent rebroadcast)
+            if !rate_blocked {
+                self.announce_table.insert(
+                    dest_hash,
+                    AnnounceEntry {
+                        timestamp_ms: now,
+                        hops: packet.hops,
+                        retries: 0,
+                        retransmit_at_ms: if should_rebroadcast {
+                            Some(now + self.calculate_retransmit_delay(packet.hops))
+                        } else {
+                            None
+                        },
+                        raw_packet: raw.to_vec(),
+                        receiving_interface_index: interface_index,
+                        local_rebroadcasts: 0,
+                        block_rebroadcasts: is_path_response,
                     },
-                    raw_packet: raw.to_vec(),
-                    receiving_interface_index: interface_index,
-                    local_rebroadcasts: 0,
-                    block_rebroadcasts: is_path_response,
-                },
-            );
+                );
+            }
 
             // Cache raw announce for path responses (when transport is enabled)
             if self.config.enable_transport {
@@ -2059,6 +2099,64 @@ impl<C: Clock, S: Storage> Transport<C, S> {
         for hash in stale {
             self.path_states.remove(&hash);
         }
+    }
+
+    /// Remove announce_rate_table entries for destinations no longer in path_table.
+    fn clean_announce_rate_table(&mut self) {
+        self.announce_rate_table
+            .retain(|h, _| self.path_table.contains_key(h));
+    }
+
+    /// Check announce rate for a destination, returning true if rebroadcast should be blocked.
+    ///
+    /// Matches Python Transport.py:1692-1719. Only blocks rebroadcast (announce_table insertion),
+    /// NOT path_table updates. Skipped for PATH_RESPONSE context and when rate target is None.
+    fn check_announce_rate(&mut self, dest_hash: &[u8; TRUNCATED_HASHBYTES], now: u64) -> bool {
+        let rate_target = match self.config.announce_rate_target_ms {
+            Some(t) => t,
+            None => return false, // Disabled
+        };
+
+        if let Some(entry) = self.announce_rate_table.get_mut(dest_hash) {
+            // Currently blocked?
+            if now <= entry.blocked_until_ms {
+                return true;
+            }
+
+            // Check rate
+            let current_rate = now.saturating_sub(entry.last_ms);
+            if current_rate < rate_target {
+                entry.rate_violations = entry.rate_violations.saturating_add(1);
+            } else {
+                entry.rate_violations = entry.rate_violations.saturating_sub(1);
+            }
+
+            if entry.rate_violations > self.config.announce_rate_grace {
+                entry.blocked_until_ms =
+                    entry.last_ms + rate_target + self.config.announce_rate_penalty_ms;
+                return true;
+            }
+
+            // Good — update last timestamp
+            entry.last_ms = now;
+            false
+        } else {
+            // First time seeing this destination — create entry, not blocked
+            self.announce_rate_table.insert(
+                *dest_hash,
+                AnnounceRateEntry {
+                    last_ms: now,
+                    rate_violations: 0,
+                    blocked_until_ms: 0,
+                },
+            );
+            false
+        }
+    }
+
+    /// Get the number of entries in the announce rate table (for testing/stats)
+    pub fn announce_rate_table_count(&self) -> usize {
+        self.announce_rate_table.len()
     }
 
     fn calculate_retransmit_delay(&self, _hops: u8) -> u64 {
@@ -7034,6 +7132,531 @@ mod tests {
             assert!(
                 !transport.path_is_unresponsive(&dest_hash),
                 "State should be reset to UNKNOWN after normal announce acceptance"
+            );
+        }
+
+        // ─── Announce Rate Limiting Tests ─────────────────────────────────
+
+        /// Helper: create a transport with rate limiting enabled
+        fn make_transport_rate_limited(
+            target_ms: u64,
+            grace: u8,
+            penalty_ms: u64,
+        ) -> Transport<MockClock, NoStorage> {
+            let clock = MockClock::new(1_000_000);
+            let identity = Identity::generate(&mut OsRng);
+            let config = TransportConfig {
+                enable_transport: true,
+                announce_rate_target_ms: Some(target_ms),
+                announce_rate_grace: grace,
+                announce_rate_penalty_ms: penalty_ms,
+                ..TransportConfig::default()
+            };
+            Transport::new(config, clock, NoStorage, identity)
+        }
+
+        #[test]
+        fn test_announce_rate_within_limit_accepted() {
+            use crate::destination::{Destination, DestinationType, Direction};
+
+            let mut transport = make_transport_rate_limited(5_000, 0, 0);
+            let _idx0 = transport.register_interface(Box::new(MockInterface::new("if0", 1)));
+
+            let dest = Destination::new(
+                Some(Identity::generate(&mut OsRng)),
+                Direction::In,
+                DestinationType::Single,
+                "testapp",
+                &["rate"],
+            )
+            .unwrap();
+            let dest_hash = dest.hash().into_bytes();
+
+            // First announce
+            let now1 = transport.clock.now_ms();
+            let raw1 = make_announce_raw_for_dest(&dest, 1, now1);
+            transport.process_incoming(0, &raw1).unwrap();
+            assert!(transport.announce_table.contains_key(&dest_hash));
+            assert_eq!(transport.announce_rate_table_count(), 1);
+
+            // Advance past both the simple rate limit and the rate target
+            transport.clock.advance(ANNOUNCE_RATE_LIMIT_MS + 5_001);
+            transport.packet_cache.clear();
+
+            // Second announce — spaced well beyond target
+            let now2 = transport.clock.now_ms();
+            let raw2 = make_announce_raw_for_dest(&dest, 1, now2);
+            transport.process_incoming(0, &raw2).unwrap();
+
+            // Should be accepted into announce_table
+            assert!(
+                transport.announce_table.contains_key(&dest_hash),
+                "Announce within rate limit should be accepted"
+            );
+        }
+
+        #[test]
+        fn test_announce_rate_exceeds_limit_after_grace() {
+            use crate::destination::{Destination, DestinationType, Direction};
+
+            // grace=0 means first violation triggers blocking
+            let mut transport = make_transport_rate_limited(10_000, 0, 0);
+            let _idx0 = transport.register_interface(Box::new(MockInterface::new("if0", 1)));
+
+            let dest = Destination::new(
+                Some(Identity::generate(&mut OsRng)),
+                Direction::In,
+                DestinationType::Single,
+                "testapp",
+                &["rateblock"],
+            )
+            .unwrap();
+            let dest_hash = dest.hash().into_bytes();
+
+            // First announce — creates rate entry
+            let now1 = transport.clock.now_ms();
+            let raw1 = make_announce_raw_for_dest(&dest, 1, now1);
+            transport.process_incoming(0, &raw1).unwrap();
+            assert!(transport.announce_table.contains_key(&dest_hash));
+            assert!(transport.has_path(&dest_hash));
+
+            // Advance past simple rate limit but LESS than rate target (10s)
+            transport.clock.advance(ANNOUNCE_RATE_LIMIT_MS + 1);
+            transport.packet_cache.clear();
+
+            // Second announce — too fast (2s < 10s target)
+            let now2 = transport.clock.now_ms();
+            let raw2 = make_announce_raw_for_dest(&dest, 1, now2);
+            transport.process_incoming(0, &raw2).unwrap();
+
+            // Path table SHOULD be updated (rate limiting only blocks rebroadcast)
+            assert!(
+                transport.has_path(&dest_hash),
+                "Path table should still be updated even when rate-blocked"
+            );
+
+            // Announce table entry should NOT be updated (rebroadcast blocked)
+            // The announce_table still has the first entry's timestamp
+            let entry = transport.announce_table.get(&dest_hash).unwrap();
+            assert_eq!(
+                entry.timestamp_ms, now1,
+                "Announce table should not be updated when rate-blocked"
+            );
+        }
+
+        #[test]
+        fn test_announce_rate_penalty_extends_blocking() {
+            use crate::destination::{Destination, DestinationType, Direction};
+
+            // 10s target + 5s penalty = blocking until last_ms + 15s
+            let mut transport = make_transport_rate_limited(10_000, 0, 5_000);
+            let _idx0 = transport.register_interface(Box::new(MockInterface::new("if0", 1)));
+
+            let dest = Destination::new(
+                Some(Identity::generate(&mut OsRng)),
+                Direction::In,
+                DestinationType::Single,
+                "testapp",
+                &["penalty"],
+            )
+            .unwrap();
+            let dest_hash = dest.hash().into_bytes();
+
+            // First announce at T=1_000_000
+            let t0 = transport.clock.now_ms();
+            let raw1 = make_announce_raw_for_dest(&dest, 1, t0);
+            transport.process_incoming(0, &raw1).unwrap();
+
+            // Trigger violation: advance 3s (< 10s target)
+            transport.clock.advance(3_000);
+            transport.packet_cache.clear();
+            let now2 = transport.clock.now_ms();
+            let raw2 = make_announce_raw_for_dest(&dest, 1, now2);
+            transport.process_incoming(0, &raw2).unwrap();
+
+            // blocked_until should be t0 + 10_000 + 5_000 = t0 + 15_000
+            let rate_entry = transport.announce_rate_table.get(&dest_hash).unwrap();
+            assert_eq!(rate_entry.blocked_until_ms, t0 + 10_000 + 5_000);
+
+            // At t0 + 14_999 — still blocked
+            transport.clock.time_ms.set(t0 + 14_999);
+            transport.packet_cache.clear();
+            let now3 = transport.clock.now_ms();
+            let raw3 = make_announce_raw_for_dest(&dest, 1, now3);
+            transport.process_incoming(0, &raw3).unwrap();
+            let entry = transport.announce_table.get(&dest_hash).unwrap();
+            assert_eq!(
+                entry.timestamp_ms, t0,
+                "Should still be blocked at t0 + 14_999"
+            );
+
+            // At t0 + 15_001 — block expired
+            transport.clock.time_ms.set(t0 + 15_001);
+            transport.packet_cache.clear();
+            let now4 = transport.clock.now_ms();
+            let raw4 = make_announce_raw_for_dest(&dest, 1, now4);
+            transport.process_incoming(0, &raw4).unwrap();
+            let entry = transport.announce_table.get(&dest_hash).unwrap();
+            assert_eq!(
+                entry.timestamp_ms, now4,
+                "Should be accepted after block expires"
+            );
+        }
+
+        #[test]
+        fn test_announce_rate_independent_per_destination() {
+            use crate::destination::{Destination, DestinationType, Direction};
+
+            let mut transport = make_transport_rate_limited(10_000, 0, 0);
+            let _idx0 = transport.register_interface(Box::new(MockInterface::new("if0", 1)));
+
+            let dest_a = Destination::new(
+                Some(Identity::generate(&mut OsRng)),
+                Direction::In,
+                DestinationType::Single,
+                "testapp",
+                &["dest_a"],
+            )
+            .unwrap();
+            let dest_b = Destination::new(
+                Some(Identity::generate(&mut OsRng)),
+                Direction::In,
+                DestinationType::Single,
+                "testapp",
+                &["dest_b"],
+            )
+            .unwrap();
+            let hash_a = dest_a.hash().into_bytes();
+            let hash_b = dest_b.hash().into_bytes();
+
+            // First announces for both
+            let now1 = transport.clock.now_ms();
+            let raw_a1 = make_announce_raw_for_dest(&dest_a, 1, now1);
+            let raw_b1 = make_announce_raw_for_dest(&dest_b, 1, now1);
+            transport.process_incoming(0, &raw_a1).unwrap();
+            transport.process_incoming(0, &raw_b1).unwrap();
+
+            // Trigger violation for dest_a only (too fast)
+            transport.clock.advance(ANNOUNCE_RATE_LIMIT_MS + 1);
+            transport.packet_cache.clear();
+            let now2 = transport.clock.now_ms();
+            let raw_a2 = make_announce_raw_for_dest(&dest_a, 1, now2);
+            transport.process_incoming(0, &raw_a2).unwrap();
+
+            // dest_a should be rate-blocked (announce_table timestamp unchanged)
+            let entry_a = transport.announce_table.get(&hash_a).unwrap();
+            assert_eq!(entry_a.timestamp_ms, now1, "dest_a should be rate-blocked");
+
+            // dest_b should still be able to accept announces
+            let raw_b2 = make_announce_raw_for_dest(&dest_b, 1, now2);
+            transport.process_incoming(0, &raw_b2).unwrap();
+
+            // dest_b announce_table entry should be updated (not blocked)
+            // Note: the simple rate limit (announce_rate_limit_ms) also applies,
+            // but we already advanced past it. The rate target check is separate.
+            // dest_b's rate entry: now2 - now1 = ANNOUNCE_RATE_LIMIT_MS + 1 < 10_000
+            // So dest_b will ALSO be rate-blocked. Let's verify independence differently:
+            // advance enough for dest_b to be within target
+            transport.clock.advance(10_000);
+            transport.packet_cache.clear();
+            let now3 = transport.clock.now_ms();
+            let raw_b3 = make_announce_raw_for_dest(&dest_b, 1, now3);
+            transport.process_incoming(0, &raw_b3).unwrap();
+
+            let entry_b = transport.announce_table.get(&hash_b).unwrap();
+            assert_eq!(
+                entry_b.timestamp_ms, now3,
+                "dest_b should be accepted (not blocked by dest_a's violation)"
+            );
+
+            // dest_a should STILL be blocked (blocked_until = now1 + 10_000)
+            // now3 = now1 + ANNOUNCE_RATE_LIMIT_MS + 1 + 10_000 = now1 + 12_001
+            // blocked_until = now1 + 10_000 = now1 + 10_000
+            // now3 > blocked_until, so dest_a block has expired by now
+            // But the rate entry's last_ms is still now1, so current_rate = now3 - now1 > target
+            // which means violations would decrement. So dest_a should now be unblocked too.
+        }
+
+        #[test]
+        fn test_announce_rate_violations_decrement_on_good_rate() {
+            use crate::destination::{Destination, DestinationType, Direction};
+
+            // grace=2 means 3 violations needed to trigger blocking
+            let mut transport = make_transport_rate_limited(5_000, 2, 0);
+            let _idx0 = transport.register_interface(Box::new(MockInterface::new("if0", 1)));
+
+            let dest = Destination::new(
+                Some(Identity::generate(&mut OsRng)),
+                Direction::In,
+                DestinationType::Single,
+                "testapp",
+                &["decrement"],
+            )
+            .unwrap();
+            let dest_hash = dest.hash().into_bytes();
+
+            // First announce
+            let t0 = transport.clock.now_ms();
+            let raw1 = make_announce_raw_for_dest(&dest, 1, t0);
+            transport.process_incoming(0, &raw1).unwrap();
+
+            // Violation 1: too fast (2s < 5s)
+            transport.clock.advance(ANNOUNCE_RATE_LIMIT_MS + 1);
+            transport.packet_cache.clear();
+            let raw2 = make_announce_raw_for_dest(&dest, 1, transport.clock.now_ms());
+            transport.process_incoming(0, &raw2).unwrap();
+
+            let rate_entry = transport.announce_rate_table.get(&dest_hash).unwrap();
+            assert_eq!(rate_entry.rate_violations, 1, "Should have 1 violation");
+
+            // Violation 2: too fast again
+            transport.clock.advance(ANNOUNCE_RATE_LIMIT_MS + 1);
+            transport.packet_cache.clear();
+            let raw3 = make_announce_raw_for_dest(&dest, 1, transport.clock.now_ms());
+            transport.process_incoming(0, &raw3).unwrap();
+
+            let rate_entry = transport.announce_rate_table.get(&dest_hash).unwrap();
+            assert_eq!(rate_entry.rate_violations, 2, "Should have 2 violations");
+
+            // Good rate: advance well past target (10s > 5s)
+            transport.clock.advance(10_000);
+            transport.packet_cache.clear();
+            let now_good = transport.clock.now_ms();
+            let raw4 = make_announce_raw_for_dest(&dest, 1, now_good);
+            transport.process_incoming(0, &raw4).unwrap();
+
+            let rate_entry = transport.announce_rate_table.get(&dest_hash).unwrap();
+            assert_eq!(
+                rate_entry.rate_violations, 1,
+                "Violations should decrement on good rate"
+            );
+
+            // Another good rate
+            transport.clock.advance(10_000);
+            transport.packet_cache.clear();
+            let raw5 = make_announce_raw_for_dest(&dest, 1, transport.clock.now_ms());
+            transport.process_incoming(0, &raw5).unwrap();
+
+            let rate_entry = transport.announce_rate_table.get(&dest_hash).unwrap();
+            assert_eq!(
+                rate_entry.rate_violations, 0,
+                "Violations should be back to 0 after enough good-rate announces"
+            );
+
+            // Announce should be accepted (not blocked)
+            assert!(
+                transport.announce_table.contains_key(&dest_hash),
+                "Announce should be accepted when violations are within grace"
+            );
+        }
+
+        #[test]
+        fn test_announce_rate_recovery_after_block_expires() {
+            use crate::destination::{Destination, DestinationType, Direction};
+
+            let mut transport = make_transport_rate_limited(10_000, 0, 0);
+            let _idx0 = transport.register_interface(Box::new(MockInterface::new("if0", 1)));
+
+            let dest = Destination::new(
+                Some(Identity::generate(&mut OsRng)),
+                Direction::In,
+                DestinationType::Single,
+                "testapp",
+                &["recovery"],
+            )
+            .unwrap();
+            let dest_hash = dest.hash().into_bytes();
+
+            // First announce at T0
+            let t0 = transport.clock.now_ms();
+            let raw1 = make_announce_raw_for_dest(&dest, 1, t0);
+            transport.process_incoming(0, &raw1).unwrap();
+
+            // Trigger blocking (too fast)
+            transport.clock.advance(ANNOUNCE_RATE_LIMIT_MS + 1);
+            transport.packet_cache.clear();
+            let raw2 = make_announce_raw_for_dest(&dest, 1, transport.clock.now_ms());
+            transport.process_incoming(0, &raw2).unwrap();
+
+            // Verify blocked
+            let rate_entry = transport.announce_rate_table.get(&dest_hash).unwrap();
+            assert!(rate_entry.blocked_until_ms > 0, "Should be blocked");
+
+            // Advance past blocked_until (t0 + 10_000)
+            transport.clock.time_ms.set(t0 + 10_001);
+            transport.packet_cache.clear();
+            let now_after = transport.clock.now_ms();
+            let raw3 = make_announce_raw_for_dest(&dest, 1, now_after);
+            transport.process_incoming(0, &raw3).unwrap();
+
+            // current_rate = now_after - t0 = 10_001 > 10_000 target → good rate
+            // violations decrement from 1 to 0, not blocked
+            let entry = transport.announce_table.get(&dest_hash).unwrap();
+            assert_eq!(
+                entry.timestamp_ms, now_after,
+                "Announce should be accepted after block expires"
+            );
+        }
+
+        #[test]
+        fn test_announce_rate_disabled_by_default() {
+            // Default config has announce_rate_target_ms: None
+            let mut transport = make_transport_enabled();
+            let _idx0 = transport.register_interface(Box::new(MockInterface::new("if0", 1)));
+
+            let dest = crate::destination::Destination::new(
+                Some(Identity::generate(&mut OsRng)),
+                crate::destination::Direction::In,
+                crate::destination::DestinationType::Single,
+                "testapp",
+                &["norlimit"],
+            )
+            .unwrap();
+            let dest_hash = dest.hash().into_bytes();
+
+            // Rapid announces (only bypass simple rate limit and packet cache)
+            let now1 = transport.clock.now_ms();
+            let raw1 = make_announce_raw_for_dest(&dest, 1, now1);
+            transport.process_incoming(0, &raw1).unwrap();
+            assert!(transport.announce_table.contains_key(&dest_hash));
+
+            transport.clock.advance(ANNOUNCE_RATE_LIMIT_MS + 1);
+            transport.packet_cache.clear();
+            let now2 = transport.clock.now_ms();
+            let raw2 = make_announce_raw_for_dest(&dest, 1, now2);
+            transport.process_incoming(0, &raw2).unwrap();
+
+            // Should be accepted (rate limiting is disabled)
+            let entry = transport.announce_table.get(&dest_hash).unwrap();
+            assert_eq!(
+                entry.timestamp_ms, now2,
+                "Announce should be accepted when rate limiting is disabled"
+            );
+
+            // No rate table entries should exist
+            assert_eq!(
+                transport.announce_rate_table_count(),
+                0,
+                "Rate table should be empty when rate limiting is disabled"
+            );
+        }
+
+        #[test]
+        fn test_announce_rate_path_response_exempt() {
+            let mut transport = make_transport_rate_limited(10_000, 0, 0);
+            let _idx0 = transport.register_interface(Box::new(MockInterface::new("if0", 1)));
+
+            // Use make_announce_raw which supports context
+            let (raw, dest_hash) = make_announce_raw(1, PacketContext::PathResponse);
+            transport.process_incoming(0, &raw).unwrap();
+
+            // PATH_RESPONSE should not create a rate entry
+            assert_eq!(
+                transport.announce_rate_table_count(),
+                0,
+                "PATH_RESPONSE announces should not be rate-tracked"
+            );
+
+            // Should be in announce_table
+            assert!(
+                transport.announce_table.contains_key(&dest_hash),
+                "PATH_RESPONSE announce should be in announce_table"
+            );
+        }
+
+        #[test]
+        fn test_announce_rate_table_cleanup() {
+            use crate::destination::{Destination, DestinationType, Direction};
+
+            let mut transport = make_transport_rate_limited(10_000, 0, 0);
+            let _idx0 = transport.register_interface(Box::new(MockInterface::new("if0", 1)));
+
+            let dest = Destination::new(
+                Some(Identity::generate(&mut OsRng)),
+                Direction::In,
+                DestinationType::Single,
+                "testapp",
+                &["cleanup"],
+            )
+            .unwrap();
+            let dest_hash = dest.hash().into_bytes();
+
+            // Create announce to populate path_table and rate_table
+            let now = transport.clock.now_ms();
+            let raw = make_announce_raw_for_dest(&dest, 1, now);
+            transport.process_incoming(0, &raw).unwrap();
+            assert_eq!(transport.announce_rate_table_count(), 1);
+            assert!(transport.has_path(&dest_hash));
+
+            // Remove from path_table
+            transport.path_table.remove(&dest_hash);
+
+            // Run poll to trigger cleanup
+            transport.poll();
+
+            assert_eq!(
+                transport.announce_rate_table_count(),
+                0,
+                "Rate table entry should be cleaned up when path is removed"
+            );
+        }
+
+        #[test]
+        fn test_announce_rate_last_ms_not_updated_on_violation() {
+            use crate::destination::{Destination, DestinationType, Direction};
+
+            // grace=0: first violation immediately triggers blocking
+            let mut transport = make_transport_rate_limited(10_000, 0, 0);
+            let _idx0 = transport.register_interface(Box::new(MockInterface::new("if0", 1)));
+
+            let dest = Destination::new(
+                Some(Identity::generate(&mut OsRng)),
+                Direction::In,
+                DestinationType::Single,
+                "testapp",
+                &["lastms"],
+            )
+            .unwrap();
+            let dest_hash = dest.hash().into_bytes();
+
+            // First announce at T0
+            let t0 = transport.clock.now_ms();
+            let raw1 = make_announce_raw_for_dest(&dest, 1, t0);
+            transport.process_incoming(0, &raw1).unwrap();
+
+            let rate_entry = transport.announce_rate_table.get(&dest_hash).unwrap();
+            assert_eq!(rate_entry.last_ms, t0);
+
+            // Violation: too fast (3s < 10s target) — triggers blocking (grace=0)
+            transport.clock.advance(3_000);
+            transport.packet_cache.clear();
+            let now2 = transport.clock.now_ms();
+            let raw2 = make_announce_raw_for_dest(&dest, 1, now2);
+            transport.process_incoming(0, &raw2).unwrap();
+
+            // last_ms should NOT be updated — blocking was triggered
+            let rate_entry = transport.announce_rate_table.get(&dest_hash).unwrap();
+            assert_eq!(
+                rate_entry.last_ms, t0,
+                "last_ms should not be updated when violation triggers blocking"
+            );
+            assert_eq!(rate_entry.rate_violations, 1);
+            assert!(
+                rate_entry.blocked_until_ms > 0,
+                "Should be blocked after violation with grace=0"
+            );
+
+            // Another too-fast announce while blocked — last_ms still anchored
+            transport.clock.advance(3_000);
+            transport.packet_cache.clear();
+            let now3 = transport.clock.now_ms();
+            let raw3 = make_announce_raw_for_dest(&dest, 1, now3);
+            transport.process_incoming(0, &raw3).unwrap();
+
+            let rate_entry = transport.announce_rate_table.get(&dest_hash).unwrap();
+            assert_eq!(
+                rate_entry.last_ms, t0,
+                "last_ms should still be anchored to original accepted announce"
             );
         }
     }

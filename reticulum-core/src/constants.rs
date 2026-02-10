@@ -154,6 +154,12 @@ pub const DATA_RECEIPT_TIMEOUT_MS: u64 = 30_000;
 /// Default announce rate limit interval (milliseconds)
 pub const ANNOUNCE_RATE_LIMIT_MS: u64 = 2_000;
 
+/// Default announce rate grace: number of violations allowed before blocking (Python default: 0)
+pub const ANNOUNCE_RATE_GRACE: u8 = 0;
+
+/// Default announce rate penalty: additional blocking time in milliseconds (Python default: 0)
+pub const ANNOUNCE_RATE_PENALTY_MS: u64 = 0;
+
 /// Maximum number of random blobs to retain per destination (matches Python MAX_RANDOM_BLOBS)
 pub const MAX_RANDOM_BLOBS: usize = 64;
 
