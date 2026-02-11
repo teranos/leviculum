@@ -227,7 +227,7 @@ link_manager.close(link_id)?;
 
 **Multi-Hop Link von Non-Transport Nodes** (v0.5.3): `connect()` nutzt jetzt `PathEntry::needs_relay()` für korrekte HEADER_2-Formatierung mit transport_id, und LRPROOF-Pakete werden an lokale Pending-Links zugestellt (Python Transport.py:2054-2073). Interop-Test bestätigt: Link-Aufbau, Timeout-Recovery (expire_path + request_path), und Wiederherstellung.
 
-Kleinere Lücken (nicht blockierend für v1.0): Announce-Expiry-Timer, mehrere Pfade pro Destination.
+Kleinere Lücken (nicht blockierend für v1.0): Announce-Expiry-Timer, mehrere Pfade pro Destination, MTU-Signaling für Link-MDU-Verhandlung.
 
 **Deliverable:** ✅ Vollständiges Routing für direkte und Multi-Hop-Verbindungen
 

@@ -1134,8 +1134,10 @@ impl LinkManager {
                 });
             }
             Err(_) => {
-                // Decryption failed - could be tampering or wrong link
-                // Silently ignore for now
+                // Decryption failed — drop the packet. This matches Python
+                // Transport.py behavior: packets with invalid HMAC or failed
+                // decryption indicate tampering, corruption, or misrouted
+                // data and are silently discarded.
             }
         }
     }

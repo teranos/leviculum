@@ -45,9 +45,9 @@ impl Reticulum {
         // Note: Interface configuration from config file would be added here
         // when config-driven interface setup is implemented.
 
-        // We can't use async in a sync context, so we build synchronously
-        // and defer start() to the caller or to an async context.
-        // For now, create the builder and store config.
+        // Two-phase pattern: sync construction here, async start() later.
+        // This allows callers to configure the node synchronously before
+        // entering an async runtime.
         Ok(Self {
             config,
             node: builder.build_sync()?,

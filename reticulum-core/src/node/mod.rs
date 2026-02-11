@@ -907,12 +907,10 @@ impl<R: CryptoRngCore, C: Clock, S: Storage> NodeCore<R, C, S> {
             }
 
             TransportEvent::PathRequestReceived { destination_hash } => {
-                // For now, emit as a path found event so the application
-                // can re-announce the destination
-                self.events.push(NodeEvent::PathFound {
+                // Informational event — auto-re-announce is already handled
+                // by Transport::process_path_request() internally.
+                self.events.push(NodeEvent::PathRequestReceived {
                     destination_hash: DestinationHash::new(destination_hash),
-                    hops: 0,
-                    interface_index: 0,
                 });
             }
         }
@@ -1020,8 +1018,8 @@ impl<R: CryptoRngCore, C: Clock, S: Storage> NodeCore<R, C, S> {
                 link_id,
                 packet_hash,
             } => {
-                // App-level proof request from link layer (PROVE_APP strategy)
-                // For now we expose this as a link-level ProofRequested event
+                // PROVE_APP strategy: delegate proof decision to the application.
+                // The app receives this event and calls send_data_proof() if appropriate.
                 self.events.push(NodeEvent::LinkProofRequested {
                     link_id,
                     packet_hash,

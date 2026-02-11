@@ -733,8 +733,9 @@ impl Link {
     /// after encryption overhead. For channel messages, subtract the envelope
     /// header size (6 bytes) from this value.
     pub fn mdu(&self) -> usize {
-        // Use the default MDU from constants
-        // TODO: Store negotiated MTU from signaling and compute proper MDU
+        // Returns the protocol-default MDU. MTU signaling does not exist in the
+        // Reticulum protocol yet, so this is the only correct value.
+        // TODO(ROADMAP 2.5 Kleinere Lücken): Support negotiated MTU via signaling
         crate::constants::MDU
     }
 

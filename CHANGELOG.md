@@ -5,6 +5,20 @@ All notable changes to this project will be documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.5.4] - 2026-02-11
+
+### Fixed
+- **PathRequestReceived emitted incorrect PathFound event** — when a remote node requested the path to a local destination, `NodeCore` emitted `NodeEvent::PathFound { hops: 0, interface_index: 0 }` with fabricated data. Applications receiving this would incorrectly believe a direct path existed. Replaced with a proper `NodeEvent::PathRequestReceived` that correctly identifies the event as informational (auto-re-announce is handled internally by the transport layer).
+- **TCPServerInterface silently discarded** — calling `add_tcp_server()` on the builder would silently skip server creation at startup with only a warning log. Now returns `Error::Config` so callers know the feature is not yet implemented (see ROADMAP Milestone 2.4).
+
+### Added
+- `NodeEvent::PathRequestReceived { destination_hash }` variant for informational path request events
+- MTU signaling added to ROADMAP "Kleinere Lücken" (non-blocking for v1.0)
+
+### Changed
+- All orphaned TODOs now reference ROADMAP items
+- Removed "for now" / "silently ignore" language from 5 comments across core and std, replacing with explanations of the intentional design decisions
+
 ## [0.5.3] - 2026-02-11
 
 ### Fixed

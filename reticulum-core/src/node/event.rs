@@ -36,6 +36,16 @@ pub enum NodeEvent {
         interface_index: usize,
     },
 
+    /// A remote node requested the path to one of our local destinations
+    ///
+    /// This is informational — the transport layer already handles
+    /// auto-re-announce internally (Transport.py:1843-1853). The application
+    /// does not need to take action.
+    PathRequestReceived {
+        /// The destination hash that was requested
+        destination_hash: DestinationHash,
+    },
+
     /// Path to a destination expired
     PathLost {
         /// Destination hash

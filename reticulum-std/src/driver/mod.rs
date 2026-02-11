@@ -234,9 +234,11 @@ impl ReticulumNodeImpl {
                     }
                 }
                 "TCPServerInterface" => {
-                    // TCP server interfaces would be handled here
-                    // For now, we skip them as they require more complex handling
-                    tracing::warn!("TCP server interfaces not yet supported");
+                    // TCP server interfaces are not yet implemented (ROADMAP 2.4)
+                    return Err(Error::Config(
+                        "TCPServerInterface is not yet supported (see ROADMAP Milestone 2.4)"
+                            .to_string(),
+                    ));
                 }
                 other => {
                     tracing::warn!("Unknown interface type: {}", other);
