@@ -45,7 +45,7 @@ Das Projekt hat Phase 1 vollständig abgeschlossen und Phase 2 ist zu ~85% ferti
 
 **Transport Layer vollständig (3.676 LOC):** Announce-Rebroadcast, PATH_REQUEST/PATH_RESPONSE, Reverse-Path-Routing, Link-Tabellenverwaltung, Hop-Count-Validation, Header-Stripping am letzten Hop, Announce-Replay-Schutz, LRPROOF-Validierung, Auto-Re-Announce auf PATH_REQUEST. **Path Recovery** (v0.4.2/v0.4.3): Pfad-Zustandsverfolgung (`PathState`), automatische Markierung als unresponsive bei abgelaufenen unvalidierten Links, Akzeptanz von Same-Emission-Announces über Alternativrouten, direkte `request_path()`-Aufrufe aus dem Core für Pfad-Neuentdeckung. **Announce Rate Limiting** (v0.4.4): Per-Destination-Violation/Grace/Penalty-Eskalationsmechanismus analog zu Python Transport.py:1692-1719, blockiert nur Rebroadcast (nicht Pfad-Updates), konfigurierbar und standardmäßig deaktiviert. **Hop-Threshold-Korrektur** (v0.5.2): 4 Off-by-One-Bugs in Forwarding-Schwellwerten behoben (Python inkrementiert `hops` bei Empfang, Rust nicht — aus Python kopierte Schwellwerte waren um 1 daneben). `PathEntry::is_direct()` und `PathEntry::needs_relay()` kapseln die Semantik-Differenz und verhindern Wiederholung. **Rust Transport Relay** funktioniert vollständig: Announce-Rebroadcast, Link-Routing und Datenweiterleitung zwischen zwei Python-Daemons getestet. **Gemischte Relay-Ketten** (Rust + Python Relays in Serie) funktionieren inklusive Link-Establishment und bidirektionaler Datenübertragung über die volle Kette.
 
-**Code-Qualität:** LinkManager intern auf einheitliche Paket-Queue (`PendingPacket` Enum) umgestellt, Timeout-Konstanten zentralisiert, `LinkId` und `DestinationHash` als Newtype-Structs für vollständige Typ-Sicherheit (keine `Deref` mehr, kein `as_bytes_mut()`). Proof-Strategy und Signing-Key von LinkManager's Destination-Map auf den `Link` selbst verschoben — reduziert duplizierte State zwischen Transport, LinkManager und NodeCore. ~860 Tests bestehen (582 Core-Unit + 20 Std-Lib + 175 Interop + 26 Doctests + 18 Proptest + 31 Test-Vektoren + 7 Core-Integration + 3 Std-Integration).
+**Code-Qualität:** LinkManager intern auf einheitliche Paket-Queue (`PendingPacket` Enum) umgestellt, Timeout-Konstanten zentralisiert, `LinkId` und `DestinationHash` als Newtype-Structs für vollständige Typ-Sicherheit (keine `Deref` mehr, kein `as_bytes_mut()`). Proof-Strategy und Signing-Key von LinkManager's Destination-Map auf den `Link` selbst verschoben — reduziert duplizierte State zwischen Transport, LinkManager und NodeCore. ~861 Tests bestehen (582 Core-Unit + 20 Std-Lib + 176 Interop + 26 Doctests + 18 Proptest + 31 Test-Vektoren + 7 Core-Integration + 3 Std-Integration).
 
 | Komponente | Status | LOC |
 |------------|--------|-----|
@@ -76,7 +76,7 @@ Das Projekt hat Phase 1 vollständig abgeschlossen und Phase 2 ist zu ~85% ferti
 | reticulum-nrf | ~400 | — | Embedded-Firmware (Embassy, nRF52840, USB CDC-ACM) |
 | reticulum-ffi | 361 | 404 | C-API |
 
-**Test-Abdeckung:** ~860 Tests (582 Core-Unit + 18 Proptest + 31 Test-Vektoren + 26 Doctests + 20 Std-Lib + 7 Core-Integration + 3 Std-Integration + 175 Interop gegen rnsd)
+**Test-Abdeckung:** ~861 Tests (582 Core-Unit + 18 Proptest + 31 Test-Vektoren + 26 Doctests + 20 Std-Lib + 7 Core-Integration + 3 Std-Integration + 176 Interop gegen rnsd)
 
 **Architektur:** Siehe [doc/ARCHITECTURE.md](doc/ARCHITECTURE.md) — no_std/embedded-freundlich, sans-I/O Core (reine Zustandsmaschine), I/O via Action-Rückgabewerte an den Treiber.
 
@@ -314,7 +314,7 @@ Production-ready: QA, zusätzliche Interfaces, Dokumentation.
 - [ ] Async interface connect path — `spawn_tcp_interface()` connects synchronously (blocking on tokio thread), which is fine at startup but blocks the event loop for runtime hot-plug. Prerequisite for USB and BLE interface support. The channel-based `InterfaceRegistry` already supports dynamic `register()`, only the connect step needs an async variant.
 
 ### Qualitätssicherung
-- [x] Integration-Tests gegen rnsd-Daemon (175 Tests)
+- [x] Integration-Tests gegen rnsd-Daemon (176 Tests)
 - [ ] Performance-Optimierung
 - [ ] Speicher-Profiling mit Valgrind
 - [ ] Fuzzing der Paket-Parser
@@ -365,6 +365,7 @@ Diese Features sind nice-to-have, aber nicht MVP-kritisch:
 | Multi-Hop | Multi-Hop-Topologie und Routing | ✅ |
 | Channel/Buffer | Stream + gepuffertes I/O | ✅ |
 | Eingehende Link-Daten | Empfangspfad für Link-Data-Pakete | ✅ (C8 behoben v0.5.5) |
+| Full Link Lifecycle | Bidirektionale Daten, Channel-ACKs, Graceful Close durch Relay | ✅ (v0.5.5 Fixes verifiziert) |
 | Resource Transfer | Dateitransfer-Verifikation | - |
 
 ### Integration-Tests
@@ -376,7 +377,7 @@ Testumgebung:
 └─────────────┘      └─────────────┘
 ```
 
-Automatisierte Test-Suite (175 Interop-Tests in 24 Modulen gegen rnsd):
+Automatisierte Test-Suite (176 Interop-Tests in 25 Modulen gegen rnsd):
 - ✅ TCP-Verbindung zu rnsd
 - ✅ Pakete empfangen und senden
 - ✅ Announce-Erstellung und -Validierung
@@ -419,7 +420,7 @@ Automatisierte Test-Suite (175 Interop-Tests in 24 Modulen gegen rnsd):
 | Risiko | Wahrscheinlichkeit | Mitigation |
 |--------|-------------------|------------|
 | Transport Layer komplexer als erwartet | ✅ Gelöst | 3.676 LOC, vollständig implementiert |
-| Interop-Probleme mit Python | Mittel | Frühe und kontinuierliche Tests (175 Interop-Tests) |
+| Interop-Probleme mit Python | Mittel | Frühe und kontinuierliche Tests (176 Interop-Tests) |
 | Performance-Probleme bei async | Niedrig | Profiling ab Phase 2 |
 | no_std-Kompatibilitätsprobleme | ✅ Gelöst | Context-Trait entfernt, direkte RNG/time-Parameter |
 | Resource Transfer Komplexität | Mittel | Sliding-Window, Hashmap, Compression — frühzeitig planen |
@@ -481,7 +482,7 @@ Monat 1    Monat 2    Monat 3       Monat 4       Monat 5         Monat 6
 - [ ] Resource Transfer: Dateien übertragen
 - [ ] TCP Server Interface
 - [ ] `lrnsd` Daemon läuft standalone
-- [x] Integration-Tests gegen Python rnsd bestehen (175 Interop-Tests)
+- [x] Integration-Tests gegen Python rnsd bestehen (176 Interop-Tests)
 - [x] no_std-Kompatibilität für reticulum-core
 - [ ] Forward Secrecy via Ratchets — ⚠️ Krypto fertig, Validierung nicht eingebunden
 - [ ] Interface Access Codes (IFAC) — ⚠️ Modul fertig, nicht in Empfangspfad eingebunden

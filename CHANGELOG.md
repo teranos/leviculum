@@ -14,6 +14,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **`ConnectionStream::close()` didn't send LINKCLOSE** (D12) — `close()` only set a local flag without signaling the core. Now sends an empty-data sentinel through the outgoing channel, which the event loop dispatches as `NodeCore::close_connection()`.
 
 ### Added
+- Interop test `test_full_link_lifecycle_through_relay` — end-to-end lifecycle test exercising all three v0.5.5 fixes through a Python relay: bidirectional data delivery (Fix 1), channel ACK delivery confirmations (Fix 2), graceful close from both Rust and Python sides (Fix 3)
 - `Channel::last_sent_sequence()` for tracking the most recently sent channel sequence number
 - `Connection::last_sent_sequence()` delegate for accessing channel sequence from the node layer
 - `LinkManager::register_data_receipt()` for external receipt registration (used by NodeCore for channel messages)

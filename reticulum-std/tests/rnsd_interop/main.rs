@@ -40,6 +40,7 @@ mod edge_case_tests;
 mod flood_tests;
 mod flow_tests;
 mod harness;
+mod lifecycle_tests;
 mod link_keepalive_close_tests;
 mod link_manager_tests;
 mod link_tests;
