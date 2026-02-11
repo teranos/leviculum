@@ -114,9 +114,15 @@ impl ConnectionStream {
         }
     }
 
-    /// Close the stream
-    pub fn close(&mut self) {
+    /// Close the stream gracefully, sending LINKCLOSE to the peer
+    pub async fn close(&mut self) -> io::Result<()> {
+        if self.closed {
+            return Ok(());
+        }
         self.closed = true;
+        // Signal close through outgoing channel (empty data = close)
+        let _ = self.outgoing_tx.send((self.link_id, vec![])).await;
+        Ok(())
     }
 }
 
@@ -244,14 +250,19 @@ mod tests {
     #[tokio::test]
     async fn test_connection_stream_close() {
         let link_id = [0u8; 16];
-        let (out_tx, _out_rx) = mpsc::channel(16);
+        let (out_tx, mut out_rx) = mpsc::channel(16);
         let (_in_tx, in_rx) = mpsc::channel(16);
 
         let mut stream = ConnectionStream::new(link_id.into(), out_tx, in_rx);
 
         assert!(!stream.is_closed());
-        stream.close();
+        stream.close().await.unwrap();
         assert!(stream.is_closed());
+
+        // Close should have sent an empty-data sentinel
+        let (recv_link_id, data) = out_rx.recv().await.unwrap();
+        assert_eq!(recv_link_id, LinkId::from(link_id));
+        assert!(data.is_empty());
 
         // Send should fail after close
         let result = stream.send(b"test").await;

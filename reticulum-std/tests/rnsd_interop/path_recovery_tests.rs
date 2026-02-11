@@ -237,7 +237,7 @@ async fn test_rust_node_path_recovery_on_link_timeout() {
     );
 
     // Step 8: Close link cleanly
-    stream1.close();
+    let _ = stream1.close().await;
     tokio::time::sleep(Duration::from_millis(500)).await;
 
     // ── Phase 2: Drop LRPROOF, trigger timeout recovery ─────────────

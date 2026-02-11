@@ -232,6 +232,17 @@ impl Channel {
         self.next_rx_sequence
     }
 
+    /// Get the sequence number of the most recently sent message
+    ///
+    /// This wraps around correctly at the sequence modulus boundary.
+    pub fn last_sent_sequence(&self) -> u16 {
+        if self.next_tx_sequence == 0 {
+            (CHANNEL_SEQ_MODULUS - 1) as u16
+        } else {
+            self.next_tx_sequence - 1
+        }
+    }
+
     /// Update window limits based on RTT
     ///
     /// Faster links get larger windows for better throughput.

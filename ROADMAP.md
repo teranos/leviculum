@@ -29,7 +29,7 @@
 
 ## Aktueller Stand
 
-Das Projekt hat Phase 1 vollständig abgeschlossen und Phase 2 ist zu ~80% fertig — neben TCP Server (Meilenstein 2.4) fehlen Bug-Fixes (C8: handle_data-Bug), IFAC/Ratchet-Integration und API-Vervollständigung. Meilensteine 2.1 (Destination API), 2.2 (Link-Responder), 2.3 (High-Level Link API inkl. Keepalive) und 2.5 (Transport Layer) sind abgeschlossen. Meilenstein 3.2 (Channel-System inkl. Buffer-System) ist ebenfalls fertig — StreamDataMessage für binäre Streams und RawChannelReader/Writer für gepufferte I/O sind implementiert. **High-Level Node API** (`NodeCore` in reticulum-core, `ReticulumNode` in reticulum-std) bietet eine einheitliche async-kompatible Schnittstelle mit Smart Routing, Connection-Abstraktion und symmetrischer Channel-API. Vollständige Interoperabilität mit Python rnsd ist nachgewiesen. **CLI-Tool `lrns`** existiert mit Subcommands: `status`, `path`, `identity`, `probe`, `interfaces` (nur `identity` ist voll implementiert, die anderen sind Gerüste mit "Not implemented yet").
+Das Projekt hat Phase 1 vollständig abgeschlossen und Phase 2 ist zu ~85% fertig — neben TCP Server (Meilenstein 2.4) fehlen IFAC/Ratchet-Integration und API-Vervollständigung. Kritische Bugs C8 (Link-Daten verworfen), C9 (Channel-ACKs) und D12 (close_connection) sind in v0.5.5 behoben. Meilensteine 2.1 (Destination API), 2.2 (Link-Responder), 2.3 (High-Level Link API inkl. Keepalive) und 2.5 (Transport Layer) sind abgeschlossen. Meilenstein 3.2 (Channel-System inkl. Buffer-System) ist ebenfalls fertig — StreamDataMessage für binäre Streams und RawChannelReader/Writer für gepufferte I/O sind implementiert. **High-Level Node API** (`NodeCore` in reticulum-core, `ReticulumNode` in reticulum-std) bietet eine einheitliche async-kompatible Schnittstelle mit Smart Routing, Connection-Abstraktion und symmetrischer Channel-API. Vollständige Interoperabilität mit Python rnsd ist nachgewiesen. **CLI-Tool `lrns`** existiert mit Subcommands: `status`, `path`, `identity`, `probe`, `interfaces` (nur `identity` ist voll implementiert, die anderen sind Gerüste mit "Not implemented yet").
 
 **Sans-I/O-Architektur abgeschlossen:** `reticulum-core` ist jetzt ein reiner Zustandsautomat ohne jegliche direkte I/O-Operationen. `NodeCore` nimmt eingehende Pakete via `handle_packet()` entgegen und gibt `Action`-Werte (`SendPacket`, `Broadcast`) zurück, die der Treiber ausführt. Der Treiber in `reticulum-std` besitzt die Interfaces, liest Pakete, speist sie in den Core, und dispatcht die resultierenden Actions. `TransportRunner` wurde entfernt; `ReticulumNode` ist der einheitliche Treiber. Diese Architektur ermöglicht den Einsatz auf Embedded-Plattformen ohne `std`.
 
@@ -180,7 +180,7 @@ let events = link_manager.drain_events();
 - [x] Link-Stale-Erkennung und automatisches Schließen nach Timeout
 - [x] Link-Teardown (ordnungsgemäßes Schließen via `close()` mit LINKCLOSE-Paket)
 
-**Einschränkungen (Gap-Analyse Feb 2026):** LINKCLOSE-Pakete und Keepalive-Echos erreichen LinkManager nicht, weil Transport::handle_data() Link-adressierte Datenpakete auf Non-Transport-Nodes verwirft (siehe Bug C8). Graceful Close ist in NodeCore implementiert, aber nicht über ReticulumNode exponiert.
+**Einschränkungen behoben (v0.5.5):** C8 (Link-adressierte Pakete verworfen) und D12 (close_connection nicht exponiert) sind behoben — LINKCLOSE, Keepalive-Echos und Channel-ACKs erreichen jetzt LinkManager korrekt.
 
 ```rust
 // Implementierte API (via LinkManager):
@@ -241,8 +241,8 @@ Die folgende Liste wurde durch eine systematische 5-Runden-Lückenanalyse (Start
 
 | ID | Schwere | Beschreibung | Betroffene Datei |
 |----|---------|-------------|------------------|
-| C8 | 🔴 Kritisch | `Transport::handle_data()` verwirft Link-adressierte Data-Pakete auf Non-Transport-Nodes still. Link-IDs sind nicht in `destinations` registriert und `enable_transport` ist false → Paket fällt durch zu `Ok(())`. Gleiche Bug-Klasse wie der LRPROOF-Fix in v0.5.3. Blockiert: eingehende Daten, Keepalive-Echos, LINKCLOSE, Channel-ACKs. | `transport.rs:1539-1631` |
-| C9 | 🟡 Mittel | `Channel::mark_delivered()` wird in Produktion nie aufgerufen — eingehende ACKs werden nicht verarbeitet. Verursacht Retransmission-Stürme bei jeder Nachricht. | `link/channel/mod.rs:504` |
+| C8 | ✅ Behoben (v0.5.5) | `Transport::handle_data()` verwirft Link-adressierte Data-Pakete auf Non-Transport-Nodes still — behoben durch Link-adressierte Paket-Zustellung + Proof-Routing-Erweiterung. | `transport.rs` |
+| C9 | ✅ Behoben (v0.5.5) | `Channel::mark_delivered()` wird in Produktion nie aufgerufen — behoben durch vollständige Proof-Delivery-Chain (Receiver-Proof-Generierung, Sender-Receipt-Registrierung, mark_delivered-Aufruf). | `link/manager.rs`, `node/mod.rs` |
 | D11 | 🟡 Mittel | `handle_interface_down()` räumt Transport-Tabellen auf, aber nicht LinkManager. Links auf toten Interfaces bleiben ~12 Min als Zombies bestehen. | `node/mod.rs:701-737` |
 | D13 | 🟠 Niedrig | Geschlossene Links werden nie aus `LinkManager::links` entfernt — `close()` setzt Status aber löscht nicht aus BTreeMap. Speicherleck bei langlebigen Nodes. | `link/manager.rs:421-441` |
 
@@ -253,7 +253,7 @@ Die folgende Liste wurde durch eine systematische 5-Runden-Lückenanalyse (Start
 | B3 | IFAC-Modul existiert, ist aber nicht in den Paketempfangspfad eingebunden | ⚠️ Modul fertig |
 | B4 | Ratchet-Krypto funktioniert, aber Validierung bei Announces/Links nicht aktiv | ⚠️ Krypto fertig |
 | C10 | Buffer/Stream-System (1091 LOC) existiert, ist aber nicht in ConnectionStream integriert | ⚠️ Code fertig |
-| D12 | `NodeCore::close_connection()` funktioniert, aber nicht über `ReticulumNode` exponiert | ⚠️ Core fertig |
+| D12 | `NodeCore::close_connection()` funktioniert, aber nicht über `ReticulumNode` exponiert | ✅ Behoben (v0.5.5) |
 
 #### Fehlende Features
 
@@ -289,7 +289,7 @@ Zuverlässiger Dateitransfer zwischen Rust und Python. Release-Qualität erreich
 - [x] Buffer-System (RawChannelReader, RawChannelWriter, BufferedChannelWriter)
 - [x] BZ2-Kompression für Stream-Daten
 
-**Deliverable:** ⚠️ Channel-Envelope funktioniert, aber Buffer/Stream-Layer nicht in ConnectionStream integriert, mark_delivered() nicht aufgerufen
+**Deliverable:** ⚠️ Channel-Envelope funktioniert inkl. mark_delivered() (v0.5.5), aber Buffer/Stream-Layer nicht in ConnectionStream integriert
 
 ---
 
@@ -364,7 +364,7 @@ Diese Features sind nice-to-have, aber nicht MVP-kritisch:
 | Transport Relay | Announce-Rebroadcast, Link-Routing | ✅ |
 | Multi-Hop | Multi-Hop-Topologie und Routing | ✅ |
 | Channel/Buffer | Stream + gepuffertes I/O | ✅ |
-| Eingehende Link-Daten | Empfangspfad für Link-Data-Pakete | 🐛 Nicht getestet — C8 |
+| Eingehende Link-Daten | Empfangspfad für Link-Data-Pakete | ✅ (C8 behoben v0.5.5) |
 | Resource Transfer | Dateitransfer-Verifikation | - |
 
 ### Integration-Tests
@@ -448,7 +448,7 @@ Monat 1    Monat 2    Monat 3       Monat 4       Monat 5         Monat 6
 
 ```
 ┌─────────────────────┐
-│ C8 handle_data-Bug  │ 🐛 Kritisch — blockiert eingehende Link-Daten
+│ C8 handle_data-Bug  │ ✅ Behoben (v0.5.5)
 │     fix             │
 └─────────┬───────────┘
           ▼

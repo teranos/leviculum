@@ -5,6 +5,21 @@ All notable changes to this project will be documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.5.5] - 2026-02-11
+
+### Fixed
+- **Link-addressed Data packets dropped on non-transport nodes** (C8) — `Transport::handle_data()` silently dropped link-addressed Data packets when `enable_transport` was false and the link ID wasn't in `destinations`. This blocked all incoming link data, keepalive echoes, LINKCLOSE, and channel ACKs from reaching `LinkManager`. Now emits `TransportEvent::PacketReceived` for link-addressed packets, matching Python Transport.py:1969-1994.
+- **Link-addressed data proofs dropped on non-transport nodes** — `Transport::handle_proof()` only routed LRPROOF (link establishment) proofs to local links, silently dropping data proofs (96 bytes, context=None). Broadened the fallthrough to catch all link-addressed proofs, enabling channel ACK delivery.
+- **Channel `mark_delivered()` never called** (C9) — Channel messages accumulated in the TX ring because: (1) the receiver never generated proofs for CHANNEL packets, (2) the sender never registered data receipts for channel messages, and (3) the `DataDelivered` event handler didn't call `mark_delivered()`. Now the full proof delivery chain works: receiver generates proof unconditionally (matching Python Link.py:1173), sender registers receipts with sequence mapping, and `DataDelivered` calls `mark_delivered()` to remove from the TX ring.
+- **`ConnectionStream::close()` didn't send LINKCLOSE** (D12) — `close()` only set a local flag without signaling the core. Now sends an empty-data sentinel through the outgoing channel, which the event loop dispatches as `NodeCore::close_connection()`.
+
+### Added
+- `Channel::last_sent_sequence()` for tracking the most recently sent channel sequence number
+- `Connection::last_sent_sequence()` delegate for accessing channel sequence from the node layer
+- `LinkManager::register_data_receipt()` for external receipt registration (used by NodeCore for channel messages)
+- `ReticulumNodeImpl::close_connection()` for graceful link teardown from the driver layer
+- `NodeCore::channel_hash_to_seq` mapping for correlating data proofs with channel sequences
+
 ## [0.5.4] - 2026-02-11
 
 ### Fixed
@@ -535,7 +550,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Transport layer (routing, paths, deduplication)
 - Full interoperability with Python rnsd
 
-[Unreleased]: https://codeberg.org/Lew_Palm/leviculum/compare/v0.5.2...HEAD
+[Unreleased]: https://codeberg.org/Lew_Palm/leviculum/compare/v0.5.5...HEAD
+[0.5.5]: https://codeberg.org/Lew_Palm/leviculum/compare/v0.5.4...v0.5.5
+[0.5.4]: https://codeberg.org/Lew_Palm/leviculum/compare/v0.5.3...v0.5.4
+[0.5.3]: https://codeberg.org/Lew_Palm/leviculum/compare/v0.5.2...v0.5.3
 [0.5.2]: https://codeberg.org/Lew_Palm/leviculum/compare/v0.5.1...v0.5.2
 [0.5.1]: https://codeberg.org/Lew_Palm/leviculum/compare/v0.5.0...v0.5.1
 [0.5.0]: https://codeberg.org/Lew_Palm/leviculum/compare/v0.4.4...v0.5.0

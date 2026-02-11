@@ -1517,13 +1517,23 @@ impl<C: Clock, S: Storage> Transport<C, S> {
             }
         }
 
-        // Deliver LRPROOF to local pending links (Python Transport.py:2054-2073).
-        // This handles the case where we initiated a link and the proof arrives
-        // back to us. For transport nodes, the proof was either forwarded via the
-        // link table above or falls through here if the link_id isn't in our
-        // link table (i.e., it's our own pending link, not one we're relaying).
-        // For non-transport nodes, this is the only path for LRPROOF delivery.
-        if packet.context == PacketContext::Lrproof {
+        // Deliver link-addressed proofs to local links.
+        //
+        // LRPROOF (link establishment proofs, context=Lrproof) need delivery
+        // for non-transport nodes (Python Transport.py:2054-2073).
+        // Data proofs (96 bytes, context=None) need delivery for channel ACK
+        // processing (Python Link.py:1173 generates proof for every CHANNEL packet).
+        //
+        // If we reach this point:
+        // - Not in Transport::receipts (receipt check at line 1404 failed)
+        // - Not for a registered destination (check at line 1435 failed)
+        // - Not forwarded by transport (enable_transport is false, or link_id
+        //   not in our link_table — initiator's own links are never in link_table)
+        //
+        // The node layer routes Proof packets to LinkManager::process_packet(),
+        // which distinguishes LRPROOF (link establishment) from data proofs
+        // (PROOF_DATA_SIZE + context=None) and validates each cryptographically.
+        if packet.flags.dest_type == DestinationType::Link {
             self.packet_cache.insert(dedup_hash, self.clock.now_ms());
             self.events.push(TransportEvent::PacketReceived {
                 destination_hash: dest_hash,
@@ -1624,7 +1634,28 @@ impl<C: Clock, S: Storage> Transport<C, S> {
                 }
             }
 
-            self.forward_packet(packet, interface_index, dedup_hash)?;
+            // Non-link-addressed packets: forward via path table.
+            // Link-addressed packets not in link_table are for our own local
+            // links (link_ids never appear in path_table) — fall through to
+            // the delivery code below.
+            if packet.flags.dest_type != DestinationType::Link {
+                self.forward_packet(packet, interface_index, dedup_hash)?;
+                return Ok(());
+            }
+        }
+
+        // Deliver link-addressed Data packets to local links (Python Transport.py:1969-1994).
+        // On non-transport nodes, link_table routing is skipped entirely.
+        // On transport nodes, relayed links are handled via link_table above;
+        // only packets for our own local links reach this point.
+        if packet.flags.dest_type == DestinationType::Link {
+            self.packet_cache.insert(dedup_hash, self.clock.now_ms());
+            self.events.push(TransportEvent::PacketReceived {
+                destination_hash: dest_hash,
+                packet: Box::new(packet),
+                interface_index,
+            });
+            return Ok(());
         }
 
         Ok(())

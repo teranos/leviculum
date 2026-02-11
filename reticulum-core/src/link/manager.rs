@@ -414,6 +414,38 @@ impl LinkManager {
         link.build_data_proof_packet_with_signing_key(packet_hash, signing_key)
     }
 
+    /// Register a data receipt for tracking delivery via proofs
+    ///
+    /// Used by NodeCore to register receipts for channel messages, which are
+    /// built by Connection (not LinkManager) but need proof matching here.
+    ///
+    /// # Arguments
+    /// * `packet_data` - The serialized packet bytes (hashed for receipt matching)
+    /// * `link_id` - The link this packet was sent on
+    /// * `now_ms` - Current time in milliseconds
+    ///
+    /// # Returns
+    /// The full SHA256 hash of the packet
+    pub fn register_data_receipt(
+        &mut self,
+        packet_data: &[u8],
+        link_id: LinkId,
+        now_ms: u64,
+    ) -> [u8; 32] {
+        let full_hash = packet_hash(packet_data);
+        let mut truncated = [0u8; TRUNCATED_HASHBYTES];
+        truncated.copy_from_slice(&full_hash[..TRUNCATED_HASHBYTES]);
+        self.data_receipts.insert(
+            truncated,
+            DataReceipt {
+                full_hash,
+                link_id,
+                sent_at_ms: now_ms,
+            },
+        );
+        full_hash
+    }
+
     /// Close a link gracefully
     ///
     /// This builds a LINKCLOSE packet that should be sent to the peer.
@@ -1076,6 +1108,25 @@ impl LinkManager {
                     sequence: envelope.sequence,
                     data: envelope.data,
                 });
+            }
+
+            // Generate proof unconditionally for CHANNEL packets (Python Link.py:1173).
+            // Unlike regular data (which checks proof_strategy), Channel proofs are
+            // always generated — matching Python's packet.prove() call.
+            let link = match self.links.get(&link_id) {
+                Some(l) => l,
+                None => return,
+            };
+            let full_packet_hash = packet_hash(raw_packet);
+            if let Some(signing_key) = link.dest_signing_key() {
+                if let Ok(proof_packet) =
+                    link.build_data_proof_packet_with_signing_key(&full_packet_hash, signing_key)
+                {
+                    self.pending_packets.push(PendingPacket::Proof {
+                        link_id,
+                        data: proof_packet,
+                    });
+                }
             }
 
             return;

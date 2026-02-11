@@ -150,6 +150,11 @@ impl Connection {
         self.channel.as_mut()
     }
 
+    /// Get the sequence number of the most recently sent channel message
+    pub fn last_sent_sequence(&self) -> Option<u16> {
+        self.channel.as_ref().map(|ch| ch.last_sent_sequence())
+    }
+
     /// Send raw data on this connection (without Channel framing)
     ///
     /// This encrypts the data and returns the packet bytes to send.

@@ -386,6 +386,29 @@ impl ReticulumNodeImpl {
         Ok(())
     }
 
+    /// Close a connection gracefully
+    ///
+    /// Sends a LINKCLOSE packet to the peer and removes the connection.
+    ///
+    /// # Arguments
+    /// * `link_id` - The link ID of the connection to close
+    pub async fn close_connection(&self, link_id: &LinkId) -> Result<(), Error> {
+        let output = {
+            let mut inner = self.inner.lock().unwrap();
+            inner.close_connection(link_id)
+        };
+        // Remove from connection map
+        {
+            let mut connections = self.connections.lock().unwrap();
+            connections.remove(link_id);
+        }
+        self.action_dispatch_tx
+            .send(output)
+            .await
+            .map_err(|_| Error::Transport("event loop shut down".to_string()))?;
+        Ok(())
+    }
+
     /// Check if transport mode (relay/routing) is enabled
     pub fn is_transport_enabled(&self) -> bool {
         self.inner
@@ -504,15 +527,24 @@ async fn run_event_loop(
                 let mut combined = TickOutput::default();
                 {
                     let mut core = inner.lock().unwrap();
-                    match core.send_on_connection(&link_id, &data) {
-                        Ok(output) => combined.merge(output),
-                        Err(e) => tracing::debug!("send_on_connection failed for {:?}: {}", link_id, e),
+                    if data.is_empty() {
+                        // Close signal from ConnectionStream
+                        combined.merge(core.close_connection(&link_id));
+                    } else {
+                        match core.send_on_connection(&link_id, &data) {
+                            Ok(output) => combined.merge(output),
+                            Err(e) => tracing::debug!("send_on_connection failed for {:?}: {}", link_id, e),
+                        }
                     }
                     // Drain any more queued messages before dispatching
                     while let Ok((lid, d)) = outgoing_rx.try_recv() {
-                        match core.send_on_connection(&lid, &d) {
-                            Ok(output) => combined.merge(output),
-                            Err(e) => tracing::debug!("send_on_connection failed for {:?}: {}", lid, e),
+                        if d.is_empty() {
+                            combined.merge(core.close_connection(&lid));
+                        } else {
+                            match core.send_on_connection(&lid, &d) {
+                                Ok(output) => combined.merge(output),
+                                Err(e) => tracing::debug!("send_on_connection failed for {:?}: {}", lid, e),
+                            }
                         }
                     }
                 };
