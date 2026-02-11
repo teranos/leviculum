@@ -330,26 +330,40 @@ impl<R: CryptoRngCore, C: Clock, S: Storage> NodeCore<R, C, S> {
 
     /// Accept an incoming connection request
     ///
+    /// Looks up the destination's identity from the registered destination
+    /// matching the link's destination hash. The identity is used to sign
+    /// the link proof.
+    ///
     /// # Arguments
     /// * `link_id` - The link ID from the ConnectionRequest event
-    /// * `identity` - The destination's identity (for signing the proof)
     ///
     /// # Returns
     /// A `TickOutput` containing the link proof action. The driver must
     /// dispatch this output the same way it handles output from
     /// `handle_packet()` / `handle_timeout()`.
+    ///
+    /// # Errors
+    /// - `ConnectionError::NotFound` if the link does not exist
+    /// - `ConnectionError::IdentityNotFound` if the destination is not
+    ///   registered or has no identity
     pub fn accept_connection(
         &mut self,
         link_id: &LinkId,
-        identity: &Identity,
     ) -> Result<crate::transport::TickOutput, ConnectionError> {
-        // Look up proof strategy from the destination
-        let proof_strategy = self
+        // Look up the destination hash from the link
+        let dest_hash = self
             .link_manager
             .link(link_id)
-            .and_then(|link| self.destinations.get(link.destination_hash()))
-            .map(|dest| dest.proof_strategy())
-            .unwrap_or(ProofStrategy::None);
+            .map(|l| *l.destination_hash())
+            .ok_or(ConnectionError::NotFound)?;
+
+        // Look up identity and proof strategy from the registered destination
+        let dest = self
+            .destinations
+            .get(&dest_hash)
+            .ok_or(ConnectionError::IdentityNotFound)?;
+        let identity = dest.identity().ok_or(ConnectionError::IdentityNotFound)?;
+        let proof_strategy = dest.proof_strategy();
 
         let now_ms = self.transport.clock().now_ms();
         let proof = self
@@ -357,10 +371,10 @@ impl<R: CryptoRngCore, C: Clock, S: Storage> NodeCore<R, C, S> {
             .accept_link(link_id, identity, proof_strategy, now_ms)
             .map_err(ConnectionError::LinkError)?;
 
-        // Get destination hash from link
+        // Create connection wrapper (is_initiator = false)
         if let Some(link) = self.link_manager.link(link_id) {
-            let dest_hash = *link.destination_hash();
-            let conn = Connection::new(*link_id, dest_hash, false);
+            let dh = *link.destination_hash();
+            let conn = Connection::new(*link_id, dh, false);
             self.connections.insert(*link_id, conn);
         }
 

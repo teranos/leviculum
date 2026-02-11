@@ -54,7 +54,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                         println!("  Link ID: {:02x?}", &link_id.as_bytes()[..4]);
                         println!("  Peer Ed25519 key: {:02x?}...", &peer_keys.ed25519_verifying[..8]);
                         // In a real application, you would accept the connection here
-                        // by calling node.inner().lock().unwrap().accept_connection(...)
+                        // by calling node.accept_connection(&link_id).await
                     }
                     NodeEvent::ConnectionEstablished { link_id, is_initiator } => {
                         println!("Connection established!");

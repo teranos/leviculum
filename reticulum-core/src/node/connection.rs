@@ -25,6 +25,8 @@ pub enum ConnectionError {
     TooLarge,
     /// Connection not found
     NotFound,
+    /// Destination identity not found (destination not registered or has no identity)
+    IdentityNotFound,
 }
 
 impl core::fmt::Display for ConnectionError {
@@ -35,6 +37,9 @@ impl core::fmt::Display for ConnectionError {
             ConnectionError::ChannelError(e) => write!(f, "channel error: {}", e),
             ConnectionError::TooLarge => write!(f, "data too large for connection MDU"),
             ConnectionError::NotFound => write!(f, "connection not found"),
+            ConnectionError::IdentityNotFound => {
+                write!(f, "destination identity not found")
+            }
         }
     }
 }

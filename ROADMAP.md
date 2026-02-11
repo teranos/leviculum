@@ -29,7 +29,7 @@
 
 ## Aktueller Stand
 
-Das Projekt hat Phase 1 vollständig abgeschlossen und Phase 2 ist zu ~85% fertig — neben TCP Server (Meilenstein 2.4) fehlen IFAC/Ratchet-Integration und API-Vervollständigung. Kritische Bugs C8 (Link-Daten verworfen), C9 (Channel-ACKs) und D12 (close_connection) sind in v0.5.5 behoben. Meilensteine 2.1 (Destination API), 2.2 (Link-Responder), 2.3 (High-Level Link API inkl. Keepalive) und 2.5 (Transport Layer) sind abgeschlossen. Meilenstein 3.2 (Channel-System inkl. Buffer-System) ist ebenfalls fertig — StreamDataMessage für binäre Streams und RawChannelReader/Writer für gepufferte I/O sind implementiert. **High-Level Node API** (`NodeCore` in reticulum-core, `ReticulumNode` in reticulum-std) bietet eine einheitliche async-kompatible Schnittstelle mit Smart Routing, Connection-Abstraktion und symmetrischer Channel-API. Vollständige Interoperabilität mit Python rnsd ist nachgewiesen. **CLI-Tool `lrns`** existiert mit Subcommands: `status`, `path`, `identity`, `probe`, `interfaces` (nur `identity` ist voll implementiert, die anderen sind Gerüste mit "Not implemented yet").
+Das Projekt hat Phase 1 vollständig abgeschlossen und Phase 2 ist zu ~85% fertig — neben TCP Server (Meilenstein 2.4) fehlen IFAC/Ratchet-Integration und API-Vervollständigung. Kritische Bugs C8 (Link-Daten verworfen), C9 (Channel-ACKs) und D12 (close_connection) sind in v0.5.5 behoben. **Responder-Pfad komplett (v0.5.6):** `ReticulumNode::accept_connection()` exponiert, `MessageReceived`-Routing im Driver repariert, `NodeCore::accept_connection()` sucht Identity intern aus der registrierten Destination. Meilensteine 2.1 (Destination API), 2.2 (Link-Responder), 2.3 (High-Level Link API inkl. Keepalive) und 2.5 (Transport Layer) sind abgeschlossen. Meilenstein 3.2 (Channel-System inkl. Buffer-System) ist ebenfalls fertig — StreamDataMessage für binäre Streams und RawChannelReader/Writer für gepufferte I/O sind implementiert. **High-Level Node API** (`NodeCore` in reticulum-core, `ReticulumNode` in reticulum-std) bietet eine einheitliche async-kompatible Schnittstelle mit Smart Routing, Connection-Abstraktion und symmetrischer Channel-API. Vollständige Interoperabilität mit Python rnsd ist nachgewiesen. **CLI-Tool `lrns`** existiert mit Subcommands: `status`, `path`, `identity`, `probe`, `interfaces` (nur `identity` ist voll implementiert, die anderen sind Gerüste mit "Not implemented yet").
 
 **Sans-I/O-Architektur abgeschlossen:** `reticulum-core` ist jetzt ein reiner Zustandsautomat ohne jegliche direkte I/O-Operationen. `NodeCore` nimmt eingehende Pakete via `handle_packet()` entgegen und gibt `Action`-Werte (`SendPacket`, `Broadcast`) zurück, die der Treiber ausführt. Der Treiber in `reticulum-std` besitzt die Interfaces, liest Pakete, speist sie in den Core, und dispatcht die resultierenden Actions. `TransportRunner` wurde entfernt; `ReticulumNode` ist der einheitliche Treiber. Diese Architektur ermöglicht den Einsatz auf Embedded-Plattformen ohne `std`.
 
@@ -45,7 +45,7 @@ Das Projekt hat Phase 1 vollständig abgeschlossen und Phase 2 ist zu ~85% ferti
 
 **Transport Layer vollständig (3.676 LOC):** Announce-Rebroadcast, PATH_REQUEST/PATH_RESPONSE, Reverse-Path-Routing, Link-Tabellenverwaltung, Hop-Count-Validation, Header-Stripping am letzten Hop, Announce-Replay-Schutz, LRPROOF-Validierung, Auto-Re-Announce auf PATH_REQUEST. **Path Recovery** (v0.4.2/v0.4.3): Pfad-Zustandsverfolgung (`PathState`), automatische Markierung als unresponsive bei abgelaufenen unvalidierten Links, Akzeptanz von Same-Emission-Announces über Alternativrouten, direkte `request_path()`-Aufrufe aus dem Core für Pfad-Neuentdeckung. **Announce Rate Limiting** (v0.4.4): Per-Destination-Violation/Grace/Penalty-Eskalationsmechanismus analog zu Python Transport.py:1692-1719, blockiert nur Rebroadcast (nicht Pfad-Updates), konfigurierbar und standardmäßig deaktiviert. **Hop-Threshold-Korrektur** (v0.5.2): 4 Off-by-One-Bugs in Forwarding-Schwellwerten behoben (Python inkrementiert `hops` bei Empfang, Rust nicht — aus Python kopierte Schwellwerte waren um 1 daneben). `PathEntry::is_direct()` und `PathEntry::needs_relay()` kapseln die Semantik-Differenz und verhindern Wiederholung. **Rust Transport Relay** funktioniert vollständig: Announce-Rebroadcast, Link-Routing und Datenweiterleitung zwischen zwei Python-Daemons getestet. **Gemischte Relay-Ketten** (Rust + Python Relays in Serie) funktionieren inklusive Link-Establishment und bidirektionaler Datenübertragung über die volle Kette.
 
-**Code-Qualität:** LinkManager intern auf einheitliche Paket-Queue (`PendingPacket` Enum) umgestellt, Timeout-Konstanten zentralisiert, `LinkId` und `DestinationHash` als Newtype-Structs für vollständige Typ-Sicherheit (keine `Deref` mehr, kein `as_bytes_mut()`). Proof-Strategy und Signing-Key von LinkManager's Destination-Map auf den `Link` selbst verschoben — reduziert duplizierte State zwischen Transport, LinkManager und NodeCore. ~861 Tests bestehen (582 Core-Unit + 20 Std-Lib + 176 Interop + 26 Doctests + 18 Proptest + 31 Test-Vektoren + 7 Core-Integration + 3 Std-Integration).
+**Code-Qualität:** LinkManager intern auf einheitliche Paket-Queue (`PendingPacket` Enum) umgestellt, Timeout-Konstanten zentralisiert, `LinkId` und `DestinationHash` als Newtype-Structs für vollständige Typ-Sicherheit (keine `Deref` mehr, kein `as_bytes_mut()`). Proof-Strategy und Signing-Key von LinkManager's Destination-Map auf den `Link` selbst verschoben — reduziert duplizierte State zwischen Transport, LinkManager und NodeCore. ~864 Tests bestehen (582 Core-Unit + 20 Std-Lib + 177 Interop + 26 Doctests + 18 Proptest + 31 Test-Vektoren + 7 Core-Integration + 3 Std-Integration).
 
 | Komponente | Status | LOC |
 |------------|--------|-----|
@@ -76,7 +76,7 @@ Das Projekt hat Phase 1 vollständig abgeschlossen und Phase 2 ist zu ~85% ferti
 | reticulum-nrf | ~400 | — | Embedded-Firmware (Embassy, nRF52840, USB CDC-ACM) |
 | reticulum-ffi | 361 | 404 | C-API |
 
-**Test-Abdeckung:** ~861 Tests (582 Core-Unit + 18 Proptest + 31 Test-Vektoren + 26 Doctests + 20 Std-Lib + 7 Core-Integration + 3 Std-Integration + 176 Interop gegen rnsd)
+**Test-Abdeckung:** ~864 Tests (582 Core-Unit + 18 Proptest + 31 Test-Vektoren + 26 Doctests + 20 Std-Lib + 7 Core-Integration + 3 Std-Integration + 177 Interop gegen rnsd)
 
 **Architektur:** Siehe [doc/ARCHITECTURE.md](doc/ARCHITECTURE.md) — no_std/embedded-freundlich, sans-I/O Core (reine Zustandsmaschine), I/O via Action-Rückgabewerte an den Treiber.
 
@@ -180,7 +180,7 @@ let events = link_manager.drain_events();
 - [x] Link-Stale-Erkennung und automatisches Schließen nach Timeout
 - [x] Link-Teardown (ordnungsgemäßes Schließen via `close()` mit LINKCLOSE-Paket)
 
-**Einschränkungen behoben (v0.5.5):** C8 (Link-adressierte Pakete verworfen) und D12 (close_connection nicht exponiert) sind behoben — LINKCLOSE, Keepalive-Echos und Channel-ACKs erreichen jetzt LinkManager korrekt.
+**Einschränkungen behoben (v0.5.5):** C8 (Link-adressierte Pakete verworfen) und D12 (close_connection nicht exponiert) sind behoben — LINKCLOSE, Keepalive-Echos und Channel-ACKs erreichen jetzt LinkManager korrekt. **Responder-Pfad komplett (v0.5.6):** `ReticulumNode::accept_connection()` als async Wrapper, `MessageReceived`-Routing im Driver repariert.
 
 ```rust
 // Implementierte API (via LinkManager):
@@ -314,7 +314,7 @@ Production-ready: QA, zusätzliche Interfaces, Dokumentation.
 - [ ] Async interface connect path — `spawn_tcp_interface()` connects synchronously (blocking on tokio thread), which is fine at startup but blocks the event loop for runtime hot-plug. Prerequisite for USB and BLE interface support. The channel-based `InterfaceRegistry` already supports dynamic `register()`, only the connect step needs an async variant.
 
 ### Qualitätssicherung
-- [x] Integration-Tests gegen rnsd-Daemon (176 Tests)
+- [x] Integration-Tests gegen rnsd-Daemon (177 Tests)
 - [ ] Performance-Optimierung
 - [ ] Speicher-Profiling mit Valgrind
 - [ ] Fuzzing der Paket-Parser
@@ -366,6 +366,7 @@ Diese Features sind nice-to-have, aber nicht MVP-kritisch:
 | Channel/Buffer | Stream + gepuffertes I/O | ✅ |
 | Eingehende Link-Daten | Empfangspfad für Link-Data-Pakete | ✅ (C8 behoben v0.5.5) |
 | Full Link Lifecycle | Bidirektionale Daten, Channel-ACKs, Graceful Close durch Relay | ✅ (v0.5.5 Fixes verifiziert) |
+| Responder Node | Rust als Connection-Responder via High-Level API, bidirektionaler Datenaustausch | ✅ (v0.5.6) |
 | Resource Transfer | Dateitransfer-Verifikation | - |
 
 ### Integration-Tests
@@ -377,7 +378,7 @@ Testumgebung:
 └─────────────┘      └─────────────┘
 ```
 
-Automatisierte Test-Suite (176 Interop-Tests in 25 Modulen gegen rnsd):
+Automatisierte Test-Suite (177 Interop-Tests in 26 Modulen gegen rnsd):
 - ✅ TCP-Verbindung zu rnsd
 - ✅ Pakete empfangen und senden
 - ✅ Announce-Erstellung und -Validierung
@@ -397,6 +398,7 @@ Automatisierte Test-Suite (176 Interop-Tests in 25 Modulen gegen rnsd):
 - ✅ Path Recovery via Link-Timeout (LRPROOF-Drop, expire_path + request_path)
 - ✅ Link Keepalive und Close
 - ✅ Proof-Strategien
+- ✅ Responder Node (Rust als Connection-Responder mit accept_connection API)
 - ✅ Flood/Loop-Prevention (Triangle, Diamond, redundante Pfade)
 - Resource Transfer
 - Error Recovery
@@ -420,7 +422,7 @@ Automatisierte Test-Suite (176 Interop-Tests in 25 Modulen gegen rnsd):
 | Risiko | Wahrscheinlichkeit | Mitigation |
 |--------|-------------------|------------|
 | Transport Layer komplexer als erwartet | ✅ Gelöst | 3.676 LOC, vollständig implementiert |
-| Interop-Probleme mit Python | Mittel | Frühe und kontinuierliche Tests (176 Interop-Tests) |
+| Interop-Probleme mit Python | Mittel | Frühe und kontinuierliche Tests (177 Interop-Tests) |
 | Performance-Probleme bei async | Niedrig | Profiling ab Phase 2 |
 | no_std-Kompatibilitätsprobleme | ✅ Gelöst | Context-Trait entfernt, direkte RNG/time-Parameter |
 | Resource Transfer Komplexität | Mittel | Sliding-Window, Hashmap, Compression — frühzeitig planen |
@@ -482,7 +484,7 @@ Monat 1    Monat 2    Monat 3       Monat 4       Monat 5         Monat 6
 - [ ] Resource Transfer: Dateien übertragen
 - [ ] TCP Server Interface
 - [ ] `lrnsd` Daemon läuft standalone
-- [x] Integration-Tests gegen Python rnsd bestehen (176 Interop-Tests)
+- [x] Integration-Tests gegen Python rnsd bestehen (177 Interop-Tests)
 - [x] no_std-Kompatibilität für reticulum-core
 - [ ] Forward Secrecy via Ratchets — ⚠️ Krypto fertig, Validierung nicht eingebunden
 - [ ] Interface Access Codes (IFAC) — ⚠️ Modul fertig, nicht in Empfangspfad eingebunden

@@ -439,6 +439,15 @@ class TestDaemon:
                 link.set_packet_callback(lambda msg, pkt, l=link: self._on_packet(l, msg, pkt))
                 link.set_link_closed_callback(lambda l: self._on_link_closed(l))
 
+                # Set up channel handler for Rust channel messages
+                try:
+                    channel = link.get_channel()
+                    channel.register_message_type(RawBytesMessage)
+                    channel.add_message_handler(lambda msg, l=link: self._on_channel_message(l, msg))
+                except Exception as e:
+                    if self.verbose:
+                        print(f"Failed to set up channel handler on initiator link: {e}")
+
                 return {
                     "result": {
                         "link_hash": link_hash,

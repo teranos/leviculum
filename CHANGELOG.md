@@ -5,6 +5,20 @@ All notable changes to this project will be documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.5.6] - 2026-02-11
+
+### Fixed
+- **`MessageReceived` events silently dropped in driver** — `handle_event()` in `reticulum-std` routed `DataReceived` to `ConnectionStream` but `MessageReceived` (from Channel) fell through `_ => {}`. Since `ConnectionStream::send()` uses Channel internally, Rust-to-Rust data sent via `stream.send()` never reached `stream.recv()`. Now routes `MessageReceived` data to the `ConnectionStream`, matching `DataReceived` handling.
+
+### Added
+- `ReticulumNode::accept_connection()` async wrapper — accepts an incoming link request and returns a `ConnectionStream` for async read/write, completing the responder path through the high-level driver API
+- `ConnectionError::IdentityNotFound` variant for missing destination identity during `accept_connection()`
+- Interop test `test_rust_node_as_responder` — Py-Initiator → Py-Relay → Rust-Responder topology with bidirectional data exchange proving both the `MessageReceived` fix and the new `accept_connection()` API
+- Channel message handler in test daemon's `create_link` path — Python initiator can now receive Rust channel messages (was only set up for responder links)
+
+### Changed
+- **Breaking:** `NodeCore::accept_connection()` no longer takes an `identity: &Identity` parameter — the destination identity is looked up internally from the registered destination matching the link's destination hash
+
 ## [0.5.5] - 2026-02-11
 
 ### Fixed
@@ -551,7 +565,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Transport layer (routing, paths, deduplication)
 - Full interoperability with Python rnsd
 
-[Unreleased]: https://codeberg.org/Lew_Palm/leviculum/compare/v0.5.5...HEAD
+[Unreleased]: https://codeberg.org/Lew_Palm/leviculum/compare/v0.5.6...HEAD
+[0.5.6]: https://codeberg.org/Lew_Palm/leviculum/compare/v0.5.5...v0.5.6
 [0.5.5]: https://codeberg.org/Lew_Palm/leviculum/compare/v0.5.4...v0.5.5
 [0.5.4]: https://codeberg.org/Lew_Palm/leviculum/compare/v0.5.3...v0.5.4
 [0.5.3]: https://codeberg.org/Lew_Palm/leviculum/compare/v0.5.2...v0.5.3

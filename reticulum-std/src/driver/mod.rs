@@ -324,6 +324,40 @@ impl ReticulumNodeImpl {
         ))
     }
 
+    /// Accept an incoming connection request
+    ///
+    /// Accepts a link request identified by `link_id` (from a `ConnectionRequest`
+    /// event) and returns a `ConnectionStream` for async read/write operations.
+    /// The link proof packet is queued and dispatched by the event loop.
+    ///
+    /// # Arguments
+    /// * `link_id` - The link ID from the `ConnectionRequest` event
+    pub async fn accept_connection(&self, link_id: &LinkId) -> Result<ConnectionStream, Error> {
+        let output = {
+            let mut inner = self.inner.lock().unwrap();
+            inner
+                .accept_connection(link_id)
+                .map_err(|e| Error::Transport(e.to_string()))?
+        };
+
+        self.action_dispatch_tx
+            .send(output)
+            .await
+            .map_err(|_| Error::Transport("event loop shut down".to_string()))?;
+
+        let (in_tx, in_rx) = mpsc::channel(CONNECTION_CHANNEL_CAPACITY);
+        {
+            let mut connections = self.connections.lock().unwrap();
+            connections.insert(*link_id, in_tx);
+        }
+
+        Ok(ConnectionStream::new(
+            *link_id,
+            self.outgoing_tx.clone(),
+            in_rx,
+        ))
+    }
+
     /// Take the event receiver
     ///
     /// This allows consuming node events directly. Can only be called once.
@@ -641,6 +675,19 @@ fn handle_event(event: &NodeEvent, connections: &Arc<Mutex<ConnectionMap>>) {
         }
         NodeEvent::DataReceived { link_id, data } => {
             // Forward data to the connection stream
+            let conns = connections.lock().unwrap();
+            if let Some(tx) = conns.get(link_id) {
+                if tx.try_send(data.clone()).is_err() {
+                    tracing::warn!(
+                        "Connection channel full for {:?}, dropping {} bytes",
+                        link_id,
+                        data.len()
+                    );
+                }
+            }
+        }
+        NodeEvent::MessageReceived { link_id, data, .. } => {
+            // Forward channel message data to the connection stream
             let conns = connections.lock().unwrap();
             if let Some(tx) = conns.get(link_id) {
                 if tx.try_send(data.clone()).is_err() {
