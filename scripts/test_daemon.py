@@ -72,6 +72,7 @@ if RETICULUM_PATH:
 
 try:
     import RNS
+    import RNS.Channel
     from RNS import Transport
     from RNS.Interfaces.TCPInterface import TCPClientInterface
 except ImportError:
@@ -81,6 +82,20 @@ except ImportError:
     print("  2. Set RETICULUM_PATH=/path/to/Reticulum")
     print("  3. Install system-wide: pip install rns")
     sys.exit(1)
+
+
+class RawBytesMessage(RNS.Channel.MessageBase):
+    """Channel message type compatible with Rust's RawBytesMessage (MSGTYPE=0x0000)."""
+    MSGTYPE = 0x0000
+
+    def __init__(self):
+        self.data = b""
+
+    def pack(self) -> bytes:
+        return self.data
+
+    def unpack(self, raw: bytes):
+        self.data = raw
 
 
 class TestDaemon:
@@ -93,6 +108,7 @@ class TestDaemon:
         self.links = {}  # link_hash -> link
         self.received_packets = []  # [(timestamp, link, data)]
         self.client_interfaces = {}  # name -> TCPClientInterface
+        self.inbound_trace = []  # [(timestamp, flags, packet_type, dest_hash_hex, transport_id_hex)]
 
         # Create temp config directory
         self.config_dir = tempfile.mkdtemp(prefix="rns_test_")
@@ -245,6 +261,10 @@ class TestDaemon:
                     "online": getattr(iface, 'online', None),
                     "IN": getattr(iface, 'IN', None),
                     "OUT": getattr(iface, 'OUT', None),
+                    "txb": getattr(iface, 'txb', None),
+                    "rxb": getattr(iface, 'rxb', None),
+                    "mode": getattr(iface, 'mode', None),
+                    "ifac_identity": hasattr(iface, 'ifac_identity') and iface.ifac_identity is not None,
                 })
             return {"result": interfaces}
 
@@ -484,6 +504,13 @@ class TestDaemon:
                 client_iface.IN = True
                 client_iface.mode = RNS.Interfaces.Interface.Interface.MODE_GATEWAY
 
+                # Set announce rate attributes required by Transport.inbound's
+                # announce processing (Transport.py:1692). Without these,
+                # incoming announces on this interface cause an AttributeError.
+                client_iface.announce_rate_target = None
+                client_iface.announce_rate_grace = None
+                client_iface.announce_rate_penalty = None
+
                 # Register with Transport
                 RNS.Transport.interfaces.append(client_iface)
 
@@ -535,6 +562,164 @@ class TestDaemon:
                 return {"result": link_table}
             except Exception as e:
                 return {"error": f"Failed to get link table: {str(e)}"}
+
+        elif method == "enable_inbound_trace":
+            # Install monkey-patch on Transport.inbound to trace all packets
+            original_inbound = Transport.inbound.__func__ if hasattr(Transport.inbound, '__func__') else Transport.inbound
+            daemon_ref = self
+
+            @staticmethod
+            def traced_inbound(raw, interface=None):
+                try:
+                    if len(raw) > 2:
+                        flags = raw[0]
+                        packet_type = flags & 0x03
+                        header_type = (flags >> 6) & 0x01
+                        context_flag = (flags >> 5) & 0x01
+                        dest_type = (flags >> 2) & 0x03
+                        transport_id_hex = None
+                        context_val = None
+                        if header_type == 1:  # HEADER_2
+                            transport_id_hex = raw[2:18].hex()
+                            dest_hash_hex = raw[18:34].hex()
+                            if len(raw) > 34:
+                                context_val = raw[34]
+                        else:  # HEADER_1
+                            dest_hash_hex = raw[2:18].hex()
+                            if len(raw) > 18:
+                                context_val = raw[18]
+                        daemon_ref.inbound_trace.append({
+                            "time": time.time(),
+                            "flags": f"0x{flags:02x}",
+                            "header_type": header_type,
+                            "packet_type": packet_type,
+                            "dest_type": dest_type,
+                            "context_flag": context_flag,
+                            "context_val": context_val,
+                            "dest_hash": dest_hash_hex,
+                            "transport_id": transport_id_hex,
+                            "interface": str(interface),
+                            "raw_len": len(raw),
+                            "hops": raw[1] if len(raw) > 1 else None,
+                        })
+                except Exception as e:
+                    daemon_ref.inbound_trace.append({"error": str(e)})
+                return original_inbound(raw, interface=interface)
+
+            Transport.inbound = traced_inbound
+            return {"result": "trace enabled"}
+
+        elif method == "enable_lrproof_trace":
+            # Detailed tracing of LRPROOF handling inside Transport
+            daemon_ref = self
+            daemon_ref.lrproof_trace = []
+
+            # Monkey-patch Transport.transmit to trace outgoing packets
+            original_transmit = Transport.transmit.__func__ if hasattr(Transport.transmit, '__func__') else Transport.transmit
+            @staticmethod
+            def traced_transmit(interface, raw):
+                try:
+                    if len(raw) > 2:
+                        flags = raw[0]
+                        pt = flags & 0x03
+                        daemon_ref.lrproof_trace.append({
+                            "event": "transmit",
+                            "interface": str(interface),
+                            "flags": f"0x{flags:02x}",
+                            "packet_type": pt,
+                            "raw_len": len(raw),
+                            "dest_hash": raw[2:18].hex() if (flags >> 6) & 0x01 == 0 else raw[18:34].hex(),
+                        })
+                except Exception as e:
+                    daemon_ref.lrproof_trace.append({"event": "transmit_error", "error": str(e)})
+                return original_transmit(interface, raw)
+            Transport.transmit = traced_transmit
+
+            # Log link table and path table state
+            daemon_ref.lrproof_trace.append({
+                "event": "tables_snapshot",
+                "link_table_keys": [k.hex() if isinstance(k, bytes) else str(k) for k in Transport.link_table.keys()],
+                "path_table_keys": [k.hex() if isinstance(k, bytes) else str(k) for k in Transport.path_table.keys()],
+                "transport_enabled": RNS.Reticulum.transport_enabled(),
+                "transport_identity": Transport.identity.hash.hex() if Transport.identity else None,
+            })
+
+            return {"result": "lrproof trace enabled"}
+
+        elif method == "get_lrproof_trace":
+            return {"result": getattr(self, 'lrproof_trace', [])}
+
+        elif method == "enable_lrproof_drop":
+            # Monkey-patch Transport.transmit to silently drop LRPROOF packets.
+            # LRPROOF has context byte 0xFF. Context byte offset depends on
+            # header type: HEADER_1 → raw[18], HEADER_2 → raw[34].
+            daemon_ref = self
+            daemon_ref.lrproof_drops = getattr(daemon_ref, 'lrproof_drops', [])
+
+            # Save original transmit only once (avoid double-patching)
+            if not hasattr(daemon_ref, '_original_transmit'):
+                daemon_ref._original_transmit = (
+                    Transport.transmit.__func__
+                    if hasattr(Transport.transmit, '__func__')
+                    else Transport.transmit
+                )
+
+            original = daemon_ref._original_transmit
+
+            @staticmethod
+            def dropping_transmit(interface, raw):
+                try:
+                    if len(raw) > 2:
+                        flags = raw[0]
+                        is_header_2 = (flags >> 6) & 0x01
+                        context_offset = 34 if is_header_2 else 18
+                        if len(raw) > context_offset and raw[context_offset] == 0xFF:
+                            daemon_ref.lrproof_drops.append({
+                                "time": time.time(),
+                                "interface": str(interface),
+                                "raw_len": len(raw),
+                                "header_type": 2 if is_header_2 else 1,
+                            })
+                            return  # silently drop
+                except Exception:
+                    pass  # on error, fall through to original
+                return original(interface, raw)
+
+            Transport.transmit = dropping_transmit
+            return {"result": "lrproof_drop_enabled"}
+
+        elif method == "disable_lrproof_drop":
+            # Restore original Transport.transmit saved during enable.
+            if hasattr(self, '_original_transmit'):
+                Transport.transmit = self._original_transmit
+                del self._original_transmit
+                return {"result": "lrproof_drop_disabled"}
+            else:
+                return {"result": "lrproof_drop_was_not_enabled"}
+
+        elif method == "get_lrproof_drops":
+            return {"result": getattr(self, 'lrproof_drops', [])}
+
+        elif method == "get_link_table_detail":
+            # Get full link table with all fields
+            result = {}
+            for k, v in Transport.link_table.items():
+                key_hex = k.hex() if isinstance(k, bytes) else str(k)
+                result[key_hex] = {
+                    "timestamp": v[0],
+                    "next_hop": v[1].hex() if isinstance(v[1], bytes) else str(v[1]),
+                    "nh_interface": str(v[2]),
+                    "remaining_hops": v[3],
+                    "rcvd_interface": str(v[4]),
+                    "taken_hops": v[5],
+                    "dest_hash": v[6].hex() if isinstance(v[6], bytes) else str(v[6]),
+                    "validated": v[7],
+                    "proof_timeout": v[8],
+                }
+            return {"result": result}
+
+        elif method == "get_inbound_trace":
+            return {"result": self.inbound_trace}
 
         elif method == "rotate_ratchet":
             # Force ratchet rotation for a destination
@@ -794,6 +979,23 @@ class TestDaemon:
 
         link.set_packet_callback(lambda msg, pkt: self._on_packet(link, msg, pkt))
         link.set_link_closed_callback(lambda l: self._on_link_closed(l))
+
+        # Set up channel handler for Rust channel messages (RawBytesMessage)
+        try:
+            channel = link.get_channel()
+            channel.register_message_type(RawBytesMessage)
+            channel.add_message_handler(lambda msg: self._on_channel_message(link, msg))
+        except Exception as e:
+            if self.verbose:
+                print(f"Failed to set up channel handler: {e}")
+
+    def _on_channel_message(self, link, message):
+        """Called when a channel message is received over a link."""
+        if self.verbose:
+            print(f"Channel message received: {message.data}")
+
+        self.received_packets.append((time.time(), link, message.data))
+        return True
 
     def _on_packet(self, link, message, packet):
         """Called when a packet is received over a link."""

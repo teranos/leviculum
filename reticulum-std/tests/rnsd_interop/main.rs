@@ -45,6 +45,7 @@ mod link_manager_tests;
 mod link_tests;
 mod multihop_tests;
 mod node_api_tests;
+mod path_recovery_tests;
 mod proof_tests;
 mod protocol_tests;
 mod ratchet_rotation_tests;

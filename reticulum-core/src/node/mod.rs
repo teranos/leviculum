@@ -287,13 +287,12 @@ impl<R: CryptoRngCore, C: Clock, S: Storage> NodeCore<R, C, S> {
     ) -> (LinkId, crate::transport::TickOutput) {
         // Check if we have path info for this destination
         let (next_hop, hops) = if let Some(path) = self.transport.path(dest_hash.as_bytes()) {
-            // Multi-hop: need transport_id
-            if path.hops > 1 {
-                // For multi-hop, we'd need the transport_id from the path
-                // For now, just use direct connection
-                (None, path.hops)
+            if path.needs_relay() {
+                // Multi-hop: use HEADER_2 with the relay's transport_id
+                (path.next_hop, path.hops)
             } else {
-                (None, 1)
+                // Direct neighbor: use HEADER_1
+                (None, path.hops)
             }
         } else {
             (None, 1)

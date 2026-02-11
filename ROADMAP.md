@@ -45,7 +45,7 @@ Das Projekt hat Phase 1 vollständig abgeschlossen und Phase 2 ist zu ~95% ferti
 
 **Transport Layer vollständig (3.676 LOC):** Announce-Rebroadcast, PATH_REQUEST/PATH_RESPONSE, Reverse-Path-Routing, Link-Tabellenverwaltung, Hop-Count-Validation, Header-Stripping am letzten Hop, Announce-Replay-Schutz, LRPROOF-Validierung, Auto-Re-Announce auf PATH_REQUEST. **Path Recovery** (v0.4.2/v0.4.3): Pfad-Zustandsverfolgung (`PathState`), automatische Markierung als unresponsive bei abgelaufenen unvalidierten Links, Akzeptanz von Same-Emission-Announces über Alternativrouten, direkte `request_path()`-Aufrufe aus dem Core für Pfad-Neuentdeckung. **Announce Rate Limiting** (v0.4.4): Per-Destination-Violation/Grace/Penalty-Eskalationsmechanismus analog zu Python Transport.py:1692-1719, blockiert nur Rebroadcast (nicht Pfad-Updates), konfigurierbar und standardmäßig deaktiviert. **Hop-Threshold-Korrektur** (v0.5.2): 4 Off-by-One-Bugs in Forwarding-Schwellwerten behoben (Python inkrementiert `hops` bei Empfang, Rust nicht — aus Python kopierte Schwellwerte waren um 1 daneben). `PathEntry::is_direct()` und `PathEntry::needs_relay()` kapseln die Semantik-Differenz und verhindern Wiederholung. **Rust Transport Relay** funktioniert vollständig: Announce-Rebroadcast, Link-Routing und Datenweiterleitung zwischen zwei Python-Daemons getestet. **Gemischte Relay-Ketten** (Rust + Python Relays in Serie) funktionieren inklusive Link-Establishment und bidirektionaler Datenübertragung über die volle Kette.
 
-**Code-Qualität:** LinkManager intern auf einheitliche Paket-Queue (`PendingPacket` Enum) umgestellt, Timeout-Konstanten zentralisiert, `LinkId` und `DestinationHash` als Newtype-Structs für vollständige Typ-Sicherheit (keine `Deref` mehr, kein `as_bytes_mut()`). Proof-Strategy und Signing-Key von LinkManager's Destination-Map auf den `Link` selbst verschoben — reduziert duplizierte State zwischen Transport, LinkManager und NodeCore. ~860 Tests bestehen (582 Core-Unit + 20 Std-Lib + 173 Interop + 26 Doctests + 18 Proptest + 31 Test-Vektoren + 7 Core-Integration + 3 Std-Integration).
+**Code-Qualität:** LinkManager intern auf einheitliche Paket-Queue (`PendingPacket` Enum) umgestellt, Timeout-Konstanten zentralisiert, `LinkId` und `DestinationHash` als Newtype-Structs für vollständige Typ-Sicherheit (keine `Deref` mehr, kein `as_bytes_mut()`). Proof-Strategy und Signing-Key von LinkManager's Destination-Map auf den `Link` selbst verschoben — reduziert duplizierte State zwischen Transport, LinkManager und NodeCore. ~860 Tests bestehen (582 Core-Unit + 20 Std-Lib + 175 Interop + 26 Doctests + 18 Proptest + 31 Test-Vektoren + 7 Core-Integration + 3 Std-Integration).
 
 | Komponente | Status | LOC |
 |------------|--------|-----|
@@ -76,7 +76,7 @@ Das Projekt hat Phase 1 vollständig abgeschlossen und Phase 2 ist zu ~95% ferti
 | reticulum-nrf | ~400 | — | Embedded-Firmware (Embassy, nRF52840, USB CDC-ACM) |
 | reticulum-ffi | 361 | 404 | C-API |
 
-**Test-Abdeckung:** ~860 Tests (582 Core-Unit + 18 Proptest + 31 Test-Vektoren + 26 Doctests + 20 Std-Lib + 7 Core-Integration + 3 Std-Integration + 173 Interop gegen rnsd)
+**Test-Abdeckung:** ~860 Tests (582 Core-Unit + 18 Proptest + 31 Test-Vektoren + 26 Doctests + 20 Std-Lib + 7 Core-Integration + 3 Std-Integration + 175 Interop gegen rnsd)
 
 **Architektur:** Siehe [doc/ARCHITECTURE.md](doc/ARCHITECTURE.md) — no_std/embedded-freundlich, sans-I/O Core (reine Zustandsmaschine), I/O via Action-Rückgabewerte an den Treiber.
 
@@ -225,7 +225,9 @@ link_manager.close(link_id)?;
 - [x] LRPROOF-Validierung
 - [x] Auto-Re-Announce auf PATH_REQUEST
 
-Kleinere Lücken (nicht blockierend für v1.0): Announce-Expiry-Timer, mehrere Pfade pro Destination, Pending-Links-Trigger für lokal initiierte Links.
+**Multi-Hop Link von Non-Transport Nodes** (v0.5.3): `connect()` nutzt jetzt `PathEntry::needs_relay()` für korrekte HEADER_2-Formatierung mit transport_id, und LRPROOF-Pakete werden an lokale Pending-Links zugestellt (Python Transport.py:2054-2073). Interop-Test bestätigt: Link-Aufbau, Timeout-Recovery (expire_path + request_path), und Wiederherstellung.
+
+Kleinere Lücken (nicht blockierend für v1.0): Announce-Expiry-Timer, mehrere Pfade pro Destination.
 
 **Deliverable:** ✅ Vollständiges Routing für direkte und Multi-Hop-Verbindungen
 
@@ -280,7 +282,7 @@ Production-ready: QA, zusätzliche Interfaces, Dokumentation.
 - [ ] Async interface connect path — `spawn_tcp_interface()` connects synchronously (blocking on tokio thread), which is fine at startup but blocks the event loop for runtime hot-plug. Prerequisite for USB and BLE interface support. The channel-based `InterfaceRegistry` already supports dynamic `register()`, only the connect step needs an async variant.
 
 ### Qualitätssicherung
-- [x] Integration-Tests gegen rnsd-Daemon (170 Tests)
+- [x] Integration-Tests gegen rnsd-Daemon (175 Tests)
 - [ ] Performance-Optimierung
 - [ ] Speicher-Profiling mit Valgrind
 - [ ] Fuzzing der Paket-Parser
@@ -341,7 +343,7 @@ Testumgebung:
 └─────────────┘      └─────────────┘
 ```
 
-Automatisierte Test-Suite (173 Interop-Tests in 24 Modulen gegen rnsd):
+Automatisierte Test-Suite (175 Interop-Tests in 24 Modulen gegen rnsd):
 - ✅ TCP-Verbindung zu rnsd
 - ✅ Pakete empfangen und senden
 - ✅ Announce-Erstellung und -Validierung
@@ -358,6 +360,7 @@ Automatisierte Test-Suite (173 Interop-Tests in 24 Modulen gegen rnsd):
 - ✅ Transport Relay (Rust-Node leitet Announces, Links und Daten zwischen zwei Python-Daemons)
 - ✅ Gemischte Relay-Ketten (Rust + Python Relays, Link-Establishment über volle Kette)
 - ✅ Relay-Failover und Pfad-Recovery (Diamond-Topologie mit Relay-Austausch)
+- ✅ Path Recovery via Link-Timeout (LRPROOF-Drop, expire_path + request_path)
 - ✅ Link Keepalive und Close
 - ✅ Proof-Strategien
 - ✅ Flood/Loop-Prevention (Triangle, Diamond, redundante Pfade)
@@ -383,7 +386,7 @@ Automatisierte Test-Suite (173 Interop-Tests in 24 Modulen gegen rnsd):
 | Risiko | Wahrscheinlichkeit | Mitigation |
 |--------|-------------------|------------|
 | Transport Layer komplexer als erwartet | ✅ Gelöst | 3.676 LOC, vollständig implementiert |
-| Interop-Probleme mit Python | Mittel | Frühe und kontinuierliche Tests (170 Interop-Tests) |
+| Interop-Probleme mit Python | Mittel | Frühe und kontinuierliche Tests (175 Interop-Tests) |
 | Performance-Probleme bei async | Niedrig | Profiling ab Phase 2 |
 | no_std-Kompatibilitätsprobleme | ✅ Gelöst | Context-Trait entfernt, direkte RNG/time-Parameter |
 | Resource Transfer Komplexität | Mittel | Sliding-Window, Hashmap, Compression — frühzeitig planen |
@@ -440,7 +443,7 @@ Monat 1    Monat 2    Monat 3       Monat 4       Monat 5         Monat 6
 - [ ] Resource Transfer: Dateien übertragen
 - [ ] TCP Server Interface
 - [ ] `lrnsd` Daemon läuft standalone
-- [x] Integration-Tests gegen Python rnsd bestehen (173 Interop-Tests)
+- [x] Integration-Tests gegen Python rnsd bestehen (175 Interop-Tests)
 - [x] no_std-Kompatibilität für reticulum-core
 - [x] Forward Secrecy via Ratchets
 - [x] Interface Access Codes (IFAC)

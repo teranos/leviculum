@@ -1517,6 +1517,22 @@ impl<C: Clock, S: Storage> Transport<C, S> {
             }
         }
 
+        // Deliver LRPROOF to local pending links (Python Transport.py:2054-2073).
+        // This handles the case where we initiated a link and the proof arrives
+        // back to us. For transport nodes, the proof was either forwarded via the
+        // link table above or falls through here if the link_id isn't in our
+        // link table (i.e., it's our own pending link, not one we're relaying).
+        // For non-transport nodes, this is the only path for LRPROOF delivery.
+        if packet.context == PacketContext::Lrproof {
+            self.packet_cache.insert(dedup_hash, self.clock.now_ms());
+            self.events.push(TransportEvent::PacketReceived {
+                destination_hash: dest_hash,
+                packet: Box::new(packet),
+                interface_index,
+            });
+            return Ok(());
+        }
+
         Ok(())
     }
 

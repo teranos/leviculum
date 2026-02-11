@@ -5,6 +5,20 @@ All notable changes to this project will be documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.5.3] - 2026-02-11
+
+### Fixed
+- **Multi-hop link initiation from non-transport nodes** — `connect()` used `None` for `next_hop` even on multi-hop paths, causing link requests to use HEADER_1 (direct) instead of HEADER_2 (transport) format. Relays couldn't forward the link request because it lacked the transport_id. Now uses `PathEntry::needs_relay()` to select the correct header format and passes the relay's transport_id.
+- **LRPROOF delivery to local pending links** — Link proofs returning to the initiator on non-transport nodes were silently dropped at the end of `process_incoming_packet()`. Added LRPROOF delivery path that caches the packet and emits a `PacketReceived` event, matching Python Transport.py:2054-2073.
+
+### Changed
+- Path recovery interop test redesigned — replaced relay-kill topology with LRPROOF-dropping approach that keeps TCP alive, directly exercising the `expire_path()` + `request_path()` timeout handler without interference from `handle_interface_down()`
+
+### Added
+- LRPROOF drop/restore RPCs in test daemon for targeted packet dropping in interop tests
+- Channel message support (`RawBytesMessage`) in test daemon for Rust-Python channel communication
+- Packet tracing and debugging RPCs in test daemon (`enable_inbound_trace`, `enable_lrproof_trace`, `get_link_table_detail`)
+
 ## [0.5.2] - 2026-02-11
 
 ### Fixed

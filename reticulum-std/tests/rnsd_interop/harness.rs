@@ -1130,6 +1130,37 @@ impl TestDaemon {
             current,
         })
     }
+
+    /// Enable LRPROOF dropping on the relay.
+    ///
+    /// Monkey-patches `Transport.transmit` on the daemon to silently drop
+    /// packets whose context byte is 0xFF (LRPROOF).
+    pub async fn enable_lrproof_drop(&self) -> Result<(), HarnessError> {
+        self.query("enable_lrproof_drop", serde_json::json!({}))
+            .await?;
+        Ok(())
+    }
+
+    /// Disable LRPROOF dropping on the relay.
+    ///
+    /// Restores the original `Transport.transmit` saved during enable.
+    pub async fn disable_lrproof_drop(&self) -> Result<(), HarnessError> {
+        self.query("disable_lrproof_drop", serde_json::json!({}))
+            .await?;
+        Ok(())
+    }
+
+    /// Get the list of LRPROOF packets that were dropped by the relay.
+    pub async fn get_lrproof_drops(&self) -> Result<Vec<serde_json::Value>, HarnessError> {
+        let result = self
+            .query("get_lrproof_drops", serde_json::json!({}))
+            .await?;
+
+        match result {
+            serde_json::Value::Array(arr) => Ok(arr),
+            _ => Ok(vec![]),
+        }
+    }
 }
 
 impl Drop for TestDaemon {
