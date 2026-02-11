@@ -23,6 +23,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `action_dispatch_tx` channel in std driver for dispatching `TickOutput` from `connect()` and `announce_destination()` (called outside the event loop) to the event loop for immediate interface dispatch
 
 ### Removed
+- `pending_connects` mechanism from std driver — dead scaffolding that was never wired up (oneshot sender never used, entries never removed, orphaned tasks on every `connect()` call)
 - "Deferred dispatch" docstrings from the six affected methods — callers now receive actions directly instead of relying on a subsequent `handle_timeout()` to flush them
 
 ## [0.4.4] - 2026-02-10

@@ -57,9 +57,8 @@ use std::sync::{Arc, Mutex};
 use std::task::Poll;
 use std::time::Duration;
 
-use tokio::sync::{mpsc, oneshot, watch};
+use tokio::sync::{mpsc, watch};
 
-use reticulum_core::constants::TRUNCATED_HASHBYTES;
 use reticulum_core::link::LinkId;
 use reticulum_core::node::{NodeCore, NodeEvent};
 use reticulum_core::traits::Clock;
@@ -117,8 +116,6 @@ pub struct ReticulumNodeImpl {
     runner_handle: Option<tokio::task::JoinHandle<()>>,
     /// Active connection streams (link_id -> incoming data sender)
     connections: Arc<Mutex<ConnectionMap>>,
-    /// Pending connection requests
-    pending_connects: Arc<Mutex<HashMap<[u8; TRUNCATED_HASHBYTES], oneshot::Sender<LinkId>>>>,
     /// Shared outgoing channel sender (cloned to each ConnectionStream)
     outgoing_tx: mpsc::Sender<(LinkId, Vec<u8>)>,
     /// Channel for dispatching TickOutput from outside the event loop
@@ -142,7 +139,6 @@ impl ReticulumNodeImpl {
             shutdown_tx: None,
             runner_handle: None,
             connections: Arc::new(Mutex::new(HashMap::new())),
-            pending_connects: Arc::new(Mutex::new(HashMap::new())),
             outgoing_tx,
             action_dispatch_tx,
         }
@@ -180,7 +176,6 @@ impl ReticulumNodeImpl {
         let inner = Arc::clone(&self.inner);
         let event_tx = self.event_tx.clone();
         let connections = Arc::clone(&self.connections);
-        let pending_connects = Arc::clone(&self.pending_connects);
 
         // Spawn the runner
         let runner_handle = tokio::spawn(async move {
@@ -189,7 +184,6 @@ impl ReticulumNodeImpl {
                 registry,
                 event_tx,
                 connections,
-                pending_connects,
                 outgoing_rx,
                 action_dispatch_rx,
                 shutdown_rx,
@@ -301,15 +295,6 @@ impl ReticulumNodeImpl {
         dest_hash: &DestinationHash,
         dest_signing_key: &[u8; 32],
     ) -> Result<ConnectionStream, Error> {
-        // Create oneshot channel to receive notification when connection is established
-        let (tx, rx) = oneshot::channel();
-
-        // Register the pending connect
-        {
-            let mut pending = self.pending_connects.lock().unwrap();
-            pending.insert(dest_hash.into_bytes(), tx);
-        }
-
         // Request connection from NodeCore
         let (link_id, output) = {
             let mut inner = self.inner.lock().unwrap();
@@ -329,13 +314,6 @@ impl ReticulumNodeImpl {
             let mut connections = self.connections.lock().unwrap();
             connections.insert(link_id, in_tx);
         }
-
-        // Store the oneshot receiver for when connection completes
-        // (In practice, we'd want to track this better and wait for completion)
-        tokio::spawn(async move {
-            // Wait for connection establishment
-            let _ = rx.await;
-        });
 
         Ok(ConnectionStream::new(
             link_id,
@@ -460,13 +438,11 @@ async fn recv_any(registry: &mut InterfaceRegistry) -> RecvEvent {
 /// The driver owns the interfaces and acts as the I/O bridge between the
 /// pure state machine (`NodeCore`) and the actual network. Uses `select!`
 /// to wake immediately on socket readability, outgoing data, or timer expiry.
-#[allow(clippy::too_many_arguments)]
 async fn run_event_loop(
     inner: Arc<Mutex<StdNodeCore>>,
     mut registry: InterfaceRegistry,
     event_tx: mpsc::Sender<NodeEvent>,
     connections: Arc<Mutex<ConnectionMap>>,
-    pending_connects: Arc<Mutex<HashMap<[u8; TRUNCATED_HASHBYTES], oneshot::Sender<LinkId>>>>,
     mut outgoing_rx: mpsc::Receiver<(LinkId, Vec<u8>)>,
     mut action_dispatch_rx: mpsc::Receiver<TickOutput>,
     mut shutdown: watch::Receiver<bool>,
@@ -502,7 +478,6 @@ async fn run_event_loop(
                             &registry,
                             &event_tx,
                             &connections,
-                            &pending_connects,
                         );
                     }
                     RecvEvent::Disconnected(iface_id) => {
@@ -516,7 +491,6 @@ async fn run_event_loop(
                             &registry,
                             &event_tx,
                             &connections,
-                            &pending_connects,
                         );
                         registry.remove(iface_id);
                     }
@@ -545,7 +519,6 @@ async fn run_event_loop(
                     &registry,
                     &event_tx,
                     &connections,
-                    &pending_connects,
                 );
             }
 
@@ -557,7 +530,6 @@ async fn run_event_loop(
                     &registry,
                     &event_tx,
                     &connections,
-                    &pending_connects,
                 );
             }
 
@@ -572,7 +544,6 @@ async fn run_event_loop(
                     &registry,
                     &event_tx,
                     &connections,
-                    &pending_connects,
                 );
             }
 
@@ -593,7 +564,6 @@ fn dispatch_output(
     registry: &InterfaceRegistry,
     event_tx: &mpsc::Sender<NodeEvent>,
     connections: &Arc<Mutex<ConnectionMap>>,
-    pending_connects: &Arc<Mutex<HashMap<[u8; TRUNCATED_HASHBYTES], oneshot::Sender<LinkId>>>>,
 ) {
     // Execute I/O actions
     for action in &output.actions {
@@ -623,18 +593,14 @@ fn dispatch_output(
 
     // Forward events: handle internal routing and send to application
     for event in output.events {
-        handle_event(&event, connections, pending_connects);
+        handle_event(&event, connections);
         // Forward to external event receiver (best effort — drop if full)
         let _ = event_tx.try_send(event);
     }
 }
 
 /// Handle a node event
-fn handle_event(
-    event: &NodeEvent,
-    connections: &Arc<Mutex<ConnectionMap>>,
-    _pending_connects: &Arc<Mutex<HashMap<[u8; TRUNCATED_HASHBYTES], oneshot::Sender<LinkId>>>>,
-) {
+fn handle_event(event: &NodeEvent, connections: &Arc<Mutex<ConnectionMap>>) {
     match event {
         NodeEvent::ConnectionEstablished { link_id, .. } => {
             tracing::debug!("Connection established: {:?}", link_id);
