@@ -5,6 +5,21 @@ All notable changes to this project will be documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.5.1] - 2026-02-11
+
+### Fixed
+- **Multi-hop link request forwarding failed through mixed Rust/Python relay chains** — two bugs in `handle_link_request` and `forward_packet`:
+  1. HEADER_1 stripping threshold was `remaining_hops <= 1` instead of `remaining_hops == 0`. Python increments hops on receipt (Transport.py:1319), Rust does not — so Rust's `hops == 0` corresponds to Python's `hops == 1` (directly connected). The off-by-one caused premature stripping one hop too early, dropping the transport header before the packet reached the final relay.
+  2. Intermediate-hop `transport_id` was set to the forwarding relay's own identity hash instead of `path.next_hop` (the next relay's identity). The next relay checks `transport_id == own_identity` (Transport.py:1428) and ignored packets addressed to the wrong relay.
+- Same threshold bug fixed in `forward_packet` for general data packet forwarding
+- 3 unit tests updated from testing buggy behavior to testing correct behavior: `PathEntry` fixtures now include proper `next_hop` values, and stripping threshold assertions match `remaining_hops == 0`
+
+### Added
+- `TestDaemon::restart()` for killing and restarting a Python test daemon on the same ports (enables relay failure/recovery testing)
+- 2 comprehensive relay integration tests (`relay_integration_tests` module):
+  - `test_diamond_relay_and_failure_recovery` — single Rust relay bridging two Python daemons with bidirectional link+data, then relay failover to a second Rust relay with path recovery
+  - `test_mixed_python_rust_relay_chain` — 3-hop mixed chain (Py-A ↔ Rust-R ↔ Py-M ↔ Py-B) verifying announce propagation, hop counts, link establishment, and data delivery through both relay types
+
 ## [0.5.0] - 2026-02-11
 
 ### Changed
@@ -475,7 +490,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Transport layer (routing, paths, deduplication)
 - Full interoperability with Python rnsd
 
-[Unreleased]: https://codeberg.org/Lew_Palm/leviculum/compare/v0.5.0...HEAD
+[Unreleased]: https://codeberg.org/Lew_Palm/leviculum/compare/v0.5.1...HEAD
+[0.5.1]: https://codeberg.org/Lew_Palm/leviculum/compare/v0.5.0...v0.5.1
 [0.5.0]: https://codeberg.org/Lew_Palm/leviculum/compare/v0.4.4...v0.5.0
 [0.4.4]: https://codeberg.org/Lew_Palm/leviculum/compare/v0.4.3...v0.4.4
 [0.4.3]: https://codeberg.org/Lew_Palm/leviculum/compare/v0.4.2...v0.4.3

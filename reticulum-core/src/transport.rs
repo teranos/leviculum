@@ -1296,7 +1296,6 @@ impl<C: Clock, S: Storage> Transport<C, S> {
                 let now = self.clock.now_ms();
                 let link_id = Link::calculate_link_id(raw);
                 let target_iface = path.interface_index;
-                let transport_id_bytes = *self.identity.hash();
 
                 // Insert link table entry for bidirectional routing
                 self.link_table.insert(
@@ -1327,9 +1326,20 @@ impl<C: Clock, S: Storage> Transport<C, S> {
                     },
                 );
 
-                // Forward: strip to Type1 at final hop, Type2 otherwise
+                // Forward: strip to Type1 at final hop, Type2 otherwise.
+                //
+                // Rust stores raw wire hops (no increment on receipt), while
+                // Python increments hops on receipt (Transport.py:1319).
+                // Python strips at remaining_hops == 1 (i.e., wire hops == 0,
+                // directly connected). Rust equivalent: remaining_hops == 0.
+                //
+                // For intermediate hops, the transport_id must be set to the
+                // next-hop relay's identity (from path_table), not our own.
+                // The next relay checks transport_id == own identity before
+                // processing (Transport.py:1428).
                 let remaining_hops = path.hops;
-                let mut forwarded = if remaining_hops <= 1 {
+                let next_hop = path.next_hop;
+                let mut forwarded = if remaining_hops == 0 || next_hop.is_none() {
                     // Final hop: destination is directly connected, strip transport header
                     Packet {
                         flags: PacketFlags {
@@ -1344,7 +1354,7 @@ impl<C: Clock, S: Storage> Transport<C, S> {
                         data: packet.data,
                     }
                 } else {
-                    // Intermediate: Header Type 2 with our transport ID
+                    // Intermediate: Header Type 2 with next-hop transport identity
                     Packet {
                         flags: PacketFlags {
                             header_type: HeaderType::Type2,
@@ -1352,7 +1362,7 @@ impl<C: Clock, S: Storage> Transport<C, S> {
                             ..packet.flags
                         },
                         hops: packet.hops,
-                        transport_id: Some(transport_id_bytes),
+                        transport_id: next_hop,
                         destination_hash: dest_hash,
                         context: packet.context,
                         data: packet.data,
@@ -1626,21 +1636,27 @@ impl<C: Clock, S: Storage> Transport<C, S> {
                 },
             );
 
-            // Header transformation (mirrors handle_link_request L1136-1166)
-            if remaining_hops > 1 {
-                // Intermediate relay: keep Type2, replace transport_id with next hop
+            // Header transformation: Rust stores raw wire hops (no increment
+            // on receipt), so remaining_hops == 0 means directly connected.
+            // For remaining_hops > 0, keep HEADER_2 with next-hop identity.
+            if remaining_hops > 0 {
                 if let Some(nh) = next_hop {
+                    // Intermediate relay: keep Type2, replace transport_id with next hop
                     packet.flags.header_type = HeaderType::Type2;
                     packet.flags.transport_type = TransportType::Transport;
                     packet.transport_id = Some(nh);
+                } else {
+                    // No next_hop but hops > 0: strip to Type1 as fallback
+                    packet.flags.header_type = HeaderType::Type1;
+                    packet.flags.transport_type = TransportType::Broadcast;
+                    packet.transport_id = None;
                 }
-            } else if remaining_hops == 1 {
-                // Final relay: strip to Type1
+            } else {
+                // Directly connected (hops == 0): strip to Type1
                 packet.flags.header_type = HeaderType::Type1;
                 packet.flags.transport_type = TransportType::Broadcast;
                 packet.transport_id = None;
             }
-            // remaining_hops == 0: forward as-is
 
             return self.forward_on_interface(target_iface, &mut packet);
         }
@@ -3773,6 +3789,7 @@ mod tests {
 
             // Path with hops=3 (destination is multiple hops away)
             let dest_hash = [0xBB; TRUNCATED_HASHBYTES];
+            let next_hop_hash = [0xCC; TRUNCATED_HASHBYTES];
             let now = transport.clock.now_ms();
             transport.path_table.insert(
                 dest_hash,
@@ -3781,7 +3798,7 @@ mod tests {
                     expires_ms: now + 100_000,
                     interface_index: 1,
                     random_blobs: Vec::new(),
-                    next_hop: None,
+                    next_hop: Some(next_hop_hash),
                 },
             );
 
@@ -3813,6 +3830,11 @@ mod tests {
             assert!(
                 forwarded_pkt.transport_id.is_some(),
                 "Type2 packet should have transport_id"
+            );
+            assert_eq!(
+                forwarded_pkt.transport_id.unwrap(),
+                next_hop_hash,
+                "Transport ID should be set to the next-hop relay's identity hash"
             );
         }
 
@@ -3989,7 +4011,8 @@ mod tests {
             transport.drain_actions();
             transport.packet_cache.clear();
 
-            // Update path to multi-hop
+            // Update path to multi-hop with a next-hop relay identity
+            let next_hop_relay = [0xEE; TRUNCATED_HASHBYTES];
             transport.path_table.insert(
                 dest_hash,
                 PathEntry {
@@ -3997,7 +4020,7 @@ mod tests {
                     expires_ms: now + 100_000,
                     interface_index: 1,
                     random_blobs: Vec::new(),
-                    next_hop: None,
+                    next_hop: Some(next_hop_relay),
                 },
             );
 
@@ -4044,12 +4067,11 @@ mod tests {
                     forwarded_pkt.transport_id.is_some(),
                     "Type2 must have transport_id"
                 );
-                // transport_id should now be THIS transport node's identity hash
-                let our_id = *transport.identity.hash();
+                // transport_id should be the next-hop relay's identity hash
                 assert_eq!(
                     forwarded_pkt.transport_id.unwrap(),
-                    our_id,
-                    "Transport ID should be set to the relay's identity hash"
+                    next_hop_relay,
+                    "Transport ID should be set to the next-hop relay's identity hash"
                 );
 
                 // Verify data payload is intact
@@ -4403,8 +4425,13 @@ mod tests {
 
         #[test]
         fn test_path_table_forward_header2_strips_to_type1_at_final_hop() {
-            // When a HEADER_2 data packet reaches the final relay (path hops == 1),
-            // it should be stripped to HEADER_1 with no transport_id.
+            // When a HEADER_2 data packet reaches the final relay (path hops == 0,
+            // destination directly connected), it should be stripped to HEADER_1
+            // with no transport_id.
+            //
+            // Rust stores raw wire hops (no increment on receipt), so hops == 0
+            // means directly connected — the Python equivalent of hops == 1
+            // (Python increments on receipt, Transport.py:1319).
             use crate::destination::DestinationType;
             use crate::packet::{HeaderType, PacketData, PacketFlags, TransportType};
 
@@ -4413,18 +4440,17 @@ mod tests {
             let _idx1 = transport.register_interface(Box::new(MockInterface::new("if1", 2)));
 
             let dest_hash = [0xCC; TRUNCATED_HASHBYTES];
-            let next_hop_hash = [0xDD; TRUNCATED_HASHBYTES];
             let now = transport.clock.now_ms();
 
-            // Path entry with hops=1 (we are the final relay before destination)
+            // Path entry with hops=0 (destination is directly connected to us)
             transport.path_table.insert(
                 dest_hash,
                 PathEntry {
-                    hops: 1,
+                    hops: 0,
                     expires_ms: now + 100_000,
                     interface_index: 1,
                     random_blobs: Vec::new(),
-                    next_hop: Some(next_hop_hash),
+                    next_hop: None,
                 },
             );
 

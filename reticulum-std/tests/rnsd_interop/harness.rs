@@ -250,6 +250,40 @@ impl TestDaemon {
         }
     }
 
+    /// Kill this daemon and restart it on the same ports.
+    ///
+    /// The new daemon is a fresh Python process with empty state — all
+    /// previously registered destinations, established links, and path
+    /// table entries are lost.  Any existing TCP streams from test code
+    /// to the old daemon will be broken and must be reconnected.
+    ///
+    /// Both the RNS port and cmd port use SO_REUSEADDR, so the OS
+    /// releases them immediately after the old process exits.
+    pub async fn restart(&mut self) -> Result<(), HarnessError> {
+        let rns_port = self.rns_port;
+        let cmd_port = self.cmd_port;
+
+        // Hard kill (simulates crash — no graceful shutdown RPC)
+        let _ = self.process.kill();
+        let _ = self.process.wait();
+
+        // Brief pause for OS to release sockets
+        tokio::time::sleep(Duration::from_millis(200)).await;
+
+        // start_with_ports returns a full TestDaemon. We swap process
+        // handles so the new_daemon's Drop runs on the old (dead) process
+        // — harmless since it's already dead.
+        let mut new_daemon = Self::start_with_ports(rns_port, cmd_port).await?;
+        std::mem::swap(&mut self.process, &mut new_daemon.process);
+
+        // new_daemon now holds the OLD (already dead) process handle.
+        // Zero out its cmd_port so Drop's graceful-shutdown TCP connect
+        // fails harmlessly instead of shutting down our new live daemon.
+        new_daemon.cmd_port = 0;
+
+        Ok(())
+    }
+
     /// Get the address for the Reticulum TCP interface.
     pub fn rns_addr(&self) -> SocketAddr {
         SocketAddr::from(([127, 0, 0, 1], self.rns_port))
@@ -1494,6 +1528,34 @@ mod tests {
             dest.signing_key.len(),
             64,
             "Signing key should be 32 bytes hex-encoded"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_daemon_restart() {
+        let mut daemon = TestDaemon::start().await.expect("Failed to start daemon");
+
+        // Register a destination (proves daemon has state)
+        let dest = daemon
+            .register_destination("test", &["restart"])
+            .await
+            .expect("Failed to register destination");
+        assert!(!dest.hash.is_empty());
+
+        // Kill and restart
+        daemon.restart().await.expect("Failed to restart daemon");
+
+        // Verify new daemon responds
+        daemon.ping().await.expect("Ping after restart failed");
+
+        // Verify state is gone (fresh daemon has no destinations)
+        let interfaces = daemon
+            .get_interfaces()
+            .await
+            .expect("Failed to get interfaces");
+        assert!(
+            !interfaces.is_empty(),
+            "Should have interfaces after restart"
         );
     }
 }
