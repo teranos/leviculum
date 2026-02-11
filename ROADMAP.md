@@ -29,7 +29,7 @@
 
 ## Aktueller Stand
 
-Das Projekt hat Phase 1 vollständig abgeschlossen und Phase 2 ist zu ~85% fertig — neben TCP Server (Meilenstein 2.4) fehlen IFAC/Ratchet-Integration und API-Vervollständigung. Kritische Bugs C8 (Link-Daten verworfen), C9 (Channel-ACKs) und D12 (close_connection) sind in v0.5.5 behoben. **Responder-Pfad komplett (v0.5.6):** `ReticulumNode::accept_connection()` exponiert, `MessageReceived`-Routing im Driver repariert, `NodeCore::accept_connection()` sucht Identity intern aus der registrierten Destination. Meilensteine 2.1 (Destination API), 2.2 (Link-Responder), 2.3 (High-Level Link API inkl. Keepalive) und 2.5 (Transport Layer) sind abgeschlossen. Meilenstein 3.2 (Channel-System inkl. Buffer-System) ist ebenfalls fertig — StreamDataMessage für binäre Streams und RawChannelReader/Writer für gepufferte I/O sind implementiert. **High-Level Node API** (`NodeCore` in reticulum-core, `ReticulumNode` in reticulum-std) bietet eine einheitliche async-kompatible Schnittstelle mit Smart Routing, Connection-Abstraktion und symmetrischer Channel-API. Vollständige Interoperabilität mit Python rnsd ist nachgewiesen. **CLI-Tool `lrns`** existiert mit Subcommands: `status`, `path`, `identity`, `probe`, `interfaces` (nur `identity` ist voll implementiert, die anderen sind Gerüste mit "Not implemented yet").
+Das Projekt hat Phase 1 vollständig abgeschlossen und Phase 2 ist zu ~85% fertig — neben TCP Server (Meilenstein 2.4) fehlen IFAC/Ratchet-Integration und API-Vervollständigung. Kritische Bugs C8 (Link-Daten verworfen), C9 (Channel-ACKs) und D12 (close_connection) sind in v0.5.5 behoben. **Responder-Pfad komplett (v0.5.6):** `ReticulumNode::accept_connection()` exponiert, `MessageReceived`-Routing im Driver repariert, `NodeCore::accept_connection()` sucht Identity intern aus der registrierten Destination. Meilensteine 2.1 (Destination API), 2.2 (Link-Responder), 2.3 (High-Level Link API inkl. Keepalive) und 2.5 (Transport Layer) sind abgeschlossen. Meilenstein 3.2 (Channel-System inkl. Buffer-System) ist ebenfalls fertig — StreamDataMessage für binäre Streams und RawChannelReader/Writer für gepufferte I/O sind implementiert. **High-Level Node API** (`NodeCore` in reticulum-core, `ReticulumNode` in reticulum-std) bietet eine einheitliche async-kompatible Schnittstelle mit Smart Routing, Connection-Abstraktion und symmetrischer Channel-API. Vollständige Interoperabilität mit Python rnsd ist nachgewiesen. **CLI-Tool `lrns`** existiert mit Subcommands: `status`, `path`, `identity`, `probe`, `interfaces`, `connect`. `identity` und `connect` sind voll implementiert (`connect` bietet interaktive Sessions mit Announce-Discovery, Link-Management und bidirektionalem Datenaustausch), die anderen sind Gerüste mit "Not implemented yet".
 
 **Sans-I/O-Architektur abgeschlossen:** `reticulum-core` ist jetzt ein reiner Zustandsautomat ohne jegliche direkte I/O-Operationen. `NodeCore` nimmt eingehende Pakete via `handle_packet()` entgegen und gibt `Action`-Werte (`SendPacket`, `Broadcast`) zurück, die der Treiber ausführt. Der Treiber in `reticulum-std` besitzt die Interfaces, liest Pakete, speist sie in den Core, und dispatcht die resultierenden Actions. `TransportRunner` wurde entfernt; `ReticulumNode` ist der einheitliche Treiber. Diese Architektur ermöglicht den Einsatz auf Embedded-Plattformen ohne `std`.
 
@@ -303,6 +303,7 @@ Production-ready: QA, zusätzliche Interfaces, Dokumentation.
 - [ ] `lrns path` - Pfad-Lookup
 - [ ] `lrns probe` - Konnektivitätstest
 - [x] `lrns identity` - Identity-Management
+- [x] `lrns connect` - Interaktive Session (Announce-Discovery, Link-Aufbau/-Akzeptanz, bidirektionaler Datenaustausch)
 - [ ] `lrns interfaces` - Interface-Übersicht
 - [ ] `lrns cp` - Dateitransfer (benötigt Resource Transfer aus Phase 3)
 - [ ] `lrnsd` - Daemon (aufbauend auf Meilenstein 2.4)
@@ -490,7 +491,7 @@ Monat 1    Monat 2    Monat 3       Monat 4       Monat 5         Monat 6
 - [ ] Interface Access Codes (IFAC) — ⚠️ Modul fertig, nicht in Empfangspfad eingebunden
 
 **Should-Have:**
-- [ ] `lrns` CLI: status, path, ~~identity~~, probe, interfaces (nur `identity` fertig)
+- [ ] `lrns` CLI: status, path, ~~identity~~, probe, interfaces, ~~connect~~ (`identity` und `connect` fertig)
 - [ ] `lrns cp` - Dateitransfer (benötigt Resource Transfer)
 - [ ] UDP Interface
 - [ ] Unit-Test-Abdeckung > 80%

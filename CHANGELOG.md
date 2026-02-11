@@ -5,6 +5,12 @@ All notable changes to this project will be documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.5.7] - 2026-02-11
+
+### Added
+- **`lrns connect` interactive CLI subcommand** — connects to an rnsd instance and provides an interactive command loop for network diagnostics and link management. Commands: `/peers` (list discovered destinations), `/link <hash>` (initiate link), `/accept` (accept incoming link request), `/send <msg>` (send data), `/close` (close link), `/status` (show node info), `/quit` (exit). Bare text sends as data on active links. Supports ephemeral or file-based identity (`--identity`). Two async tasks (event display + stdin input) communicate via shared `SessionState` for announce tracking, link lifecycle, and remote-close detection.
+- `hex_decode()` helper function for parsing hex destination hashes
+
 ## [0.5.6] - 2026-02-11
 
 ### Fixed
@@ -565,7 +571,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Transport layer (routing, paths, deduplication)
 - Full interoperability with Python rnsd
 
-[Unreleased]: https://codeberg.org/Lew_Palm/leviculum/compare/v0.5.6...HEAD
+[Unreleased]: https://codeberg.org/Lew_Palm/leviculum/compare/v0.5.7...HEAD
+[0.5.7]: https://codeberg.org/Lew_Palm/leviculum/compare/v0.5.6...v0.5.7
 [0.5.6]: https://codeberg.org/Lew_Palm/leviculum/compare/v0.5.5...v0.5.6
 [0.5.5]: https://codeberg.org/Lew_Palm/leviculum/compare/v0.5.4...v0.5.5
 [0.5.4]: https://codeberg.org/Lew_Palm/leviculum/compare/v0.5.3...v0.5.4
