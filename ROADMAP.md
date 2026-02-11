@@ -20,7 +20,7 @@
 | Version | Phase | Status |
 |---------|-------|--------|
 | 0.1.0 | Phase 1: Protokoll-Fundament | ✅ |
-| **0.2.0** | Phase 2: Core API & Full Node | 🔶 Aktuell (~95%) |
+| **0.2.0** | Phase 2: Core API & Full Node | 🔶 Aktuell (~80%) |
 | 0.3.0 | Phase 3: Datenübertragung & Release-Vorbereitung | ⬜ |
 | **1.0.0** | Erstes stabiles Release | ⬜ |
 | 1.1.0 | Phase 5-7: Hardware, C-API, Android | ⬜ |
@@ -29,7 +29,7 @@
 
 ## Aktueller Stand
 
-Das Projekt hat Phase 1 vollständig abgeschlossen und Phase 2 ist zu ~95% fertig — nur TCP Server (Meilenstein 2.4) fehlt noch. Meilensteine 2.1 (Destination API), 2.2 (Link-Responder), 2.3 (High-Level Link API inkl. Keepalive) und 2.5 (Transport Layer) sind abgeschlossen. Meilenstein 3.2 (Channel-System inkl. Buffer-System) ist ebenfalls fertig — StreamDataMessage für binäre Streams und RawChannelReader/Writer für gepufferte I/O sind implementiert. **High-Level Node API** (`NodeCore` in reticulum-core, `ReticulumNode` in reticulum-std) bietet eine einheitliche async-kompatible Schnittstelle mit Smart Routing, Connection-Abstraktion und symmetrischer Channel-API. Vollständige Interoperabilität mit Python rnsd ist nachgewiesen. **CLI-Tool `lrns`** existiert mit Subcommands: `status`, `path`, `identity`, `probe`, `interfaces` (nur `identity` ist voll implementiert, die anderen sind Gerüste mit "Not implemented yet").
+Das Projekt hat Phase 1 vollständig abgeschlossen und Phase 2 ist zu ~80% fertig — neben TCP Server (Meilenstein 2.4) fehlen Bug-Fixes (C8: handle_data-Bug), IFAC/Ratchet-Integration und API-Vervollständigung. Meilensteine 2.1 (Destination API), 2.2 (Link-Responder), 2.3 (High-Level Link API inkl. Keepalive) und 2.5 (Transport Layer) sind abgeschlossen. Meilenstein 3.2 (Channel-System inkl. Buffer-System) ist ebenfalls fertig — StreamDataMessage für binäre Streams und RawChannelReader/Writer für gepufferte I/O sind implementiert. **High-Level Node API** (`NodeCore` in reticulum-core, `ReticulumNode` in reticulum-std) bietet eine einheitliche async-kompatible Schnittstelle mit Smart Routing, Connection-Abstraktion und symmetrischer Channel-API. Vollständige Interoperabilität mit Python rnsd ist nachgewiesen. **CLI-Tool `lrns`** existiert mit Subcommands: `status`, `path`, `identity`, `probe`, `interfaces` (nur `identity` ist voll implementiert, die anderen sind Gerüste mit "Not implemented yet").
 
 **Sans-I/O-Architektur abgeschlossen:** `reticulum-core` ist jetzt ein reiner Zustandsautomat ohne jegliche direkte I/O-Operationen. `NodeCore` nimmt eingehende Pakete via `handle_packet()` entgegen und gibt `Action`-Werte (`SendPacket`, `Broadcast`) zurück, die der Treiber ausführt. Der Treiber in `reticulum-std` besitzt die Interfaces, liest Pakete, speist sie in den Core, und dispatcht die resultierenden Actions. `TransportRunner` wurde entfernt; `ReticulumNode` ist der einheitliche Treiber. Diese Architektur ermöglicht den Einsatz auf Embedded-Plattformen ohne `std`.
 
@@ -41,7 +41,7 @@ Das Projekt hat Phase 1 vollständig abgeschlossen und Phase 2 ist zu ~95% ferti
 
 **Architektur-Migration abgeschlossen:** `NodeCore` besitzt RNG intern als generischen Parameter (`NodeCore<R, C, S>`). Alle Runtime-Methoden (`handle_packet()`, `connect()`, etc.) benötigen keinen `Context`-Parameter mehr. Die `Context`-Trait-Abstraktion wurde vollständig entfernt — Funktionen nehmen direkt `rng: &mut R` und `now_ms: u64` als Parameter. Alle `#[cfg(feature = "alloc")]` wurden entfernt — `alloc` ist immer verfügbar. Das `std` Feature aktiviert nur noch optimierte Crypto-Implementierungen.
 
-**Ratchet & IFAC implementiert:** Forward Secrecy via Ratchets und Interface Access Codes sind vollständig implementiert und gegen Python Reticulum getestet.
+**Ratchet & IFAC:** Kryptographische Module implementiert und unit-getestet. IFAC ist noch nicht in den Paketempfangspfad eingebunden. Ratchet-Validierung ist bei Announces und Link-Establishment noch nicht aktiv.
 
 **Transport Layer vollständig (3.676 LOC):** Announce-Rebroadcast, PATH_REQUEST/PATH_RESPONSE, Reverse-Path-Routing, Link-Tabellenverwaltung, Hop-Count-Validation, Header-Stripping am letzten Hop, Announce-Replay-Schutz, LRPROOF-Validierung, Auto-Re-Announce auf PATH_REQUEST. **Path Recovery** (v0.4.2/v0.4.3): Pfad-Zustandsverfolgung (`PathState`), automatische Markierung als unresponsive bei abgelaufenen unvalidierten Links, Akzeptanz von Same-Emission-Announces über Alternativrouten, direkte `request_path()`-Aufrufe aus dem Core für Pfad-Neuentdeckung. **Announce Rate Limiting** (v0.4.4): Per-Destination-Violation/Grace/Penalty-Eskalationsmechanismus analog zu Python Transport.py:1692-1719, blockiert nur Rebroadcast (nicht Pfad-Updates), konfigurierbar und standardmäßig deaktiviert. **Hop-Threshold-Korrektur** (v0.5.2): 4 Off-by-One-Bugs in Forwarding-Schwellwerten behoben (Python inkrementiert `hops` bei Empfang, Rust nicht — aus Python kopierte Schwellwerte waren um 1 daneben). `PathEntry::is_direct()` und `PathEntry::needs_relay()` kapseln die Semantik-Differenz und verhindern Wiederholung. **Rust Transport Relay** funktioniert vollständig: Announce-Rebroadcast, Link-Routing und Datenweiterleitung zwischen zwei Python-Daemons getestet. **Gemischte Relay-Ketten** (Rust + Python Relays in Serie) funktionieren inklusive Link-Establishment und bidirektionaler Datenübertragung über die volle Kette.
 
@@ -54,8 +54,8 @@ Das Projekt hat Phase 1 vollständig abgeschlossen und Phase 2 ist zu ~95% ferti
 | Packet-Strukturen (alle Typen, Header 1/2) | ✅ Fertig | 411 |
 | Announce (Erstellung, Validierung, Signaturprüfung) | ✅ Fertig | 681 |
 | Destination (Hashing, Typen, Ratchets) | ✅ Fertig | 921 |
-| Ratchet (Forward Secrecy) | ✅ Fertig | 419 |
-| IFAC (Interface Access Codes) | ✅ Fertig | 378 |
+| Ratchet (Forward Secrecy) | ⚠️ Krypto fertig, Validierung nicht eingebunden | 419 |
+| IFAC (Interface Access Codes) | ⚠️ Modul fertig, nicht in Empfangspfad eingebunden | 378 |
 | Link-State-Machine (Handshake, Proof, RTT, Data) | ✅ Initiator + Responder | 1.800 |
 | Transport Layer (Routing, Pfade, Announces, Relay) | ✅ Fertig | 3.676 |
 | HDLC-Framing (no_std + alloc) | ✅ Fertig | 577 |
@@ -180,6 +180,8 @@ let events = link_manager.drain_events();
 - [x] Link-Stale-Erkennung und automatisches Schließen nach Timeout
 - [x] Link-Teardown (ordnungsgemäßes Schließen via `close()` mit LINKCLOSE-Paket)
 
+**Einschränkungen (Gap-Analyse Feb 2026):** LINKCLOSE-Pakete und Keepalive-Echos erreichen LinkManager nicht, weil Transport::handle_data() Link-adressierte Datenpakete auf Non-Transport-Nodes verwirft (siehe Bug C8). Graceful Close ist in NodeCore implementiert, aber nicht über ReticulumNode exponiert.
+
 ```rust
 // Implementierte API (via LinkManager):
 let link_id = link_manager.initiate(dest_hash, &identity)?;
@@ -227,9 +229,39 @@ link_manager.close(link_id)?;
 
 **Multi-Hop Link von Non-Transport Nodes** (v0.5.3): `connect()` nutzt jetzt `PathEntry::needs_relay()` für korrekte HEADER_2-Formatierung mit transport_id, und LRPROOF-Pakete werden an lokale Pending-Links zugestellt (Python Transport.py:2054-2073). Interop-Test bestätigt: Link-Aufbau, Timeout-Recovery (expire_path + request_path), und Wiederherstellung.
 
-Kleinere Lücken (nicht blockierend für v1.0): Announce-Expiry-Timer, mehrere Pfade pro Destination, MTU-Signaling für Link-MDU-Verhandlung.
+Kleinere Lücken (nicht blockierend für v1.0): Announce-Expiry-Timer, mehrere Pfade pro Destination, MTU-Signaling für Link-MDU-Verhandlung, TCP-Reconnection bei Verbindungsabbruch (A2), LRPROOF/Receipt-Disambiguierung ohne Receipt-Tabelle (E16).
 
 **Deliverable:** ✅ Vollständiges Routing für direkte und Multi-Hop-Verbindungen
+
+### Bekannte Bugs und Lücken (Gap-Analyse Feb 2026)
+
+Die folgende Liste wurde durch eine systematische 5-Runden-Lückenanalyse (Startup → Announce → Link → Data → Lifecycle) identifiziert.
+
+#### Bugs
+
+| ID | Schwere | Beschreibung | Betroffene Datei |
+|----|---------|-------------|------------------|
+| C8 | 🔴 Kritisch | `Transport::handle_data()` verwirft Link-adressierte Data-Pakete auf Non-Transport-Nodes still. Link-IDs sind nicht in `destinations` registriert und `enable_transport` ist false → Paket fällt durch zu `Ok(())`. Gleiche Bug-Klasse wie der LRPROOF-Fix in v0.5.3. Blockiert: eingehende Daten, Keepalive-Echos, LINKCLOSE, Channel-ACKs. | `transport.rs:1539-1631` |
+| C9 | 🟡 Mittel | `Channel::mark_delivered()` wird in Produktion nie aufgerufen — eingehende ACKs werden nicht verarbeitet. Verursacht Retransmission-Stürme bei jeder Nachricht. | `link/channel/mod.rs:504` |
+| D11 | 🟡 Mittel | `handle_interface_down()` räumt Transport-Tabellen auf, aber nicht LinkManager. Links auf toten Interfaces bleiben ~12 Min als Zombies bestehen. | `node/mod.rs:701-737` |
+| D13 | 🟠 Niedrig | Geschlossene Links werden nie aus `LinkManager::links` entfernt — `close()` setzt Status aber löscht nicht aus BTreeMap. Speicherleck bei langlebigen Nodes. | `link/manager.rs:421-441` |
+
+#### Fehlende Integrationen
+
+| ID | Beschreibung | Status |
+|----|-------------|--------|
+| B3 | IFAC-Modul existiert, ist aber nicht in den Paketempfangspfad eingebunden | ⚠️ Modul fertig |
+| B4 | Ratchet-Krypto funktioniert, aber Validierung bei Announces/Links nicht aktiv | ⚠️ Krypto fertig |
+| C10 | Buffer/Stream-System (1091 LOC) existiert, ist aber nicht in ConnectionStream integriert | ⚠️ Code fertig |
+| D12 | `NodeCore::close_connection()` funktioniert, aber nicht über `ReticulumNode` exponiert | ⚠️ Core fertig |
+
+#### Fehlende Features
+
+| ID | Beschreibung |
+|----|-------------|
+| A2 | Keine TCP-Reconnection-Logik — Interface geht bei Verbindungsabbruch permanent verloren |
+| E15 | Kein `wait_established()` API auf ConnectionStream — Anwendungen können nicht auf Link-Handshake warten |
+| E16 | LRPROOF und Receipt sind beide 96 Bytes — Disambiguierung nur über Receipt-Tabellen-Lookup, kein Typ-Feld |
 
 ---
 
@@ -250,14 +282,14 @@ Zuverlässiger Dateitransfer zwischen Rust und Python. Release-Qualität erreich
 
 **Deliverable:** Dateitransfer zwischen Rust und Python
 
-### Meilenstein 3.2: Channels & Buffer (Woche 20) ✅
+### Meilenstein 3.2: Channels & Buffer (Woche 20) ⚠️
 - [x] Channel-Abstraktion für zuverlässige Streams
 - [x] Message Envelopes
 - [x] StreamDataMessage (0xff00) für binäre Stream-Übertragung
 - [x] Buffer-System (RawChannelReader, RawChannelWriter, BufferedChannelWriter)
 - [x] BZ2-Kompression für Stream-Daten
 
-**Deliverable:** ✅ Channel-System für zuverlässige Nachrichtenübertragung implementiert
+**Deliverable:** ⚠️ Channel-Envelope funktioniert, aber Buffer/Stream-Layer nicht in ConnectionStream integriert, mark_delivered() nicht aufgerufen
 
 ---
 
@@ -301,8 +333,8 @@ Production-ready: QA, zusätzliche Interfaces, Dokumentation.
 
 Diese Features sind nice-to-have, aber nicht MVP-kritisch:
 
-- [x] ~~Interface Access Control (IFAC)~~ ✅ Implementiert in 0.2.1
-- [x] ~~Ratchet-Schlüsselverwaltung für Forward Secrecy~~ ✅ Implementiert
+- [ ] Interface Access Control (IFAC) — ⚠️ Modul implementiert, nicht in Empfangspfad eingebunden
+- [ ] Ratchet-Schlüsselverwaltung für Forward Secrecy — ⚠️ Krypto implementiert, Validierung nicht eingebunden
 - [ ] AutoInterface (lokale Netzwerk-Autodiscovery)
 - [ ] KISS Interface (TNC-Protokoll)
 - [ ] Pipe Interface
@@ -332,6 +364,7 @@ Diese Features sind nice-to-have, aber nicht MVP-kritisch:
 | Transport Relay | Announce-Rebroadcast, Link-Routing | ✅ |
 | Multi-Hop | Multi-Hop-Topologie und Routing | ✅ |
 | Channel/Buffer | Stream + gepuffertes I/O | ✅ |
+| Eingehende Link-Daten | Empfangspfad für Link-Data-Pakete | 🐛 Nicht getestet — C8 |
 | Resource Transfer | Dateitransfer-Verifikation | - |
 
 ### Integration-Tests
@@ -374,7 +407,7 @@ Automatisierte Test-Suite (175 Interop-Tests in 24 Modulen gegen rnsd):
 | Phase | Geschätzte LOC | Komplexität |
 |-------|---------------|-------------|
 | Phase 1: Protokoll-Fundament | ~3.000 ✅ | Mittel |
-| Phase 2: Core API & Full Node | ~2.500 ✅ (~95%) | Hoch |
+| Phase 2: Core API & Full Node | ~2.500 🔶 (~80%) | Hoch |
 | Phase 3: Datenübertragung & Release | ~4.500 | Mittel |
 | **Gesamt neu** | **~10.000** | |
 | **Gesamt (inkl. bestehend)** | **~25.000** | |
@@ -402,7 +435,7 @@ Monat 1    Monat 2    Monat 3       Monat 4       Monat 5         Monat 6
 ┌──────────────────┐┌─────────────────────────┐┌────────────────────────────────┐
 │ Phase 1          ││ Phase 2                 ││ Phase 3                        │
 │ Protokoll-       ││ Core API & Full Node    ││ Datenübertragung &             │
-│ Fundament ✅     ││ (~95%) 🔶              ││ Release-Vorbereitung           │
+│ Fundament ✅     ││ (~80%) 🔶              ││ Release-Vorbereitung           │
 └──────────────────┘└─────────────────────────┘└────────────────────────────────┘
         │                      │                           │
         ▼                      ▼                           ▼
@@ -414,6 +447,11 @@ Monat 1    Monat 2    Monat 3       Monat 4       Monat 5         Monat 6
 ### Kritischer Pfad bis v1.0
 
 ```
+┌─────────────────────┐
+│ C8 handle_data-Bug  │ 🐛 Kritisch — blockiert eingehende Link-Daten
+│     fix             │
+└─────────┬───────────┘
+          ▼
 ┌─────────────────────┐
 │ 2.4 TCP Server      │ ⬜ Offen — letzter Phase-2-Meilenstein
 │     lrnsd Basis     │
@@ -445,8 +483,8 @@ Monat 1    Monat 2    Monat 3       Monat 4       Monat 5         Monat 6
 - [ ] `lrnsd` Daemon läuft standalone
 - [x] Integration-Tests gegen Python rnsd bestehen (175 Interop-Tests)
 - [x] no_std-Kompatibilität für reticulum-core
-- [x] Forward Secrecy via Ratchets
-- [x] Interface Access Codes (IFAC)
+- [ ] Forward Secrecy via Ratchets — ⚠️ Krypto fertig, Validierung nicht eingebunden
+- [ ] Interface Access Codes (IFAC) — ⚠️ Modul fertig, nicht in Empfangspfad eingebunden
 
 **Should-Have:**
 - [ ] `lrns` CLI: status, path, ~~identity~~, probe, interfaces (nur `identity` fertig)
@@ -937,7 +975,7 @@ Monat 1-2      Monat 3-4      Monat 5-6                  Monat 7        Monat 8 
 ┌────────────┐┌────────────┐┌───────────────────────┐  ┌────────────┐┌────────────┐┌────────────┐
 │  Phase 1   ││  Phase 2   ││ Phase 3               │  │  Phase 5   ││  Phase 6   ││  Phase 7   │
 │  Protokoll ││  Netzwerk  ││ Datenübertragung &    │  │  Hardware  ││  C-API &   ││  Android   │
-│   ✅       ││  (~95%) 🔶 ││ Release-Vorbereitung  │  │  Interfaces││  Debian    ││            │
+│   ✅       ││  (~80%) 🔶 ││ Release-Vorbereitung  │  │  Interfaces││  Debian    ││            │
 └────────────┘└────────────┘└───────────────────────┘  └────────────┘└────────────┘└────────────┘
       │              │                  │                    │              │              │
       ▼              ▼                  ▼                    ▼              ▼              ▼
