@@ -169,6 +169,20 @@ pub(crate) struct PathEntry {
     pub next_hop: Option<[u8; TRUNCATED_HASHBYTES]>,
 }
 
+impl PathEntry {
+    /// Destination is directly connected (no relay needed).
+    /// Rust stores raw wire hops: 0 = direct neighbor.
+    /// Python equivalent: hops == 1 (Python increments on receipt).
+    pub(crate) fn is_direct(&self) -> bool {
+        self.hops == 0
+    }
+
+    /// Destination requires relay forwarding AND we know the next hop.
+    pub(crate) fn needs_relay(&self) -> bool {
+        self.hops > 0 && self.next_hop.is_some()
+    }
+}
+
 /// Link table entry (for active links routed through this transport node)
 #[derive(Debug, Clone)]
 pub(crate) struct LinkEntry {
@@ -822,8 +836,10 @@ impl<C: Clock, S: Storage> Transport<C, S> {
                 self.stats.packets_dropped += 1;
                 return Ok(());
             }
-            // Non-announce: drop if hops > 1
-            if packet.hops > 1 {
+            // Non-announce: drop if hops > 0 (PLAIN/GROUP are direct-neighbor only).
+            // Python checks hops > 1 AFTER incrementing on receipt; Rust stores
+            // raw wire hops without increment, so the equivalent is hops > 0.
+            if packet.hops > 0 {
                 self.stats.packets_dropped += 1;
                 return Ok(());
             }
@@ -1326,20 +1342,8 @@ impl<C: Clock, S: Storage> Transport<C, S> {
                     },
                 );
 
-                // Forward: strip to Type1 at final hop, Type2 otherwise.
-                //
-                // Rust stores raw wire hops (no increment on receipt), while
-                // Python increments hops on receipt (Transport.py:1319).
-                // Python strips at remaining_hops == 1 (i.e., wire hops == 0,
-                // directly connected). Rust equivalent: remaining_hops == 0.
-                //
-                // For intermediate hops, the transport_id must be set to the
-                // next-hop relay's identity (from path_table), not our own.
-                // The next relay checks transport_id == own identity before
-                // processing (Transport.py:1428).
-                let remaining_hops = path.hops;
-                let next_hop = path.next_hop;
-                let mut forwarded = if remaining_hops == 0 || next_hop.is_none() {
+                // Forward: strip at final hop, keep Type2 otherwise.
+                let mut forwarded = if !path.needs_relay() {
                     // Final hop: destination is directly connected, strip transport header
                     Packet {
                         flags: PacketFlags {
@@ -1362,7 +1366,7 @@ impl<C: Clock, S: Storage> Transport<C, S> {
                             ..packet.flags
                         },
                         hops: packet.hops,
-                        transport_id: next_hop,
+                        transport_id: path.next_hop,
                         destination_hash: dest_hash,
                         context: packet.context,
                         data: packet.data,
@@ -1621,8 +1625,6 @@ impl<C: Clock, S: Storage> Transport<C, S> {
         // Look up path
         if let Some(path) = self.path_table.get(&packet.destination_hash) {
             let target_iface = path.interface_index;
-            let remaining_hops = path.hops;
-            let next_hop = path.next_hop;
 
             // Populate reverse table at forwarding time
             let now = self.clock.now_ms();
@@ -1636,23 +1638,13 @@ impl<C: Clock, S: Storage> Transport<C, S> {
                 },
             );
 
-            // Header transformation: Rust stores raw wire hops (no increment
-            // on receipt), so remaining_hops == 0 means directly connected.
-            // For remaining_hops > 0, keep HEADER_2 with next-hop identity.
-            if remaining_hops > 0 {
-                if let Some(nh) = next_hop {
-                    // Intermediate relay: keep Type2, replace transport_id with next hop
-                    packet.flags.header_type = HeaderType::Type2;
-                    packet.flags.transport_type = TransportType::Transport;
-                    packet.transport_id = Some(nh);
-                } else {
-                    // No next_hop but hops > 0: strip to Type1 as fallback
-                    packet.flags.header_type = HeaderType::Type1;
-                    packet.flags.transport_type = TransportType::Broadcast;
-                    packet.transport_id = None;
-                }
+            if path.needs_relay() {
+                // Intermediate relay: keep Type2, replace transport_id with next hop
+                packet.flags.header_type = HeaderType::Type2;
+                packet.flags.transport_type = TransportType::Transport;
+                packet.transport_id = path.next_hop; // guaranteed Some by needs_relay()
             } else {
-                // Directly connected (hops == 0): strip to Type1
+                // Directly connected or no next_hop: strip to Type1
                 packet.flags.header_type = HeaderType::Type1;
                 packet.flags.transport_type = TransportType::Broadcast;
                 packet.transport_id = None;
@@ -2070,20 +2062,23 @@ impl<C: Clock, S: Storage> Transport<C, S> {
                 // Sub-case 1: Path missing — unconditionally try to rediscover
                 // (no throttle check). Python Transport.py:644.
                 should_request_path = true;
-            } else if !path_request_throttled && entry.hops == 0 {
-                // Sub-case 2: Local client link (initiator was 0 hops away).
-                // Python Transport.py:651.
-                should_request_path = true;
-            } else if !path_request_throttled && self.hops_to(&dest_hash) == Some(1) {
-                // Sub-case 3: Destination was 1-hop away.
-                // Python Transport.py:660-676.
+            } else if !path_request_throttled
+                && self
+                    .path_table
+                    .get(&dest_hash)
+                    .is_some_and(|p| p.is_direct())
+            {
+                // Sub-case 2: Destination directly connected — may have roamed.
+                // Python checks hops_to(dest) == 1 after increment; Rust
+                // equivalent: is_direct() (hops == 0). Python Transport.py:660-676.
                 should_request_path = true;
                 if self.config.enable_transport {
                     self.mark_path_unresponsive(&dest_hash);
                 }
-            } else if !path_request_throttled && entry.hops == 1 {
-                // Sub-case 4: Initiator was 1-hop away.
-                // Python Transport.py:682-689.
+            } else if !path_request_throttled && entry.hops == 0 {
+                // Sub-case 3: Initiator directly connected (0 wire hops away).
+                // Python checks lr_taken_hops == 1 after increment; Rust
+                // equivalent: entry.hops == 0. Python Transport.py:682-689.
                 should_request_path = true;
                 if self.config.enable_transport {
                     self.mark_path_unresponsive(&dest_hash);
@@ -5858,7 +5853,7 @@ mod tests {
 
         #[test]
         fn test_plain_packet_with_hops_above_1_dropped() {
-            // PLAIN data packets with hops > 1 must be dropped — PLAIN destinations
+            // PLAIN data packets with hops > 0 must be dropped — PLAIN destinations
             // are for direct neighbors only. Python Transport.py:1205-1213
             use crate::destination::DestinationType;
             use crate::packet::{HeaderType, PacketData, PacketFlags, TransportType};
@@ -5949,15 +5944,17 @@ mod tests {
         }
 
         #[test]
-        fn test_plain_packet_with_hops_1_processed() {
-            // PLAIN data packets with hops=1 (boundary) should be delivered normally.
+        fn test_plain_packet_with_hops_1_dropped() {
+            // PLAIN data packets with hops=1 must be dropped — PLAIN destinations
+            // are for direct neighbors only (hops == 0). Python checks hops > 1
+            // after increment; Rust equivalent without increment: hops > 0.
             use crate::destination::DestinationType;
             use crate::packet::{HeaderType, PacketData, PacketFlags, TransportType};
 
-            let mut transport = make_transport();
-            transport.register_interface(Box::new(MockInterface::new("test", 1)));
+            let mut transport = make_transport_enabled();
+            let _idx0 = transport.register_interface(Box::new(MockInterface::new("if0", 1)));
+
             let dest_hash = [0xAA; TRUNCATED_HASHBYTES];
-            transport.register_destination(dest_hash, false);
 
             let packet = Packet {
                 flags: PacketFlags {
@@ -5975,18 +5972,20 @@ mod tests {
                 data: PacketData::Owned(b"plain one hop".to_vec()),
             };
 
-            let mut buf = [0u8; 500];
+            let mut buf = [0u8; MTU];
             let len = packet.pack(&mut buf).unwrap();
+
+            let dropped_before = transport.stats().packets_dropped;
             transport.process_incoming(0, &buf[..len]).unwrap();
 
             assert_eq!(
                 transport.stats().packets_dropped,
-                0,
-                "PLAIN data packet with hops=1 should NOT be dropped"
+                dropped_before + 1,
+                "PLAIN data packet with hops=1 should be dropped"
             );
             assert!(
-                transport.pending_events() > 0,
-                "PLAIN data packet with hops=1 should generate events"
+                transport.drain_actions().is_empty(),
+                "No actions should be emitted for dropped PLAIN packet"
             );
         }
 
@@ -6037,7 +6036,7 @@ mod tests {
 
         #[test]
         fn test_group_packet_with_hops_above_1_dropped() {
-            // GROUP data packets with hops > 1 must be dropped — GROUP destinations
+            // GROUP data packets with hops > 0 must be dropped — GROUP destinations
             // are for direct neighbors only. Python Transport.py:1215-1225
             use crate::destination::DestinationType;
             use crate::packet::{HeaderType, PacketData, PacketFlags, TransportType};
@@ -6656,11 +6655,12 @@ mod tests {
             let dest_hash = [0xDD; TRUNCATED_HASHBYTES];
             let now = transport.clock.now_ms();
 
-            // Insert path entry with hops=1
+            // Insert path entry with hops=0 (directly connected).
+            // Rust stores raw wire hops; 0 = direct neighbor.
             transport.path_table.insert(
                 dest_hash,
                 PathEntry {
-                    hops: 1,
+                    hops: 0,
                     expires_ms: now + 3_600_000,
                     interface_index: 0,
                     random_blobs: Vec::new(),
@@ -6669,14 +6669,14 @@ mod tests {
             );
 
             // Insert unvalidated link entry: hops=2 (initiator 2 hops away),
-            // dest is 1-hop → sub-case 3 (not sub-case 2 which requires hops==0)
+            // dest is directly connected → sub-case 2 (dest is_direct)
             let link_id = [0xAA; TRUNCATED_HASHBYTES];
             transport.link_table.insert(
                 link_id,
                 LinkEntry {
                     timestamp_ms: now,
                     next_hop_interface_index: 1,
-                    remaining_hops: 1,
+                    remaining_hops: 0,
                     received_interface_index: 0,
                     hops: 2,
                     validated: false,
@@ -6691,10 +6691,10 @@ mod tests {
             transport.clock.advance(1001);
             transport.poll();
 
-            // Sub-case 3: dest was 1-hop, transport enabled → mark unresponsive
+            // Sub-case 2: dest directly connected, transport enabled → mark unresponsive
             assert!(
                 transport.path_is_unresponsive(&dest_hash),
-                "Path should be marked unresponsive when unvalidated link expires for 1-hop dest"
+                "Path should be marked unresponsive when unvalidated link expires for direct dest"
             );
 
             // Link should be removed
@@ -6722,7 +6722,8 @@ mod tests {
                 },
             );
 
-            // Insert unvalidated link: hops=1 (initiator was 1-hop away)
+            // Insert unvalidated link: hops=0 (initiator directly connected).
+            // Rust stores raw wire hops; 0 = direct neighbor.
             let link_id = [0xAA; TRUNCATED_HASHBYTES];
             transport.link_table.insert(
                 link_id,
@@ -6731,7 +6732,7 @@ mod tests {
                     next_hop_interface_index: 1,
                     remaining_hops: 3,
                     received_interface_index: 0,
-                    hops: 1,
+                    hops: 0,
                     validated: false,
                     proof_timeout_ms: now + 1000,
                     destination_hash: dest_hash,
@@ -6741,10 +6742,10 @@ mod tests {
             transport.clock.advance(1001);
             transport.poll();
 
-            // Sub-case 4: initiator was 1-hop → mark unresponsive
+            // Sub-case 3: initiator directly connected → mark unresponsive
             assert!(
                 transport.path_is_unresponsive(&dest_hash),
-                "Path should be marked unresponsive when initiator was 1-hop away"
+                "Path should be marked unresponsive when initiator was directly connected"
             );
         }
 
@@ -6807,11 +6808,11 @@ mod tests {
             let dest_hash = [0xDD; TRUNCATED_HASHBYTES];
             let now = transport.clock.now_ms();
 
-            // Path with hops=1 (sub-case 3)
+            // Path with hops=0 (directly connected — sub-case 2)
             transport.path_table.insert(
                 dest_hash,
                 PathEntry {
-                    hops: 1,
+                    hops: 0,
                     expires_ms: now + 3_600_000,
                     interface_index: 0,
                     random_blobs: Vec::new(),
@@ -6819,14 +6820,14 @@ mod tests {
                 },
             );
 
-            // hops=2 (not 0, so sub-case 2 doesn't trigger before sub-case 3)
+            // hops=2 (not 0, so sub-case 3 doesn't trigger before sub-case 2)
             let link_id = [0xAA; TRUNCATED_HASHBYTES];
             transport.link_table.insert(
                 link_id,
                 LinkEntry {
                     timestamp_ms: now,
                     next_hop_interface_index: 1,
-                    remaining_hops: 1,
+                    remaining_hops: 0,
                     received_interface_index: 0,
                     hops: 2,
                     validated: false,
@@ -7086,16 +7087,16 @@ mod tests {
             let dest = make_test_dest();
             let dest_hash = dest.hash().into_bytes();
 
-            // Step 1: Process announce A (hops=1, interface 0)
+            // Step 1: Process announce A (hops=0 = directly connected)
             let emission = 5000u64;
             let rh_a = make_random_hash([0x01, 0x02, 0x03, 0x04, 0x05], emission);
-            let a1 = make_announce_raw_with_random_hash(&dest, 1, &rh_a);
+            let a1 = make_announce_raw_with_random_hash(&dest, 0, &rh_a);
             transport.process_incoming(0, &a1).unwrap();
-            assert_eq!(transport.hops_to(&dest_hash), Some(1));
+            assert_eq!(transport.hops_to(&dest_hash), Some(0));
 
             // Step 2: Insert unvalidated link_table entry (simulates relay)
-            // hops=2 so sub-case 2 (local client, hops==0) doesn't take priority
-            // over sub-case 3 (dest 1-hop away)
+            // hops=2 so sub-case 3 (initiator hops==0) doesn't take priority
+            // over sub-case 2 (dest is_direct)
             let link_id = [0xCC; TRUNCATED_HASHBYTES];
             let now = transport.clock.now_ms();
             transport.link_table.insert(
@@ -7103,7 +7104,7 @@ mod tests {
                 LinkEntry {
                     timestamp_ms: now,
                     next_hop_interface_index: 1,
-                    remaining_hops: 1,
+                    remaining_hops: 0,
                     received_interface_index: 0,
                     hops: 2,
                     validated: false,
@@ -7117,7 +7118,7 @@ mod tests {
             transport.drain_events();
             transport.poll();
 
-            // Step 4: Verify sub-case 3 fired
+            // Step 4: Verify sub-case 2 fired
             assert!(
                 transport.path_is_unresponsive(&dest_hash),
                 "Path should be marked unresponsive after unvalidated link expiry"

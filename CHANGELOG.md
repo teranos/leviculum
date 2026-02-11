@@ -5,6 +5,23 @@ All notable changes to this project will be documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.5.2] - 2026-02-11
+
+### Fixed
+- **4 hop off-by-one bugs in forwarding thresholds** — Python increments `packet.hops += 1` on receipt (Transport.py:1319), so "directly connected" = `hops == 1` in Python but `hops == 0` in Rust. Thresholds copied from Python without adjusting for this difference were wrong:
+  1. PLAIN/GROUP packet filter used `hops > 1` instead of `hops > 0` — allowed 1-hop PLAIN/GROUP packets through instead of dropping them (only direct neighbors should receive these)
+  2. `clean_link_table` destination proximity check used `hops_to() == Some(1)` instead of `Some(0)` — failed to mark directly-connected destinations as unresponsive on link expiry
+  3. `clean_link_table` initiator proximity check used `entry.hops == 1` instead of `entry.hops == 0` — failed to mark directly-connected initiators as unresponsive
+  4. `clean_link_table` local-client sub-case (`entry.hops == 0`) was missing `mark_path_unresponsive()` call — merged with the initiator sub-case after fix
+
+### Added
+- `PathEntry::is_direct()` — returns true when destination is directly connected (hops == 0), preventing future off-by-one bugs by encoding the Python/Rust hop semantics difference in one place
+- `PathEntry::needs_relay()` — returns true when destination requires relay forwarding and next hop is known (hops > 0 && next_hop is Some)
+
+### Changed
+- Refactored `handle_link_request` and `forward_packet` to use `PathEntry::needs_relay()` instead of raw hop comparisons — eliminates local `remaining_hops`/`next_hop` variables and makes forwarding logic self-documenting
+- Merged `clean_link_table` sub-cases: old 4-case structure (path missing, local client, 1-hop dest, 1-hop initiator) simplified to 3 cases (path missing, dest is_direct, initiator direct) with consistent `mark_path_unresponsive` behavior
+
 ## [0.5.1] - 2026-02-11
 
 ### Fixed
@@ -490,7 +507,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Transport layer (routing, paths, deduplication)
 - Full interoperability with Python rnsd
 
-[Unreleased]: https://codeberg.org/Lew_Palm/leviculum/compare/v0.5.1...HEAD
+[Unreleased]: https://codeberg.org/Lew_Palm/leviculum/compare/v0.5.2...HEAD
+[0.5.2]: https://codeberg.org/Lew_Palm/leviculum/compare/v0.5.1...v0.5.2
 [0.5.1]: https://codeberg.org/Lew_Palm/leviculum/compare/v0.5.0...v0.5.1
 [0.5.0]: https://codeberg.org/Lew_Palm/leviculum/compare/v0.4.4...v0.5.0
 [0.4.4]: https://codeberg.org/Lew_Palm/leviculum/compare/v0.4.3...v0.4.4
