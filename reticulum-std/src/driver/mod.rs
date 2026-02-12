@@ -50,7 +50,7 @@ mod builder;
 mod stream;
 
 pub use builder::ReticulumNodeBuilder;
-pub use stream::ConnectionStream;
+pub use stream::{ConnectionSender, ConnectionStream};
 
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};

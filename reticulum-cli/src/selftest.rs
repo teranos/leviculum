@@ -15,7 +15,7 @@ use reticulum_core::destination::{DestinationType, Direction};
 use reticulum_core::link::LinkId;
 use reticulum_core::node::NodeEvent;
 use reticulum_core::{Destination, DestinationHash, Identity};
-use reticulum_std::driver::{ConnectionStream, ReticulumNodeBuilder};
+use reticulum_std::driver::{ConnectionSender, ReticulumNodeBuilder};
 
 // ─── Message Format ──────────────────────────────────────────────────────────
 
@@ -313,7 +313,7 @@ async fn event_task_b(
 // ─── Send helper ─────────────────────────────────────────────────────────────
 
 async fn send_msg(
-    stream: &ConnectionStream,
+    sender: &ConnectionSender,
     dir: &str,
     seq: u64,
     start_time: Instant,
@@ -322,7 +322,7 @@ async fn send_msg(
 ) {
     let now_ms = start_time.elapsed().as_millis() as u64;
     let msg = build_message(dir, seq, now_ms);
-    match stream.send(&msg).await {
+    match sender.send(&msg).await {
         Ok(()) => {
             let mut st = state.stats.lock().unwrap();
             if is_a {
@@ -514,6 +514,20 @@ pub async fn run_selftest(
         .await
         .map_err(|_| "Phase 3 timeout: link establishment >60s")?;
 
+    // Get send-only handles, then move streams into drain tasks.
+    // Data tracking happens via event tasks, so we just discard received
+    // data to prevent the ConnectionStream inbound channel from filling up.
+    let sender_a = stream_a.sender();
+    let sender_b = stream_b.sender();
+    tokio::spawn(async move {
+        let mut s = stream_a;
+        while let Ok(Some(_)) = s.recv().await {}
+    });
+    tokio::spawn(async move {
+        let mut s = stream_b;
+        while let Ok(Some(_)) = s.recv().await {}
+    });
+
     println!(
         "[selftest] Phase 3: OK — link established in {:.1}s",
         link_start.elapsed().as_secs_f64(),
@@ -524,7 +538,7 @@ pub async fn run_selftest(
     let warmup_msgs = 10u64;
 
     for seq in 0..warmup_msgs {
-        send_msg(&stream_a, "ab", seq, start_time, &state, true).await;
+        send_msg(&sender_a, "ab", seq, start_time, &state, true).await;
         tokio::time::sleep(std::time::Duration::from_millis(200)).await;
     }
 
@@ -609,9 +623,9 @@ pub async fn run_selftest(
 
         if send_due {
             // Send one message in each direction
-            send_msg(&stream_a, "ab", seq_a, start_time, &state, true).await;
+            send_msg(&sender_a, "ab", seq_a, start_time, &state, true).await;
             seq_a += 1;
-            send_msg(&stream_b, "ba", seq_b, start_time, &state, false).await;
+            send_msg(&sender_b, "ba", seq_b, start_time, &state, false).await;
             seq_b += 1;
             next_send = tokio::time::Instant::now() + std::time::Duration::from_millis(interval_ms);
         }
@@ -681,7 +695,7 @@ pub async fn run_selftest(
     for seq in 0..10u64 {
         let now_ms = start_time.elapsed().as_millis() as u64;
         let msg = build_message("ab", 10000 + seq, now_ms);
-        match stream_a.send(&msg).await {
+        match sender_a.send(&msg).await {
             Ok(()) => {
                 state.stats.lock().unwrap().sent_a += 1;
                 burst_ok += 1;
@@ -715,7 +729,7 @@ pub async fn run_selftest(
         .unwrap_or(0);
 
     // Close from B side
-    if let Err(e) = node_b.close_connection(stream_b.link_id()).await {
+    if let Err(e) = node_b.close_connection(sender_b.link_id()).await {
         eprintln!("[selftest] close B: {e}");
     }
     tokio::time::sleep(std::time::Duration::from_secs(3)).await;

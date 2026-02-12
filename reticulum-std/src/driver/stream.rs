@@ -11,6 +11,57 @@ use tokio::sync::mpsc;
 
 use reticulum_core::link::LinkId;
 
+/// A send-only handle for a [`ConnectionStream`].
+///
+/// Obtained via [`ConnectionStream::sender()`]. Cheap to clone, allowing the
+/// full stream (with recv capability) to be moved into a separate task while
+/// the sender is used for writing from another task.
+///
+/// # Example
+///
+/// ```no_run
+/// # use reticulum_std::driver::ReticulumNodeBuilder;
+/// # async fn example() -> Result<(), Box<dyn std::error::Error>> {
+/// # let node = ReticulumNodeBuilder::new().build().await?;
+/// # let dest_hash = reticulum_core::DestinationHash::new([0; 16]);
+/// # let signing_key = [0u8; 32];
+/// let stream = node.connect(&dest_hash, &signing_key).await?;
+/// let sender = stream.sender();
+///
+/// // Move stream into a receive task
+/// tokio::spawn(async move {
+///     let mut s = stream;
+///     while let Ok(Some(data)) = s.recv().await {
+///         println!("Received {} bytes", data.len());
+///     }
+/// });
+///
+/// // Send from the current task
+/// sender.send(b"Hello!").await?;
+/// # Ok(())
+/// # }
+/// ```
+#[derive(Clone)]
+pub struct ConnectionSender {
+    link_id: LinkId,
+    outgoing_tx: mpsc::Sender<(LinkId, Vec<u8>)>,
+}
+
+impl ConnectionSender {
+    /// Get the link ID for this connection
+    pub fn link_id(&self) -> &LinkId {
+        &self.link_id
+    }
+
+    /// Send data on this connection
+    pub async fn send(&self, data: &[u8]) -> io::Result<()> {
+        self.outgoing_tx
+            .send((self.link_id, data.to_vec()))
+            .await
+            .map_err(|_| io::Error::new(io::ErrorKind::BrokenPipe, "send channel closed"))
+    }
+}
+
 /// Async stream wrapper around a Connection
 ///
 /// ConnectionStream provides async read/write operations for a connection.
@@ -75,6 +126,18 @@ impl ConnectionStream {
     /// Get the link ID for this connection
     pub fn link_id(&self) -> &LinkId {
         &self.link_id
+    }
+
+    /// Create a send-only handle for this connection.
+    ///
+    /// The returned [`ConnectionSender`] is cheaply cloneable and can be used
+    /// from a different task, allowing the stream itself to be moved into a
+    /// receive-only task.
+    pub fn sender(&self) -> ConnectionSender {
+        ConnectionSender {
+            link_id: self.link_id,
+            outgoing_tx: self.outgoing_tx.clone(),
+        }
     }
 
     /// Check if the stream is closed
