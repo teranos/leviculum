@@ -41,6 +41,8 @@ pub enum DestinationError {
     RatchetRequired,
     /// Decryption failed
     DecryptionFailed,
+    /// Encryption failed
+    EncryptionFailed,
     /// Cannot enable ratchets on OUT destination
     CannotEnableRatchetsOnOut,
 }
@@ -63,6 +65,9 @@ impl core::fmt::Display for DestinationError {
             DestinationError::DecryptionFailed => {
                 write!(f, "Decryption failed")
             }
+            DestinationError::EncryptionFailed => {
+                write!(f, "Encryption failed")
+            }
             DestinationError::CannotEnableRatchetsOnOut => {
                 write!(f, "Cannot enable ratchets on OUT destination")
             }
@@ -74,6 +79,7 @@ impl From<IdentityError> for DestinationError {
     fn from(e: IdentityError) -> Self {
         match e {
             IdentityError::NoPrivateKey => DestinationError::NoIdentity,
+            IdentityError::EncryptionFailed => DestinationError::EncryptionFailed,
             IdentityError::DecryptionFailed => DestinationError::DecryptionFailed,
             _ => DestinationError::DecryptionFailed,
         }
@@ -570,7 +576,7 @@ impl Destination {
     ) -> Result<Vec<u8>, DestinationError> {
         let identity = self.identity.as_ref().ok_or(DestinationError::NoIdentity)?;
 
-        Ok(identity.encrypt_for_destination(plaintext, ratchet_public, rng))
+        Ok(identity.encrypt_for_destination(plaintext, ratchet_public, rng)?)
     }
 
     /// Compute the name hash from app_name and aspects.

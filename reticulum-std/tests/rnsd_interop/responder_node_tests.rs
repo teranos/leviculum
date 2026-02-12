@@ -27,8 +27,8 @@ use std::time::Duration;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpStream;
 
-use reticulum_core::destination::{Destination, DestinationType, Direction};
 use reticulum_core::identity::Identity;
+use reticulum_core::{Destination, DestinationType, Direction};
 use reticulum_std::driver::ReticulumNodeBuilder;
 
 use crate::common::{

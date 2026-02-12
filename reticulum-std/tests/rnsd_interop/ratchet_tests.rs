@@ -27,9 +27,9 @@ use tokio::net::TcpStream;
 use tokio::time::timeout;
 
 use reticulum_core::constants::{MTU, RATCHET_SIZE};
-use reticulum_core::destination::{Destination, DestinationType, Direction};
 use reticulum_core::identity::Identity;
 use reticulum_core::packet::{Packet, PacketType};
+use reticulum_core::{Destination, DestinationType, Direction};
 use reticulum_std::interfaces::hdlc::{frame, DeframeResult, Deframer};
 
 use crate::common::{connect_to_daemon, now_ms, ParsedAnnounce, DAEMON_PROCESS_TIME};

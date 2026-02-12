@@ -73,9 +73,6 @@
 //! **Crypto and encoding:**
 //! [`crypto`], [`ratchet`], [`ifac`], [`framing`]
 //!
-//! **Data transfer:**
-//! [`resource`]
-//!
 //! **Platform abstraction:**
 //! [`traits`], [`constants`]
 
@@ -99,7 +96,7 @@ pub mod node;
 pub mod packet;
 pub mod ratchet;
 pub mod receipt;
-pub mod resource;
+mod resource;
 pub mod traits;
 pub mod transport;
 
@@ -107,7 +104,7 @@ pub mod transport;
 pub use announce::{generate_random_hash, AnnounceError, ReceivedAnnounce};
 #[cfg(feature = "compression")]
 pub use compression::{compress, decompress, decompress_auto, CompressionError};
-pub use destination::{Destination, DestinationHash, ProofStrategy};
+pub use destination::{Destination, DestinationHash, DestinationType, Direction, ProofStrategy};
 pub use identity::Identity;
 pub use ifac::{IfacConfig, IfacError};
 #[cfg(feature = "compression")]

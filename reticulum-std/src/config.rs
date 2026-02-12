@@ -108,8 +108,11 @@ pub struct InterfaceConfig {
     pub tx_power: Option<i8>,
 }
 
+/// Default interface bitrate in bits/second (matches Python Reticulum default)
+const DEFAULT_BITRATE_BPS: u64 = 62_500;
+
 fn default_bitrate() -> u64 {
-    62500 // Default Reticulum bitrate
+    DEFAULT_BITRATE_BPS
 }
 
 impl Config {

@@ -110,7 +110,6 @@ pub const RATCHET_INTERVAL_SECS: u64 = 60 * 30; // 30 minutes
 pub const PATHFINDER_MAX_HOPS: u8 = 128;
 pub const PATHFINDER_RETRIES: u8 = 1;
 pub const PATHFINDER_EXPIRY_SECS: u64 = 60 * 60 * 24 * 7; // 7 days
-pub const PATH_REQUEST_GRACE_SECS: f64 = 0.4;
 
 /// Retry grace period for announce rebroadcast (milliseconds)
 pub const PATHFINDER_G_MS: u64 = 5_000;
@@ -125,6 +124,7 @@ pub const LOCAL_REBROADCASTS_MAX: u8 = 2;
 pub const LINK_TIMEOUT_MS: u64 = 900_000;
 
 /// Grace period before sending a path response (milliseconds)
+/// Equivalent to Python's PATH_REQUEST_GRACE = 0.4 (seconds)
 pub const PATH_REQUEST_GRACE_MS: u64 = 400;
 
 /// Timeout for path request round-trip (milliseconds)

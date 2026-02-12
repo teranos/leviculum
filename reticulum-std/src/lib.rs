@@ -20,8 +20,11 @@ pub mod interfaces;
 pub mod reticulum;
 pub mod storage;
 
-// Re-export all core types and modules
-pub use reticulum_core::*;
+// Re-export commonly used core types for the high-level API
+pub use reticulum_core::node::NodeEvent;
+pub use reticulum_core::{
+    Destination, DestinationHash, DestinationType, Direction, Identity, ProofStrategy,
+};
 
 pub use clock::SystemClock;
 pub use config::{Config, InterfaceConfig, ReticulumConfig};

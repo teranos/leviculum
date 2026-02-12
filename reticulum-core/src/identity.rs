@@ -26,6 +26,8 @@ pub enum IdentityError {
     DecryptionFailed,
     /// No private key available (public-only identity)
     NoPrivateKey,
+    /// Encryption failed (internal token encryption error)
+    EncryptionFailed,
 }
 
 impl core::fmt::Display for IdentityError {
@@ -35,6 +37,7 @@ impl core::fmt::Display for IdentityError {
             IdentityError::InvalidSignature => write!(f, "Invalid signature"),
             IdentityError::DecryptionFailed => write!(f, "Decryption failed"),
             IdentityError::NoPrivateKey => write!(f, "No private key available"),
+            IdentityError::EncryptionFailed => write!(f, "Encryption failed"),
         }
     }
 }
@@ -308,7 +311,11 @@ impl Identity {
     ///
     /// # Returns
     /// Ciphertext that can be decrypted by the holder of this identity's private key
-    pub fn encrypt<R: rand_core::CryptoRngCore>(&self, plaintext: &[u8], rng: &mut R) -> Vec<u8> {
+    pub fn encrypt<R: rand_core::CryptoRngCore>(
+        &self,
+        plaintext: &[u8],
+        rng: &mut R,
+    ) -> Result<Vec<u8>, IdentityError> {
         // Generate ephemeral X25519 key pair
         let ephemeral_private = x25519_dalek::StaticSecret::random_from_rng(&mut *rng);
 
@@ -325,7 +332,7 @@ impl Identity {
         plaintext: &[u8],
         ephemeral_private_bytes: &[u8; X25519_KEY_SIZE],
         iv: &[u8; AES_BLOCK_SIZE],
-    ) -> Vec<u8> {
+    ) -> Result<Vec<u8>, IdentityError> {
         let ephemeral_private = x25519_dalek::StaticSecret::from(*ephemeral_private_bytes);
         self.encrypt_impl(&ephemeral_private, plaintext, iv)
     }
@@ -336,7 +343,7 @@ impl Identity {
         ephemeral_private: &x25519_dalek::StaticSecret,
         plaintext: &[u8],
         iv: &[u8; AES_BLOCK_SIZE],
-    ) -> Vec<u8> {
+    ) -> Result<Vec<u8>, IdentityError> {
         let ephemeral_public = x25519_dalek::PublicKey::from(ephemeral_private);
 
         // Perform ECDH
@@ -363,10 +370,10 @@ impl Identity {
 
         // Encrypt with token
         let token_size = encrypt_token(&derived_key, iv, plaintext, &mut output[X25519_KEY_SIZE..])
-            .expect("token encryption should succeed with valid parameters");
+            .map_err(|_| IdentityError::EncryptionFailed)?;
 
         output.truncate(X25519_KEY_SIZE + token_size);
-        output
+        Ok(output)
     }
 
     /// Decrypt data encrypted for this identity
@@ -439,7 +446,7 @@ impl Identity {
         plaintext: &[u8],
         ratchet_public: Option<&[u8; crate::constants::RATCHET_SIZE]>,
         rng: &mut R,
-    ) -> Vec<u8> {
+    ) -> Result<Vec<u8>, IdentityError> {
         // Generate ephemeral X25519 key pair
         let ephemeral_private = x25519_dalek::StaticSecret::random_from_rng(&mut *rng);
 
@@ -457,7 +464,7 @@ impl Identity {
         plaintext: &[u8],
         ratchet_public: Option<&[u8; crate::constants::RATCHET_SIZE]>,
         iv: &[u8; AES_BLOCK_SIZE],
-    ) -> Vec<u8> {
+    ) -> Result<Vec<u8>, IdentityError> {
         let ephemeral_public = x25519_dalek::PublicKey::from(ephemeral_private);
 
         // Perform ECDH with ratchet or identity key
@@ -488,10 +495,10 @@ impl Identity {
 
         // Encrypt with token
         let token_size = encrypt_token(&derived_key, iv, plaintext, &mut output[X25519_KEY_SIZE..])
-            .expect("token encryption should succeed with valid parameters");
+            .map_err(|_| IdentityError::EncryptionFailed)?;
 
         output.truncate(X25519_KEY_SIZE + token_size);
-        output
+        Ok(output)
     }
 
     /// Decrypt data that may have been encrypted with a ratchet
@@ -647,7 +654,7 @@ mod tests {
 
         // Encrypt something for this identity
         let plaintext = b"Secret message";
-        let ciphertext = identity.encrypt(plaintext, &mut OsRng);
+        let ciphertext = identity.encrypt(plaintext, &mut OsRng).unwrap();
 
         // Public-only identity should not be able to decrypt
         let result = pub_only.decrypt(&ciphertext);
@@ -671,7 +678,7 @@ mod tests {
 
         // Encrypt for Alice
         let plaintext = b"Secret for Alice";
-        let ciphertext = alice.encrypt(plaintext, &mut OsRng);
+        let ciphertext = alice.encrypt(plaintext, &mut OsRng).unwrap();
 
         // Bob should not be able to decrypt
         let result = bob.decrypt(&ciphertext);
@@ -705,7 +712,7 @@ mod tests {
         let identity = new_identity();
         let plaintext: &[u8] = b"";
 
-        let ciphertext = identity.encrypt(plaintext, &mut OsRng);
+        let ciphertext = identity.encrypt(plaintext, &mut OsRng).unwrap();
         let decrypted = identity.decrypt(&ciphertext).unwrap();
 
         assert_eq!(decrypted.len(), 0);
@@ -725,7 +732,7 @@ mod tests {
         let identity = new_identity();
         let plaintext = [0xab; 100000]; // 100KB
 
-        let ciphertext = identity.encrypt(&plaintext, &mut OsRng);
+        let ciphertext = identity.encrypt(&plaintext, &mut OsRng).unwrap();
         let decrypted = identity.decrypt(&ciphertext).unwrap();
 
         assert_eq!(decrypted.len(), plaintext.len());
@@ -773,7 +780,7 @@ mod tests {
         let identity = new_identity();
         let plaintext = b"Secret message";
 
-        let mut ciphertext = identity.encrypt(plaintext, &mut OsRng);
+        let mut ciphertext = identity.encrypt(plaintext, &mut OsRng).unwrap();
         // Corrupt the ephemeral public key (first 32 bytes)
         ciphertext[0] ^= 0x01;
 
@@ -787,7 +794,7 @@ mod tests {
         let identity = new_identity();
         let plaintext = b"Secret message";
 
-        let mut ciphertext = identity.encrypt(plaintext, &mut OsRng);
+        let mut ciphertext = identity.encrypt(plaintext, &mut OsRng).unwrap();
         // Corrupt the token part (after ephemeral key)
         ciphertext[40] ^= 0x01;
 
@@ -800,7 +807,7 @@ mod tests {
         let identity = new_identity();
         let plaintext = b"Secret message";
 
-        let ciphertext = identity.encrypt(plaintext, &mut OsRng);
+        let ciphertext = identity.encrypt(plaintext, &mut OsRng).unwrap();
         // Truncate to less than minimum size
         let truncated = &ciphertext[..32];
 
@@ -844,8 +851,8 @@ mod tests {
         let identity = new_identity();
         let plaintext = b"Same message";
 
-        let ct1 = identity.encrypt(plaintext, &mut OsRng);
-        let ct2 = identity.encrypt(plaintext, &mut OsRng);
+        let ct1 = identity.encrypt(plaintext, &mut OsRng).unwrap();
+        let ct2 = identity.encrypt(plaintext, &mut OsRng).unwrap();
 
         // Ciphertexts should be different
         assert_ne!(ct1, ct2);
@@ -863,7 +870,7 @@ mod tests {
         let pub_only = Identity::from_public_key_bytes(&pub_bytes).unwrap();
 
         let plaintext = b"Secret message";
-        let ciphertext = pub_only.encrypt(plaintext, &mut OsRng);
+        let ciphertext = pub_only.encrypt(plaintext, &mut OsRng).unwrap();
 
         // Original identity (with private key) should be able to decrypt
         let decrypted = identity.decrypt(&ciphertext).unwrap();
@@ -876,7 +883,7 @@ mod tests {
 
         for i in 0..10 {
             let plaintext = alloc::format!("Message number {}", i);
-            let ciphertext = identity.encrypt(plaintext.as_bytes(), &mut OsRng);
+            let ciphertext = identity.encrypt(plaintext.as_bytes(), &mut OsRng).unwrap();
             let decrypted = identity.decrypt(&ciphertext).unwrap();
             assert_eq!(&decrypted[..], plaintext.as_bytes());
         }
@@ -908,7 +915,7 @@ mod tests {
         let identity = new_identity();
         let plaintext = [0xaa];
 
-        let ciphertext = identity.encrypt(&plaintext, &mut OsRng);
+        let ciphertext = identity.encrypt(&plaintext, &mut OsRng).unwrap();
         let decrypted = identity.decrypt(&ciphertext).unwrap();
 
         assert_eq!(decrypted.len(), 1);
@@ -944,7 +951,9 @@ mod tests {
         let identity = new_identity();
         let plaintext = b"Hello without ratchet";
 
-        let ciphertext = identity.encrypt_for_destination(plaintext, None, &mut OsRng);
+        let ciphertext = identity
+            .encrypt_for_destination(plaintext, None, &mut OsRng)
+            .unwrap();
 
         // Should be decryptable with normal decrypt
         let decrypted = identity.decrypt(&ciphertext).unwrap();
@@ -965,8 +974,9 @@ mod tests {
         let ratchet_pub = ratchet.public_key_bytes();
 
         // Encrypt with ratchet
-        let ciphertext =
-            identity.encrypt_for_destination(plaintext, Some(&ratchet_pub), &mut OsRng);
+        let ciphertext = identity
+            .encrypt_for_destination(plaintext, Some(&ratchet_pub), &mut OsRng)
+            .unwrap();
 
         // Should NOT be decryptable with normal decrypt (uses identity key)
         let result = identity.decrypt(&ciphertext);
@@ -998,11 +1008,9 @@ mod tests {
 
         // Encrypt with ratchet2
         let plaintext = b"Encrypted with ratchet 2";
-        let ciphertext = identity.encrypt_for_destination(
-            plaintext,
-            Some(&ratchet2.public_key_bytes()),
-            &mut OsRng,
-        );
+        let ciphertext = identity
+            .encrypt_for_destination(plaintext, Some(&ratchet2.public_key_bytes()), &mut OsRng)
+            .unwrap();
 
         // Try decrypting with all ratchets (ratchet2 should succeed)
         let ratchets = [ratchet1, ratchet2, ratchet3];
@@ -1025,7 +1033,9 @@ mod tests {
 
         // Encrypt WITHOUT ratchet (uses identity key)
         let plaintext = b"Encrypted with identity key";
-        let ciphertext = identity.encrypt_for_destination(plaintext, None, &mut OsRng);
+        let ciphertext = identity
+            .encrypt_for_destination(plaintext, None, &mut OsRng)
+            .unwrap();
 
         // Try decrypting with ratchet (will fail) then fallback to identity
         let ratchets = [ratchet];
@@ -1049,7 +1059,9 @@ mod tests {
         let plaintext = b"Encrypted with identity";
 
         // Encrypt with identity
-        let ciphertext = identity.encrypt_for_destination(plaintext, None, &mut OsRng);
+        let ciphertext = identity
+            .encrypt_for_destination(plaintext, None, &mut OsRng)
+            .unwrap();
 
         // Empty ratchets list with fallback
         let (decrypted, ratchet_id) = identity
@@ -1072,8 +1084,9 @@ mod tests {
 
         // Encrypt for Alice's identity using ratchet
         let plaintext = b"Secret for Alice";
-        let ciphertext =
-            alice.encrypt_for_destination(plaintext, Some(&ratchet.public_key_bytes()), &mut OsRng);
+        let ciphertext = alice
+            .encrypt_for_destination(plaintext, Some(&ratchet.public_key_bytes()), &mut OsRng)
+            .unwrap();
 
         // Bob cannot decrypt even with the same ratchet (different identity hash used in HKDF)
         let ratchets = [ratchet];
@@ -1097,11 +1110,9 @@ mod tests {
 
         // Encrypt using public-only identity with ratchet
         let plaintext = b"Encrypted by sender using public identity";
-        let ciphertext = pub_only.encrypt_for_destination(
-            plaintext,
-            Some(&ratchet.public_key_bytes()),
-            &mut OsRng,
-        );
+        let ciphertext = pub_only
+            .encrypt_for_destination(plaintext, Some(&ratchet.public_key_bytes()), &mut OsRng)
+            .unwrap();
 
         // Full identity can decrypt with ratchet
         let ratchets = [ratchet];

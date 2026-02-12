@@ -14,13 +14,13 @@ use tokio::time::timeout;
 
 use reticulum_core::constants::{MTU, PROOF_DATA_SIZE, TRUNCATED_HASHBYTES};
 use reticulum_core::crypto::sha256;
-use reticulum_core::destination::{Destination, DestinationType, Direction, ProofStrategy};
 use reticulum_core::identity::Identity;
 use reticulum_core::link::{Link, LinkState};
 use reticulum_core::packet::{
     build_proof_packet, packet_hash, HeaderType, Packet, PacketContext, PacketData, PacketFlags,
     PacketType, TransportType,
 };
+use reticulum_core::{Destination, DestinationType, Direction, ProofStrategy};
 use reticulum_std::interfaces::hdlc::{frame, DeframeResult, Deframer};
 
 use crate::common::{send_framed, OsRng};

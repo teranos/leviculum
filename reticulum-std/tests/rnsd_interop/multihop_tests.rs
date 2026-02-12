@@ -38,9 +38,9 @@ use std::time::Duration;
 use tokio::io::AsyncWriteExt;
 
 use reticulum_core::constants::{MTU, TRUNCATED_HASHBYTES};
-use reticulum_core::destination::{Destination, DestinationType, Direction};
 use reticulum_core::identity::Identity;
 use reticulum_core::link::{Link, LinkState};
+use reticulum_core::{Destination, DestinationType, Direction};
 use reticulum_std::interfaces::hdlc::{frame, Deframer};
 
 use crate::common::*;

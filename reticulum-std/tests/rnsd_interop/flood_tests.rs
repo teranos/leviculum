@@ -19,9 +19,8 @@
 use std::time::Duration;
 
 use reticulum_core::constants::TRUNCATED_HASHBYTES;
-use reticulum_core::destination::{Destination, DestinationType, Direction};
 use reticulum_core::identity::Identity;
-use reticulum_core::DestinationHash;
+use reticulum_core::{Destination, DestinationHash, DestinationType, Direction};
 use reticulum_std::driver::ReticulumNodeBuilder;
 
 use crate::common::wait_for_path_on_daemon;

@@ -16,10 +16,9 @@ use tokio::io::AsyncBufReadExt;
 
 mod selftest;
 
-use reticulum_core::destination::{DestinationType, Direction};
 use reticulum_core::link::LinkId;
 use reticulum_core::node::NodeEvent;
-use reticulum_core::{Destination, DestinationHash, Identity};
+use reticulum_core::{Destination, DestinationHash, DestinationType, Direction, Identity};
 use reticulum_std::driver::{ConnectionStream, ReticulumNodeBuilder};
 
 fn hex_encode(bytes: &[u8]) -> String {

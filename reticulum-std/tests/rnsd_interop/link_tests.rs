@@ -525,8 +525,8 @@ async fn test_link_request_with_mtu_signaling() {
     assert_eq!(request_data.len(), 67, "MTU request should be 67 bytes");
 
     // Build packet manually
-    use reticulum_core::destination::DestinationType;
     use reticulum_core::packet::{HeaderType, PacketContext, PacketFlags, TransportType};
+    use reticulum_core::DestinationType;
 
     let flags = PacketFlags {
         ifac_flag: false,

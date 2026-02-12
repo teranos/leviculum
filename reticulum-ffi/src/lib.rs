@@ -282,7 +282,10 @@ pub unsafe extern "C" fn lrns_identity_encrypt(
     let identity = &(*identity).inner;
     let plaintext = std::slice::from_raw_parts(plaintext, plaintext_len);
 
-    let ciphertext = identity.encrypt(plaintext, &mut rand_core::OsRng);
+    let ciphertext = match identity.encrypt(plaintext, &mut rand_core::OsRng) {
+        Ok(c) => c,
+        Err(_) => return LRNS_ERR_CRYPTO,
+    };
 
     if *out_len < ciphertext.len() {
         *out_len = ciphertext.len();

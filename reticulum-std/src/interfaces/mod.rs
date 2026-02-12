@@ -12,10 +12,14 @@ use reticulum_core::transport::InterfaceId;
 use reticulum_net::{IncomingPacket, InterfaceInfo, OutgoingPacket};
 use tokio::sync::mpsc;
 
-/// Incoming channel capacity for TCP interfaces
+/// Incoming channel capacity for TCP interfaces.
+/// Sized to absorb short bursts without backpressure; at MTU=500 this is 16 KB.
+/// Not yet tuned — chosen empirically during initial development.
 pub(crate) const TCP_INCOMING_CAPACITY: usize = 32;
 
-/// Outgoing channel capacity for TCP interfaces
+/// Outgoing channel capacity for TCP interfaces.
+/// Smaller than incoming because the event loop drains it synchronously.
+/// Not yet tuned — chosen empirically during initial development.
 pub(crate) const TCP_OUTGOING_CAPACITY: usize = 16;
 
 /// Event loop's handle to a spawned interface task

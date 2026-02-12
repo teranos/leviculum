@@ -15,12 +15,12 @@
 
 use reticulum_core::constants::{MTU, TRUNCATED_HASHBYTES};
 use reticulum_core::crypto::{full_hash, sha256, truncated_hash};
-use reticulum_core::destination::{Destination, DestinationType};
 use reticulum_core::identity::Identity;
 use reticulum_core::link::Link;
 use reticulum_core::packet::{
     HeaderType, Packet, PacketContext, PacketData, PacketFlags, PacketType, TransportType,
 };
+use reticulum_core::{Destination, DestinationType};
 
 use crate::common::compute_name_hash;
 

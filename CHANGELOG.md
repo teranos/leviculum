@@ -5,6 +5,18 @@ All notable changes to this project will be documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.5.11] - 2026-02-12
+
+### Changed
+- **Breaking: `Identity::encrypt()`, `encrypt_with_keys()`, `encrypt_for_destination()` now return `Result<Vec<u8>, IdentityError>`** — replaced two `.expect()` calls in token encryption with proper error propagation via new `IdentityError::EncryptionFailed` variant. `Destination::encrypt()` propagates the error through new `DestinationError::EncryptionFailed`. FFI `lrns_identity_encrypt` returns `LRNS_ERR_CRYPTO` on failure.
+- **Breaking: `pub use reticulum_core::*` removed from `reticulum-std`** — replaced with selective re-exports of `NodeEvent`, `Destination`, `DestinationHash`, `DestinationType`, `Direction`, `Identity`, `ProofStrategy`. Consumers should import from `reticulum_core::` directly for anything not in this list.
+- `Direction` and `DestinationType` re-exported from `reticulum_core` crate root — consumers no longer need to import from `reticulum_core::destination::`
+- `resource` module visibility reduced from `pub` to private — the module is empty scaffolding for Phase 3 work
+- Removed unused `PATH_REQUEST_GRACE_SECS` constant (f64 duplicate of `PATH_REQUEST_GRACE_MS`)
+- Extracted hardcoded bitrate `62500` to named constant `DEFAULT_BITRATE_BPS` in config
+- Added rationale comments to `TCP_INCOMING_CAPACITY`, `TCP_OUTGOING_CAPACITY`, and `EVENT_CHANNEL_CAPACITY`
+- Simplified imports across 13 files to use crate-root re-exports for `Direction` and `DestinationType`
+
 ## [0.5.10] - 2026-02-12
 
 ### Changed
@@ -623,7 +635,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Transport layer (routing, paths, deduplication)
 - Full interoperability with Python rnsd
 
-[Unreleased]: https://codeberg.org/Lew_Palm/leviculum/compare/v0.5.9...HEAD
+[Unreleased]: https://codeberg.org/Lew_Palm/leviculum/compare/v0.5.11...HEAD
+[0.5.11]: https://codeberg.org/Lew_Palm/leviculum/compare/v0.5.10...v0.5.11
+[0.5.10]: https://codeberg.org/Lew_Palm/leviculum/compare/v0.5.9...v0.5.10
 [0.5.9]: https://codeberg.org/Lew_Palm/leviculum/compare/v0.5.8...v0.5.9
 [0.5.8]: https://codeberg.org/Lew_Palm/leviculum/compare/v0.5.7...v0.5.8
 [0.5.7]: https://codeberg.org/Lew_Palm/leviculum/compare/v0.5.6...v0.5.7

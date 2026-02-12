@@ -9,14 +9,13 @@ use tokio::time::timeout;
 
 use reticulum_core::constants::{MTU, TRUNCATED_HASHBYTES};
 use reticulum_core::crypto::truncated_hash;
-use reticulum_core::destination::{Destination, DestinationType, Direction};
 use reticulum_core::identity::Identity;
 use reticulum_core::link::{Link, LinkId};
 use reticulum_core::packet::{
     HeaderType, Packet, PacketContext, PacketData, PacketFlags, PacketType, TransportType,
 };
 use reticulum_core::traits::Clock;
-use reticulum_core::DestinationHash;
+use reticulum_core::{Destination, DestinationHash, DestinationType, Direction};
 use reticulum_std::interfaces::hdlc::{frame, DeframeResult, Deframer};
 
 // =========================================================================

@@ -194,7 +194,7 @@ proptest! {
     ) {
         let identity = new_identity();
 
-        let ciphertext = identity.encrypt(&plaintext, &mut OsRng);
+        let ciphertext = identity.encrypt(&plaintext, &mut OsRng).unwrap();
         let decrypted = identity.decrypt(&ciphertext).unwrap();
 
         prop_assert_eq!(decrypted, plaintext);
@@ -217,7 +217,7 @@ proptest! {
         let alice = new_identity();
         let bob = new_identity();
 
-        let ciphertext = alice.encrypt(&plaintext, &mut OsRng);
+        let ciphertext = alice.encrypt(&plaintext, &mut OsRng).unwrap();
         let result = bob.decrypt(&ciphertext);
 
         prop_assert!(result.is_err());
@@ -242,8 +242,8 @@ proptest! {
     ) {
         let identity = new_identity();
 
-        let ct1 = identity.encrypt(&plaintext, &mut OsRng);
-        let ct2 = identity.encrypt(&plaintext, &mut OsRng);
+        let ct1 = identity.encrypt(&plaintext, &mut OsRng).unwrap();
+        let ct2 = identity.encrypt(&plaintext, &mut OsRng).unwrap();
 
         // Ciphertexts should be different (different ephemeral keys)
         prop_assert!(ct1 != ct2);

@@ -11,10 +11,9 @@ use std::time::Instant;
 use sha2::{Digest, Sha256};
 use tokio::sync::Notify;
 
-use reticulum_core::destination::{DestinationType, Direction};
 use reticulum_core::link::LinkId;
 use reticulum_core::node::NodeEvent;
-use reticulum_core::{Destination, DestinationHash, Identity};
+use reticulum_core::{Destination, DestinationHash, DestinationType, Direction, Identity};
 use reticulum_std::driver::{ConnectionStream, ReticulumNodeBuilder};
 
 // ─── Message Format ──────────────────────────────────────────────────────────

@@ -78,7 +78,9 @@ pub type StdNodeCore = NodeCore<rand_core::OsRng, SystemClock, Storage>;
 /// Alias for `ReticulumNode` (preserves backward compatibility)
 pub type ReticulumNode = ReticulumNodeImpl;
 
-/// Event channel capacity
+/// Event channel capacity for NodeEvent delivery to the application.
+/// Must be large enough that slow consumers don't block the event loop.
+/// Not yet tuned — chosen empirically during initial development.
 const EVENT_CHANNEL_CAPACITY: usize = 256;
 
 /// Event received from any interface

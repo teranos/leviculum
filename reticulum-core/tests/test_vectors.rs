@@ -330,7 +330,9 @@ fn test_identity_encrypt_deterministic() {
     let ephemeral_arr: [u8; 32] = ephemeral_private.try_into().unwrap();
     let iv_arr: [u8; 16] = iv.try_into().unwrap();
 
-    let ciphertext = identity.encrypt_with_keys(&plaintext, &ephemeral_arr, &iv_arr);
+    let ciphertext = identity
+        .encrypt_with_keys(&plaintext, &ephemeral_arr, &iv_arr)
+        .unwrap();
 
     assert_eq!(
         hex::encode(&ciphertext),
@@ -392,7 +394,7 @@ fn test_encrypt_decrypt_roundtrip() {
     let identity = Identity::generate(&mut OsRng);
     let plaintext = b"Hello, this is a test message for roundtrip encryption!";
 
-    let ciphertext = identity.encrypt(plaintext, &mut OsRng);
+    let ciphertext = identity.encrypt(plaintext, &mut OsRng).unwrap();
     let decrypted = identity.decrypt(&ciphertext).unwrap();
 
     assert_eq!(decrypted, plaintext);
@@ -403,11 +405,11 @@ fn test_encrypt_decrypt_roundtrip() {
 // ==========================================================
 
 use reticulum_core::constants::TRUNCATED_HASHBYTES;
-use reticulum_core::destination::DestinationType;
 use reticulum_core::link::Link;
 use reticulum_core::packet::{
     HeaderType, Packet, PacketContext, PacketData, PacketFlags, PacketType, TransportType,
 };
+use reticulum_core::DestinationType;
 
 fn load_all_vectors() -> TestVectors {
     let path = concat!(
