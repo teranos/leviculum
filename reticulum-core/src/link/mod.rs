@@ -696,6 +696,16 @@ impl Link {
         self.dest_signing_key = Some(key);
     }
 
+    /// Get the signing key for data/channel proof generation.
+    ///
+    /// Returns `dest_signing_key` (the destination identity key) for the
+    /// responder, or the link's own ephemeral `signing_key` for the initiator.
+    /// Matches Python's `Link.sig_prv` which is identity-based for responders
+    /// and ephemeral for initiators.
+    pub fn proof_signing_key(&self) -> Option<&ed25519_dalek::SigningKey> {
+        self.dest_signing_key.as_ref().or(self.signing_key.as_ref())
+    }
+
     /// Get the interface this link is attached to
     pub fn attached_interface(&self) -> Option<usize> {
         self.attached_interface

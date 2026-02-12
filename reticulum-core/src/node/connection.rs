@@ -150,6 +150,11 @@ impl Connection {
         })
     }
 
+    /// Get a reference to the channel if it exists
+    pub fn channel(&self) -> Option<&Channel> {
+        self.channel.as_ref()
+    }
+
     /// Get a mutable reference to the channel if it exists
     pub fn channel_mut(&mut self) -> Option<&mut Channel> {
         self.channel.as_mut()

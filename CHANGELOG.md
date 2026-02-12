@@ -5,6 +5,23 @@ All notable changes to this project will be documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.5.9] - 2026-02-12
+
+### Fixed
+- **Channel data proofs silently not generated (responder)** — `accept_link()` gated signing key storage on `proof_strategy != ProofStrategy::None`, but channel proofs are unconditional (Python Link.py:1173). Since the default proof strategy is `None`, the signing key was never stored and channel proofs were silently skipped. Now always stores the signing key regardless of proof strategy.
+- **Channel data proofs silently not generated (initiator)** — all three proof generation sites only checked `dest_signing_key()`, which is only set for responders. Initiators have an ephemeral `signing_key` (matching Python's `Link.sig_prv`) that was never consulted. Added `Link::proof_signing_key()` which returns `dest_signing_key` for responders or ephemeral `signing_key` for initiators.
+- **Connection stats showed window=0** — `connection_stats()` read the channel window from `LinkManager::channel()` (the inbound/receive-side channel) instead of `Connection::channel()` (the outbound/send-side channel where `mark_delivered` grows the window). Now reads from the correct send-side channel.
+- **Selftest final window always 0** — window stats were captured after `close_connection()` destroyed the connection. Now captures stats before closing.
+
+### Changed
+- `lrns selftest` no longer reports receipt counts (was always 0 and confusing — receipts are internal to the proof chain, not user-visible)
+- `ConnectionStats` no longer includes `data_receipts_count` field
+
+### Added
+- `Link::proof_signing_key()` — returns the correct signing key for proof generation on both initiator and responder sides
+- `Connection::channel()` immutable accessor for reading channel state without mutation
+- Improved channel proof instrumentation — log moved inside success path with proof length, else branches added for missing signing key and build failure
+
 ## [0.5.8] - 2026-02-12
 
 ### Fixed
@@ -591,7 +608,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Transport layer (routing, paths, deduplication)
 - Full interoperability with Python rnsd
 
-[Unreleased]: https://codeberg.org/Lew_Palm/leviculum/compare/v0.5.8...HEAD
+[Unreleased]: https://codeberg.org/Lew_Palm/leviculum/compare/v0.5.9...HEAD
+[0.5.9]: https://codeberg.org/Lew_Palm/leviculum/compare/v0.5.8...v0.5.9
 [0.5.8]: https://codeberg.org/Lew_Palm/leviculum/compare/v0.5.7...v0.5.8
 [0.5.7]: https://codeberg.org/Lew_Palm/leviculum/compare/v0.5.6...v0.5.7
 [0.5.6]: https://codeberg.org/Lew_Palm/leviculum/compare/v0.5.5...v0.5.6

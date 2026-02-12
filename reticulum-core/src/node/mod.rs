@@ -137,8 +137,6 @@ pub struct ConnectionStats {
     pub window: usize,
     /// Maximum channel window size
     pub window_max: usize,
-    /// Number of pending data receipts across all links
-    pub data_receipts_count: usize,
 }
 
 /// The unified Reticulum node - combines Transport + LinkManager
@@ -859,12 +857,11 @@ impl<R: CryptoRngCore, C: Clock, S: Storage> NodeCore<R, C, S> {
     /// Returns channel and receipt stats useful for monitoring connection health.
     pub fn connection_stats(&self, link_id: &LinkId) -> Option<ConnectionStats> {
         let conn = self.connections.get(link_id)?;
-        let ch = self.link_manager.channel(link_id);
+        let ch = conn.channel();
         Some(ConnectionStats {
             tx_ring_size: conn.outstanding_messages(),
             window: ch.map(|c| c.window()).unwrap_or(0),
             window_max: ch.map(|c| c.window_max()).unwrap_or(0),
-            data_receipts_count: self.link_manager.data_receipts_count(),
         })
     }
 

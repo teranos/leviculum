@@ -295,12 +295,12 @@ impl LinkManager {
             return Err(LinkError::InvalidState);
         }
 
-        // Store proof strategy and signing key on the link itself
+        // Store proof strategy and signing key on the link itself.
+        // Always store signing key — channel proofs are unconditional (Python Link.py:1173)
+        // and need the key even when proof_strategy is None for regular data.
         link.set_proof_strategy(proof_strategy);
-        if proof_strategy != ProofStrategy::None {
-            if let Some(sk) = identity.ed25519_signing_key() {
-                link.set_dest_signing_key(sk.clone());
-            }
+        if let Some(sk) = identity.ed25519_signing_key() {
+            link.set_dest_signing_key(sk.clone());
         }
 
         // Build the proof packet (this also derives the link key)
@@ -421,7 +421,7 @@ impl LinkManager {
             return Err(LinkError::InvalidState);
         }
 
-        let signing_key = link.dest_signing_key().ok_or(LinkError::NoIdentity)?;
+        let signing_key = link.proof_signing_key().ok_or(LinkError::NoIdentity)?;
         link.build_data_proof_packet_with_signing_key(packet_hash, signing_key)
     }
 
@@ -1181,21 +1181,35 @@ impl LinkManager {
                 None => return,
             };
             let full_packet_hash = packet_hash(raw_packet);
-            tracing::debug!(
-                hash = %HexFmt(&full_packet_hash),
-                link = %HexFmt(link_id.as_bytes()),
-                raw_len = raw_packet.len(),
-                "link_mgr: generating channel proof"
-            );
-            if let Some(signing_key) = link.dest_signing_key() {
-                if let Ok(proof_packet) =
-                    link.build_data_proof_packet_with_signing_key(&full_packet_hash, signing_key)
+            if let Some(signing_key) = link.proof_signing_key() {
+                match link.build_data_proof_packet_with_signing_key(&full_packet_hash, signing_key)
                 {
-                    self.pending_packets.push(PendingPacket::Proof {
-                        link_id,
-                        data: proof_packet,
-                    });
+                    Ok(proof_packet) => {
+                        tracing::debug!(
+                            hash = %HexFmt(&full_packet_hash),
+                            link = %HexFmt(link_id.as_bytes()),
+                            proof_len = proof_packet.len(),
+                            "link_mgr: channel proof generated"
+                        );
+                        self.pending_packets.push(PendingPacket::Proof {
+                            link_id,
+                            data: proof_packet,
+                        });
+                    }
+                    Err(e) => {
+                        tracing::warn!(
+                            hash = %HexFmt(&full_packet_hash),
+                            link = %HexFmt(link_id.as_bytes()),
+                            error = %e,
+                            "link_mgr: channel proof build failed"
+                        );
+                    }
                 }
+            } else {
+                tracing::warn!(
+                    link = %HexFmt(link_id.as_bytes()),
+                    "link_mgr: channel proof skipped — no signing key"
+                );
             }
 
             return;
@@ -1224,7 +1238,7 @@ impl LinkManager {
                 match link.proof_strategy() {
                     ProofStrategy::All => {
                         // Automatically generate and queue proof using the link's signing key
-                        if let Some(signing_key) = link.dest_signing_key() {
+                        if let Some(signing_key) = link.proof_signing_key() {
                             if let Ok(proof_packet) = link.build_data_proof_packet_with_signing_key(
                                 &full_packet_hash,
                                 signing_key,
@@ -1676,7 +1690,8 @@ mod tests {
             .link(&pair_none.responder_link_id)
             .unwrap();
         assert_eq!(link_none.proof_strategy(), ProofStrategy::None);
-        assert!(link_none.dest_signing_key().is_none());
+        // Signing key is always stored (needed for unconditional channel proofs)
+        assert!(link_none.dest_signing_key().is_some());
     }
 
     #[test]
@@ -1930,5 +1945,110 @@ mod tests {
             0,
             "Expired receipts should be removed during poll"
         );
+    }
+
+    #[test]
+    fn test_channel_proof_generated_with_proof_strategy_none() {
+        use crate::link::channel::ChannelError;
+
+        struct TestMsg(Vec<u8>);
+        impl Message for TestMsg {
+            const MSGTYPE: u16 = 0x0001;
+            fn pack(&self) -> Vec<u8> {
+                self.0.clone()
+            }
+            fn unpack(data: &[u8]) -> Result<Self, ChannelError> {
+                Ok(Self(data.to_vec()))
+            }
+        }
+
+        // Establish with ProofStrategy::None — the default for destinations
+        let mut pair = establish_link_pair(ProofStrategy::None);
+
+        // Signing key must be present even with ProofStrategy::None
+        let link = pair.responder.link(&pair.responder_link_id).unwrap();
+        assert!(
+            link.dest_signing_key().is_some(),
+            "dest_signing_key must always be stored for channel proofs"
+        );
+
+        // Send a channel message from initiator
+        let channel_packet = pair
+            .initiator
+            .channel_send(
+                &pair.initiator_link_id,
+                &TestMsg(b"hello channel".to_vec()),
+                &mut OsRng,
+                pair.now_ms,
+            )
+            .unwrap();
+
+        // Process channel data on responder
+        let packet = Packet::unpack(&channel_packet).unwrap();
+        pair.responder
+            .process_packet(&packet, &channel_packet, &mut OsRng, pair.now_ms, 0);
+
+        // Responder must have generated a proof packet
+        let proofs = pair.responder.drain_proof_packets();
+        assert_eq!(
+            proofs.len(),
+            1,
+            "Channel proof must be generated even with ProofStrategy::None"
+        );
+        assert_eq!(proofs[0].0, pair.responder_link_id);
+    }
+
+    #[test]
+    fn test_channel_proof_generated_by_initiator() {
+        use crate::link::channel::ChannelError;
+
+        struct TestMsg(Vec<u8>);
+        impl Message for TestMsg {
+            const MSGTYPE: u16 = 0x0001;
+            fn pack(&self) -> Vec<u8> {
+                self.0.clone()
+            }
+            fn unpack(data: &[u8]) -> Result<Self, ChannelError> {
+                Ok(Self(data.to_vec()))
+            }
+        }
+
+        let mut pair = establish_link_pair(ProofStrategy::None);
+
+        // Initiator has no dest_signing_key but has ephemeral signing_key
+        let link = pair.initiator.link(&pair.initiator_link_id).unwrap();
+        assert!(
+            link.dest_signing_key().is_none(),
+            "initiator should not have dest_signing_key"
+        );
+        assert!(
+            link.proof_signing_key().is_some(),
+            "initiator must have proof_signing_key (ephemeral)"
+        );
+
+        // Send a channel message from responder to initiator
+        let channel_packet = pair
+            .responder
+            .channel_send(
+                &pair.responder_link_id,
+                &TestMsg(b"hello from responder".to_vec()),
+                &mut OsRng,
+                pair.now_ms,
+            )
+            .unwrap();
+
+        // Process channel data on initiator
+        let packet = Packet::unpack(&channel_packet).unwrap();
+        pair.initiator
+            .process_packet(&packet, &channel_packet, &mut OsRng, pair.now_ms, 0);
+
+        // Initiator must have generated a proof using its ephemeral signing key
+        let proofs = pair.initiator.drain_proof_packets();
+        assert_eq!(
+            proofs.len(),
+            1,
+            "Initiator must generate channel proof using ephemeral signing key"
+        );
+        assert_eq!(proofs[0].0, pair.initiator_link_id);
     }
 }

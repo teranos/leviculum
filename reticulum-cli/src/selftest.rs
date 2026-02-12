@@ -83,7 +83,6 @@ struct SelftestStats {
     rtt_samples: Vec<u64>,
     stale_count: u64,
     recovered_count: u64,
-    receipts_snapshots: Vec<(u64, usize)>,
 }
 
 impl SelftestStats {
@@ -107,7 +106,6 @@ impl SelftestStats {
             rtt_samples: Vec::new(),
             stale_count: 0,
             recovered_count: 0,
-            receipts_snapshots: Vec::new(),
         }
     }
 }
@@ -634,24 +632,9 @@ pub async fn run_selftest(
             let total_sent = st.sent_a + st.sent_b;
             drop(st);
 
-            // Snapshot receipts
-            if let Some(cs) = node_a.connection_stats(&link_id) {
-                let now_ms = start_time.elapsed().as_millis() as u64;
-                state
-                    .stats
-                    .lock()
-                    .unwrap()
-                    .receipts_snapshots
-                    .push((now_ms, cs.data_receipts_count));
-            }
-
             let win = node_a
                 .connection_stats(&link_id)
                 .map(|s| s.window)
-                .unwrap_or(0);
-            let rcpts = node_a
-                .connection_stats(&link_id)
-                .map(|s| s.data_receipts_count)
                 .unwrap_or(0);
 
             // Check progress
@@ -673,7 +656,7 @@ pub async fn run_selftest(
             }
 
             println!(
-                "[selftest]   +{elapsed_checks}s:  sent={total_sent}  recv={}  ack={}  fails={fails}  win={win}  rcpts={rcpts} — {status}",
+                "[selftest]   +{elapsed_checks}s:  sent={total_sent}  recv={}  ack={}  fails={fails}  win={win} — {status}",
                 recv_a + recv_b,
                 conf_a + conf_b,
             );
@@ -721,6 +704,16 @@ pub async fn run_selftest(
     // Give burst acks time to arrive
     tokio::time::sleep(std::time::Duration::from_secs(2)).await;
 
+    // Capture window stats before closing (connection is destroyed on close)
+    let final_win = node_a
+        .connection_stats(&link_id)
+        .map(|s| s.window)
+        .unwrap_or(0);
+    let final_win_max = node_a
+        .connection_stats(&link_id)
+        .map(|s| s.window_max)
+        .unwrap_or(0);
+
     // Close from B side
     if let Err(e) = node_b.close_connection(stream_b.link_id()).await {
         eprintln!("[selftest] close B: {e}");
@@ -736,8 +729,6 @@ pub async fn run_selftest(
         total_fails,
         recv_pct,
         conf_pct,
-        receipt_leak,
-        peak_rcpts,
         stale_count,
         recovered_count,
         corrupt,
@@ -762,15 +753,6 @@ pub async fn run_selftest(
             0.0
         };
 
-        let snapshots = &st.receipts_snapshots;
-        let receipt_leak = if snapshots.len() >= 5 {
-            let last5 = &snapshots[snapshots.len() - 5..];
-            last5.windows(2).all(|w| w[1].1 >= w[0].1) && last5.last().map(|s| s.1).unwrap_or(0) > 0
-        } else {
-            false
-        };
-
-        let peak_rcpts = snapshots.iter().map(|s| s.1).max().unwrap_or(0);
         let stale_count = st.stale_count;
         let recovered_count = st.recovered_count;
         let corrupt = st.corrupt;
@@ -787,9 +769,6 @@ pub async fn run_selftest(
         }
         if stale_count > 0 && recovered_count < stale_count {
             warnings.push(format!("stale={stale_count} recovered={recovered_count}"));
-        }
-        if receipt_leak {
-            warnings.push("data_receipts monotonically growing (possible leak)".to_string());
         }
         if corrupt > 0 {
             warnings.push(format!("corrupt={corrupt}"));
@@ -809,8 +788,6 @@ pub async fn run_selftest(
             total_fails,
             recv_pct,
             conf_pct,
-            receipt_leak,
-            peak_rcpts,
             stale_count,
             recovered_count,
             corrupt,
@@ -819,19 +796,6 @@ pub async fn run_selftest(
             verdict,
         )
     };
-
-    let final_rcpts = node_a
-        .connection_stats(&link_id)
-        .map(|s| s.data_receipts_count)
-        .unwrap_or(0);
-    let final_win = node_a
-        .connection_stats(&link_id)
-        .map(|s| s.window)
-        .unwrap_or(0);
-    let final_win_max = node_a
-        .connection_stats(&link_id)
-        .map(|s| s.window_max)
-        .unwrap_or(0);
 
     let total_time = start_time.elapsed();
 
@@ -847,10 +811,6 @@ pub async fn run_selftest(
     println!("[selftest]  Integrity:     corrupt={corrupt} out_of_order={oo} duplicates={dupes}");
     println!("[selftest]  Send fails:    {total_fails} WindowFull");
     println!("[selftest]  Window:        final={final_win} (max={final_win_max})");
-    println!(
-        "[selftest]  Receipts:      final={final_rcpts} peak={peak_rcpts} ({})",
-        if receipt_leak { "LEAK" } else { "no leak" }
-    );
     println!("[selftest]  Link events:   stale={stale_count} recovered={recovered_count}");
     if !warnings.is_empty() {
         for w in &warnings {
