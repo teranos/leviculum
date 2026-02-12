@@ -595,10 +595,6 @@ async fn event_loop(
             }
 
             NodeEvent::DataReceived { link_id: _, data } => {
-                // Note: DataReceived is delivered to BOTH event_rx and the
-                // ConnectionStream's internal incoming_rx. Since nobody calls
-                // stream.recv() in this CLI, the stream's channel (capacity 64)
-                // fills up silently. This is acceptable — 64 × ≤458 bytes ≈ 29 KB.
                 let text = String::from_utf8_lossy(&data);
                 format!("[received] {text}")
             }

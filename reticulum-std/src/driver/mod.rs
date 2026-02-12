@@ -50,9 +50,8 @@ mod builder;
 mod stream;
 
 pub use builder::ReticulumNodeBuilder;
-pub use stream::{ConnectionSender, ConnectionStream};
+pub use stream::ConnectionStream;
 
-use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 use std::task::Poll;
 use std::time::Duration;
@@ -82,12 +81,6 @@ pub type ReticulumNode = ReticulumNodeImpl;
 /// Event channel capacity
 const EVENT_CHANNEL_CAPACITY: usize = 256;
 
-/// Connection channel capacity
-const CONNECTION_CHANNEL_CAPACITY: usize = 64;
-
-/// Map from link ID to the channel for delivering incoming data to the connection stream
-type ConnectionMap = HashMap<LinkId, mpsc::Sender<Vec<u8>>>;
-
 /// Event received from any interface
 enum RecvEvent {
     /// A complete packet from an interface
@@ -114,8 +107,6 @@ pub struct ReticulumNodeImpl {
     shutdown_tx: Option<watch::Sender<bool>>,
     /// Runner task handle
     runner_handle: Option<tokio::task::JoinHandle<()>>,
-    /// Active connection streams (link_id -> incoming data sender)
-    connections: Arc<Mutex<ConnectionMap>>,
     /// Shared outgoing channel sender (cloned to each ConnectionStream)
     outgoing_tx: mpsc::Sender<(LinkId, Vec<u8>)>,
     /// Channel for dispatching TickOutput from outside the event loop
@@ -138,7 +129,6 @@ impl ReticulumNodeImpl {
             event_rx: Some(event_rx),
             shutdown_tx: None,
             runner_handle: None,
-            connections: Arc::new(Mutex::new(HashMap::new())),
             outgoing_tx,
             action_dispatch_tx,
         }
@@ -175,7 +165,6 @@ impl ReticulumNodeImpl {
         // Clone handles for the runner
         let inner = Arc::clone(&self.inner);
         let event_tx = self.event_tx.clone();
-        let connections = Arc::clone(&self.connections);
 
         // Spawn the runner
         let runner_handle = tokio::spawn(async move {
@@ -183,7 +172,6 @@ impl ReticulumNodeImpl {
                 inner,
                 registry,
                 event_tx,
-                connections,
                 outgoing_rx,
                 action_dispatch_rx,
                 shutdown_rx,
@@ -308,20 +296,7 @@ impl ReticulumNodeImpl {
             .await
             .map_err(|_| Error::Transport("event loop shut down".to_string()))?;
 
-        // Create incoming channel (per-connection)
-        let (in_tx, in_rx) = mpsc::channel(CONNECTION_CHANNEL_CAPACITY);
-
-        // Register the connection channels
-        {
-            let mut connections = self.connections.lock().unwrap();
-            connections.insert(link_id, in_tx);
-        }
-
-        Ok(ConnectionStream::new(
-            link_id,
-            self.outgoing_tx.clone(),
-            in_rx,
-        ))
+        Ok(ConnectionStream::new(link_id, self.outgoing_tx.clone()))
     }
 
     /// Accept an incoming connection request
@@ -345,17 +320,7 @@ impl ReticulumNodeImpl {
             .await
             .map_err(|_| Error::Transport("event loop shut down".to_string()))?;
 
-        let (in_tx, in_rx) = mpsc::channel(CONNECTION_CHANNEL_CAPACITY);
-        {
-            let mut connections = self.connections.lock().unwrap();
-            connections.insert(*link_id, in_tx);
-        }
-
-        Ok(ConnectionStream::new(
-            *link_id,
-            self.outgoing_tx.clone(),
-            in_rx,
-        ))
+        Ok(ConnectionStream::new(*link_id, self.outgoing_tx.clone()))
     }
 
     /// Take the event receiver
@@ -439,11 +404,6 @@ impl ReticulumNodeImpl {
             let mut inner = self.inner.lock().unwrap();
             inner.close_connection(link_id)
         };
-        // Remove from connection map
-        {
-            let mut connections = self.connections.lock().unwrap();
-            connections.remove(link_id);
-        }
         self.action_dispatch_tx
             .send(output)
             .await
@@ -509,7 +469,6 @@ async fn run_event_loop(
     inner: Arc<Mutex<StdNodeCore>>,
     mut registry: InterfaceRegistry,
     event_tx: mpsc::Sender<NodeEvent>,
-    connections: Arc<Mutex<ConnectionMap>>,
     mut outgoing_rx: mpsc::Receiver<(LinkId, Vec<u8>)>,
     mut action_dispatch_rx: mpsc::Receiver<TickOutput>,
     mut shutdown: watch::Receiver<bool>,
@@ -544,7 +503,6 @@ async fn run_event_loop(
                             output,
                             &registry,
                             &event_tx,
-                            &connections,
                         );
                     }
                     RecvEvent::Disconnected(iface_id) => {
@@ -557,7 +515,6 @@ async fn run_event_loop(
                             output,
                             &registry,
                             &event_tx,
-                            &connections,
                         );
                         registry.remove(iface_id);
                     }
@@ -594,7 +551,6 @@ async fn run_event_loop(
                     combined,
                     &registry,
                     &event_tx,
-                    &connections,
                 );
             }
 
@@ -605,7 +561,6 @@ async fn run_event_loop(
                     output,
                     &registry,
                     &event_tx,
-                    &connections,
                 );
             }
 
@@ -619,7 +574,6 @@ async fn run_event_loop(
                     output,
                     &registry,
                     &event_tx,
-                    &connections,
                 );
             }
 
@@ -639,7 +593,6 @@ fn dispatch_output(
     output: TickOutput,
     registry: &InterfaceRegistry,
     event_tx: &mpsc::Sender<NodeEvent>,
-    connections: &Arc<Mutex<ConnectionMap>>,
 ) {
     // Execute I/O actions
     for action in &output.actions {
@@ -667,52 +620,12 @@ fn dispatch_output(
         }
     }
 
-    // Forward events: handle internal routing and send to application
+    // Forward events to application (best effort — drop if full)
     for event in output.events {
-        handle_event(&event, connections);
-        // Forward to external event receiver (best effort — drop if full)
-        let _ = event_tx.try_send(event);
-    }
-}
-
-/// Handle a node event
-fn handle_event(event: &NodeEvent, connections: &Arc<Mutex<ConnectionMap>>) {
-    match event {
-        NodeEvent::ConnectionEstablished { link_id, .. } => {
+        if let NodeEvent::ConnectionEstablished { link_id, .. } = &event {
             tracing::debug!("Connection established: {:?}", link_id);
         }
-        NodeEvent::DataReceived { link_id, data } => {
-            // Forward data to the connection stream
-            let conns = connections.lock().unwrap();
-            if let Some(tx) = conns.get(link_id) {
-                if tx.try_send(data.clone()).is_err() {
-                    tracing::warn!(
-                        "Connection channel full for {:?}, dropping {} bytes",
-                        link_id,
-                        data.len()
-                    );
-                }
-            }
-        }
-        NodeEvent::MessageReceived { link_id, data, .. } => {
-            // Forward channel message data to the connection stream
-            let conns = connections.lock().unwrap();
-            if let Some(tx) = conns.get(link_id) {
-                if tx.try_send(data.clone()).is_err() {
-                    tracing::warn!(
-                        "Connection channel full for {:?}, dropping {} bytes",
-                        link_id,
-                        data.len()
-                    );
-                }
-            }
-        }
-        NodeEvent::ConnectionClosed { link_id, .. } => {
-            // Remove connection channels
-            let mut conns = connections.lock().unwrap();
-            conns.remove(link_id);
-        }
-        _ => {}
+        let _ = event_tx.try_send(event);
     }
 }
 

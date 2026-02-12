@@ -38,6 +38,57 @@ use tokio::sync::mpsc;
 
 use crate::harness::TestDaemon;
 
+/// Wait for a `DataReceived` or `MessageReceived` event for a specific link ID.
+/// Drains other events while waiting.
+async fn wait_for_data_event(
+    event_rx: &mut mpsc::Receiver<NodeEvent>,
+    link_id: &LinkId,
+    timeout: Duration,
+) -> Option<Vec<u8>> {
+    let deadline = tokio::time::Instant::now() + timeout;
+    loop {
+        let remaining = deadline - tokio::time::Instant::now();
+        if remaining.is_zero() {
+            return None;
+        }
+        match tokio::time::timeout(remaining, event_rx.recv()).await {
+            Ok(Some(NodeEvent::DataReceived { link_id: id, data })) if &id == link_id => {
+                return Some(data);
+            }
+            Ok(Some(NodeEvent::MessageReceived {
+                link_id: id, data, ..
+            })) if &id == link_id => {
+                return Some(data);
+            }
+            Ok(Some(_)) => continue,
+            Ok(None) | Err(_) => return None,
+        }
+    }
+}
+
+/// Wait for a `ConnectionClosed` event for a specific link ID.
+/// Drains other events while waiting.
+async fn wait_for_connection_closed_event(
+    event_rx: &mut mpsc::Receiver<NodeEvent>,
+    link_id: &LinkId,
+    timeout: Duration,
+) -> bool {
+    let deadline = tokio::time::Instant::now() + timeout;
+    loop {
+        let remaining = deadline - tokio::time::Instant::now();
+        if remaining.is_zero() {
+            return false;
+        }
+        match tokio::time::timeout(remaining, event_rx.recv()).await {
+            Ok(Some(NodeEvent::ConnectionClosed { link_id: id, .. })) if &id == link_id => {
+                return true;
+            }
+            Ok(Some(_)) => continue,
+            Ok(None) | Err(_) => return false,
+        }
+    }
+}
+
 // ── Helpers (duplicated from path_recovery_tests to avoid cross-module refactor) ──
 
 /// Decode a hex destination hash string into a DestinationHash.
@@ -252,20 +303,13 @@ async fn test_full_link_lifecycle_through_relay() {
         .await
         .expect("Failed to send Python→Rust");
 
-    let recv_result = tokio::time::timeout(Duration::from_secs(10), stream.recv()).await;
-    match recv_result {
-        Ok(Ok(Some(data))) => {
-            assert_eq!(
-                data, b"hello-from-python",
-                "Rust should receive exact data from Python"
-            );
-        }
-        Ok(Ok(None)) => panic!("stream.recv() returned None — connection closed unexpectedly"),
-        Ok(Err(e)) => panic!("stream.recv() returned error: {}", e),
-        Err(_) => {
-            panic!("stream.recv() timed out — Fix 1 (link-addressed Data delivery) not working")
-        }
-    }
+    let data = wait_for_data_event(&mut event_rx, stream.link_id(), Duration::from_secs(10))
+        .await
+        .expect("Should receive data from Python within 10s — Fix 1 (link-addressed Data delivery) not working");
+    assert_eq!(
+        data, b"hello-from-python",
+        "Rust should receive exact data from Python"
+    );
 
     // ── Phase 3: Channel ACK / Delivery Confirmation (proves Fix 2) ──────
 
@@ -332,7 +376,7 @@ async fn test_full_link_lifecycle_through_relay() {
     // Step 15: Establish a new link
     tokio::time::sleep(Duration::from_millis(500)).await;
 
-    let mut stream2 = rust_node
+    let stream2 = rust_node
         .connect(&dest_hash, &signing_key)
         .await
         .expect("Second connect() should succeed");
@@ -370,16 +414,13 @@ async fn test_full_link_lifecycle_through_relay() {
         .await
         .expect("Failed to send Python→Rust on second link");
 
-    let recv2 = tokio::time::timeout(Duration::from_secs(10), stream2.recv()).await;
-    match recv2 {
-        Ok(Ok(Some(data))) => {
-            assert_eq!(
-                data, b"link2-py-to-rust",
-                "Second link should carry data Python→Rust"
-            );
-        }
-        other => panic!("Second link recv failed: {:?}", other),
-    }
+    let data2 = wait_for_data_event(&mut event_rx, stream2.link_id(), Duration::from_secs(10))
+        .await
+        .expect("Should receive data from Python on second link within 10s");
+    assert_eq!(
+        data2, b"link2-py-to-rust",
+        "Second link should carry data Python→Rust"
+    );
 
     // Step 17: Python closes the link
     // Before Fix 1, the LINKCLOSE (a link-addressed Data packet with context=Linkclose)
@@ -390,17 +431,11 @@ async fn test_full_link_lifecycle_through_relay() {
         .await
         .expect("Failed to close link from Python");
 
-    // Step 18: stream2.recv() should return None within 5s
-    let remote_close = tokio::time::timeout(Duration::from_secs(5), stream2.recv()).await;
-    match remote_close {
-        Ok(Ok(None)) => { /* expected: remote close delivered */ }
-        Ok(Err(_)) => { /* also acceptable: I/O error on closed stream */ }
-        Ok(Ok(Some(data))) => panic!(
-            "stream2.recv() should return None after remote close, got {} bytes",
-            data.len()
-        ),
-        Err(_) => panic!("stream2.recv() timed out — Fix 1 not delivering LINKCLOSE packets"),
-    }
+    // Step 18: Should receive ConnectionClosed event within 5s
+    assert!(
+        wait_for_connection_closed_event(&mut event_rx, stream2.link_id(), Duration::from_secs(5)).await,
+        "Should receive ConnectionClosed event after Python closes link — Fix 1 not delivering LINKCLOSE packets"
+    );
 
     // Clean up
     rust_node.stop().await.expect("Failed to stop Rust node");

@@ -28,6 +28,34 @@ use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpStream;
 use tokio::sync::mpsc;
 
+/// Wait for a `DataReceived` or `MessageReceived` event for a specific link ID.
+/// Drains other events while waiting.
+async fn wait_for_data_event(
+    event_rx: &mut mpsc::Receiver<NodeEvent>,
+    link_id: &LinkId,
+    timeout: Duration,
+) -> Option<Vec<u8>> {
+    let deadline = tokio::time::Instant::now() + timeout;
+    loop {
+        let remaining = deadline - tokio::time::Instant::now();
+        if remaining.is_zero() {
+            return None;
+        }
+        match tokio::time::timeout(remaining, event_rx.recv()).await {
+            Ok(Some(NodeEvent::DataReceived { link_id: id, data })) if &id == link_id => {
+                return Some(data);
+            }
+            Ok(Some(NodeEvent::MessageReceived {
+                link_id: id, data, ..
+            })) if &id == link_id => {
+                return Some(data);
+            }
+            Ok(Some(_)) => continue,
+            Ok(None) | Err(_) => return None,
+        }
+    }
+}
+
 use reticulum_core::destination::{Destination, DestinationType, Direction};
 use reticulum_core::identity::Identity;
 use reticulum_core::link::LinkId;
@@ -218,19 +246,14 @@ async fn test_rust_node_as_responder() {
         .await
         .expect("Python send_on_link should succeed");
 
-    let recv_result = tokio::time::timeout(Duration::from_secs(10), stream.recv()).await;
-    match recv_result {
-        Ok(Ok(Some(data))) => {
-            assert_eq!(
-                data, b"hello-from-python-initiator",
-                "Rust should receive exact data from Python"
-            );
-            eprintln!("Rust received Python→Rust data: OK");
-        }
-        Ok(Ok(None)) => panic!("stream.recv() returned None — connection closed unexpectedly"),
-        Ok(Err(e)) => panic!("stream.recv() returned error: {}", e),
-        Err(_) => panic!("stream.recv() timed out — DataReceived routing not working"),
-    }
+    let data = wait_for_data_event(&mut event_rx, &req_link_id, Duration::from_secs(10))
+        .await
+        .expect("Should receive DataReceived from Python within 10s");
+    assert_eq!(
+        data, b"hello-from-python-initiator",
+        "Rust should receive exact data from Python"
+    );
+    eprintln!("Rust received Python→Rust data: OK");
 
     // Rust → Python (via Channel / send() — produces MessageReceived on receiver)
     // This is the key test for the MessageReceived routing fix: ConnectionStream::send()

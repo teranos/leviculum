@@ -1,75 +1,30 @@
-//! Async stream wrapper for Connections
+//! Send-only async stream wrapper for Connections
 //!
-//! Provides AsyncRead/AsyncWrite implementations for Connection.
+//! Provides AsyncWrite implementation for Connection. Data received on a
+//! connection is delivered exclusively via `NodeEvent` (DataReceived /
+//! MessageReceived) on the event channel — there is no per-stream incoming
+//! path.
 
 use std::io;
 use std::pin::Pin;
 use std::task::{Context, Poll};
 
-use tokio::io::{AsyncRead, AsyncWrite, ReadBuf};
+use tokio::io::AsyncWrite;
 use tokio::sync::mpsc;
 
 use reticulum_core::link::LinkId;
 
-/// A send-only handle for a [`ConnectionStream`].
+/// Async stream wrapper around a Connection (send-only)
 ///
-/// Obtained via [`ConnectionStream::sender()`]. Cheap to clone, allowing the
-/// full stream (with recv capability) to be moved into a separate task while
-/// the sender is used for writing from another task.
-///
-/// # Example
-///
-/// ```no_run
-/// # use reticulum_std::driver::ReticulumNodeBuilder;
-/// # async fn example() -> Result<(), Box<dyn std::error::Error>> {
-/// # let node = ReticulumNodeBuilder::new().build().await?;
-/// # let dest_hash = reticulum_core::DestinationHash::new([0; 16]);
-/// # let signing_key = [0u8; 32];
-/// let stream = node.connect(&dest_hash, &signing_key).await?;
-/// let sender = stream.sender();
-///
-/// // Move stream into a receive task
-/// tokio::spawn(async move {
-///     let mut s = stream;
-///     while let Ok(Some(data)) = s.recv().await {
-///         println!("Received {} bytes", data.len());
-///     }
-/// });
-///
-/// // Send from the current task
-/// sender.send(b"Hello!").await?;
-/// # Ok(())
-/// # }
-/// ```
-#[derive(Clone)]
-pub struct ConnectionSender {
-    link_id: LinkId,
-    outgoing_tx: mpsc::Sender<(LinkId, Vec<u8>)>,
-}
-
-impl ConnectionSender {
-    /// Get the link ID for this connection
-    pub fn link_id(&self) -> &LinkId {
-        &self.link_id
-    }
-
-    /// Send data on this connection
-    pub async fn send(&self, data: &[u8]) -> io::Result<()> {
-        self.outgoing_tx
-            .send((self.link_id, data.to_vec()))
-            .await
-            .map_err(|_| io::Error::new(io::ErrorKind::BrokenPipe, "send channel closed"))
-    }
-}
-
-/// Async stream wrapper around a Connection
-///
-/// ConnectionStream provides async read/write operations for a connection.
-/// It implements tokio's AsyncRead and AsyncWrite traits.
+/// ConnectionStream provides async write operations for a connection.
+/// It implements tokio's AsyncWrite trait.
 ///
 /// All outgoing data is tagged with the stream's `LinkId` and sent through
 /// a shared channel back to the event loop, which dispatches it to the
 /// appropriate link via `NodeCore::send_on_connection()`.
+///
+/// Incoming data is delivered via `NodeEvent::DataReceived` /
+/// `NodeEvent::MessageReceived` on the node's event channel.
 ///
 /// # Example
 ///
@@ -79,15 +34,12 @@ impl ConnectionSender {
 /// # let node = ReticulumNodeBuilder::new().build().await?;
 /// # let dest_hash = reticulum_core::DestinationHash::new([0; 16]);
 /// # let signing_key = [0u8; 32];
-/// let mut stream = node.connect(&dest_hash, &signing_key).await?;
+/// let stream = node.connect(&dest_hash, &signing_key).await?;
 ///
 /// // Write data
 /// stream.send(b"Hello!").await?;
 ///
-/// // Read response
-/// if let Some(data) = stream.recv().await? {
-///     println!("Received {} bytes", data.len());
-/// }
+/// // Read responses via node.take_event_receiver()
 /// # Ok(())
 /// # }
 /// ```
@@ -96,29 +48,16 @@ pub struct ConnectionStream {
     link_id: LinkId,
     /// Channel for outgoing data (shared, tagged with LinkId)
     outgoing_tx: mpsc::Sender<(LinkId, Vec<u8>)>,
-    /// Channel for incoming data
-    incoming_rx: mpsc::Receiver<Vec<u8>>,
-    /// Buffer for partial reads
-    read_buffer: Vec<u8>,
-    /// Current position in read buffer
-    read_pos: usize,
     /// Whether the stream is closed
     closed: bool,
 }
 
 impl ConnectionStream {
     /// Create a new ConnectionStream
-    pub(crate) fn new(
-        link_id: LinkId,
-        outgoing_tx: mpsc::Sender<(LinkId, Vec<u8>)>,
-        incoming_rx: mpsc::Receiver<Vec<u8>>,
-    ) -> Self {
+    pub(crate) fn new(link_id: LinkId, outgoing_tx: mpsc::Sender<(LinkId, Vec<u8>)>) -> Self {
         Self {
             link_id,
             outgoing_tx,
-            incoming_rx,
-            read_buffer: Vec::new(),
-            read_pos: 0,
             closed: false,
         }
     }
@@ -126,18 +65,6 @@ impl ConnectionStream {
     /// Get the link ID for this connection
     pub fn link_id(&self) -> &LinkId {
         &self.link_id
-    }
-
-    /// Create a send-only handle for this connection.
-    ///
-    /// The returned [`ConnectionSender`] is cheaply cloneable and can be used
-    /// from a different task, allowing the stream itself to be moved into a
-    /// receive-only task.
-    pub fn sender(&self) -> ConnectionSender {
-        ConnectionSender {
-            link_id: self.link_id,
-            outgoing_tx: self.outgoing_tx.clone(),
-        }
     }
 
     /// Check if the stream is closed
@@ -159,24 +86,6 @@ impl ConnectionStream {
             .map_err(|_| io::Error::new(io::ErrorKind::BrokenPipe, "send channel closed"))
     }
 
-    /// Receive data from this connection
-    ///
-    /// This is a convenience method that doesn't require polling.
-    /// Returns None if the connection is closed.
-    pub async fn recv(&mut self) -> io::Result<Option<Vec<u8>>> {
-        if self.closed {
-            return Ok(None);
-        }
-
-        match self.incoming_rx.recv().await {
-            Some(data) => Ok(Some(data)),
-            None => {
-                self.closed = true;
-                Ok(None)
-            }
-        }
-    }
-
     /// Close the stream gracefully, sending LINKCLOSE to the peer
     pub async fn close(&mut self) -> io::Result<()> {
         if self.closed {
@@ -186,55 +95,6 @@ impl ConnectionStream {
         // Signal close through outgoing channel (empty data = close)
         let _ = self.outgoing_tx.send((self.link_id, vec![])).await;
         Ok(())
-    }
-}
-
-impl AsyncRead for ConnectionStream {
-    fn poll_read(
-        mut self: Pin<&mut Self>,
-        cx: &mut Context<'_>,
-        buf: &mut ReadBuf<'_>,
-    ) -> Poll<io::Result<()>> {
-        // If we have buffered data, return it first
-        if self.read_pos < self.read_buffer.len() {
-            let remaining = &self.read_buffer[self.read_pos..];
-            let to_copy = remaining.len().min(buf.remaining());
-            buf.put_slice(&remaining[..to_copy]);
-            self.read_pos += to_copy;
-
-            // Clear buffer if fully consumed
-            if self.read_pos >= self.read_buffer.len() {
-                self.read_buffer.clear();
-                self.read_pos = 0;
-            }
-
-            return Poll::Ready(Ok(()));
-        }
-
-        if self.closed {
-            return Poll::Ready(Ok(())); // EOF
-        }
-
-        // Try to receive more data
-        match Pin::new(&mut self.incoming_rx).poll_recv(cx) {
-            Poll::Ready(Some(data)) => {
-                let to_copy = data.len().min(buf.remaining());
-                buf.put_slice(&data[..to_copy]);
-
-                // Buffer remaining if any
-                if to_copy < data.len() {
-                    self.read_buffer = data;
-                    self.read_pos = to_copy;
-                }
-
-                Poll::Ready(Ok(()))
-            }
-            Poll::Ready(None) => {
-                self.closed = true;
-                Poll::Ready(Ok(())) // EOF
-            }
-            Poll::Pending => Poll::Pending,
-        }
     }
 }
 
@@ -291,32 +151,25 @@ mod tests {
     use super::*;
 
     #[tokio::test]
-    async fn test_connection_stream_send_recv() {
+    async fn test_connection_stream_send() {
         let link_id = [0u8; 16];
         let (out_tx, mut out_rx) = mpsc::channel(16);
-        let (in_tx, in_rx) = mpsc::channel(16);
 
-        let mut stream = ConnectionStream::new(link_id.into(), out_tx, in_rx);
+        let stream = ConnectionStream::new(link_id.into(), out_tx);
 
         // Test send
         stream.send(b"hello").await.unwrap();
         let (recv_link_id, sent) = out_rx.recv().await.unwrap();
         assert_eq!(recv_link_id, LinkId::from(link_id));
         assert_eq!(sent, b"hello");
-
-        // Test recv
-        in_tx.send(b"world".to_vec()).await.unwrap();
-        let received = stream.recv().await.unwrap().unwrap();
-        assert_eq!(received, b"world");
     }
 
     #[tokio::test]
     async fn test_connection_stream_close() {
         let link_id = [0u8; 16];
         let (out_tx, mut out_rx) = mpsc::channel(16);
-        let (_in_tx, in_rx) = mpsc::channel(16);
 
-        let mut stream = ConnectionStream::new(link_id.into(), out_tx, in_rx);
+        let mut stream = ConnectionStream::new(link_id.into(), out_tx);
 
         assert!(!stream.is_closed());
         stream.close().await.unwrap();
@@ -330,22 +183,5 @@ mod tests {
         // Send should fail after close
         let result = stream.send(b"test").await;
         assert!(result.is_err());
-    }
-
-    #[tokio::test]
-    async fn test_connection_stream_recv_closed() {
-        let link_id = [0u8; 16];
-        let (out_tx, _out_rx) = mpsc::channel(16);
-        let (in_tx, in_rx) = mpsc::channel(16);
-
-        let mut stream = ConnectionStream::new(link_id.into(), out_tx, in_rx);
-
-        // Drop sender to close channel
-        drop(in_tx);
-
-        // Recv should return None
-        let result = stream.recv().await.unwrap();
-        assert!(result.is_none());
-        assert!(stream.is_closed());
     }
 }

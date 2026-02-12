@@ -39,6 +39,29 @@ use tokio::sync::mpsc;
 use crate::common::wait_for_path_on_daemon;
 use crate::harness::TestDaemon;
 
+/// Wait for a `ConnectionClosed` event for a specific link ID.
+/// Drains other events while waiting.
+async fn wait_for_connection_closed_event(
+    event_rx: &mut mpsc::Receiver<NodeEvent>,
+    link_id: &LinkId,
+    timeout: Duration,
+) -> bool {
+    let deadline = tokio::time::Instant::now() + timeout;
+    loop {
+        let remaining = deadline - tokio::time::Instant::now();
+        if remaining.is_zero() {
+            return false;
+        }
+        match tokio::time::timeout(remaining, event_rx.recv()).await {
+            Ok(Some(NodeEvent::ConnectionClosed { link_id: id, .. })) if &id == link_id => {
+                return true;
+            }
+            Ok(Some(_)) => continue,
+            Ok(None) | Err(_) => return false,
+        }
+    }
+}
+
 /// Helper: decode a hex destination hash string into a DestinationHash.
 fn parse_dest_hash(hex: &str) -> DestinationHash {
     let bytes: [u8; TRUNCATED_HASHBYTES] = hex::decode(hex).unwrap().try_into().unwrap();
@@ -258,19 +281,17 @@ async fn test_rust_node_path_recovery_on_link_timeout() {
     // Link request (HEADER_2) reaches Relay → forwarded to Dest.
     // Dest generates proof → Relay drops it (LRPROOF, context 0xFF).
     // No proof reaches Rust node → link stays pending → times out after ~30s.
-    let mut stream2 = rust_node
+    let stream2 = rust_node
         .connect(&dest_hash, &signing_key)
         .await
         .expect("connect() should return immediately (async link request)");
 
-    // Step 12: Wait for link timeout via stream.recv() returning None (~30s)
-    let recv_result = tokio::time::timeout(Duration::from_secs(45), stream2.recv()).await;
-    match recv_result {
-        Ok(Ok(None)) => { /* expected: connection closed after timeout */ }
-        Ok(Ok(Some(_))) => panic!("Should not receive data on timed-out link"),
-        Ok(Err(_)) => { /* also acceptable: I/O error on closed stream */ }
-        Err(_) => panic!("recv() should not hang — link timeout should fire within 45s"),
-    }
+    // Step 12: Wait for link timeout via ConnectionClosed event (~30s)
+    assert!(
+        wait_for_connection_closed_event(&mut event_rx, stream2.link_id(), Duration::from_secs(45))
+            .await,
+        "Should receive ConnectionClosed event — link timeout should fire within 45s"
+    );
 
     // Step 13: KEY ASSERTION — path should be gone.
     // TCP connection is alive → handle_interface_down() never fires.

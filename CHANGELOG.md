@@ -5,6 +5,21 @@ All notable changes to this project will be documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.5.10] - 2026-02-12
+
+### Changed
+- **Breaking: `ConnectionStream` is now send-only** — removed `ConnectionSender`, `ConnectionStream::recv()`, `ConnectionStream::sender()`, and `impl AsyncRead for ConnectionStream`. Data received on a connection is now delivered exclusively via `NodeEvent::DataReceived` / `NodeEvent::MessageReceived` on the event channel. The previous dual-delivery design (event channel + per-stream `incoming_rx`) caused silent "Connection channel full, dropping N bytes" warnings because consumers always used one path and left the other unread. Python Reticulum has exactly one delivery path per packet context — this change aligns with that.
+- Removed `ConnectionMap` and per-connection incoming channels from the driver event loop — no more `HashMap<LinkId, mpsc::Sender<Vec<u8>>>` in `ReticulumNodeImpl`
+- Interop tests now use `wait_for_data_event()` / `wait_for_connection_closed_event()` helpers on `event_rx` instead of `stream.recv()`
+- `lrns selftest` no longer needs drain tasks to prevent channel backpressure
+
+### Removed
+- `ConnectionSender` struct
+- `ConnectionStream::recv()`, `ConnectionStream::sender()` methods
+- `impl AsyncRead for ConnectionStream`
+- `CONNECTION_CHANNEL_CAPACITY` constant
+- `handle_event()` function in driver (was the incoming data router)
+
 ## [0.5.9] - 2026-02-12
 
 ### Fixed
