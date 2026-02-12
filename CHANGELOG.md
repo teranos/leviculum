@@ -5,6 +5,15 @@ All notable changes to this project will be documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.5.13] - 2026-02-13
+
+### Fixed
+- **`/peers` hop count always showing `?`** — `PathFound` events arrived before `AnnounceReceived` in the same batch, but the handler tried to update an entry that didn't exist yet. Fixed by creating the entry on `PathFound` if missing. Also changed `PathFound` to emit on every path update (not just new paths) so re-announces with changed hop counts are reflected.
+- **`/peers` garbled app_data display** — Python Reticulum apps (LXMF, Sideband, NomadNet) encode app_data as msgpack structures. Added a multi-strategy parser: scans fixarray elements and fixmap values for the longest valid UTF-8 text, unwraps top-level bin/str wrappers, and falls back to longest printable ASCII run for unknown formats. Pure binary data now shows empty instead of garbled replacement characters.
+
+### Added
+- 13 unit tests for `display_app_data` covering plain UTF-8, msgpack fixarray (bin8/fixstr/str8), fixmap value extraction, binary fallback, and embedded text extraction
+
 ## [0.5.12] - 2026-02-12
 
 ### Fixed
@@ -656,6 +665,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Full interoperability with Python rnsd
 
 [Unreleased]: https://codeberg.org/Lew_Palm/leviculum/compare/v0.5.12...HEAD
+[0.5.13]: https://codeberg.org/Lew_Palm/leviculum/compare/v0.5.12...v0.5.13
 [0.5.12]: https://codeberg.org/Lew_Palm/leviculum/compare/v0.5.11...v0.5.12
 [0.5.11]: https://codeberg.org/Lew_Palm/leviculum/compare/v0.5.10...v0.5.11
 [0.5.10]: https://codeberg.org/Lew_Palm/leviculum/compare/v0.5.9...v0.5.10

@@ -1183,7 +1183,6 @@ impl<C: Clock, S: Storage> Transport<C, S> {
         // - Equal or fewer hops: accept if emission timestamp is newer
         // - More hops: accept only if path is expired, emission is newer,
         //   or path is unresponsive with same emission (path recovery)
-        let is_new_path = !self.path_table.contains_key(&dest_hash);
         let should_update = if let Some(existing) = self.path_table.get(&dest_hash) {
             let announce_emitted = emission_from_random_hash(&random_hash);
             let path_timebase = max_emission_from_blobs(&existing.random_blobs);
@@ -1291,14 +1290,13 @@ impl<C: Clock, S: Storage> Transport<C, S> {
 
             self.stats.announces_processed += 1;
 
-            // Emit events
-            if is_new_path {
-                self.events.push(TransportEvent::PathFound {
-                    destination_hash: dest_hash,
-                    hops: packet.hops,
-                    interface_index,
-                });
-            }
+            // Emit events — PathFound on every update (not just new paths)
+            // so consumers always see current hop counts
+            self.events.push(TransportEvent::PathFound {
+                destination_hash: dest_hash,
+                hops: packet.hops,
+                interface_index,
+            });
 
             self.events.push(TransportEvent::AnnounceReceived {
                 announce,

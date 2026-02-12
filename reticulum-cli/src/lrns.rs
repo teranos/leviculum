@@ -41,6 +41,300 @@ fn hex_decode(s: &str) -> Result<Vec<u8>, String> {
         .collect()
 }
 
+/// Display app_data as a human-readable string.
+///
+/// Some Python Reticulum apps (LXMF, Sideband, NomadNet) encode app_data
+/// as a msgpack structure — typically `[display_name, stamp]` or
+/// `[stamp, display_name]`. This function tries to extract the display
+/// name from such structures, falling back to UTF-8 lossy conversion.
+fn display_app_data(data: &[u8]) -> String {
+    if data.is_empty() {
+        return String::new();
+    }
+    if let Some(s) = try_parse_app_data(data) {
+        return s;
+    }
+    // Unwrap a top-level msgpack str/bin wrapper and retry
+    if let Some((inner, _)) = read_msgpack_text(data) {
+        if !inner.is_empty() {
+            // Inner content is valid UTF-8 text — try parsing it as nested msgpack
+            if let Some(s) = try_parse_app_data(inner.as_bytes()) {
+                return s;
+            }
+            return inner;
+        }
+    } else if let Some((inner_bytes, _)) = read_msgpack_bin_raw(data) {
+        if let Some(s) = try_parse_app_data(inner_bytes) {
+            return s;
+        }
+    }
+    // Plain UTF-8
+    if let Ok(s) = core::str::from_utf8(data) {
+        return s.to_string();
+    }
+    // Last resort: find the longest printable ASCII run in raw bytes
+    longest_printable_run(data)
+}
+
+/// Try parsing data as a msgpack container (array or map) and extract the display name.
+fn try_parse_app_data(data: &[u8]) -> Option<String> {
+    if data.is_empty() {
+        return None;
+    }
+    // Try msgpack fixarray: 0x90..0x9f = array of 0..15 elements
+    if (data[0] & 0xf0) == 0x90 {
+        let count = (data[0] & 0x0f) as usize;
+        if count >= 1 {
+            if let Some(s) = find_display_name_in_elements(&data[1..], count) {
+                return Some(s);
+            }
+        }
+    }
+    // Try msgpack fixmap: 0x80..0x8f = map of 0..15 entries — scan values
+    if (data[0] & 0xf0) == 0x80 {
+        let count = (data[0] & 0x0f) as usize;
+        if count >= 1 {
+            if let Some(s) = find_display_name_in_map(&data[1..], count) {
+                return Some(s);
+            }
+        }
+    }
+    None
+}
+
+/// Read a msgpack bin element, returning raw bytes (not requiring UTF-8).
+fn read_msgpack_bin_raw(data: &[u8]) -> Option<(&[u8], &[u8])> {
+    let (&tag, rest) = data.split_first()?;
+    match tag {
+        0xc4 => {
+            let (&len, rest) = rest.split_first()?;
+            let len = len as usize;
+            Some((rest.get(..len)?, rest.get(len..)?))
+        }
+        0xc5 => {
+            if rest.len() < 2 {
+                return None;
+            }
+            let len = u16::from_be_bytes([rest[0], rest[1]]) as usize;
+            let rest = &rest[2..];
+            Some((rest.get(..len)?, rest.get(len..)?))
+        }
+        _ => None,
+    }
+}
+
+/// Scan `count` sequential msgpack elements for the best display name candidate.
+/// Returns the longest valid UTF-8 text found among str/bin elements.
+fn find_display_name_in_elements(mut data: &[u8], count: usize) -> Option<String> {
+    let mut best: Option<String> = None;
+
+    for _ in 0..count {
+        if data.is_empty() {
+            break;
+        }
+        // Try reading this element as text (str or bin that's valid UTF-8)
+        if let Some((text, rest)) = read_msgpack_text(data) {
+            if !text.is_empty() {
+                let dominated = best.as_ref().is_some_and(|b| b.len() >= text.len());
+                if !dominated {
+                    best = Some(text);
+                }
+            }
+            data = rest;
+        } else if let Some(rest) = skip_msgpack_element(data) {
+            data = rest;
+        } else {
+            break;
+        }
+    }
+    best
+}
+
+/// Scan a msgpack fixmap's values for the best display name candidate.
+/// Skips keys (short labels), only checks values for valid UTF-8 text.
+fn find_display_name_in_map(mut data: &[u8], count: usize) -> Option<String> {
+    let mut best: Option<String> = None;
+
+    for _ in 0..count {
+        if data.is_empty() {
+            break;
+        }
+        // Skip the key
+        if let Some(rest) = skip_msgpack_element(data) {
+            data = rest;
+        } else {
+            break;
+        }
+        if data.is_empty() {
+            break;
+        }
+        // Try reading the value as text
+        if let Some((text, rest)) = read_msgpack_text(data) {
+            if !text.is_empty() {
+                let dominated = best.as_ref().is_some_and(|b| b.len() >= text.len());
+                if !dominated {
+                    best = Some(text);
+                }
+            }
+            data = rest;
+        } else if let Some(rest) = skip_msgpack_element(data) {
+            data = rest;
+        } else {
+            break;
+        }
+    }
+    best
+}
+
+/// Find the longest run of printable ASCII (0x20..0x7e) in raw bytes.
+/// Returns the run if >= 3 characters, otherwise empty string.
+fn longest_printable_run(data: &[u8]) -> String {
+    let mut best_start = 0;
+    let mut best_len = 0;
+    let mut start = 0;
+    let mut len = 0;
+
+    for (i, &b) in data.iter().enumerate() {
+        if (0x20..=0x7e).contains(&b) {
+            if len == 0 {
+                start = i;
+            }
+            len += 1;
+        } else {
+            if len > best_len {
+                best_start = start;
+                best_len = len;
+            }
+            len = 0;
+        }
+    }
+    if len > best_len {
+        best_start = start;
+        best_len = len;
+    }
+
+    if best_len >= 3 {
+        // All bytes are 0x20-0x7e so this is valid ASCII/UTF-8
+        String::from_utf8_lossy(&data[best_start..best_start + best_len]).into_owned()
+    } else {
+        String::new()
+    }
+}
+
+/// Try to read a msgpack string or bin element as UTF-8 text.
+/// Returns (text, remaining_bytes) on success.
+fn read_msgpack_text(data: &[u8]) -> Option<(String, &[u8])> {
+    let (&tag, rest) = data.split_first()?;
+    let (bytes, remaining) = match tag {
+        // fixstr (0xa0..0xbf): length in lower 5 bits
+        0xa0..=0xbf => {
+            let len = (tag & 0x1f) as usize;
+            (rest.get(..len)?, rest.get(len..)?)
+        }
+        // str8 (0xd9): 1-byte length
+        0xd9 => {
+            let (&len, rest) = rest.split_first()?;
+            let len = len as usize;
+            (rest.get(..len)?, rest.get(len..)?)
+        }
+        // str16 (0xda): 2-byte length
+        0xda => {
+            if rest.len() < 2 {
+                return None;
+            }
+            let len = u16::from_be_bytes([rest[0], rest[1]]) as usize;
+            let rest = &rest[2..];
+            (rest.get(..len)?, rest.get(len..)?)
+        }
+        // bin8 (0xc4): 1-byte length — try as UTF-8
+        0xc4 => {
+            let (&len, rest) = rest.split_first()?;
+            let len = len as usize;
+            (rest.get(..len)?, rest.get(len..)?)
+        }
+        // bin16 (0xc5): 2-byte length — try as UTF-8
+        0xc5 => {
+            if rest.len() < 2 {
+                return None;
+            }
+            let len = u16::from_be_bytes([rest[0], rest[1]]) as usize;
+            let rest = &rest[2..];
+            (rest.get(..len)?, rest.get(len..)?)
+        }
+        _ => return None,
+    };
+    let text = core::str::from_utf8(bytes).ok()?;
+    Some((text.to_string(), remaining))
+}
+
+/// Skip one msgpack element, returning the remaining bytes.
+fn skip_msgpack_element(data: &[u8]) -> Option<&[u8]> {
+    let (&tag, rest) = data.split_first()?;
+    match tag {
+        // positive fixint (0x00..0x7f)
+        0x00..=0x7f => Some(rest),
+        // negative fixint (0xe0..0xff)
+        0xe0..=0xff => Some(rest),
+        // nil, false, true
+        0xc0..=0xc3 => Some(rest),
+        // fixstr (0xa0..0xbf)
+        0xa0..=0xbf => rest.get((tag & 0x1f) as usize..),
+        // fixmap (0x80..0x8f): skip 2*N elements
+        0x80..=0x8f => {
+            let count = ((tag & 0x0f) as usize) * 2;
+            let mut d = rest;
+            for _ in 0..count {
+                d = skip_msgpack_element(d)?;
+            }
+            Some(d)
+        }
+        // fixarray (0x90..0x9f): skip N elements
+        0x90..=0x9f => {
+            let count = (tag & 0x0f) as usize;
+            let mut d = rest;
+            for _ in 0..count {
+                d = skip_msgpack_element(d)?;
+            }
+            Some(d)
+        }
+        // bin8 (0xc4)
+        0xc4 => {
+            let (&len, rest) = rest.split_first()?;
+            rest.get(len as usize..)
+        }
+        // bin16 (0xc5)
+        0xc5 => {
+            if rest.len() < 2 {
+                return None;
+            }
+            let len = u16::from_be_bytes([rest[0], rest[1]]) as usize;
+            rest.get(2 + len..)
+        }
+        // str8 (0xd9)
+        0xd9 => {
+            let (&len, rest) = rest.split_first()?;
+            rest.get(len as usize..)
+        }
+        // str16 (0xda)
+        0xda => {
+            if rest.len() < 2 {
+                return None;
+            }
+            let len = u16::from_be_bytes([rest[0], rest[1]]) as usize;
+            rest.get(2 + len..)
+        }
+        // uint8, int8
+        0xcc | 0xd0 => rest.get(1..),
+        // uint16, int16
+        0xcd | 0xd1 => rest.get(2..),
+        // uint32, int32, float32
+        0xce | 0xd2 | 0xca => rest.get(4..),
+        // uint64, int64, float64
+        0xcf | 0xd3 | 0xcb => rest.get(8..),
+        _ => None,
+    }
+}
+
 #[derive(Parser, Debug)]
 #[command(name = "lrns")]
 #[command(author, version, about = "Reticulum command-line utility")]
@@ -628,7 +922,7 @@ async fn event_loop(
                 interface_index: _,
             } => {
                 let hash = hex_encode(announce.destination_hash().as_bytes());
-                let app_data = String::from_utf8_lossy(announce.app_data()).to_string();
+                let app_data = display_app_data(announce.app_data());
                 let public_key = *announce.public_key();
 
                 let mut st = state.lock().expect("lock poisoned");
@@ -655,9 +949,12 @@ async fn event_loop(
                 let hash = hex_encode(destination_hash.as_bytes());
 
                 let mut st = state.lock().expect("lock poisoned");
-                if let Some(info) = st.discovered.get_mut(&hash) {
-                    info.hops = Some(hops);
-                }
+                let info = st.discovered.entry(hash.clone()).or_insert(AnnounceInfo {
+                    app_data: String::new(),
+                    hops: None,
+                    public_key: [0u8; 64],
+                });
+                info.hops = Some(hops);
 
                 if !st.show_announces {
                     continue;
@@ -834,4 +1131,149 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_display_app_data_plain_utf8() {
+        assert_eq!(display_app_data(b"FK_Nomadek"), "FK_Nomadek");
+        assert_eq!(display_app_data(b"MNTL"), "MNTL");
+        assert_eq!(
+            display_app_data(b"g00n Cloud (Dallas)"),
+            "g00n Cloud (Dallas)"
+        );
+    }
+
+    #[test]
+    fn test_display_app_data_msgpack_bin8_then_fixstr() {
+        // msgpack: fixarray(2), bin8(len=2, [0xFF, 0xFE]), fixstr(len=5, "Hello")
+        let data = [
+            0x92, // fixarray(2)
+            0xc4, 0x02, 0xFF, 0xFE, // bin8, len=2, data
+            0xa5, b'H', b'e', b'l', b'l', b'o', // fixstr(5)
+        ];
+        assert_eq!(display_app_data(&data), "Hello");
+    }
+
+    #[test]
+    fn test_display_app_data_msgpack_bin8_then_str8() {
+        // msgpack: fixarray(2), bin8(len=1, [0xAA]), str8(len=4, "Test")
+        let data = [
+            0x92, // fixarray(2)
+            0xc4, 0x01, 0xAA, // bin8, len=1
+            0xd9, 0x04, b'T', b'e', b's', b't', // str8, len=4
+        ];
+        assert_eq!(display_app_data(&data), "Test");
+    }
+
+    #[test]
+    fn test_display_app_data_empty() {
+        assert_eq!(display_app_data(b""), "");
+    }
+
+    #[test]
+    fn test_display_app_data_msgpack_fallback_on_invalid() {
+        // Starts with 0x92 but structure is broken — should fall back
+        let data = [0x92, 0xFF];
+        let result = display_app_data(&data);
+        // Should not panic — 0xFF is negative fixint, not printable
+        assert!(result.is_empty());
+    }
+
+    #[test]
+    fn test_display_app_data_realistic_lxmf() {
+        // Simulates LXMF-style: [bin(18 bytes hash), str("Meteo Bot - MSG ME!")]
+        let name = b"Meteo Bot - MSG ME!";
+        let mut data = vec![0x92]; // fixarray(2)
+        data.push(0xc4); // bin8
+        data.push(18); // length
+        data.extend_from_slice(&[0x01; 18]); // 18 bytes of binary
+        data.push(0xa0 | (name.len() as u8)); // fixstr(19)
+        data.extend_from_slice(name);
+        assert_eq!(display_app_data(&data), "Meteo Bot - MSG ME!");
+    }
+
+    #[test]
+    fn test_display_app_data_name_in_first_element_bin8() {
+        // Real pattern: [bin8("screwpress"), bin8(binary_hash)]
+        // Display name is in the FIRST element as bin8 with valid UTF-8
+        let name = b"screwpress";
+        let mut data = vec![0x92]; // fixarray(2)
+        data.push(0xc4); // bin8
+        data.push(name.len() as u8);
+        data.extend_from_slice(name);
+        data.push(0xc4); // bin8
+        data.push(4); // short binary hash
+        data.extend_from_slice(&[0xFF, 0xFE, 0xFD, 0xFC]);
+        assert_eq!(display_app_data(&data), "screwpress");
+    }
+
+    #[test]
+    fn test_display_app_data_picks_longest_utf8() {
+        // Two valid UTF-8 strings — should pick the longer one
+        let mut data = vec![0x92]; // fixarray(2)
+        data.push(0xa2); // fixstr(2) "Hi"
+        data.extend_from_slice(b"Hi");
+        data.push(0xa5); // fixstr(5) "World"
+        data.extend_from_slice(b"World");
+        assert_eq!(display_app_data(&data), "World");
+    }
+
+    #[test]
+    fn test_display_app_data_fixmap_extracts_value() {
+        // fixmap(2): {"protocol": "rcav", "name": "RRC Beleth"}
+        let mut data = vec![0x82]; // fixmap(2)
+                                   // key 1: fixstr(8) "protocol"
+        data.push(0xa8);
+        data.extend_from_slice(b"protocol");
+        // value 1: fixstr(4) "rcav"
+        data.push(0xa4);
+        data.extend_from_slice(b"rcav");
+        // key 2: fixstr(4) "name"
+        data.push(0xa4);
+        data.extend_from_slice(b"name");
+        // value 2: fixstr(10) "RRC Beleth"
+        data.push(0xaa);
+        data.extend_from_slice(b"RRC Beleth");
+        assert_eq!(display_app_data(&data), "RRC Beleth");
+    }
+
+    #[test]
+    fn test_display_app_data_fixmap_skips_short_values() {
+        // fixmap(1): {"c": "AB"} — value too short to be a name, but returned
+        // since it's the only text in the map
+        let data = [0x81, 0xa1, b'c', 0xa2, b'A', b'B'];
+        assert_eq!(display_app_data(&data), "AB");
+    }
+
+    #[test]
+    fn test_display_app_data_pure_binary() {
+        // 16 bytes of non-UTF-8 binary — should show empty, not garbled
+        let data = [
+            0xFF, 0xFE, 0x01, 0x02, 0x69, 0xAB, 0x5B, 0x71, 0xBC, 0xCD, 0xDE, 0x28, 0xEF, 0xF0,
+            0x12, 0x34,
+        ];
+        let result = display_app_data(&data);
+        // No garbled replacement characters — either empty or short printable run
+        assert!(!result.contains('\u{FFFD}'));
+    }
+
+    #[test]
+    fn test_display_app_data_binary_with_embedded_text() {
+        // Binary blob with "RRC Beleth" embedded — should extract it
+        let mut data = vec![0xFF, 0x82, 0xAB];
+        data.extend_from_slice(b"RRC Beleth");
+        data.extend_from_slice(&[0xFF, 0xFE, 0xFD]);
+        assert_eq!(display_app_data(&data), "RRC Beleth");
+    }
+
+    #[test]
+    fn test_display_app_data_short_binary_no_text() {
+        // Short binary with only 1-2 char printable runs — shows empty
+        let data = [0xFF, b'a', 0xFE, b'b', 0xFD];
+        assert_eq!(display_app_data(&data), "");
+    }
 }
