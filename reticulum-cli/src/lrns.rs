@@ -19,7 +19,7 @@ mod selftest;
 use reticulum_core::link::LinkId;
 use reticulum_core::node::NodeEvent;
 use reticulum_core::{Destination, DestinationHash, DestinationType, Direction, Identity};
-use reticulum_std::driver::{ConnectionStream, ReticulumNodeBuilder};
+use reticulum_std::driver::{ConnectionStream, PacketEndpoint, ReticulumNodeBuilder};
 
 fn hex_encode(bytes: &[u8]) -> String {
     use std::fmt::Write;
@@ -93,6 +93,9 @@ enum Commands {
         /// Messages per second per direction
         #[arg(long, default_value = "1")]
         rate: f64,
+        /// Which test phases to run: all, link, or packet
+        #[arg(long, default_value = "all")]
+        mode: String,
     },
 
     /// Interactive session: connect to rnsd and enter command loop
@@ -133,6 +136,7 @@ struct SessionState {
     discovered: BTreeMap<String, AnnounceInfo>,
     pending_requests: VecDeque<(LinkId, DestinationHash)>,
     active_link_id: Option<LinkId>,
+    packet_endpoint: Option<PacketEndpoint>,
     show_announces: bool,
 }
 
@@ -145,8 +149,10 @@ fn print_help() {
     println!("Commands:");
     println!("  /peers           List discovered destinations");
     println!("  /link <hash>     Initiate link to destination (32-char hex)");
+    println!("  /target <hash>   Set single-packet destination (32-char hex)");
+    println!("  /untarget        Clear single-packet target");
     println!("  /accept          Accept pending incoming link request");
-    println!("  /send <msg>      Send data on active link");
+    println!("  /send <msg>      Send data on active link or to target");
     println!("  /close           Close active link");
     println!("  /announce        Re-announce this destination");
     println!("  /quiet           Hide announce/path messages");
@@ -154,7 +160,7 @@ fn print_help() {
     println!("  /status          Show node status");
     println!("  /help            Show this help");
     println!("  /quit            Exit");
-    println!("  <bare text>      Send as data if link is active");
+    println!("  <bare text>      Send as data on active link or to target");
 }
 
 async fn run_connect(
@@ -233,6 +239,7 @@ async fn run_connect(
         discovered: BTreeMap::new(),
         pending_requests: VecDeque::new(),
         active_link_id: None,
+        packet_endpoint: None,
         show_announces: false,
     }));
 
@@ -301,11 +308,16 @@ async fn run_connect(
                         continue;
                     }
 
-                    // Check if we already have an active link
+                    // Check if we already have an active link or target
                     {
                         let st = state.lock().expect("lock poisoned");
                         if st.active_link_id.is_some() {
                             eprintln!("close current link first (/close)");
+                            print_prompt();
+                            continue;
+                        }
+                        if st.packet_endpoint.is_some() {
+                            eprintln!("clear single-packet target first (/untarget)");
                             print_prompt();
                             continue;
                         }
@@ -425,6 +437,65 @@ async fn run_connect(
                     }
                 }
 
+                "/target" => {
+                    let Some(hash_str) = arg else {
+                        eprintln!("usage: /target <32-char hex destination hash>");
+                        print_prompt();
+                        continue;
+                    };
+
+                    if hash_str.len() != 32 {
+                        eprintln!("destination hash must be 32 hex characters (16 bytes)");
+                        print_prompt();
+                        continue;
+                    }
+
+                    {
+                        let st = state.lock().expect("lock poisoned");
+                        if st.active_link_id.is_some() {
+                            eprintln!("close active link first (/close)");
+                            print_prompt();
+                            continue;
+                        }
+                    }
+
+                    let hash_bytes = match hex_decode(hash_str) {
+                        Ok(b) => b,
+                        Err(e) => {
+                            eprintln!("invalid hex: {e}");
+                            print_prompt();
+                            continue;
+                        }
+                    };
+
+                    let mut dest_bytes = [0u8; 16];
+                    dest_bytes.copy_from_slice(&hash_bytes);
+                    let dest_hash = DestinationHash::new(dest_bytes);
+
+                    {
+                        let st = state.lock().expect("lock poisoned");
+                        if !st.discovered.contains_key(hash_str) {
+                            eprintln!(
+                                "destination not found in discovered peers, wait for announce"
+                            );
+                            print_prompt();
+                            continue;
+                        }
+                    }
+
+                    {
+                        let mut st = state.lock().expect("lock poisoned");
+                        st.packet_endpoint = Some(node.packet_endpoint(&dest_hash));
+                    }
+                    println!("[target] sending to {hash_str}");
+                }
+
+                "/untarget" => {
+                    let mut st = state.lock().expect("lock poisoned");
+                    st.packet_endpoint = None;
+                    println!("[untarget] single-packet target cleared");
+                }
+
                 "/announce" => match node.announce_destination(&dest_hash, Some(b"lrns-cli")) {
                     Ok(()) => println!("[announced] {dest_hash_hex}"),
                     Err(e) => eprintln!("announce failed: {e}"),
@@ -451,6 +522,13 @@ async fn run_connect(
                         st.active_link_id
                             .as_ref()
                             .map(|id| format!("{id}"))
+                            .unwrap_or_else(|| "none".to_string())
+                    );
+                    println!(
+                        "Target:      {}",
+                        st.packet_endpoint
+                            .as_ref()
+                            .map(|ep| hex_encode(ep.dest_hash().as_bytes()))
                             .unwrap_or_else(|| "none".to_string())
                     );
                     println!("Paths:       {}", node.path_count());
@@ -485,39 +563,53 @@ async fn run_connect(
     Ok(())
 }
 
-/// Try to send data on the active connection.
+/// Try to send data on the active connection or to the single-packet target.
 /// Returns Err with a user-facing message on failure.
 async fn try_send(
     state: &Arc<Mutex<SessionState>>,
     stream: &Option<ConnectionStream>,
     msg: &str,
 ) -> Result<(), String> {
-    // Check if peer closed the link (event task clears active_link_id)
-    let link_alive = {
+    let (link_alive, has_endpoint) = {
         let st = state.lock().expect("lock poisoned");
-        st.active_link_id.is_some()
+        (st.active_link_id.is_some(), st.packet_endpoint.is_some())
     };
 
-    if !link_alive {
-        if stream.is_some() {
-            // Peer closed but we still hold the stream — signal to caller to drop it
-            return Err("[closed] link closed by peer".to_string());
+    // Prefer link if active
+    if link_alive {
+        let Some(s) = stream else {
+            return Err("no active link, use /link or /accept first".to_string());
+        };
+
+        if msg.len() > 458 {
+            return Err(format!("message too long ({} bytes, max 458)", msg.len()));
         }
-        return Err("no active link, use /link or /accept first".to_string());
+
+        return s.send(msg.as_bytes()).await.map_err(|e| {
+            tracing::debug!(error = %e, msg_len = msg.len(), "try_send: stream.send() failed");
+            format!("send failed: {e}")
+        });
     }
 
-    let Some(s) = stream else {
-        return Err("no active link, use /link or /accept first".to_string());
-    };
-
-    if msg.len() > 458 {
-        return Err(format!("message too long ({} bytes, max 458)", msg.len()));
+    // Check if peer closed the link but we still hold the stream
+    if stream.is_some() {
+        return Err("[closed] link closed by peer".to_string());
     }
 
-    s.send(msg.as_bytes()).await.map_err(|e| {
-        tracing::debug!(error = %e, msg_len = msg.len(), "try_send: stream.send() failed");
-        format!("send failed: {e}")
-    })
+    // Try single-packet target
+    if has_endpoint {
+        let ep = {
+            let st = state.lock().expect("lock poisoned");
+            st.packet_endpoint.clone().unwrap()
+        };
+        return ep
+            .send(msg.as_bytes())
+            .await
+            .map(|_hash| ())
+            .map_err(|e| format!("send failed: {e}"));
+    }
+
+    Err("no active link or target, use /link or /target first".to_string())
 }
 
 /// Event loop task: reads NodeEvents and prints them, updating shared state.
@@ -626,6 +718,11 @@ async fn event_loop(
                 format!("[recovered] link {link_id}")
             }
 
+            NodeEvent::PacketReceived { from: _, data, .. } => {
+                let text = String::from_utf8_lossy(&data);
+                format!("[packet] {text}")
+            }
+
             _ => continue, // Ignore other events
         };
 
@@ -726,8 +823,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             addr,
             duration,
             rate,
+            mode,
         } => {
-            selftest::run_selftest(addr, duration, rate).await?;
+            selftest::run_selftest(addr, duration, rate, &mode).await?;
         }
 
         Commands::Connect { addr, identity } => {

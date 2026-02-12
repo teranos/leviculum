@@ -28,7 +28,9 @@ pub use reticulum_core::{
 
 pub use clock::SystemClock;
 pub use config::{Config, InterfaceConfig, ReticulumConfig};
-pub use driver::{ConnectionStream, ReticulumNode, ReticulumNodeBuilder, StdNodeCore};
+pub use driver::{
+    ConnectionStream, PacketEndpoint, ReticulumNode, ReticulumNodeBuilder, StdNodeCore,
+};
 pub use error::{Error, Result};
 pub use reticulum::Reticulum;
 pub use storage::Storage;

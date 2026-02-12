@@ -5,6 +5,26 @@ All notable changes to this project will be documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.5.12] - 2026-02-12
+
+### Fixed
+- **Single-packet delivery silently broken through relays** — `send_to_destination()` sent Type1/Broadcast packets as-is, but relays only forward Type2/Transport packets. Now converts Type1 to Type2 when `path.needs_relay()`, inserting the relay's identity hash as `transport_id` — matching Python Transport.py `outbound()` lines 980-991. Type2 packets (e.g., link requests) are left unchanged to avoid double-wrapping.
+
+### Added
+- **`PacketEndpoint` handle for single-packet destinations** — self-contained async handle mirroring `ConnectionStream` for link-based communication. Created via `ReticulumNode::packet_endpoint()`, provides `send()` for fire-and-forget delivery and `dest_hash()` accessor. `Clone`-able for use across async boundaries.
+- `ReticulumNode::send_single_packet()` method for one-off single-packet sends without creating a handle
+- `lrns connect` commands: `/target <hash>` (set single-packet destination), `/untarget` (clear target)
+- `lrns connect` displays `PacketReceived` events as `[packet]` messages
+- `lrns selftest --mode` flag: `all` (default), `link`, or `packet` to select test phases
+- `lrns selftest` Phase 8: single-packet sustained bidirectional exchange through relay with delivery stats and verdict
+- 2 transport unit tests for Type1→Type2 conversion and Type2 pass-through
+- 3 `PacketEndpoint` unit tests (accessor, no-path error, closed-channel error) and 1 doc-test
+- 8 selftest unit tests for single-packet verdict logic and message recording
+
+### Changed
+- `lrns connect`: bare text and `/send` now work with both active links and single-packet targets
+- `lrns selftest` reports separate verdicts for link and packet phases, exits with worst verdict
+
 ## [0.5.11] - 2026-02-12
 
 ### Changed
@@ -635,7 +655,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Transport layer (routing, paths, deduplication)
 - Full interoperability with Python rnsd
 
-[Unreleased]: https://codeberg.org/Lew_Palm/leviculum/compare/v0.5.11...HEAD
+[Unreleased]: https://codeberg.org/Lew_Palm/leviculum/compare/v0.5.12...HEAD
+[0.5.12]: https://codeberg.org/Lew_Palm/leviculum/compare/v0.5.11...v0.5.12
 [0.5.11]: https://codeberg.org/Lew_Palm/leviculum/compare/v0.5.10...v0.5.11
 [0.5.10]: https://codeberg.org/Lew_Palm/leviculum/compare/v0.5.9...v0.5.10
 [0.5.9]: https://codeberg.org/Lew_Palm/leviculum/compare/v0.5.8...v0.5.9

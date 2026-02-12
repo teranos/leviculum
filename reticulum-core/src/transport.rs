@@ -924,13 +924,45 @@ impl<C: Clock, S: Storage> Transport<C, S> {
         dest_hash: &[u8; TRUNCATED_HASHBYTES],
         data: &[u8],
     ) -> Result<(), TransportError> {
-        let interface_index = self
+        let path = self
             .path_table
             .get(dest_hash)
-            .map(|p| p.interface_index)
             .ok_or(TransportError::NoPath)?;
 
-        self.send_on_interface(interface_index, data)
+        let interface_index = path.interface_index;
+
+        // Only convert Type1 packets to Type2 for relay routing.
+        // Type2 packets (e.g., link requests from initiate_with_path) are
+        // already correctly formatted — pass them through unchanged.
+        let is_type1 = data.len() >= 2 && (data[0] & 0x40) == 0;
+
+        if path.needs_relay() && is_type1 {
+            // Multi-hop: convert Type1 packet to Type2 with transport header.
+            // Python equivalent: Transport.py outbound() lines 980-991.
+            //
+            // Wire format change:
+            //   Type1: [flags][hops][dest_hash(16)][context][data...]
+            //   Type2: [flags'][hops][next_hop(16)][dest_hash(16)][context][data...]
+            //
+            // flags' = header_type=Type2, transport_type=Transport, keep lower 4 bits
+            let next_hop = path.next_hop.ok_or(TransportError::NoPath)?;
+
+            let mut buf = alloc::vec![0u8; data.len() + TRUNCATED_HASHBYTES];
+
+            // Rewrite flags: set Type2 header + Transport type, preserve lower 4 bits
+            buf[0] = (1u8 << 6) | (1u8 << 4) | (data[0] & 0x0F);
+            // Keep hops byte
+            buf[1] = data[1];
+            // Insert transport_id (next-hop relay identity hash)
+            buf[2..2 + TRUNCATED_HASHBYTES].copy_from_slice(&next_hop);
+            // Copy the rest: dest_hash + context + payload
+            buf[2 + TRUNCATED_HASHBYTES..].copy_from_slice(&data[2..]);
+
+            self.send_on_interface(interface_index, &buf)
+        } else {
+            // Direct neighbor or already Type2: send as-is
+            self.send_on_interface(interface_index, data)
+        }
     }
 
     // ─── Polling ────────────────────────────────────────────────────────
@@ -4895,6 +4927,121 @@ mod tests {
                     data: data.to_vec(),
                 }
             );
+        }
+
+        #[test]
+        fn test_send_to_destination_relay_converts_type1_to_type2() {
+            use crate::packet::{HeaderType, PacketFlags, TransportType};
+
+            let mut transport = make_transport();
+            let idx = transport.register_interface(Box::new(MockInterface::new("if0", 1)));
+
+            let dest_hash = [0x42; TRUNCATED_HASHBYTES];
+            let next_hop = [0xAA; TRUNCATED_HASHBYTES];
+            transport.path_table.insert(
+                dest_hash,
+                PathEntry {
+                    hops: 1,
+                    expires_ms: u64::MAX,
+                    interface_index: idx,
+                    random_blobs: Vec::new(),
+                    next_hop: Some(next_hop),
+                },
+            );
+
+            // Build a Type1 data packet: flags(1) + hops(1) + dest_hash(16) + context(1) + payload
+            let flags = PacketFlags {
+                ifac_flag: false,
+                header_type: HeaderType::Type1,
+                context_flag: false,
+                transport_type: TransportType::Broadcast,
+                dest_type: crate::destination::DestinationType::Single,
+                packet_type: crate::packet::PacketType::Data,
+            };
+            let mut pkt = alloc::vec![flags.to_byte(), 0]; // flags + hops=0
+            pkt.extend_from_slice(&dest_hash); // dest_hash
+            pkt.push(0x00); // context
+            pkt.extend_from_slice(b"hello"); // payload
+
+            transport.send_to_destination(&dest_hash, &pkt).unwrap();
+
+            let actions = transport.drain_actions();
+            assert_eq!(actions.len(), 1);
+            if let Action::SendPacket { data, .. } = &actions[0] {
+                // Should be 16 bytes longer (transport_id inserted)
+                assert_eq!(data.len(), pkt.len() + TRUNCATED_HASHBYTES);
+                // Parse the output flags
+                let out_flags = PacketFlags::from_byte(data[0]).unwrap();
+                assert_eq!(out_flags.header_type, HeaderType::Type2, "should be Type2");
+                assert_eq!(
+                    out_flags.transport_type,
+                    TransportType::Transport,
+                    "should be Transport"
+                );
+                // transport_id should be the next_hop
+                assert_eq!(&data[2..2 + TRUNCATED_HASHBYTES], &next_hop);
+                // dest_hash follows the transport_id
+                assert_eq!(
+                    &data[2 + TRUNCATED_HASHBYTES..2 + 2 * TRUNCATED_HASHBYTES],
+                    &dest_hash
+                );
+                // payload at the end
+                assert_eq!(&data[data.len() - 5..], b"hello");
+            } else {
+                panic!("expected SendPacket action");
+            }
+        }
+
+        #[test]
+        fn test_send_to_destination_type2_not_double_wrapped() {
+            use crate::packet::{HeaderType, PacketFlags, TransportType};
+
+            let mut transport = make_transport();
+            let idx = transport.register_interface(Box::new(MockInterface::new("if0", 1)));
+
+            let dest_hash = [0x42; TRUNCATED_HASHBYTES];
+            let next_hop = [0xAA; TRUNCATED_HASHBYTES];
+            transport.path_table.insert(
+                dest_hash,
+                PathEntry {
+                    hops: 1,
+                    expires_ms: u64::MAX,
+                    interface_index: idx,
+                    random_blobs: Vec::new(),
+                    next_hop: Some(next_hop),
+                },
+            );
+
+            // Build a Type2 packet (already has transport header)
+            let flags = PacketFlags {
+                ifac_flag: false,
+                header_type: HeaderType::Type2,
+                context_flag: false,
+                transport_type: TransportType::Transport,
+                dest_type: crate::destination::DestinationType::Single,
+                packet_type: crate::packet::PacketType::Data,
+            };
+            let mut pkt = alloc::vec![flags.to_byte(), 0]; // flags + hops
+            pkt.extend_from_slice(&next_hop); // transport_id
+            pkt.extend_from_slice(&dest_hash); // dest_hash
+            pkt.push(0x00); // context
+            pkt.extend_from_slice(b"hello"); // payload
+            let original_len = pkt.len();
+
+            transport.send_to_destination(&dest_hash, &pkt).unwrap();
+
+            let actions = transport.drain_actions();
+            assert_eq!(actions.len(), 1);
+            if let Action::SendPacket { data, .. } = &actions[0] {
+                // Should NOT grow — Type2 packets are passed through unchanged
+                assert_eq!(
+                    data.len(),
+                    original_len,
+                    "Type2 packet should not be re-wrapped"
+                );
+            } else {
+                panic!("expected SendPacket action");
+            }
         }
 
         #[test]

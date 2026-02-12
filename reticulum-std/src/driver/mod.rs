@@ -47,9 +47,11 @@
 //! ```
 
 mod builder;
+mod endpoint;
 mod stream;
 
 pub use builder::ReticulumNodeBuilder;
+pub use endpoint::PacketEndpoint;
 pub use stream::ConnectionStream;
 
 use std::sync::{Arc, Mutex};
@@ -58,6 +60,7 @@ use std::time::Duration;
 
 use tokio::sync::{mpsc, watch};
 
+use reticulum_core::constants::TRUNCATED_HASHBYTES;
 use reticulum_core::link::LinkId;
 use reticulum_core::node::{NodeCore, NodeEvent};
 use reticulum_core::traits::Clock;
@@ -411,6 +414,47 @@ impl ReticulumNodeImpl {
             .await
             .map_err(|_| Error::Transport("event loop shut down".to_string()))?;
         Ok(())
+    }
+
+    /// Send a single (fire-and-forget) packet to a destination
+    ///
+    /// Builds an unreliable data packet addressed to `dest_hash` and queues it
+    /// for dispatch. A path to the destination must already be known.
+    ///
+    /// # Arguments
+    /// * `dest_hash` - The destination hash to send to
+    /// * `data` - The data to send (must fit in a single packet)
+    ///
+    /// # Returns
+    /// The truncated packet hash, usable for tracking delivery proofs.
+    pub async fn send_single_packet(
+        &self,
+        dest_hash: &DestinationHash,
+        data: &[u8],
+    ) -> Result<[u8; TRUNCATED_HASHBYTES], Error> {
+        let (packet_hash, output) = {
+            let mut inner = self.inner.lock().unwrap();
+            inner
+                .send_single_packet(dest_hash, data)
+                .map_err(|e| Error::Transport(e.to_string()))?
+        };
+        self.action_dispatch_tx
+            .send(output)
+            .await
+            .map_err(|_| Error::Transport("event loop shut down".to_string()))?;
+        Ok(packet_hash)
+    }
+
+    /// Create a PacketEndpoint for a destination
+    ///
+    /// Returns a self-contained handle for sending single packets.
+    /// No path or destination validation — errors are reported on send().
+    pub fn packet_endpoint(&self, dest_hash: &DestinationHash) -> PacketEndpoint {
+        PacketEndpoint::new(
+            *dest_hash,
+            Arc::clone(&self.inner),
+            self.action_dispatch_tx.clone(),
+        )
     }
 
     /// Check if transport mode (relay/routing) is enabled
