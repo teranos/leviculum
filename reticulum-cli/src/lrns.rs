@@ -14,6 +14,8 @@ use tracing_subscriber::EnvFilter;
 
 use tokio::io::AsyncBufReadExt;
 
+mod selftest;
+
 use reticulum_core::destination::{DestinationType, Direction};
 use reticulum_core::link::LinkId;
 use reticulum_core::node::NodeEvent;
@@ -81,6 +83,18 @@ enum Commands {
 
     /// Show interface information
     Interfaces,
+
+    /// Run integration self-test through a relay node
+    Selftest {
+        /// Address of relay node (host:port)
+        addr: String,
+        /// Test duration in seconds
+        #[arg(long, default_value = "180")]
+        duration: u64,
+        /// Messages per second per direction
+        #[arg(long, default_value = "1")]
+        rate: f64,
+    },
 
     /// Interactive session: connect to rnsd and enter command loop
     Connect {
@@ -711,6 +725,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             println!();
             println!("No interfaces (not implemented yet)");
             // TODO: Show interface information from daemon
+        }
+
+        Commands::Selftest {
+            addr,
+            duration,
+            rate,
+        } => {
+            selftest::run_selftest(addr, duration, rate).await?;
         }
 
         Commands::Connect { addr, identity } => {

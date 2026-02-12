@@ -392,6 +392,14 @@ impl ReticulumNodeImpl {
         self.inner.lock().unwrap().transport_stats()
     }
 
+    /// Get connection statistics for a link
+    pub fn connection_stats(
+        &self,
+        link_id: &reticulum_core::link::LinkId,
+    ) -> Option<reticulum_core::node::ConnectionStats> {
+        self.inner.lock().unwrap().connection_stats(link_id)
+    }
+
     /// Announce a registered destination on all interfaces
     ///
     /// Builds the announce packet and queues it as a Broadcast action.

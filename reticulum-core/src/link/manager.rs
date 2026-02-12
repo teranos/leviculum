@@ -539,9 +539,19 @@ impl LinkManager {
         self.channels.get_mut(link_id)
     }
 
+    /// Get an immutable reference to a channel (None if not yet created)
+    pub fn channel(&self, link_id: &LinkId) -> Option<&Channel> {
+        self.channels.get(link_id)
+    }
+
     /// Check if a channel exists for a link
     pub fn has_channel(&self, link_id: &LinkId) -> bool {
         self.channels.contains_key(link_id)
+    }
+
+    /// Get the number of pending data receipts
+    pub fn data_receipts_count(&self) -> usize {
+        self.data_receipts.len()
     }
 
     /// Send a channel message on a link
@@ -1853,6 +1863,43 @@ mod tests {
 
         // Receipt should have been removed
         assert_eq!(pair.initiator.data_receipts.len(), 0);
+    }
+
+    #[test]
+    fn test_channel_immutable_accessor() {
+        let mut manager = LinkManager::new();
+        let dest_hash = DestinationHash::new([0x42; 16]);
+        let dest_signing_key = [0x33; 32];
+
+        let (link_id, _) =
+            manager.initiate(dest_hash, &dest_signing_key, &mut OsRng, INITIAL_TIME_MS);
+
+        // No channel exists yet
+        assert!(manager.channel(&link_id).is_none());
+
+        // For a non-existent link, also returns None
+        let fake_id = LinkId::new([0xFF; 16]);
+        assert!(manager.channel(&fake_id).is_none());
+    }
+
+    #[test]
+    fn test_data_receipts_count() {
+        let mut pair = establish_link_pair(ProofStrategy::All);
+        assert_eq!(pair.initiator.data_receipts_count(), 0);
+
+        // Send data with receipt
+        let _ = pair
+            .initiator
+            .send_with_receipt(&pair.initiator_link_id, b"test", &mut OsRng, pair.now_ms)
+            .unwrap();
+        assert_eq!(pair.initiator.data_receipts_count(), 1);
+
+        // Send another
+        let _ = pair
+            .initiator
+            .send_with_receipt(&pair.initiator_link_id, b"test2", &mut OsRng, pair.now_ms)
+            .unwrap();
+        assert_eq!(pair.initiator.data_receipts_count(), 2);
     }
 
     #[test]

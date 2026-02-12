@@ -128,6 +128,19 @@ impl SendOptions {
     }
 }
 
+/// Connection statistics for observability
+#[derive(Debug, Clone)]
+pub struct ConnectionStats {
+    /// Number of outstanding (unacknowledged) messages in the channel tx ring
+    pub tx_ring_size: usize,
+    /// Current channel window size
+    pub window: usize,
+    /// Maximum channel window size
+    pub window_max: usize,
+    /// Number of pending data receipts across all links
+    pub data_receipts_count: usize,
+}
+
 /// The unified Reticulum node - combines Transport + LinkManager
 ///
 /// NodeCore is generic over RNG, Clock, and Storage traits, allowing it to run
@@ -841,6 +854,20 @@ impl<R: CryptoRngCore, C: Clock, S: Storage> NodeCore<R, C, S> {
         self.transport.stats().clone()
     }
 
+    /// Get connection statistics for a link
+    ///
+    /// Returns channel and receipt stats useful for monitoring connection health.
+    pub fn connection_stats(&self, link_id: &LinkId) -> Option<ConnectionStats> {
+        let conn = self.connections.get(link_id)?;
+        let ch = self.link_manager.channel(link_id);
+        Some(ConnectionStats {
+            tx_ring_size: conn.outstanding_messages(),
+            window: ch.map(|c| c.window()).unwrap_or(0),
+            window_max: ch.map(|c| c.window_max()).unwrap_or(0),
+            data_receipts_count: self.link_manager.data_receipts_count(),
+        })
+    }
+
     /// Access the underlying transport (for advanced use cases)
     pub fn transport(&self) -> &Transport<C, S> {
         &self.transport
@@ -1269,6 +1296,17 @@ mod tests {
         assert_eq!(*conn.id(), link_id);
         assert_eq!(conn.destination_hash(), &dest_hash);
         assert!(conn.is_initiator());
+    }
+
+    #[test]
+    fn test_connection_stats_no_connection() {
+        let clock = MockClock::new(1_000_000);
+        let node = NodeCoreBuilder::new()
+            .build(OsRng, clock, NoStorage)
+            .unwrap();
+
+        let fake_id = LinkId::new([0xFF; 16]);
+        assert!(node.connection_stats(&fake_id).is_none());
     }
 
     #[test]

@@ -217,6 +217,11 @@ impl Channel {
         self.window
     }
 
+    /// Get the maximum window size
+    pub fn window_max(&self) -> usize {
+        self.window_max
+    }
+
     /// Get the number of outstanding (unacknowledged) messages
     pub fn outstanding(&self) -> usize {
         self.tx_ring.len()
@@ -963,6 +968,18 @@ mod tests {
             channel.send_system(&msg, 464, 1000, 100),
             Err(ChannelError::WindowFull)
         );
+    }
+
+    #[test]
+    fn test_window_max_accessor() {
+        let mut channel = Channel::new();
+        assert_eq!(channel.window_max(), CHANNEL_WINDOW_MAX_SLOW);
+
+        channel.update_window_for_rtt(100);
+        assert_eq!(channel.window_max(), CHANNEL_WINDOW_MAX_FAST);
+
+        channel.update_window_for_rtt(500);
+        assert_eq!(channel.window_max(), CHANNEL_WINDOW_MAX_MEDIUM);
     }
 
     #[test]
