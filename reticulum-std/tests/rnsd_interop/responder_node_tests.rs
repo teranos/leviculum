@@ -26,97 +26,15 @@ use std::time::Duration;
 
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpStream;
-use tokio::sync::mpsc;
-
-/// Wait for a `DataReceived` or `MessageReceived` event for a specific link ID.
-/// Drains other events while waiting.
-async fn wait_for_data_event(
-    event_rx: &mut mpsc::Receiver<NodeEvent>,
-    link_id: &LinkId,
-    timeout: Duration,
-) -> Option<Vec<u8>> {
-    let deadline = tokio::time::Instant::now() + timeout;
-    loop {
-        let remaining = deadline - tokio::time::Instant::now();
-        if remaining.is_zero() {
-            return None;
-        }
-        match tokio::time::timeout(remaining, event_rx.recv()).await {
-            Ok(Some(NodeEvent::DataReceived { link_id: id, data })) if &id == link_id => {
-                return Some(data);
-            }
-            Ok(Some(NodeEvent::MessageReceived {
-                link_id: id, data, ..
-            })) if &id == link_id => {
-                return Some(data);
-            }
-            Ok(Some(_)) => continue,
-            Ok(None) | Err(_) => return None,
-        }
-    }
-}
 
 use reticulum_core::destination::{Destination, DestinationType, Direction};
 use reticulum_core::identity::Identity;
-use reticulum_core::link::LinkId;
-use reticulum_core::node::NodeEvent;
-use reticulum_core::DestinationHash;
 use reticulum_std::driver::ReticulumNodeBuilder;
 
+use crate::common::{
+    wait_for_connection_request, wait_for_data_event, wait_for_responder_established,
+};
 use crate::harness::TestDaemon;
-
-/// Wait for a `ConnectionRequest` event, returning the link_id and destination_hash.
-/// Drains other events while waiting.
-async fn wait_for_connection_request(
-    event_rx: &mut mpsc::Receiver<NodeEvent>,
-    timeout: Duration,
-) -> Option<(LinkId, DestinationHash)> {
-    let deadline = tokio::time::Instant::now() + timeout;
-    loop {
-        let remaining = deadline - tokio::time::Instant::now();
-        if remaining.is_zero() {
-            return None;
-        }
-        match tokio::time::timeout(remaining, event_rx.recv()).await {
-            Ok(Some(NodeEvent::ConnectionRequest {
-                link_id,
-                destination_hash,
-                ..
-            })) => {
-                return Some((link_id, destination_hash));
-            }
-            Ok(Some(_)) => continue,
-            Ok(None) | Err(_) => return None,
-        }
-    }
-}
-
-/// Wait for a `ConnectionEstablished` event with `is_initiator == false`.
-/// Drains other events while waiting.
-async fn wait_for_responder_established(
-    event_rx: &mut mpsc::Receiver<NodeEvent>,
-    link_id: &LinkId,
-    timeout: Duration,
-) -> bool {
-    let deadline = tokio::time::Instant::now() + timeout;
-    loop {
-        let remaining = deadline - tokio::time::Instant::now();
-        if remaining.is_zero() {
-            return false;
-        }
-        match tokio::time::timeout(remaining, event_rx.recv()).await {
-            Ok(Some(NodeEvent::ConnectionEstablished {
-                link_id: id,
-                is_initiator,
-            })) if &id == link_id => {
-                assert!(!is_initiator, "Responder should have is_initiator == false");
-                return true;
-            }
-            Ok(Some(_)) => continue,
-            Ok(None) | Err(_) => return false,
-        }
-    }
-}
 
 /// Test: Rust node as responder accepting incoming connections via the high-level API.
 ///

@@ -33,17 +33,17 @@ use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpStream;
 use tokio::time::timeout;
 
-use reticulum_core::constants::{MTU, TRUNCATED_HASHBYTES};
-use reticulum_core::destination::{Destination, DestinationType, Direction, ProofStrategy};
+use reticulum_core::constants::TRUNCATED_HASHBYTES;
+use reticulum_core::destination::ProofStrategy;
 use reticulum_core::identity::Identity;
 use reticulum_core::link::{LinkCloseReason, LinkEvent, LinkId, LinkManager};
 use reticulum_core::packet::{Packet, PacketContext, PacketType};
 use reticulum_core::traits::Clock;
 use reticulum_core::DestinationHash;
-use reticulum_std::interfaces::hdlc::{frame, DeframeResult, Deframer};
+use reticulum_std::interfaces::hdlc::{DeframeResult, Deframer};
 
 use crate::common::{
-    connect_to_daemon, now_ms, receive_proof_for_link, send_framed,
+    connect_to_daemon, receive_proof_for_link, send_framed, setup_rust_destination,
     wait_for_any_announce_with_route_info, wait_for_data_packet, wait_for_link_request,
     wait_for_rtt_packet, TestClock,
 };
@@ -291,43 +291,6 @@ where
     }
 
     None
-}
-
-/// Set up a Rust destination and send its announce to the daemon.
-///
-/// Returns (destination, public_key_hex). The identity can be accessed via destination.identity().
-async fn setup_rust_destination(
-    stream: &mut TcpStream,
-    app_name: &str,
-    aspects: &[&str],
-    app_data: &[u8],
-) -> (Destination, String) {
-    let identity = Identity::generate(&mut OsRng);
-    let public_key_hex = hex::encode(identity.public_key_bytes());
-
-    let mut destination = Destination::new(
-        Some(identity),
-        Direction::In,
-        DestinationType::Single,
-        app_name,
-        aspects,
-    )
-    .expect("Failed to create destination");
-
-    // Create and send announce
-    let packet = destination
-        .announce(Some(app_data), &mut OsRng, now_ms())
-        .expect("Failed to create announce");
-
-    let mut raw_packet = [0u8; MTU];
-    let size = packet.pack(&mut raw_packet).expect("Failed to pack");
-
-    let mut framed = Vec::new();
-    frame(&raw_packet[..size], &mut framed);
-    stream.write_all(&framed).await.expect("Failed to send");
-    stream.flush().await.expect("Failed to flush");
-
-    (destination, public_key_hex)
 }
 
 // =========================================================================

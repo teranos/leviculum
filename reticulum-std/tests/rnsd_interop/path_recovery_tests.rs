@@ -26,117 +26,15 @@
 //! cargo test --package reticulum-std --test rnsd_interop path_recovery_tests -- --nocapture
 //! ```
 
-use std::collections::HashSet;
 use std::time::Duration;
 
-use reticulum_core::constants::TRUNCATED_HASHBYTES;
-use reticulum_core::link::LinkId;
-use reticulum_core::node::NodeEvent;
-use reticulum_core::DestinationHash;
 use reticulum_std::driver::ReticulumNodeBuilder;
-use tokio::sync::mpsc;
 
-use crate::common::wait_for_path_on_daemon;
+use crate::common::{
+    collect_messages, extract_signing_key, parse_dest_hash, wait_for_connection_closed_event,
+    wait_for_connection_established, wait_for_path_on_daemon, wait_for_path_on_node,
+};
 use crate::harness::TestDaemon;
-
-/// Wait for a `ConnectionClosed` event for a specific link ID.
-/// Drains other events while waiting.
-async fn wait_for_connection_closed_event(
-    event_rx: &mut mpsc::Receiver<NodeEvent>,
-    link_id: &LinkId,
-    timeout: Duration,
-) -> bool {
-    let deadline = tokio::time::Instant::now() + timeout;
-    loop {
-        let remaining = deadline - tokio::time::Instant::now();
-        if remaining.is_zero() {
-            return false;
-        }
-        match tokio::time::timeout(remaining, event_rx.recv()).await {
-            Ok(Some(NodeEvent::ConnectionClosed { link_id: id, .. })) if &id == link_id => {
-                return true;
-            }
-            Ok(Some(_)) => continue,
-            Ok(None) | Err(_) => return false,
-        }
-    }
-}
-
-/// Helper: decode a hex destination hash string into a DestinationHash.
-fn parse_dest_hash(hex: &str) -> DestinationHash {
-    let bytes: [u8; TRUNCATED_HASHBYTES] = hex::decode(hex).unwrap().try_into().unwrap();
-    DestinationHash::new(bytes)
-}
-
-/// Helper: extract the Ed25519 signing key (last 32 bytes) from a DestinationInfo's
-/// 64-byte public key.
-fn extract_signing_key(public_key_hex: &str) -> [u8; 32] {
-    let pub_key_bytes = hex::decode(public_key_hex).unwrap();
-    pub_key_bytes[32..64].try_into().unwrap()
-}
-
-/// Poll `node.has_path()` every 500ms until it returns true or timeout expires.
-async fn wait_for_path_on_node(
-    node: &reticulum_std::driver::ReticulumNode,
-    dest_hash: &DestinationHash,
-    timeout: Duration,
-) -> bool {
-    let deadline = tokio::time::Instant::now() + timeout;
-    while tokio::time::Instant::now() < deadline {
-        if node.has_path(dest_hash) {
-            return true;
-        }
-        tokio::time::sleep(Duration::from_millis(500)).await;
-    }
-    false
-}
-
-/// Wait for a `ConnectionEstablished` event for a specific link ID.
-/// Drains other events while waiting.
-async fn wait_for_connection_established(
-    event_rx: &mut mpsc::Receiver<NodeEvent>,
-    link_id: &LinkId,
-    timeout: Duration,
-) -> bool {
-    let deadline = tokio::time::Instant::now() + timeout;
-    loop {
-        let remaining = deadline - tokio::time::Instant::now();
-        if remaining.is_zero() {
-            return false;
-        }
-        match tokio::time::timeout(remaining, event_rx.recv()).await {
-            Ok(Some(NodeEvent::ConnectionEstablished { link_id: id, .. })) if &id == link_id => {
-                return true;
-            }
-            Ok(Some(_)) => continue,
-            Ok(None) | Err(_) => return false,
-        }
-    }
-}
-
-/// Poll a daemon for messages matching a prefix, collecting unique messages
-/// into a HashSet. Returns when `expected_count` unique messages are found or
-/// the deadline expires.
-async fn collect_messages(
-    daemon: &TestDaemon,
-    prefix: &str,
-    expected_count: usize,
-    timeout: Duration,
-) -> HashSet<String> {
-    let mut received = HashSet::new();
-    let deadline = tokio::time::Instant::now() + timeout;
-    while received.len() < expected_count && tokio::time::Instant::now() < deadline {
-        tokio::time::sleep(Duration::from_millis(500)).await;
-        let packets = daemon.get_received_packets().await.unwrap_or_default();
-        for p in &packets {
-            let s = String::from_utf8_lossy(&p.data);
-            if s.starts_with(prefix) {
-                received.insert(s.to_string());
-            }
-        }
-    }
-    received
-}
 
 /// Smoke test: verify announce propagation between two Python daemons
 /// when one connects to the other at runtime via add_client_interface.

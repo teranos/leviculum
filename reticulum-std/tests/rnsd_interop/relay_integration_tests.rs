@@ -28,45 +28,12 @@
 //! cargo test --package reticulum-std --test rnsd_interop relay_integration_tests -- --nocapture
 //! ```
 
-use std::collections::HashSet;
 use std::time::Duration;
 
-use reticulum_core::constants::TRUNCATED_HASHBYTES;
-use reticulum_core::DestinationHash;
 use reticulum_std::driver::ReticulumNodeBuilder;
 
-use crate::common::wait_for_path_on_daemon;
+use crate::common::{collect_messages, parse_dest_hash, wait_for_path_on_daemon};
 use crate::harness::TestDaemon;
-
-/// Helper: decode a hex destination hash string into a DestinationHash.
-fn parse_dest_hash(hex: &str) -> DestinationHash {
-    let bytes: [u8; TRUNCATED_HASHBYTES] = hex::decode(hex).unwrap().try_into().unwrap();
-    DestinationHash::new(bytes)
-}
-
-/// Helper: poll a daemon for messages matching a prefix, collecting unique messages
-/// into a HashSet. Returns when `expected_count` unique messages are found or
-/// the deadline expires.
-async fn collect_messages(
-    daemon: &TestDaemon,
-    prefix: &str,
-    expected_count: usize,
-    timeout: Duration,
-) -> HashSet<String> {
-    let mut received = HashSet::new();
-    let deadline = tokio::time::Instant::now() + timeout;
-    while received.len() < expected_count && tokio::time::Instant::now() < deadline {
-        tokio::time::sleep(Duration::from_millis(500)).await;
-        let packets = daemon.get_received_packets().await.unwrap_or_default();
-        for p in &packets {
-            let s = String::from_utf8_lossy(&p.data);
-            if s.starts_with(prefix) {
-                received.insert(s.to_string());
-            }
-        }
-    }
-    received
-}
 
 /// Test: Diamond relay topology with failure recovery.
 ///

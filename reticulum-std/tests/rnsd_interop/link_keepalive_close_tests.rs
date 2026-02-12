@@ -33,17 +33,16 @@ use reticulum_core::constants::{
     LINK_KEEPALIVE_SECS, LINK_STALE_FACTOR, LINK_STALE_GRACE_SECS, MS_PER_SECOND,
     TRUNCATED_HASHBYTES,
 };
-use reticulum_core::destination::{Destination, DestinationType, Direction, ProofStrategy};
-use reticulum_core::identity::Identity;
+use reticulum_core::destination::ProofStrategy;
 use reticulum_core::link::{LinkCloseReason, LinkEvent, LinkId, LinkManager, LinkState};
 use reticulum_core::packet::{Packet, PacketContext, PacketType};
 use reticulum_core::traits::Clock;
-use reticulum_std::interfaces::hdlc::{frame, Deframer};
+use reticulum_std::interfaces::hdlc::Deframer;
 
 use crate::common::{
-    connect_to_daemon, receive_proof_for_link, send_framed, wait_for_any_announce_with_route_info,
-    wait_for_close_packet, wait_for_keepalive_packet, wait_for_link_request, wait_for_rtt_packet,
-    TestClock,
+    connect_to_daemon, receive_proof_for_link, send_framed, setup_rust_destination,
+    wait_for_any_announce_with_route_info, wait_for_close_packet, wait_for_keepalive_packet,
+    wait_for_link_request, wait_for_rtt_packet, TestClock,
 };
 use crate::harness::TestDaemon;
 
@@ -144,41 +143,6 @@ async fn establish_link_as_initiator(
     let link_hash_hex = hex::encode(link_id);
 
     Ok((link_id, link_hash_hex))
-}
-
-/// Set up a Rust destination and send its announce to the daemon.
-async fn setup_rust_destination(
-    stream: &mut TcpStream,
-    app_name: &str,
-    aspects: &[&str],
-    app_data: &[u8],
-) -> (Destination, String) {
-    let identity = Identity::generate(&mut OsRng);
-    let public_key_hex = hex::encode(identity.public_key_bytes());
-
-    let mut destination = Destination::new(
-        Some(identity),
-        Direction::In,
-        DestinationType::Single,
-        app_name,
-        aspects,
-    )
-    .expect("Failed to create destination");
-
-    // Create and send announce
-    let packet = destination
-        .announce(Some(app_data), &mut OsRng, crate::common::now_ms())
-        .expect("Failed to create announce");
-
-    let mut raw_packet = [0u8; 500];
-    let size = packet.pack(&mut raw_packet).expect("Failed to pack");
-
-    let mut framed = Vec::new();
-    frame(&raw_packet[..size], &mut framed);
-    stream.write_all(&framed).await.expect("Failed to send");
-    stream.flush().await.expect("Failed to flush");
-
-    (destination, public_key_hex)
 }
 
 // =========================================================================

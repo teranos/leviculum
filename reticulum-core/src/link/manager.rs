@@ -53,17 +53,7 @@ use super::{
     Link, LinkCloseReason, LinkError, LinkEvent, LinkId, LinkState, PeerKeys, PendingPacket,
 };
 use crate::destination::DestinationHash;
-
-/// Display helper for hex-formatted byte slices in tracing output
-struct HexFmt<'a>(&'a [u8]);
-impl core::fmt::Display for HexFmt<'_> {
-    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-        for b in self.0 {
-            write!(f, "{b:02x}")?;
-        }
-        Ok(())
-    }
-}
+use crate::hex_fmt::HexFmt;
 
 /// Extract packets matching a predicate from the unified queue, returning (link_id, data) pairs.
 fn drain_packets_by_kind(

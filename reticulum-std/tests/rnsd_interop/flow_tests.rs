@@ -25,76 +25,15 @@
 
 use std::time::Duration;
 
-use rand_core::OsRng;
-use tokio::io::{AsyncReadExt, AsyncWriteExt};
-use tokio::time::timeout;
+use tokio::io::AsyncWriteExt;
 
 use reticulum_core::constants::TRUNCATED_HASHBYTES;
-use reticulum_core::identity::Identity;
 use reticulum_core::link::{Link, LinkState};
-use reticulum_core::packet::{Packet, PacketType};
-use reticulum_core::traits::{Clock, NoStorage};
-use reticulum_core::transport::{Transport, TransportConfig, TransportEvent};
-use reticulum_std::interfaces::hdlc::{frame, DeframeResult, Deframer};
+use reticulum_core::transport::TransportEvent;
+use reticulum_std::interfaces::hdlc::{frame, Deframer};
 
 use crate::common::*;
 use crate::harness::TestDaemon;
-
-// =========================================================================
-// Test helpers
-// =========================================================================
-
-/// Simple clock for tests
-struct TestClock;
-impl Clock for TestClock {
-    fn now_ms(&self) -> u64 {
-        std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap()
-            .as_millis() as u64
-    }
-}
-
-/// Create a Transport for testing (sans-I/O, no interfaces registered)
-fn create_test_transport() -> (Transport<TestClock, NoStorage>, usize) {
-    let clock = TestClock;
-    let identity = Identity::generate(&mut OsRng);
-    let config = TransportConfig::default();
-    let transport = Transport::new(config, clock, NoStorage, identity);
-    // Interface index 0 is used when feeding packets to process_incoming.
-    // In sans-I/O, Transport doesn't own interfaces — it just stores the index.
-    (transport, 0)
-}
-
-/// Receive an announce packet from the daemon stream.
-async fn receive_announce_from_daemon(
-    stream: &mut tokio::net::TcpStream,
-    deframer: &mut Deframer,
-    timeout_duration: Duration,
-) -> Option<(Packet, Vec<u8>)> {
-    let mut buffer = [0u8; 2048];
-    let start = std::time::Instant::now();
-
-    while start.elapsed() < timeout_duration {
-        match timeout(Duration::from_millis(100), stream.read(&mut buffer)).await {
-            Ok(Ok(0)) => return None,
-            Ok(Ok(n)) => {
-                let results = deframer.process(&buffer[..n]);
-                for result in results {
-                    if let DeframeResult::Frame(data) = result {
-                        if let Ok(pkt) = Packet::unpack(&data) {
-                            if pkt.flags.packet_type == PacketType::Announce {
-                                return Some((pkt, data));
-                            }
-                        }
-                    }
-                }
-            }
-            _ => {}
-        }
-    }
-    None
-}
 
 // =========================================================================
 // Test 1: Discovery then link establishment

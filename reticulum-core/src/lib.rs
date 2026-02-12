@@ -91,6 +91,7 @@ pub mod constants;
 pub mod crypto;
 pub mod destination;
 pub mod framing;
+mod hex_fmt;
 pub mod identity;
 pub mod ifac;
 pub mod link;

@@ -40,61 +40,12 @@ use std::time::Duration;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpStream;
 
-use reticulum_core::constants::MTU;
-use reticulum_core::destination::{Destination, DestinationType, Direction};
-use reticulum_core::identity::Identity;
 use reticulum_core::link::{Link, LinkId, LinkState};
 use reticulum_core::packet::Packet;
-use reticulum_std::interfaces::hdlc::{frame, Deframer};
+use reticulum_std::interfaces::hdlc::Deframer;
 
 use crate::common::*;
 use crate::harness::TestDaemon;
-
-/// Create a Rust destination and send its announce to the daemon.
-/// Returns (destination, public_key_hex).
-///
-/// The destination contains the identity which can be accessed via destination.identity().
-async fn setup_rust_destination(
-    stream: &mut TcpStream,
-    app_name: &str,
-    aspects: &[&str],
-    app_data: &[u8],
-) -> (Destination, String) {
-    let identity = Identity::generate(&mut OsRng);
-    let public_key_hex = hex::encode(identity.public_key_bytes());
-
-    let mut destination = Destination::new(
-        Some(identity),
-        Direction::In,
-        DestinationType::Single,
-        app_name,
-        aspects,
-    )
-    .expect("Failed to create destination");
-
-    // Create and send announce
-    let packet = destination
-        .announce(Some(app_data), &mut OsRng, crate::common::now_ms())
-        .expect("Failed to create announce");
-
-    let mut raw_packet = [0u8; MTU];
-    let size = packet.pack(&mut raw_packet).expect("Failed to pack");
-
-    let mut framed = Vec::new();
-    frame(&raw_packet[..size], &mut framed);
-    stream.write_all(&framed).await.expect("Failed to send");
-    stream.flush().await.expect("Failed to flush");
-
-    (destination, public_key_hex)
-}
-
-/// Pack and send a packet over the stream with HDLC framing.
-async fn send_packet(stream: &mut TcpStream, packet_bytes: &[u8]) {
-    let mut framed = Vec::new();
-    frame(packet_bytes, &mut framed);
-    stream.write_all(&framed).await.expect("Failed to send");
-    stream.flush().await.expect("Failed to flush");
-}
 
 // =========================================================================
 // Test 1: Basic responder handshake
@@ -204,7 +155,7 @@ async fn test_responder_basic_handshake() {
 
     assert_eq!(link.state(), LinkState::Handshake);
 
-    send_packet(&mut stream, &proof_packet).await;
+    send_framed(&mut stream, &proof_packet).await;
     println!("Sent PROOF packet");
 
     // Wait for RTT packet from Python
@@ -313,7 +264,7 @@ async fn test_responder_bidirectional_data() {
 
     // Send proof
     let proof_packet = link.build_proof_packet(identity, 500, 1).unwrap();
-    send_packet(&mut stream, &proof_packet).await;
+    send_framed(&mut stream, &proof_packet).await;
 
     // Process RTT
     let rtt_encrypted = wait_for_rtt_packet(
@@ -377,7 +328,7 @@ async fn test_responder_bidirectional_data() {
         .build_data_packet(reply_message, &mut OsRng)
         .expect("Failed to build data packet");
 
-    send_packet(&mut stream, &data_packet).await;
+    send_framed(&mut stream, &data_packet).await;
     println!("Rust sent: {:?}", String::from_utf8_lossy(reply_message));
 
     // Wait for Python to receive
@@ -454,7 +405,7 @@ async fn test_responder_key_derivation_match() {
     let mut link = Link::new_incoming(&raw[19..], link_id, dest_hash, &mut OsRng).unwrap();
 
     let proof = link.build_proof_packet(identity, 500, 1).unwrap();
-    send_packet(&mut stream, &proof).await;
+    send_framed(&mut stream, &proof).await;
 
     let rtt = wait_for_rtt_packet(
         &mut stream,
@@ -499,7 +450,7 @@ async fn test_responder_key_derivation_match() {
     // Test 2: Rust encrypts, Python decrypts
     let rust_message = b"Rust encrypted this with the same derived key";
     let data_packet = link.build_data_packet(rust_message, &mut OsRng).unwrap();
-    send_packet(&mut stream, &data_packet).await;
+    send_framed(&mut stream, &data_packet).await;
 
     tokio::time::sleep(Duration::from_millis(500)).await;
     let received = daemon.get_received_packets().await.unwrap();
@@ -561,7 +512,7 @@ async fn test_responder_multiple_packets() {
     let mut link = Link::new_incoming(&raw[19..], link_id, dest_hash, &mut OsRng).unwrap();
 
     let proof = link.build_proof_packet(identity, 500, 1).unwrap();
-    send_packet(&mut stream, &proof).await;
+    send_framed(&mut stream, &proof).await;
 
     let rtt = wait_for_rtt_packet(
         &mut stream,
@@ -583,7 +534,7 @@ async fn test_responder_multiple_packets() {
     for (i, &size) in test_sizes.iter().enumerate() {
         let data: Vec<u8> = (0..size).map(|j| ((i + j) & 0xFF) as u8).collect();
         let data_packet = link.build_data_packet(&data, &mut OsRng).unwrap();
-        send_packet(&mut stream, &data_packet).await;
+        send_framed(&mut stream, &data_packet).await;
         println!("Sent packet {}: {} bytes", i + 1, size);
         tokio::time::sleep(Duration::from_millis(50)).await;
     }

@@ -1,6 +1,7 @@
 //! Shared test infrastructure for rnsd interop tests
 
 pub use rand_core::OsRng;
+use std::collections::HashSet;
 use std::time::Duration;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpStream;
@@ -782,15 +783,16 @@ pub async fn wait_for_announce_for_dest(
 }
 
 /// Set up a Rust destination on a daemon connection and announce it.
-/// Returns the destination after sending the announce.
-#[allow(dead_code)]
+/// Returns `(destination, public_key_hex)`.
 pub async fn setup_rust_destination(
     stream: &mut TcpStream,
     app_name: &str,
     aspects: &[&str],
     app_data: &[u8],
-) -> Destination {
+) -> (Destination, String) {
     let identity = Identity::generate(&mut OsRng);
+    let public_key_hex = hex::encode(identity.public_key_bytes());
+
     let mut dest = Destination::new(
         Some(identity),
         Direction::In,
@@ -809,5 +811,272 @@ pub async fn setup_rust_destination(
 
     send_framed(stream, &raw_packet[..size]).await;
 
-    dest
+    (dest, public_key_hex)
+}
+
+// =========================================================================
+// Node-level event helpers
+// =========================================================================
+
+use reticulum_core::node::NodeEvent;
+use tokio::sync::mpsc;
+
+/// Generic event-loop helper: drain events until `predicate` returns `Some(T)` or timeout.
+pub async fn wait_for_event<T>(
+    event_rx: &mut mpsc::Receiver<NodeEvent>,
+    timeout: Duration,
+    mut predicate: impl FnMut(NodeEvent) -> Option<T>,
+) -> Option<T> {
+    let deadline = tokio::time::Instant::now() + timeout;
+    loop {
+        let remaining = deadline - tokio::time::Instant::now();
+        if remaining.is_zero() {
+            return None;
+        }
+        match tokio::time::timeout(remaining, event_rx.recv()).await {
+            Ok(Some(event)) => {
+                if let Some(result) = predicate(event) {
+                    return Some(result);
+                }
+            }
+            Ok(None) | Err(_) => return None,
+        }
+    }
+}
+
+/// Wait for a `DataReceived` or `MessageReceived` event for a specific link ID.
+/// Drains other events while waiting.
+pub async fn wait_for_data_event(
+    event_rx: &mut mpsc::Receiver<NodeEvent>,
+    link_id: &LinkId,
+    timeout: Duration,
+) -> Option<Vec<u8>> {
+    let link_id = *link_id;
+    wait_for_event(event_rx, timeout, move |event| match event {
+        NodeEvent::DataReceived { link_id: id, data } if id == link_id => Some(data),
+        NodeEvent::MessageReceived {
+            link_id: id, data, ..
+        } if id == link_id => Some(data),
+        _ => None,
+    })
+    .await
+}
+
+/// Wait for a `ConnectionClosed` event for a specific link ID.
+/// Drains other events while waiting.
+pub async fn wait_for_connection_closed_event(
+    event_rx: &mut mpsc::Receiver<NodeEvent>,
+    link_id: &LinkId,
+    timeout: Duration,
+) -> bool {
+    let link_id = *link_id;
+    wait_for_event(event_rx, timeout, move |event| match event {
+        NodeEvent::ConnectionClosed { link_id: id, .. } if id == link_id => Some(()),
+        _ => None,
+    })
+    .await
+    .is_some()
+}
+
+/// Wait for a `ConnectionEstablished` event for a specific link ID.
+/// Drains other events while waiting.
+pub async fn wait_for_connection_established(
+    event_rx: &mut mpsc::Receiver<NodeEvent>,
+    link_id: &LinkId,
+    timeout: Duration,
+) -> bool {
+    let link_id = *link_id;
+    wait_for_event(event_rx, timeout, move |event| match event {
+        NodeEvent::ConnectionEstablished { link_id: id, .. } if id == link_id => Some(()),
+        _ => None,
+    })
+    .await
+    .is_some()
+}
+
+/// Wait for a `ConnectionRequest` event, returning the link_id and destination_hash.
+/// Drains other events while waiting.
+pub async fn wait_for_connection_request(
+    event_rx: &mut mpsc::Receiver<NodeEvent>,
+    timeout: Duration,
+) -> Option<(LinkId, DestinationHash)> {
+    wait_for_event(event_rx, timeout, |event| match event {
+        NodeEvent::ConnectionRequest {
+            link_id,
+            destination_hash,
+            ..
+        } => Some((link_id, destination_hash)),
+        _ => None,
+    })
+    .await
+}
+
+/// Wait for a `ConnectionEstablished` event with `is_initiator == false`.
+/// Drains other events while waiting.
+pub async fn wait_for_responder_established(
+    event_rx: &mut mpsc::Receiver<NodeEvent>,
+    link_id: &LinkId,
+    timeout: Duration,
+) -> bool {
+    let link_id = *link_id;
+    wait_for_event(event_rx, timeout, move |event| match event {
+        NodeEvent::ConnectionEstablished {
+            link_id: id,
+            is_initiator,
+        } if id == link_id => {
+            assert!(!is_initiator, "Responder should have is_initiator == false");
+            Some(())
+        }
+        _ => None,
+    })
+    .await
+    .is_some()
+}
+
+/// Drain `event_rx` for `LinkDeliveryConfirmed` events until `expected_count` are
+/// collected or `timeout` expires. Returns the count received.
+pub async fn wait_for_delivery_confirmations(
+    event_rx: &mut mpsc::Receiver<NodeEvent>,
+    expected_count: usize,
+    timeout: Duration,
+) -> usize {
+    let mut count = 0;
+    let deadline = tokio::time::Instant::now() + timeout;
+    while count < expected_count {
+        let remaining = deadline - tokio::time::Instant::now();
+        if remaining.is_zero() {
+            break;
+        }
+        match tokio::time::timeout(remaining, event_rx.recv()).await {
+            Ok(Some(NodeEvent::LinkDeliveryConfirmed { .. })) => {
+                count += 1;
+            }
+            Ok(Some(_)) => continue,
+            Ok(None) | Err(_) => break,
+        }
+    }
+    count
+}
+
+// =========================================================================
+// Non-event helpers consolidated from test files
+// =========================================================================
+
+/// Decode a hex destination hash string into a DestinationHash.
+pub fn parse_dest_hash(hex_str: &str) -> DestinationHash {
+    let bytes: [u8; TRUNCATED_HASHBYTES] = hex::decode(hex_str).unwrap().try_into().unwrap();
+    DestinationHash::new(bytes)
+}
+
+/// Extract the Ed25519 signing key (last 32 bytes) from a 64-byte public key hex string.
+pub fn extract_signing_key(public_key_hex: &str) -> [u8; 32] {
+    let pub_key_bytes = hex::decode(public_key_hex).unwrap();
+    pub_key_bytes[32..64].try_into().unwrap()
+}
+
+/// Poll `node.has_path()` every 500ms until it returns true or timeout expires.
+pub async fn wait_for_path_on_node(
+    node: &reticulum_std::driver::ReticulumNode,
+    dest_hash: &DestinationHash,
+    timeout: Duration,
+) -> bool {
+    let deadline = tokio::time::Instant::now() + timeout;
+    while tokio::time::Instant::now() < deadline {
+        if node.has_path(dest_hash) {
+            return true;
+        }
+        tokio::time::sleep(Duration::from_millis(500)).await;
+    }
+    false
+}
+
+/// Poll a daemon for messages matching a prefix, collecting unique messages.
+/// Returns when `expected_count` unique messages are found or the deadline expires.
+pub async fn collect_messages(
+    daemon: &TestDaemon,
+    prefix: &str,
+    expected_count: usize,
+    timeout: Duration,
+) -> HashSet<String> {
+    let mut received = HashSet::new();
+    let deadline = tokio::time::Instant::now() + timeout;
+    while received.len() < expected_count && tokio::time::Instant::now() < deadline {
+        tokio::time::sleep(Duration::from_millis(500)).await;
+        let packets = daemon.get_received_packets().await.unwrap_or_default();
+        for p in &packets {
+            let s = String::from_utf8_lossy(&p.data);
+            if s.starts_with(prefix) {
+                received.insert(s.to_string());
+            }
+        }
+    }
+    received
+}
+
+/// Receive an announce packet from the daemon stream.
+/// Returns the parsed Packet and raw bytes on success.
+pub async fn receive_announce_from_daemon(
+    stream: &mut TcpStream,
+    deframer: &mut Deframer,
+    timeout_duration: Duration,
+) -> Option<(Packet, Vec<u8>)> {
+    let mut buffer = [0u8; 2048];
+    let start = std::time::Instant::now();
+
+    while start.elapsed() < timeout_duration {
+        match timeout(Duration::from_millis(100), stream.read(&mut buffer)).await {
+            Ok(Ok(0)) => return None,
+            Ok(Ok(n)) => {
+                let results = deframer.process(&buffer[..n]);
+                for result in results {
+                    if let DeframeResult::Frame(data) = result {
+                        if let Ok(pkt) = Packet::unpack(&data) {
+                            if pkt.flags.packet_type == PacketType::Announce {
+                                return Some((pkt, data));
+                            }
+                        }
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+    None
+}
+
+/// Wait for the Python daemon to show a link in its link table.
+/// Polls `get_links()` every 500ms.
+pub async fn wait_for_link_on_daemon(
+    daemon: &TestDaemon,
+    link_hash: &str,
+    timeout: Duration,
+) -> bool {
+    let deadline = tokio::time::Instant::now() + timeout;
+    while tokio::time::Instant::now() < deadline {
+        if let Ok(links) = daemon.get_links().await {
+            if links.contains_key(link_hash) {
+                return true;
+            }
+        }
+        tokio::time::sleep(Duration::from_millis(500)).await;
+    }
+    false
+}
+
+/// Create a Transport for testing (sans-I/O, no interfaces registered).
+/// Returns `(transport, interface_index)`.
+pub fn create_test_transport() -> (
+    reticulum_core::transport::Transport<TestClock, reticulum_core::traits::NoStorage>,
+    usize,
+) {
+    let clock = TestClock;
+    let identity = Identity::generate(&mut OsRng);
+    let config = reticulum_core::transport::TransportConfig::default();
+    let transport = reticulum_core::transport::Transport::new(
+        config,
+        clock,
+        reticulum_core::traits::NoStorage,
+        identity,
+    );
+    (transport, 0)
 }

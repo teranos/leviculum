@@ -66,16 +66,7 @@ use crate::traits::{Clock, Storage};
 use crate::transport::{Transport, TransportConfig, TransportEvent, TransportStats};
 use rand_core::CryptoRngCore;
 
-/// Display helper for hex-formatted byte slices in tracing output
-struct HexFmt<'a>(&'a [u8]);
-impl core::fmt::Display for HexFmt<'_> {
-    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-        for b in self.0 {
-            write!(f, "{b:02x}")?;
-        }
-        Ok(())
-    }
-}
+use crate::hex_fmt::HexFmt;
 
 /// Send options for controlling how data is delivered
 ///

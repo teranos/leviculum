@@ -23,7 +23,7 @@ use reticulum_core::packet::{
 };
 use reticulum_std::interfaces::hdlc::{frame, DeframeResult, Deframer};
 
-use crate::common::OsRng;
+use crate::common::{send_framed, OsRng};
 use crate::harness::TestDaemon;
 
 // =========================================================================
@@ -32,18 +32,6 @@ use crate::harness::TestDaemon;
 
 const DAEMON_SETTLE_TIME: Duration = Duration::from_millis(500);
 const PACKET_WAIT_TIMEOUT: Duration = Duration::from_secs(5);
-
-// =========================================================================
-// Helper functions
-// =========================================================================
-
-/// Send raw bytes over a stream with HDLC framing
-async fn send_framed(stream: &mut TcpStream, raw: &[u8]) {
-    let mut framed = Vec::new();
-    frame(raw, &mut framed);
-    stream.write_all(&framed).await.expect("Failed to send");
-    stream.flush().await.expect("Failed to flush");
-}
 
 /// Wait for a proof packet for a specific destination hash
 #[allow(dead_code)]
