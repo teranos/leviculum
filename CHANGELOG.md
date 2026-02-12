@@ -5,6 +5,26 @@ All notable changes to this project will be documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.5.8] - 2026-02-12
+
+### Fixed
+- **Stale→Active link recovery** — Rust links could not recover from Stale state, unlike Python (Link.py:987-988) which transitions back to Active on any inbound traffic. Now `LinkManager::try_recover_stale()` recovers Stale links on keepalive, channel, and regular data packets. Keepalive state guards relaxed to allow processing and echo on Stale links, enabling the recovery path.
+
+### Added
+- **Proof chain instrumentation** — tracing at three critical points in the data proof delivery chain: receipt registration (`register_data_receipt`), channel proof generation, and proof arrival/validation (`handle_data_proof`). Enables diagnosing why channel proofs may not match receipts.
+- **Repack symmetry check** — `TransportEvent::PacketReceived` now carries `raw_hash: Option<[u8; 32]>` (the SHA256 hash of original wire bytes). The node layer compares this against the hash of repacked bytes, logging a `REPACK HASH MISMATCH` warning if they diverge — which would indicate proof chain failure.
+- **Channel lifecycle tracing** — debug-level tracing for channel send, delivery, WindowFull, retransmit, max-retries-exceeded, and teardown events, including tx_ring size, window, and sequence numbers.
+- `LinkEvent::LinkRecovered` and `NodeEvent::ConnectionRecovered` events for Stale→Active transitions
+- `tracing` dependency in `reticulum-core` (`no_std` compatible, `default-features = false`)
+- `lrns connect` commands: `/announce` (re-announce destination), `/quiet` (hide announce/path messages), `/verbose` (show announce/path messages)
+- `lrns connect` TCP pre-check — verifies TCP connectivity before building the node, failing fast with a clear error instead of silently running with no interfaces
+- `RUST_LOG` environment variable support in `lrns` — takes precedence over `-v` flag, enables per-crate log filtering (e.g., `RUST_LOG=reticulum_core=debug`)
+
+### Changed
+- `tracing` workspace dependency configured with `default-features = false`; `reticulum-std` and `reticulum-cli` enable `features = ["std"]`
+- `tracing-subscriber` now uses `env-filter` feature for `RUST_LOG` support
+- `lrns` logging shows module targets (`with_target(true)`) for easier filtering
+
 ## [0.5.7] - 2026-02-11
 
 ### Added
@@ -571,7 +591,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Transport layer (routing, paths, deduplication)
 - Full interoperability with Python rnsd
 
-[Unreleased]: https://codeberg.org/Lew_Palm/leviculum/compare/v0.5.7...HEAD
+[Unreleased]: https://codeberg.org/Lew_Palm/leviculum/compare/v0.5.8...HEAD
+[0.5.8]: https://codeberg.org/Lew_Palm/leviculum/compare/v0.5.7...v0.5.8
 [0.5.7]: https://codeberg.org/Lew_Palm/leviculum/compare/v0.5.6...v0.5.7
 [0.5.6]: https://codeberg.org/Lew_Palm/leviculum/compare/v0.5.5...v0.5.6
 [0.5.5]: https://codeberg.org/Lew_Palm/leviculum/compare/v0.5.4...v0.5.5

@@ -10,8 +10,7 @@ use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 
 use clap::{Parser, Subcommand};
-use tracing::Level;
-use tracing_subscriber::FmtSubscriber;
+use tracing_subscriber::EnvFilter;
 
 use tokio::io::AsyncBufReadExt;
 
@@ -121,6 +120,7 @@ struct SessionState {
     discovered: BTreeMap<String, AnnounceInfo>,
     pending_requests: VecDeque<(LinkId, DestinationHash)>,
     active_link_id: Option<LinkId>,
+    show_announces: bool,
 }
 
 fn print_prompt() {
@@ -135,6 +135,9 @@ fn print_help() {
     println!("  /accept          Accept pending incoming link request");
     println!("  /send <msg>      Send data on active link");
     println!("  /close           Close active link");
+    println!("  /announce        Re-announce this destination");
+    println!("  /quiet           Hide announce/path messages");
+    println!("  /verbose         Show announce/path messages");
     println!("  /status          Show node status");
     println!("  /help            Show this help");
     println!("  /quit            Exit");
@@ -146,6 +149,12 @@ async fn run_connect(
     identity_path: Option<PathBuf>,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let socket_addr: SocketAddr = addr.parse().map_err(|e| format!("invalid address: {e}"))?;
+
+    // Verify TCP connectivity before building the node — the driver silently
+    // ignores connection failures, leaving the node running with no interfaces.
+    tokio::net::TcpStream::connect(socket_addr)
+        .await
+        .map_err(|e| format!("cannot connect to {socket_addr}: {e}"))?;
 
     // Load or generate identity private key bytes, so we can create two Identity
     // instances (one for the builder, one for the destination — Identity is not Clone).
@@ -211,6 +220,7 @@ async fn run_connect(
         discovered: BTreeMap::new(),
         pending_requests: VecDeque::new(),
         active_link_id: None,
+        show_announces: false,
     }));
 
     // Spawn event task
@@ -402,6 +412,23 @@ async fn run_connect(
                     }
                 }
 
+                "/announce" => match node.announce_destination(&dest_hash, Some(b"lrns-cli")) {
+                    Ok(()) => println!("[announced] {dest_hash_hex}"),
+                    Err(e) => eprintln!("announce failed: {e}"),
+                },
+
+                "/quiet" => {
+                    let mut st = state.lock().expect("lock poisoned");
+                    st.show_announces = false;
+                    println!("Announce/path messages hidden. Use /verbose to restore.");
+                }
+
+                "/verbose" => {
+                    let mut st = state.lock().expect("lock poisoned");
+                    st.show_announces = true;
+                    println!("Announce/path messages visible.");
+                }
+
                 "/status" => {
                     let st = state.lock().expect("lock poisoned");
                     println!("Identity:    {identity_hash}");
@@ -474,9 +501,10 @@ async fn try_send(
         return Err(format!("message too long ({} bytes, max 458)", msg.len()));
     }
 
-    s.send(msg.as_bytes())
-        .await
-        .map_err(|e| format!("send failed: {e}"))
+    s.send(msg.as_bytes()).await.map_err(|e| {
+        tracing::debug!(error = %e, msg_len = msg.len(), "try_send: stream.send() failed");
+        format!("send failed: {e}")
+    })
 }
 
 /// Event loop task: reads NodeEvents and prints them, updating shared state.
@@ -508,6 +536,9 @@ async fn event_loop(
                 entry.app_data = app_data.clone();
                 entry.public_key = public_key;
 
+                if !st.show_announces {
+                    continue;
+                }
                 format!("[announce] {hash}  app_data: {app_data}")
             }
 
@@ -523,6 +554,9 @@ async fn event_loop(
                     info.hops = Some(hops);
                 }
 
+                if !st.show_announces {
+                    continue;
+                }
                 format!("[path] {hash}  {hops} hops")
             }
 
@@ -579,6 +613,10 @@ async fn event_loop(
                 format!("[stale] link {link_id}")
             }
 
+            NodeEvent::ConnectionRecovered { link_id } => {
+                format!("[recovered] link {link_id}")
+            }
+
             _ => continue, // Ignore other events
         };
 
@@ -593,17 +631,14 @@ async fn event_loop(
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let args = Args::parse();
 
-    // Initialize logging
-    let log_level = if args.verbose {
-        Level::DEBUG
-    } else {
-        Level::INFO
-    };
-    let subscriber = FmtSubscriber::builder()
-        .with_max_level(log_level)
-        .with_target(false)
-        .finish();
-    tracing::subscriber::set_global_default(subscriber)?;
+    // Initialize logging: RUST_LOG env takes precedence, then -v flag
+    let default_filter = if args.verbose { "debug" } else { "info" };
+    tracing_subscriber::fmt()
+        .with_env_filter(
+            EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new(default_filter)),
+        )
+        .with_target(true)
+        .init();
 
     match args.command {
         Commands::Status => {

@@ -18,7 +18,7 @@ path = "src/lrns.rs"
 reticulum-core = { path = "../reticulum-core", default-features = true }
 reticulum-std = { path = "../reticulum-std" }
 tokio.workspace = true
-tracing.workspace = true
+tracing = { workspace = true, features = ["std"] }
 tracing-subscriber.workspace = true
 clap = { version = "4", features = ["derive"] }
 rand_core.workspace = true

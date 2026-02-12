@@ -180,7 +180,7 @@ let events = link_manager.drain_events();
 - [x] Link-Stale-Erkennung und automatisches Schließen nach Timeout
 - [x] Link-Teardown (ordnungsgemäßes Schließen via `close()` mit LINKCLOSE-Paket)
 
-**Einschränkungen behoben (v0.5.5):** C8 (Link-adressierte Pakete verworfen) und D12 (close_connection nicht exponiert) sind behoben — LINKCLOSE, Keepalive-Echos und Channel-ACKs erreichen jetzt LinkManager korrekt. **Responder-Pfad komplett (v0.5.6):** `ReticulumNode::accept_connection()` als async Wrapper, `MessageReceived`-Routing im Driver repariert.
+**Einschränkungen behoben (v0.5.5):** C8 (Link-adressierte Pakete verworfen) und D12 (close_connection nicht exponiert) sind behoben — LINKCLOSE, Keepalive-Echos und Channel-ACKs erreichen jetzt LinkManager korrekt. **Responder-Pfad komplett (v0.5.6):** `ReticulumNode::accept_connection()` als async Wrapper, `MessageReceived`-Routing im Driver repariert. **Stale→Active Recovery (v0.5.8):** Links können jetzt aus dem Stale-Zustand zurück in Active wechseln wenn Traffic eingeht (analog zu Python Link.py:987-988). Proof-Chain-Instrumentierung mit `tracing` für Debugging von Channel-Proof-Delivery-Problemen.
 
 ```rust
 // Implementierte API (via LinkManager):
@@ -205,7 +205,7 @@ link_manager.close(link_id)?;
 - [ ] TCP Server Interface (accept incoming connections)
 - [ ] `lrnsd` Grundgerüst (Config laden, Interfaces starten, Event-Loop)
 - [ ] Graceful Shutdown
-- [ ] Logging-Integration (tracing)
+- [x] Logging-Integration (tracing) — `tracing` in reticulum-core (no_std), RUST_LOG/env-filter in CLI (v0.5.8)
 
 **Deliverable:** Minimaler funktionierender Daemon
 
@@ -1022,6 +1022,6 @@ Für spätere Versionen:
 
 ---
 
-*Stand: 11. Februar 2026*
+*Stand: 12. Februar 2026*
 *Projekt: leviculum*
 *Lizenz: MIT*

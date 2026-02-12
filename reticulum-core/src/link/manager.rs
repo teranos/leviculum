@@ -54,6 +54,17 @@ use super::{
 };
 use crate::destination::DestinationHash;
 
+/// Display helper for hex-formatted byte slices in tracing output
+struct HexFmt<'a>(&'a [u8]);
+impl core::fmt::Display for HexFmt<'_> {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        for b in self.0 {
+            write!(f, "{b:02x}")?;
+        }
+        Ok(())
+    }
+}
+
 /// Extract packets matching a predicate from the unified queue, returning (link_id, data) pairs.
 fn drain_packets_by_kind(
     packets: &mut Vec<PendingPacket>,
@@ -435,6 +446,12 @@ impl LinkManager {
         let full_hash = packet_hash(packet_data);
         let mut truncated = [0u8; TRUNCATED_HASHBYTES];
         truncated.copy_from_slice(&full_hash[..TRUNCATED_HASHBYTES]);
+        tracing::debug!(
+            hash = %HexFmt(&full_hash),
+            truncated = %HexFmt(&truncated),
+            link = %HexFmt(link_id.as_bytes()),
+            "link_mgr: registered data receipt"
+        );
         self.data_receipts.insert(
             truncated,
             DataReceipt {
@@ -940,6 +957,11 @@ impl LinkManager {
     fn handle_data_proof(&mut self, link_id: &LinkId, proof_data: &[u8]) {
         // Extract the packet hash from the proof (first 32 bytes)
         if proof_data.len() != PROOF_DATA_SIZE {
+            tracing::debug!(
+                len = proof_data.len(),
+                expected = PROOF_DATA_SIZE,
+                "link_mgr: data proof wrong size"
+            );
             return;
         }
         let proof_hash: [u8; 32] = match proof_data[..32].try_into() {
@@ -950,15 +972,29 @@ impl LinkManager {
         // Compute truncated hash to look up receipt
         let mut truncated = [0u8; TRUNCATED_HASHBYTES];
         truncated.copy_from_slice(&proof_hash[..TRUNCATED_HASHBYTES]);
+        tracing::debug!(
+            proof_hash = %HexFmt(&proof_hash),
+            truncated = %HexFmt(&truncated),
+            link = %HexFmt(link_id.as_bytes()),
+            receipts = self.data_receipts.len(),
+            "link_mgr: data proof received"
+        );
 
         // Look up receipt by truncated hash
         let receipt = match self.data_receipts.get(&truncated) {
             Some(r) => r,
-            None => return, // No receipt for this hash
+            None => {
+                tracing::debug!(
+                    receipts = self.data_receipts.len(),
+                    "link_mgr: data proof — no matching receipt"
+                );
+                return;
+            }
         };
 
         // Verify the receipt is for this link
         if &receipt.link_id != link_id {
+            tracing::debug!("link_mgr: data proof — link_id mismatch");
             return;
         }
 
@@ -973,10 +1009,16 @@ impl LinkManager {
             // Proof is valid - emit DataDelivered event
             let packet_hash = receipt.full_hash;
             self.data_receipts.remove(&truncated);
+            tracing::debug!(
+                receipts = self.data_receipts.len(),
+                "link_mgr: data proof validated — delivered"
+            );
             self.events.push(LinkEvent::DataDelivered {
                 link_id: *link_id,
                 packet_hash,
             });
+        } else {
+            tracing::debug!("link_mgr: data proof — signature validation failed");
         }
     }
 
@@ -984,6 +1026,11 @@ impl LinkManager {
         // DATA packets are addressed to link_id
         let link_id = LinkId::new(packet.destination_hash);
         let now_secs = now_ms / MS_PER_SECOND;
+
+        // Recover stale links on any inbound traffic (Python Link.py:987-988).
+        // Safe to call unconditionally: RTT only fires in Handshake state,
+        // LinkClose transitions to Closed — neither will be Stale.
+        self.try_recover_stale(&link_id, now_secs);
 
         let Some(link) = self.links.get_mut(&link_id) else {
             return;
@@ -1080,6 +1127,12 @@ impl LinkManager {
             // Process through channel
             match channel.receive(&plaintext) {
                 Ok(Some(envelope)) => {
+                    tracing::debug!(
+                        seq = envelope.sequence,
+                        msgtype = envelope.msgtype,
+                        len = envelope.data.len(),
+                        "link_mgr: channel message received (in-order)"
+                    );
                     // In-order message received
                     self.events.push(LinkEvent::ChannelMessageReceived {
                         link_id,
@@ -1089,10 +1142,10 @@ impl LinkManager {
                     });
                 }
                 Ok(None) => {
-                    // Out-of-order message buffered
+                    tracing::debug!("link_mgr: channel message buffered (out-of-order)");
                 }
-                Err(_) => {
-                    // Invalid envelope
+                Err(e) => {
+                    tracing::debug!(?e, "link_mgr: channel receive failed");
                 }
             }
 
@@ -1118,6 +1171,12 @@ impl LinkManager {
                 None => return,
             };
             let full_packet_hash = packet_hash(raw_packet);
+            tracing::debug!(
+                hash = %HexFmt(&full_packet_hash),
+                link = %HexFmt(link_id.as_bytes()),
+                raw_len = raw_packet.len(),
+                "link_mgr: generating channel proof"
+            );
             if let Some(signing_key) = link.dest_signing_key() {
                 if let Ok(proof_packet) =
                     link.build_data_proof_packet_with_signing_key(&full_packet_hash, signing_key)
@@ -1190,6 +1249,24 @@ impl LinkManager {
                 // decryption indicate tampering, corruption, or misrouted
                 // data and are silently discarded.
             }
+        }
+    }
+
+    /// If the link is Stale and we receive any valid packet, recover to Active.
+    /// Matches Python Link.py:987-988.
+    fn try_recover_stale(&mut self, link_id: &LinkId, now_secs: u64) -> bool {
+        let Some(link) = self.links.get_mut(link_id) else {
+            return false;
+        };
+        if link.state() == LinkState::Stale {
+            link.set_state(LinkState::Active);
+            link.record_inbound(now_secs);
+            self.events
+                .push(LinkEvent::LinkRecovered { link_id: *link_id });
+            tracing::debug!(link = %HexFmt(link_id.as_bytes()), "link_mgr: recovered from stale");
+            true
+        } else {
+            false
         }
     }
 
@@ -1343,7 +1420,8 @@ impl LinkManager {
             // Process actions
             for action in actions {
                 match action {
-                    ChannelAction::Retransmit { sequence: _, data } => {
+                    ChannelAction::Retransmit { sequence, data } => {
+                        tracing::debug!(seq = sequence, "link_mgr: queuing channel retransmit");
                         // Build and queue the retransmission packet
                         if let Some(link) = self.links.get(&link_id) {
                             if let Ok(packet) = link.build_data_packet_with_context(
@@ -1359,6 +1437,7 @@ impl LinkManager {
                         }
                     }
                     ChannelAction::TearDownLink => {
+                        tracing::debug!("link_mgr: channel teardown — closing link");
                         // Max retries exceeded - close the link
                         if let Some(link) = self.links.get_mut(&link_id) {
                             if let Ok(close_packet) = link.build_close_packet(rng) {

@@ -322,6 +322,8 @@ pub enum TransportEvent {
         packet: Box<Packet>,
         /// Interface it arrived on
         interface_index: usize,
+        /// Hash of original wire bytes (for repack symmetry verification)
+        raw_hash: Option<[u8; 32]>,
     },
     /// Path to a destination was found (from announce)
     PathFound {
@@ -1301,6 +1303,7 @@ impl<C: Clock, S: Storage> Transport<C, S> {
                     destination_hash: dest_hash,
                     packet: Box::new(packet),
                     interface_index,
+                    raw_hash: Some(packet_hash(raw)),
                 });
                 return Ok(());
             }
@@ -1441,6 +1444,7 @@ impl<C: Clock, S: Storage> Transport<C, S> {
                 destination_hash: dest_hash,
                 packet: Box::new(packet),
                 interface_index,
+                raw_hash: None,
             });
             return Ok(());
         }
@@ -1539,6 +1543,7 @@ impl<C: Clock, S: Storage> Transport<C, S> {
                 destination_hash: dest_hash,
                 packet: Box::new(packet),
                 interface_index,
+                raw_hash: None,
             });
             return Ok(());
         }
@@ -1569,6 +1574,7 @@ impl<C: Clock, S: Storage> Transport<C, S> {
                 destination_hash: dest_hash,
                 packet: Box::new(packet),
                 interface_index,
+                raw_hash: Some(full_packet_hash),
             });
 
             // Handle proof generation based on strategy
@@ -1654,6 +1660,7 @@ impl<C: Clock, S: Storage> Transport<C, S> {
                 destination_hash: dest_hash,
                 packet: Box::new(packet),
                 interface_index,
+                raw_hash: Some(full_packet_hash),
             });
             return Ok(());
         }
@@ -2692,6 +2699,7 @@ mod tests {
                     destination_hash,
                     packet,
                     interface_index,
+                    ..
                 } => {
                     assert_eq!(destination_hash, &hash);
                     assert_eq!(packet.data.as_slice(), b"hello");

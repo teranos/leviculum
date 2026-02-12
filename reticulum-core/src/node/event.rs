@@ -122,6 +122,12 @@ pub enum NodeEvent {
         link_id: LinkId,
     },
 
+    /// Connection recovered from stale state (traffic resumed)
+    ConnectionRecovered {
+        /// The link/connection ID
+        link_id: LinkId,
+    },
+
     /// Connection closed
     ConnectionClosed {
         /// The link/connection ID

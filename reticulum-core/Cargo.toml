@@ -22,6 +22,7 @@ hmac.workspace = true
 hkdf.workspace = true
 rand_core.workspace = true
 zeroize.workspace = true
+tracing.workspace = true
 libbz2-rs-sys = { workspace = true, optional = true }
 
 [dev-dependencies]

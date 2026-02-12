@@ -210,6 +210,11 @@ pub enum LinkEvent {
         /// The link ID
         link_id: LinkId,
     },
+    /// Link recovered from stale state (traffic resumed, Python Link.py:987-988)
+    LinkRecovered {
+        /// The link ID
+        link_id: LinkId,
+    },
     /// Channel message received on a link
     ChannelMessageReceived {
         /// The link ID
@@ -1510,7 +1515,10 @@ impl Link {
         use crate::destination::DestinationType;
         use crate::packet::{HeaderType, PacketContext, PacketFlags, PacketType, TransportType};
 
-        self.require_state(LinkState::Active)?;
+        // Allow keepalive echo on both Active and Stale links (recovery path)
+        if self.state != LinkState::Active && self.state != LinkState::Stale {
+            return Err(LinkError::InvalidState);
+        }
 
         // Keepalive payload: KEEPALIVE_INITIATOR_BYTE for initiator, KEEPALIVE_RESPONDER_BYTE for responder
         let payload = if self.initiator {
@@ -1630,7 +1638,10 @@ impl Link {
     /// # Returns
     /// Ok(true) if responder should echo back a keepalive, Ok(false) otherwise.
     pub fn process_keepalive(&mut self, data: &[u8]) -> Result<bool, LinkError> {
-        self.require_state(LinkState::Active)?;
+        // Allow processing keepalives on both Active and Stale links (recovery path)
+        if self.state != LinkState::Active && self.state != LinkState::Stale {
+            return Err(LinkError::InvalidState);
+        }
 
         // Keepalive payload should be exactly KEEPALIVE_PAYLOAD_SIZE byte(s)
         if data.len() != KEEPALIVE_PAYLOAD_SIZE {

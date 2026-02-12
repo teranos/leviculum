@@ -341,6 +341,12 @@ impl Channel {
         }
 
         if !self.is_ready_to_send() {
+            tracing::debug!(
+                tx_ring = self.tx_ring.len(),
+                window = self.window,
+                window_max = self.window_max,
+                "channel: WindowFull — send rejected"
+            );
             return Err(ChannelError::WindowFull);
         }
 
@@ -357,6 +363,15 @@ impl Channel {
         outbound.timeout_at_ms = now_ms.saturating_add(timeout_ms);
 
         self.tx_ring.push_back(outbound);
+
+        tracing::debug!(
+            seq = sequence,
+            tx_ring = self.tx_ring.len(),
+            window = self.window,
+            window_max = self.window_max,
+            timeout_ms,
+            "channel: sent"
+        );
 
         Ok(packed)
     }
@@ -520,8 +535,19 @@ impl Channel {
         {
             self.tx_ring.remove(pos);
             self.adjust_window(true, rtt_ms);
+            tracing::debug!(
+                seq = sequence,
+                tx_ring = self.tx_ring.len(),
+                window = self.window,
+                "channel: delivered"
+            );
             true
         } else {
+            tracing::debug!(
+                seq = sequence,
+                tx_ring = self.tx_ring.len(),
+                "channel: delivered — seq not found (duplicate ACK?)"
+            );
             false
         }
     }
@@ -564,6 +590,13 @@ impl Channel {
         for (i, tries) in timed_out {
             // Timeout occurred
             if tries >= self.max_tries {
+                let seq = self.tx_ring[i].envelope.sequence;
+                tracing::debug!(
+                    seq,
+                    tries,
+                    max_tries = self.max_tries,
+                    "channel: max retries exceeded — tearing down link"
+                );
                 self.tx_ring[i].state = MessageState::Failed;
                 actions.push(ChannelAction::TearDownLink);
                 window_decrements += 1;
@@ -579,6 +612,14 @@ impl Channel {
             outbound.tries = new_tries;
             outbound.sent_at_ms = now_ms;
             outbound.timeout_at_ms = now_ms.saturating_add(timeout_ms);
+            tracing::debug!(
+                seq = outbound.envelope.sequence,
+                attempt = new_tries,
+                timeout_ms,
+                tx_ring = queue_len,
+                window = self.window,
+                "channel: retransmitting"
+            );
 
             actions.push(ChannelAction::Retransmit {
                 sequence: outbound.envelope.sequence,

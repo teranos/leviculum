@@ -61,10 +61,21 @@ use crate::constants::TRUNCATED_HASHBYTES;
 use crate::destination::{Destination, DestinationHash, ProofStrategy};
 use crate::identity::Identity;
 use crate::link::{LinkCloseReason, LinkEvent, LinkId, LinkManager};
-use crate::packet::Packet;
+use crate::packet::{packet_hash, Packet};
 use crate::traits::{Clock, Storage};
 use crate::transport::{Transport, TransportConfig, TransportEvent, TransportStats};
 use rand_core::CryptoRngCore;
+
+/// Display helper for hex-formatted byte slices in tracing output
+struct HexFmt<'a>(&'a [u8]);
+impl core::fmt::Display for HexFmt<'_> {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        for b in self.0 {
+            write!(f, "{b:02x}")?;
+        }
+        Ok(())
+    }
+}
 
 /// Send options for controlling how data is delivered
 ///
@@ -871,6 +882,7 @@ impl<R: CryptoRngCore, C: Clock, S: Storage> NodeCore<R, C, S> {
                 destination_hash,
                 packet,
                 interface_index,
+                raw_hash,
             } => {
                 // Check if this is a link-related packet
                 if packet.flags.packet_type == crate::packet::PacketType::LinkRequest
@@ -883,6 +895,22 @@ impl<R: CryptoRngCore, C: Clock, S: Storage> NodeCore<R, C, S> {
                 {
                     // Route to link manager
                     let raw = self.repack_packet(&packet);
+
+                    // Verify repack symmetry: if original wire hash is known,
+                    // check that repacking produces the same hashable bytes.
+                    if let Some(original_hash) = raw_hash {
+                        let repacked_hash = packet_hash(&raw);
+                        if original_hash != repacked_hash {
+                            tracing::warn!(
+                                original = %HexFmt(&original_hash),
+                                repacked = %HexFmt(&repacked_hash),
+                                ptype = ?packet.flags.packet_type,
+                                ctx = ?packet.context,
+                                "REPACK HASH MISMATCH — proof chain will fail"
+                            );
+                        }
+                    }
+
                     let now_ms = self.transport.clock().now_ms();
                     self.link_manager.process_packet(
                         &packet,
@@ -1000,6 +1028,10 @@ impl<R: CryptoRngCore, C: Clock, S: Storage> NodeCore<R, C, S> {
 
             LinkEvent::LinkStale { link_id } => {
                 self.events.push(NodeEvent::ConnectionStale { link_id });
+            }
+
+            LinkEvent::LinkRecovered { link_id } => {
+                self.events.push(NodeEvent::ConnectionRecovered { link_id });
             }
 
             LinkEvent::LinkClosed { link_id, reason } => {
