@@ -256,6 +256,15 @@ pub enum LinkEvent {
         /// Channel message sequence number
         sequence: u16,
     },
+    /// Channel message retransmitted due to timeout
+    ChannelRetransmit {
+        /// The link ID
+        link_id: LinkId,
+        /// Channel message sequence number
+        sequence: u16,
+        /// Which attempt this is (2 = first retry, 3 = second, etc.)
+        tries: u8,
+    },
     /// Proof requested for received data (PROVE_APP)
     ///
     /// Emitted when data is received on a link with `ProofStrategy::App`.

@@ -1478,7 +1478,11 @@ impl LinkManager {
             // Process actions
             for action in actions {
                 match action {
-                    ChannelAction::Retransmit { sequence, data } => {
+                    ChannelAction::Retransmit {
+                        sequence,
+                        data,
+                        tries,
+                    } => {
                         tracing::debug!(seq = sequence, "link_mgr: queuing channel retransmit");
                         // Build and queue the retransmission packet
                         if let Some(link) = self.links.get(&link_id) {
@@ -1496,6 +1500,11 @@ impl LinkManager {
                                     new_hash,
                                     old_hash,
                                     sequence,
+                                });
+                                self.events.push(LinkEvent::ChannelRetransmit {
+                                    link_id,
+                                    sequence,
+                                    tries,
                                 });
 
                                 self.pending_packets.push(PendingPacket::Channel {

@@ -128,6 +128,16 @@ pub enum NodeEvent {
         link_id: LinkId,
     },
 
+    /// A channel message was retransmitted due to timeout
+    ChannelRetransmit {
+        /// The link/connection ID
+        link_id: LinkId,
+        /// Message sequence number
+        sequence: u16,
+        /// Retry attempt number (2 = first retry, etc.)
+        tries: u8,
+    },
+
     /// Connection closed
     ConnectionClosed {
         /// The link/connection ID

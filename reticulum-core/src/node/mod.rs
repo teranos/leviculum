@@ -1121,6 +1121,18 @@ impl<R: CryptoRngCore, C: Clock, S: Storage> NodeCore<R, C, S> {
                 self.channel_hash_to_seq.insert(new_hash, sequence);
             }
 
+            LinkEvent::ChannelRetransmit {
+                link_id,
+                sequence,
+                tries,
+            } => {
+                self.events.push(NodeEvent::ChannelRetransmit {
+                    link_id,
+                    sequence,
+                    tries,
+                });
+            }
+
             LinkEvent::ProofRequested {
                 link_id,
                 packet_hash,

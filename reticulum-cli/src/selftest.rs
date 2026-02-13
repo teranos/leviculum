@@ -84,6 +84,8 @@ struct SelftestStats {
     seen_seqs_a: BTreeSet<u64>,
     seen_seqs_b: BTreeSet<u64>,
     rtt_samples: Vec<u64>,
+    retransmits_a: u64,
+    retransmits_b: u64,
     stale_count: u64,
     recovered_count: u64,
 
@@ -123,6 +125,8 @@ impl SelftestStats {
             seen_seqs_a: BTreeSet::new(),
             seen_seqs_b: BTreeSet::new(),
             rtt_samples: Vec::new(),
+            retransmits_a: 0,
+            retransmits_b: 0,
             stale_count: 0,
             recovered_count: 0,
 
@@ -160,6 +164,9 @@ struct SharedState {
     link_established_b: Notify,
     // Phase flag: true during single-packet phase
     single_packet_phase: AtomicBool,
+    // Link death detection
+    link_dead: AtomicBool,
+    link_dead_elapsed_secs: Mutex<Option<u64>>,
 }
 
 impl SharedState {
@@ -175,6 +182,8 @@ impl SharedState {
             link_established_a: Notify::new(),
             link_established_b: Notify::new(),
             single_packet_phase: AtomicBool::new(false),
+            link_dead: AtomicBool::new(false),
+            link_dead_elapsed_secs: Mutex::new(None),
         }
     }
 }
@@ -371,11 +380,20 @@ async fn event_task_a(
             NodeEvent::LinkDeliveryConfirmed { .. } => {
                 state.stats.lock().unwrap().confirmed_a += 1;
             }
+            NodeEvent::ChannelRetransmit { .. } => {
+                state.stats.lock().unwrap().retransmits_a += 1;
+            }
             NodeEvent::ConnectionStale { .. } => {
                 state.stats.lock().unwrap().stale_count += 1;
             }
             NodeEvent::ConnectionRecovered { .. } => {
                 state.stats.lock().unwrap().recovered_count += 1;
+            }
+            NodeEvent::ConnectionClosed { reason, .. } => {
+                let elapsed = start_time.elapsed().as_secs();
+                println!("[selftest]   +{elapsed}s:  Link died ({reason:?})");
+                state.link_dead.store(true, Ordering::Relaxed);
+                *state.link_dead_elapsed_secs.lock().unwrap() = Some(elapsed);
             }
             _ => {}
         }
@@ -421,11 +439,20 @@ async fn event_task_b(
             NodeEvent::LinkDeliveryConfirmed { .. } => {
                 state.stats.lock().unwrap().confirmed_b += 1;
             }
+            NodeEvent::ChannelRetransmit { .. } => {
+                state.stats.lock().unwrap().retransmits_b += 1;
+            }
             NodeEvent::ConnectionStale { .. } => {
                 state.stats.lock().unwrap().stale_count += 1;
             }
             NodeEvent::ConnectionRecovered { .. } => {
                 state.stats.lock().unwrap().recovered_count += 1;
+            }
+            NodeEvent::ConnectionClosed { reason, .. } => {
+                let elapsed = start_time.elapsed().as_secs();
+                println!("[selftest]   +{elapsed}s:  Link died ({reason:?})");
+                state.link_dead.store(true, Ordering::Relaxed);
+                *state.link_dead_elapsed_secs.lock().unwrap() = Some(elapsed);
             }
             _ => {}
         }
@@ -770,6 +797,9 @@ pub async fn run_selftest(
             if now >= phase5_end {
                 break;
             }
+            if state.link_dead.load(Ordering::Relaxed) {
+                break;
+            }
 
             let send_due = tokio::time::Instant::now() >= next_send;
             let health_due = tokio::time::Instant::now() >= next_health;
@@ -797,6 +827,7 @@ pub async fn run_selftest(
                 let oo = st.out_of_order;
                 let dupes = st.duplicates;
                 let total_sent = st.sent_a + st.sent_b;
+                let retx = st.retransmits_a + st.retransmits_b;
                 drop(st);
 
                 let win = node_a
@@ -822,7 +853,7 @@ pub async fn run_selftest(
                 }
 
                 println!(
-                    "[selftest]   +{elapsed_checks}s:  sent={total_sent}  recv={}  ack={}  fails={fails}  win={win} — {status}",
+                    "[selftest]   +{elapsed_checks}s:  sent={total_sent}  recv={}  ack={}  fails={fails}  retx={retx}  win={win} — {status}",
                     recv_a + recv_b,
                     conf_a + conf_b,
                 );
@@ -837,77 +868,6 @@ pub async fn run_selftest(
             }
         }
 
-        // Brief drain period for in-flight messages
-        tokio::time::sleep(std::time::Duration::from_secs(5)).await;
-
-        // ── Phase 6: Burst ──────────────────────────────────────────────
-        // Send 10 messages as fast as possible, retrying on WindowFull.
-        // This exercises the channel under load — a well-functioning link
-        // should be able to absorb the burst within a few seconds.
-        let mut burst_ok = 0u64;
-        let mut burst_retries = 0u64;
-        let burst_timeout = Instant::now() + std::time::Duration::from_secs(10);
-        for seq in 0..10u64 {
-            let msg = build_message("ab", 10000 + seq, start_time.elapsed().as_millis() as u64);
-            loop {
-                match stream_a.send(&msg).await {
-                    Ok(()) => {
-                        state.stats.lock().unwrap().sent_a += 1;
-                        burst_ok += 1;
-                        break;
-                    }
-                    Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {
-                        burst_retries += 1;
-                        if Instant::now() > burst_timeout {
-                            state.stats.lock().unwrap().send_fails_a += 1;
-                            break;
-                        }
-                        tokio::time::sleep(std::time::Duration::from_millis(200)).await;
-                    }
-                    Err(_) => {
-                        state.stats.lock().unwrap().send_fails_a += 1;
-                        break;
-                    }
-                }
-            }
-        }
-
-        if burst_ok < 10 {
-            println!(
-                "[selftest] Phase 6: Burst {burst_ok}/10 — WARN ({} not sent, {burst_retries} retries)",
-                10 - burst_ok
-            );
-            link_warnings.push(format!("burst: {}/10 not sent", 10 - burst_ok));
-        } else if burst_retries > 0 {
-            println!("[selftest] Phase 6: Burst 10/10 — OK ({burst_retries} retries)");
-        } else {
-            println!("[selftest] Phase 6: Burst 10/10 — OK");
-        }
-
-        // ── Phase 7: Close link ─────────────────────────────────────────
-        // Drain until all sent messages are confirmed (or timeout)
-        let drain_start = Instant::now();
-        let drain_timeout = std::time::Duration::from_secs(15);
-        loop {
-            let all_confirmed = {
-                let st = state.stats.lock().unwrap();
-                st.confirmed_a >= st.sent_a && st.confirmed_b >= st.sent_b
-            };
-            if all_confirmed {
-                println!("[selftest] Phase 7: All messages confirmed — closing");
-                break;
-            }
-            if drain_start.elapsed() > drain_timeout {
-                let st = state.stats.lock().unwrap();
-                println!(
-                    "[selftest] Phase 7: Drain timeout — confirmed {}/{} (a) {}/{} (b)",
-                    st.confirmed_a, st.sent_a, st.confirmed_b, st.sent_b
-                );
-                break;
-            }
-            tokio::time::sleep(std::time::Duration::from_millis(100)).await;
-        }
-
         final_win = node_a
             .connection_stats(&link_id)
             .map(|s| s.window)
@@ -917,12 +877,97 @@ pub async fn run_selftest(
             .map(|s| s.window_max)
             .unwrap_or(0);
 
-        // Close from B side
-        if let Err(e) = node_b.close_connection(stream_b.link_id()).await {
-            eprintln!("[selftest] close B: {e}");
+        if state.link_dead.load(Ordering::Relaxed) {
+            println!("[selftest] Phase 6: Skipped (link dead)");
+            println!("[selftest] Phase 7: Skipped (link dead)");
+        } else {
+            // Brief drain period for in-flight messages
+            tokio::time::sleep(std::time::Duration::from_secs(5)).await;
+
+            // ── Phase 6: Burst ──────────────────────────────────────────
+            // Send 10 messages as fast as possible, retrying on WindowFull.
+            // This exercises the channel under load — a well-functioning link
+            // should be able to absorb the burst within a few seconds.
+            let mut burst_ok = 0u64;
+            let mut burst_retries = 0u64;
+            let burst_timeout = Instant::now() + std::time::Duration::from_secs(10);
+            for seq in 0..10u64 {
+                let msg = build_message("ab", 10000 + seq, start_time.elapsed().as_millis() as u64);
+                loop {
+                    match stream_a.send(&msg).await {
+                        Ok(()) => {
+                            state.stats.lock().unwrap().sent_a += 1;
+                            burst_ok += 1;
+                            break;
+                        }
+                        Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {
+                            burst_retries += 1;
+                            if Instant::now() > burst_timeout {
+                                state.stats.lock().unwrap().send_fails_a += 1;
+                                break;
+                            }
+                            tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+                        }
+                        Err(_) => {
+                            state.stats.lock().unwrap().send_fails_a += 1;
+                            break;
+                        }
+                    }
+                }
+            }
+
+            if burst_ok < 10 {
+                println!(
+                    "[selftest] Phase 6: Burst {burst_ok}/10 — WARN ({} not sent, {burst_retries} retries)",
+                    10 - burst_ok
+                );
+                link_warnings.push(format!("burst: {}/10 not sent", 10 - burst_ok));
+            } else if burst_retries > 0 {
+                println!("[selftest] Phase 6: Burst 10/10 — OK ({burst_retries} retries)");
+            } else {
+                println!("[selftest] Phase 6: Burst 10/10 — OK");
+            }
+
+            // ── Phase 7: Close link ─────────────────────────────────────
+            // Drain until all sent messages are confirmed (or timeout)
+            let drain_start = Instant::now();
+            let drain_timeout = std::time::Duration::from_secs(15);
+            loop {
+                let all_confirmed = {
+                    let st = state.stats.lock().unwrap();
+                    st.confirmed_a >= st.sent_a && st.confirmed_b >= st.sent_b
+                };
+                if all_confirmed {
+                    println!("[selftest] Phase 7: All messages confirmed — closing");
+                    break;
+                }
+                if drain_start.elapsed() > drain_timeout {
+                    let st = state.stats.lock().unwrap();
+                    println!(
+                        "[selftest] Phase 7: Drain timeout — confirmed {}/{} (a) {}/{} (b)",
+                        st.confirmed_a, st.sent_a, st.confirmed_b, st.sent_b
+                    );
+                    break;
+                }
+                tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+            }
+
+            final_win = node_a
+                .connection_stats(&link_id)
+                .map(|s| s.window)
+                .unwrap_or(0);
+            final_win_max = node_a
+                .connection_stats(&link_id)
+                .map(|s| s.window_max)
+                .unwrap_or(0);
+
+            // Close from B side
+            if let Err(e) = node_b.close_connection(stream_b.link_id()).await {
+                eprintln!("[selftest] close B: {e}");
+            }
+            tokio::time::sleep(std::time::Duration::from_secs(3)).await;
+            println!("[selftest] Phase 7: Close link — OK");
         }
-        tokio::time::sleep(std::time::Duration::from_secs(3)).await;
-        println!("[selftest] Phase 7: Close link — OK");
     }
 
     let mut sp_warnings: Vec<String> = Vec::new();
@@ -1084,7 +1129,20 @@ pub async fn run_selftest(
         );
         println!("[selftest]  Send fails:    {total_fails} WindowFull");
         println!("[selftest]  Window:        final={final_win} (max={final_win_max})");
+        let retransmits = {
+            let st = state.stats.lock().unwrap();
+            (st.retransmits_a, st.retransmits_b)
+        };
+        println!(
+            "[selftest]  Retransmits:   a={} b={} total={}",
+            retransmits.0,
+            retransmits.1,
+            retransmits.0 + retransmits.1,
+        );
         println!("[selftest]  Link events:   stale={stale_count} recovered={recovered_count}");
+        if let Some(dead_at) = *state.link_dead_elapsed_secs.lock().unwrap() {
+            println!("[selftest]  Link death:    +{dead_at}s");
+        }
         if !link_warnings.is_empty() {
             for w in &link_warnings {
                 println!("[selftest]  Warning:       {w}");

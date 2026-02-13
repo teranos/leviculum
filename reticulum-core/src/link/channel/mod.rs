@@ -163,6 +163,8 @@ pub enum ChannelAction {
         sequence: u16,
         /// Packed envelope data to transmit
         data: Vec<u8>,
+        /// Which attempt this is (2 = first retry, 3 = second, etc.)
+        tries: u8,
     },
     /// Link should be torn down (max retries exceeded)
     TearDownLink,
@@ -656,6 +658,7 @@ impl Channel {
             actions.push(ChannelAction::Retransmit {
                 sequence: outbound.envelope.sequence,
                 data: outbound.envelope.pack(),
+                tries: new_tries,
             });
 
             window_decrements += 1;
