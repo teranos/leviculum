@@ -98,6 +98,8 @@ pub struct LinkManager {
     pending_packets: Vec<PendingPacket>,
     /// Receipts for sent data packets awaiting proofs (truncated_hash -> receipt)
     data_receipts: BTreeMap<[u8; TRUNCATED_HASHBYTES], DataReceipt>,
+    /// Maps (link_id, channel_sequence) → truncated receipt hash for cleanup on retransmit
+    channel_receipt_keys: BTreeMap<(LinkId, u16), [u8; TRUNCATED_HASHBYTES]>,
 }
 
 /// State for a pending outgoing link (initiator side, awaiting proof)
@@ -134,6 +136,7 @@ impl LinkManager {
             events: Vec::new(),
             pending_packets: Vec::new(),
             data_receipts: BTreeMap::new(),
+            channel_receipt_keys: BTreeMap::new(),
         }
     }
 
@@ -415,24 +418,37 @@ impl LinkManager {
         link.build_data_proof_packet_with_signing_key(packet_hash, signing_key)
     }
 
-    /// Register a data receipt for tracking delivery via proofs
+    /// Register a data receipt for a channel message, removing any previous receipt
+    /// for the same (link_id, sequence).
     ///
-    /// Used by NodeCore to register receipts for channel messages, which are
-    /// built by Connection (not LinkManager) but need proof matching here.
+    /// On retransmit, the re-encrypted packet has a different hash. This method
+    /// removes the old receipt before inserting the new one, preventing leaks
+    /// and ensuring proofs for retransmits match.
     ///
     /// # Arguments
     /// * `packet_data` - The serialized packet bytes (hashed for receipt matching)
     /// * `link_id` - The link this packet was sent on
+    /// * `sequence` - Channel message sequence number
     /// * `now_ms` - Current time in milliseconds
     ///
     /// # Returns
-    /// The full SHA256 hash of the packet
-    pub fn register_data_receipt(
+    /// `(new_full_hash, old_full_hash)` where `old_full_hash` is `Some` if an
+    /// old receipt was replaced.
+    pub fn register_channel_receipt(
         &mut self,
         packet_data: &[u8],
         link_id: LinkId,
+        sequence: u16,
         now_ms: u64,
-    ) -> [u8; 32] {
+    ) -> ([u8; 32], Option<[u8; 32]>) {
+        // Remove old receipt for this (link_id, sequence) if present
+        let old_full_hash = self
+            .channel_receipt_keys
+            .remove(&(link_id, sequence))
+            .and_then(|old_truncated| self.data_receipts.remove(&old_truncated))
+            .map(|old_receipt| old_receipt.full_hash);
+
+        // Register new receipt
         let full_hash = packet_hash(packet_data);
         let mut truncated = [0u8; TRUNCATED_HASHBYTES];
         truncated.copy_from_slice(&full_hash[..TRUNCATED_HASHBYTES]);
@@ -440,7 +456,7 @@ impl LinkManager {
             hash = %HexFmt(&full_hash),
             truncated = %HexFmt(&truncated),
             link = %HexFmt(link_id.as_bytes()),
-            "link_mgr: registered data receipt"
+            "link_mgr: registered channel receipt"
         );
         self.data_receipts.insert(
             truncated,
@@ -450,7 +466,10 @@ impl LinkManager {
                 sent_at_ms: now_ms,
             },
         );
-        full_hash
+        self.channel_receipt_keys
+            .insert((link_id, sequence), truncated);
+
+        (full_hash, old_full_hash)
     }
 
     /// Close a link gracefully
@@ -471,6 +490,8 @@ impl LinkManager {
             // Remove from pending tracking
             self.pending_outgoing.remove(link_id);
             self.pending_incoming.remove(link_id);
+            self.channel_receipt_keys
+                .retain(|(lid, _), _| *lid != *link_id);
             // Emit event
             self.events.push(LinkEvent::LinkClosed {
                 link_id: *link_id,
@@ -490,6 +511,8 @@ impl LinkManager {
         // Always remove from tracking regardless of link state
         self.links.remove(link_id);
         self.channels.remove(link_id);
+        self.channel_receipt_keys
+            .retain(|(lid, _), _| *lid != *link_id);
         self.pending_outgoing.remove(link_id);
         self.pending_incoming.remove(link_id);
         self.events.push(LinkEvent::LinkClosed {
@@ -1311,10 +1334,12 @@ impl LinkManager {
             });
         }
 
-        // Clean up expired data receipts
+        // Clean up expired data receipts and their channel_receipt_keys
         self.data_receipts.retain(|_, receipt| {
             now_ms.saturating_sub(receipt.sent_at_ms) <= DATA_RECEIPT_TIMEOUT_MS
         });
+        self.channel_receipt_keys
+            .retain(|_, truncated| self.data_receipts.contains_key(truncated));
     }
 
     /// Collect link IDs that have timed out from a pending map
@@ -1400,6 +1425,8 @@ impl LinkManager {
                     });
                 }
                 link.close();
+                self.channel_receipt_keys
+                    .retain(|(lid, _), _| *lid != link_id);
                 self.events.push(LinkEvent::LinkClosed {
                     link_id,
                     reason: LinkCloseReason::Stale,
@@ -1443,6 +1470,17 @@ impl LinkManager {
                                 PacketContext::Channel,
                                 rng,
                             ) {
+                                // Register receipt for the re-encrypted packet
+                                // (Python Transport.py:965)
+                                let (new_hash, old_hash) = self
+                                    .register_channel_receipt(&packet, link_id, sequence, now_ms);
+                                self.events.push(LinkEvent::ChannelReceiptUpdated {
+                                    link_id,
+                                    new_hash,
+                                    old_hash,
+                                    sequence,
+                                });
+
                                 self.pending_packets.push(PendingPacket::Channel {
                                     link_id,
                                     data: packet,
@@ -1463,6 +1501,8 @@ impl LinkManager {
                             link.close();
                         }
                         self.channels.remove(&link_id);
+                        self.channel_receipt_keys
+                            .retain(|(lid, _), _| *lid != link_id);
                         self.events.push(LinkEvent::LinkClosed {
                             link_id,
                             reason: LinkCloseReason::Timeout,
@@ -2040,5 +2080,253 @@ mod tests {
             "Initiator must generate channel proof using ephemeral signing key"
         );
         assert_eq!(proofs[0].0, pair.initiator_link_id);
+    }
+
+    #[test]
+    fn test_retransmit_registers_new_receipt_and_removes_old() {
+        use crate::link::channel::ChannelError;
+
+        struct TestMsg(Vec<u8>);
+        impl Message for TestMsg {
+            const MSGTYPE: u16 = 0x0001;
+            fn pack(&self) -> Vec<u8> {
+                self.0.clone()
+            }
+            fn unpack(data: &[u8]) -> Result<Self, ChannelError> {
+                Ok(Self(data.to_vec()))
+            }
+        }
+
+        let mut pair = establish_link_pair(ProofStrategy::None);
+        let link_id = pair.initiator_link_id;
+        let now_ms = pair.now_ms;
+
+        // Send a channel message from initiator
+        let channel_packet = pair
+            .initiator
+            .channel_send(&link_id, &TestMsg(b"hello".to_vec()), &mut OsRng, now_ms)
+            .unwrap();
+
+        // Register receipt (mimicking what NodeCore does on initial send)
+        let sequence = pair
+            .initiator
+            .channel(&link_id)
+            .unwrap()
+            .last_sent_sequence();
+        let (hash_1, old) =
+            pair.initiator
+                .register_channel_receipt(&channel_packet, link_id, sequence, now_ms);
+        assert!(old.is_none(), "first send should have no old receipt");
+        assert_eq!(pair.initiator.data_receipts.len(), 1);
+
+        // Do NOT deliver a proof — advance time past the channel timeout
+        // Default RTT is ~1ms (established locally), timeout = max(rtt*2.5, 25) = 25ms
+        // Use a generous advance to ensure timeout fires
+        let retransmit_time = now_ms + 2000;
+        pair.initiator.poll(&mut OsRng, retransmit_time);
+
+        // Should have a ChannelReceiptUpdated event
+        let events: Vec<_> = pair.initiator.drain_events().collect();
+        let receipt_updated = events.iter().find_map(|e| match e {
+            LinkEvent::ChannelReceiptUpdated {
+                link_id: lid,
+                new_hash,
+                old_hash,
+                sequence: seq,
+            } => Some((*lid, *new_hash, *old_hash, *seq)),
+            _ => None,
+        });
+        assert!(
+            receipt_updated.is_some(),
+            "Expected ChannelReceiptUpdated event, got: {:?}",
+            events
+        );
+        let (evt_link_id, hash_2, old_hash, evt_seq) = receipt_updated.unwrap();
+        assert_eq!(evt_link_id, link_id);
+        assert_eq!(evt_seq, sequence);
+        assert_eq!(
+            old_hash,
+            Some(hash_1),
+            "old_hash should be the initial send hash"
+        );
+        assert_ne!(
+            hash_2, hash_1,
+            "re-encrypted packet must have different hash"
+        );
+
+        // Only one receipt should exist (for hash_2, not hash_1)
+        assert_eq!(pair.initiator.data_receipts.len(), 1);
+
+        // The old truncated hash should not be in data_receipts
+        let mut old_truncated = [0u8; TRUNCATED_HASHBYTES];
+        old_truncated.copy_from_slice(&hash_1[..TRUNCATED_HASHBYTES]);
+        assert!(
+            !pair.initiator.data_receipts.contains_key(&old_truncated),
+            "old receipt should have been removed"
+        );
+
+        // The new truncated hash should be in data_receipts
+        let mut new_truncated = [0u8; TRUNCATED_HASHBYTES];
+        new_truncated.copy_from_slice(&hash_2[..TRUNCATED_HASHBYTES]);
+        assert!(
+            pair.initiator.data_receipts.contains_key(&new_truncated),
+            "new receipt should be present"
+        );
+
+        // Now simulate the responder receiving the retransmit packet and sending proof
+        let retransmit_packets: Vec<_> = pair.initiator.drain_pending_packets().collect();
+        let channel_retransmit = retransmit_packets
+            .iter()
+            .find_map(|p| match p {
+                PendingPacket::Channel { data, .. } => Some(data.clone()),
+                _ => None,
+            })
+            .expect("should have a retransmit packet");
+
+        // Deliver retransmit to responder → responder generates proof
+        let packet = Packet::unpack(&channel_retransmit).unwrap();
+        pair.responder
+            .process_packet(&packet, &channel_retransmit, &mut OsRng, retransmit_time, 0);
+        let proofs = pair.responder.drain_proof_packets();
+        assert_eq!(
+            proofs.len(),
+            1,
+            "responder should generate proof for retransmit"
+        );
+
+        // Deliver proof to initiator
+        let (_, proof_packet) = &proofs[0];
+        let proof = Packet::unpack(proof_packet).unwrap();
+        pair.initiator
+            .process_packet(&proof, proof_packet, &mut OsRng, retransmit_time, 0);
+
+        // Should emit DataDelivered
+        let events: Vec<_> = pair.initiator.drain_events().collect();
+        let data_delivered = events.iter().find_map(|e| match e {
+            LinkEvent::DataDelivered {
+                link_id: lid,
+                packet_hash,
+            } => Some((*lid, *packet_hash)),
+            _ => None,
+        });
+        assert!(data_delivered.is_some(), "Expected DataDelivered event");
+        let (delivered_lid, delivered_hash) = data_delivered.unwrap();
+        assert_eq!(delivered_lid, link_id);
+        assert_eq!(
+            delivered_hash, hash_2,
+            "proof should match the retransmit hash"
+        );
+
+        // Receipt should be consumed
+        assert_eq!(pair.initiator.data_receipts.len(), 0);
+    }
+
+    #[test]
+    fn test_multiple_retransmits_clean_up_receipts() {
+        use crate::link::channel::ChannelError;
+
+        struct TestMsg(Vec<u8>);
+        impl Message for TestMsg {
+            const MSGTYPE: u16 = 0x0001;
+            fn pack(&self) -> Vec<u8> {
+                self.0.clone()
+            }
+            fn unpack(data: &[u8]) -> Result<Self, ChannelError> {
+                Ok(Self(data.to_vec()))
+            }
+        }
+
+        let mut pair = establish_link_pair(ProofStrategy::None);
+        let link_id = pair.initiator_link_id;
+        let mut now_ms = pair.now_ms;
+
+        // Send a channel message
+        let channel_packet = pair
+            .initiator
+            .channel_send(&link_id, &TestMsg(b"retry me".to_vec()), &mut OsRng, now_ms)
+            .unwrap();
+        let sequence = pair
+            .initiator
+            .channel(&link_id)
+            .unwrap()
+            .last_sent_sequence();
+        let (hash_1, _) =
+            pair.initiator
+                .register_channel_receipt(&channel_packet, link_id, sequence, now_ms);
+        assert_eq!(pair.initiator.data_receipts.len(), 1);
+        let _ = pair.initiator.drain_pending_packets().collect::<Vec<_>>();
+
+        // First retransmit
+        now_ms += 2000;
+        pair.initiator.poll(&mut OsRng, now_ms);
+        let events: Vec<_> = pair.initiator.drain_events().collect();
+        let hash_2 = events
+            .iter()
+            .find_map(|e| match e {
+                LinkEvent::ChannelReceiptUpdated {
+                    new_hash, old_hash, ..
+                } => {
+                    assert_eq!(*old_hash, Some(hash_1));
+                    Some(*new_hash)
+                }
+                _ => None,
+            })
+            .expect("expected ChannelReceiptUpdated after first retransmit");
+        assert_eq!(pair.initiator.data_receipts.len(), 1);
+        let _ = pair.initiator.drain_pending_packets().collect::<Vec<_>>();
+
+        // Second retransmit
+        now_ms += 5000;
+        pair.initiator.poll(&mut OsRng, now_ms);
+        let events: Vec<_> = pair.initiator.drain_events().collect();
+        let hash_3 = events
+            .iter()
+            .find_map(|e| match e {
+                LinkEvent::ChannelReceiptUpdated {
+                    new_hash, old_hash, ..
+                } => {
+                    assert_eq!(*old_hash, Some(hash_2));
+                    Some(*new_hash)
+                }
+                _ => None,
+            })
+            .expect("expected ChannelReceiptUpdated after second retransmit");
+        assert_eq!(
+            pair.initiator.data_receipts.len(),
+            1,
+            "should only have one receipt (no leaks)"
+        );
+        assert_ne!(hash_3, hash_2);
+        assert_ne!(hash_3, hash_1);
+
+        // Deliver proof for hash_3 — should succeed
+        let retransmit_packets: Vec<_> = pair.initiator.drain_pending_packets().collect();
+        let retransmit_data = retransmit_packets
+            .iter()
+            .find_map(|p| match p {
+                PendingPacket::Channel { data, .. } => Some(data.clone()),
+                _ => None,
+            })
+            .expect("should have retransmit packet");
+
+        let packet = Packet::unpack(&retransmit_data).unwrap();
+        pair.responder
+            .process_packet(&packet, &retransmit_data, &mut OsRng, now_ms, 0);
+        let proofs = pair.responder.drain_proof_packets();
+        assert_eq!(proofs.len(), 1);
+
+        let (_, proof_packet) = &proofs[0];
+        let proof = Packet::unpack(proof_packet).unwrap();
+        pair.initiator
+            .process_packet(&proof, proof_packet, &mut OsRng, now_ms, 0);
+
+        let events: Vec<_> = pair.initiator.drain_events().collect();
+        assert!(
+            events
+                .iter()
+                .any(|e| matches!(e, LinkEvent::DataDelivered { .. })),
+            "Expected DataDelivered after proof for third hash"
+        );
+        assert_eq!(pair.initiator.data_receipts.len(), 0);
     }
 }

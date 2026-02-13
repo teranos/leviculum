@@ -242,6 +242,20 @@ pub enum LinkEvent {
         /// The full packet hash that was proven
         packet_hash: [u8; 32],
     },
+    /// Channel receipt updated due to retransmit (re-encryption changed the hash)
+    ///
+    /// NodeCore must update its `channel_hash_to_seq` mapping: remove `old_hash`
+    /// (if present) and insert `new_hash` → `sequence`.
+    ChannelReceiptUpdated {
+        /// The link ID
+        link_id: LinkId,
+        /// New packet hash (from re-encrypted retransmit)
+        new_hash: [u8; 32],
+        /// Old packet hash to remove from tracking (`None` on first send)
+        old_hash: Option<[u8; 32]>,
+        /// Channel message sequence number
+        sequence: u16,
+    },
     /// Proof requested for received data (PROVE_APP)
     ///
     /// Emitted when data is received on a link with `ProofStrategy::App`.

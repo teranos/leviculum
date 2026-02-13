@@ -640,9 +640,12 @@ impl<R: CryptoRngCore, C: Clock, S: Storage> NodeCore<R, C, S> {
         if let Some(connection) = self.connections.get(link_id) {
             if let Some(seq) = connection.last_sent_sequence() {
                 let now_ms = self.transport.clock().now_ms();
-                let full_hash =
-                    self.link_manager
-                        .register_data_receipt(&packet_bytes, *link_id, now_ms);
+                let (full_hash, _old) = self.link_manager.register_channel_receipt(
+                    &packet_bytes,
+                    *link_id,
+                    seq,
+                    now_ms,
+                );
                 self.channel_hash_to_seq.insert(full_hash, seq);
             }
         }
@@ -1102,6 +1105,20 @@ impl<R: CryptoRngCore, C: Clock, S: Storage> NodeCore<R, C, S> {
                     link_id,
                     packet_hash,
                 });
+            }
+
+            LinkEvent::ChannelReceiptUpdated {
+                link_id: _,
+                new_hash,
+                old_hash,
+                sequence,
+            } => {
+                // Remove stale hash→sequence mapping from previous send/retransmit
+                if let Some(old) = old_hash {
+                    self.channel_hash_to_seq.remove(&old);
+                }
+                // Insert new hash→sequence mapping for proof matching
+                self.channel_hash_to_seq.insert(new_hash, sequence);
             }
 
             LinkEvent::ProofRequested {
