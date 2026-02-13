@@ -15,6 +15,8 @@ pub enum ChannelError {
     InvalidStreamId,
     /// Channel window is full
     WindowFull,
+    /// Receive ring is full (message dropped)
+    RxRingFull,
 }
 
 impl core::fmt::Display for ChannelError {
@@ -26,6 +28,7 @@ impl core::fmt::Display for ChannelError {
             ChannelError::EnvelopeTruncated => write!(f, "envelope data truncated"),
             ChannelError::InvalidStreamId => write!(f, "invalid stream ID"),
             ChannelError::WindowFull => write!(f, "channel window full"),
+            ChannelError::RxRingFull => write!(f, "receive ring full"),
         }
     }
 }

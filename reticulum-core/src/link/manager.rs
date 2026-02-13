@@ -48,7 +48,7 @@ use crate::identity::Identity;
 use crate::packet::{packet_hash, Packet, PacketContext, PacketType};
 use rand_core::CryptoRngCore;
 
-use super::channel::{Channel, Message};
+use super::channel::{Channel, ChannelError, Message};
 use super::{
     Link, LinkCloseReason, LinkError, LinkEvent, LinkId, LinkState, PeerKeys, PendingPacket,
 };
@@ -1166,6 +1166,12 @@ impl LinkManager {
                 }
                 Ok(None) => {
                     tracing::debug!("link_mgr: channel message buffered (out-of-order)");
+                }
+                Err(ChannelError::RxRingFull) => {
+                    tracing::warn!(
+                        "link_mgr: channel rx_ring full — message dropped (cap={})",
+                        crate::constants::CHANNEL_RX_RING_MAX
+                    );
                 }
                 Err(e) => {
                     tracing::debug!(?e, "link_mgr: channel receive failed");

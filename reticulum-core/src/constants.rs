@@ -216,8 +216,8 @@ pub const CHANNEL_WINDOW_INITIAL: usize = 2;
 /// Minimum window size for slow links
 pub const CHANNEL_WINDOW_MIN_SLOW: usize = 2;
 
-/// Minimum window size for fast links
-pub const CHANNEL_WINDOW_MIN_FAST: usize = 5;
+/// Minimum window size for fast links (Python Channel.py:248 WINDOW_MIN_LIMIT_FAST = 16)
+pub const CHANNEL_WINDOW_MIN_FAST: usize = 16;
 
 /// Maximum window size for slow links
 pub const CHANNEL_WINDOW_MAX_SLOW: usize = 5;
@@ -227,6 +227,10 @@ pub const CHANNEL_WINDOW_MAX_MEDIUM: usize = 12;
 
 /// Maximum window size for fast links
 pub const CHANNEL_WINDOW_MAX_FAST: usize = 48;
+
+/// Maximum rx_ring capacity (out-of-order buffer).
+/// Python's rx_ring is unbounded; we cap at 512 for embedded safety.
+pub const CHANNEL_RX_RING_MAX: usize = 512;
 
 /// Maximum transmission attempts before failure
 pub const CHANNEL_MAX_TRIES: u8 = 5;

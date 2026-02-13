@@ -57,7 +57,7 @@ use crate::constants::{
     CHANNEL_BACKOFF_BASE, CHANNEL_ENVELOPE_HEADER_SIZE, CHANNEL_MAX_TRIES,
     CHANNEL_MIN_TIMEOUT_BASE_MS, CHANNEL_MSGTYPE_RESERVED, CHANNEL_QUEUE_LEN_ADJUSTMENT,
     CHANNEL_RTT_FAST_MS, CHANNEL_RTT_MEDIUM_MS, CHANNEL_RTT_TIMEOUT_MULTIPLIER,
-    CHANNEL_SEQ_MODULUS, CHANNEL_WINDOW_INITIAL, CHANNEL_WINDOW_MAX_FAST,
+    CHANNEL_RX_RING_MAX, CHANNEL_SEQ_MODULUS, CHANNEL_WINDOW_INITIAL, CHANNEL_WINDOW_MAX_FAST,
     CHANNEL_WINDOW_MAX_MEDIUM, CHANNEL_WINDOW_MAX_SLOW, CHANNEL_WINDOW_MIN_FAST,
     CHANNEL_WINDOW_MIN_SLOW,
 };
@@ -407,10 +407,9 @@ impl Channel {
         // Calculate the offset from expected sequence (handling wraparound)
         let offset = self.sequence_offset(envelope.sequence);
 
-        // If offset is too large, this might be a very old or invalid packet
-        if offset >= self.window_max * 2 {
-            // Treat as duplicate or invalid
-            return Ok(None);
+        // If offset is too large, the rx_ring is full
+        if offset >= CHANNEL_RX_RING_MAX {
+            return Err(ChannelError::RxRingFull);
         }
 
         // Buffer the out-of-order envelope
@@ -1095,5 +1094,33 @@ mod tests {
         let drained = receiver.drain_received();
         assert_eq!(drained.len(), 1);
         assert_eq!(drained[0].data, vec![1]);
+    }
+
+    #[test]
+    fn test_receive_rx_ring_full() {
+        use super::envelope::Envelope;
+
+        let mut channel = Channel::new();
+        // next_rx_sequence is 0; send a packet with offset == CHANNEL_RX_RING_MAX
+        let seq = CHANNEL_RX_RING_MAX as u16;
+        let envelope = Envelope::new(0x0001, seq, vec![42]);
+        let packed = envelope.pack();
+
+        let result = channel.receive(&packed);
+        assert_eq!(result, Err(ChannelError::RxRingFull));
+    }
+
+    #[test]
+    fn test_receive_within_rx_ring_max() {
+        use super::envelope::Envelope;
+
+        let mut channel = Channel::new();
+        // next_rx_sequence is 0; send a packet with offset == CHANNEL_RX_RING_MAX - 1
+        let seq = (CHANNEL_RX_RING_MAX - 1) as u16;
+        let envelope = Envelope::new(0x0001, seq, vec![42]);
+        let packed = envelope.pack();
+
+        let result = channel.receive(&packed);
+        assert_eq!(result, Ok(None)); // Buffered, not dropped
     }
 }
