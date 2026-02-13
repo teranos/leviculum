@@ -1148,7 +1148,7 @@ impl LinkManager {
             });
 
             // Process through channel
-            match channel.receive(&plaintext) {
+            let message_accepted = match channel.receive(&plaintext) {
                 Ok(Some(envelope)) => {
                     tracing::debug!(
                         seq = envelope.sequence,
@@ -1163,20 +1163,24 @@ impl LinkManager {
                         sequence: envelope.sequence,
                         data: envelope.data,
                     });
+                    true
                 }
                 Ok(None) => {
                     tracing::debug!("link_mgr: channel message buffered (out-of-order)");
+                    true // Buffered = accepted, prove it
                 }
                 Err(ChannelError::RxRingFull) => {
                     tracing::warn!(
                         "link_mgr: channel rx_ring full — message dropped (cap={})",
                         crate::constants::CHANNEL_RX_RING_MAX
                     );
+                    false // Dropped = not accepted, don't prove
                 }
                 Err(e) => {
                     tracing::debug!(?e, "link_mgr: channel receive failed");
+                    false // Parse/decode error = not accepted, don't prove
                 }
-            }
+            };
 
             // Drain any buffered messages that are now ready
             let channel = match self.channels.get_mut(&link_id) {
@@ -1192,7 +1196,14 @@ impl LinkManager {
                 });
             }
 
-            // Generate proof unconditionally for CHANNEL packets (Python Link.py:1173).
+            // Only prove if the message was accepted (in-order or buffered).
+            // If the rx_ring was full or parsing failed, suppress the proof
+            // so the sender retransmits instead of thinking it was delivered.
+            if !message_accepted {
+                return;
+            }
+
+            // Generate proof for CHANNEL packets (Python Link.py:1173).
             // Unlike regular data (which checks proof_strategy), Channel proofs are
             // always generated — matching Python's packet.prove() call.
             let link = match self.links.get(&link_id) {
@@ -2334,5 +2345,91 @@ mod tests {
             "Expected DataDelivered after proof for third hash"
         );
         assert_eq!(pair.initiator.data_receipts.len(), 0);
+    }
+
+    #[test]
+    fn test_channel_proof_suppressed_on_rx_ring_full() {
+        use crate::link::channel::ChannelError;
+
+        struct TestMsg(Vec<u8>);
+        impl Message for TestMsg {
+            const MSGTYPE: u16 = 0x0001;
+            fn pack(&self) -> Vec<u8> {
+                self.0.clone()
+            }
+            fn unpack(data: &[u8]) -> Result<Self, ChannelError> {
+                Ok(Self(data.to_vec()))
+            }
+        }
+
+        let mut pair = establish_link_pair(ProofStrategy::None);
+
+        // First, send a normal channel message — proof should be generated (baseline)
+        let channel_packet = pair
+            .initiator
+            .channel_send(
+                &pair.initiator_link_id,
+                &TestMsg(b"normal message".to_vec()),
+                &mut OsRng,
+                pair.now_ms,
+            )
+            .unwrap();
+
+        let packet = Packet::unpack(&channel_packet).unwrap();
+        pair.responder
+            .process_packet(&packet, &channel_packet, &mut OsRng, pair.now_ms, 0);
+
+        let proofs = pair.responder.drain_proof_packets();
+        assert_eq!(
+            proofs.len(),
+            1,
+            "baseline: proof should be generated for normal message"
+        );
+
+        // Now create an out-of-order gap: send seq 1 (skip seq 0 from responder's
+        // perspective by consuming seq 0 above, so responder now expects seq 1).
+        // Then we need to trigger RxRingFull. To do this, we need to send a packet
+        // with a sequence number offset >= CHANNEL_RX_RING_MAX from what the
+        // responder's channel expects.
+        //
+        // The responder's channel has received seq 0, so it expects seq 1.
+        // We need to skip enough sequences on the initiator's side so that
+        // the offset from expected is >= CHANNEL_RX_RING_MAX.
+        //
+        // Strategy: manually advance the initiator's channel sequence counter
+        // past CHANNEL_RX_RING_MAX, then send. The responder's channel expects
+        // seq 1, so sending seq (1 + CHANNEL_RX_RING_MAX) will trigger RxRingFull.
+        let target_seq = 1 + crate::constants::CHANNEL_RX_RING_MAX as u16;
+
+        // Access the initiator's channel and advance its sequence counter
+        let init_channel = pair
+            .initiator
+            .channels
+            .get_mut(&pair.initiator_link_id)
+            .unwrap();
+        init_channel.force_next_tx_sequence_for_test(target_seq);
+
+        // Send the far-future message
+        let far_packet = pair
+            .initiator
+            .channel_send(
+                &pair.initiator_link_id,
+                &TestMsg(b"far future".to_vec()),
+                &mut OsRng,
+                pair.now_ms,
+            )
+            .unwrap();
+
+        let packet = Packet::unpack(&far_packet).unwrap();
+        pair.responder
+            .process_packet(&packet, &far_packet, &mut OsRng, pair.now_ms, 0);
+
+        // Proof should NOT be generated because the message was dropped (RxRingFull)
+        let proofs = pair.responder.drain_proof_packets();
+        assert_eq!(
+            proofs.len(),
+            0,
+            "proof must be suppressed when rx_ring is full"
+        );
     }
 }

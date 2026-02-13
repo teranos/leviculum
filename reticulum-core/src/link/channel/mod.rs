@@ -90,6 +90,18 @@ fn pow_f64(base: f64, exp: u32) -> f64 {
     result
 }
 
+/// Calculate timeout using Python Reticulum formula (free function).
+///
+/// Formula: BACKOFF_BASE^(tries-1) * max(rtt*RTT_MULTIPLIER, MIN_TIMEOUT) * (queue_len+QUEUE_ADJ)
+fn calculate_timeout(tries: u8, rtt_ms: u64, queue_len: usize) -> u64 {
+    let base_timeout =
+        (rtt_ms as f64 * CHANNEL_RTT_TIMEOUT_MULTIPLIER).max(CHANNEL_MIN_TIMEOUT_BASE_MS);
+    let retry_factor = pow_f64(CHANNEL_BACKOFF_BASE, tries.saturating_sub(1) as u32);
+    let queue_factor = queue_len as f64 + CHANNEL_QUEUE_LEN_ADJUSTMENT;
+
+    (base_timeout * retry_factor * queue_factor) as u64
+}
+
 /// Message trait - all channel messages must implement this
 pub trait Message: Sized {
     /// Unique message type identifier (< 0xf000)
@@ -539,6 +551,7 @@ impl Channel {
         {
             self.tx_ring.remove(pos);
             self.adjust_window(true, rtt_ms);
+            self.update_pending_timeouts(rtt_ms);
             tracing::debug!(
                 seq = sequence,
                 tx_ring = self.tx_ring.len(),
@@ -556,16 +569,31 @@ impl Channel {
         }
     }
 
+    /// Recalculate timeouts for pending messages after tx_ring size changed.
+    ///
+    /// Called after `mark_delivered()` removes an entry. Matches Python's
+    /// `_update_packet_timeouts()` (Channel.py:538-547): recalculates using
+    /// the new (smaller) queue_len so remaining messages timeout sooner.
+    ///
+    /// Only shortens timeouts, never extends them.
+    fn update_pending_timeouts(&mut self, rtt_ms: u64) {
+        let queue_len = self.tx_ring.len();
+        for outbound in self.tx_ring.iter_mut() {
+            if outbound.state == MessageState::Sent {
+                let new_timeout = calculate_timeout(outbound.tries, rtt_ms, queue_len);
+                let new_deadline = outbound.sent_at_ms.saturating_add(new_timeout);
+                if new_deadline < outbound.timeout_at_ms {
+                    outbound.timeout_at_ms = new_deadline;
+                }
+            }
+        }
+    }
+
     /// Calculate timeout using Python Reticulum formula
     ///
     /// Formula: BACKOFF_BASE^(tries-1) * max(rtt*RTT_MULTIPLIER, MIN_TIMEOUT) * (queue_len+QUEUE_ADJ)
     fn calculate_timeout_ms(&self, tries: u8, rtt_ms: u64, queue_len: usize) -> u64 {
-        let base_timeout =
-            (rtt_ms as f64 * CHANNEL_RTT_TIMEOUT_MULTIPLIER).max(CHANNEL_MIN_TIMEOUT_BASE_MS);
-        let retry_factor = pow_f64(CHANNEL_BACKOFF_BASE, tries.saturating_sub(1) as u32);
-        let queue_factor = queue_len as f64 + CHANNEL_QUEUE_LEN_ADJUSTMENT;
-
-        (base_timeout * retry_factor * queue_factor) as u64
+        calculate_timeout(tries, rtt_ms, queue_len)
     }
 
     /// Poll for timeouts and get actions to take
@@ -667,6 +695,15 @@ impl Channel {
     /// Clear all pending inbound envelopes
     pub fn clear_rx(&mut self) {
         self.rx_ring.clear();
+    }
+
+    /// Set the next TX sequence number for testing purposes.
+    ///
+    /// Allows tests to create far-future sequence numbers to trigger
+    /// RxRingFull on the receiving side.
+    #[cfg(test)]
+    pub fn force_next_tx_sequence_for_test(&mut self, seq: u16) {
+        self.next_tx_sequence = seq;
     }
 }
 
@@ -1094,6 +1131,101 @@ mod tests {
         let drained = receiver.drain_received();
         assert_eq!(drained.len(), 1);
         assert_eq!(drained[0].data, vec![1]);
+    }
+
+    #[test]
+    fn test_dynamic_timeout_recalculation() {
+        // Send 5 messages, mark 3 as delivered. The remaining messages'
+        // timeouts should shorten because queue_len decreased significantly.
+        //
+        // At send time, each message has increasing queue_len (0,1,2,3,4).
+        // After delivering seq 0,1,2 the queue_len drops to 2.
+        // Seq=4 had original queue_len=4 → timeout 250*(4+1.5)=1375.
+        // Recalculated with queue_len=2: 250*(2+1.5)=875. Shortened!
+        let mut channel = Channel::new();
+        channel.window = 10; // Increase window to allow 5 sends
+        let rtt_ms = 100;
+
+        // Send 5 messages at t=0
+        for i in 0..5u8 {
+            let msg = TestMessage { data: vec![i] };
+            channel.send(&msg, 464, 0, rtt_ms).unwrap();
+        }
+        assert_eq!(channel.outstanding(), 5);
+
+        // Seq=4 original timeout: 250 * (4+1.5) = 1375
+        assert_eq!(channel.tx_ring[4].timeout_at_ms, 1375);
+
+        // Mark seq=0,1,2 delivered → queue_len drops to 2
+        channel.mark_delivered(0, rtt_ms);
+        channel.mark_delivered(1, rtt_ms);
+        channel.mark_delivered(2, rtt_ms);
+        assert_eq!(channel.outstanding(), 2);
+
+        // Seq=4 (now at index 1) should be shortened:
+        // 250 * (2+1.5) = 875 < 1375
+        assert_eq!(channel.tx_ring[1].timeout_at_ms, 875);
+
+        // Seq=3 (now at index 0) had original queue_len=3 → timeout 1125.
+        // Recalculated with queue_len=2: 875 < 1125 → shortened
+        assert_eq!(channel.tx_ring[0].timeout_at_ms, 875);
+    }
+
+    #[test]
+    fn test_dynamic_timeout_only_shortens() {
+        // Verify that update_pending_timeouts never extends a timeout.
+        // Set up a message with a very short timeout, then call update
+        // with parameters that would calculate a longer one.
+        let mut channel = Channel::new();
+        let msg = TestMessage { data: vec![1] };
+        channel.send(&msg, 464, 1000, 100).unwrap();
+
+        // Artificially set a very short timeout
+        channel.tx_ring[0].timeout_at_ms = 1001;
+        let short_timeout = channel.tx_ring[0].timeout_at_ms;
+
+        // Call update with a large RTT that would calculate a longer timeout
+        channel.update_pending_timeouts(5000);
+
+        // Timeout should NOT have increased
+        assert_eq!(
+            channel.tx_ring[0].timeout_at_ms, short_timeout,
+            "timeout must never be extended by update_pending_timeouts"
+        );
+    }
+
+    #[test]
+    fn test_dynamic_timeout_triggers_earlier_retransmit() {
+        // Verify the practical effect: after marking delivered, a retransmit
+        // triggers at a time that would NOT have triggered with old timeouts.
+        let mut channel = Channel::new();
+        channel.window = 10;
+        let rtt_ms = 100;
+
+        // Send 3 messages at t=0
+        for i in 0..3u8 {
+            let msg = TestMessage { data: vec![i] };
+            channel.send(&msg, 464, 0, rtt_ms).unwrap();
+        }
+
+        // Original timeout for seq=2 (queue_len=2 at send time):
+        // 250 * (2+1.5) = 250 * 3.5 = 875ms
+        assert_eq!(channel.tx_ring[2].timeout_at_ms, 875);
+
+        // Mark seq=0 and seq=1 delivered → queue_len drops to 1
+        channel.mark_delivered(0, rtt_ms);
+        channel.mark_delivered(1, rtt_ms);
+
+        // Recalculated for seq=2 with queue_len=1: 250*(1+1.5)=625ms
+        assert_eq!(channel.tx_ring[0].timeout_at_ms, 625);
+
+        // Poll at t=700: triggers with shortened timeout (625 < 700)
+        // but would NOT trigger with original 875ms timeout
+        let actions = channel.poll(700, rtt_ms);
+        assert_eq!(actions.len(), 1);
+        assert!(
+            matches!(&actions[0], ChannelAction::Retransmit { sequence, .. } if *sequence == 2)
+        );
     }
 
     #[test]
