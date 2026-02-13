@@ -10,7 +10,7 @@ use reticulum_core::node::NodeCoreBuilder;
 use reticulum_core::ProofStrategy;
 
 use crate::clock::SystemClock;
-use crate::config::{Config, InterfaceConfig};
+use crate::config::{Config, InterfaceConfig, DEFAULT_BITRATE_BPS};
 use crate::error::Error;
 use crate::storage::Storage;
 
@@ -95,7 +95,7 @@ impl ReticulumNodeBuilder {
             interface_type: "TCPClientInterface".to_string(),
             enabled: true,
             outgoing: true,
-            bitrate: 62500,
+            bitrate: DEFAULT_BITRATE_BPS,
             target_host: Some(addr.ip().to_string()),
             target_port: Some(addr.port()),
             listen_ip: None,
@@ -124,7 +124,7 @@ impl ReticulumNodeBuilder {
             interface_type: "TCPServerInterface".to_string(),
             enabled: true,
             outgoing: true,
-            bitrate: 62500,
+            bitrate: DEFAULT_BITRATE_BPS,
             listen_ip: Some(addr.ip().to_string()),
             listen_port: Some(addr.port()),
             target_host: None,
