@@ -347,6 +347,10 @@ struct Args {
     #[arg(short, long, global = true)]
     verbose: bool,
 
+    /// Corrupt ~1 byte per N bytes on TCP write (fault injection)
+    #[arg(long, global = true)]
+    corrupt_every: Option<u64>,
+
     #[command(subcommand)]
     command: Commands,
 }
@@ -460,6 +464,7 @@ fn print_help() {
 async fn run_connect(
     addr: String,
     identity_path: Option<PathBuf>,
+    corrupt_every: Option<u64>,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let socket_addr: SocketAddr = addr.parse().map_err(|e| format!("invalid address: {e}"))?;
 
@@ -490,12 +495,14 @@ async fn run_connect(
     let identity_hash = hex_encode(node_identity.hash());
 
     // Build and start node
-    let mut node = ReticulumNodeBuilder::new()
+    let mut builder = ReticulumNodeBuilder::new()
         .identity(node_identity)
         .enable_transport(false)
-        .add_tcp_client(socket_addr)
-        .build()
-        .await?;
+        .add_tcp_client(socket_addr);
+    if let Some(n) = corrupt_every {
+        builder = builder.corrupt_every(Some(n));
+    }
+    let mut node = builder.build().await?;
 
     node.start().await?;
 
@@ -1043,6 +1050,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .with_target(true)
         .init();
 
+    if let Some(n) = args.corrupt_every {
+        eprintln!("WARNING: Fault injection active: corrupting ~1 byte per {n} bytes");
+    }
+
     match args.command {
         Commands::Status => {
             println!("Reticulum Status");
@@ -1122,11 +1133,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             rate,
             mode,
         } => {
-            selftest::run_selftest(addr, duration, rate, &mode).await?;
+            selftest::run_selftest(addr, duration, rate, &mode, args.corrupt_every).await?;
         }
 
         Commands::Connect { addr, identity } => {
-            run_connect(addr, identity).await?;
+            run_connect(addr, identity, args.corrupt_every).await?;
         }
     }
 

@@ -115,11 +115,17 @@ pub struct ReticulumNodeImpl {
     /// Channel for dispatching TickOutput from outside the event loop
     /// (used by connect, send_on_connection, close_connection, announce)
     action_dispatch_tx: mpsc::Sender<TickOutput>,
+    /// Fault injection: corrupt ~1 byte per N bytes on TCP write
+    corrupt_every: Option<u64>,
 }
 
 impl ReticulumNodeImpl {
     /// Create a new ReticulumNode (internal use - use ReticulumNodeBuilder)
-    pub(crate) fn new(core: StdNodeCore, interfaces: Vec<InterfaceConfig>) -> Self {
+    pub(crate) fn new(
+        core: StdNodeCore,
+        interfaces: Vec<InterfaceConfig>,
+        corrupt_every: Option<u64>,
+    ) -> Self {
         let (event_tx, event_rx) = mpsc::channel(EVENT_CHANNEL_CAPACITY);
         // Create dummy channel; real one is created in start()
         let (action_dispatch_tx, _) = mpsc::channel(1);
@@ -132,6 +138,7 @@ impl ReticulumNodeImpl {
             shutdown_tx: None,
             runner_handle: None,
             action_dispatch_tx,
+            corrupt_every,
         }
     }
 
@@ -201,6 +208,7 @@ impl ReticulumNodeImpl {
                         iface_name,
                         &addr as &str,
                         Duration::from_secs(10),
+                        self.corrupt_every,
                     ) {
                         Ok(handle) => {
                             tracing::info!("Connected to TCP interface: {}", addr);

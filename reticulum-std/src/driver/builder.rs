@@ -36,6 +36,7 @@ pub struct ReticulumNodeBuilder {
     config_path: Option<PathBuf>,
     storage_path: Option<PathBuf>,
     interfaces: Vec<InterfaceConfig>,
+    corrupt_every: Option<u64>,
 }
 
 impl Default for ReticulumNodeBuilder {
@@ -52,6 +53,7 @@ impl ReticulumNodeBuilder {
             config_path: None,
             storage_path: None,
             interfaces: Vec::new(),
+            corrupt_every: None,
         }
     }
 
@@ -145,6 +147,12 @@ impl ReticulumNodeBuilder {
         self
     }
 
+    /// Enable fault injection: corrupt ~1 byte per N bytes on TCP write
+    pub fn corrupt_every(mut self, n: Option<u64>) -> Self {
+        self.corrupt_every = n;
+        self
+    }
+
     /// Enable transport mode
     ///
     /// When enabled, this node will forward packets between interfaces.
@@ -189,7 +197,11 @@ impl ReticulumNodeBuilder {
             .build(rand_core::OsRng, clock, storage)
             .map_err(|e| Error::Transport(format!("{:?}", e)))?;
 
-        Ok(ReticulumNode::new(node_core, interfaces))
+        Ok(ReticulumNode::new(
+            node_core,
+            interfaces,
+            self.corrupt_every,
+        ))
     }
 
     /// Build the ReticulumNode
@@ -235,7 +247,11 @@ impl ReticulumNodeBuilder {
             .build(rand_core::OsRng, clock, storage)
             .map_err(|e| Error::Transport(format!("{:?}", e)))?;
 
-        Ok(ReticulumNode::new(node_core, interfaces))
+        Ok(ReticulumNode::new(
+            node_core,
+            interfaces,
+            self.corrupt_every,
+        ))
     }
 }
 

@@ -501,6 +501,7 @@ pub async fn run_selftest(
     duration: u64,
     rate: f64,
     mode: &str,
+    corrupt_every: Option<u64>,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let run_link = mode == "all" || mode == "link";
     let run_packet = mode == "all" || mode == "packet";
@@ -513,6 +514,9 @@ pub async fn run_selftest(
 
     // ── Phase 1: Setup ──────────────────────────────────────────────────
     println!("[selftest] Connecting to {socket_addr} (mode: {mode})");
+    if let Some(n) = corrupt_every {
+        println!("[selftest] Fault injection: --corrupt-every {n}");
+    }
 
     // TCP pre-check
     tokio::time::timeout(
@@ -538,6 +542,7 @@ pub async fn run_selftest(
         .identity(id_a)
         .enable_transport(false)
         .add_tcp_client(socket_addr)
+        .corrupt_every(corrupt_every)
         .build()
         .await?;
     node_a.start().await?;
@@ -546,6 +551,7 @@ pub async fn run_selftest(
         .identity(id_b)
         .enable_transport(false)
         .add_tcp_client(socket_addr)
+        .corrupt_every(corrupt_every)
         .build()
         .await?;
     node_b.start().await?;
@@ -1011,6 +1017,9 @@ pub async fn run_selftest(
         "[selftest]  Duration:      {:.1}s",
         total_time.as_secs_f64()
     );
+    if let Some(n) = corrupt_every {
+        println!("[selftest]  Fault inject:  ~1 byte per {n} bytes");
+    }
 
     if run_link {
         let st = state.stats.lock().unwrap();

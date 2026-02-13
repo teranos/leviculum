@@ -10,6 +10,7 @@ use std::io;
 use std::net::ToSocketAddrs;
 use std::time::Duration;
 
+use rand_core::RngCore;
 use reticulum_core::constants::MTU;
 use reticulum_core::framing::hdlc::{frame, DeframeResult, Deframer};
 use reticulum_core::transport::InterfaceId;
@@ -18,6 +19,47 @@ use tokio::io::AsyncWriteExt;
 use tokio::sync::mpsc;
 
 use super::{InterfaceHandle, TCP_INCOMING_CAPACITY, TCP_OUTGOING_CAPACITY};
+
+/// Fast non-cryptographic PRNG (xorshift64). Seeded from OsRng once per task.
+struct Xorshift64(u64);
+
+impl Xorshift64 {
+    fn from_entropy() -> Self {
+        Self(rand_core::OsRng.next_u64() | 1) // ensure non-zero seed
+    }
+
+    fn next(&mut self) -> u64 {
+        self.0 ^= self.0 << 13;
+        self.0 ^= self.0 >> 7;
+        self.0 ^= self.0 << 17;
+        self.0
+    }
+}
+
+/// Corrupt bytes in `buf` with probability 1/N per byte.
+///
+/// Uses a fast inline PRNG (not OsRng) to avoid syscalls per byte.
+/// XORs with a random non-zero value to guarantee the byte actually changes.
+/// Returns the number of bytes corrupted.
+fn maybe_corrupt(buf: &mut [u8], every_n: u64, rng: &mut Xorshift64) -> usize {
+    if every_n == 0 {
+        return 0;
+    }
+    let mut corrupted = 0;
+    for byte in buf.iter_mut() {
+        if rng.next().is_multiple_of(every_n) {
+            let flip = loop {
+                let v = (rng.next() & 0xFF) as u8;
+                if v != 0 {
+                    break v;
+                }
+            };
+            *byte ^= flip;
+            corrupted += 1;
+        }
+    }
+    corrupted
+}
 
 /// Frame buffer multiplier (accounts for HDLC escaping overhead)
 const FRAME_BUFFER_MULTIPLIER: usize = 2;
@@ -41,6 +83,7 @@ pub(crate) fn spawn_tcp_interface<A: ToSocketAddrs>(
     name: String,
     addr: A,
     connect_timeout: Duration,
+    corrupt_every: Option<u64>,
 ) -> Result<InterfaceHandle, io::Error> {
     // Resolve and connect synchronously (same as old TcpClientInterface::connect)
     let addr = addr
@@ -61,7 +104,7 @@ pub(crate) fn spawn_tcp_interface<A: ToSocketAddrs>(
 
     // Spawn the I/O task
     tokio::spawn(async move {
-        tcp_interface_task(task_name, stream, incoming_tx, outgoing_rx).await;
+        tcp_interface_task(task_name, stream, incoming_tx, outgoing_rx, corrupt_every).await;
     });
 
     Ok(InterfaceHandle {
@@ -88,12 +131,14 @@ async fn tcp_interface_task(
     stream: tokio::net::TcpStream,
     incoming_tx: mpsc::Sender<IncomingPacket>,
     mut outgoing_rx: mpsc::Receiver<OutgoingPacket>,
+    corrupt_every: Option<u64>,
 ) {
     let (reader, mut writer) = stream.into_split();
 
     let mut deframer = Deframer::new();
     let mut read_buf = vec![0u8; MTU * READ_BUFFER_MULTIPLIER];
     let mut frame_buf = Vec::with_capacity(MTU * FRAME_BUFFER_MULTIPLIER);
+    let mut corrupt_rng = Xorshift64::from_entropy();
 
     loop {
         tokio::select! {
@@ -142,6 +187,15 @@ async fn tcp_interface_task(
                 match msg {
                     Some(pkt) => {
                         frame(&pkt.data, &mut frame_buf);
+                        if let Some(n) = corrupt_every {
+                            let count = maybe_corrupt(&mut frame_buf, n, &mut corrupt_rng);
+                            if count > 0 {
+                                tracing::trace!(
+                                    "TCP {} corrupted {} byte(s) in {} byte frame",
+                                    name, count, frame_buf.len()
+                                );
+                            }
+                        }
                         if let Err(e) = writer.write_all(&frame_buf).await {
                             tracing::debug!("TCP interface {} write error: {}", name, e);
                             return;
@@ -170,6 +224,7 @@ mod tests {
             "test".to_string(),
             "127.0.0.1:19999",
             Duration::from_millis(500),
+            None,
         );
         assert!(result.is_err());
     }
@@ -185,6 +240,7 @@ mod tests {
             "test_tcp".to_string(),
             addr,
             Duration::from_secs(2),
+            None,
         )
         .unwrap();
 
@@ -197,5 +253,53 @@ mod tests {
 
         // The handle is valid and channels are open
         assert!(!handle.outgoing.is_closed());
+    }
+
+    #[test]
+    fn test_maybe_corrupt_zero_means_no_corruption() {
+        let mut buf = vec![0xAA; 100];
+        let original = buf.clone();
+        let mut rng = Xorshift64::from_entropy();
+        let count = maybe_corrupt(&mut buf, 0, &mut rng);
+        assert_eq!(count, 0);
+        assert_eq!(buf, original);
+    }
+
+    #[test]
+    fn test_maybe_corrupt_every_one_corrupts_all() {
+        let mut buf = vec![0xAA; 500];
+        let original = buf.clone();
+        let mut rng = Xorshift64::from_entropy();
+        let count = maybe_corrupt(&mut buf, 1, &mut rng);
+        assert_eq!(count, 500);
+        // XOR with non-zero guarantees every byte changed
+        for (i, &b) in buf.iter().enumerate() {
+            assert_ne!(b, original[i], "byte {i} should have changed");
+        }
+    }
+
+    #[test]
+    fn test_maybe_corrupt_rare_practically_none() {
+        let mut buf = vec![0xAA; 500];
+        let original = buf.clone();
+        let mut rng = Xorshift64::from_entropy();
+        let count = maybe_corrupt(&mut buf, 1_000_000, &mut rng);
+        // With 500 bytes and 1/1M probability, expect ~0 corruptions
+        assert!(count <= 2, "expected near-zero corruption, got {count}");
+        // Most bytes should be unchanged
+        let unchanged = buf
+            .iter()
+            .zip(original.iter())
+            .filter(|(a, b)| a == b)
+            .count();
+        assert!(unchanged >= 498);
+    }
+
+    #[test]
+    fn test_maybe_corrupt_empty_buffer() {
+        let mut buf: Vec<u8> = Vec::new();
+        let mut rng = Xorshift64::from_entropy();
+        let count = maybe_corrupt(&mut buf, 1, &mut rng);
+        assert_eq!(count, 0);
     }
 }
