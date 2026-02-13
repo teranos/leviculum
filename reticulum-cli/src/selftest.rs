@@ -835,33 +835,72 @@ pub async fn run_selftest(
         tokio::time::sleep(std::time::Duration::from_secs(5)).await;
 
         // ── Phase 6: Burst ──────────────────────────────────────────────
+        // Send 10 messages as fast as possible, retrying on WindowFull.
+        // This exercises the channel under load — a well-functioning link
+        // should be able to absorb the burst within a few seconds.
         let mut burst_ok = 0u64;
-        let mut burst_fail = 0u64;
+        let mut burst_retries = 0u64;
+        let burst_timeout = Instant::now() + std::time::Duration::from_secs(10);
         for seq in 0..10u64 {
-            let now_ms = start_time.elapsed().as_millis() as u64;
-            let msg = build_message("ab", 10000 + seq, now_ms);
-            match stream_a.send(&msg).await {
-                Ok(()) => {
-                    state.stats.lock().unwrap().sent_a += 1;
-                    burst_ok += 1;
-                }
-                Err(_) => {
-                    state.stats.lock().unwrap().send_fails_a += 1;
-                    burst_fail += 1;
+            let msg = build_message("ab", 10000 + seq, start_time.elapsed().as_millis() as u64);
+            loop {
+                match stream_a.send(&msg).await {
+                    Ok(()) => {
+                        state.stats.lock().unwrap().sent_a += 1;
+                        burst_ok += 1;
+                        break;
+                    }
+                    Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {
+                        burst_retries += 1;
+                        if Instant::now() > burst_timeout {
+                            state.stats.lock().unwrap().send_fails_a += 1;
+                            break;
+                        }
+                        tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+                    }
+                    Err(_) => {
+                        state.stats.lock().unwrap().send_fails_a += 1;
+                        break;
+                    }
                 }
             }
         }
 
-        if burst_fail > 5 {
-            println!("[selftest] Phase 6: Burst {burst_ok}/10 — WARN (>5 failed)");
-            link_warnings.push(format!("burst: {burst_fail}/10 failed"));
+        if burst_ok < 10 {
+            println!(
+                "[selftest] Phase 6: Burst {burst_ok}/10 — WARN ({} not sent, {burst_retries} retries)",
+                10 - burst_ok
+            );
+            link_warnings.push(format!("burst: {}/10 not sent", 10 - burst_ok));
+        } else if burst_retries > 0 {
+            println!("[selftest] Phase 6: Burst 10/10 — OK ({burst_retries} retries)");
         } else {
-            println!("[selftest] Phase 6: Burst {burst_ok}/10 — OK");
+            println!("[selftest] Phase 6: Burst 10/10 — OK");
         }
 
         // ── Phase 7: Close link ─────────────────────────────────────────
-        // Give burst acks time to arrive
-        tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+        // Drain until all sent messages are confirmed (or timeout)
+        let drain_start = Instant::now();
+        let drain_timeout = std::time::Duration::from_secs(15);
+        loop {
+            let all_confirmed = {
+                let st = state.stats.lock().unwrap();
+                st.confirmed_a >= st.sent_a && st.confirmed_b >= st.sent_b
+            };
+            if all_confirmed {
+                println!("[selftest] Phase 7: All messages confirmed — closing");
+                break;
+            }
+            if drain_start.elapsed() > drain_timeout {
+                let st = state.stats.lock().unwrap();
+                println!(
+                    "[selftest] Phase 7: Drain timeout — confirmed {}/{} (a) {}/{} (b)",
+                    st.confirmed_a, st.sent_a, st.confirmed_b, st.sent_b
+                );
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+        }
 
         final_win = node_a
             .connection_stats(&link_id)

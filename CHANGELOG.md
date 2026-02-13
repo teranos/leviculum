@@ -5,6 +5,18 @@ All notable changes to this project will be documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.5.14] - 2026-02-13
+
+### Fixed
+- **ConnectionStream silently dropped messages on WindowFull** — `send()` routed data through an mpsc channel to the event loop, which called `send_on_connection()` and silently discarded `WindowFull` errors. The caller received `Ok(())` for messages that were never sent. Now `ConnectionStream` locks the core directly and returns the real error, mapping `WindowFull` to `io::ErrorKind::WouldBlock` (retryable). Matches the lock + dispatch pattern already used by `PacketEndpoint`.
+- **Selftest Phase 7 closed links before all messages were confirmed** — used a fixed 2s sleep before closing, which abandoned in-flight messages in the channel tx_ring. Now drains until `confirmed >= sent` (15s timeout).
+- **Selftest Phase 6 burst silently counted WindowFull as failures** — burst sends did not retry on `WouldBlock`, permanently losing messages. Now retries with 200ms backoff (10s timeout per message).
+- **Interop lifecycle test failed on WindowFull** — rapid 5-message send in `test_full_link_lifecycle_through_relay` now retries on `WouldBlock` with 500ms backoff.
+
+### Removed
+- `AsyncWrite` impl from `ConnectionStream` (unused by any caller)
+- mpsc-based outgoing channel (Branch 2) from driver event loop — `ConnectionStream` now dispatches actions directly like `PacketEndpoint`
+
 ## [0.5.13] - 2026-02-13
 
 ### Fixed

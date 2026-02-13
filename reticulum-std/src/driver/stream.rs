@@ -1,27 +1,26 @@
 //! Send-only async stream wrapper for Connections
 //!
-//! Provides AsyncWrite implementation for Connection. Data received on a
-//! connection is delivered exclusively via `NodeEvent` (DataReceived /
-//! MessageReceived) on the event channel — there is no per-stream incoming
-//! path.
+//! Locks the core directly and dispatches actions through the event loop,
+//! matching the pattern used by `PacketEndpoint`. This ensures that
+//! `send()` returns the real result from `send_on_connection()` — including
+//! `WindowFull` — instead of silently buffering through an mpsc channel.
 
 use std::io;
-use std::pin::Pin;
-use std::task::{Context, Poll};
+use std::sync::{Arc, Mutex};
 
-use tokio::io::AsyncWrite;
 use tokio::sync::mpsc;
 
 use reticulum_core::link::LinkId;
+use reticulum_core::transport::TickOutput;
+use reticulum_core::SendError;
+
+use super::StdNodeCore;
 
 /// Async stream wrapper around a Connection (send-only)
 ///
-/// ConnectionStream provides async write operations for a connection.
-/// It implements tokio's AsyncWrite trait.
-///
-/// All outgoing data is tagged with the stream's `LinkId` and sent through
-/// a shared channel back to the event loop, which dispatches it to the
-/// appropriate link via `NodeCore::send_on_connection()`.
+/// `ConnectionStream` provides async write operations for a connection.
+/// It locks the core directly for each send, ensuring the caller sees
+/// the real result (including `WindowFull` mapped to `WouldBlock`).
 ///
 /// Incoming data is delivered via `NodeEvent::DataReceived` /
 /// `NodeEvent::MessageReceived` on the node's event channel.
@@ -46,18 +45,25 @@ use reticulum_core::link::LinkId;
 pub struct ConnectionStream {
     /// Link ID for this connection
     link_id: LinkId,
-    /// Channel for outgoing data (shared, tagged with LinkId)
-    outgoing_tx: mpsc::Sender<(LinkId, Vec<u8>)>,
+    /// Shared handle to the core node
+    inner: Arc<Mutex<StdNodeCore>>,
+    /// Channel for dispatching actions to the event loop
+    action_dispatch_tx: mpsc::Sender<TickOutput>,
     /// Whether the stream is closed
     closed: bool,
 }
 
 impl ConnectionStream {
     /// Create a new ConnectionStream
-    pub(crate) fn new(link_id: LinkId, outgoing_tx: mpsc::Sender<(LinkId, Vec<u8>)>) -> Self {
+    pub(crate) fn new(
+        link_id: LinkId,
+        inner: Arc<Mutex<StdNodeCore>>,
+        action_dispatch_tx: mpsc::Sender<TickOutput>,
+    ) -> Self {
         Self {
             link_id,
-            outgoing_tx,
+            inner,
+            action_dispatch_tx,
             closed: false,
         }
     }
@@ -74,16 +80,32 @@ impl ConnectionStream {
 
     /// Send data on this connection
     ///
-    /// This is a convenience method that doesn't require polling.
+    /// Locks the core, calls `send_on_connection()`, and dispatches the
+    /// resulting actions. Returns `WouldBlock` if the channel window is full.
     pub async fn send(&self, data: &[u8]) -> io::Result<()> {
         if self.closed {
             return Err(io::Error::new(io::ErrorKind::BrokenPipe, "stream closed"));
         }
 
-        self.outgoing_tx
-            .send((self.link_id, data.to_vec()))
+        let output = {
+            let mut core = self.inner.lock().unwrap();
+            core.send_on_connection(&self.link_id, data)
+                .map_err(|e| match e {
+                    SendError::WindowFull => {
+                        io::Error::new(io::ErrorKind::WouldBlock, "channel window full")
+                    }
+                    SendError::NoConnection => {
+                        io::Error::new(io::ErrorKind::NotConnected, "no connection")
+                    }
+                    other => io::Error::other(other.to_string()),
+                })?
+        };
+
+        self.action_dispatch_tx
+            .send(output)
             .await
-            .map_err(|_| io::Error::new(io::ErrorKind::BrokenPipe, "send channel closed"))
+            .map_err(|_| io::Error::new(io::ErrorKind::BrokenPipe, "event loop shut down"))?;
+        Ok(())
     }
 
     /// Close the stream gracefully, sending LINKCLOSE to the peer
@@ -92,57 +114,17 @@ impl ConnectionStream {
             return Ok(());
         }
         self.closed = true;
-        // Signal close through outgoing channel (empty data = close)
-        let _ = self.outgoing_tx.send((self.link_id, vec![])).await;
+
+        let output = {
+            let mut core = self.inner.lock().unwrap();
+            core.close_connection(&self.link_id)
+        };
+
+        self.action_dispatch_tx
+            .send(output)
+            .await
+            .map_err(|_| io::Error::new(io::ErrorKind::BrokenPipe, "event loop shut down"))?;
         Ok(())
-    }
-}
-
-impl AsyncWrite for ConnectionStream {
-    fn poll_write(
-        self: Pin<&mut Self>,
-        cx: &mut Context<'_>,
-        buf: &[u8],
-    ) -> Poll<io::Result<usize>> {
-        if self.closed {
-            return Poll::Ready(Err(io::Error::new(
-                io::ErrorKind::BrokenPipe,
-                "stream closed",
-            )));
-        }
-
-        // Check if the channel is ready to send
-        match self.outgoing_tx.capacity() {
-            0 => {
-                // Channel full, need to wait
-                cx.waker().wake_by_ref();
-                Poll::Pending
-            }
-            _ => {
-                // Try to send (tagged with LinkId)
-                match self.outgoing_tx.try_send((self.link_id, buf.to_vec())) {
-                    Ok(()) => Poll::Ready(Ok(buf.len())),
-                    Err(mpsc::error::TrySendError::Full(_)) => {
-                        cx.waker().wake_by_ref();
-                        Poll::Pending
-                    }
-                    Err(mpsc::error::TrySendError::Closed(_)) => Poll::Ready(Err(io::Error::new(
-                        io::ErrorKind::BrokenPipe,
-                        "send channel closed",
-                    ))),
-                }
-            }
-        }
-    }
-
-    fn poll_flush(self: Pin<&mut Self>, _cx: &mut Context<'_>) -> Poll<io::Result<()>> {
-        // No buffering at this level - data is sent immediately
-        Poll::Ready(Ok(()))
-    }
-
-    fn poll_shutdown(mut self: Pin<&mut Self>, _cx: &mut Context<'_>) -> Poll<io::Result<()>> {
-        self.closed = true;
-        Poll::Ready(Ok(()))
     }
 }
 
@@ -150,38 +132,79 @@ impl AsyncWrite for ConnectionStream {
 mod tests {
     use super::*;
 
+    use super::super::ReticulumNodeBuilder;
+
+    fn make_node_and_inner() -> (
+        Arc<Mutex<StdNodeCore>>,
+        mpsc::Sender<TickOutput>,
+        mpsc::Receiver<TickOutput>,
+    ) {
+        let node = ReticulumNodeBuilder::new()
+            .build_sync()
+            .expect("build_sync");
+        let inner = node.inner();
+        let (tx, rx) = mpsc::channel(16);
+        (inner, tx, rx)
+    }
+
     #[tokio::test]
-    async fn test_connection_stream_send() {
-        let link_id = [0u8; 16];
-        let (out_tx, mut out_rx) = mpsc::channel(16);
+    async fn test_connection_stream_send_no_connection() {
+        let (inner, tx, _rx) = make_node_and_inner();
+        let link_id = LinkId::from([0u8; 16]);
 
-        let stream = ConnectionStream::new(link_id.into(), out_tx);
+        let stream = ConnectionStream::new(link_id, inner, tx);
 
-        // Test send
-        stream.send(b"hello").await.unwrap();
-        let (recv_link_id, sent) = out_rx.recv().await.unwrap();
-        assert_eq!(recv_link_id, LinkId::from(link_id));
-        assert_eq!(sent, b"hello");
+        // Sending on a non-existent connection should return NotConnected
+        let result = stream.send(b"hello").await;
+        assert!(result.is_err());
+        assert_eq!(result.unwrap_err().kind(), io::ErrorKind::NotConnected);
     }
 
     #[tokio::test]
     async fn test_connection_stream_close() {
-        let link_id = [0u8; 16];
-        let (out_tx, mut out_rx) = mpsc::channel(16);
+        let (inner, tx, _rx) = make_node_and_inner();
+        let link_id = LinkId::from([0u8; 16]);
 
-        let mut stream = ConnectionStream::new(link_id.into(), out_tx);
+        let mut stream = ConnectionStream::new(link_id, inner, tx);
 
         assert!(!stream.is_closed());
+        // close_connection on a non-existent link is harmless (returns empty output)
         stream.close().await.unwrap();
         assert!(stream.is_closed());
 
-        // Close should have sent an empty-data sentinel
-        let (recv_link_id, data) = out_rx.recv().await.unwrap();
-        assert_eq!(recv_link_id, LinkId::from(link_id));
-        assert!(data.is_empty());
-
         // Send should fail after close
         let result = stream.send(b"test").await;
+        assert!(result.is_err());
+        assert_eq!(result.unwrap_err().kind(), io::ErrorKind::BrokenPipe);
+    }
+
+    #[tokio::test]
+    async fn test_connection_stream_close_idempotent() {
+        let (inner, tx, _rx) = make_node_and_inner();
+        let link_id = LinkId::from([0u8; 16]);
+
+        let mut stream = ConnectionStream::new(link_id, inner, tx);
+
+        stream.close().await.unwrap();
+        // Second close is a no-op
+        stream.close().await.unwrap();
+        assert!(stream.is_closed());
+    }
+
+    #[tokio::test]
+    async fn test_connection_stream_send_closed_dispatch_channel() {
+        let (inner, _, _) = make_node_and_inner();
+        let link_id = LinkId::from([0u8; 16]);
+
+        // Create with a channel whose receiver is dropped
+        let (tx, rx) = mpsc::channel::<TickOutput>(1);
+        drop(rx);
+
+        let stream = ConnectionStream::new(link_id, inner, tx);
+
+        // Send fails because there's no connection, so dispatch channel
+        // closure is not reached — but NotConnected is returned first
+        let result = stream.send(b"hello").await;
         assert!(result.is_err());
     }
 }

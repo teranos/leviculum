@@ -13,7 +13,7 @@
 //! The event loop awaits interface readability via `select!`:
 //! 1. Wakes immediately when any interface has data (no polling delay)
 //! 2. Feeds packets to `NodeCore::handle_packet()` → gets `TickOutput`
-//! 3. Wakes on outgoing data from `ConnectionStream`s
+//! 3. Dispatches `TickOutput` from external callers (connect, send, close)
 //! 4. Wakes on timer deadline for periodic maintenance
 //! 5. Dispatches `Action`s from `TickOutput` to interfaces
 //! 6. Forwards `NodeEvent`s to the application
@@ -112,10 +112,8 @@ pub struct ReticulumNodeImpl {
     shutdown_tx: Option<watch::Sender<bool>>,
     /// Runner task handle
     runner_handle: Option<tokio::task::JoinHandle<()>>,
-    /// Shared outgoing channel sender (cloned to each ConnectionStream)
-    outgoing_tx: mpsc::Sender<(LinkId, Vec<u8>)>,
     /// Channel for dispatching TickOutput from outside the event loop
-    /// (used by connect() and announce_destination())
+    /// (used by connect, send_on_connection, close_connection, announce)
     action_dispatch_tx: mpsc::Sender<TickOutput>,
 }
 
@@ -123,8 +121,7 @@ impl ReticulumNodeImpl {
     /// Create a new ReticulumNode (internal use - use ReticulumNodeBuilder)
     pub(crate) fn new(core: StdNodeCore, interfaces: Vec<InterfaceConfig>) -> Self {
         let (event_tx, event_rx) = mpsc::channel(EVENT_CHANNEL_CAPACITY);
-        // Create dummy channels; real ones are created in start()
-        let (outgoing_tx, _) = mpsc::channel(1);
+        // Create dummy channel; real one is created in start()
         let (action_dispatch_tx, _) = mpsc::channel(1);
 
         Self {
@@ -134,7 +131,6 @@ impl ReticulumNodeImpl {
             event_rx: Some(event_rx),
             shutdown_tx: None,
             runner_handle: None,
-            outgoing_tx,
             action_dispatch_tx,
         }
     }
@@ -154,16 +150,13 @@ impl ReticulumNodeImpl {
         let (shutdown_tx, shutdown_rx) = watch::channel(false);
         self.shutdown_tx = Some(shutdown_tx);
 
-        // Create the shared outgoing channel
-        let (outgoing_tx, outgoing_rx) = mpsc::channel(EVENT_CHANNEL_CAPACITY);
-        self.outgoing_tx = outgoing_tx;
-
         // Channel for dispatching TickOutput from outside the event loop.
-        // connect() and announce_destination() produce actions that must reach
-        // the event loop for interface dispatch.  Capacity 256 is generous —
-        // each call produces exactly one TickOutput, and the event loop drains
-        // them on every iteration, so the queue only backs up if the event
-        // loop is blocked (which also stalls all other I/O).
+        // connect(), send_on_connection(), close_connection(), and
+        // announce_destination() produce actions that must reach the event loop
+        // for interface dispatch.  Capacity 256 is generous — each call
+        // produces exactly one TickOutput, and the event loop drains them on
+        // every iteration, so the queue only backs up if the event loop is
+        // blocked (which also stalls all other I/O).
         let (action_dispatch_tx, action_dispatch_rx) = mpsc::channel(EVENT_CHANNEL_CAPACITY);
         self.action_dispatch_tx = action_dispatch_tx;
 
@@ -173,15 +166,7 @@ impl ReticulumNodeImpl {
 
         // Spawn the runner
         let runner_handle = tokio::spawn(async move {
-            run_event_loop(
-                inner,
-                registry,
-                event_tx,
-                outgoing_rx,
-                action_dispatch_rx,
-                shutdown_rx,
-            )
-            .await;
+            run_event_loop(inner, registry, event_tx, action_dispatch_rx, shutdown_rx).await;
         });
 
         self.runner_handle = Some(runner_handle);
@@ -301,7 +286,11 @@ impl ReticulumNodeImpl {
             .await
             .map_err(|_| Error::Transport("event loop shut down".to_string()))?;
 
-        Ok(ConnectionStream::new(link_id, self.outgoing_tx.clone()))
+        Ok(ConnectionStream::new(
+            link_id,
+            Arc::clone(&self.inner),
+            self.action_dispatch_tx.clone(),
+        ))
     }
 
     /// Accept an incoming connection request
@@ -325,7 +314,11 @@ impl ReticulumNodeImpl {
             .await
             .map_err(|_| Error::Transport("event loop shut down".to_string()))?;
 
-        Ok(ConnectionStream::new(*link_id, self.outgoing_tx.clone()))
+        Ok(ConnectionStream::new(
+            *link_id,
+            Arc::clone(&self.inner),
+            self.action_dispatch_tx.clone(),
+        ))
     }
 
     /// Take the event receiver
@@ -515,7 +508,6 @@ async fn run_event_loop(
     inner: Arc<Mutex<StdNodeCore>>,
     mut registry: InterfaceRegistry,
     event_tx: mpsc::Sender<NodeEvent>,
-    mut outgoing_rx: mpsc::Receiver<(LinkId, Vec<u8>)>,
     mut action_dispatch_rx: mpsc::Receiver<TickOutput>,
     mut shutdown: watch::Receiver<bool>,
 ) {
@@ -567,41 +559,8 @@ async fn run_event_loop(
                 }
             }
 
-            // Branch 2: Outgoing data from ConnectionStreams
-            Some((link_id, data)) = outgoing_rx.recv() => {
-                let mut combined = TickOutput::default();
-                {
-                    let mut core = inner.lock().unwrap();
-                    if data.is_empty() {
-                        // Close signal from ConnectionStream
-                        combined.merge(core.close_connection(&link_id));
-                    } else {
-                        match core.send_on_connection(&link_id, &data) {
-                            Ok(output) => combined.merge(output),
-                            Err(e) => tracing::debug!("send_on_connection failed for {:?}: {}", link_id, e),
-                        }
-                    }
-                    // Drain any more queued messages before dispatching
-                    while let Ok((lid, d)) = outgoing_rx.try_recv() {
-                        if d.is_empty() {
-                            combined.merge(core.close_connection(&lid));
-                        } else {
-                            match core.send_on_connection(&lid, &d) {
-                                Ok(output) => combined.merge(output),
-                                Err(e) => tracing::debug!("send_on_connection failed for {:?}: {}", lid, e),
-                            }
-                        }
-                    }
-                };
-                dispatch_output(
-                    combined,
-                    &registry,
-                    &event_tx,
-                );
-            }
-
-            // Branch 3: Dispatch TickOutput from outside the event loop
-            // (connect() and announce_destination() send their output here)
+            // Branch 2: Dispatch TickOutput from outside the event loop
+            // (connect, send_on_connection, close_connection, announce send here)
             Some(output) = action_dispatch_rx.recv() => {
                 dispatch_output(
                     output,
@@ -610,7 +569,7 @@ async fn run_event_loop(
                 );
             }
 
-            // Branch 4: Timer deadline
+            // Branch 3: Timer deadline
             _ = tokio::time::sleep_until(deadline) => {
                 let output = {
                     let mut core = inner.lock().unwrap();
@@ -623,7 +582,7 @@ async fn run_event_loop(
                 );
             }
 
-            // Branch 5: Shutdown
+            // Branch 4: Shutdown
             _ = shutdown.changed() => {
                 if *shutdown.borrow() {
                     tracing::info!("Node shutdown requested");
