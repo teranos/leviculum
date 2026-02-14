@@ -233,7 +233,7 @@ pub const CHANNEL_WINDOW_MAX_FAST: usize = 48;
 pub const CHANNEL_RX_RING_MAX: usize = 512;
 
 /// Maximum transmission attempts before failure
-pub const CHANNEL_MAX_TRIES: u8 = 5;
+pub const CHANNEL_MAX_TRIES: u8 = 8;
 
 /// RTT threshold for fast links (180ms)
 pub const CHANNEL_RTT_FAST_MS: u64 = 180;

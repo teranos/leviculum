@@ -571,9 +571,15 @@ impl LinkManager {
     /// Mark a channel message as delivered (proof received)
     ///
     /// Returns true if the sequence was found in the channel's tx_ring.
-    pub fn mark_channel_delivered(&mut self, link_id: &LinkId, sequence: u16, rtt_ms: u64) -> bool {
+    pub fn mark_channel_delivered(
+        &mut self,
+        link_id: &LinkId,
+        sequence: u16,
+        now_ms: u64,
+        rtt_ms: u64,
+    ) -> bool {
         if let Some(channel) = self.channels.get_mut(link_id) {
-            channel.mark_delivered(sequence, rtt_ms)
+            channel.mark_delivered(sequence, now_ms, rtt_ms)
         } else {
             false
         }
@@ -2183,10 +2189,10 @@ mod tests {
         assert!(old.is_none(), "first send should have no old receipt");
         assert_eq!(pair.initiator.data_receipts.len(), 1);
 
-        // Do NOT deliver a proof — advance time past the channel timeout
-        // Default RTT is ~1ms (established locally), timeout = max(rtt*2.5, 25) = 25ms
-        // Use a generous advance to ensure timeout fires
-        let retransmit_time = now_ms + 2000;
+        // Do NOT deliver a proof — advance time past the channel timeout.
+        // RTT fallback = 500ms. Live timeout with queue_len=1:
+        // max(500*2.5, 25) * 1.5^0 * (1+1.5) = 1250 * 2.5 = 3125ms
+        let retransmit_time = now_ms + 5000;
         pair.initiator.poll(&mut OsRng, retransmit_time);
 
         // Should have a ChannelReceiptUpdated event
@@ -2320,8 +2326,9 @@ mod tests {
         assert_eq!(pair.initiator.data_receipts.len(), 1);
         let _ = pair.initiator.drain_pending_packets().collect::<Vec<_>>();
 
-        // First retransmit
-        now_ms += 2000;
+        // First retransmit: live timeout with queue_len=1, rtt=500:
+        // max(500*2.5, 25) * 1.5^0 * (1+1.5) = 1250 * 2.5 = 3125ms
+        now_ms += 5000;
         pair.initiator.poll(&mut OsRng, now_ms);
         let events: Vec<_> = pair.initiator.drain_events().collect();
         let hash_2 = events
@@ -2339,7 +2346,8 @@ mod tests {
         assert_eq!(pair.initiator.data_receipts.len(), 1);
         let _ = pair.initiator.drain_pending_packets().collect::<Vec<_>>();
 
-        // Second retransmit
+        // Second retransmit: backoff with tries=2:
+        // 1250 * 1.5^1 * 2.5 = 4687ms
         now_ms += 5000;
         pair.initiator.poll(&mut OsRng, now_ms);
         let events: Vec<_> = pair.initiator.drain_events().collect();

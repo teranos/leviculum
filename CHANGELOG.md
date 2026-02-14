@@ -5,6 +5,24 @@ All notable changes to this project will be documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.5.18] - 2026-02-15
+
+### Changed
+- **Live timeout computation** — Channel timeouts are now computed fresh in `poll()` using the current `tx_ring.len()` instead of being frozen at send time. Under load changes (deliveries reducing queue, or new sends growing it), timeouts adapt immediately without waiting for the next retransmit cycle. Removes `timeout_at_ms` from `OutboundEnvelope`.
+- **Smoothed RTT (SRTT) from proof round-trips** — Per-channel SRTT tracking using RFC 6298 (exponentially weighted moving average) with Karn's algorithm (skip retransmitted messages to avoid ambiguous samples). `effective_rtt_ms()` returns SRTT when measured, falling back to handshake RTT. Used for timeout calculation and pacing in `poll()`.
+- **`CHANNEL_MAX_TRIES` increased from 5 to 8** — With exponential backoff (`1.5^(tries-1)`), 8 tries gives a final retry factor of ~17x, providing more patience before link teardown under transient corruption.
+- **First retransmit skips pacing multiplicative decrease** — The first retransmit (tries 1→2) may be spurious (jitter, not loss). Window shrink still happens on every retransmit (matches Python), but pacing MD only triggers on 2nd+ retransmits (tries ≥ 2).
+- `mark_delivered()` and `mark_channel_delivered()` now take `now_ms` parameter for SRTT measurement
+
+### Removed
+- `update_pending_timeouts()` — dead code after live timeout computation (timeouts no longer stored on envelopes)
+- `calculate_timeout_ms()` wrapper — callers use the free function `calculate_timeout()` directly
+- 3 tests for stored-timeout recalculation (`test_dynamic_timeout_recalculation`, `test_dynamic_timeout_only_shortens`, `test_dynamic_timeout_triggers_earlier_retransmit`)
+
+### Added
+- `Channel::srtt_ms()` and `Channel::rttvar_ms()` accessors
+- 8 new tests: live timeout with current queue length (2 tests), SRTT first measurement, SRTT convergence, Karn's algorithm skipping retransmits, effective RTT fallback, max_tries=8 survival, first retransmit no pacing MD
+
 ## [0.5.17] - 2026-02-14
 
 ### Added

@@ -138,8 +138,6 @@ struct OutboundEnvelope {
     tries: u8,
     /// When the envelope was last sent (milliseconds)
     sent_at_ms: u64,
-    /// When the envelope will timeout (milliseconds)
-    timeout_at_ms: u64,
 }
 
 impl OutboundEnvelope {
@@ -149,7 +147,6 @@ impl OutboundEnvelope {
             state: MessageState::New,
             tries: 0,
             sent_at_ms: 0,
-            timeout_at_ms: 0,
         }
     }
 }
@@ -194,6 +191,10 @@ pub struct Channel {
     pacing_interval_ms: u64,
     /// Earliest allowed time for the next send (milliseconds).
     next_send_at_ms: u64,
+    /// Smoothed round-trip time (f64, milliseconds). 0.0 = not yet measured.
+    srtt_ms: f64,
+    /// RTT variance (f64, milliseconds). 0.0 = not yet measured.
+    rttvar_ms: f64,
 }
 
 impl Default for Channel {
@@ -216,6 +217,8 @@ impl Channel {
             max_tries: CHANNEL_MAX_TRIES,
             pacing_interval_ms: 0,
             next_send_at_ms: 0,
+            srtt_ms: 0.0,
+            rttvar_ms: 0.0,
         }
     }
 
@@ -276,6 +279,40 @@ impl Channel {
             (CHANNEL_SEQ_MODULUS - 1) as u16
         } else {
             self.next_tx_sequence - 1
+        }
+    }
+
+    /// Get the smoothed RTT in milliseconds (0.0 if not yet measured)
+    pub fn srtt_ms(&self) -> f64 {
+        self.srtt_ms
+    }
+
+    /// Get the RTT variance in milliseconds (0.0 if not yet measured)
+    pub fn rttvar_ms(&self) -> f64 {
+        self.rttvar_ms
+    }
+
+    /// Update SRTT from a sample RTT measurement (RFC 6298).
+    fn update_srtt(&mut self, sample_ms: u64) {
+        let sample = sample_ms as f64;
+        if self.srtt_ms == 0.0 {
+            // First measurement
+            self.srtt_ms = sample;
+            self.rttvar_ms = sample / 2.0;
+        } else {
+            // RTTVAR = (1-beta)*RTTVAR + beta*|SRTT - R|, beta = 1/4
+            self.rttvar_ms = 0.75 * self.rttvar_ms + 0.25 * (self.srtt_ms - sample).abs();
+            // SRTT = (1-alpha)*SRTT + alpha*R, alpha = 1/8
+            self.srtt_ms = 0.875 * self.srtt_ms + 0.125 * sample;
+        }
+    }
+
+    /// Return the effective RTT: SRTT if measured, else fallback.
+    fn effective_rtt_ms(&self, fallback_rtt_ms: u64) -> u64 {
+        if self.srtt_ms > 0.0 {
+            self.srtt_ms as u64
+        } else {
+            fallback_rtt_ms
         }
     }
 
@@ -397,20 +434,19 @@ impl Channel {
         let envelope = Envelope::new(msgtype, sequence, data.to_vec());
         let packed = envelope.pack();
 
-        let queue_len = self.tx_ring.len();
-        let timeout_ms = self.calculate_timeout_ms(1, rtt_ms, queue_len);
         let mut outbound = OutboundEnvelope::new(envelope);
         outbound.state = MessageState::Sent;
         outbound.tries = 1;
         outbound.sent_at_ms = now_ms;
-        outbound.timeout_at_ms = now_ms.saturating_add(timeout_ms);
 
         self.tx_ring.push_back(outbound);
         self.next_send_at_ms = now_ms.saturating_add(self.pacing_interval_ms);
 
+        let queue_len = self.tx_ring.len();
+        let timeout_ms = calculate_timeout(1, rtt_ms, queue_len); // for logging only
         tracing::debug!(
             seq = sequence,
-            tx_ring = self.tx_ring.len(),
+            tx_ring = queue_len,
             window = self.window,
             window_max = self.window_max,
             timeout_ms,
@@ -576,28 +612,44 @@ impl Channel {
 
     /// Mark an envelope as delivered (ACK received)
     ///
-    /// This removes the envelope from the TX ring and adjusts the window.
+    /// This removes the envelope from the TX ring, updates SRTT using
+    /// Karn's algorithm (non-retransmitted messages only), and adjusts
+    /// the window.
     ///
     /// # Arguments
     /// * `sequence` - Sequence number of the delivered envelope
-    /// * `rtt_ms` - Current RTT in milliseconds (for window adjustment)
+    /// * `now_ms` - Current time in milliseconds (for SRTT measurement)
+    /// * `rtt_ms` - Handshake RTT in milliseconds (fallback for window adjustment)
     ///
     /// # Returns
     /// `true` if the ACK was for a known pending envelope, `false` otherwise
     /// (e.g., duplicate ACK or ACK for unknown sequence).
-    pub fn mark_delivered(&mut self, sequence: u16, rtt_ms: u64) -> bool {
+    pub fn mark_delivered(&mut self, sequence: u16, now_ms: u64, rtt_ms: u64) -> bool {
         if let Some(pos) = self
             .tx_ring
             .iter()
             .position(|e| e.envelope.sequence == sequence)
         {
+            // Karn's algorithm: update SRTT only from non-retransmitted messages
+            let sent_at = self.tx_ring[pos].sent_at_ms;
+            let tries = self.tx_ring[pos].tries;
+            if tries == 1 {
+                let sample_rtt = now_ms.saturating_sub(sent_at);
+                if sample_rtt > 0 {
+                    self.update_srtt(sample_rtt);
+                }
+            }
+
             self.tx_ring.remove(pos);
+            // Window tiers use handshake RTT (conservative), not SRTT.
+            // SRTT from proof round-trips can be much lower than the true
+            // end-to-end RTT, causing spurious promotion to FAST tier.
             self.adjust_window(true, rtt_ms);
-            self.update_pending_timeouts(rtt_ms);
             tracing::debug!(
                 seq = sequence,
                 tx_ring = self.tx_ring.len(),
                 window = self.window,
+                srtt = self.srtt_ms,
                 "channel: delivered"
             );
             true
@@ -611,33 +663,6 @@ impl Channel {
         }
     }
 
-    /// Recalculate timeouts for pending messages after tx_ring size changed.
-    ///
-    /// Called after `mark_delivered()` removes an entry. Matches Python's
-    /// `_update_packet_timeouts()` (Channel.py:538-547): recalculates using
-    /// the new (smaller) queue_len so remaining messages timeout sooner.
-    ///
-    /// Only shortens timeouts, never extends them.
-    fn update_pending_timeouts(&mut self, rtt_ms: u64) {
-        let queue_len = self.tx_ring.len();
-        for outbound in self.tx_ring.iter_mut() {
-            if outbound.state == MessageState::Sent {
-                let new_timeout = calculate_timeout(outbound.tries, rtt_ms, queue_len);
-                let new_deadline = outbound.sent_at_ms.saturating_add(new_timeout);
-                if new_deadline < outbound.timeout_at_ms {
-                    outbound.timeout_at_ms = new_deadline;
-                }
-            }
-        }
-    }
-
-    /// Calculate timeout using Python Reticulum formula
-    ///
-    /// Formula: BACKOFF_BASE^(tries-1) * max(rtt*RTT_MULTIPLIER, MIN_TIMEOUT) * (queue_len+QUEUE_ADJ)
-    fn calculate_timeout_ms(&self, tries: u8, rtt_ms: u64, queue_len: usize) -> u64 {
-        calculate_timeout(tries, rtt_ms, queue_len)
-    }
-
     /// Poll for timeouts and get actions to take
     ///
     /// Call this periodically to check for timed-out envelopes.
@@ -648,6 +673,8 @@ impl Channel {
     pub fn poll(&mut self, now_ms: u64, rtt_ms: u64) -> Vec<ChannelAction> {
         let mut actions = Vec::new();
         let mut window_decrements = 0usize;
+        let mut pacing_doublings = 0usize;
+        let eff_rtt = self.effective_rtt_ms(rtt_ms);
 
         // Collect queue length once at start (used for timeout calculation)
         let queue_len = self.tx_ring.len();
@@ -655,8 +682,11 @@ impl Channel {
         // First pass: collect indices that need processing and their current tries
         let mut timed_out: Vec<(usize, u8)> = Vec::new();
         for (i, outbound) in self.tx_ring.iter().enumerate() {
-            if outbound.state == MessageState::Sent && now_ms >= outbound.timeout_at_ms {
-                timed_out.push((i, outbound.tries));
+            if outbound.state == MessageState::Sent {
+                let timeout = calculate_timeout(outbound.tries, eff_rtt, queue_len);
+                if now_ms >= outbound.sent_at_ms.saturating_add(timeout) {
+                    timed_out.push((i, outbound.tries));
+                }
             }
         }
 
@@ -677,15 +707,12 @@ impl Channel {
                 break; // Link is being torn down, no point continuing
             }
 
-            // Calculate new timeout before mutating
             let new_tries = tries + 1;
-            let timeout_ms = self.calculate_timeout_ms(new_tries, rtt_ms, queue_len);
 
-            // Now mutate the outbound envelope
+            // Mutate the outbound envelope
             let outbound = &mut self.tx_ring[i];
             outbound.tries = new_tries;
             outbound.sent_at_ms = now_ms;
-            outbound.timeout_at_ms = now_ms.saturating_add(timeout_ms);
 
             actions.push(ChannelAction::Retransmit {
                 sequence: outbound.envelope.sequence,
@@ -693,23 +720,28 @@ impl Channel {
                 tries: new_tries,
             });
 
-            window_decrements += 1;
+            window_decrements += 1; // always — matches Python
+            if tries >= 2 {
+                pacing_doublings += 1; // only 2nd+ retry triggers pacing MD
+            }
         }
 
-        // Apply window adjustments after iteration is complete
+        // Apply window adjustments after iteration is complete.
+        // Window tiers use handshake RTT (conservative), not SRTT.
         for _ in 0..window_decrements {
             self.adjust_window(false, rtt_ms);
         }
 
-        // Multiplicative decrease: double pacing per retransmit, capped at rtt_ms.
+        // Multiplicative decrease: double pacing per retransmit, capped at eff_rtt.
         // adjust_window() already called recalculate_pacing(), so pacing_interval_ms > 0
         // (assuming RTT is known). If still 0 (no RTT yet), skip — no timing data to pace with.
-        if window_decrements > 0 && self.pacing_interval_ms > 0 {
-            let doublings = window_decrements.min(10); // safety cap against overflow
+        // Only 2nd+ retransmits trigger MD — first retransmit may be spurious (jitter).
+        if pacing_doublings > 0 && self.pacing_interval_ms > 0 {
+            let doublings = pacing_doublings.min(10); // safety cap against overflow
             self.pacing_interval_ms = self
                 .pacing_interval_ms
                 .saturating_mul(1u64 << doublings)
-                .min(rtt_ms.max(1));
+                .min(eff_rtt.max(1));
         }
 
         actions
@@ -937,12 +969,12 @@ mod tests {
         assert_eq!(channel.outstanding(), 1);
 
         // Should return true for known sequence
-        assert!(channel.mark_delivered(0, 100));
+        assert!(channel.mark_delivered(0, 1100, 100));
         assert_eq!(channel.outstanding(), 0);
 
         // Should return false for unknown sequence
-        assert!(!channel.mark_delivered(0, 100));
-        assert!(!channel.mark_delivered(999, 100));
+        assert!(!channel.mark_delivered(0, 1200, 100));
+        assert!(!channel.mark_delivered(999, 1200, 100));
     }
 
     #[test]
@@ -1006,14 +1038,12 @@ mod tests {
 
     #[test]
     fn test_timeout_formula() {
-        let channel = Channel::new();
-
         // Basic timeout: max(100*2.5, 25) * 1.5^0 * (0+1.5) = 250 * 1 * 1.5 = 375
-        let timeout = channel.calculate_timeout_ms(1, 100, 0);
+        let timeout = calculate_timeout(1, 100, 0);
         assert_eq!(timeout, 375);
 
         // With retries: 250 * 1.5^1 * 1.5 = 562.5
-        let timeout = channel.calculate_timeout_ms(2, 100, 0);
+        let timeout = calculate_timeout(2, 100, 0);
         assert_eq!(timeout, 562);
     }
 
@@ -1191,101 +1221,6 @@ mod tests {
     }
 
     #[test]
-    fn test_dynamic_timeout_recalculation() {
-        // Send 5 messages, mark 3 as delivered. The remaining messages'
-        // timeouts should shorten because queue_len decreased significantly.
-        //
-        // At send time, each message has increasing queue_len (0,1,2,3,4).
-        // After delivering seq 0,1,2 the queue_len drops to 2.
-        // Seq=4 had original queue_len=4 → timeout 250*(4+1.5)=1375.
-        // Recalculated with queue_len=2: 250*(2+1.5)=875. Shortened!
-        let mut channel = Channel::new();
-        channel.window = 10; // Increase window to allow 5 sends
-        let rtt_ms = 100;
-
-        // Send 5 messages at t=0
-        for i in 0..5u8 {
-            let msg = TestMessage { data: vec![i] };
-            channel.send(&msg, 464, 0, rtt_ms).unwrap();
-        }
-        assert_eq!(channel.outstanding(), 5);
-
-        // Seq=4 original timeout: 250 * (4+1.5) = 1375
-        assert_eq!(channel.tx_ring[4].timeout_at_ms, 1375);
-
-        // Mark seq=0,1,2 delivered → queue_len drops to 2
-        channel.mark_delivered(0, rtt_ms);
-        channel.mark_delivered(1, rtt_ms);
-        channel.mark_delivered(2, rtt_ms);
-        assert_eq!(channel.outstanding(), 2);
-
-        // Seq=4 (now at index 1) should be shortened:
-        // 250 * (2+1.5) = 875 < 1375
-        assert_eq!(channel.tx_ring[1].timeout_at_ms, 875);
-
-        // Seq=3 (now at index 0) had original queue_len=3 → timeout 1125.
-        // Recalculated with queue_len=2: 875 < 1125 → shortened
-        assert_eq!(channel.tx_ring[0].timeout_at_ms, 875);
-    }
-
-    #[test]
-    fn test_dynamic_timeout_only_shortens() {
-        // Verify that update_pending_timeouts never extends a timeout.
-        // Set up a message with a very short timeout, then call update
-        // with parameters that would calculate a longer one.
-        let mut channel = Channel::new();
-        let msg = TestMessage { data: vec![1] };
-        channel.send(&msg, 464, 1000, 100).unwrap();
-
-        // Artificially set a very short timeout
-        channel.tx_ring[0].timeout_at_ms = 1001;
-        let short_timeout = channel.tx_ring[0].timeout_at_ms;
-
-        // Call update with a large RTT that would calculate a longer timeout
-        channel.update_pending_timeouts(5000);
-
-        // Timeout should NOT have increased
-        assert_eq!(
-            channel.tx_ring[0].timeout_at_ms, short_timeout,
-            "timeout must never be extended by update_pending_timeouts"
-        );
-    }
-
-    #[test]
-    fn test_dynamic_timeout_triggers_earlier_retransmit() {
-        // Verify the practical effect: after marking delivered, a retransmit
-        // triggers at a time that would NOT have triggered with old timeouts.
-        let mut channel = Channel::new();
-        channel.window = 10;
-        let rtt_ms = 100;
-
-        // Send 3 messages at t=0
-        for i in 0..3u8 {
-            let msg = TestMessage { data: vec![i] };
-            channel.send(&msg, 464, 0, rtt_ms).unwrap();
-        }
-
-        // Original timeout for seq=2 (queue_len=2 at send time):
-        // 250 * (2+1.5) = 250 * 3.5 = 875ms
-        assert_eq!(channel.tx_ring[2].timeout_at_ms, 875);
-
-        // Mark seq=0 and seq=1 delivered → queue_len drops to 1
-        channel.mark_delivered(0, rtt_ms);
-        channel.mark_delivered(1, rtt_ms);
-
-        // Recalculated for seq=2 with queue_len=1: 250*(1+1.5)=625ms
-        assert_eq!(channel.tx_ring[0].timeout_at_ms, 625);
-
-        // Poll at t=700: triggers with shortened timeout (625 < 700)
-        // but would NOT trigger with original 875ms timeout
-        let actions = channel.poll(700, rtt_ms);
-        assert_eq!(actions.len(), 1);
-        assert!(
-            matches!(&actions[0], ChannelAction::Retransmit { sequence, .. } if *sequence == 2)
-        );
-    }
-
-    #[test]
     fn test_receive_rx_ring_full() {
         use super::envelope::Envelope;
 
@@ -1430,30 +1365,32 @@ mod tests {
 
         channel.send(&msg, 464, 0, rtt_ms).unwrap();
 
-        // After adjust_window(false) with slow RTT, window stays manageable.
-        // recalculate_pacing sets base pacing from rtt/window.
-        // Then MD doubles it. We verify the doubling step.
-        // First, note the pacing right before poll:
-        let pacing_before = channel.pacing_interval_ms;
-
-        // Poll after timeout → retransmit, window--, recalculate, then MD doubles
+        // First retransmit (tries=1→2): window shrinks but pacing does NOT
+        // double (Change D: first retransmit may be spurious)
         let actions = channel.poll(100_000, rtt_ms);
         assert!(!actions.is_empty());
-        assert!(
-            matches!(&actions[0], ChannelAction::Retransmit { .. }),
-            "expected retransmit"
-        );
+        assert!(matches!(&actions[0], ChannelAction::Retransmit { .. }));
+        let pacing_after_first = channel.pacing_interval_ms;
 
-        // After recalculate_pacing, base = rtt/window. MD then doubles it.
-        // The key invariant: MD pushes pacing above the recalculated base.
-        // Since window decreased, base pacing = rtt/(window) is larger.
-        // Then MD doubles that. So final pacing > base pacing.
+        // Second retransmit (tries=2→3): now pacing DOES double
+        let actions = channel.poll(200_000, rtt_ms);
+        assert!(!actions.is_empty());
+        assert!(matches!(&actions[0], ChannelAction::Retransmit { .. }));
+
+        // After recalculate_pacing + MD: pacing > base pacing
         let base_pacing = rtt_ms / channel.window as u64;
         assert!(
             channel.pacing_interval_ms > base_pacing,
             "MD should push pacing {} above recalculated base {}",
             channel.pacing_interval_ms,
             base_pacing
+        );
+        // Pacing should have increased from the first retransmit's level
+        assert!(
+            channel.pacing_interval_ms > pacing_after_first,
+            "second retransmit pacing {} should exceed first retransmit pacing {}",
+            channel.pacing_interval_ms,
+            pacing_after_first
         );
         // And pacing should not exceed rtt_ms
         assert!(
@@ -1462,7 +1399,6 @@ mod tests {
             channel.pacing_interval_ms,
             rtt_ms
         );
-        let _ = pacing_before; // suppress unused warning
     }
 
     #[test]
@@ -1473,11 +1409,14 @@ mod tests {
         let msg = TestMessage { data: vec![1] };
         channel.send(&msg, 464, 0, rtt_ms).unwrap();
 
-        // Set pacing near the ceiling
+        // First retransmit (tries=1→2): no pacing MD (Change D)
+        channel.poll(100_000, rtt_ms);
+
+        // Set pacing near the ceiling before second retransmit
         channel.pacing_interval_ms = 80;
 
-        // Poll → retransmit → MD doubles to 160, capped at rtt_ms=100
-        channel.poll(100_000, rtt_ms);
+        // Second retransmit (tries=2→3): MD doubles to 160, capped at rtt_ms=100
+        channel.poll(200_000, rtt_ms);
 
         assert!(
             channel.pacing_interval_ms <= rtt_ms,
@@ -1526,7 +1465,7 @@ mod tests {
         channel.send(&msg, 464, 1000, rtt_ms).unwrap();
 
         // Deliver → window goes to 6, pacing = 500/6 = 83
-        channel.mark_delivered(0, rtt_ms);
+        channel.mark_delivered(0, 1500, rtt_ms);
 
         assert_eq!(channel.window, 6);
         assert_eq!(channel.pacing_interval_ms, 83); // 500/6 = 83
@@ -1552,5 +1491,278 @@ mod tests {
 
         // next_send_at should be 5000 + 0 = 5000
         assert_eq!(channel.next_send_at_ms, 5000);
+    }
+
+    // ─── Live Timeout Tests ──────────────────────────────────────────────────
+
+    #[test]
+    fn test_live_timeout_uses_current_queue_len() {
+        // Send 5 messages (queue_len=5). Deliver 3. Poll remaining 2 with
+        // live timeout based on queue_len=2 (shorter). Verify retransmit
+        // triggers earlier than it would with queue_len=5.
+        let mut channel = Channel::new();
+        channel.window = 10;
+        let rtt_ms = 100;
+
+        // Send 5 messages at t=0
+        for i in 0..5u8 {
+            let msg = TestMessage { data: vec![i] };
+            channel.send(&msg, 464, 0, rtt_ms).unwrap();
+        }
+        assert_eq!(channel.outstanding(), 5);
+
+        // Mark seq=0,1,2 delivered at t=0 → queue_len drops to 2.
+        // now_ms=0 matches sent_at_ms=0, so sample_rtt=0 which is
+        // filtered by Karn (sample > 0 guard). SRTT stays unmeasured,
+        // effective_rtt_ms falls back to rtt_ms=100.
+        channel.mark_delivered(0, 0, rtt_ms);
+        channel.mark_delivered(1, 0, rtt_ms);
+        channel.mark_delivered(2, 0, rtt_ms);
+        assert_eq!(channel.outstanding(), 2);
+        assert_eq!(channel.srtt_ms(), 0.0, "SRTT should stay unmeasured");
+
+        // Timeout with rtt=100, queue_len=5: 250 * (5+1.5) = 1625ms
+        // Timeout with rtt=100, queue_len=2: 250 * (2+1.5) = 875ms
+        // Poll at t=900: should trigger with live queue_len=2 (875 < 900)
+        // but would NOT trigger with original queue_len=5 (1625 > 900)
+        let actions = channel.poll(900, rtt_ms);
+        assert_eq!(
+            actions.len(),
+            2,
+            "both remaining messages should retransmit with live queue_len=2"
+        );
+        assert!(matches!(
+            &actions[0],
+            ChannelAction::Retransmit { sequence, .. } if *sequence == 3
+        ));
+        assert!(matches!(
+            &actions[1],
+            ChannelAction::Retransmit { sequence, .. } if *sequence == 4
+        ));
+    }
+
+    #[test]
+    fn test_live_timeout_longer_when_queue_grows() {
+        // Send 1 message. Send 4 more (queue_len grows to 5).
+        // Poll: the first message's timeout is based on queue_len=5 (longer).
+        // Verify it does NOT trigger at a time that queue_len=1 timeout would.
+        let mut channel = Channel::new();
+        channel.window = 10;
+        let rtt_ms = 100;
+
+        // Send 1 message at t=0
+        let msg = TestMessage { data: vec![0] };
+        channel.send(&msg, 464, 0, rtt_ms).unwrap();
+
+        // Send 4 more (queue grows to 5)
+        for i in 1..5u8 {
+            let msg = TestMessage { data: vec![i] };
+            channel.send(&msg, 464, 0, rtt_ms).unwrap();
+        }
+        assert_eq!(channel.outstanding(), 5);
+
+        // Timeout with queue_len=1: 250 * (1+1.5) = 625ms
+        // Timeout with queue_len=5: 250 * (5+1.5) = 1625ms
+        // Poll at t=700: should NOT trigger (live queue_len=5 → 1625ms)
+        let actions = channel.poll(700, rtt_ms);
+        assert!(
+            actions.is_empty(),
+            "queue_len=5 timeout (1625ms) should prevent retransmit at t=700"
+        );
+    }
+
+    // ─── SRTT Tests ──────────────────────────────────────────────────────────
+
+    #[test]
+    fn test_srtt_first_measurement() {
+        // Send message at t=1000, deliver at t=1100. SRTT = 100, RTTVAR = 50.
+        let mut channel = Channel::new();
+        channel.window = 10;
+        let rtt_ms = 500; // handshake RTT (fallback)
+
+        let msg = TestMessage { data: vec![1] };
+        channel.send(&msg, 464, 1000, rtt_ms).unwrap();
+
+        assert_eq!(channel.srtt_ms(), 0.0, "SRTT should start unmeasured");
+
+        channel.mark_delivered(0, 1100, rtt_ms);
+
+        assert!(
+            (channel.srtt_ms() - 100.0).abs() < 0.001,
+            "SRTT should be 100ms, got {}",
+            channel.srtt_ms()
+        );
+        assert!(
+            (channel.rttvar_ms() - 50.0).abs() < 0.001,
+            "RTTVAR should be 50ms, got {}",
+            channel.rttvar_ms()
+        );
+    }
+
+    #[test]
+    fn test_srtt_converges() {
+        // Send and deliver multiple messages. Verify SRTT converges
+        // toward the average and reflects the samples.
+        let mut channel = Channel::new();
+        channel.window = 10;
+        let rtt_ms = 500;
+
+        // Sample RTTs: 100, 120, 80, 110, 90
+        let samples = [100u64, 120, 80, 110, 90];
+        for (i, &sample) in samples.iter().enumerate() {
+            let msg = TestMessage {
+                data: vec![i as u8],
+            };
+            let t_send = (i as u64) * 1000;
+            channel.send(&msg, 464, t_send, rtt_ms).unwrap();
+            channel.mark_delivered(i as u16, t_send + sample, rtt_ms);
+        }
+
+        // After 5 samples around 100ms, SRTT should be close to 100
+        assert!(
+            (channel.srtt_ms() - 100.0).abs() < 15.0,
+            "SRTT should converge near 100ms, got {}",
+            channel.srtt_ms()
+        );
+    }
+
+    #[test]
+    fn test_srtt_karn_skips_retransmits() {
+        // Send, timeout, retransmit, deliver. SRTT should NOT be updated
+        // (Karn's algorithm: ambiguous RTT for retransmitted messages).
+        let mut channel = Channel::new();
+        channel.window = 10;
+        let rtt_ms = 100;
+
+        let msg = TestMessage { data: vec![1] };
+        channel.send(&msg, 464, 0, rtt_ms).unwrap();
+
+        // Force a retransmit by polling after timeout
+        let actions = channel.poll(100_000, rtt_ms);
+        assert!(!actions.is_empty());
+        assert!(matches!(&actions[0], ChannelAction::Retransmit { .. }));
+
+        // Now deliver — tries > 1, so Karn's algorithm skips SRTT update
+        channel.mark_delivered(0, 200_000, rtt_ms);
+
+        assert_eq!(
+            channel.srtt_ms(),
+            0.0,
+            "SRTT should NOT be updated for retransmitted messages"
+        );
+    }
+
+    #[test]
+    fn test_srtt_effective_rtt_ms_fallback() {
+        // Before any deliveries, effective_rtt_ms returns fallback.
+        // After delivery with sample, it returns SRTT.
+        let mut channel = Channel::new();
+        channel.window = 10;
+
+        assert_eq!(
+            channel.effective_rtt_ms(500),
+            500,
+            "should return fallback before any measurement"
+        );
+
+        // Send and deliver to establish SRTT
+        let msg = TestMessage { data: vec![1] };
+        channel.send(&msg, 464, 1000, 500).unwrap();
+        channel.mark_delivered(0, 1200, 500);
+
+        assert_eq!(
+            channel.effective_rtt_ms(500),
+            200,
+            "should return SRTT (200ms) after measurement"
+        );
+    }
+
+    // ─── MAX_TRIES and Pacing MD Tests ───────────────────────────────────────
+
+    #[test]
+    fn test_max_tries_8_survives_longer() {
+        // With max_tries=8, 7 retransmits trigger Retransmit (not TearDownLink),
+        // and the 8th triggers TearDownLink.
+        let mut channel = Channel::new();
+        assert_eq!(channel.max_tries, 8);
+        let rtt_ms = 100;
+
+        let msg = TestMessage { data: vec![1] };
+        channel.send(&msg, 464, 0, rtt_ms).unwrap();
+
+        // 7 retransmits (tries 1→2, 2→3, ..., 7→8)
+        let mut t = 0u64;
+        for i in 0..7 {
+            t += 1_000_000; // far enough in the future to trigger timeout
+            let actions = channel.poll(t, rtt_ms);
+            assert_eq!(
+                actions.len(),
+                1,
+                "retry {} should produce exactly one action",
+                i + 1
+            );
+            assert!(
+                matches!(&actions[0], ChannelAction::Retransmit { tries, .. } if *tries == (i as u8 + 2)),
+                "retry {} should be Retransmit with tries={}, got {:?}",
+                i + 1,
+                i + 2,
+                &actions[0]
+            );
+        }
+
+        // 8th timeout — tries=8 >= max_tries=8 → TearDownLink
+        t += 1_000_000;
+        let actions = channel.poll(t, rtt_ms);
+        assert_eq!(actions.len(), 1);
+        assert!(
+            matches!(&actions[0], ChannelAction::TearDownLink),
+            "8th timeout should tear down link, got {:?}",
+            &actions[0]
+        );
+    }
+
+    #[test]
+    fn test_first_retransmit_no_pacing_md() {
+        // First retransmit (tries=1→2): window decreases but pacing does NOT
+        // double. Second retransmit (tries=2→3): window decreases AND pacing
+        // doubles.
+        let mut channel = Channel::new();
+        let rtt_ms = 2000u64; // slow RTT for manageable window
+        let msg = TestMessage { data: vec![1] };
+
+        channel.send(&msg, 464, 0, rtt_ms).unwrap();
+
+        // First retransmit
+        let actions = channel.poll(100_000, rtt_ms);
+        assert!(!actions.is_empty());
+        assert!(matches!(
+            &actions[0],
+            ChannelAction::Retransmit { tries: 2, .. }
+        ));
+
+        // Pacing should be recalculate_pacing result only (no MD doubling)
+        let pacing_after_first = channel.pacing_interval_ms;
+        let base_pacing = rtt_ms / channel.window as u64;
+        assert_eq!(
+            pacing_after_first, base_pacing,
+            "first retransmit: pacing {} should equal base {} (no MD)",
+            pacing_after_first, base_pacing
+        );
+
+        // Second retransmit
+        let actions = channel.poll(200_000, rtt_ms);
+        assert!(!actions.is_empty());
+        assert!(matches!(
+            &actions[0],
+            ChannelAction::Retransmit { tries: 3, .. }
+        ));
+
+        // Now pacing SHOULD be doubled (MD kicks in for tries >= 2)
+        assert!(
+            channel.pacing_interval_ms > base_pacing,
+            "second retransmit: pacing {} should exceed base {} (MD applied)",
+            channel.pacing_interval_ms,
+            base_pacing
+        );
     }
 }

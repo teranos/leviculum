@@ -1107,13 +1107,14 @@ impl<R: CryptoRngCore, C: Clock, S: Storage> NodeCore<R, C, S> {
                 // Check if this was a channel message and call mark_delivered
                 // on the LinkManager's Channel (unified tx_ring + rx_ring)
                 if let Some(sequence) = self.channel_hash_to_seq.remove(&packet_hash) {
+                    let now_ms = self.transport.clock().now_ms();
                     let rtt_ms = self
                         .link_manager
                         .link(&link_id)
                         .map(|l| l.rtt_ms())
                         .unwrap_or(500);
                     self.link_manager
-                        .mark_channel_delivered(&link_id, sequence, rtt_ms);
+                        .mark_channel_delivered(&link_id, sequence, now_ms, rtt_ms);
                 }
                 self.events.push(NodeEvent::LinkDeliveryConfirmed {
                     link_id,
