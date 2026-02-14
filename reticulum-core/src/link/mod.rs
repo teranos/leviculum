@@ -139,6 +139,8 @@ pub enum LinkError {
     NotFound,
     /// Channel send window is full
     WindowFull,
+    /// Channel is pacing sends — retry at the given time
+    PacingDelay { ready_at_ms: u64 },
 }
 
 impl core::fmt::Display for LinkError {
@@ -154,6 +156,9 @@ impl core::fmt::Display for LinkError {
             LinkError::InvalidRtt => write!(f, "invalid RTT packet"),
             LinkError::NotFound => write!(f, "link not found"),
             LinkError::WindowFull => write!(f, "channel send window full"),
+            LinkError::PacingDelay { ready_at_ms } => {
+                write!(f, "pacing delay until {}ms", ready_at_ms)
+            }
         }
     }
 }

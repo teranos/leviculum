@@ -15,6 +15,8 @@ pub enum ChannelError {
     InvalidStreamId,
     /// Channel window is full
     WindowFull,
+    /// Channel is pacing sends — retry at the given time
+    PacingDelay { ready_at_ms: u64 },
     /// Receive ring is full (message dropped)
     RxRingFull,
 }
@@ -28,6 +30,9 @@ impl core::fmt::Display for ChannelError {
             ChannelError::EnvelopeTruncated => write!(f, "envelope data truncated"),
             ChannelError::InvalidStreamId => write!(f, "invalid stream ID"),
             ChannelError::WindowFull => write!(f, "channel window full"),
+            ChannelError::PacingDelay { ready_at_ms } => {
+                write!(f, "pacing delay until {}ms", ready_at_ms)
+            }
             ChannelError::RxRingFull => write!(f, "receive ring full"),
         }
     }

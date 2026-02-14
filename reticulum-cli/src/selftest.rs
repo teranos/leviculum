@@ -467,7 +467,7 @@ async fn send_msg(
 ) {
     let now_ms = start_time.elapsed().as_millis() as u64;
     let msg = build_message(dir, seq, now_ms);
-    match stream.send(&msg).await {
+    match stream.send_bytes(&msg).await {
         Ok(()) => {
             let mut st = state.stats.lock().unwrap();
             if is_a {
@@ -884,45 +884,33 @@ pub async fn run_selftest(
             println!("[selftest] Phase 7: Skipped (link dead)");
         } else {
             // ── Phase 6: Burst ──────────────────────────────────────────
-            // Send 10 messages as fast as possible, retrying on WindowFull.
-            // This exercises the channel under load — a well-functioning link
-            // should be able to absorb the burst within a few seconds.
+            // Send 10 messages as fast as possible. send_bytes() absorbs
+            // pacing delays and window-full automatically.
             let mut burst_ok = 0u64;
-            let mut burst_retries = 0u64;
-            let burst_timeout = Instant::now() + std::time::Duration::from_secs(10);
             for seq in 0..10u64 {
                 let msg = build_message("ab", 10000 + seq, start_time.elapsed().as_millis() as u64);
-                loop {
-                    match stream_a.send(&msg).await {
-                        Ok(()) => {
-                            state.stats.lock().unwrap().sent_a += 1;
-                            burst_ok += 1;
-                            break;
-                        }
-                        Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {
-                            burst_retries += 1;
-                            if Instant::now() > burst_timeout {
-                                state.stats.lock().unwrap().send_fails_a += 1;
-                                break;
-                            }
-                            tokio::time::sleep(std::time::Duration::from_millis(200)).await;
-                        }
-                        Err(_) => {
-                            state.stats.lock().unwrap().send_fails_a += 1;
-                            break;
-                        }
+                match tokio::time::timeout(
+                    std::time::Duration::from_secs(10),
+                    stream_a.send_bytes(&msg),
+                )
+                .await
+                {
+                    Ok(Ok(())) => {
+                        state.stats.lock().unwrap().sent_a += 1;
+                        burst_ok += 1;
+                    }
+                    _ => {
+                        state.stats.lock().unwrap().send_fails_a += 1;
                     }
                 }
             }
 
             if burst_ok < 10 {
                 println!(
-                    "[selftest] Phase 6: Burst {burst_ok}/10 — WARN ({} not sent, {burst_retries} retries)",
+                    "[selftest] Phase 6: Burst {burst_ok}/10 — WARN ({} not sent)",
                     10 - burst_ok
                 );
                 link_warnings.push(format!("burst: {}/10 not sent", 10 - burst_ok));
-            } else if burst_retries > 0 {
-                println!("[selftest] Phase 6: Burst 10/10 — OK ({burst_retries} retries)");
             } else {
                 println!("[selftest] Phase 6: Burst 10/10 — OK");
             }

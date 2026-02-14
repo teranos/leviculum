@@ -634,6 +634,9 @@ impl LinkManager {
                 .send(message, link_mdu, now_ms, rtt_ms)
                 .map_err(|e| match e {
                     super::channel::ChannelError::WindowFull => LinkError::WindowFull,
+                    super::channel::ChannelError::PacingDelay { ready_at_ms } => {
+                        LinkError::PacingDelay { ready_at_ms }
+                    }
                     _ => LinkError::InvalidState,
                 })?;
 

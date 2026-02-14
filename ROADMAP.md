@@ -291,7 +291,7 @@ Zuverlässiger Dateitransfer zwischen Rust und Python. Release-Qualität erreich
 - [x] Buffer-System (RawChannelReader, RawChannelWriter, BufferedChannelWriter)
 - [x] BZ2-Kompression für Stream-Daten
 
-**Deliverable:** ⚠️ Channel-Envelope funktioniert inkl. mark_delivered() und Retransmission (v0.5.5/v0.5.15). Backward-Sequence-Handling für verloren gegangene Proofs behoben (v0.5.16). Buffer/Stream-Layer nicht in ConnectionStream integriert
+**Deliverable:** ⚠️ Channel-Envelope funktioniert inkl. mark_delivered() und Retransmission (v0.5.5/v0.5.15). Backward-Sequence-Handling für verloren gegangene Proofs behoben (v0.5.16). Sender-seitiges Pacing mit AIMD-Congestion-Control (v0.5.17): Sends werden gleichmäßig über die RTT verteilt statt burst-artig bis WindowFull; Additive Increase bei Delivery, Multiplicative Decrease bei Retransmit. Buffer/Stream-Layer nicht in ConnectionStream integriert
 
 ---
 

@@ -5,6 +5,23 @@ All notable changes to this project will be documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.5.17] - 2026-02-14
+
+### Added
+- **Sender-side pacing with AIMD congestion control** — Channel now spaces sends evenly across the RTT (`pacing_interval_ms = rtt / window`) instead of bursting until WindowFull. Additive Increase on delivery (window growth naturally decreases pacing interval via `recalculate_pacing()`), Multiplicative Decrease on retransmit (pacing doubled per retransmit, capped at RTT). No wire protocol changes, fully compatible with Python peers.
+- `ChannelError::PacingDelay { ready_at_ms }` variant — returned when the caller sends before the pacing interval allows
+- `LinkError::PacingDelay` and `SendError::PacingDelay` variants for error propagation
+- `Channel::pacing_interval_ms()` and `Channel::next_send_at_ms()` accessors
+- `ConnectionStream::send_bytes()` — async method that absorbs pacing delays and window-full conditions by sleeping until ready, only returning errors on fatal conditions (connection lost, stream closed)
+- `NodeCore::now_ms()` accessor for reading the transport clock
+- `ConnectionStats::pacing_interval_ms` field
+- 8 unit tests for pacing: delay returned, next_send_at set, window-full priority, retransmit doubling, ceiling on retransmit, recalculate_pacing, delivery recalculates, no pacing before first RTT
+
+### Changed
+- `ConnectionStream::send()` now maps `PacingDelay` to `WouldBlock` (alongside existing `WindowFull` mapping)
+- `lrns selftest` `send_msg()` uses `send_bytes()` instead of `send()` for automatic pacing absorption
+- `lrns selftest` Phase 6 burst replaced manual WindowFull retry loop with `send_bytes()` + `tokio::time::timeout`
+
 ## [0.5.16] - 2026-02-14
 
 ### Fixed
@@ -701,7 +718,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Transport layer (routing, paths, deduplication)
 - Full interoperability with Python rnsd
 
-[Unreleased]: https://codeberg.org/Lew_Palm/leviculum/compare/v0.5.15...HEAD
+[Unreleased]: https://codeberg.org/Lew_Palm/leviculum/compare/v0.5.17...HEAD
+[0.5.17]: https://codeberg.org/Lew_Palm/leviculum/compare/v0.5.16...v0.5.17
+[0.5.16]: https://codeberg.org/Lew_Palm/leviculum/compare/v0.5.15...v0.5.16
 [0.5.15]: https://codeberg.org/Lew_Palm/leviculum/compare/v0.5.14...v0.5.15
 [0.5.14]: https://codeberg.org/Lew_Palm/leviculum/compare/v0.5.13...v0.5.14
 [0.5.13]: https://codeberg.org/Lew_Palm/leviculum/compare/v0.5.12...v0.5.13

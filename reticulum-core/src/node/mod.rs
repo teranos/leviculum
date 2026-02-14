@@ -146,6 +146,8 @@ pub struct ConnectionStats {
     pub window: usize,
     /// Maximum channel window size
     pub window_max: usize,
+    /// Current pacing interval between sends (milliseconds)
+    pub pacing_interval_ms: u64,
 }
 
 /// The unified Reticulum node - combines Transport + LinkManager
@@ -643,6 +645,9 @@ impl<R: CryptoRngCore, C: Clock, S: Storage> NodeCore<R, C, S> {
             .channel_send(link_id, &RawBytesMessage(data), &mut self.rng, now_ms)
             .map_err(|e| match e {
                 crate::link::LinkError::WindowFull => send::SendError::WindowFull,
+                crate::link::LinkError::PacingDelay { ready_at_ms } => {
+                    send::SendError::PacingDelay { ready_at_ms }
+                }
                 crate::link::LinkError::NotFound => send::SendError::NoConnection,
                 _ => send::SendError::ConnectionFailed,
             })?;
@@ -861,7 +866,13 @@ impl<R: CryptoRngCore, C: Clock, S: Storage> NodeCore<R, C, S> {
             tx_ring_size: ch.map(|c| c.outstanding()).unwrap_or(0),
             window: ch.map(|c| c.window()).unwrap_or(0),
             window_max: ch.map(|c| c.window_max()).unwrap_or(0),
+            pacing_interval_ms: ch.map(|c| c.pacing_interval_ms()).unwrap_or(0),
         })
+    }
+
+    /// Get the current time in milliseconds from the transport clock
+    pub fn now_ms(&self) -> u64 {
+        self.transport.clock().now_ms()
     }
 
     /// Access the underlying transport (for advanced use cases)

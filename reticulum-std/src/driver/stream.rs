@@ -81,7 +81,8 @@ impl ConnectionStream {
     /// Send data on this connection
     ///
     /// Locks the core, calls `send_on_connection()`, and dispatches the
-    /// resulting actions. Returns `WouldBlock` if the channel window is full.
+    /// resulting actions. Returns `WouldBlock` if the channel window is full
+    /// or pacing delay is active.
     pub async fn send(&self, data: &[u8]) -> io::Result<()> {
         if self.closed {
             return Err(io::Error::new(io::ErrorKind::BrokenPipe, "stream closed"));
@@ -93,6 +94,9 @@ impl ConnectionStream {
                 .map_err(|e| match e {
                     SendError::WindowFull => {
                         io::Error::new(io::ErrorKind::WouldBlock, "channel window full")
+                    }
+                    SendError::PacingDelay { .. } => {
+                        io::Error::new(io::ErrorKind::WouldBlock, "channel pacing delay")
                     }
                     SendError::NoConnection => {
                         io::Error::new(io::ErrorKind::NotConnected, "no connection")
@@ -106,6 +110,49 @@ impl ConnectionStream {
             .await
             .map_err(|_| io::Error::new(io::ErrorKind::BrokenPipe, "event loop shut down"))?;
         Ok(())
+    }
+
+    /// Send data on this connection, absorbing pacing delays and window-full
+    ///
+    /// Unlike `send()`, this method retries automatically when the channel
+    /// reports a pacing delay or window-full condition, sleeping until ready.
+    /// Only returns an error on fatal conditions (connection lost, stream closed).
+    pub async fn send_bytes(&self, data: &[u8]) -> io::Result<()> {
+        loop {
+            if self.closed {
+                return Err(io::Error::new(io::ErrorKind::BrokenPipe, "stream closed"));
+            }
+
+            let result = {
+                let mut core = self.inner.lock().unwrap();
+                core.send_on_connection(&self.link_id, data)
+            };
+
+            match result {
+                Ok(output) => {
+                    self.action_dispatch_tx.send(output).await.map_err(|_| {
+                        io::Error::new(io::ErrorKind::BrokenPipe, "event loop shut down")
+                    })?;
+                    return Ok(());
+                }
+                Err(SendError::PacingDelay { ready_at_ms }) => {
+                    let now_ms = self.inner.lock().unwrap().now_ms();
+                    let delay = ready_at_ms.saturating_sub(now_ms);
+                    if delay > 0 {
+                        tokio::time::sleep(std::time::Duration::from_millis(delay)).await;
+                    }
+                }
+                Err(SendError::WindowFull) => {
+                    tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+                }
+                Err(SendError::NoConnection) => {
+                    return Err(io::Error::new(io::ErrorKind::NotConnected, "no connection"));
+                }
+                Err(other) => {
+                    return Err(io::Error::other(other.to_string()));
+                }
+            }
+        }
     }
 
     /// Close the stream gracefully, sending LINKCLOSE to the peer
