@@ -519,23 +519,9 @@ async fn run_event_loop(
     mut action_dispatch_rx: mpsc::Receiver<TickOutput>,
     mut shutdown: watch::Receiver<bool>,
 ) {
-    loop {
-        // Compute deadline for timer branch
-        let deadline = {
-            let core = inner.lock().unwrap();
-            match core.next_deadline() {
-                Some(deadline_ms) => {
-                    let now_ms = core.transport().clock().now_ms();
-                    if deadline_ms <= now_ms {
-                        tokio::time::Instant::now()
-                    } else {
-                        tokio::time::Instant::now() + Duration::from_millis(deadline_ms - now_ms)
-                    }
-                }
-                None => tokio::time::Instant::now() + Duration::from_secs(1),
-            }
-        };
+    let mut next_poll = tokio::time::Instant::now();
 
+    loop {
         tokio::select! {
             // Branch 1: Packet from any interface
             event = recv_any(&mut registry) => {
@@ -577,8 +563,8 @@ async fn run_event_loop(
                 );
             }
 
-            // Branch 3: Timer deadline
-            _ = tokio::time::sleep_until(deadline) => {
+            // Branch 3: Timer — persistent deadline, not recomputed per iteration
+            _ = tokio::time::sleep_until(next_poll) => {
                 let output = {
                     let mut core = inner.lock().unwrap();
                     core.handle_timeout()
@@ -588,6 +574,20 @@ async fn run_event_loop(
                     &registry,
                     &event_tx,
                 );
+
+                // Advance next_poll based on next_deadline(), clamped to [250ms, 1s]
+                let interval = {
+                    let core = inner.lock().unwrap();
+                    match core.next_deadline() {
+                        Some(deadline_ms) => {
+                            let now_ms = core.transport().clock().now_ms();
+                            let delta = deadline_ms.saturating_sub(now_ms);
+                            Duration::from_millis(delta.clamp(250, 1000))
+                        }
+                        None => Duration::from_secs(1),
+                    }
+                };
+                next_poll = tokio::time::Instant::now() + interval;
             }
 
             // Branch 4: Shutdown

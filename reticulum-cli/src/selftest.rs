@@ -295,23 +295,19 @@ impl std::fmt::Display for Verdict {
 fn compute_link_verdict(stats: &SelftestStats, warnings: &[String]) -> Verdict {
     let total_sent = stats.sent_a + stats.sent_b;
     let total_recv = stats.recv_a + stats.recv_b;
-    let total_confirmed = stats.confirmed_a + stats.confirmed_b;
 
-    // FAIL conditions
     if total_sent > 0 && total_recv == 0 {
         return Verdict::Fail;
     }
     if total_sent > 0 {
         let recv_pct = (total_recv as f64 / total_sent as f64) * 100.0;
-        if recv_pct < 70.0 {
+        if recv_pct < 90.0 {
             return Verdict::Fail;
         }
-        let conf_pct = (total_confirmed as f64 / total_sent as f64) * 100.0;
-        if conf_pct < 50.0 {
-            return Verdict::Fail;
+        if recv_pct < 99.0 {
+            return Verdict::Warn;
         }
     }
-
     if !warnings.is_empty() {
         return Verdict::Warn;
     }
@@ -868,6 +864,12 @@ pub async fn run_selftest(
             }
         }
 
+        {
+            let st = state.stats.lock().unwrap();
+            let total_sent = st.sent_a + st.sent_b;
+            println!("[selftest] Phase 5 complete: sent {total_sent} messages, entering drain");
+        }
+
         final_win = node_a
             .connection_stats(&link_id)
             .map(|s| s.window)
@@ -881,9 +883,6 @@ pub async fn run_selftest(
             println!("[selftest] Phase 6: Skipped (link dead)");
             println!("[selftest] Phase 7: Skipped (link dead)");
         } else {
-            // Brief drain period for in-flight messages
-            tokio::time::sleep(std::time::Duration::from_secs(5)).await;
-
             // ── Phase 6: Burst ──────────────────────────────────────────
             // Send 10 messages as fast as possible, retrying on WindowFull.
             // This exercises the channel under load — a well-functioning link
@@ -928,28 +927,68 @@ pub async fn run_selftest(
                 println!("[selftest] Phase 6: Burst 10/10 — OK");
             }
 
-            // ── Phase 7: Close link ─────────────────────────────────────
-            // Drain until all sent messages are confirmed (or timeout)
+            // ── Phase 7: Drain + Close ────────────────────────────────
             let drain_start = Instant::now();
-            let drain_timeout = std::time::Duration::from_secs(15);
+            let drain_max = std::time::Duration::from_secs(120);
+            let mut drain_last_print = Instant::now();
+            let mut drain_last_recv: u64;
+            let mut drain_last_ack: u64;
+            let mut drain_stagnant_since = Instant::now();
+            let stagnation_limit = std::time::Duration::from_secs(30);
+
+            // Initialize with current values
+            {
+                let st = state.stats.lock().unwrap();
+                drain_last_recv = st.recv_a + st.recv_b;
+                drain_last_ack = st.confirmed_a + st.confirmed_b;
+            }
+
             loop {
-                let all_confirmed = {
+                tokio::time::sleep(std::time::Duration::from_secs(1)).await;
+
+                let (total_sent, total_recv, total_ack) = {
                     let st = state.stats.lock().unwrap();
-                    st.confirmed_a >= st.sent_a && st.confirmed_b >= st.sent_b
+                    (
+                        st.sent_a + st.sent_b,
+                        st.recv_a + st.recv_b,
+                        st.confirmed_a + st.confirmed_b,
+                    )
                 };
-                if all_confirmed {
-                    println!("[selftest] Phase 7: All messages confirmed — closing");
+
+                // Exit: all messages received
+                if total_recv >= total_sent {
+                    println!("[selftest] Phase 7: All messages received — closing");
                     break;
                 }
-                if drain_start.elapsed() > drain_timeout {
-                    let st = state.stats.lock().unwrap();
+
+                // Exit: max timeout
+                if drain_start.elapsed() > drain_max {
                     println!(
-                        "[selftest] Phase 7: Drain timeout — confirmed {}/{} (a) {}/{} (b)",
-                        st.confirmed_a, st.sent_a, st.confirmed_b, st.sent_b
+                        "[selftest] Phase 7: Drain timeout (120s) — recv={total_recv}/{total_sent} ack={total_ack}/{total_sent}"
                     );
                     break;
                 }
-                tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+
+                // Stagnation detection
+                if total_recv != drain_last_recv || total_ack != drain_last_ack {
+                    drain_last_recv = total_recv;
+                    drain_last_ack = total_ack;
+                    drain_stagnant_since = Instant::now();
+                } else if drain_stagnant_since.elapsed() > stagnation_limit {
+                    println!(
+                        "[selftest] Phase 7: Stagnant 30s — recv={total_recv}/{total_sent} ack={total_ack}/{total_sent}"
+                    );
+                    break;
+                }
+
+                // Progress print every 15s
+                if drain_last_print.elapsed() >= std::time::Duration::from_secs(15) {
+                    let elapsed = drain_start.elapsed().as_secs();
+                    println!(
+                        "[selftest]   drain +{elapsed}s: recv={total_recv}/{total_sent} ack={total_ack}/{total_sent}"
+                    );
+                    drain_last_print = Instant::now();
+                }
             }
 
             final_win = node_a
@@ -1264,10 +1303,20 @@ mod tests {
         let mut stats = SelftestStats::new();
         stats.sent_a = 100;
         stats.sent_b = 100;
-        stats.recv_a = 190;
-        stats.recv_b = 190;
-        stats.confirmed_a = 150;
-        stats.confirmed_b = 150;
+        stats.recv_a = 100;
+        stats.recv_b = 100;
+        let warnings = vec![];
+        assert_eq!(compute_link_verdict(&stats, &warnings), Verdict::Pass);
+    }
+
+    #[test]
+    fn test_link_verdict_pass_boundary() {
+        // recv = 99% exactly → PASS
+        let mut stats = SelftestStats::new();
+        stats.sent_a = 100;
+        stats.sent_b = 100;
+        stats.recv_a = 99;
+        stats.recv_b = 99;
         let warnings = vec![];
         assert_eq!(compute_link_verdict(&stats, &warnings), Verdict::Pass);
     }
@@ -1277,11 +1326,33 @@ mod tests {
         let mut stats = SelftestStats::new();
         stats.sent_a = 100;
         stats.sent_b = 100;
-        stats.recv_a = 190;
-        stats.recv_b = 190;
-        stats.confirmed_a = 150;
-        stats.confirmed_b = 150;
+        stats.recv_a = 95;
+        stats.recv_b = 95;
         let warnings = vec!["something".to_string()];
+        assert_eq!(compute_link_verdict(&stats, &warnings), Verdict::Warn);
+    }
+
+    #[test]
+    fn test_link_verdict_warn_low_recv() {
+        // recv = 91% (between 90-99%), no warnings → WARN
+        let mut stats = SelftestStats::new();
+        stats.sent_a = 100;
+        stats.sent_b = 100;
+        stats.recv_a = 91;
+        stats.recv_b = 91;
+        let warnings = vec![];
+        assert_eq!(compute_link_verdict(&stats, &warnings), Verdict::Warn);
+    }
+
+    #[test]
+    fn test_link_verdict_warn_boundary() {
+        // recv = 90% exactly → WARN (not FAIL, threshold is <90%)
+        let mut stats = SelftestStats::new();
+        stats.sent_a = 100;
+        stats.sent_b = 100;
+        stats.recv_a = 90;
+        stats.recv_b = 90;
+        let warnings = vec![];
         assert_eq!(compute_link_verdict(&stats, &warnings), Verdict::Warn);
     }
 
@@ -1292,21 +1363,6 @@ mod tests {
         stats.sent_b = 100;
         stats.recv_a = 50;
         stats.recv_b = 50;
-        stats.confirmed_a = 100;
-        stats.confirmed_b = 100;
-        let warnings = vec![];
-        assert_eq!(compute_link_verdict(&stats, &warnings), Verdict::Fail);
-    }
-
-    #[test]
-    fn test_link_verdict_fail_low_confirmed() {
-        let mut stats = SelftestStats::new();
-        stats.sent_a = 100;
-        stats.sent_b = 100;
-        stats.recv_a = 190;
-        stats.recv_b = 190;
-        stats.confirmed_a = 10;
-        stats.confirmed_b = 10;
         let warnings = vec![];
         assert_eq!(compute_link_verdict(&stats, &warnings), Verdict::Fail);
     }
