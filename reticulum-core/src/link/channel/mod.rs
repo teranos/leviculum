@@ -421,6 +421,20 @@ impl Channel {
         // Calculate the offset from expected sequence (handling wraparound)
         let offset = self.sequence_offset(envelope.sequence);
 
+        // Backward sequence (retransmit of already-delivered message).
+        // sequence_offset() wraps around for backward sequences, producing
+        // values in the upper half of the sequence space (>= 32768).
+        // Return Ok(None) so the caller generates a proof — the original
+        // proof was likely lost on the return path.
+        if offset >= CHANNEL_SEQ_MODULUS as usize / 2 {
+            tracing::debug!(
+                seq = envelope.sequence,
+                next_rx = self.next_rx_sequence,
+                "channel: duplicate/backward sequence, re-proving"
+            );
+            return Ok(None);
+        }
+
         // If offset is too large, the rx_ring is full
         if offset >= CHANNEL_RX_RING_MAX {
             return Err(ChannelError::RxRingFull);
@@ -646,14 +660,6 @@ impl Channel {
             outbound.tries = new_tries;
             outbound.sent_at_ms = now_ms;
             outbound.timeout_at_ms = now_ms.saturating_add(timeout_ms);
-            tracing::debug!(
-                seq = outbound.envelope.sequence,
-                attempt = new_tries,
-                timeout_ms,
-                tx_ring = queue_len,
-                window = self.window,
-                "channel: retransmitting"
-            );
 
             actions.push(ChannelAction::Retransmit {
                 sequence: outbound.envelope.sequence,
@@ -1257,5 +1263,67 @@ mod tests {
 
         let result = channel.receive(&packed);
         assert_eq!(result, Ok(None)); // Buffered, not dropped
+    }
+
+    #[test]
+    fn test_receive_backward_sequence_reproving() {
+        use super::envelope::Envelope;
+
+        let mut channel = Channel::new();
+
+        // Receive seq 0 in-order
+        let env0 = Envelope::new(0x0001, 0, vec![1]);
+        let result = channel.receive(&env0.pack());
+        assert_eq!(result.unwrap().unwrap().sequence, 0);
+        // next_rx_sequence is now 1
+
+        // Drain (no buffered messages)
+        assert!(channel.drain_received().is_empty());
+
+        // Simulate retransmit: receive seq 0 again (proof was lost)
+        let env0_retx = Envelope::new(0x0001, 0, vec![1]);
+        let result = channel.receive(&env0_retx.pack());
+        // Must be Ok(None), NOT Err(RxRingFull)
+        assert_eq!(result, Ok(None));
+
+        // rx_ring must not grow (duplicate was not buffered)
+        assert!(channel.rx_ring.is_empty());
+    }
+
+    #[test]
+    fn test_receive_backward_sequence_many_ahead() {
+        use super::envelope::Envelope;
+
+        let mut channel = Channel::new();
+
+        // Advance next_rx_sequence to 141 by receiving 0..140 in order
+        for seq in 0..141u16 {
+            let env = Envelope::new(0x0001, seq, vec![seq as u8]);
+            let result = channel.receive(&env.pack());
+            assert!(result.unwrap().is_some());
+        }
+        assert_eq!(channel.next_rx_sequence, 141);
+
+        // Retransmit seq=128 (the scenario from the bug report)
+        let env_retx = Envelope::new(0x0001, 128, vec![128]);
+        let result = channel.receive(&env_retx.pack());
+        // Must be Ok(None) — backward sequence re-proved
+        assert_eq!(result, Ok(None));
+    }
+
+    #[test]
+    fn test_receive_backward_sequence_wraparound() {
+        use super::envelope::Envelope;
+
+        let mut channel = Channel::new();
+
+        // Set next_rx_sequence near the modulus boundary
+        channel.next_rx_sequence = 5;
+
+        // Receive seq=65534 — behind next_rx=5 across the wraparound boundary
+        // offset = (65536 - 5 + 65534) % 65536 = 65529, which is >= 32768
+        let env = Envelope::new(0x0001, 65534, vec![1]);
+        let result = channel.receive(&env.pack());
+        assert_eq!(result, Ok(None));
     }
 }

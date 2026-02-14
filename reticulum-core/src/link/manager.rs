@@ -100,6 +100,10 @@ pub struct LinkManager {
     data_receipts: BTreeMap<[u8; TRUNCATED_HASHBYTES], DataReceipt>,
     /// Maps (link_id, channel_sequence) → truncated receipt hash for cleanup on retransmit
     channel_receipt_keys: BTreeMap<(LinkId, u16), [u8; TRUNCATED_HASHBYTES]>,
+    /// Count of rx_ring full drops since last log
+    rx_ring_full_count: u64,
+    /// Timestamp (ms) when last rx_ring full log was emitted
+    rx_ring_full_last_log_ms: u64,
 }
 
 /// State for a pending outgoing link (initiator side, awaiting proof)
@@ -137,6 +141,8 @@ impl LinkManager {
             pending_packets: Vec::new(),
             data_receipts: BTreeMap::new(),
             channel_receipt_keys: BTreeMap::new(),
+            rx_ring_full_count: 0,
+            rx_ring_full_last_log_ms: 0,
         }
     }
 
@@ -1190,10 +1196,18 @@ impl LinkManager {
                     true // Buffered = accepted, prove it
                 }
                 Err(ChannelError::RxRingFull) => {
-                    tracing::warn!(
-                        "link_mgr: channel rx_ring full — message dropped (cap={})",
-                        crate::constants::CHANNEL_RX_RING_MAX
-                    );
+                    self.rx_ring_full_count += 1;
+                    let elapsed = now_ms.saturating_sub(self.rx_ring_full_last_log_ms);
+                    if self.rx_ring_full_last_log_ms == 0 || elapsed >= 5000 {
+                        tracing::warn!(
+                            "link_mgr: channel rx_ring full — {} messages dropped in last {}s (cap={})",
+                            self.rx_ring_full_count,
+                            elapsed / 1000,
+                            crate::constants::CHANNEL_RX_RING_MAX
+                        );
+                        self.rx_ring_full_count = 0;
+                        self.rx_ring_full_last_log_ms = now_ms;
+                    }
                     false // Dropped = not accepted, don't prove
                 }
                 Err(e) => {
@@ -1207,7 +1221,8 @@ impl LinkManager {
                 Some(c) => c,
                 None => return,
             };
-            for envelope in channel.drain_received() {
+            let drained: Vec<_> = channel.drain_received();
+            for envelope in drained {
                 self.events.push(LinkEvent::ChannelMessageReceived {
                     link_id,
                     msgtype: envelope.msgtype,

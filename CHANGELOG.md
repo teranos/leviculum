@@ -5,6 +5,15 @@ All notable changes to this project will be documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.5.16] - 2026-02-14
+
+### Fixed
+- **Retransmitted messages permanently rejected when proof lost on return path** — When a retransmit arrived with a sequence behind `next_rx_sequence`, `sequence_offset()` wrapped around to a huge number (e.g. seq=128 with next_rx=141 → offset=65523), hit the `CHANNEL_RX_RING_MAX` check, returned `Err(RxRingFull)`, and the manager suppressed the proof. The sender never got the proof and kept retransmitting until `max_tries` killed the link. Fixed with half-sequence-space detection (standard TCP technique): offsets >= 32768 are recognized as backward/duplicate sequences and return `Ok(None)` so the caller generates a proof.
+
+### Changed
+- Rate-limited `rx_ring full` warnings to once per 5 seconds with aggregated drop counts (was per-message)
+- Removed temporary WARN-level diagnostics added for retransmit investigation (GAP_FILLED, RX_RING_FULL, RETRANSMIT age, RETX_SENT, DRAIN)
+
 ## [0.5.15] - 2026-02-14
 
 ### Fixed
