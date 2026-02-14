@@ -5,6 +5,22 @@ All notable changes to this project will be documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.5.15] - 2026-02-14
+
+### Fixed
+- **Channel retransmissions never triggered (retx=0)** — Connection and LinkManager each owned a separate `Channel` per link. Sent messages accumulated in Connection's Channel tx_ring, but `check_channel_timeouts()` only polled LinkManager's Channel (which had an empty tx_ring), so retransmit timeouts were never detected. Merged into a single Channel per link in LinkManager: `send_on_connection()` now routes through `LinkManager::channel_send()`, and `DataDelivered` calls `LinkManager::mark_channel_delivered()`. Also fixed event loop timer starvation: the per-iteration deadline recomputation was replaced with a persistent `next_poll` instant that only advances after `handle_timeout()` fires, ensuring `channel.poll()` runs every 250ms–1s regardless of packet traffic.
+
+### Changed
+- **Breaking: `Connection` no longer owns a `Channel`** — all channel state (tx_ring, rx_ring, window) is now exclusively in `LinkManager::channels`. `Connection` is a lightweight metadata struct (link_id, destination_hash, is_initiator, compression_enabled).
+
+### Added
+- `LinkManager::mark_channel_delivered()` for proof-driven delivery confirmation on the unified Channel
+- `LinkManager::channel_last_sent_sequence()` for reading the most recent sent sequence number
+- `LinkError::WindowFull` variant for propagating channel backpressure through the link layer
+
+### Removed
+- `Connection` channel methods: `send_bytes()`, `send_message()`, `send_raw()`, `receive_message()`, `receive_bytes()`, `receive_envelope()`, `get_or_create_channel()`, `channel()`, `channel_mut()`, `last_sent_sequence()`, `has_channel()`, `is_ready_to_send()`, `outstanding_messages()` — all channel operations now go through `LinkManager`
+
 ## [0.5.14] - 2026-02-13
 
 ### Fixed
@@ -676,7 +692,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Transport layer (routing, paths, deduplication)
 - Full interoperability with Python rnsd
 
-[Unreleased]: https://codeberg.org/Lew_Palm/leviculum/compare/v0.5.12...HEAD
+[Unreleased]: https://codeberg.org/Lew_Palm/leviculum/compare/v0.5.15...HEAD
+[0.5.15]: https://codeberg.org/Lew_Palm/leviculum/compare/v0.5.14...v0.5.15
+[0.5.14]: https://codeberg.org/Lew_Palm/leviculum/compare/v0.5.13...v0.5.14
 [0.5.13]: https://codeberg.org/Lew_Palm/leviculum/compare/v0.5.12...v0.5.13
 [0.5.12]: https://codeberg.org/Lew_Palm/leviculum/compare/v0.5.11...v0.5.12
 [0.5.11]: https://codeberg.org/Lew_Palm/leviculum/compare/v0.5.10...v0.5.11

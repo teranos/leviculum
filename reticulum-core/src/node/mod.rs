@@ -60,6 +60,7 @@ use crate::announce::AnnounceError;
 use crate::constants::TRUNCATED_HASHBYTES;
 use crate::destination::{Destination, DestinationHash, ProofStrategy};
 use crate::identity::Identity;
+use crate::link::channel::{ChannelError, Message};
 use crate::link::{LinkCloseReason, LinkEvent, LinkId, LinkManager};
 use crate::packet::{packet_hash, Packet};
 use crate::traits::{Clock, Storage};
@@ -116,6 +117,23 @@ impl SendOptions {
             compress: true,
             ..Self::default()
         }
+    }
+}
+
+/// Simple message type for sending raw bytes over a channel
+struct RawBytesMessage<'a>(&'a [u8]);
+
+impl Message for RawBytesMessage<'_> {
+    const MSGTYPE: u16 = 0x0000;
+
+    fn pack(&self) -> Vec<u8> {
+        self.0.to_vec()
+    }
+
+    fn unpack(data: &[u8]) -> Result<Self, ChannelError> {
+        // Not used for sending — receiving goes through LinkManager's channel.receive()
+        let _ = data;
+        Err(ChannelError::EnvelopeTruncated)
     }
 }
 
@@ -604,50 +622,37 @@ impl<R: CryptoRngCore, C: Clock, S: Storage> NodeCore<R, C, S> {
         link_id: &LinkId,
         data: &[u8],
     ) -> Result<crate::transport::TickOutput, send::SendError> {
-        // Build the packet (borrows connection + link)
-        let (packet_bytes, attached_iface, dest_hash) = {
-            let connection = self
-                .connections
-                .get_mut(link_id)
-                .ok_or(send::SendError::NoConnection)?;
+        // Verify connection exists and get routing info
+        let _conn = self
+            .connections
+            .get(link_id)
+            .ok_or(send::SendError::NoConnection)?;
 
-            let link = self
-                .link_manager
-                .link(link_id)
-                .ok_or(send::SendError::NoConnection)?;
+        let link = self
+            .link_manager
+            .link(link_id)
+            .ok_or(send::SendError::NoConnection)?;
 
-            let attached = link.attached_interface();
-            let dh = *link.destination_hash();
+        let attached_iface = link.attached_interface();
+        let dest_hash = *link.destination_hash();
 
-            let now_ms = self.transport.clock().now_ms();
-
-            let bytes = connection
-                .send_bytes(link, data, &mut self.rng, now_ms)
-                .map_err(|e| match e {
-                    ConnectionError::ChannelError(
-                        crate::link::channel::ChannelError::WindowFull,
-                    ) => send::SendError::WindowFull,
-                    ConnectionError::ChannelError(crate::link::channel::ChannelError::TooLarge) => {
-                        send::SendError::TooLarge
-                    }
-                    _ => send::SendError::ConnectionFailed,
-                })?;
-
-            (bytes, attached, dh)
-        };
+        // Send through LinkManager's Channel (unified tx_ring + rx_ring)
+        let now_ms = self.transport.clock().now_ms();
+        let packet_bytes = self
+            .link_manager
+            .channel_send(link_id, &RawBytesMessage(data), &mut self.rng, now_ms)
+            .map_err(|e| match e {
+                crate::link::LinkError::WindowFull => send::SendError::WindowFull,
+                crate::link::LinkError::NotFound => send::SendError::NoConnection,
+                _ => send::SendError::ConnectionFailed,
+            })?;
 
         // Register receipt for channel delivery tracking (Python Channel.py:606)
-        if let Some(connection) = self.connections.get(link_id) {
-            if let Some(seq) = connection.last_sent_sequence() {
-                let now_ms = self.transport.clock().now_ms();
-                let (full_hash, _old) = self.link_manager.register_channel_receipt(
-                    &packet_bytes,
-                    *link_id,
-                    seq,
-                    now_ms,
-                );
-                self.channel_hash_to_seq.insert(full_hash, seq);
-            }
+        if let Some(seq) = self.link_manager.channel_last_sent_sequence(link_id) {
+            let (full_hash, _old) =
+                self.link_manager
+                    .register_channel_receipt(&packet_bytes, *link_id, seq, now_ms);
+            self.channel_hash_to_seq.insert(full_hash, seq);
         }
 
         // Route via attached interface (matching Python's LINK routing)
@@ -850,10 +855,10 @@ impl<R: CryptoRngCore, C: Clock, S: Storage> NodeCore<R, C, S> {
     ///
     /// Returns channel and receipt stats useful for monitoring connection health.
     pub fn connection_stats(&self, link_id: &LinkId) -> Option<ConnectionStats> {
-        let conn = self.connections.get(link_id)?;
-        let ch = conn.channel();
+        let _conn = self.connections.get(link_id)?;
+        let ch = self.link_manager.channel(link_id);
         Some(ConnectionStats {
-            tx_ring_size: conn.outstanding_messages(),
+            tx_ring_size: ch.map(|c| c.outstanding()).unwrap_or(0),
             window: ch.map(|c| c.window()).unwrap_or(0),
             window_max: ch.map(|c| c.window_max()).unwrap_or(0),
         })
@@ -1089,17 +1094,15 @@ impl<R: CryptoRngCore, C: Clock, S: Storage> NodeCore<R, C, S> {
                 packet_hash,
             } => {
                 // Check if this was a channel message and call mark_delivered
+                // on the LinkManager's Channel (unified tx_ring + rx_ring)
                 if let Some(sequence) = self.channel_hash_to_seq.remove(&packet_hash) {
-                    if let Some(connection) = self.connections.get_mut(&link_id) {
-                        if let Some(channel) = connection.channel_mut() {
-                            let rtt_ms = self
-                                .link_manager
-                                .link(&link_id)
-                                .map(|l| l.rtt_ms())
-                                .unwrap_or(500);
-                            channel.mark_delivered(sequence, rtt_ms);
-                        }
-                    }
+                    let rtt_ms = self
+                        .link_manager
+                        .link(&link_id)
+                        .map(|l| l.rtt_ms())
+                        .unwrap_or(500);
+                    self.link_manager
+                        .mark_channel_delivered(&link_id, sequence, rtt_ms);
                 }
                 self.events.push(NodeEvent::LinkDeliveryConfirmed {
                     link_id,

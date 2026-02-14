@@ -562,6 +562,22 @@ impl LinkManager {
         self.channels.contains_key(link_id)
     }
 
+    /// Mark a channel message as delivered (proof received)
+    ///
+    /// Returns true if the sequence was found in the channel's tx_ring.
+    pub fn mark_channel_delivered(&mut self, link_id: &LinkId, sequence: u16, rtt_ms: u64) -> bool {
+        if let Some(channel) = self.channels.get_mut(link_id) {
+            channel.mark_delivered(sequence, rtt_ms)
+        } else {
+            false
+        }
+    }
+
+    /// Get the last sent sequence number for a channel
+    pub fn channel_last_sent_sequence(&self, link_id: &LinkId) -> Option<u16> {
+        self.channels.get(link_id).map(|ch| ch.last_sent_sequence())
+    }
+
     /// Get the number of pending data receipts
     pub fn data_receipts_count(&self) -> usize {
         self.data_receipts.len()
@@ -607,9 +623,13 @@ impl LinkManager {
         let channel = self.channels.get_mut(link_id).ok_or(LinkError::NotFound)?;
 
         // Send through channel to get envelope data
-        let envelope_data = channel
-            .send(message, link_mdu, now_ms, rtt_ms)
-            .map_err(|_| LinkError::InvalidState)?;
+        let envelope_data =
+            channel
+                .send(message, link_mdu, now_ms, rtt_ms)
+                .map_err(|e| match e {
+                    super::channel::ChannelError::WindowFull => LinkError::WindowFull,
+                    _ => LinkError::InvalidState,
+                })?;
 
         // Build data packet with Channel context
         let link = self.links.get(link_id).ok_or(LinkError::NotFound)?;

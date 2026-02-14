@@ -291,7 +291,7 @@ Zuverlässiger Dateitransfer zwischen Rust und Python. Release-Qualität erreich
 - [x] Buffer-System (RawChannelReader, RawChannelWriter, BufferedChannelWriter)
 - [x] BZ2-Kompression für Stream-Daten
 
-**Deliverable:** ⚠️ Channel-Envelope funktioniert inkl. mark_delivered() (v0.5.5), aber Buffer/Stream-Layer nicht in ConnectionStream integriert
+**Deliverable:** ⚠️ Channel-Envelope funktioniert inkl. mark_delivered() und Retransmission (v0.5.5/v0.5.15), aber Buffer/Stream-Layer nicht in ConnectionStream integriert
 
 ---
 
@@ -1024,6 +1024,6 @@ Für spätere Versionen:
 
 ---
 
-*Stand: 13. Februar 2026*
+*Stand: 14. Februar 2026*
 *Projekt: leviculum*
 *Lizenz: MIT*

@@ -137,6 +137,8 @@ pub enum LinkError {
     InvalidRtt,
     /// Link not found
     NotFound,
+    /// Channel send window is full
+    WindowFull,
 }
 
 impl core::fmt::Display for LinkError {
@@ -151,6 +153,7 @@ impl core::fmt::Display for LinkError {
             LinkError::NoIdentity => write!(f, "no identity to sign with"),
             LinkError::InvalidRtt => write!(f, "invalid RTT packet"),
             LinkError::NotFound => write!(f, "link not found"),
+            LinkError::WindowFull => write!(f, "channel send window full"),
         }
     }
 }
