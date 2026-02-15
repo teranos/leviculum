@@ -50,7 +50,8 @@ use rand_core::CryptoRngCore;
 
 use super::channel::{Channel, ChannelError, Message};
 use super::{
-    Link, LinkCloseReason, LinkError, LinkEvent, LinkId, LinkState, PeerKeys, PendingPacket,
+    Link, LinkCloseReason, LinkError, LinkEvent, LinkId, LinkPhase, LinkState, PeerKeys,
+    PendingPacket,
 };
 use crate::destination::DestinationHash;
 use crate::hex_fmt::HexFmt;
@@ -84,12 +85,6 @@ fn drain_packets_by_kind(
 pub struct LinkManager {
     /// Active links by ID
     links: BTreeMap<LinkId, Link>,
-    /// Channels by link ID
-    channels: BTreeMap<LinkId, Channel>,
-    /// Pending outgoing links (awaiting proof) - stores (link_id, created_at_ms)
-    pending_outgoing: BTreeMap<LinkId, PendingOutgoing>,
-    /// Pending incoming links (awaiting RTT) - stores (link_id, created_at_ms)
-    pending_incoming: BTreeMap<LinkId, PendingIncoming>,
     /// Destinations that accept incoming links
     accepted_destinations: BTreeSet<DestinationHash>,
     /// Pending events
@@ -106,12 +101,6 @@ pub struct LinkManager {
     rx_ring_full_last_log_ms: u64,
 }
 
-/// State for a pending outgoing link (initiator side, awaiting proof)
-struct PendingOutgoing {
-    /// When this link request was created
-    created_at_ms: u64,
-}
-
 /// Receipt for a sent data packet awaiting proof (PROVE_ALL)
 struct DataReceipt {
     /// Full SHA256 hash of the packet
@@ -122,20 +111,11 @@ struct DataReceipt {
     sent_at_ms: u64,
 }
 
-/// State for a pending incoming link (responder side, awaiting RTT)
-struct PendingIncoming {
-    /// When the proof was sent
-    proof_sent_at_ms: u64,
-}
-
 impl LinkManager {
     /// Create a new LinkManager
     pub fn new() -> Self {
         Self {
             links: BTreeMap::new(),
-            channels: BTreeMap::new(),
-            pending_outgoing: BTreeMap::new(),
-            pending_incoming: BTreeMap::new(),
             accepted_destinations: BTreeSet::new(),
             events: Vec::new(),
             pending_packets: Vec::new(),
@@ -231,13 +211,10 @@ impl LinkManager {
         // Set the destination's signing key for proof verification
         let _ = link.set_destination_keys(dest_signing_key);
 
-        // Track as pending
-        self.pending_outgoing.insert(
-            link_id,
-            PendingOutgoing {
-                created_at_ms: now_ms,
-            },
-        );
+        // Track handshake phase on the link itself
+        link.set_phase(LinkPhase::PendingOutgoing {
+            created_at_ms: now_ms,
+        });
 
         // Store the link
         self.links.insert(link_id, link);
@@ -305,13 +282,10 @@ impl LinkManager {
         // Build the proof packet (this also derives the link key)
         let proof_packet = link.build_proof_packet(identity, MTU as u32, MODE_AES256_CBC)?;
 
-        // Track as pending incoming (awaiting RTT)
-        self.pending_incoming.insert(
-            *link_id,
-            PendingIncoming {
-                proof_sent_at_ms: now_ms,
-            },
-        );
+        // Track handshake phase on the link itself
+        link.set_phase(LinkPhase::PendingIncoming {
+            proof_sent_at_ms: now_ms,
+        });
 
         Ok(proof_packet)
     }
@@ -505,10 +479,8 @@ impl LinkManager {
             });
         }
         // Clean up all tracking (no-op if link_id not present)
+        // Phase and channel are on Link — removing the link drops them automatically.
         self.links.remove(link_id);
-        self.channels.remove(link_id);
-        self.pending_outgoing.remove(link_id);
-        self.pending_incoming.remove(link_id);
         self.channel_receipt_keys
             .retain(|(lid, _), _| *lid != *link_id);
     }
@@ -528,12 +500,10 @@ impl LinkManager {
             link.close();
         }
         // Always remove from tracking regardless of link state
+        // Phase and channel are on Link — removing the link drops them automatically.
         self.links.remove(link_id);
-        self.channels.remove(link_id);
         self.channel_receipt_keys
             .retain(|(lid, _), _| *lid != *link_id);
-        self.pending_outgoing.remove(link_id);
-        self.pending_incoming.remove(link_id);
         self.events.push(LinkEvent::LinkClosed {
             link_id: *link_id,
             reason,
@@ -556,31 +526,25 @@ impl LinkManager {
     /// A mutable reference to the channel, or None if the link doesn't exist
     /// or is not active.
     pub fn get_channel(&mut self, link_id: &LinkId) -> Option<&mut Channel> {
-        // Check if link exists and is active
-        let link = self.links.get(link_id)?;
+        let link = self.links.get_mut(link_id)?;
         if link.state() != LinkState::Active {
             return None;
         }
-
-        // Get or create channel
-        if !self.channels.contains_key(link_id) {
-            let mut channel = Channel::new();
-            // Update window based on link RTT
-            channel.update_window_for_rtt(link.rtt_ms());
-            self.channels.insert(*link_id, channel);
-        }
-
-        self.channels.get_mut(link_id)
+        let rtt_ms = link.rtt_ms();
+        Some(link.ensure_channel(rtt_ms))
     }
 
     /// Get an immutable reference to a channel (None if not yet created)
     pub fn channel(&self, link_id: &LinkId) -> Option<&Channel> {
-        self.channels.get(link_id)
+        self.links.get(link_id)?.channel()
     }
 
     /// Check if a channel exists for a link
     pub fn has_channel(&self, link_id: &LinkId) -> bool {
-        self.channels.contains_key(link_id)
+        self.links
+            .get(link_id)
+            .map(|l| l.has_channel())
+            .unwrap_or(false)
     }
 
     /// Mark a channel message as delivered (proof received)
@@ -593,16 +557,19 @@ impl LinkManager {
         now_ms: u64,
         rtt_ms: u64,
     ) -> bool {
-        if let Some(channel) = self.channels.get_mut(link_id) {
-            channel.mark_delivered(sequence, now_ms, rtt_ms)
-        } else {
-            false
-        }
+        self.links
+            .get_mut(link_id)
+            .and_then(|l| l.channel_mut())
+            .map(|ch| ch.mark_delivered(sequence, now_ms, rtt_ms))
+            .unwrap_or(false)
     }
 
     /// Get the last sent sequence number for a channel
     pub fn channel_last_sent_sequence(&self, link_id: &LinkId) -> Option<u16> {
-        self.channels.get(link_id).map(|ch| ch.last_sent_sequence())
+        self.links
+            .get(link_id)?
+            .channel()
+            .map(|ch| ch.last_sent_sequence())
     }
 
     /// Get the number of pending data receipts
@@ -630,39 +597,29 @@ impl LinkManager {
         rng: &mut impl CryptoRngCore,
         now_ms: u64,
     ) -> Result<Vec<u8>, LinkError> {
-        // First check if link exists and is active
-        let link = self.links.get(link_id).ok_or(LinkError::NotFound)?;
+        let link = self.links.get_mut(link_id).ok_or(LinkError::NotFound)?;
         if link.state() != LinkState::Active {
             return Err(LinkError::InvalidState);
         }
 
-        // Get link MDU and RTT for channel
+        // Extract values needed for channel.send() before taking &mut channel
         let link_mdu = link.mdu();
         let rtt_ms = link.rtt_ms();
 
-        // Get or create channel
-        if !self.channels.contains_key(link_id) {
-            let mut channel = Channel::new();
-            channel.update_window_for_rtt(rtt_ms);
-            self.channels.insert(*link_id, channel);
-        }
-
-        let channel = self.channels.get_mut(link_id).ok_or(LinkError::NotFound)?;
-
-        // Send through channel to get envelope data
-        let envelope_data =
+        // Scope the &mut channel borrow so it's released before we call link methods again
+        let envelope_data = {
+            let channel = link.ensure_channel(rtt_ms);
             channel
                 .send(message, link_mdu, now_ms, rtt_ms)
                 .map_err(|e| match e {
-                    super::channel::ChannelError::WindowFull => LinkError::WindowFull,
-                    super::channel::ChannelError::PacingDelay { ready_at_ms } => {
+                    ChannelError::WindowFull => LinkError::WindowFull,
+                    ChannelError::PacingDelay { ready_at_ms } => {
                         LinkError::PacingDelay { ready_at_ms }
                     }
                     _ => LinkError::InvalidState,
-                })?;
-
-        // Build data packet with Channel context
-        let link = self.links.get(link_id).ok_or(LinkError::NotFound)?;
+                })?
+        };
+        // &mut channel borrow released by block scope — envelope_data is owned Vec<u8>
         link.build_data_packet_with_context(&envelope_data, PacketContext::Channel, rng)
     }
 
@@ -773,7 +730,10 @@ impl LinkManager {
 
     /// Get the number of pending links
     pub fn pending_link_count(&self) -> usize {
-        self.pending_outgoing.len() + self.pending_incoming.len()
+        self.links
+            .values()
+            .filter(|l| !matches!(l.phase(), LinkPhase::Established))
+            .count()
     }
 
     /// Compute the earliest deadline across all link-layer timers
@@ -791,14 +751,17 @@ impl LinkManager {
             });
         };
 
-        // Pending outgoing handshake timeouts
-        for p in self.pending_outgoing.values() {
-            update(p.created_at_ms.saturating_add(LINK_PENDING_TIMEOUT_MS));
-        }
-
-        // Pending incoming handshake timeouts
-        for p in self.pending_incoming.values() {
-            update(p.proof_sent_at_ms.saturating_add(LINK_PENDING_TIMEOUT_MS));
+        // Pending handshake timeouts (both outgoing and incoming)
+        for link in self.links.values() {
+            match link.phase() {
+                LinkPhase::PendingOutgoing { created_at_ms } => {
+                    update(created_at_ms.saturating_add(LINK_PENDING_TIMEOUT_MS));
+                }
+                LinkPhase::PendingIncoming { proof_sent_at_ms } => {
+                    update(proof_sent_at_ms.saturating_add(LINK_PENDING_TIMEOUT_MS));
+                }
+                LinkPhase::Established => {}
+            }
         }
 
         // Data receipt timeouts
@@ -841,7 +804,7 @@ impl LinkManager {
 
         // Channel retransmit deadlines — channels track their own timeouts
         // but we don't have a direct accessor. Use a short deadline if channels exist.
-        if !self.channels.is_empty() {
+        if self.links.values().any(|l| l.has_channel()) {
             // Ensure we poll channels at least every second
             update(now_ms.saturating_add(MS_PER_SECOND));
         }
@@ -976,14 +939,14 @@ impl LinkManager {
             return;
         }
 
-        // Check if we have a pending outgoing link (link establishment proof)
-        if !self.pending_outgoing.contains_key(&link_id) {
-            return;
-        }
-
         let Some(link) = self.links.get_mut(&link_id) else {
             return;
         };
+
+        // Check if we have a pending outgoing link (link establishment proof)
+        if !matches!(link.phase(), LinkPhase::PendingOutgoing { .. }) {
+            return;
+        }
 
         if link.state() != LinkState::Pending || !link.is_initiator() {
             return;
@@ -999,7 +962,6 @@ impl LinkManager {
             let is_initiator = link.is_initiator();
             let destination_hash = *link.destination_hash();
             self.links.remove(&link_id);
-            self.pending_outgoing.remove(&link_id);
             self.events.push(LinkEvent::LinkClosed {
                 link_id,
                 reason: LinkCloseReason::InvalidProof,
@@ -1011,10 +973,11 @@ impl LinkManager {
 
         // Proof verified! Calculate RTT and build the RTT packet
         let now_secs = now_ms / MS_PER_SECOND;
-        let pending = self.pending_outgoing.remove(&link_id);
-        let rtt_ms = pending
-            .map(|p| now_ms.saturating_sub(p.created_at_ms))
-            .unwrap_or(0);
+        let rtt_ms = match link.phase() {
+            LinkPhase::PendingOutgoing { created_at_ms } => now_ms.saturating_sub(created_at_ms),
+            _ => 0,
+        };
+        link.set_phase(LinkPhase::Established);
         let rtt_seconds = rtt_ms as f64 / MS_PER_SECOND as f64;
 
         // Update keepalive timing based on RTT
@@ -1136,7 +1099,7 @@ impl LinkManager {
                 // Link is now active - update keepalive timing from RTT
                 link.update_keepalive_from_rtt(rtt_secs);
                 link.mark_established(now_secs);
-                self.pending_incoming.remove(&link_id);
+                link.set_phase(LinkPhase::Established);
                 self.events.push(LinkEvent::LinkEstablished {
                     link_id,
                     is_initiator: false,
@@ -1205,13 +1168,11 @@ impl LinkManager {
             };
             plaintext.truncate(decrypted_len);
 
-            // Get or create channel for this link
+            // Get or create channel, process message, drain buffered.
+            // self.events and self.rx_ring_full_* are different fields from self.links,
+            // so split borrows allow accessing them while link (&mut) is held.
             let rtt_ms = link.rtt_ms();
-            let channel = self.channels.entry(link_id).or_insert_with(|| {
-                let mut channel = Channel::new();
-                channel.update_window_for_rtt(rtt_ms);
-                channel
-            });
+            let channel = link.ensure_channel(rtt_ms);
 
             // Process through channel
             let message_accepted = match channel.receive(&plaintext) {
@@ -1257,11 +1218,11 @@ impl LinkManager {
             };
 
             // Drain any buffered messages that are now ready
-            let channel = match self.channels.get_mut(&link_id) {
-                Some(c) => c,
-                None => return,
-            };
-            let drained: Vec<_> = channel.drain_received();
+            // (channel is still accessible through link)
+            let drained: Vec<_> = link
+                .channel_mut()
+                .map(|ch| ch.drain_received())
+                .unwrap_or_default();
             for envelope in drained {
                 self.events.push(LinkEvent::ChannelMessageReceived {
                     link_id,
@@ -1281,10 +1242,6 @@ impl LinkManager {
             // Generate proof for CHANNEL packets (Python Link.py:1173).
             // Unlike regular data (which checks proof_strategy), Channel proofs are
             // always generated — matching Python's packet.prove() call.
-            let link = match self.links.get(&link_id) {
-                Some(l) => l,
-                None => return,
-            };
             let full_packet_hash = packet_hash(raw_packet);
             if let Some(signing_key) = link.proof_signing_key() {
                 match link.build_data_proof_packet_with_signing_key(&full_packet_hash, signing_key)
@@ -1402,36 +1359,28 @@ impl LinkManager {
     // --- Internal: Timeout Handling ---
 
     fn check_timeouts(&mut self, now_ms: u64) {
-        // Check pending outgoing links
-        let timed_out_outgoing =
-            Self::collect_timed_out_ids(&self.pending_outgoing, |p| p.created_at_ms, now_ms);
-        for link_id in timed_out_outgoing {
-            let (is_initiator, destination_hash) = self
-                .links
-                .get(&link_id)
-                .map(|l| (l.is_initiator(), *l.destination_hash()))
-                .unwrap_or((true, DestinationHash::new([0; 16])));
-            self.links.remove(&link_id);
-            self.pending_outgoing.remove(&link_id);
-            self.events.push(LinkEvent::LinkClosed {
-                link_id,
-                reason: LinkCloseReason::Timeout,
-                is_initiator,
-                destination_hash,
-            });
-        }
+        // Collect timed-out pending links (both outgoing and incoming)
+        let timed_out: Vec<LinkId> = self
+            .links
+            .iter()
+            .filter(|(_, link)| {
+                let started_at = match link.phase() {
+                    LinkPhase::PendingOutgoing { created_at_ms } => created_at_ms,
+                    LinkPhase::PendingIncoming { proof_sent_at_ms } => proof_sent_at_ms,
+                    LinkPhase::Established => return false,
+                };
+                now_ms.saturating_sub(started_at) > LINK_PENDING_TIMEOUT_MS
+            })
+            .map(|(id, _)| *id)
+            .collect();
 
-        // Check pending incoming links
-        let timed_out_incoming =
-            Self::collect_timed_out_ids(&self.pending_incoming, |p| p.proof_sent_at_ms, now_ms);
-        for link_id in timed_out_incoming {
+        for link_id in timed_out {
             let (is_initiator, destination_hash) = self
                 .links
                 .get(&link_id)
                 .map(|l| (l.is_initiator(), *l.destination_hash()))
                 .unwrap_or((false, DestinationHash::new([0; 16])));
             self.links.remove(&link_id);
-            self.pending_incoming.remove(&link_id);
             self.events.push(LinkEvent::LinkClosed {
                 link_id,
                 reason: LinkCloseReason::Timeout,
@@ -1446,24 +1395,6 @@ impl LinkManager {
         });
         self.channel_receipt_keys
             .retain(|_, truncated| self.data_receipts.contains_key(truncated));
-    }
-
-    /// Collect link IDs that have timed out from a pending map
-    fn collect_timed_out_ids<T, F>(
-        pending: &BTreeMap<LinkId, T>,
-        get_timestamp: F,
-        now_ms: u64,
-    ) -> Vec<LinkId>
-    where
-        F: Fn(&T) -> u64,
-    {
-        pending
-            .iter()
-            .filter(|(_, entry)| {
-                now_ms.saturating_sub(get_timestamp(entry)) > LINK_PENDING_TIMEOUT_MS
-            })
-            .map(|(id, _)| *id)
-            .collect()
     }
 
     // --- Internal: Keepalive Handling ---
@@ -1552,23 +1483,27 @@ impl LinkManager {
         use super::channel::ChannelAction;
 
         // Collect link IDs that have channels
-        let channel_link_ids: Vec<LinkId> = self.channels.keys().copied().collect();
+        let channel_link_ids: Vec<LinkId> = self
+            .links
+            .iter()
+            .filter(|(_, link)| link.has_channel())
+            .map(|(id, _)| *id)
+            .collect();
 
         for link_id in channel_link_ids {
-            // Get RTT for this link (use default if link not found)
-            let rtt_ms = self
-                .links
-                .get(&link_id)
-                .map(|link| link.rtt_ms())
-                .unwrap_or(crate::constants::CHANNEL_DEFAULT_RTT_MS);
-
-            // Get channel and poll for actions
-            let actions = match self.channels.get_mut(&link_id) {
-                Some(channel) => channel.poll(now_ms, rtt_ms),
+            // Get link, extract RTT, poll channel — actions is owned Vec, releasing borrow
+            let actions = match self.links.get_mut(&link_id) {
+                Some(link) => {
+                    let rtt_ms = link.rtt_ms();
+                    match link.channel_mut() {
+                        Some(ch) => ch.poll(now_ms, rtt_ms),
+                        None => continue,
+                    }
+                }
                 None => continue,
             };
 
-            // Process actions
+            // Process actions (re-borrow link for each)
             for action in actions {
                 match action {
                     ChannelAction::Retransmit {
@@ -1624,7 +1559,6 @@ impl LinkManager {
                             }
                             link.close();
                         }
-                        self.channels.remove(&link_id);
                         self.channel_receipt_keys
                             .retain(|(lid, _), _| *lid != link_id);
                         self.events.push(LinkEvent::LinkClosed {
@@ -2571,7 +2505,7 @@ mod tests {
         // Close the link
         pair.initiator.close(&link_id, &mut OsRng);
 
-        // Channel should be removed — FAILS: close() doesn't remove from self.channels
+        // Channel should be removed — dropping the link drops its channel
         assert!(
             !pair.initiator.has_channel(&link_id),
             "channel should be removed after close()"
@@ -2629,8 +2563,9 @@ mod tests {
 
         // Reduce max_tries so we hit TearDownLink quickly
         pair.initiator
-            .channels
-            .get_mut(&link_id)
+            .link_mut(&link_id)
+            .unwrap()
+            .channel_mut()
             .unwrap()
             .set_max_tries_for_test(2);
 
@@ -3026,8 +2961,9 @@ mod tests {
         // Jump initiator's sequence far ahead to trigger rx_ring full
         let target_seq = 1 + crate::constants::CHANNEL_RX_RING_MAX as u16;
         pair.initiator
-            .channels
-            .get_mut(&pair.initiator_link_id)
+            .link_mut(&pair.initiator_link_id)
+            .unwrap()
+            .channel_mut()
             .unwrap()
             .force_next_tx_sequence_for_test(target_seq);
 

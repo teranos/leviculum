@@ -29,7 +29,7 @@ Work proceeds in TDD order: tests first, then fixes, then refactoring.
 
 | ID | P | Effort | Phase | Status | Category | Summary |
 |----|---|--------|-------|--------|----------|---------|
-| A2 | H | XL | 3 | open | Structural | Four parallel LinkId maps — split-brain root cause |
+| A2 | H | XL | 3 | in_progress | Structural | Four parallel LinkId maps — 3 of 4 eliminated (pending_outgoing, pending_incoming, channels) |
 | A3 | M | M | 3 | open | Structural | `channel_hash_to_seq` cross-layer dependency |
 | A4 | M | M | 3 | open | Structural | `data_receipts` + `channel_receipt_keys` tight coupling |
 | A5 | L | S | 4 | open | Structural | Event cascade: 13/20 pass-through translations |
@@ -56,16 +56,16 @@ Work proceeds in TDD order: tests first, then fixes, then refactoring.
 ## Issues
 
 ### A2: Four parallel LinkId maps
-- **Status:** open
+- **Status:** in_progress
 - **Priority:** HIGH
 - **Effort:** XL
 - **Phase:** 3
 - **Category:** Structural
 - **Blocked-by:** —
 - **Ref:** doc/ISSUES.md A2, doc/ARCHITECTURE_REVIEW2.md (ownership graph), doc/ARCHITECTURE_REVIEW3.md (LinkManager dissolution plan)
-- **Detail:** `links`, `channels`, `pending_outgoing/incoming` — all keyed by `LinkId`, all with different lifecycles. Root cause of the two-channel bug. (B1/B3 cleanup asymmetry fixed; structural root cause remains. `connections` map eliminated in Phase 4.)
-- **Fix:** Channel → `Option<Channel>` on Link. Pending → phase enum on Link. Reduces 3+ maps to 1. See doc/ARCHITECTURE_REVIEW3.md for the detailed dissolution plan with ownership graph and migration steps.
-- **Test:** Create link, establish channel, send message, close via each path, verify all maps are empty. (Currently: NO unit test, partial interop.)
+- **Detail:** Originally 4 parallel maps keyed by `LinkId`: `links`, `channels`, `pending_outgoing`, `pending_incoming`. Root cause of the two-channel bug. Phase 4 eliminated the `connections` map. Phase 5a+5b eliminated 3 more: `pending_outgoing` → `LinkPhase::PendingOutgoing` on Link, `pending_incoming` → `LinkPhase::PendingIncoming` on Link, `channels` → `Option<Channel>` on Link. Remaining: `channel_receipt_keys` and `data_receipts` (deferred to Phase 5c).
+- **Fix:** Remaining maps (`channel_receipt_keys`, `data_receipts`) require global hash-based lookup and cannot trivially move onto Link. Evaluate consolidation in Phase 5c.
+- **Test:** Existing tests cover all cleanup paths (close, close_local, timeout, peer close, channel exhaustion). 632 core tests pass.
 
 ### A3: `channel_hash_to_seq` cross-layer dependency
 - **Status:** open

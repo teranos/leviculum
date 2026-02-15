@@ -57,6 +57,7 @@ use crate::destination::{DestinationHash, ProofStrategy};
 use crate::identity::Identity;
 use crate::packet::PacketContext;
 use alloc::vec::Vec;
+use channel::Channel;
 use rand_core::CryptoRngCore;
 
 // Link request/proof size constants
@@ -99,6 +100,18 @@ fn build_proof_signed_data(
         .copy_from_slice(ed25519_pub);
     signed_data[TRUNCATED_HASHBYTES + 2 * X25519_KEY_SIZE..].copy_from_slice(signaling);
     signed_data
+}
+
+/// Handshake phase — tracks which side we're on and when we started waiting.
+/// Consumed by `check_timeouts()` to detect stalled handshakes.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum LinkPhase {
+    /// Initiator: LINK_REQUEST sent, waiting for PROOF
+    PendingOutgoing { created_at_ms: u64 },
+    /// Responder: PROOF sent, waiting for RTT packet
+    PendingIncoming { proof_sent_at_ms: u64 },
+    /// Handshake complete (Active, Stale, or Closed)
+    Established,
 }
 
 /// Link state
@@ -452,6 +465,10 @@ pub struct Link {
     attached_interface: Option<usize>,
     /// Whether compression is enabled for this link
     compression_enabled: bool,
+    /// Handshake phase (pending outgoing, pending incoming, or established)
+    phase: LinkPhase,
+    /// Channel for multiplexed message delivery (created lazily on first send/receive)
+    channel: Option<Channel>,
 }
 
 impl Link {
@@ -497,6 +514,8 @@ impl Link {
             dest_signing_key: None,
             attached_interface: None,
             compression_enabled: false,
+            phase: LinkPhase::Established,
+            channel: None,
         }
     }
 
@@ -572,6 +591,8 @@ impl Link {
             dest_signing_key: None,
             attached_interface: None,
             compression_enabled: false,
+            phase: LinkPhase::Established,
+            channel: None,
         })
     }
 
@@ -1064,6 +1085,45 @@ impl Link {
     /// Set the link state
     pub fn set_state(&mut self, state: LinkState) {
         self.state = state;
+    }
+
+    /// Get the current handshake phase
+    pub(crate) fn phase(&self) -> LinkPhase {
+        self.phase
+    }
+
+    /// Set the handshake phase
+    pub(crate) fn set_phase(&mut self, phase: LinkPhase) {
+        self.phase = phase;
+    }
+
+    /// Get an immutable reference to the channel (if created)
+    pub(crate) fn channel(&self) -> Option<&Channel> {
+        self.channel.as_ref()
+    }
+
+    /// Get a mutable reference to the channel (if created)
+    pub(crate) fn channel_mut(&mut self) -> Option<&mut Channel> {
+        self.channel.as_mut()
+    }
+
+    /// Check if a channel has been created for this link
+    pub(crate) fn has_channel(&self) -> bool {
+        self.channel.is_some()
+    }
+
+    /// Get or create the channel, initializing window from the given RTT.
+    ///
+    /// The caller must extract `rtt_ms` from `self.rtt_ms()` BEFORE calling
+    /// this, to avoid a `&self` borrow conflicting with the `&mut self.channel` write.
+    pub(crate) fn ensure_channel(&mut self, rtt_ms: u64) -> &mut Channel {
+        if self.channel.is_none() {
+            let mut ch = Channel::new();
+            ch.update_window_for_rtt(rtt_ms);
+            self.channel = Some(ch);
+        }
+        // Safe: we just ensured Some above
+        self.channel.as_mut().unwrap()
     }
 
     #[cfg(test)]
