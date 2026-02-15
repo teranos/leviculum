@@ -5,6 +5,13 @@ All notable changes to this project will be documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+- **Architecture review documentation** — 3-part architecture audit (`doc/ARCHITECTURE_REVIEW.md`, `ARCHITECTURE_REVIEW2.md`, `ARCHITECTURE_REVIEW3.md`) covering ownership graphs, hot path call chains, split-brain risks, LinkManager dissolution feasibility, core/std layering purity, and API surface quality (16 issues identified)
+- **Test review documentation** — 2-part test audit (`doc/TEST_REVIEW.md`, `TEST_REVIEW2.md`) with 938-test inventory, duplicate analysis, coverage gap identification (35 missing test areas), fragility assessment (24 private-field accesses), and consolidation plan (~615 LOC savings)
+- **Issue tracking system** — `doc/OPEN_ISSUES_TRACKER.md` with 58 categorized issues from architecture reviews, phased remediation plan (4 phases: tests, quick wins, structural refactoring, post-refactoring), and effort estimates; `doc/ISSUES.md` as consolidated issue catalog by category
+
 ## [0.5.19] - 2026-02-15
 
 ### Fixed
