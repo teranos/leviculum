@@ -10,24 +10,6 @@ use rand_core::CryptoRngCore;
 
 use super::NodeCore;
 
-/// Error type for NodeCore building
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum BuildError {
-    /// No identity was provided and none could be generated
-    NoIdentity,
-    /// Invalid configuration
-    InvalidConfig,
-}
-
-impl core::fmt::Display for BuildError {
-    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-        match self {
-            BuildError::NoIdentity => write!(f, "no identity provided"),
-            BuildError::InvalidConfig => write!(f, "invalid configuration"),
-        }
-    }
-}
-
 /// Builder for creating [`NodeCore`] instances
 ///
 /// # Example
@@ -49,8 +31,7 @@ impl core::fmt::Display for BuildError {
 ///     .identity(my_identity)
 ///     .proof_strategy(ProofStrategy::All)
 ///     .enable_transport(true)
-///     .build(rand_core::OsRng, MyClock::new(0), NoStorage)
-///     .unwrap();
+///     .build(rand_core::OsRng, MyClock::new(0), NoStorage);
 /// # }
 /// ```
 pub struct NodeCoreBuilder {
@@ -138,12 +119,7 @@ impl NodeCoreBuilder {
     /// * `rng` - Random number generator (moved into NodeCore)
     /// * `clock` - Clock instance (moved into NodeCore)
     /// * `storage` - Storage instance (moved into NodeCore)
-    pub fn build<R, Clk, S>(
-        self,
-        mut rng: R,
-        clock: Clk,
-        storage: S,
-    ) -> Result<NodeCore<R, Clk, S>, BuildError>
+    pub fn build<R, Clk, S>(self, mut rng: R, clock: Clk, storage: S) -> NodeCore<R, Clk, S>
     where
         R: CryptoRngCore,
         Clk: crate::traits::Clock,
@@ -155,14 +131,14 @@ impl NodeCoreBuilder {
             None => Identity::generate(&mut rng),
         };
 
-        Ok(NodeCore::new(
+        NodeCore::new(
             identity,
             self.transport_config,
             self.proof_strategy,
             rng,
             clock,
             storage,
-        ))
+        )
     }
 }
 
@@ -190,9 +166,7 @@ mod tests {
     #[test]
     fn test_builder_default() {
         let clock = MockClock::new(1_000_000);
-        let node = NodeCoreBuilder::new()
-            .build(OsRng, clock, NoStorage)
-            .unwrap();
+        let node = NodeCoreBuilder::new().build(OsRng, clock, NoStorage);
 
         assert_eq!(node.active_connection_count(), 0);
         assert_eq!(node.pending_connection_count(), 0);
@@ -206,8 +180,7 @@ mod tests {
 
         let node = NodeCoreBuilder::new()
             .identity(identity)
-            .build(OsRng, clock, NoStorage)
-            .unwrap();
+            .build(OsRng, clock, NoStorage);
 
         assert_eq!(node.identity().hash(), &id_hash);
     }
@@ -217,8 +190,7 @@ mod tests {
         let clock = MockClock::new(1_000_000);
         let node = NodeCoreBuilder::new()
             .proof_strategy(ProofStrategy::All)
-            .build(OsRng, clock, NoStorage)
-            .unwrap();
+            .build(OsRng, clock, NoStorage);
 
         assert_eq!(node.default_proof_strategy(), ProofStrategy::All);
     }
@@ -230,8 +202,7 @@ mod tests {
             .enable_transport(true)
             .max_hops(10)
             .path_expiry_secs(7200)
-            .build(OsRng, clock, NoStorage)
-            .unwrap();
+            .build(OsRng, clock, NoStorage);
 
         assert!(node.transport_config().enable_transport);
         assert_eq!(node.transport_config().max_hops, 10);
@@ -251,8 +222,7 @@ mod tests {
             .path_expiry_secs(3600)
             .announce_rate_limit_ms(5000)
             .packet_cache_expiry_ms(120_000)
-            .build(OsRng, clock, NoStorage)
-            .unwrap();
+            .build(OsRng, clock, NoStorage);
 
         assert_eq!(node.default_proof_strategy(), ProofStrategy::App);
         assert!(!node.transport_config().enable_transport);

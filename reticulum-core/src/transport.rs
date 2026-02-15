@@ -99,8 +99,11 @@ pub enum Action {
 /// Output from any core method that may produce I/O or events
 ///
 /// Returned by `handle_packet()`, `handle_timeout()`, and other methods that
-/// may trigger outbound I/O or application-visible events.
+/// may trigger outbound I/O or application-visible events. The returned
+/// `TickOutput` **must** be dispatched to interfaces by the driver — dropping
+/// it silently loses outbound packets and application events.
 #[derive(Default)]
+#[must_use = "TickOutput contains actions that must be dispatched to interfaces"]
 pub struct TickOutput {
     /// I/O actions for the driver to execute
     pub actions: Vec<Action>,

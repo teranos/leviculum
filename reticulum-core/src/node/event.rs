@@ -39,8 +39,8 @@ pub enum NodeEvent {
     /// A remote node requested the path to one of our local destinations
     ///
     /// This is informational — the transport layer already handles
-    /// auto-re-announce internally (Transport.py:1843-1853). The application
-    /// does not need to take action.
+    /// auto-re-announce internally (Transport.py:1843-1853).
+    /// No application action is required.
     PathRequestReceived {
         /// The destination hash that was requested
         destination_hash: DestinationHash,
@@ -55,8 +55,8 @@ pub enum NodeEvent {
     // ─── Single-Packet Events ──────────────────────────────────────────────────
     /// Incoming single-packet data (not via a Link)
     PacketReceived {
-        /// Source destination hash (if known)
-        from: DestinationHash,
+        /// The destination hash that received this packet
+        destination: DestinationHash,
         /// The decrypted data
         data: Vec<u8>,
         /// Interface it arrived on
@@ -128,7 +128,9 @@ pub enum NodeEvent {
         link_id: LinkId,
     },
 
-    /// A channel message was retransmitted due to timeout
+    /// Observability event — a channel message was retransmitted due to timeout.
+    ///
+    /// No application action is required. Useful for logging and diagnostics.
     ChannelRetransmit {
         /// The link/connection ID
         link_id: LinkId,
@@ -187,8 +189,6 @@ pub enum NodeEvent {
 /// Reason why a delivery failed
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum DeliveryError {
-    /// No path to the destination
-    NoPath,
     /// Delivery timed out without proof
     Timeout,
     /// Connection/link failed during delivery
@@ -198,7 +198,6 @@ pub enum DeliveryError {
 impl core::fmt::Display for DeliveryError {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         match self {
-            DeliveryError::NoPath => write!(f, "no path to destination"),
             DeliveryError::Timeout => write!(f, "delivery timed out"),
             DeliveryError::ConnectionFailed => write!(f, "connection failed during delivery"),
         }
@@ -263,7 +262,7 @@ mod tests {
     #[test]
     fn test_delivery_error_variants() {
         // Ensure all variants are copyable
-        let err = DeliveryError::NoPath;
+        let err = DeliveryError::Timeout;
         let err2 = err;
         assert_eq!(err, err2);
     }

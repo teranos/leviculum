@@ -1022,7 +1022,11 @@ async fn event_loop(
                 format!("[recovered] link {link_id}")
             }
 
-            NodeEvent::PacketReceived { from: _, data, .. } => {
+            NodeEvent::PacketReceived {
+                destination: _,
+                data,
+                ..
+            } => {
                 let text = String::from_utf8_lossy(&data);
                 format!("[packet] {text}")
             }

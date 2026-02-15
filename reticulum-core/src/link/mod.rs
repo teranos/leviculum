@@ -121,8 +121,6 @@ pub enum LinkState {
 pub enum LinkError {
     /// Invalid state for operation
     InvalidState,
-    /// Timeout waiting for response
-    Timeout,
     /// Invalid proof received
     InvalidProof,
     /// Key exchange failed
@@ -137,9 +135,9 @@ pub enum LinkError {
     InvalidRtt,
     /// Link not found
     NotFound,
-    /// Channel send window is full
+    /// Channel send window is full (mirrors [`ChannelError::WindowFull`])
     WindowFull,
-    /// Channel is pacing sends — retry at the given time
+    /// Channel is pacing sends — retry at the given time (mirrors [`ChannelError::PacingDelay`])
     PacingDelay { ready_at_ms: u64 },
 }
 
@@ -147,7 +145,6 @@ impl core::fmt::Display for LinkError {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         match self {
             LinkError::InvalidState => write!(f, "invalid state for operation"),
-            LinkError::Timeout => write!(f, "timeout waiting for response"),
             LinkError::InvalidProof => write!(f, "invalid proof received"),
             LinkError::KeyExchangeFailed => write!(f, "key exchange failed"),
             LinkError::NoDestination => write!(f, "no destination"),
@@ -417,7 +414,11 @@ pub struct Link {
     initiator: bool,
     /// Hop count to destination
     hops: u8,
-    /// Round-trip time estimate (microseconds)
+    /// Handshake round-trip time in microseconds.
+    ///
+    /// Measured once during link establishment (from the RTT packet exchange).
+    /// Used for keepalive interval calculation and window tier promotion.
+    /// For the smoothed RTT used in pacing, see `Channel::srtt_ms`.
     rtt_us: Option<u64>,
     /// Keepalive interval in seconds (calculated from RTT)
     keepalive_secs: u64,
@@ -762,10 +763,14 @@ impl Link {
         self.rtt_us.map(|us| us as f64 / 1_000_000.0)
     }
 
-    /// Get RTT in milliseconds with default fallback
+    /// Get the handshake RTT in milliseconds with default fallback
     ///
-    /// Returns the measured RTT or the default channel RTT if no measurement
-    /// is available yet.
+    /// Returns the one-time handshake RTT measurement, or the default channel
+    /// RTT if no measurement is available yet. This is a conservative estimate
+    /// used for keepalive timing and window tier decisions.
+    ///
+    /// For the continuously-updated smoothed RTT used in pacing, see
+    /// `Channel::srtt_ms`.
     pub fn rtt_ms(&self) -> u64 {
         use crate::constants::{CHANNEL_DEFAULT_RTT_MS, US_PER_MS};
         self.rtt_us

@@ -20,7 +20,7 @@ use crate::error::Error;
 /// packet delivery to a specific destination hash. It is the single-packet
 /// analog of [`super::ConnectionStream`].
 ///
-/// Created via [`super::ReticulumNodeImpl::packet_endpoint()`]. The handle
+/// Created via [`super::ReticulumNode::packet_endpoint()`]. The handle
 /// locks the core to build the packet and dispatches the resulting actions
 /// through the event loop.
 ///

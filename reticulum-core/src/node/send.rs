@@ -54,14 +54,10 @@ pub enum SendError {
     NoConnection,
     /// Connection/link failed
     ConnectionFailed,
-    /// Channel window is full
+    /// Channel window is full (mirrors [`ChannelError::WindowFull`])
     WindowFull,
-    /// Channel is pacing sends — retry at the given time
+    /// Channel is pacing sends — retry at the given time (mirrors [`ChannelError::PacingDelay`])
     PacingDelay { ready_at_ms: u64 },
-    /// Operation timed out
-    Timeout,
-    /// Invalid destination
-    InvalidDestination,
 }
 
 impl core::fmt::Display for SendError {
@@ -75,8 +71,6 @@ impl core::fmt::Display for SendError {
             SendError::PacingDelay { ready_at_ms } => {
                 write!(f, "pacing delay until {}ms", ready_at_ms)
             }
-            SendError::Timeout => write!(f, "operation timed out"),
-            SendError::InvalidDestination => write!(f, "invalid destination"),
         }
     }
 }

@@ -192,10 +192,7 @@ impl ReticulumNodeBuilder {
         interfaces.extend(self.interfaces);
 
         // Build NodeCore directly from the core builder
-        let node_core = self
-            .core_builder
-            .build(rand_core::OsRng, clock, storage)
-            .map_err(|e| Error::Transport(format!("{:?}", e)))?;
+        let node_core = self.core_builder.build(rand_core::OsRng, clock, storage);
 
         Ok(ReticulumNode::new(
             node_core,
@@ -242,10 +239,7 @@ impl ReticulumNodeBuilder {
         interfaces.extend(self.interfaces);
 
         // Build NodeCore directly from the core builder
-        let node_core = self
-            .core_builder
-            .build(rand_core::OsRng, clock, storage)
-            .map_err(|e| Error::Transport(format!("{:?}", e)))?;
+        let node_core = self.core_builder.build(rand_core::OsRng, clock, storage);
 
         Ok(ReticulumNode::new(
             node_core,

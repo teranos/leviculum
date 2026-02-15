@@ -63,7 +63,6 @@ use tokio::sync::{mpsc, watch};
 use reticulum_core::constants::TRUNCATED_HASHBYTES;
 use reticulum_core::link::LinkId;
 use reticulum_core::node::{NodeCore, NodeEvent};
-use reticulum_core::traits::Clock;
 use reticulum_core::transport::{Action, InterfaceId, TickOutput};
 use reticulum_core::{Destination, DestinationHash};
 use reticulum_net::{IncomingPacket, OutgoingPacket};
@@ -77,9 +76,6 @@ use crate::storage::Storage;
 
 /// Type alias for the concrete NodeCore used by std platforms
 pub type StdNodeCore = NodeCore<rand_core::OsRng, SystemClock, Storage>;
-
-/// Alias for `ReticulumNode` (preserves backward compatibility)
-pub type ReticulumNode = ReticulumNodeImpl;
 
 /// Event channel capacity for NodeEvent delivery to the application.
 /// Must be large enough that slow consumers don't block the event loop.
@@ -96,10 +92,10 @@ enum RecvEvent {
 
 /// High-level async Reticulum node
 ///
-/// `ReticulumNodeImpl` provides an async API for interacting with the Reticulum
+/// `ReticulumNode` provides an async API for interacting with the Reticulum
 /// network. It manages the internal event loop and provides methods for sending
 /// data, establishing connections, and handling incoming messages.
-pub struct ReticulumNodeImpl {
+pub struct ReticulumNode {
     /// Handle to the core node
     inner: Arc<Mutex<StdNodeCore>>,
     /// Interface configurations
@@ -119,7 +115,7 @@ pub struct ReticulumNodeImpl {
     corrupt_every: Option<u64>,
 }
 
-impl ReticulumNodeImpl {
+impl ReticulumNode {
     /// Create a new ReticulumNode (internal use - use ReticulumNodeBuilder)
     pub(crate) fn new(
         core: StdNodeCore,
@@ -580,7 +576,7 @@ async fn run_event_loop(
                     let core = inner.lock().unwrap();
                     match core.next_deadline() {
                         Some(deadline_ms) => {
-                            let now_ms = core.transport().clock().now_ms();
+                            let now_ms = core.now_ms();
                             let delta = deadline_ms.saturating_sub(now_ms);
                             Duration::from_millis(delta.clamp(250, 1000))
                         }
@@ -648,7 +644,17 @@ mod tests {
 
     #[test]
     fn test_reticulum_node_builder_creates_node() {
-        // This is a basic smoke test
-        let _builder = ReticulumNodeBuilder::new();
+        let node = ReticulumNodeBuilder::new()
+            .enable_transport(true)
+            .build_sync()
+            .expect("build_sync failed");
+
+        assert!(node.is_transport_enabled());
+        assert!(!node.is_running());
+        assert_eq!(node.path_count(), 0);
+
+        let fake_hash = reticulum_core::DestinationHash::new([0xFF; 16]);
+        assert!(!node.has_path(&fake_hash));
+        assert!(node.hops_to(&fake_hash).is_none());
     }
 }

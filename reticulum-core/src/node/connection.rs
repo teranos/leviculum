@@ -11,30 +11,24 @@ use crate::link::{LinkError, LinkId};
 /// Error type for connection operations
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ConnectionError {
-    /// Connection is not in a valid state for this operation
-    InvalidState,
     /// Link-level error occurred
     LinkError(LinkError),
     /// Channel-level error occurred
     ChannelError(ChannelError),
-    /// Data too large for connection MDU
-    TooLarge,
     /// Connection not found
     NotFound,
-    /// Destination identity not found (destination not registered or has no identity)
-    IdentityNotFound,
+    /// Destination not registered on this node
+    DestinationNotRegistered,
 }
 
 impl core::fmt::Display for ConnectionError {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         match self {
-            ConnectionError::InvalidState => write!(f, "invalid connection state"),
             ConnectionError::LinkError(e) => write!(f, "link error: {}", e),
             ConnectionError::ChannelError(e) => write!(f, "channel error: {}", e),
-            ConnectionError::TooLarge => write!(f, "data too large for connection MDU"),
             ConnectionError::NotFound => write!(f, "connection not found"),
-            ConnectionError::IdentityNotFound => {
-                write!(f, "destination identity not found")
+            ConnectionError::DestinationNotRegistered => {
+                write!(f, "destination not registered")
             }
         }
     }
@@ -129,7 +123,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_connection_new() {
+    fn test_connection_struct_fields() {
         let link_id = LinkId::new([0x42; 16]);
         let dest_hash = DestinationHash::new([0x33; 16]);
 

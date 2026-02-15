@@ -371,7 +371,7 @@ impl Channel {
         rtt_ms: u64,
     ) -> Result<Vec<u8>, ChannelError> {
         Self::validate_msgtype(M::MSGTYPE)?;
-        self.send_internal(M::MSGTYPE, &message.pack(), link_mdu, now_ms, rtt_ms)
+        self.send_raw(M::MSGTYPE, &message.pack(), link_mdu, now_ms, rtt_ms)
     }
 
     /// Send a system message on the channel (bypasses MSGTYPE validation)
@@ -395,11 +395,14 @@ impl Channel {
         now_ms: u64,
         rtt_ms: u64,
     ) -> Result<Vec<u8>, ChannelError> {
-        self.send_internal(M::MSGTYPE, &message.pack(), link_mdu, now_ms, rtt_ms)
+        self.send_raw(M::MSGTYPE, &message.pack(), link_mdu, now_ms, rtt_ms)
     }
 
-    /// Internal send implementation used by both send() and send_system()
-    fn send_internal(
+    /// Low-level send without MSGTYPE validation
+    ///
+    /// Called by `send()` (which validates MSGTYPE) and `send_system()` (which
+    /// skips validation for system messages like StreamDataMessage).
+    fn send_raw(
         &mut self,
         msgtype: u16,
         data: &[u8],

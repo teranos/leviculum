@@ -38,39 +38,28 @@ Work proceeds in TDD order: tests first, then fixes, then refactoring.
 | B1 | H | S | 2 | open | Bug | Closed links accumulate indefinitely (memory leak) |
 | B2 | M | S | 2 | open | Bug | `channel_hash_to_seq` never cleaned on link close |
 | B3 | L | S | 4 | open | Bug | Asymmetric cleanup between links and channels |
-| C1 | M | S | 2 | open | Dead Code | 8 dead error variants across 5 enums |
 | C2 | L | S | 2 | open | Dead Code | ~20 pub re-exports never imported |
 | C3 | L | S | 2 | open | Dead Code | Buffer types exported but unreachable |
 | C4 | L | S | 4 | open | Dead Code | 5 pure delegation methods |
 | D1 | M | S | 4 | open | Naming | `ConnectionStream` doesn't implement Stream |
 | D2 | M | S | 2 | open | Naming | `PacketEndpoint` isn't an endpoint |
 | D3 | M | S | 2 | open | Naming | `send()` vs `send_bytes()` hides real distinction |
-| D4 | M | S | 2 | open | Naming | `PacketReceived { from }` — `from` is not the sender |
 | D5 | M | S | 2 | open | Naming | `DataReceived` vs `MessageReceived` subtle distinction |
 | D6 | M | S | 2 | open | Naming | `DeliveryConfirmed` vs `LinkDeliveryConfirmed` |
 | D7 | M | S | 2 | open | Naming | `ProofRequested` vs `LinkProofRequested` |
 | D8 | L | S | 4 | open | Naming | `initiate()` vs `connect()` across layers |
 | D9 | L | S | 4 | open | Naming | `accept_link()` vs `accept_connection()` |
-| D10 | L | S | 2 | open | Naming | `ReticulumNodeImpl` aliased as `ReticulumNode` |
 | D11 | L | S | 4 | open | Naming | `Connection` struct is nearly empty |
 | D12 | L | S | 2 | open | Naming | No distinction between handshake and active-link timeout |
 | D13 | L | S | 2 | open | Naming | Channel exhaustion indistinguishable from other closes |
-| D14 | L | S | 2 | open | Naming | `PathRequestReceived` looks actionable but is informational |
-| D15 | L | S | 2 | open | Naming | `ChannelRetransmit` is observability-only |
-| E1 | M | S | 2 | open | Visibility | `NodeCore::transport()` exposes entire Transport internals |
 | E2 | L | S | 2 | open | Visibility | LinkManager drain methods are pub |
-| E3 | L | S | 4 | open | Visibility | `Channel::send()` pure delegation |
-| F1 | M | S | 2 | open | Coupling | TickOutput must be dispatched — undocumented |
 | F2 | L | S | 2 | open | Coupling | `connect()` silently broadcasts when no path exists |
-| F3 | L | S | 2 | open | Coupling | `register_destination()` before `accept_connection()` not enforced |
 | F4 | L | S | 2 | open | Coupling | `mark_channel_delivered()` return value ignored |
 | G1 | L | S | 2 | open | Perf | Lock-and-read pattern in event loop |
 | G2 | L | S | 4 | open | Perf | Pass-through parameters cross 3-5 boundaries |
 | H1 | M | M | 3 | open | SSOT | Destination in 3 maps |
-| H2 | L | S | 2 | open | SSOT | RTT in 2 places |
 | H3 | L | S | 4 | open | SSOT | CloseReason / LinkCloseReason identical duplicate |
 | H4 | M | M | 3 | open | SSOT | `channel_receipt_keys` and `channel_hash_to_seq` — same mapping, two directions |
-| H5 | L | S | 2 | open | SSOT | WindowFull / PacingDelay in 3 error enums |
 | T1 | M | S | 1 | open | Test | MockClock defined 4 times |
 | T2 | M | M | 2 | open | Test | 80+ Transport tests with no shared setup |
 | T3 | M | M | 2 | open | Test | Magic numbers instead of constants in tests |
@@ -82,10 +71,7 @@ Work proceeds in TDD order: tests first, then fixes, then refactoring.
 | T9 | L | S | 1 | open | Test | Channel coverage gaps (5 missing) |
 | T10 | L | S | 1 | open | Test | Link lifecycle gaps (4 missing) |
 | T11 | L | S | 1 | open | Test | Transport minor gaps (4 missing) |
-| T12 | L | S | 2 | open | Test | 3 smoke tests with no meaningful assertions |
 | T13 | L | M | 4 | open | Test | 4 tests >80 LOC combining multiple concerns |
-| T14 | L | S | 2 | open | Test | `test_connection_new` name collision across files |
-| T15 | L | S | 2 | open | Test | 1 exact duplicate test |
 | T16 | H | L | 1 | open | Test | ISSUES.md bugs have no test coverage (10 of 14) |
 
 ---
@@ -198,18 +184,6 @@ Work proceeds in TDD order: tests first, then fixes, then refactoring.
 - **Fix:** Addressed by B1 (GC for Closed links).
 - **Test:** Close via each path, verify both maps cleaned. (Currently: NO unit test, NO interop test.)
 
-### C1: 8 dead error variants across 5 enums
-- **Status:** open
-- **Priority:** MEDIUM
-- **Effort:** S
-- **Phase:** 2
-- **Category:** Dead Code
-- **Blocked-by:** —
-- **Ref:** doc/ISSUES.md C1, doc/TEST_REVIEW2.md Part A6 (error variant audit)
-- **Detail:** `BuildError::NoIdentity`/`InvalidConfig` (build() never fails), `LinkError::Timeout` (timeouts use events), `SendError::Timeout`/`InvalidDestination` (never constructed), `ConnectionError::InvalidState`/`TooLarge` (dead in production), `DeliveryError::NoPath` (never constructed). `ConnectionError::ChannelError(_)` is live (constructed via `From<ChannelError>` impl).
-- **Fix:** Remove dead variants. Make `build()` infallible (return `NodeCore` directly, not `Result`).
-- **Test:** N/A (removal — compilation verifies).
-
 ### C2: ~20 pub re-exports never imported
 - **Status:** open
 - **Priority:** LOW
@@ -277,17 +251,6 @@ Work proceeds in TDD order: tests first, then fixes, then refactoring.
 - **Fix:** `send()` → `try_send()`, `send_bytes()` → `send()`.
 - **Test:** N/A (rename — existing tests cover behavior).
 
-### D4: `PacketReceived { from }` — `from` is not the sender
-- **Status:** open
-- **Priority:** MEDIUM
-- **Effort:** S
-- **Phase:** 2
-- **Category:** Naming
-- **Blocked-by:** —
-- **Detail:** `from` field contains the destination hash (our registered destination), not the sender's identity.
-- **Fix:** Rename field to `destination` or `dest_hash`.
-- **Test:** N/A (rename).
-
 ### D5: `DataReceived` vs `MessageReceived` subtle distinction
 - **Status:** open
 - **Priority:** MEDIUM
@@ -343,17 +306,6 @@ Work proceeds in TDD order: tests first, then fixes, then refactoring.
 - **Fix:** Unify after A1 rename.
 - **Test:** N/A (rename).
 
-### D10: `ReticulumNodeImpl` aliased as `ReticulumNode`
-- **Status:** open
-- **Priority:** LOW
-- **Effort:** S
-- **Phase:** 2
-- **Category:** Naming
-- **Blocked-by:** —
-- **Detail:** Both names exported. Grep finds both. Confusing which is canonical.
-- **Fix:** Remove the alias, use one name.
-- **Test:** N/A (rename).
-
 ### D11: `Connection` struct is nearly empty
 - **Status:** open
 - **Priority:** LOW
@@ -387,39 +339,6 @@ Work proceeds in TDD order: tests first, then fixes, then refactoring.
 - **Fix:** Add a `ChannelExhausted` close reason, or emit a separate `ChannelFailed` event before the close.
 - **Test:** Currently untested. Verify exhaustion produces a distinct close reason.
 
-### D14: `PathRequestReceived` looks actionable but is informational
-- **Status:** open
-- **Priority:** LOW
-- **Effort:** S
-- **Phase:** 2
-- **Category:** Naming
-- **Blocked-by:** —
-- **Detail:** `NodeEvent::PathRequestReceived` is emitted for observability only — transport handles path requests internally. It sits in the same enum as actionable events like `ConnectionRequest`.
-- **Fix:** Document as informational. Consider a separate `ObservabilityEvent` enum.
-- **Test:** N/A (documentation / design).
-
-### D15: `ChannelRetransmit` is observability-only
-- **Status:** open
-- **Priority:** LOW
-- **Effort:** S
-- **Phase:** 2
-- **Category:** Naming
-- **Blocked-by:** —
-- **Detail:** `NodeEvent::ChannelRetransmit` reports that a retransmission occurred. Like D14, purely informational but mixed with actionable events.
-- **Fix:** Same approach as D14 — document or separate.
-- **Test:** N/A (documentation / design).
-
-### E1: `NodeCore::transport()` exposes entire Transport internals
-- **Status:** open
-- **Priority:** MEDIUM
-- **Effort:** S
-- **Phase:** 2
-- **Category:** Visibility
-- **Blocked-by:** —
-- **Detail:** Public method, but only used by `reticulum-std` for `clock().now_ms()`.
-- **Fix:** Replace with `pub fn now_ms(&self) -> u64` accessor. Make `transport()` `pub(crate)`.
-- **Test:** N/A (visibility change — compilation verifies).
-
 ### E2: LinkManager drain methods are pub
 - **Status:** open
 - **Priority:** LOW
@@ -429,29 +348,8 @@ Work proceeds in TDD order: tests first, then fixes, then refactoring.
 - **Blocked-by:** —
 - **Detail:** `take_pending_rtt_packet()`, `drain_close_packets()`, `drain_keepalive_packets()`, `drain_proof_packets()` — only used in `#[cfg(test)]`.
 - **Fix:** `pub(crate)` or `#[cfg(test)]`.
+- **Note:** Deferred — interop tests in reticulum-std call these methods cross-crate, preventing pub(crate) visibility.
 - **Test:** N/A (visibility change).
-
-### E3: `Channel::send()` pure delegation
-- **Status:** open
-- **Priority:** LOW
-- **Effort:** S
-- **Phase:** 4
-- **Category:** Visibility
-- **Blocked-by:** A2
-- **Detail:** Calls `send_internal()` adding only msgtype validation. Extra indirection.
-- **Fix:** Inline or rename to make the distinction clear. Simplifies after A2.
-- **Test:** N/A (code simplification).
-
-### F1: TickOutput must be dispatched — undocumented
-- **Status:** open
-- **Priority:** MEDIUM
-- **Effort:** S
-- **Phase:** 2
-- **Category:** Coupling
-- **Blocked-by:** —
-- **Detail:** `connect()`, `send_on_connection()`, `close_connection()` return `TickOutput` that MUST be dispatched to interfaces. If the caller discards it, the operation silently fails (no packet sent, no error). Only `announce_destination()` documents this requirement.
-- **Fix:** Add `#[must_use]` attribute on `TickOutput`. Document on all methods.
-- **Test:** Call `connect()`, discard TickOutput, verify link stays pending forever. Or: verify `TickOutput` has `#[must_use]`. (Currently: NO unit test, NO interop test.)
 
 ### F2: `connect()` silently broadcasts when no path exists
 - **Status:** open
@@ -463,17 +361,6 @@ Work proceeds in TDD order: tests first, then fixes, then refactoring.
 - **Detail:** Falls back to broadcast instead of returning an error. Caller doesn't know whether the link request was routed or broadcast.
 - **Fix:** Return an enum indicating `Routed` vs `Broadcast`, or return an error.
 - **Test:** N/A (behavior change — add test with fix).
-
-### F3: `register_destination()` before `accept_connection()` not enforced
-- **Status:** open
-- **Priority:** LOW
-- **Effort:** S
-- **Phase:** 2
-- **Category:** Coupling
-- **Blocked-by:** —
-- **Detail:** `accept_connection()` returns `ConnectionError::IdentityNotFound` if destination isn't registered — misleading error name.
-- **Fix:** Rename error to `DestinationNotRegistered`. Or enforce at type level.
-- **Test:** N/A (error rename — existing test covers the error path).
 
 ### F4: `mark_channel_delivered()` return value ignored
 - **Status:** open
@@ -520,17 +407,6 @@ Work proceeds in TDD order: tests first, then fixes, then refactoring.
 - **Fix:** Single canonical `Destination` registry on NodeCore. Transport and LinkManager query it.
 - **Test:** Currently untested. Verify all three maps stay in sync after register/unregister.
 
-### H2: RTT in 2 places
-- **Status:** open
-- **Priority:** LOW
-- **Effort:** S
-- **Phase:** 2
-- **Category:** SSOT
-- **Blocked-by:** —
-- **Detail:** `Link.rtt_us` (handshake RTT, microseconds) and `Channel.srtt_ms` (smoothed RTT from proofs, milliseconds). Different values, different units, different purposes.
-- **Fix:** Architecturally justified (tier promotion vs timeout calculation). Document the distinction. Unify units to milliseconds.
-- **Test:** N/A (documentation — existing tests cover both RTT paths).
-
 ### H3: CloseReason / LinkCloseReason identical duplicate
 - **Status:** open
 - **Priority:** LOW
@@ -553,17 +429,6 @@ Work proceeds in TDD order: tests first, then fixes, then refactoring.
 - **Detail:** `channel_receipt_keys` in LinkManager maps `(LinkId, seq) → hash`. `channel_hash_to_seq` in NodeCore maps `hash → seq`. Same logical association, indexed from opposite directions, living in different structs. No guarantee they stay in sync.
 - **Fix:** Consolidate into one structure with bidirectional lookup. Move to Channel or Link.
 - **Test:** Verify both maps agree after send, retransmit, and close. (Currently: NO unit test, NO interop test.)
-
-### H5: WindowFull / PacingDelay in 3 error enums
-- **Status:** open
-- **Priority:** LOW
-- **Effort:** S
-- **Phase:** 2
-- **Category:** SSOT
-- **Blocked-by:** —
-- **Detail:** `ChannelError::WindowFull`, `LinkError::WindowFull`, `SendError::WindowFull` — same concept, defined three times. Same for `PacingDelay`.
-- **Fix:** Single error type at the lowest layer, re-exported or wrapped once.
-- **Test:** N/A (dedup — compilation verifies).
 
 ### T1: MockClock defined 4 times
 - **Status:** open
@@ -697,18 +562,6 @@ Work proceeds in TDD order: tests first, then fixes, then refactoring.
 - **Fix:** Write 4 unit tests.
 - **Test:** 4 new unit tests needed.
 
-### T12: 3 smoke tests with no meaningful assertions
-- **Status:** open
-- **Priority:** LOW
-- **Effort:** S
-- **Phase:** 2
-- **Category:** Test
-- **Blocked-by:** —
-- **Ref:** doc/TEST_REVIEW.md Section 4B
-- **Detail:** `test_connection_stream_close_idempotent` (driver/stream.rs), `test_reticulum_node_builder_creates_node` (driver/mod.rs), `test_create_instance` (reticulum.rs) — each only asserts that the code doesn't panic. No behavioral verification.
-- **Fix:** Either add meaningful assertions or document as intentional panic-guard tests.
-- **Test:** N/A (test quality improvement).
-
 ### T13: 4 tests >80 LOC combining multiple concerns
 - **Status:** open
 - **Priority:** LOW
@@ -720,30 +573,6 @@ Work proceeds in TDD order: tests first, then fixes, then refactoring.
 - **Detail:** `test_retransmit_registers_new_receipt_and_removes_old` (137 LOC), `test_multiple_retransmits_clean_up_receipts` (109 LOC), `test_pending_link_recovery_rate_limited` (86 LOC), `test_channel_proof_suppressed_on_rx_ring_full` (84 LOC). Each exercises multiple concerns in a single function.
 - **Fix:** Split into focused tests after LinkManager lifecycle tests (T7) provide setup helpers.
 - **Test:** N/A (test refactoring).
-
-### T14: `test_connection_new` name collision across files
-- **Status:** open
-- **Priority:** LOW
-- **Effort:** S
-- **Phase:** 2
-- **Category:** Test
-- **Blocked-by:** —
-- **Ref:** doc/TEST_REVIEW.md Section 4E
-- **Detail:** `test_connection_new` exists in both `node/mod.rs` and `node/connection.rs`, testing the same `Connection` struct. Not a build error (Rust scopes by module) but confusing when reading test output.
-- **Fix:** Rename one (e.g., `test_connection_struct_fields` in connection.rs).
-- **Test:** N/A (rename).
-
-### T15: 1 exact duplicate test
-- **Status:** open
-- **Priority:** LOW
-- **Effort:** S
-- **Phase:** 2
-- **Category:** Test
-- **Blocked-by:** —
-- **Ref:** doc/TEST_REVIEW.md Section 4E
-- **Detail:** `test_nodecore_handle_timeout_empty` (node/mod.rs:1274) and `test_handle_timeout_empty_node` (node/mod.rs:1388) are identical. Same test, different names.
-- **Fix:** Delete one.
-- **Test:** N/A (deletion).
 
 ### T16: ISSUES.md bugs have no test coverage
 - **Status:** open

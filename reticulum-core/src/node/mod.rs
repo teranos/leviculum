@@ -29,8 +29,7 @@
 //! // Build a node
 //! let mut node = NodeCoreBuilder::new()
 //!     .enable_transport(false)
-//!     .build(rand_core::OsRng, MyClock::new(0), NoStorage)
-//!     .unwrap();
+//!     .build(rand_core::OsRng, MyClock::new(0), NoStorage);
 //!
 //! // Register a destination
 //! let dest = Destination::new(
@@ -48,7 +47,7 @@ mod connection;
 mod event;
 mod send;
 
-pub use builder::{BuildError, NodeCoreBuilder};
+pub use builder::NodeCoreBuilder;
 pub use connection::{Connection, ConnectionError};
 pub use event::{CloseReason, DeliveryError, NodeEvent};
 pub use send::{RoutingDecision, SendError, SendHandle, SendMethod, SendResult};
@@ -377,7 +376,7 @@ impl<R: CryptoRngCore, C: Clock, S: Storage> NodeCore<R, C, S> {
     ///
     /// # Errors
     /// - `ConnectionError::NotFound` if the link does not exist
-    /// - `ConnectionError::IdentityNotFound` if the destination is not
+    /// - `ConnectionError::DestinationNotRegistered` if the destination is not
     ///   registered or has no identity
     pub fn accept_connection(
         &mut self,
@@ -394,8 +393,10 @@ impl<R: CryptoRngCore, C: Clock, S: Storage> NodeCore<R, C, S> {
         let dest = self
             .destinations
             .get(&dest_hash)
-            .ok_or(ConnectionError::IdentityNotFound)?;
-        let identity = dest.identity().ok_or(ConnectionError::IdentityNotFound)?;
+            .ok_or(ConnectionError::DestinationNotRegistered)?;
+        let identity = dest
+            .identity()
+            .ok_or(ConnectionError::DestinationNotRegistered)?;
         let proof_strategy = dest.proof_strategy();
 
         let now_ms = self.transport.clock().now_ms();
@@ -501,7 +502,7 @@ impl<R: CryptoRngCore, C: Clock, S: Storage> NodeCore<R, C, S> {
     /// # impl MyClock { fn new(ms: u64) -> Self { Self(Cell::new(ms)) } }
     /// # impl Clock for MyClock { fn now_ms(&self) -> u64 { self.0.get() } }
     /// # fn example() {
-    /// # let node = NodeCoreBuilder::new().build(rand_core::OsRng, MyClock::new(0), NoStorage).unwrap();
+    /// # let node = NodeCoreBuilder::new().build(rand_core::OsRng, MyClock::new(0), NoStorage);
     /// # let dest_hash = DestinationHash::new([0x42; 16]);
     /// // Simple unreliable send (single-packet if possible)
     /// let result = node.send(&dest_hash, b"Hello!", &SendOptions::default());
@@ -875,8 +876,9 @@ impl<R: CryptoRngCore, C: Clock, S: Storage> NodeCore<R, C, S> {
         self.transport.clock().now_ms()
     }
 
-    /// Access the underlying transport (for advanced use cases)
-    pub fn transport(&self) -> &Transport<C, S> {
+    /// Access the underlying transport (test-only, for clock manipulation)
+    #[cfg(test)]
+    pub(crate) fn transport(&self) -> &Transport<C, S> {
         &self.transport
     }
 
@@ -956,7 +958,7 @@ impl<R: CryptoRngCore, C: Clock, S: Storage> NodeCore<R, C, S> {
                 } else {
                     // Regular packet event
                     self.events.push(NodeEvent::PacketReceived {
-                        from: DestinationHash::new(destination_hash),
+                        destination: DestinationHash::new(destination_hash),
                         data: packet.data.as_slice().to_vec(),
                         interface_index,
                     });
@@ -1223,9 +1225,7 @@ mod tests {
     #[test]
     fn test_nodecore_builder_default() {
         let clock = MockClock::new(1_000_000);
-        let node = NodeCoreBuilder::new()
-            .build(OsRng, clock, NoStorage)
-            .unwrap();
+        let node = NodeCoreBuilder::new().build(OsRng, clock, NoStorage);
 
         assert_eq!(node.active_connection_count(), 0);
         assert_eq!(node.pending_connection_count(), 0);
@@ -1240,8 +1240,7 @@ mod tests {
 
         let node = NodeCoreBuilder::new()
             .identity(identity)
-            .build(OsRng, clock, NoStorage)
-            .unwrap();
+            .build(OsRng, clock, NoStorage);
 
         assert_eq!(node.identity().hash(), &id_hash);
     }
@@ -1249,9 +1248,7 @@ mod tests {
     #[test]
     fn test_nodecore_register_destination() {
         let clock = MockClock::new(1_000_000);
-        let mut node = NodeCoreBuilder::new()
-            .build(OsRng, clock, NoStorage)
-            .unwrap();
+        let mut node = NodeCoreBuilder::new().build(OsRng, clock, NoStorage);
 
         let identity = Identity::generate(&mut OsRng);
         let dest = Destination::new(
@@ -1273,9 +1270,7 @@ mod tests {
     #[test]
     fn test_nodecore_handle_timeout_empty() {
         let clock = MockClock::new(1_000_000);
-        let mut node = NodeCoreBuilder::new()
-            .build(OsRng, clock, NoStorage)
-            .unwrap();
+        let mut node = NodeCoreBuilder::new().build(OsRng, clock, NoStorage);
 
         // handle_timeout should return empty when there are no events
         let output = node.handle_timeout();
@@ -1309,9 +1304,7 @@ mod tests {
     #[test]
     fn test_nodecore_has_path_empty() {
         let clock = MockClock::new(1_000_000);
-        let node = NodeCoreBuilder::new()
-            .build(OsRng, clock, NoStorage)
-            .unwrap();
+        let node = NodeCoreBuilder::new().build(OsRng, clock, NoStorage);
 
         let dest_hash = DestinationHash::new([0x42; 16]);
         assert!(!node.has_path(&dest_hash));
@@ -1333,9 +1326,7 @@ mod tests {
     #[test]
     fn test_connection_stats_no_connection() {
         let clock = MockClock::new(1_000_000);
-        let node = NodeCoreBuilder::new()
-            .build(OsRng, clock, NoStorage)
-            .unwrap();
+        let node = NodeCoreBuilder::new().build(OsRng, clock, NoStorage);
 
         let fake_id = LinkId::new([0xFF; 16]);
         assert!(node.connection_stats(&fake_id).is_none());
@@ -1344,9 +1335,7 @@ mod tests {
     #[test]
     fn test_send_no_path_returns_error() {
         let clock = MockClock::new(1_000_000);
-        let node = NodeCoreBuilder::new()
-            .build(OsRng, clock, NoStorage)
-            .unwrap();
+        let node = NodeCoreBuilder::new().build(OsRng, clock, NoStorage);
 
         let dest_hash = DestinationHash::new([0x42; 16]);
         let result = node.send(&dest_hash, b"Hello!", &SendOptions::default());
@@ -1359,9 +1348,7 @@ mod tests {
     #[test]
     fn test_send_reliable_no_path_returns_error() {
         let clock = MockClock::new(1_000_000);
-        let node = NodeCoreBuilder::new()
-            .build(OsRng, clock, NoStorage)
-            .unwrap();
+        let node = NodeCoreBuilder::new().build(OsRng, clock, NoStorage);
 
         let dest_hash = DestinationHash::new([0x42; 16]);
         let result = node.send(&dest_hash, b"Hello!", &SendOptions::reliable());
@@ -1374,9 +1361,7 @@ mod tests {
     #[test]
     fn test_find_connection_to_none() {
         let clock = MockClock::new(1_000_000);
-        let node = NodeCoreBuilder::new()
-            .build(OsRng, clock, NoStorage)
-            .unwrap();
+        let node = NodeCoreBuilder::new().build(OsRng, clock, NoStorage);
 
         let dest_hash = DestinationHash::new([0x42; 16]);
         assert!(node.find_connection_to(&dest_hash).is_none());
@@ -1385,24 +1370,11 @@ mod tests {
     // ─── Sans-I/O API Tests ───────────────────────────────────────────────────
 
     #[test]
-    fn test_handle_timeout_empty_node() {
-        let clock = MockClock::new(1_000_000);
-        let mut node = NodeCoreBuilder::new()
-            .build(OsRng, clock, NoStorage)
-            .unwrap();
-
-        let output = node.handle_timeout();
-        assert!(output.is_empty());
-    }
-
-    #[test]
     fn test_handle_packet_invalid_data() {
         use crate::transport::InterfaceId;
 
         let clock = MockClock::new(1_000_000);
-        let mut node = NodeCoreBuilder::new()
-            .build(OsRng, clock, NoStorage)
-            .unwrap();
+        let mut node = NodeCoreBuilder::new().build(OsRng, clock, NoStorage);
 
         // Garbage data should not panic and should produce no events/actions
         let output = node.handle_packet(InterfaceId(0), &[0xFF; 3]);
@@ -1417,8 +1389,7 @@ mod tests {
         let clock = MockClock::new(1_000_000);
         let mut node = NodeCoreBuilder::new()
             .enable_transport(true)
-            .build(OsRng, clock, NoStorage)
-            .unwrap();
+            .build(OsRng, clock, NoStorage);
 
         // Build a valid announce
         let identity = Identity::generate(&mut OsRng);
@@ -1448,9 +1419,7 @@ mod tests {
     #[test]
     fn test_next_deadline_empty_node() {
         let clock = MockClock::new(1_000_000);
-        let node = NodeCoreBuilder::new()
-            .build(OsRng, clock, NoStorage)
-            .unwrap();
+        let node = NodeCoreBuilder::new().build(OsRng, clock, NoStorage);
 
         // Empty node should have no deadlines
         assert!(node.next_deadline().is_none());
@@ -1463,8 +1432,7 @@ mod tests {
         let clock = MockClock::new(1_000_000);
         let mut node = NodeCoreBuilder::new()
             .enable_transport(true)
-            .build(OsRng, clock, NoStorage)
-            .unwrap();
+            .build(OsRng, clock, NoStorage);
 
         // Inject an announce to create a path with an expiry deadline
         let identity = Identity::generate(&mut OsRng);
@@ -1501,8 +1469,7 @@ mod tests {
         let clock = MockClock::new(1_000_000);
         let mut node = NodeCoreBuilder::new()
             .enable_transport(true)
-            .build(OsRng, clock, NoStorage)
-            .unwrap();
+            .build(OsRng, clock, NoStorage);
 
         // Inject an announce on interface 0 to create a path
         let identity = Identity::generate(&mut OsRng);
@@ -1555,9 +1522,7 @@ mod tests {
         use crate::transport::InterfaceId;
 
         let clock = MockClock::new(1_000_000);
-        let mut node = NodeCoreBuilder::new()
-            .build(OsRng, clock, NoStorage)
-            .unwrap();
+        let mut node = NodeCoreBuilder::new().build(OsRng, clock, NoStorage);
 
         // Interface down on empty node should produce just the InterfaceDown event
         let output = node.handle_interface_down(InterfaceId(5));
@@ -1573,8 +1538,7 @@ mod tests {
         let clock = MockClock::new(1_000_000);
         let mut node = NodeCoreBuilder::new()
             .enable_transport(true)
-            .build(OsRng, clock, NoStorage)
-            .unwrap();
+            .build(OsRng, clock, NoStorage);
 
         // Inject an announce
         let identity = Identity::generate(&mut OsRng);
@@ -1613,8 +1577,7 @@ mod tests {
         let clock = MockClock::new(1_000_000);
         let mut node = NodeCoreBuilder::new()
             .enable_transport(true)
-            .build(OsRng, clock, NoStorage)
-            .unwrap();
+            .build(OsRng, clock, NoStorage);
 
         // Create a valid announce from a remote destination
         let identity = Identity::generate(&mut OsRng);
@@ -1664,8 +1627,7 @@ mod tests {
         let clock = MockClock::new(1_000_000);
         let mut node = NodeCoreBuilder::new()
             .enable_transport(true)
-            .build(OsRng, clock, NoStorage)
-            .unwrap();
+            .build(OsRng, clock, NoStorage);
 
         // Create a remote identity and announce to establish a path
         let remote_identity = Identity::generate(&mut OsRng);
@@ -1725,8 +1687,7 @@ mod tests {
         let clock = MockClock::new(1_000_000);
         let mut node = NodeCoreBuilder::new()
             .enable_transport(enable_transport)
-            .build(OsRng, clock, NoStorage)
-            .unwrap();
+            .build(OsRng, clock, NoStorage);
 
         // Create remote identity and announce to establish a path
         let remote_identity = Identity::generate(&mut OsRng);
@@ -1852,8 +1813,7 @@ mod tests {
         let clock = MockClock::new(1_000_000);
         let mut node = NodeCoreBuilder::new()
             .enable_transport(false)
-            .build(OsRng, clock, NoStorage)
-            .unwrap();
+            .build(OsRng, clock, NoStorage);
 
         // Create two remote destinations
         let remote1 = Identity::generate(&mut OsRng);

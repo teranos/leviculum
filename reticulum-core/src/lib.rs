@@ -112,7 +112,7 @@ pub use link::channel::CompressingWriter;
 pub use link::channel::{Channel, ChannelAction, ChannelError, Envelope, Message, MessageState};
 pub use link::{Link, LinkCloseReason, LinkError, LinkEvent, LinkId, LinkState, PeerKeys};
 pub use node::{
-    BuildError, CloseReason, Connection, ConnectionError, ConnectionStats, DeliveryError, NodeCore,
+    CloseReason, Connection, ConnectionError, ConnectionStats, DeliveryError, NodeCore,
     NodeCoreBuilder, NodeEvent, RoutingDecision, SendError, SendHandle, SendMethod, SendOptions,
     SendResult,
 };
