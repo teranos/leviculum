@@ -1,7 +1,7 @@
 //! Send-only async handle for single-packet destinations
 //!
 //! Provides a self-contained handle for fire-and-forget packet delivery
-//! to a specific destination. The single-packet analog of ConnectionStream.
+//! to a specific destination. The single-packet analog of LinkHandle.
 
 use std::sync::{Arc, Mutex};
 
@@ -18,7 +18,7 @@ use crate::error::Error;
 ///
 /// `PacketEndpoint` provides a self-contained handle for fire-and-forget
 /// packet delivery to a specific destination hash. It is the single-packet
-/// analog of [`super::ConnectionStream`].
+/// analog of [`super::LinkHandle`].
 ///
 /// Created via [`super::ReticulumNode::packet_endpoint()`]. The handle
 /// locks the core to build the packet and dispatches the resulting actions
@@ -46,7 +46,7 @@ pub struct PacketEndpoint {
 }
 
 impl PacketEndpoint {
-    /// Create a new PacketEndpoint (crate-private, like ConnectionStream)
+    /// Create a new PacketEndpoint (crate-private, like LinkHandle)
     pub(crate) fn new(
         dest_hash: DestinationHash,
         inner: Arc<Mutex<StdNodeCore>>,

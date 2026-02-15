@@ -29,7 +29,6 @@ Work proceeds in TDD order: tests first, then fixes, then refactoring.
 
 | ID | P | Effort | Phase | Status | Category | Summary |
 |----|---|--------|-------|--------|----------|---------|
-| A1 | H | XL | 3 | open | Structural | Link/Connection naming confusion — 4 names for 1 concept |
 | A2 | H | XL | 3 | open | Structural | Four parallel LinkId maps — split-brain root cause |
 | A3 | M | M | 3 | open | Structural | `channel_hash_to_seq` cross-layer dependency |
 | A4 | M | M | 3 | open | Structural | `data_receipts` + `channel_receipt_keys` tight coupling |
@@ -38,15 +37,11 @@ Work proceeds in TDD order: tests first, then fixes, then refactoring.
 | C2 | L | S | 2 | open | Dead Code | ~20 pub re-exports never imported |
 | C3 | L | S | 2 | open | Dead Code | Buffer types exported but unreachable |
 | C4 | L | S | 4 | open | Dead Code | 5 pure delegation methods |
-| D1 | M | S | 4 | open | Naming | `ConnectionStream` doesn't implement Stream |
 | D2 | M | S | 2 | open | Naming | `PacketEndpoint` isn't an endpoint |
 | D3 | M | S | 2 | open | Naming | `send()` vs `send_bytes()` hides real distinction |
 | D5 | M | S | 2 | open | Naming | `DataReceived` vs `MessageReceived` subtle distinction |
 | D6 | M | S | 2 | open | Naming | `DeliveryConfirmed` vs `LinkDeliveryConfirmed` |
 | D7 | M | S | 2 | open | Naming | `ProofRequested` vs `LinkProofRequested` |
-| D8 | L | S | 4 | open | Naming | `initiate()` vs `connect()` across layers |
-| D9 | L | S | 4 | open | Naming | `accept_link()` vs `accept_connection()` |
-| D11 | L | S | 4 | open | Naming | `Connection` struct is nearly empty |
 | D12 | L | S | 2 | open | Naming | No distinction between handshake and active-link timeout |
 | D13 | L | S | 2 | open | Naming | Channel exhaustion indistinguishable from other closes |
 | E2 | L | S | 2 | open | Visibility | LinkManager drain methods are pub |
@@ -54,24 +49,11 @@ Work proceeds in TDD order: tests first, then fixes, then refactoring.
 | G1 | L | S | 2 | open | Perf | Lock-and-read pattern in event loop |
 | G2 | L | S | 4 | open | Perf | Pass-through parameters cross 3-5 boundaries |
 | H1 | M | M | 3 | open | SSOT | Destination in 3 maps |
-| H3 | L | S | 4 | open | SSOT | CloseReason / LinkCloseReason identical duplicate |
 | H4 | M | M | 3 | open | SSOT | `channel_receipt_keys` and `channel_hash_to_seq` — same mapping, two directions |
 
 ---
 
 ## Issues
-
-### A1: Link/Connection naming confusion
-- **Status:** open
-- **Priority:** HIGH
-- **Effort:** XL
-- **Phase:** 3
-- **Category:** Structural
-- **Blocked-by:** —
-- **Ref:** doc/ISSUES.md A1, doc/ARCHITECTURE_REVIEW.md
-- **Detail:** Four names for one concept: `Link` (core internal), `Connection` (core API), `ConnectionStream` (std), `link_id` (field names everywhere). Python uses `Link` consistently. The `Connection` struct is a nearly-empty metadata wrapper (4 fields). All real state lives in `Link`. Events say "Connection" but carry `link_id` fields. `CloseReason` and `LinkCloseReason` are identical duplicated enums with a mechanical `From` impl.
-- **Fix:** Eliminate `Connection`, use `Link` everywhere. Move 4 fields into `Link`. `ConnectionStream` → `LinkHandle`. `NodeEvent::ConnectionEstablished` → `NodeEvent::LinkEstablished`. Drop `CloseReason` duplicate. Dissolves D1, D8, D9, D11, H3.
-- **Test:** N/A (naming refactor — existing tests verify behavior).
 
 ### A2: Four parallel LinkId maps
 - **Status:** open
@@ -81,8 +63,8 @@ Work proceeds in TDD order: tests first, then fixes, then refactoring.
 - **Category:** Structural
 - **Blocked-by:** —
 - **Ref:** doc/ISSUES.md A2, doc/ARCHITECTURE_REVIEW2.md (ownership graph), doc/ARCHITECTURE_REVIEW3.md (LinkManager dissolution plan)
-- **Detail:** `links`, `channels`, `pending_outgoing/incoming`, `connections` — all keyed by `LinkId`, all with different lifecycles. Root cause of the two-channel bug. (B1/B3 cleanup asymmetry fixed; structural root cause remains.)
-- **Fix:** Channel → `Option<Channel>` on Link. Pending → phase enum on Link. Connection fields → Link. Reduces 4+ maps to 1. See doc/ARCHITECTURE_REVIEW3.md for the detailed dissolution plan with ownership graph and migration steps.
+- **Detail:** `links`, `channels`, `pending_outgoing/incoming` — all keyed by `LinkId`, all with different lifecycles. Root cause of the two-channel bug. (B1/B3 cleanup asymmetry fixed; structural root cause remains. `connections` map eliminated in Phase 4.)
+- **Fix:** Channel → `Option<Channel>` on Link. Pending → phase enum on Link. Reduces 3+ maps to 1. See doc/ARCHITECTURE_REVIEW3.md for the detailed dissolution plan with ownership graph and migration steps.
 - **Test:** Create link, establish channel, send message, close via each path, verify all maps are empty. (Currently: NO unit test, partial interop.)
 
 ### A3: `channel_hash_to_seq` cross-layer dependency
@@ -163,20 +145,9 @@ Work proceeds in TDD order: tests first, then fixes, then refactoring.
 - **Phase:** 4
 - **Category:** Dead Code
 - **Blocked-by:** A2
-- **Detail:** 5 methods that only forward to another method: `Channel::send()` → `send_internal()`, `LinkManager::process_packet()` → match dispatcher, `LinkManager::mark_channel_delivered()` → `Channel::mark_delivered()`, `handle_link_event(LinkRequestReceived)` → 1:1 → `NodeEvent::ConnectionRequest`, `handle_link_event(ChannelMessageReceived)` → 1:1 → `NodeEvent::MessageReceived`.
+- **Detail:** 5 methods that only forward to another method: `Channel::send()` → `send_internal()`, `LinkManager::process_packet()` → match dispatcher, `LinkManager::mark_channel_delivered()` → `Channel::mark_delivered()`, `handle_link_event(LinkRequestReceived)` → 1:1 → `NodeEvent::LinkRequest`, `handle_link_event(ChannelMessageReceived)` → 1:1 → `NodeEvent::MessageReceived`.
 - **Fix:** Inline where possible after structural refactoring.
 - **Test:** N/A (code simplification).
-
-### D1: `ConnectionStream` doesn't implement Stream
-- **Status:** open
-- **Priority:** MEDIUM
-- **Effort:** S
-- **Phase:** 4
-- **Category:** Naming
-- **Blocked-by:** A1
-- **Detail:** Send-only handle. Incoming data arrives via separate `NodeEvent` channel. Name strongly suggests `AsyncRead`/`AsyncWrite`/`futures::Stream`. Implements none.
-- **Fix:** Rename to `LinkHandle` or `LinkSender` (after A1 rename).
-- **Test:** N/A (rename).
 
 ### D2: `PacketEndpoint` isn't an endpoint
 - **Status:** open
@@ -233,39 +204,6 @@ Work proceeds in TDD order: tests first, then fixes, then refactoring.
 - **Fix:** Rename to `PacketProofRequested` / `LinkProofRequested`.
 - **Test:** N/A (rename).
 
-### D8: `initiate()` vs `connect()` across layers
-- **Status:** open
-- **Priority:** LOW
-- **Effort:** S
-- **Phase:** 4
-- **Category:** Naming
-- **Blocked-by:** A1
-- **Detail:** `LinkManager::initiate()` → `NodeCore::connect()` → `ReticulumNode::connect()`. Different verbs for the same action at different layers.
-- **Fix:** Unify naming after A1 rename. All layers use same verb.
-- **Test:** N/A (rename).
-
-### D9: `accept_link()` vs `accept_connection()`
-- **Status:** open
-- **Priority:** LOW
-- **Effort:** S
-- **Phase:** 4
-- **Category:** Naming
-- **Blocked-by:** A1
-- **Detail:** Same divergence as D8. `LinkManager::accept_link()` vs `NodeCore::accept_connection()`.
-- **Fix:** Unify after A1 rename.
-- **Test:** N/A (rename).
-
-### D11: `Connection` struct is nearly empty
-- **Status:** open
-- **Priority:** LOW
-- **Effort:** S
-- **Phase:** 4
-- **Category:** Naming
-- **Blocked-by:** A1
-- **Detail:** 4 fields, all real state in `Link`. Dissolved by A1 (fields move into Link, Connection eliminated).
-- **Fix:** Dissolved by A1.
-- **Test:** N/A (dissolved by A1).
-
 ### D12: No distinction between handshake timeout and active-link timeout
 - **Status:** open
 - **Priority:** LOW
@@ -273,7 +211,7 @@ Work proceeds in TDD order: tests first, then fixes, then refactoring.
 - **Phase:** 2
 - **Category:** Naming
 - **Blocked-by:** —
-- **Detail:** Both "link request never answered" and "established link went silent" produce the same `ConnectionClosed { reason: Timeout }` event. The application cannot distinguish a failed connection attempt from a dropped connection.
+- **Detail:** Both "link request never answered" and "established link went silent" produce the same `LinkClosed { reason: Timeout }` event. The application cannot distinguish a failed link attempt from a dropped link.
 - **Fix:** Add separate event variants or reason sub-types (e.g., `Timeout::Handshake` vs `Timeout::Keepalive`).
 - **Test:** Currently untested. Verify the two timeout paths produce distinct events.
 
@@ -284,7 +222,7 @@ Work proceeds in TDD order: tests first, then fixes, then refactoring.
 - **Phase:** 2
 - **Category:** Naming
 - **Blocked-by:** —
-- **Detail:** When a channel hits max retries, it tears down the link. The resulting `ConnectionClosed` event carries a generic close reason. The application cannot tell "channel gave up retransmitting" from "peer closed cleanly" or "keepalive timeout".
+- **Detail:** When a channel hits max retries, it tears down the link. The resulting `LinkClosed` event carries a generic close reason. The application cannot tell "channel gave up retransmitting" from "peer closed cleanly" or "keepalive timeout".
 - **Fix:** Add a `ChannelExhausted` close reason, or emit a separate `ChannelFailed` event before the close.
 - **Test:** Currently untested. Verify exhaustion produces a distinct close reason.
 
@@ -345,17 +283,6 @@ Work proceeds in TDD order: tests first, then fixes, then refactoring.
 - **Detail:** `Transport.destinations` (DestinationEntry: routing, proof strategy, identity=None), `NodeCore.destinations` (Destination: full object), `LinkManager.accepted_destinations` (BTreeSet: accept filter). Three representations, three locations, one concept.
 - **Fix:** Single canonical `Destination` registry on NodeCore. Transport and LinkManager query it.
 - **Test:** Currently untested. Verify all three maps stay in sync after register/unregister.
-
-### H3: CloseReason / LinkCloseReason identical duplicate
-- **Status:** open
-- **Priority:** LOW
-- **Effort:** S
-- **Phase:** 4
-- **Category:** SSOT
-- **Blocked-by:** A1
-- **Detail:** Same variants, mechanical `From` impl. Exists solely for Link→Connection rename. Eliminated by A1.
-- **Fix:** Eliminated by A1 (one enum, one name).
-- **Test:** N/A (dissolved by A1).
 
 ### H4: `channel_receipt_keys` and `channel_hash_to_seq` — same mapping, two directions
 - **Status:** open

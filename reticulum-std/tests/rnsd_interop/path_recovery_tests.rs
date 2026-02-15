@@ -31,8 +31,8 @@ use std::time::Duration;
 use reticulum_std::driver::ReticulumNodeBuilder;
 
 use crate::common::{
-    collect_messages, extract_signing_key, parse_dest_hash, wait_for_connection_closed_event,
-    wait_for_connection_established, wait_for_path_on_daemon, wait_for_path_on_node,
+    collect_messages, extract_signing_key, parse_dest_hash, wait_for_link_closed_event,
+    wait_for_link_established, wait_for_path_on_daemon, wait_for_path_on_node,
 };
 use crate::harness::TestDaemon;
 
@@ -140,8 +140,7 @@ async fn test_rust_node_path_recovery_on_link_timeout() {
         .expect("First connect() should succeed");
 
     assert!(
-        wait_for_connection_established(&mut event_rx, stream1.link_id(), Duration::from_secs(15))
-            .await,
+        wait_for_link_established(&mut event_rx, stream1.link_id(), Duration::from_secs(15)).await,
         "Link through Relay should establish within 15s"
     );
 
@@ -175,7 +174,7 @@ async fn test_rust_node_path_recovery_on_link_timeout() {
         .await
         .expect("Failed to enable LRPROOF dropping");
 
-    // Step 11: Rust node attempts new connection.
+    // Step 11: Rust node attempts new link.
     // Link request (HEADER_2) reaches Relay → forwarded to Dest.
     // Dest generates proof → Relay drops it (LRPROOF, context 0xFF).
     // No proof reaches Rust node → link stays pending → times out after ~30s.
@@ -184,11 +183,10 @@ async fn test_rust_node_path_recovery_on_link_timeout() {
         .await
         .expect("connect() should return immediately (async link request)");
 
-    // Step 12: Wait for link timeout via ConnectionClosed event (~30s)
+    // Step 12: Wait for link timeout via LinkClosed event (~30s)
     assert!(
-        wait_for_connection_closed_event(&mut event_rx, stream2.link_id(), Duration::from_secs(45))
-            .await,
-        "Should receive ConnectionClosed event — link timeout should fire within 45s"
+        wait_for_link_closed_event(&mut event_rx, stream2.link_id(), Duration::from_secs(45)).await,
+        "Should receive LinkClosed event — link timeout should fire within 45s"
     );
 
     // Step 13: KEY ASSERTION — path should be gone.
@@ -249,8 +247,7 @@ async fn test_rust_node_path_recovery_on_link_timeout() {
         .expect("Recovery connect() should succeed");
 
     assert!(
-        wait_for_connection_established(&mut event_rx, stream3.link_id(), Duration::from_secs(15))
-            .await,
+        wait_for_link_established(&mut event_rx, stream3.link_id(), Duration::from_secs(15)).await,
         "Recovery link should establish within 15s"
     );
 

@@ -1,7 +1,7 @@
 //! Simple chat example
 //!
 //! This example demonstrates bidirectional messaging between nodes
-//! using the ConnectionStream API.
+//! using the LinkHandle API.
 //!
 //! # Usage
 //!
@@ -93,7 +93,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     print!("> ");
                     io::stdout().flush().ok();
                 }
-                NodeEvent::ConnectionEstablished {
+                NodeEvent::LinkEstablished {
                     link_id,
                     is_initiator,
                 } => {
@@ -126,7 +126,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     print!("> ");
                     io::stdout().flush().ok();
                 }
-                NodeEvent::ConnectionClosed { link_id, reason } => {
+                NodeEvent::LinkClosed {
+                    link_id, reason, ..
+                } => {
                     println!();
                     println!(
                         "[DISCONNECTED] Link {:02x?}: {:?}",
@@ -167,8 +169,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 "/status" => {
                     let core = inner.lock().unwrap();
                     println!("Node Status:");
-                    println!("  Active connections: {}", core.active_connection_count());
-                    println!("  Pending connections: {}", core.pending_connection_count());
+                    println!("  Active links: {}", core.active_link_count());
+                    println!("  Pending links: {}", core.pending_link_count());
                 }
                 "/help" | "/?" => {
                     println!("Commands:");

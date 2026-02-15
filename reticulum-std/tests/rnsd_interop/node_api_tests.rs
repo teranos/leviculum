@@ -8,7 +8,7 @@
 //!
 //! - Node creation and startup
 //! - Event reception (announces, paths)
-//! - Connection management
+//! - Link management
 //! - Graceful shutdown
 
 use std::time::Duration;
@@ -204,13 +204,13 @@ async fn test_node_inner_accessor() {
     {
         let core = inner.lock().unwrap();
 
-        // Verify connection counts are accessible
-        let active = core.active_connection_count();
-        let pending = core.pending_connection_count();
+        // Verify link counts are accessible
+        let active = core.active_link_count();
+        let pending = core.pending_link_count();
 
-        // Initially should have no connections
-        assert_eq!(active, 0, "Should have no active connections initially");
-        assert_eq!(pending, 0, "Should have no pending connections initially");
+        // Initially should have no links
+        assert_eq!(active, 0, "Should have no active links initially");
+        assert_eq!(pending, 0, "Should have no pending links initially");
     }
 
     node.stop().await.expect("Failed to stop node");

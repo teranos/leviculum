@@ -861,46 +861,46 @@ pub async fn wait_for_data_event(
     .await
 }
 
-/// Wait for a `ConnectionClosed` event for a specific link ID.
+/// Wait for a `LinkClosed` event for a specific link ID.
 /// Drains other events while waiting.
-pub async fn wait_for_connection_closed_event(
+pub async fn wait_for_link_closed_event(
     event_rx: &mut mpsc::Receiver<NodeEvent>,
     link_id: &LinkId,
     timeout: Duration,
 ) -> bool {
     let link_id = *link_id;
     wait_for_event(event_rx, timeout, move |event| match event {
-        NodeEvent::ConnectionClosed { link_id: id, .. } if id == link_id => Some(()),
+        NodeEvent::LinkClosed { link_id: id, .. } if id == link_id => Some(()),
         _ => None,
     })
     .await
     .is_some()
 }
 
-/// Wait for a `ConnectionEstablished` event for a specific link ID.
+/// Wait for a `LinkEstablished` event for a specific link ID.
 /// Drains other events while waiting.
-pub async fn wait_for_connection_established(
+pub async fn wait_for_link_established(
     event_rx: &mut mpsc::Receiver<NodeEvent>,
     link_id: &LinkId,
     timeout: Duration,
 ) -> bool {
     let link_id = *link_id;
     wait_for_event(event_rx, timeout, move |event| match event {
-        NodeEvent::ConnectionEstablished { link_id: id, .. } if id == link_id => Some(()),
+        NodeEvent::LinkEstablished { link_id: id, .. } if id == link_id => Some(()),
         _ => None,
     })
     .await
     .is_some()
 }
 
-/// Wait for a `ConnectionRequest` event, returning the link_id and destination_hash.
+/// Wait for a `LinkRequest` event, returning the link_id and destination_hash.
 /// Drains other events while waiting.
-pub async fn wait_for_connection_request(
+pub async fn wait_for_link_request_event(
     event_rx: &mut mpsc::Receiver<NodeEvent>,
     timeout: Duration,
 ) -> Option<(LinkId, DestinationHash)> {
     wait_for_event(event_rx, timeout, |event| match event {
-        NodeEvent::ConnectionRequest {
+        NodeEvent::LinkRequest {
             link_id,
             destination_hash,
             ..
@@ -910,7 +910,7 @@ pub async fn wait_for_connection_request(
     .await
 }
 
-/// Wait for a `ConnectionEstablished` event with `is_initiator == false`.
+/// Wait for a `LinkEstablished` event with `is_initiator == false`.
 /// Drains other events while waiting.
 pub async fn wait_for_responder_established(
     event_rx: &mut mpsc::Receiver<NodeEvent>,
@@ -919,7 +919,7 @@ pub async fn wait_for_responder_established(
 ) -> bool {
     let link_id = *link_id;
     wait_for_event(event_rx, timeout, move |event| match event {
-        NodeEvent::ConnectionEstablished {
+        NodeEvent::LinkEstablished {
             link_id: id,
             is_initiator,
         } if id == link_id => {

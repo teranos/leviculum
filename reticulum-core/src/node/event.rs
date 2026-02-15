@@ -77,10 +77,10 @@ pub enum NodeEvent {
         error: DeliveryError,
     },
 
-    // ─── Connection Events ─────────────────────────────────────────────────────
-    /// Incoming connection request (Link establishment request)
-    ConnectionRequest {
-        /// The link/connection ID
+    // ─── Link Events ──────────────────────────────────────────────────────────
+    /// Incoming link request (Link establishment request)
+    LinkRequest {
+        /// The link ID
         link_id: LinkId,
         /// The destination that received the request
         destination_hash: DestinationHash,
@@ -88,17 +88,17 @@ pub enum NodeEvent {
         peer_keys: PeerKeys,
     },
 
-    /// Connection established (Link handshake completed)
-    ConnectionEstablished {
-        /// The link/connection ID
+    /// Link established (handshake completed)
+    LinkEstablished {
+        /// The link ID
         link_id: LinkId,
-        /// Whether we initiated this connection
+        /// Whether we initiated this link
         is_initiator: bool,
     },
 
-    /// Message received on a connection (via Channel)
+    /// Message received on a link (via Channel)
     MessageReceived {
-        /// The link/connection ID
+        /// The link ID
         link_id: LinkId,
         /// Message type identifier
         msgtype: u16,
@@ -108,23 +108,23 @@ pub enum NodeEvent {
         data: Vec<u8>,
     },
 
-    /// Raw data received on a connection (without Channel framing)
+    /// Raw data received on a link (without Channel framing)
     DataReceived {
-        /// The link/connection ID
+        /// The link ID
         link_id: LinkId,
         /// The decrypted data
         data: Vec<u8>,
     },
 
-    /// Connection became stale (no activity for too long)
-    ConnectionStale {
-        /// The link/connection ID
+    /// Link became stale (no activity for too long)
+    LinkStale {
+        /// The link ID
         link_id: LinkId,
     },
 
-    /// Connection recovered from stale state (traffic resumed)
-    ConnectionRecovered {
-        /// The link/connection ID
+    /// Link recovered from stale state (traffic resumed)
+    LinkRecovered {
+        /// The link ID
         link_id: LinkId,
     },
 
@@ -132,7 +132,7 @@ pub enum NodeEvent {
     ///
     /// No application action is required. Useful for logging and diagnostics.
     ChannelRetransmit {
-        /// The link/connection ID
+        /// The link ID
         link_id: LinkId,
         /// Message sequence number
         sequence: u16,
@@ -140,12 +140,16 @@ pub enum NodeEvent {
         tries: u8,
     },
 
-    /// Connection closed
-    ConnectionClosed {
-        /// The link/connection ID
+    /// Link closed
+    LinkClosed {
+        /// The link ID
         link_id: LinkId,
-        /// Why the connection was closed
-        reason: CloseReason,
+        /// Why the link was closed
+        reason: LinkCloseReason,
+        /// Whether we initiated this link
+        is_initiator: bool,
+        /// The destination hash this link was to
+        destination_hash: DestinationHash,
     },
 
     // ─── Proof Events ──────────────────────────────────────────────────────────
@@ -191,42 +195,15 @@ pub enum NodeEvent {
 pub enum DeliveryError {
     /// Delivery timed out without proof
     Timeout,
-    /// Connection/link failed during delivery
-    ConnectionFailed,
+    /// Link failed during delivery
+    LinkFailed,
 }
 
 impl core::fmt::Display for DeliveryError {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         match self {
             DeliveryError::Timeout => write!(f, "delivery timed out"),
-            DeliveryError::ConnectionFailed => write!(f, "connection failed during delivery"),
-        }
-    }
-}
-
-/// Reason why a connection was closed
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum CloseReason {
-    /// Normal close requested by application
-    Normal,
-    /// Handshake timed out
-    Timeout,
-    /// Invalid proof received during handshake
-    InvalidProof,
-    /// Peer closed the connection
-    PeerClosed,
-    /// Connection became stale (no activity)
-    Stale,
-}
-
-impl From<LinkCloseReason> for CloseReason {
-    fn from(reason: LinkCloseReason) -> Self {
-        match reason {
-            LinkCloseReason::Normal => CloseReason::Normal,
-            LinkCloseReason::Timeout => CloseReason::Timeout,
-            LinkCloseReason::InvalidProof => CloseReason::InvalidProof,
-            LinkCloseReason::PeerClosed => CloseReason::PeerClosed,
-            LinkCloseReason::Stale => CloseReason::Stale,
+            DeliveryError::LinkFailed => write!(f, "link failed during delivery"),
         }
     }
 }
@@ -234,30 +211,6 @@ impl From<LinkCloseReason> for CloseReason {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn test_close_reason_from_link_close_reason() {
-        assert_eq!(
-            CloseReason::from(LinkCloseReason::Normal),
-            CloseReason::Normal
-        );
-        assert_eq!(
-            CloseReason::from(LinkCloseReason::Timeout),
-            CloseReason::Timeout
-        );
-        assert_eq!(
-            CloseReason::from(LinkCloseReason::InvalidProof),
-            CloseReason::InvalidProof
-        );
-        assert_eq!(
-            CloseReason::from(LinkCloseReason::PeerClosed),
-            CloseReason::PeerClosed
-        );
-        assert_eq!(
-            CloseReason::from(LinkCloseReason::Stale),
-            CloseReason::Stale
-        );
-    }
 
     #[test]
     fn test_delivery_error_variants() {

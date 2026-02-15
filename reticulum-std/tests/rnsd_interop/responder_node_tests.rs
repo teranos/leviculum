@@ -1,12 +1,12 @@
-//! Responder Node interop tests — Rust as connection responder via high-level API
+//! Responder Node interop tests — Rust as link responder via high-level API
 //!
-//! These tests verify the full responder path using `ReticulumNode::accept_connection()`,
+//! These tests verify the full responder path using `ReticulumNode::accept_link()`,
 //! proving that:
 //!
 //! 1. Rust can register a destination, announce it, and have Python learn the path
 //! 2. Python can create a link to the Rust destination through a relay
-//! 3. `ReticulumNode::accept_connection()` returns a working `ConnectionStream`
-//! 4. `MessageReceived` events are routed to the `ConnectionStream` (fixes silent drop)
+//! 3. `ReticulumNode::accept_link()` returns a working `LinkHandle`
+//! 4. `MessageReceived` events are routed to the `LinkHandle` (fixes silent drop)
 //! 5. Bidirectional data exchange works (Python→Rust via raw data, Rust→Python via Channel)
 //!
 //! ## Topology
@@ -32,11 +32,11 @@ use reticulum_core::{Destination, DestinationType, Direction};
 use reticulum_std::driver::ReticulumNodeBuilder;
 
 use crate::common::{
-    wait_for_connection_request, wait_for_data_event, wait_for_responder_established,
+    wait_for_data_event, wait_for_link_request_event, wait_for_responder_established,
 };
 use crate::harness::TestDaemon;
 
-/// Test: Rust node as responder accepting incoming connections via the high-level API.
+/// Test: Rust node as responder accepting incoming links via the high-level API.
 ///
 /// Topology: Py-Initiator → Py-Relay (transport) → Rust-Node (responder)
 #[tokio::test]
@@ -116,7 +116,7 @@ async fn test_rust_node_as_responder() {
     // ── Phase 3: Incoming Link ──────────────────────────────────────────
 
     // Python create_link blocks until the link is ACTIVE or times out.
-    // We must accept the connection on the Rust side concurrently, so
+    // We must accept the link on the Rust side concurrently, so
     // spawn create_link as a background task using a raw JSON-RPC call.
     let create_link_handle = {
         let cmd_addr = py_initiator.cmd_addr();
@@ -125,28 +125,28 @@ async fn test_rust_node_as_responder() {
         tokio::spawn(async move { create_link_raw(cmd_addr, &dh, &pk, 30).await })
     };
 
-    // Rust waits for ConnectionRequest event
+    // Rust waits for LinkRequest event
     let (req_link_id, req_dest_hash) =
-        wait_for_connection_request(&mut event_rx, Duration::from_secs(15))
+        wait_for_link_request_event(&mut event_rx, Duration::from_secs(15))
             .await
-            .expect("Should receive ConnectionRequest within 15s");
-    eprintln!("Rust received ConnectionRequest for link {:?}", req_link_id);
+            .expect("Should receive LinkRequest within 15s");
+    eprintln!("Rust received LinkRequest for link {:?}", req_link_id);
     assert_eq!(
         req_dest_hash, dest_hash,
-        "ConnectionRequest destination should match our registered destination"
+        "LinkRequest destination should match our registered destination"
     );
 
-    // Accept the connection
+    // Accept the link
     let mut stream = rust_node
-        .accept_connection(&req_link_id)
+        .accept_link(&req_link_id)
         .await
-        .expect("accept_connection should succeed");
-    eprintln!("Rust accepted connection, got ConnectionStream");
+        .expect("accept_link should succeed");
+    eprintln!("Rust accepted link, got LinkHandle");
 
-    // Wait for ConnectionEstablished (responder side)
+    // Wait for LinkEstablished (responder side)
     assert!(
         wait_for_responder_established(&mut event_rx, &req_link_id, Duration::from_secs(15)).await,
-        "Should receive ConnectionEstablished(is_initiator=false) within 15s"
+        "Should receive LinkEstablished(is_initiator=false) within 15s"
     );
 
     // Join the create_link background task — it should have succeeded by now
@@ -174,7 +174,7 @@ async fn test_rust_node_as_responder() {
     eprintln!("Rust received Python→Rust data: OK");
 
     // Rust → Python (via Channel / send() — produces MessageReceived on receiver)
-    // This is the key test for the MessageReceived routing fix: ConnectionStream::send()
+    // This is the key test for the MessageReceived routing fix: LinkHandle::send()
     // uses Channel internally, which produces MessageReceived events, not DataReceived.
     stream
         .send(b"hello-from-rust-responder")

@@ -4,7 +4,7 @@
 //!
 //! - **Fix 1** (C8): Link-addressed Data packet delivery on non-transport nodes
 //! - **Fix 2** (C9): Channel ACK wiring (proof → receipt → mark_delivered)
-//! - **Fix 3** (D12): Graceful close exposed through ConnectionStream
+//! - **Fix 3** (D12): Graceful close exposed through LinkHandle
 //!
 //! ## Topology
 //!
@@ -31,8 +31,8 @@ use std::time::Duration;
 use reticulum_std::driver::ReticulumNodeBuilder;
 
 use crate::common::{
-    collect_messages, extract_signing_key, parse_dest_hash, wait_for_connection_closed_event,
-    wait_for_connection_established, wait_for_data_event, wait_for_delivery_confirmations,
+    collect_messages, extract_signing_key, parse_dest_hash, wait_for_data_event,
+    wait_for_delivery_confirmations, wait_for_link_closed_event, wait_for_link_established,
     wait_for_link_on_daemon, wait_for_path_on_node,
 };
 use crate::harness::TestDaemon;
@@ -99,10 +99,9 @@ async fn test_full_link_lifecycle_through_relay() {
     let link_hash_hex = hex::encode(stream.link_id().as_bytes());
     eprintln!("Link established with hash: {}", link_hash_hex);
 
-    // Step 7: Wait for ConnectionEstablished
+    // Step 7: Wait for LinkEstablished
     assert!(
-        wait_for_connection_established(&mut event_rx, stream.link_id(), Duration::from_secs(15))
-            .await,
+        wait_for_link_established(&mut event_rx, stream.link_id(), Duration::from_secs(15)).await,
         "Link through Relay should establish within 15s"
     );
 
@@ -224,8 +223,7 @@ async fn test_full_link_lifecycle_through_relay() {
     eprintln!("Second link established with hash: {}", link_hash2_hex);
 
     assert!(
-        wait_for_connection_established(&mut event_rx, stream2.link_id(), Duration::from_secs(15))
-            .await,
+        wait_for_link_established(&mut event_rx, stream2.link_id(), Duration::from_secs(15)).await,
         "Second link should establish within 15s"
     );
 
@@ -270,10 +268,10 @@ async fn test_full_link_lifecycle_through_relay() {
         .await
         .expect("Failed to close link from Python");
 
-    // Step 18: Should receive ConnectionClosed event within 5s
+    // Step 18: Should receive LinkClosed event within 5s
     assert!(
-        wait_for_connection_closed_event(&mut event_rx, stream2.link_id(), Duration::from_secs(5)).await,
-        "Should receive ConnectionClosed event after Python closes link — Fix 1 not delivering LINKCLOSE packets"
+        wait_for_link_closed_event(&mut event_rx, stream2.link_id(), Duration::from_secs(5)).await,
+        "Should receive LinkClosed event after Python closes link — Fix 1 not delivering LINKCLOSE packets"
     );
 
     // Clean up

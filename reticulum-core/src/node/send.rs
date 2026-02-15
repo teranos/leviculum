@@ -50,10 +50,10 @@ pub enum SendError {
     NoPath,
     /// Data too large for single packet (use Link/Channel instead)
     TooLarge,
-    /// No existing connection and couldn't establish one
-    NoConnection,
-    /// Connection/link failed
-    ConnectionFailed,
+    /// No existing link and couldn't establish one
+    NoLink,
+    /// Link failed
+    LinkFailed,
     /// Channel window is full (mirrors [`ChannelError::WindowFull`])
     WindowFull,
     /// Channel is pacing sends — retry at the given time (mirrors [`ChannelError::PacingDelay`])
@@ -65,8 +65,8 @@ impl core::fmt::Display for SendError {
         match self {
             SendError::NoPath => write!(f, "no path to destination"),
             SendError::TooLarge => write!(f, "data too large for single packet"),
-            SendError::NoConnection => write!(f, "no connection available"),
-            SendError::ConnectionFailed => write!(f, "connection failed"),
+            SendError::NoLink => write!(f, "no link available"),
+            SendError::LinkFailed => write!(f, "link failed"),
             SendError::WindowFull => write!(f, "channel window full"),
             SendError::PacingDelay { ready_at_ms } => {
                 write!(f, "pacing delay until {}ms", ready_at_ms)
@@ -80,10 +80,10 @@ impl core::fmt::Display for SendError {
 pub enum RoutingDecision {
     /// Send as a single unreliable packet
     SinglePacket,
-    /// Use an existing connection
-    UseExistingConnection(LinkId),
-    /// Establish a new connection
-    EstablishConnection,
+    /// Use an existing link
+    UseExistingLink(LinkId),
+    /// Establish a new link
+    EstablishLink,
     /// Cannot send (no path available)
     CannotSend,
 }
@@ -93,9 +93,9 @@ pub enum RoutingDecision {
 /// # Arguments
 /// * `data_len` - Length of the data to send
 /// * `reliable` - Whether reliable delivery is required
-/// * `prefer_existing` - Whether to prefer existing connections
+/// * `prefer_existing` - Whether to prefer existing links
 /// * `has_path` - Whether a path to the destination is known
-/// * `existing_connection` - ID of an existing active connection, if any
+/// * `existing_link` - ID of an existing active link, if any
 /// * `max_single_packet_size` - Maximum size for single-packet delivery
 ///
 /// # Returns
@@ -105,24 +105,24 @@ pub(super) fn decide_routing(
     reliable: bool,
     prefer_existing: bool,
     has_path: bool,
-    existing_connection: Option<LinkId>,
+    existing_link: Option<LinkId>,
     max_single_packet_size: usize,
 ) -> RoutingDecision {
-    // If we have an existing connection and prefer it, use it
+    // If we have an existing link and prefer it, use it
     if prefer_existing {
-        if let Some(link_id) = existing_connection {
-            return RoutingDecision::UseExistingConnection(link_id);
+        if let Some(link_id) = existing_link {
+            return RoutingDecision::UseExistingLink(link_id);
         }
     }
 
-    // If reliable delivery is required, we need a connection
+    // If reliable delivery is required, we need a link
     if reliable {
-        if let Some(link_id) = existing_connection {
-            return RoutingDecision::UseExistingConnection(link_id);
+        if let Some(link_id) = existing_link {
+            return RoutingDecision::UseExistingLink(link_id);
         }
-        // Need to establish a new connection
+        // Need to establish a new link
         if has_path {
-            return RoutingDecision::EstablishConnection;
+            return RoutingDecision::EstablishLink;
         } else {
             return RoutingDecision::CannotSend;
         }
@@ -133,13 +133,13 @@ pub(super) fn decide_routing(
         return RoutingDecision::SinglePacket;
     }
 
-    // Data too large for single packet - need connection
-    if let Some(link_id) = existing_connection {
-        return RoutingDecision::UseExistingConnection(link_id);
+    // Data too large for single packet - need link
+    if let Some(link_id) = existing_link {
+        return RoutingDecision::UseExistingLink(link_id);
     }
 
     if has_path {
-        return RoutingDecision::EstablishConnection;
+        return RoutingDecision::EstablishLink;
     }
 
     RoutingDecision::CannotSend
@@ -152,7 +152,7 @@ pub struct SendResult {
     pub handle: SendHandle,
     /// Packet data to transmit (if any)
     pub packet_data: Option<Vec<u8>>,
-    /// Whether a connection needs to be established
+    /// Whether a link needs to be established
     pub needs_connection: bool,
 }
 
@@ -167,7 +167,7 @@ mod tests {
             false, // reliable
             true,  // prefer_existing
             true,  // has_path
-            None,  // existing_connection
+            None,  // existing_link
             500,   // max_single_packet_size
         );
         assert_eq!(decision, RoutingDecision::SinglePacket);
@@ -180,7 +180,7 @@ mod tests {
             false, // reliable
             true,  // prefer_existing
             false, // has_path
-            None,  // existing_connection
+            None,  // existing_link
             500,   // max_single_packet_size
         );
         assert_eq!(decision, RoutingDecision::CannotSend);
@@ -194,23 +194,23 @@ mod tests {
             false,         // reliable
             true,          // prefer_existing
             true,          // has_path
-            Some(link_id), // existing_connection
+            Some(link_id), // existing_link
             500,           // max_single_packet_size
         );
-        assert_eq!(decision, RoutingDecision::UseExistingConnection(link_id));
+        assert_eq!(decision, RoutingDecision::UseExistingLink(link_id));
     }
 
     #[test]
-    fn test_routing_unreliable_large_needs_connection() {
+    fn test_routing_unreliable_large_needs_link() {
         let decision = decide_routing(
             1000,  // data_len (larger than max)
             false, // reliable
             true,  // prefer_existing
             true,  // has_path
-            None,  // existing_connection
+            None,  // existing_link
             500,   // max_single_packet_size
         );
-        assert_eq!(decision, RoutingDecision::EstablishConnection);
+        assert_eq!(decision, RoutingDecision::EstablishLink);
     }
 
     #[test]
@@ -221,10 +221,10 @@ mod tests {
             true,          // reliable
             true,          // prefer_existing
             true,          // has_path
-            Some(link_id), // existing_connection
+            Some(link_id), // existing_link
             500,           // max_single_packet_size
         );
-        assert_eq!(decision, RoutingDecision::UseExistingConnection(link_id));
+        assert_eq!(decision, RoutingDecision::UseExistingLink(link_id));
     }
 
     #[test]
@@ -234,10 +234,10 @@ mod tests {
             true, // reliable
             true, // prefer_existing
             true, // has_path
-            None, // existing_connection
+            None, // existing_link
             500,  // max_single_packet_size
         );
-        assert_eq!(decision, RoutingDecision::EstablishConnection);
+        assert_eq!(decision, RoutingDecision::EstablishLink);
     }
 
     #[test]
@@ -247,7 +247,7 @@ mod tests {
             true,  // reliable
             true,  // prefer_existing
             false, // has_path
-            None,  // existing_connection
+            None,  // existing_link
             500,   // max_single_packet_size
         );
         assert_eq!(decision, RoutingDecision::CannotSend);

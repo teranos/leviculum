@@ -484,6 +484,9 @@ impl LinkManager {
     /// Call `drain_pending_packets()` after this to get the packet to send.
     pub fn close(&mut self, link_id: &LinkId, rng: &mut impl CryptoRngCore) {
         if let Some(link) = self.links.get_mut(link_id) {
+            // Capture metadata before closing
+            let is_initiator = link.is_initiator();
+            let destination_hash = *link.destination_hash();
             // Try to build and queue the close packet
             if let Ok(close_packet) = link.build_close_packet(rng) {
                 self.pending_packets.push(PendingPacket::Close {
@@ -497,6 +500,8 @@ impl LinkManager {
             self.events.push(LinkEvent::LinkClosed {
                 link_id: *link_id,
                 reason: LinkCloseReason::Normal,
+                is_initiator,
+                destination_hash,
             });
         }
         // Clean up all tracking (no-op if link_id not present)
@@ -513,6 +518,12 @@ impl LinkManager {
     /// Use this when the peer has already closed the link or when
     /// we don't want/can't send a close packet.
     pub fn close_local(&mut self, link_id: &LinkId, reason: LinkCloseReason) {
+        // Capture metadata before removal
+        let (is_initiator, destination_hash) = self
+            .links
+            .get(link_id)
+            .map(|l| (l.is_initiator(), *l.destination_hash()))
+            .unwrap_or((false, DestinationHash::new([0; 16])));
         if let Some(link) = self.links.get_mut(link_id) {
             link.close();
         }
@@ -526,6 +537,8 @@ impl LinkManager {
         self.events.push(LinkEvent::LinkClosed {
             link_id: *link_id,
             reason,
+            is_initiator,
+            destination_hash,
         });
     }
 
@@ -730,6 +743,16 @@ impl LinkManager {
     /// Get a reference to a link
     pub fn link(&self, link_id: &LinkId) -> Option<&Link> {
         self.links.get(link_id)
+    }
+
+    /// Find an active link to a destination
+    pub fn find_active_link_to(&self, dest_hash: &DestinationHash) -> Option<LinkId> {
+        self.links
+            .iter()
+            .find(|(_, link)| {
+                link.state() == LinkState::Active && link.destination_hash() == dest_hash
+            })
+            .map(|(id, _)| *id)
     }
 
     /// Check if a link is active
@@ -972,12 +995,16 @@ impl LinkManager {
 
         // Process the proof
         if link.process_proof(proof_data).is_err() {
-            // Invalid proof - close the link
+            // Invalid proof - capture metadata then close the link
+            let is_initiator = link.is_initiator();
+            let destination_hash = *link.destination_hash();
             self.links.remove(&link_id);
             self.pending_outgoing.remove(&link_id);
             self.events.push(LinkEvent::LinkClosed {
                 link_id,
                 reason: LinkCloseReason::InvalidProof,
+                is_initiator,
+                destination_hash,
             });
             return;
         }
@@ -1151,6 +1178,8 @@ impl LinkManager {
                 self.events.push(LinkEvent::LinkClosed {
                     link_id,
                     reason: LinkCloseReason::PeerClosed,
+                    is_initiator: link.is_initiator(),
+                    destination_hash: *link.destination_hash(),
                 });
             }
             return;
@@ -1377,11 +1406,18 @@ impl LinkManager {
         let timed_out_outgoing =
             Self::collect_timed_out_ids(&self.pending_outgoing, |p| p.created_at_ms, now_ms);
         for link_id in timed_out_outgoing {
+            let (is_initiator, destination_hash) = self
+                .links
+                .get(&link_id)
+                .map(|l| (l.is_initiator(), *l.destination_hash()))
+                .unwrap_or((true, DestinationHash::new([0; 16])));
             self.links.remove(&link_id);
             self.pending_outgoing.remove(&link_id);
             self.events.push(LinkEvent::LinkClosed {
                 link_id,
                 reason: LinkCloseReason::Timeout,
+                is_initiator,
+                destination_hash,
             });
         }
 
@@ -1389,11 +1425,18 @@ impl LinkManager {
         let timed_out_incoming =
             Self::collect_timed_out_ids(&self.pending_incoming, |p| p.proof_sent_at_ms, now_ms);
         for link_id in timed_out_incoming {
+            let (is_initiator, destination_hash) = self
+                .links
+                .get(&link_id)
+                .map(|l| (l.is_initiator(), *l.destination_hash()))
+                .unwrap_or((false, DestinationHash::new([0; 16])));
             self.links.remove(&link_id);
             self.pending_incoming.remove(&link_id);
             self.events.push(LinkEvent::LinkClosed {
                 link_id,
                 reason: LinkCloseReason::Timeout,
+                is_initiator,
+                destination_hash,
             });
         }
 
@@ -1480,6 +1523,8 @@ impl LinkManager {
         // Close stale links that have timed out
         for link_id in should_close {
             if let Some(link) = self.links.get_mut(&link_id) {
+                let is_initiator = link.is_initiator();
+                let destination_hash = *link.destination_hash();
                 // Build close packet before closing
                 if let Ok(close_packet) = link.build_close_packet(rng) {
                     self.pending_packets.push(PendingPacket::Close {
@@ -1493,6 +1538,8 @@ impl LinkManager {
                 self.events.push(LinkEvent::LinkClosed {
                     link_id,
                     reason: LinkCloseReason::Stale,
+                    is_initiator,
+                    destination_hash,
                 });
             }
         }
@@ -1563,6 +1610,11 @@ impl LinkManager {
                     ChannelAction::TearDownLink => {
                         tracing::debug!("link_mgr: channel teardown — closing link");
                         // Max retries exceeded - close the link
+                        let (is_initiator, destination_hash) = self
+                            .links
+                            .get(&link_id)
+                            .map(|l| (l.is_initiator(), *l.destination_hash()))
+                            .unwrap_or((false, DestinationHash::new([0; 16])));
                         if let Some(link) = self.links.get_mut(&link_id) {
                             if let Ok(close_packet) = link.build_close_packet(rng) {
                                 self.pending_packets.push(PendingPacket::Close {
@@ -1578,6 +1630,8 @@ impl LinkManager {
                         self.events.push(LinkEvent::LinkClosed {
                             link_id,
                             reason: LinkCloseReason::Timeout,
+                            is_initiator,
+                            destination_hash,
                         });
                     }
                 }
@@ -1662,6 +1716,7 @@ mod tests {
             LinkEvent::LinkClosed {
                 link_id: id,
                 reason,
+                ..
             } => {
                 assert_eq!(id, &link_id);
                 assert_eq!(*reason, LinkCloseReason::Timeout);
@@ -2010,7 +2065,10 @@ mod tests {
 
         // Link should be removed from map after close() (B1 fix)
         let link = pair.initiator.link(&pair.initiator_link_id);
-        assert!(link.is_none(), "link should be removed from map after close()");
+        assert!(
+            link.is_none(),
+            "link should be removed from map after close()"
+        );
     }
 
     #[test]

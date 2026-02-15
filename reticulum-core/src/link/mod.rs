@@ -139,6 +139,8 @@ pub enum LinkError {
     WindowFull,
     /// Channel is pacing sends — retry at the given time (mirrors [`ChannelError::PacingDelay`])
     PacingDelay { ready_at_ms: u64 },
+    /// Destination not registered on this node
+    DestinationNotRegistered,
 }
 
 impl core::fmt::Display for LinkError {
@@ -155,6 +157,9 @@ impl core::fmt::Display for LinkError {
             LinkError::WindowFull => write!(f, "channel send window full"),
             LinkError::PacingDelay { ready_at_ms } => {
                 write!(f, "pacing delay until {}ms", ready_at_ms)
+            }
+            LinkError::DestinationNotRegistered => {
+                write!(f, "destination not registered on this node")
             }
         }
     }
@@ -237,6 +242,10 @@ pub enum LinkEvent {
         link_id: LinkId,
         /// Why the link was closed
         reason: LinkCloseReason,
+        /// Whether we initiated this link
+        is_initiator: bool,
+        /// The destination hash this link was to
+        destination_hash: DestinationHash,
     },
     /// Proof received confirming data delivery (PROVE_ALL)
     ///
@@ -441,6 +450,8 @@ pub struct Link {
     /// Set from the receiving interface of the link request (responder) or
     /// the proof (initiator). Mirrors Python's `Link.attached_interface`.
     attached_interface: Option<usize>,
+    /// Whether compression is enabled for this link
+    compression_enabled: bool,
 }
 
 impl Link {
@@ -485,6 +496,7 @@ impl Link {
             proof_strategy: ProofStrategy::None,
             dest_signing_key: None,
             attached_interface: None,
+            compression_enabled: false,
         }
     }
 
@@ -559,6 +571,7 @@ impl Link {
             proof_strategy: ProofStrategy::None,
             dest_signing_key: None,
             attached_interface: None,
+            compression_enabled: false,
         })
     }
 
@@ -746,6 +759,16 @@ impl Link {
     /// Set the interface this link is attached to
     pub fn set_attached_interface(&mut self, iface: usize) {
         self.attached_interface = Some(iface);
+    }
+
+    /// Check if compression is enabled for this link
+    pub fn compression_enabled(&self) -> bool {
+        self.compression_enabled
+    }
+
+    /// Enable or disable compression for this link
+    pub fn set_compression(&mut self, enabled: bool) {
+        self.compression_enabled = enabled;
     }
 
     /// Get the hop count

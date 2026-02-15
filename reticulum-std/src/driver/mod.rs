@@ -52,7 +52,7 @@ mod stream;
 
 pub use builder::ReticulumNodeBuilder;
 pub use endpoint::PacketEndpoint;
-pub use stream::ConnectionStream;
+pub use stream::LinkHandle;
 
 use std::sync::{Arc, Mutex};
 use std::task::Poll;
@@ -94,7 +94,7 @@ enum RecvEvent {
 ///
 /// `ReticulumNode` provides an async API for interacting with the Reticulum
 /// network. It manages the internal event loop and provides methods for sending
-/// data, establishing connections, and handling incoming messages.
+/// data, establishing links, and handling incoming messages.
 pub struct ReticulumNode {
     /// Handle to the core node
     inner: Arc<Mutex<StdNodeCore>>,
@@ -109,7 +109,7 @@ pub struct ReticulumNode {
     /// Runner task handle
     runner_handle: Option<tokio::task::JoinHandle<()>>,
     /// Channel for dispatching TickOutput from outside the event loop
-    /// (used by connect, send_on_connection, close_connection, announce)
+    /// (used by connect, send_on_link, close_link, announce)
     action_dispatch_tx: mpsc::Sender<TickOutput>,
     /// Fault injection: corrupt ~1 byte per N bytes on TCP write
     corrupt_every: Option<u64>,
@@ -154,7 +154,7 @@ impl ReticulumNode {
         self.shutdown_tx = Some(shutdown_tx);
 
         // Channel for dispatching TickOutput from outside the event loop.
-        // connect(), send_on_connection(), close_connection(), and
+        // connect(), send_on_link(), close_link(), and
         // announce_destination() produce actions that must reach the event loop
         // for interface dispatch.  Capacity 256 is generous — each call
         // produces exactly one TickOutput, and the event loop drains them on
@@ -259,7 +259,7 @@ impl ReticulumNode {
             .unwrap_or(false)
     }
 
-    /// Register a destination for incoming connections
+    /// Register a destination for incoming links
     pub fn register_destination(&self, destination: Destination) {
         let mut inner = self.inner.lock().unwrap();
         inner.register_destination(destination);
@@ -267,7 +267,7 @@ impl ReticulumNode {
 
     /// Connect to a remote destination
     ///
-    /// Establishes a Link to the destination and returns a ConnectionStream
+    /// Establishes a Link to the destination and returns a LinkHandle
     /// for async read/write operations. The link request packet is queued
     /// internally and dispatched by the event loop.
     ///
@@ -278,8 +278,8 @@ impl ReticulumNode {
         &self,
         dest_hash: &DestinationHash,
         dest_signing_key: &[u8; 32],
-    ) -> Result<ConnectionStream, Error> {
-        // Request connection from NodeCore
+    ) -> Result<LinkHandle, Error> {
+        // Request link from NodeCore
         let (link_id, output) = {
             let mut inner = self.inner.lock().unwrap();
             inner.connect(*dest_hash, dest_signing_key)
@@ -290,26 +290,26 @@ impl ReticulumNode {
             .await
             .map_err(|_| Error::Transport("event loop shut down".to_string()))?;
 
-        Ok(ConnectionStream::new(
+        Ok(LinkHandle::new(
             link_id,
             Arc::clone(&self.inner),
             self.action_dispatch_tx.clone(),
         ))
     }
 
-    /// Accept an incoming connection request
+    /// Accept an incoming link request
     ///
-    /// Accepts a link request identified by `link_id` (from a `ConnectionRequest`
-    /// event) and returns a `ConnectionStream` for async read/write operations.
+    /// Accepts a link request identified by `link_id` (from a `LinkRequest`
+    /// event) and returns a `LinkHandle` for async read/write operations.
     /// The link proof packet is queued and dispatched by the event loop.
     ///
     /// # Arguments
-    /// * `link_id` - The link ID from the `ConnectionRequest` event
-    pub async fn accept_connection(&self, link_id: &LinkId) -> Result<ConnectionStream, Error> {
+    /// * `link_id` - The link ID from the `LinkRequest` event
+    pub async fn accept_link(&self, link_id: &LinkId) -> Result<LinkHandle, Error> {
         let output = {
             let mut inner = self.inner.lock().unwrap();
             inner
-                .accept_connection(link_id)
+                .accept_link(link_id)
                 .map_err(|e| Error::Transport(e.to_string()))?
         };
 
@@ -318,7 +318,7 @@ impl ReticulumNode {
             .await
             .map_err(|_| Error::Transport("event loop shut down".to_string()))?;
 
-        Ok(ConnectionStream::new(
+        Ok(LinkHandle::new(
             *link_id,
             Arc::clone(&self.inner),
             self.action_dispatch_tx.clone(),
@@ -359,12 +359,12 @@ impl ReticulumNode {
         self.inner.lock().unwrap().transport_stats()
     }
 
-    /// Get connection statistics for a link
-    pub fn connection_stats(
+    /// Get link statistics for a link
+    pub fn link_stats(
         &self,
         link_id: &reticulum_core::link::LinkId,
-    ) -> Option<reticulum_core::node::ConnectionStats> {
-        self.inner.lock().unwrap().connection_stats(link_id)
+    ) -> Option<reticulum_core::node::LinkStats> {
+        self.inner.lock().unwrap().link_stats(link_id)
     }
 
     /// Announce a registered destination on all interfaces
@@ -395,16 +395,16 @@ impl ReticulumNode {
         Ok(())
     }
 
-    /// Close a connection gracefully
+    /// Close a link gracefully
     ///
-    /// Sends a LINKCLOSE packet to the peer and removes the connection.
+    /// Sends a LINKCLOSE packet to the peer and removes the link.
     ///
     /// # Arguments
-    /// * `link_id` - The link ID of the connection to close
-    pub async fn close_connection(&self, link_id: &LinkId) -> Result<(), Error> {
+    /// * `link_id` - The link ID of the link to close
+    pub async fn close_link(&self, link_id: &LinkId) -> Result<(), Error> {
         let output = {
             let mut inner = self.inner.lock().unwrap();
-            inner.close_connection(link_id)
+            inner.close_link(link_id)
         };
         self.action_dispatch_tx
             .send(output)
@@ -550,7 +550,7 @@ async fn run_event_loop(
             }
 
             // Branch 2: Dispatch TickOutput from outside the event loop
-            // (connect, send_on_connection, close_connection, announce send here)
+            // (connect, send_on_link, close_link, announce send here)
             Some(output) = action_dispatch_rx.recv() => {
                 dispatch_output(
                     output,
@@ -631,8 +631,8 @@ fn dispatch_output(
 
     // Forward events to application (best effort — drop if full)
     for event in output.events {
-        if let NodeEvent::ConnectionEstablished { link_id, .. } = &event {
-            tracing::debug!("Connection established: {:?}", link_id);
+        if let NodeEvent::LinkEstablished { link_id, .. } = &event {
+            tracing::debug!("Link established: {:?}", link_id);
         }
         let _ = event_tx.try_send(event);
     }

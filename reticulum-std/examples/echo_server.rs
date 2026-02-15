@@ -49,14 +49,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         tokio::select! {
             Some(event) = events.recv() => {
                 match event {
-                    NodeEvent::ConnectionRequest { link_id, destination_hash, peer_keys } => {
+                    NodeEvent::LinkRequest { link_id, destination_hash, peer_keys } => {
                         println!("Connection request from {:02x?}", &destination_hash.as_bytes()[..4]);
                         println!("  Link ID: {:02x?}", &link_id.as_bytes()[..4]);
                         println!("  Peer Ed25519 key: {:02x?}...", &peer_keys.ed25519_verifying[..8]);
                         // In a real application, you would accept the connection here
-                        // by calling node.accept_connection(&link_id).await
+                        // by calling node.accept_link(&link_id).await
                     }
-                    NodeEvent::ConnectionEstablished { link_id, is_initiator } => {
+                    NodeEvent::LinkEstablished { link_id, is_initiator } => {
                         println!("Connection established!");
                         println!("  Link ID: {:02x?}", &link_id.as_bytes()[..4]);
                         println!("  We initiated: {}", is_initiator);
@@ -73,7 +73,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                         println!("  Type: 0x{:04x}, Seq: {}", msgtype, sequence);
                         println!("  {} bytes: {:?}", data.len(), String::from_utf8_lossy(&data));
                     }
-                    NodeEvent::ConnectionClosed { link_id, reason } => {
+                    NodeEvent::LinkClosed { link_id, reason, .. } => {
                         println!("Connection closed: {:02x?}", &link_id.as_bytes()[..4]);
                         println!("  Reason: {:?}", reason);
                     }

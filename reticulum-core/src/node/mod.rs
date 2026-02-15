@@ -6,9 +6,8 @@
 //! # Overview
 //!
 //! The Node API provides:
-//! - **Unified event handling**: All events (announces, packets, connections) through one stream
+//! - **Unified event handling**: All events (announces, packets, links) through one stream
 //! - **Smart routing**: Automatic selection of single-packet vs Link/Channel based on options
-//! - **Connection abstraction**: High-level Connection type wrapping Link + Channel
 //! - **Builder pattern**: Easy configuration via [`NodeCoreBuilder`]
 //!
 //! # Example
@@ -43,13 +42,11 @@
 //! # }
 
 mod builder;
-mod connection;
 mod event;
 mod send;
 
 pub use builder::NodeCoreBuilder;
-pub use connection::{Connection, ConnectionError};
-pub use event::{CloseReason, DeliveryError, NodeEvent};
+pub use event::{DeliveryError, NodeEvent};
 pub use send::{RoutingDecision, SendError, SendHandle, SendMethod, SendResult};
 
 use alloc::collections::BTreeMap;
@@ -60,7 +57,7 @@ use crate::constants::TRUNCATED_HASHBYTES;
 use crate::destination::{Destination, DestinationHash, ProofStrategy};
 use crate::identity::Identity;
 use crate::link::channel::{ChannelError, Message};
-use crate::link::{LinkCloseReason, LinkEvent, LinkId, LinkManager};
+use crate::link::{LinkCloseReason, LinkError, LinkEvent, LinkId, LinkManager};
 use crate::packet::{packet_hash, Packet};
 use crate::traits::{Clock, Storage};
 use crate::transport::{Transport, TransportConfig, TransportEvent, TransportStats};
@@ -136,9 +133,9 @@ impl Message for RawBytesMessage<'_> {
     }
 }
 
-/// Connection statistics for observability
+/// Link statistics for observability
 #[derive(Debug, Clone)]
-pub struct ConnectionStats {
+pub struct LinkStats {
     /// Number of outstanding (unacknowledged) messages in the channel tx ring
     pub tx_ring_size: usize,
     /// Current channel window size
@@ -168,8 +165,6 @@ pub struct NodeCore<R: CryptoRngCore, C: Clock, S: Storage> {
     link_manager: LinkManager,
     /// Registered destinations
     destinations: BTreeMap<DestinationHash, Destination>,
-    /// Active connections
-    connections: BTreeMap<LinkId, Connection>,
     /// Default proof strategy for new destinations
     default_proof_strategy: ProofStrategy,
     /// Pending events
@@ -208,7 +203,6 @@ impl<R: CryptoRngCore, C: Clock, S: Storage> NodeCore<R, C, S> {
             transport,
             link_manager: LinkManager::new(),
             destinations: BTreeMap::new(),
-            connections: BTreeMap::new(),
             default_proof_strategy: proof_strategy,
             events: Vec::new(),
             channel_hash_to_seq: BTreeMap::new(),
@@ -303,9 +297,9 @@ impl<R: CryptoRngCore, C: Clock, S: Storage> NodeCore<R, C, S> {
         Ok(self.process_events_and_actions())
     }
 
-    // ─── Connection Management ─────────────────────────────────────────────────
+    // ─── Link Management ──────────────────────────────────────────────────────
 
-    /// Initiate a connection to a destination
+    /// Initiate a link to a destination
     ///
     /// # Arguments
     /// * `dest_hash` - The destination to connect to
@@ -343,10 +337,6 @@ impl<R: CryptoRngCore, C: Clock, S: Storage> NodeCore<R, C, S> {
             now_ms,
         );
 
-        // Create connection wrapper
-        let conn = Connection::new(link_id, dest_hash, true);
-        self.connections.insert(link_id, conn);
-
         // Route through transport: path lookup first, broadcast if no path
         if self
             .transport
@@ -360,14 +350,14 @@ impl<R: CryptoRngCore, C: Clock, S: Storage> NodeCore<R, C, S> {
         (link_id, output)
     }
 
-    /// Accept an incoming connection request
+    /// Accept an incoming link request
     ///
     /// Looks up the destination's identity from the registered destination
     /// matching the link's destination hash. The identity is used to sign
     /// the link proof.
     ///
     /// # Arguments
-    /// * `link_id` - The link ID from the ConnectionRequest event
+    /// * `link_id` - The link ID from the LinkRequest event
     ///
     /// # Returns
     /// A `TickOutput` containing the link proof action. The driver must
@@ -375,42 +365,32 @@ impl<R: CryptoRngCore, C: Clock, S: Storage> NodeCore<R, C, S> {
     /// `handle_packet()` / `handle_timeout()`.
     ///
     /// # Errors
-    /// - `ConnectionError::NotFound` if the link does not exist
-    /// - `ConnectionError::DestinationNotRegistered` if the destination is not
+    /// - `LinkError::NotFound` if the link does not exist
+    /// - `LinkError::DestinationNotRegistered` if the destination is not
     ///   registered or has no identity
-    pub fn accept_connection(
+    pub fn accept_link(
         &mut self,
         link_id: &LinkId,
-    ) -> Result<crate::transport::TickOutput, ConnectionError> {
+    ) -> Result<crate::transport::TickOutput, LinkError> {
         // Look up the destination hash from the link
         let dest_hash = self
             .link_manager
             .link(link_id)
             .map(|l| *l.destination_hash())
-            .ok_or(ConnectionError::NotFound)?;
+            .ok_or(LinkError::NotFound)?;
 
         // Look up identity and proof strategy from the registered destination
         let dest = self
             .destinations
             .get(&dest_hash)
-            .ok_or(ConnectionError::DestinationNotRegistered)?;
-        let identity = dest
-            .identity()
-            .ok_or(ConnectionError::DestinationNotRegistered)?;
+            .ok_or(LinkError::DestinationNotRegistered)?;
+        let identity = dest.identity().ok_or(LinkError::DestinationNotRegistered)?;
         let proof_strategy = dest.proof_strategy();
 
         let now_ms = self.transport.clock().now_ms();
         let proof = self
             .link_manager
-            .accept_link(link_id, identity, proof_strategy, now_ms)
-            .map_err(ConnectionError::LinkError)?;
-
-        // Create connection wrapper (is_initiator = false)
-        if let Some(link) = self.link_manager.link(link_id) {
-            let dh = *link.destination_hash();
-            let conn = Connection::new(*link_id, dh, false);
-            self.connections.insert(*link_id, conn);
-        }
+            .accept_link(link_id, identity, proof_strategy, now_ms)?;
 
         // Route proof on attached interface (matching Python Link.prove())
         let attached = self
@@ -419,7 +399,7 @@ impl<R: CryptoRngCore, C: Clock, S: Storage> NodeCore<R, C, S> {
             .and_then(|l| l.attached_interface());
         debug_assert!(
             attached.is_some(),
-            "accept_connection: link {:?} has no attached_interface — \
+            "accept_link: link {:?} has no attached_interface — \
              process_packet() should have set this",
             link_id
         );
@@ -433,40 +413,39 @@ impl<R: CryptoRngCore, C: Clock, S: Storage> NodeCore<R, C, S> {
         Ok(self.process_events_and_actions())
     }
 
-    /// Reject an incoming connection request
-    pub fn reject_connection(&mut self, link_id: &LinkId) {
+    /// Reject an incoming link request
+    pub fn reject_link(&mut self, link_id: &LinkId) {
         self.link_manager.reject_link(link_id);
     }
 
-    /// Close a connection gracefully
+    /// Close a link gracefully
     ///
     /// # Returns
     /// A `TickOutput` containing the close packet action. The driver must
     /// dispatch this output the same way it handles output from
     /// `handle_packet()` / `handle_timeout()`.
-    pub fn close_connection(&mut self, link_id: &LinkId) -> crate::transport::TickOutput {
+    pub fn close_link(&mut self, link_id: &LinkId) -> crate::transport::TickOutput {
         self.link_manager.close(link_id, &mut self.rng);
-        self.connections.remove(link_id);
         self.process_events_and_actions()
     }
 
-    /// Get a connection by link ID
-    pub fn connection(&self, link_id: &LinkId) -> Option<&Connection> {
-        self.connections.get(link_id)
+    /// Get a link by ID
+    pub fn link(&self, link_id: &LinkId) -> Option<&crate::link::Link> {
+        self.link_manager.link(link_id)
     }
 
-    /// Get a mutable connection by link ID
-    pub fn connection_mut(&mut self, link_id: &LinkId) -> Option<&mut Connection> {
-        self.connections.get_mut(link_id)
+    /// Get a mutable reference to a link by ID
+    pub fn link_mut(&mut self, link_id: &LinkId) -> Option<&mut crate::link::Link> {
+        self.link_manager.link_mut(link_id)
     }
 
-    /// Get the number of active connections
-    pub fn active_connection_count(&self) -> usize {
+    /// Get the number of active links
+    pub fn active_link_count(&self) -> usize {
         self.link_manager.active_link_count()
     }
 
-    /// Get the number of pending connections
-    pub fn pending_connection_count(&self) -> usize {
+    /// Get the number of pending links
+    pub fn pending_link_count(&self) -> usize {
         self.link_manager.pending_link_count()
     }
 
@@ -517,8 +496,8 @@ impl<R: CryptoRngCore, C: Clock, S: Storage> NodeCore<R, C, S> {
         data: &[u8],
         opts: &SendOptions,
     ) -> Result<send::RoutingDecision, send::SendError> {
-        // Check if we have an existing connection to this destination
-        let existing_connection = self.find_connection_to(dest_hash);
+        // Check if we have an existing link to this destination
+        let existing_link = self.find_link_to(dest_hash);
 
         // Check if we have a path
         let has_path = self.transport.has_path(dest_hash.as_bytes());
@@ -533,7 +512,7 @@ impl<R: CryptoRngCore, C: Clock, S: Storage> NodeCore<R, C, S> {
             opts.reliable,
             opts.prefer_existing,
             has_path,
-            existing_connection,
+            existing_link,
             max_single_packet_size,
         );
 
@@ -607,34 +586,28 @@ impl<R: CryptoRngCore, C: Clock, S: Storage> NodeCore<R, C, S> {
         Ok((packet_hash, output))
     }
 
-    /// Send data on an existing connection
+    /// Send data on an existing link
     ///
-    /// This sends data via the Channel on an established connection,
+    /// This sends data via the Channel on an established link,
     /// providing reliable, ordered delivery.
     ///
     /// # Arguments
-    /// * `link_id` - The connection to send on
+    /// * `link_id` - The link to send on
     /// * `data` - The data to send
     ///
     /// # Returns
     /// A `TickOutput` containing the send action. The driver must dispatch
     /// this output the same way it handles output from `handle_packet()` /
     /// `handle_timeout()`.
-    pub fn send_on_connection(
+    pub fn send_on_link(
         &mut self,
         link_id: &LinkId,
         data: &[u8],
     ) -> Result<crate::transport::TickOutput, send::SendError> {
-        // Verify connection exists and get routing info
-        let _conn = self
-            .connections
-            .get(link_id)
-            .ok_or(send::SendError::NoConnection)?;
-
         let link = self
             .link_manager
             .link(link_id)
-            .ok_or(send::SendError::NoConnection)?;
+            .ok_or(send::SendError::NoLink)?;
 
         let attached_iface = link.attached_interface();
         let dest_hash = *link.destination_hash();
@@ -649,8 +622,8 @@ impl<R: CryptoRngCore, C: Clock, S: Storage> NodeCore<R, C, S> {
                 crate::link::LinkError::PacingDelay { ready_at_ms } => {
                     send::SendError::PacingDelay { ready_at_ms }
                 }
-                crate::link::LinkError::NotFound => send::SendError::NoConnection,
-                _ => send::SendError::ConnectionFailed,
+                crate::link::LinkError::NotFound => send::SendError::NoLink,
+                _ => send::SendError::LinkFailed,
             })?;
 
         // Register receipt for channel delivery tracking (Python Channel.py:606)
@@ -674,17 +647,9 @@ impl<R: CryptoRngCore, C: Clock, S: Storage> NodeCore<R, C, S> {
         Ok(self.process_events_and_actions())
     }
 
-    /// Find an existing connection to a destination
-    fn find_connection_to(&self, dest_hash: &DestinationHash) -> Option<LinkId> {
-        for (link_id, conn) in &self.connections {
-            if conn.destination_hash() == dest_hash {
-                // Check if the link is active
-                if self.link_manager.is_active(link_id) {
-                    return Some(*link_id);
-                }
-            }
-        }
-        None
+    /// Find an existing active link to a destination
+    fn find_link_to(&self, dest_hash: &DestinationHash) -> Option<LinkId> {
+        self.link_manager.find_active_link_to(dest_hash)
     }
 
     // ─── Sans-I/O Entry Points ────────────────────────────────────────────────
@@ -857,13 +822,14 @@ impl<R: CryptoRngCore, C: Clock, S: Storage> NodeCore<R, C, S> {
         self.transport.stats().clone()
     }
 
-    /// Get connection statistics for a link
+    /// Get link statistics
     ///
-    /// Returns channel and receipt stats useful for monitoring connection health.
-    pub fn connection_stats(&self, link_id: &LinkId) -> Option<ConnectionStats> {
-        let _conn = self.connections.get(link_id)?;
+    /// Returns channel and receipt stats useful for monitoring link health.
+    pub fn link_stats(&self, link_id: &LinkId) -> Option<LinkStats> {
+        // Verify link exists
+        self.link_manager.link(link_id)?;
         let ch = self.link_manager.channel(link_id);
-        Some(ConnectionStats {
+        Some(LinkStats {
             tx_ring_size: ch.map(|c| c.outstanding()).unwrap_or(0),
             window: ch.map(|c| c.window()).unwrap_or(0),
             window_max: ch.map(|c| c.window_max()).unwrap_or(0),
@@ -995,7 +961,7 @@ impl<R: CryptoRngCore, C: Clock, S: Storage> NodeCore<R, C, S> {
                 } else {
                     self.events.push(NodeEvent::DeliveryFailed {
                         packet_hash,
-                        error: DeliveryError::ConnectionFailed,
+                        error: DeliveryError::LinkFailed,
                     });
                 }
             }
@@ -1024,7 +990,7 @@ impl<R: CryptoRngCore, C: Clock, S: Storage> NodeCore<R, C, S> {
                 dest_hash,
                 peer_keys,
             } => {
-                self.events.push(NodeEvent::ConnectionRequest {
+                self.events.push(NodeEvent::LinkRequest {
                     link_id,
                     destination_hash: dest_hash,
                     peer_keys,
@@ -1035,16 +1001,7 @@ impl<R: CryptoRngCore, C: Clock, S: Storage> NodeCore<R, C, S> {
                 link_id,
                 is_initiator,
             } => {
-                // Ensure connection wrapper exists
-                if !self.connections.contains_key(&link_id) {
-                    if let Some(link) = self.link_manager.link(&link_id) {
-                        let dest_hash = *link.destination_hash();
-                        let conn = Connection::new(link_id, dest_hash, is_initiator);
-                        self.connections.insert(link_id, conn);
-                    }
-                }
-
-                self.events.push(NodeEvent::ConnectionEstablished {
+                self.events.push(NodeEvent::LinkEstablished {
                     link_id,
                     is_initiator,
                 });
@@ -1069,16 +1026,19 @@ impl<R: CryptoRngCore, C: Clock, S: Storage> NodeCore<R, C, S> {
             }
 
             LinkEvent::LinkStale { link_id } => {
-                self.events.push(NodeEvent::ConnectionStale { link_id });
+                self.events.push(NodeEvent::LinkStale { link_id });
             }
 
             LinkEvent::LinkRecovered { link_id } => {
-                self.events.push(NodeEvent::ConnectionRecovered { link_id });
+                self.events.push(NodeEvent::LinkRecovered { link_id });
             }
 
-            LinkEvent::LinkClosed { link_id, reason } => {
-                // Extract connection info BEFORE removing
-                let connection = self.connections.remove(&link_id);
+            LinkEvent::LinkClosed {
+                link_id,
+                reason,
+                is_initiator,
+                destination_hash,
+            } => {
                 // Clean up channel hash→seq entries for this link
                 self.channel_hash_to_seq
                     .retain(|_, (lid, _)| *lid != link_id);
@@ -1087,27 +1047,28 @@ impl<R: CryptoRngCore, C: Clock, S: Storage> NodeCore<R, C, S> {
                 // (Python Transport.py:472-494). When an initiator link times out
                 // on a non-transport node, expire the stale path and request a
                 // fresh one so the application can retry.
-                if reason == LinkCloseReason::Timeout {
-                    if let Some(conn) = &connection {
-                        if conn.is_initiator() && !self.transport.config().enable_transport {
-                            let dest_hash = conn.destination_hash().into_bytes();
-                            self.transport.expire_path(&dest_hash);
+                if reason == LinkCloseReason::Timeout
+                    && is_initiator
+                    && !self.transport.config().enable_transport
+                {
+                    let dest_hash = destination_hash.into_bytes();
+                    self.transport.expire_path(&dest_hash);
 
-                            // Tag = [now_ms (8 bytes)] [dest_hash prefix (8 bytes)]
-                            // Same pattern as clean_link_table() for dedup.
-                            let now = self.transport.clock().now_ms();
-                            let mut tag = [0u8; TRUNCATED_HASHBYTES];
-                            let now_bytes = now.to_be_bytes();
-                            tag[..8].copy_from_slice(&now_bytes);
-                            tag[8..16].copy_from_slice(&dest_hash[..8]);
-                            let _ = self.transport.request_path(&dest_hash, None, &tag);
-                        }
-                    }
+                    // Tag = [now_ms (8 bytes)] [dest_hash prefix (8 bytes)]
+                    // Same pattern as clean_link_table() for dedup.
+                    let now = self.transport.clock().now_ms();
+                    let mut tag = [0u8; TRUNCATED_HASHBYTES];
+                    let now_bytes = now.to_be_bytes();
+                    tag[..8].copy_from_slice(&now_bytes);
+                    tag[8..16].copy_from_slice(&dest_hash[..8]);
+                    let _ = self.transport.request_path(&dest_hash, None, &tag);
                 }
 
-                self.events.push(NodeEvent::ConnectionClosed {
+                self.events.push(NodeEvent::LinkClosed {
                     link_id,
-                    reason: reason.into(),
+                    reason,
+                    is_initiator,
+                    destination_hash,
                 });
             }
 
@@ -1224,8 +1185,8 @@ mod tests {
         let clock = MockClock::new(TEST_TIME_MS);
         let node = NodeCoreBuilder::new().build(OsRng, clock, NoStorage);
 
-        assert_eq!(node.active_connection_count(), 0);
-        assert_eq!(node.pending_connection_count(), 0);
+        assert_eq!(node.active_link_count(), 0);
+        assert_eq!(node.pending_link_count(), 0);
         assert_eq!(node.default_proof_strategy(), ProofStrategy::None);
     }
 
@@ -1309,24 +1270,12 @@ mod tests {
     }
 
     #[test]
-    fn test_connection_new() {
-        let link_id = LinkId::new([0x42; 16]);
-        let dest_hash = DestinationHash::new([0x33; 16]);
-
-        let conn = Connection::new(link_id, dest_hash, true);
-
-        assert_eq!(*conn.id(), link_id);
-        assert_eq!(conn.destination_hash(), &dest_hash);
-        assert!(conn.is_initiator());
-    }
-
-    #[test]
-    fn test_connection_stats_no_connection() {
+    fn test_link_stats_no_link() {
         let clock = MockClock::new(TEST_TIME_MS);
         let node = NodeCoreBuilder::new().build(OsRng, clock, NoStorage);
 
         let fake_id = LinkId::new([0xFF; 16]);
-        assert!(node.connection_stats(&fake_id).is_none());
+        assert!(node.link_stats(&fake_id).is_none());
     }
 
     #[test]
@@ -1356,12 +1305,12 @@ mod tests {
     }
 
     #[test]
-    fn test_find_connection_to_none() {
+    fn test_find_link_to_none() {
         let clock = MockClock::new(TEST_TIME_MS);
         let node = NodeCoreBuilder::new().build(OsRng, clock, NoStorage);
 
         let dest_hash = DestinationHash::new([0x42; 16]);
-        assert!(node.find_connection_to(&dest_hash).is_none());
+        assert!(node.find_link_to(&dest_hash).is_none());
     }
 
     // ─── Sans-I/O API Tests ───────────────────────────────────────────────────
@@ -1753,17 +1702,17 @@ mod tests {
             output.actions
         );
 
-        // Should have ConnectionClosed event with Timeout reason
+        // Should have LinkClosed event with Timeout reason
         let has_closed = output.events.iter().any(|e| {
             matches!(
                 e,
-                NodeEvent::ConnectionClosed {
-                    reason: CloseReason::Timeout,
+                NodeEvent::LinkClosed {
+                    reason: LinkCloseReason::Timeout,
                     ..
                 }
             )
         });
-        assert!(has_closed, "should emit ConnectionClosed with Timeout");
+        assert!(has_closed, "should emit LinkClosed with Timeout");
     }
 
     #[test]
@@ -1791,7 +1740,7 @@ mod tests {
         let (mut node, dest_hash, link_id) = setup_pending_link(false);
 
         // Close the connection normally (before timeout)
-        let _ = node.close_connection(&link_id);
+        let _ = node.close_link(&link_id);
 
         // Advance clock and run maintenance
         node.transport().clock().set(TEST_TIME_MS + 5_000);
@@ -1827,15 +1776,15 @@ mod tests {
             .expect("expected Broadcast or SendPacket action")
     }
 
-    fn extract_connection_request_link_id(output: &crate::transport::TickOutput) -> LinkId {
+    fn extract_link_request_link_id(output: &crate::transport::TickOutput) -> LinkId {
         output
             .events
             .iter()
             .find_map(|e| match e {
-                NodeEvent::ConnectionRequest { link_id, .. } => Some(*link_id),
+                NodeEvent::LinkRequest { link_id, .. } => Some(*link_id),
                 _ => None,
             })
-            .expect("expected ConnectionRequest event")
+            .expect("expected LinkRequest event")
     }
 
     fn establish_nodecore_link_pair() -> NodeCoreLinkPair {
@@ -1866,34 +1815,34 @@ mod tests {
         let (init_link_id, output) = initiator.connect(dest_hash, &resp_signing_key);
         let link_req_data = extract_broadcast_data(&output);
 
-        // 4. Responder receives link request → ConnectionRequest event
+        // 4. Responder receives link request → LinkRequest event
         let output = responder.handle_packet(InterfaceId(0), &link_req_data);
-        let resp_link_id = extract_connection_request_link_id(&output);
+        let resp_link_id = extract_link_request_link_id(&output);
 
         // 5. Responder accepts → proof packet in actions
-        let output = responder.accept_connection(&resp_link_id).unwrap();
+        let output = responder.accept_link(&resp_link_id).unwrap();
         let proof_data = extract_broadcast_data(&output);
 
-        // 6. Initiator receives proof → ConnectionEstablished + RTT action
+        // 6. Initiator receives proof → LinkEstablished + RTT action
         let output = initiator.handle_packet(InterfaceId(0), &proof_data);
         assert!(
             output
                 .events
                 .iter()
-                .any(|e| matches!(e, NodeEvent::ConnectionEstablished { .. })),
-            "initiator should get ConnectionEstablished"
+                .any(|e| matches!(e, NodeEvent::LinkEstablished { .. })),
+            "initiator should get LinkEstablished"
         );
         // RTT packet is in the output actions
         let rtt_data = extract_broadcast_data(&output);
 
-        // 7. Responder receives RTT → ConnectionEstablished
+        // 7. Responder receives RTT → LinkEstablished
         let output = responder.handle_packet(InterfaceId(0), &rtt_data);
         assert!(
             output
                 .events
                 .iter()
-                .any(|e| matches!(e, NodeEvent::ConnectionEstablished { .. })),
-            "responder should get ConnectionEstablished"
+                .any(|e| matches!(e, NodeEvent::LinkEstablished { .. })),
+            "responder should get LinkEstablished"
         );
 
         NodeCoreLinkPair {
@@ -1906,15 +1855,15 @@ mod tests {
     }
 
     #[test]
-    fn test_accept_connection() {
+    fn test_accept_link() {
         let pair = establish_nodecore_link_pair();
 
-        assert_eq!(pair.responder.active_connection_count(), 1);
-        assert_eq!(pair.initiator.active_connection_count(), 1);
+        assert_eq!(pair.responder.active_link_count(), 1);
+        assert_eq!(pair.initiator.active_link_count(), 1);
     }
 
     #[test]
-    fn test_reject_connection() {
+    fn test_reject_link() {
         use crate::transport::InterfaceId;
 
         let resp_identity = Identity::generate(&mut OsRng);
@@ -1940,17 +1889,17 @@ mod tests {
         let link_req_data = extract_broadcast_data(&output);
 
         let output = responder.handle_packet(InterfaceId(0), &link_req_data);
-        let resp_link_id = extract_connection_request_link_id(&output);
+        let resp_link_id = extract_link_request_link_id(&output);
 
         // Reject instead of accept
-        responder.reject_connection(&resp_link_id);
+        responder.reject_link(&resp_link_id);
 
-        assert_eq!(responder.pending_connection_count(), 0);
-        assert_eq!(responder.active_connection_count(), 0);
+        assert_eq!(responder.pending_link_count(), 0);
+        assert_eq!(responder.active_link_count(), 0);
     }
 
     #[test]
-    fn test_send_on_connection() {
+    fn test_send_on_link() {
         use crate::transport::InterfaceId;
 
         let mut pair = establish_nodecore_link_pair();
@@ -1958,13 +1907,13 @@ mod tests {
         // Send data from initiator
         let output = pair
             .initiator
-            .send_on_connection(&pair.initiator_link_id, b"Hello!")
+            .send_on_link(&pair.initiator_link_id, b"Hello!")
             .unwrap();
 
         // Should have actions (send packet)
         assert!(
             !output.actions.is_empty(),
-            "send_on_connection should produce actions"
+            "send_on_link should produce actions"
         );
 
         // Deliver to responder
@@ -1980,24 +1929,24 @@ mod tests {
     }
 
     #[test]
-    fn test_close_connection() {
+    fn test_close_link() {
         let mut pair = establish_nodecore_link_pair();
 
-        let output = pair.initiator.close_connection(&pair.initiator_link_id);
+        let output = pair.initiator.close_link(&pair.initiator_link_id);
 
-        // Should have ConnectionClosed event
+        // Should have LinkClosed event
         let has_closed = output.events.iter().any(|e| {
             matches!(
                 e,
-                NodeEvent::ConnectionClosed {
-                    reason: CloseReason::Normal,
+                NodeEvent::LinkClosed {
+                    reason: LinkCloseReason::Normal,
                     ..
                 }
             )
         });
-        assert!(has_closed, "Expected ConnectionClosed with Normal reason");
+        assert!(has_closed, "Expected LinkClosed with Normal reason");
 
-        assert_eq!(pair.initiator.active_connection_count(), 0);
+        assert_eq!(pair.initiator.active_link_count(), 0);
     }
 
     #[test]
@@ -2028,7 +1977,7 @@ mod tests {
     }
 
     #[test]
-    fn test_multiple_simultaneous_connections() {
+    fn test_multiple_simultaneous_links() {
         use crate::transport::InterfaceId;
 
         // Create responder with destination
@@ -2068,8 +2017,8 @@ mod tests {
         let (link1, out1) = init1.connect(hash1, &signing1);
         let data1 = extract_broadcast_data(&out1);
         let out = responder.handle_packet(InterfaceId(0), &data1);
-        let rlid1 = extract_connection_request_link_id(&out);
-        let out = responder.accept_connection(&rlid1).unwrap();
+        let rlid1 = extract_link_request_link_id(&out);
+        let out = responder.accept_link(&rlid1).unwrap();
         let proof1 = extract_broadcast_data(&out);
         let out = init1.handle_packet(InterfaceId(0), &proof1);
         let rtt1 = extract_broadcast_data(&out);
@@ -2081,18 +2030,18 @@ mod tests {
         let (_link2, out2) = init2.connect(hash2, &signing2);
         let data2 = extract_broadcast_data(&out2);
         let out = responder.handle_packet(InterfaceId(0), &data2);
-        let rlid2 = extract_connection_request_link_id(&out);
-        let out = responder.accept_connection(&rlid2).unwrap();
+        let rlid2 = extract_link_request_link_id(&out);
+        let out = responder.accept_link(&rlid2).unwrap();
         let proof2 = extract_broadcast_data(&out);
         let out = init2.handle_packet(InterfaceId(0), &proof2);
         let rtt2 = extract_broadcast_data(&out);
         let _ = responder.handle_packet(InterfaceId(0), &rtt2);
 
-        assert_eq!(responder.active_connection_count(), 2);
+        assert_eq!(responder.active_link_count(), 2);
 
         // Both should be functional
         let _ = init1
-            .send_on_connection(&link1, b"data1")
+            .send_on_link(&link1, b"data1")
             .expect("link 1 should work");
     }
 
@@ -2102,7 +2051,7 @@ mod tests {
 
         let _ = pair
             .initiator
-            .send_on_connection(&pair.initiator_link_id, b"test")
+            .send_on_link(&pair.initiator_link_id, b"test")
             .unwrap();
 
         assert_eq!(pair.initiator.channel_hash_to_seq_len(), 1);
@@ -2115,12 +2064,12 @@ mod tests {
         // Send data (populates channel_hash_to_seq)
         let _ = pair
             .initiator
-            .send_on_connection(&pair.initiator_link_id, b"test")
+            .send_on_link(&pair.initiator_link_id, b"test")
             .unwrap();
         assert_eq!(pair.initiator.channel_hash_to_seq_len(), 1);
 
         // Close connection
-        let _ = pair.initiator.close_connection(&pair.initiator_link_id);
+        let _ = pair.initiator.close_link(&pair.initiator_link_id);
 
         // Map should be cleaned — FAILS: handle_link_event(LinkClosed) does not clean it
         assert_eq!(
@@ -2157,11 +2106,11 @@ mod tests {
 
         let output = responder.handle_packet(InterfaceId(0), &req_data);
 
-        let has_connection_request = output
+        let has_link_request = output
             .events
             .iter()
-            .any(|e| matches!(e, NodeEvent::ConnectionRequest { .. }));
-        assert!(has_connection_request, "Expected ConnectionRequest event");
+            .any(|e| matches!(e, NodeEvent::LinkRequest { .. }));
+        assert!(has_link_request, "Expected LinkRequest event");
     }
 
     #[test]
@@ -2190,8 +2139,8 @@ mod tests {
         let req_data = extract_broadcast_data(&output);
 
         let output = responder.handle_packet(InterfaceId(0), &req_data);
-        let rlid = extract_connection_request_link_id(&output);
-        let output = responder.accept_connection(&rlid).unwrap();
+        let rlid = extract_link_request_link_id(&output);
+        let output = responder.accept_link(&rlid).unwrap();
         let proof_data = extract_broadcast_data(&output);
 
         // Feed proof to initiator
@@ -2200,10 +2149,10 @@ mod tests {
         let has_established = output
             .events
             .iter()
-            .any(|e| matches!(e, NodeEvent::ConnectionEstablished { .. }));
+            .any(|e| matches!(e, NodeEvent::LinkEstablished { .. }));
         assert!(
             has_established,
-            "initiator should get ConnectionEstablished after proof"
+            "initiator should get LinkEstablished after proof"
         );
     }
 
@@ -2216,7 +2165,7 @@ mod tests {
         // Send data from initiator
         let output = pair
             .initiator
-            .send_on_connection(&pair.initiator_link_id, b"hello data")
+            .send_on_link(&pair.initiator_link_id, b"hello data")
             .unwrap();
         let data = extract_broadcast_data(&output);
 
@@ -2291,7 +2240,7 @@ mod tests {
     fn test_d12_handshake_timeout_vs_stale_timeout_different_reason() {
         use crate::constants::LINK_PENDING_TIMEOUT_MS;
 
-        // Case 1: Handshake timeout produces ConnectionClosed with Timeout reason
+        // Case 1: Handshake timeout produces LinkClosed with Timeout reason
         let (mut node, _dest_hash, _link_id) = setup_pending_link(false);
         node.transport()
             .clock()
@@ -2301,18 +2250,18 @@ mod tests {
         let has_timeout = output.events.iter().any(|e| {
             matches!(
                 e,
-                NodeEvent::ConnectionClosed {
-                    reason: CloseReason::Timeout,
+                NodeEvent::LinkClosed {
+                    reason: LinkCloseReason::Timeout,
                     ..
                 }
             )
         });
         assert!(
             has_timeout,
-            "handshake timeout should produce ConnectionClosed with Timeout reason"
+            "handshake timeout should produce LinkClosed with Timeout reason"
         );
 
-        // Case 2: Stale closure produces ConnectionClosed with Stale reason
+        // Case 2: Stale closure produces LinkClosed with Stale reason
         // (tested via establish_nodecore_link_pair, then advancing time)
         // This is more involved — the key point is that the reason values are different
     }
@@ -2324,7 +2273,7 @@ mod tests {
         // Send data (populates both maps)
         let _ = pair
             .initiator
-            .send_on_connection(&pair.initiator_link_id, b"sync test")
+            .send_on_link(&pair.initiator_link_id, b"sync test")
             .unwrap();
         assert_eq!(pair.initiator.channel_hash_to_seq_len(), 1);
 
@@ -2374,13 +2323,13 @@ mod tests {
         let has_closed = output.events.iter().any(|e| {
             matches!(
                 e,
-                NodeEvent::ConnectionClosed {
-                    reason: CloseReason::Timeout,
+                NodeEvent::LinkClosed {
+                    reason: LinkCloseReason::Timeout,
                     ..
                 }
             )
         });
-        assert!(has_closed, "should emit ConnectionClosed with Timeout");
+        assert!(has_closed, "should emit LinkClosed with Timeout");
     }
 
     #[test]
@@ -2439,7 +2388,7 @@ mod tests {
         let closed_count = output
             .events
             .iter()
-            .filter(|e| matches!(e, NodeEvent::ConnectionClosed { .. }))
+            .filter(|e| matches!(e, NodeEvent::LinkClosed { .. }))
             .count();
         assert_eq!(closed_count, 2);
 

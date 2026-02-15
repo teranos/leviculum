@@ -17,7 +17,7 @@ use tokio::sync::Notify;
 use reticulum_core::link::LinkId;
 use reticulum_core::node::NodeEvent;
 use reticulum_core::{Destination, DestinationHash, DestinationType, Direction, Identity};
-use reticulum_std::driver::{ConnectionStream, PacketEndpoint, ReticulumNodeBuilder};
+use reticulum_std::driver::{LinkHandle, PacketEndpoint, ReticulumNodeBuilder};
 
 // ─── Message Format ──────────────────────────────────────────────────────────
 
@@ -357,7 +357,7 @@ async fn event_task_a(
                     state.a_discovered_b.notify_one();
                 }
             }
-            NodeEvent::ConnectionEstablished { link_id, .. } => {
+            NodeEvent::LinkEstablished { link_id, .. } => {
                 *link_id_a.lock().unwrap() = Some(link_id);
                 state.link_established_a.notify_one();
             }
@@ -379,13 +379,13 @@ async fn event_task_a(
             NodeEvent::ChannelRetransmit { .. } => {
                 state.stats.lock().unwrap().retransmits_a += 1;
             }
-            NodeEvent::ConnectionStale { .. } => {
+            NodeEvent::LinkStale { .. } => {
                 state.stats.lock().unwrap().stale_count += 1;
             }
-            NodeEvent::ConnectionRecovered { .. } => {
+            NodeEvent::LinkRecovered { .. } => {
                 state.stats.lock().unwrap().recovered_count += 1;
             }
-            NodeEvent::ConnectionClosed { reason, .. } => {
+            NodeEvent::LinkClosed { reason, .. } => {
                 let elapsed = start_time.elapsed().as_secs();
                 println!("[selftest]   +{elapsed}s:  Link died ({reason:?})");
                 state.link_dead.store(true, Ordering::Relaxed);
@@ -413,11 +413,11 @@ async fn event_task_b(
                     state.b_discovered_a.notify_one();
                 }
             }
-            NodeEvent::ConnectionRequest { link_id, .. } => {
+            NodeEvent::LinkRequest { link_id, .. } => {
                 *state.pending_link_b.lock().unwrap() = Some(link_id);
                 state.link_request_b.notify_one();
             }
-            NodeEvent::ConnectionEstablished { .. } => {
+            NodeEvent::LinkEstablished { .. } => {
                 state.link_established_b.notify_one();
             }
             NodeEvent::MessageReceived { data, .. } => {
@@ -438,13 +438,13 @@ async fn event_task_b(
             NodeEvent::ChannelRetransmit { .. } => {
                 state.stats.lock().unwrap().retransmits_b += 1;
             }
-            NodeEvent::ConnectionStale { .. } => {
+            NodeEvent::LinkStale { .. } => {
                 state.stats.lock().unwrap().stale_count += 1;
             }
-            NodeEvent::ConnectionRecovered { .. } => {
+            NodeEvent::LinkRecovered { .. } => {
                 state.stats.lock().unwrap().recovered_count += 1;
             }
-            NodeEvent::ConnectionClosed { reason, .. } => {
+            NodeEvent::LinkClosed { reason, .. } => {
                 let elapsed = start_time.elapsed().as_secs();
                 println!("[selftest]   +{elapsed}s:  Link died ({reason:?})");
                 state.link_dead.store(true, Ordering::Relaxed);
@@ -458,7 +458,7 @@ async fn event_task_b(
 // ─── Send helpers ────────────────────────────────────────────────────────────
 
 async fn send_msg(
-    stream: &ConnectionStream,
+    stream: &LinkHandle,
     dir: &str,
     seq: u64,
     start_time: Instant,
@@ -702,7 +702,7 @@ pub async fn run_selftest(
             .lock()
             .unwrap()
             .ok_or("no pending link on B")?;
-        let stream_b = node_b.accept_connection(&pending_id).await?;
+        let stream_b = node_b.accept_link(&pending_id).await?;
 
         // Wait for both sides established
         let establish = async {
@@ -751,10 +751,7 @@ pub async fn run_selftest(
 
         // Check window
         let link_id = link_id_a.lock().unwrap().ok_or("no link_id on A")?;
-        let window = node_a
-            .connection_stats(&link_id)
-            .map(|s| s.window)
-            .unwrap_or(0);
+        let window = node_a.link_stats(&link_id).map(|s| s.window).unwrap_or(0);
 
         if window <= 2 && Instant::now() > warmup_deadline {
             println!(
@@ -826,10 +823,7 @@ pub async fn run_selftest(
                 let retx = st.retransmits_a + st.retransmits_b;
                 drop(st);
 
-                let win = node_a
-                    .connection_stats(&link_id)
-                    .map(|s| s.window)
-                    .unwrap_or(0);
+                let win = node_a.link_stats(&link_id).map(|s| s.window).unwrap_or(0);
 
                 let recv_progress = recv_a > last_recv_a || recv_b > last_recv_b;
 
@@ -870,12 +864,9 @@ pub async fn run_selftest(
             println!("[selftest] Phase 5 complete: sent {total_sent} messages, entering drain");
         }
 
-        final_win = node_a
-            .connection_stats(&link_id)
-            .map(|s| s.window)
-            .unwrap_or(0);
+        final_win = node_a.link_stats(&link_id).map(|s| s.window).unwrap_or(0);
         final_win_max = node_a
-            .connection_stats(&link_id)
+            .link_stats(&link_id)
             .map(|s| s.window_max)
             .unwrap_or(0);
 
@@ -979,17 +970,14 @@ pub async fn run_selftest(
                 }
             }
 
-            final_win = node_a
-                .connection_stats(&link_id)
-                .map(|s| s.window)
-                .unwrap_or(0);
+            final_win = node_a.link_stats(&link_id).map(|s| s.window).unwrap_or(0);
             final_win_max = node_a
-                .connection_stats(&link_id)
+                .link_stats(&link_id)
                 .map(|s| s.window_max)
                 .unwrap_or(0);
 
             // Close from B side
-            if let Err(e) = node_b.close_connection(stream_b.link_id()).await {
+            if let Err(e) = node_b.close_link(stream_b.link_id()).await {
                 eprintln!("[selftest] close B: {e}");
             }
             tokio::time::sleep(std::time::Duration::from_secs(3)).await;

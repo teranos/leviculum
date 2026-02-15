@@ -423,10 +423,10 @@ async fn test_manager_initiator_sequential_links() {
 
     // Drain close event
     let events: Vec<_> = manager.drain_events().collect();
-    assert!(events
-        .iter()
-        .any(|e| matches!(e, LinkEvent::LinkClosed { link_id, reason }
-        if *link_id == link_id1 && *reason == LinkCloseReason::Normal)));
+    assert!(events.iter().any(
+        |e| matches!(e, LinkEvent::LinkClosed { link_id, reason, .. }
+        if *link_id == link_id1 && *reason == LinkCloseReason::Normal)
+    ));
 
     // Second link (new connection)
     let mut stream2 = connect_to_daemon(&daemon).await;
@@ -1418,7 +1418,8 @@ async fn test_manager_handshake_timeout() {
         e,
         LinkEvent::LinkClosed {
             link_id: id,
-            reason: LinkCloseReason::Timeout
+            reason: LinkCloseReason::Timeout,
+            ..
         } if *id == link_id
     )));
 

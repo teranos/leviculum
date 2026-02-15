@@ -19,7 +19,7 @@ mod selftest;
 use reticulum_core::link::LinkId;
 use reticulum_core::node::NodeEvent;
 use reticulum_core::{Destination, DestinationHash, DestinationType, Direction, Identity};
-use reticulum_std::driver::{ConnectionStream, PacketEndpoint, ReticulumNodeBuilder};
+use reticulum_std::driver::{LinkHandle, PacketEndpoint, ReticulumNodeBuilder};
 
 fn hex_encode(bytes: &[u8]) -> String {
     use std::fmt::Write;
@@ -549,7 +549,7 @@ async fn run_connect(
     let event_task = tokio::spawn(event_loop(event_rx, event_state));
 
     // Input loop (main task)
-    let mut stream: Option<ConnectionStream> = None;
+    let mut stream: Option<LinkHandle> = None;
     let stdin = tokio::io::BufReader::new(tokio::io::stdin());
     let mut lines = stdin.lines();
 
@@ -691,7 +691,7 @@ async fn run_connect(
                         continue;
                     };
 
-                    match node.accept_connection(&link_id).await {
+                    match node.accept_link(&link_id).await {
                         Ok(s) => {
                             {
                                 let mut st = state.lock().expect("lock poisoned");
@@ -868,7 +868,7 @@ async fn run_connect(
 /// Returns Err with a user-facing message on failure.
 async fn try_send(
     state: &Arc<Mutex<SessionState>>,
-    stream: &Option<ConnectionStream>,
+    stream: &Option<LinkHandle>,
     msg: &str,
 ) -> Result<(), String> {
     let (link_alive, has_endpoint) = {
@@ -969,7 +969,7 @@ async fn event_loop(
                 format!("[path] {hash}  {hops} hops")
             }
 
-            NodeEvent::ConnectionRequest {
+            NodeEvent::LinkRequest {
                 link_id,
                 destination_hash,
                 peer_keys: _,
@@ -982,7 +982,7 @@ async fn event_loop(
                 format!("[link-request] from {hash} — use /accept")
             }
 
-            NodeEvent::ConnectionEstablished {
+            NodeEvent::LinkEstablished {
                 link_id,
                 is_initiator,
             } => {
@@ -1004,7 +1004,9 @@ async fn event_loop(
                 format!("[message type={msgtype}] {text}")
             }
 
-            NodeEvent::ConnectionClosed { link_id, reason } => {
+            NodeEvent::LinkClosed {
+                link_id, reason, ..
+            } => {
                 {
                     let mut st = state.lock().expect("lock poisoned");
                     if st.active_link_id == Some(link_id) {
@@ -1014,11 +1016,11 @@ async fn event_loop(
                 format!("[closed] link {link_id}: {reason:?}")
             }
 
-            NodeEvent::ConnectionStale { link_id } => {
+            NodeEvent::LinkStale { link_id } => {
                 format!("[stale] link {link_id}")
             }
 
-            NodeEvent::ConnectionRecovered { link_id } => {
+            NodeEvent::LinkRecovered { link_id } => {
                 format!("[recovered] link {link_id}")
             }
 

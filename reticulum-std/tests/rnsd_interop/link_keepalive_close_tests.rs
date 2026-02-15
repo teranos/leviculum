@@ -399,7 +399,7 @@ async fn test_rust_graceful_close_received_by_python() {
     let close_event = events.iter().find(|e| {
         matches!(
             e,
-            LinkEvent::LinkClosed { link_id: id, reason: LinkCloseReason::Normal }
+            LinkEvent::LinkClosed { link_id: id, reason: LinkCloseReason::Normal, .. }
             if *id == link_id
         )
     });
@@ -475,7 +475,7 @@ async fn test_python_graceful_close_received_by_rust() {
     let close_event = events.iter().find(|e| {
         matches!(
             e,
-            LinkEvent::LinkClosed { link_id: id, reason: LinkCloseReason::PeerClosed }
+            LinkEvent::LinkClosed { link_id: id, reason: LinkCloseReason::PeerClosed, .. }
             if *id == link_id
         )
     });
@@ -760,7 +760,8 @@ async fn test_stale_link_closes_after_timeout() {
             e,
             LinkEvent::LinkClosed {
                 link_id: id,
-                reason: LinkCloseReason::Stale
+                reason: LinkCloseReason::Stale,
+                ..
             }
             if *id == link_id
         )
@@ -1359,7 +1360,7 @@ async fn test_multi_hop_graceful_close_through_relay() {
     let close_event_b = events_b.iter().find(|e| {
         matches!(
             e,
-            LinkEvent::LinkClosed { link_id: id, reason: LinkCloseReason::Normal }
+            LinkEvent::LinkClosed { link_id: id, reason: LinkCloseReason::Normal, .. }
             if *id == link_id
         )
     });
@@ -1392,7 +1393,7 @@ async fn test_multi_hop_graceful_close_through_relay() {
     let close_event_a = events_a.iter().find(|e| {
         matches!(
             e,
-            LinkEvent::LinkClosed { link_id: id, reason: LinkCloseReason::PeerClosed }
+            LinkEvent::LinkClosed { link_id: id, reason: LinkCloseReason::PeerClosed, .. }
             if *id == link_id
         )
     });

@@ -154,8 +154,8 @@ mod tests {
         let clock = MockClock::new(TEST_TIME_MS);
         let node = NodeCoreBuilder::new().build(OsRng, clock, NoStorage);
 
-        assert_eq!(node.active_connection_count(), 0);
-        assert_eq!(node.pending_connection_count(), 0);
+        assert_eq!(node.active_link_count(), 0);
+        assert_eq!(node.pending_link_count(), 0);
     }
 
     #[test]
