@@ -153,7 +153,7 @@ pub struct SendResult {
     /// Packet data to transmit (if any)
     pub packet_data: Option<Vec<u8>>,
     /// Whether a link needs to be established
-    pub needs_connection: bool,
+    pub needs_link: bool,
 }
 
 #[cfg(test)]
