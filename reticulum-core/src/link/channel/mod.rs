@@ -645,6 +645,9 @@ impl Channel {
             // SRTT from proof round-trips can be much lower than the true
             // end-to-end RTT, causing spurious promotion to FAST tier.
             self.adjust_window(true, rtt_ms);
+            // Overwrite pacing with SRTT (adjust_window used handshake RTT)
+            let eff_rtt = self.effective_rtt_ms(rtt_ms);
+            self.recalculate_pacing(eff_rtt);
             tracing::debug!(
                 seq = sequence,
                 tx_ring = self.tx_ring.len(),
@@ -730,6 +733,10 @@ impl Channel {
         // Window tiers use handshake RTT (conservative), not SRTT.
         for _ in 0..window_decrements {
             self.adjust_window(false, rtt_ms);
+        }
+        // Overwrite pacing with SRTT (adjust_window used handshake RTT)
+        if window_decrements > 0 {
+            self.recalculate_pacing(eff_rtt);
         }
 
         // Multiplicative decrease: double pacing per retransmit, capped at eff_rtt.
@@ -1763,6 +1770,59 @@ mod tests {
             "second retransmit: pacing {} should exceed base {} (MD applied)",
             channel.pacing_interval_ms,
             base_pacing
+        );
+    }
+
+    #[test]
+    fn test_pacing_uses_srtt_not_handshake_rtt() {
+        // Handshake RTT is high (1200ms), but actual RTT is much faster (200ms).
+        // After SRTT is measured, pacing should use SRTT, not handshake RTT.
+        let mut channel = Channel::new();
+        let handshake_rtt = 1200u64;
+
+        // Send first message at t=1000
+        let msg1 = TestMessage {
+            data: vec![1, 2, 3],
+        };
+        channel.send(&msg1, 464, 1000, handshake_rtt).unwrap();
+
+        // Deliver at t=1200 → sample RTT = 200ms, SRTT = 200.0 (first sample)
+        channel.mark_delivered(0, 1200, handshake_rtt);
+        assert!(
+            (channel.srtt_ms - 200.0).abs() < 1.0,
+            "SRTT should be ~200ms"
+        );
+
+        // Send and deliver a second message to trigger adjust_window + recalculate_pacing
+        let msg2 = TestMessage {
+            data: vec![4, 5, 6],
+        };
+        channel.send(&msg2, 464, 1300, handshake_rtt).unwrap();
+        channel.mark_delivered(1, 1500, handshake_rtt);
+
+        // SRTT should still be ~200ms (second sample also 200ms)
+        let srtt = channel.srtt_ms as u64;
+        assert!(
+            (180..=220).contains(&srtt),
+            "SRTT should be ~200ms, got {}",
+            srtt
+        );
+
+        // Pacing should be based on SRTT (~200ms), NOT handshake RTT (1200ms)
+        let expected_pacing = srtt / channel.window as u64;
+        assert_eq!(
+            channel.pacing_interval_ms, expected_pacing,
+            "pacing should be SRTT/window = {}/{} = {}, got {}",
+            srtt, channel.window, expected_pacing, channel.pacing_interval_ms
+        );
+
+        // Specifically: pacing must NOT be based on handshake RTT
+        let handshake_pacing = handshake_rtt / channel.window as u64;
+        assert!(
+            channel.pacing_interval_ms < handshake_pacing,
+            "pacing {} should be less than handshake-based pacing {}",
+            channel.pacing_interval_ms,
+            handshake_pacing
         );
     }
 }

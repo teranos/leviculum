@@ -5,6 +5,14 @@ All notable changes to this project will be documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.5.19] - 2026-02-15
+
+### Fixed
+- **Pacing interval used handshake RTT instead of SRTT** — `recalculate_pacing()` inside `adjust_window()` always used the handshake RTT for the pacing base calculation (`pacing_interval_ms = rtt_ms / window`). When SRTT was measured (e.g. ~200ms) but handshake RTT was high (e.g. 1200ms), pacing was far too conservative — throttling throughput to 1200/window ms between sends when the actual round-trip was much faster. Now `mark_delivered()` and `poll()` overwrite pacing with `effective_rtt_ms()` (SRTT when measured, handshake RTT fallback) after each `adjust_window()` call. Window tier promotion still uses handshake RTT (conservative — SRTT from proof round-trips can underestimate true end-to-end RTT).
+
+### Added
+- 1 new test: `test_pacing_uses_srtt_not_handshake_rtt` verifying pacing uses SRTT after measurement
+
 ## [0.5.18] - 2026-02-15
 
 ### Changed

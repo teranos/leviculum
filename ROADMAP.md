@@ -291,7 +291,7 @@ Zuverlässiger Dateitransfer zwischen Rust und Python. Release-Qualität erreich
 - [x] Buffer-System (RawChannelReader, RawChannelWriter, BufferedChannelWriter)
 - [x] BZ2-Kompression für Stream-Daten
 
-**Deliverable:** ⚠️ Channel-Envelope funktioniert inkl. mark_delivered() und Retransmission (v0.5.5/v0.5.15). Backward-Sequence-Handling für verloren gegangene Proofs behoben (v0.5.16). Sender-seitiges Pacing mit AIMD-Congestion-Control (v0.5.17): Sends werden gleichmäßig über die RTT verteilt statt burst-artig bis WindowFull; Additive Increase bei Delivery, Multiplicative Decrease bei Retransmit. Timeout- und RTT-Tuning (v0.5.18): Live-Timeout-Berechnung in poll() statt eingefrorener Werte, Smoothed-RTT (RFC 6298) mit Karn-Algorithmus, MAX_TRIES 5→8, erste Retransmission überspringt Pacing-MD. Buffer/Stream-Layer nicht in ConnectionStream integriert
+**Deliverable:** ⚠️ Channel-Envelope funktioniert inkl. mark_delivered() und Retransmission (v0.5.5/v0.5.15). Backward-Sequence-Handling für verloren gegangene Proofs behoben (v0.5.16). Sender-seitiges Pacing mit AIMD-Congestion-Control (v0.5.17): Sends werden gleichmäßig über die RTT verteilt statt burst-artig bis WindowFull; Additive Increase bei Delivery, Multiplicative Decrease bei Retransmit. Timeout- und RTT-Tuning (v0.5.18): Live-Timeout-Berechnung in poll() statt eingefrorener Werte, Smoothed-RTT (RFC 6298) mit Karn-Algorithmus, MAX_TRIES 5→8, erste Retransmission überspringt Pacing-MD. Pacing-Fix (v0.5.19): `recalculate_pacing()` nutzt jetzt SRTT statt Handshake-RTT — bei gemessenem SRTT (~200ms) und hohem Handshake-RTT (1200ms) war Pacing viel zu konservativ. Buffer/Stream-Layer nicht in ConnectionStream integriert
 
 ---
 
