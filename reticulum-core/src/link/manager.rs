@@ -493,17 +493,19 @@ impl LinkManager {
             }
             // Mark the link as closed
             link.close();
-            // Remove from pending tracking
-            self.pending_outgoing.remove(link_id);
-            self.pending_incoming.remove(link_id);
-            self.channel_receipt_keys
-                .retain(|(lid, _), _| *lid != *link_id);
             // Emit event
             self.events.push(LinkEvent::LinkClosed {
                 link_id: *link_id,
                 reason: LinkCloseReason::Normal,
             });
         }
+        // Clean up all tracking (no-op if link_id not present)
+        self.links.remove(link_id);
+        self.channels.remove(link_id);
+        self.pending_outgoing.remove(link_id);
+        self.pending_incoming.remove(link_id);
+        self.channel_receipt_keys
+            .retain(|(lid, _), _| *lid != *link_id);
     }
 
     /// Close a link without sending a close packet (local only)
@@ -2006,10 +2008,9 @@ mod tests {
         });
         assert!(has_close, "Expected LinkClosed event with Normal reason");
 
-        // Link should still exist (in Closed state — B1: not removed from map)
+        // Link should be removed from map after close() (B1 fix)
         let link = pair.initiator.link(&pair.initiator_link_id);
-        assert!(link.is_some(), "link should still be in map after close()");
-        assert_eq!(link.unwrap().state(), LinkState::Closed);
+        assert!(link.is_none(), "link should be removed from map after close()");
     }
 
     #[test]
@@ -2190,7 +2191,6 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "Bug B1: closed links accumulate indefinitely — will be fixed in Phase 3"]
     fn test_memory_cleanup_on_close() {
         let mut pair = establish_link_pair(ProofStrategy::None);
         let link_id = pair.initiator_link_id;
@@ -2481,7 +2481,6 @@ mod tests {
     // ─── T16: Regression Tests ──────────────────────────────────────────────
 
     #[test]
-    #[ignore = "Bug B3: close() does not remove channel from channels map — will be fixed in Phase 3"]
     fn test_b3_close_does_not_clean_channels_map() {
         use crate::link::channel::ChannelError;
 

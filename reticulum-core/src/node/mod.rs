@@ -175,7 +175,7 @@ pub struct NodeCore<R: CryptoRngCore, C: Clock, S: Storage> {
     /// Pending events
     events: Vec<NodeEvent>,
     /// Maps packet hash → channel sequence for delivery tracking
-    channel_hash_to_seq: BTreeMap<[u8; 32], u16>,
+    channel_hash_to_seq: BTreeMap<[u8; 32], (LinkId, u16)>,
 }
 
 impl<R: CryptoRngCore, C: Clock, S: Storage> NodeCore<R, C, S> {
@@ -658,7 +658,7 @@ impl<R: CryptoRngCore, C: Clock, S: Storage> NodeCore<R, C, S> {
             let (full_hash, _old) =
                 self.link_manager
                     .register_channel_receipt(&packet_bytes, *link_id, seq, now_ms);
-            self.channel_hash_to_seq.insert(full_hash, seq);
+            self.channel_hash_to_seq.insert(full_hash, (*link_id, seq));
         }
 
         // Route via attached interface (matching Python's LINK routing)
@@ -1079,6 +1079,9 @@ impl<R: CryptoRngCore, C: Clock, S: Storage> NodeCore<R, C, S> {
             LinkEvent::LinkClosed { link_id, reason } => {
                 // Extract connection info BEFORE removing
                 let connection = self.connections.remove(&link_id);
+                // Clean up channel hash→seq entries for this link
+                self.channel_hash_to_seq
+                    .retain(|_, (lid, _)| *lid != link_id);
 
                 // Path recovery for locally-initiated links that never activated
                 // (Python Transport.py:472-494). When an initiator link times out
@@ -1114,14 +1117,15 @@ impl<R: CryptoRngCore, C: Clock, S: Storage> NodeCore<R, C, S> {
             } => {
                 // Check if this was a channel message and call mark_delivered
                 // on the LinkManager's Channel (unified tx_ring + rx_ring)
-                if let Some(sequence) = self.channel_hash_to_seq.remove(&packet_hash) {
+                if let Some((_, sequence)) = self.channel_hash_to_seq.remove(&packet_hash) {
                     let now_ms = self.transport.clock().now_ms();
                     let rtt_ms = self
                         .link_manager
                         .link(&link_id)
                         .map(|l| l.rtt_ms())
                         .unwrap_or(500);
-                    self.link_manager
+                    let _delivered = self
+                        .link_manager
                         .mark_channel_delivered(&link_id, sequence, now_ms, rtt_ms);
                 }
                 self.events.push(NodeEvent::LinkDeliveryConfirmed {
@@ -1131,7 +1135,7 @@ impl<R: CryptoRngCore, C: Clock, S: Storage> NodeCore<R, C, S> {
             }
 
             LinkEvent::ChannelReceiptUpdated {
-                link_id: _,
+                link_id,
                 new_hash,
                 old_hash,
                 sequence,
@@ -1141,7 +1145,8 @@ impl<R: CryptoRngCore, C: Clock, S: Storage> NodeCore<R, C, S> {
                     self.channel_hash_to_seq.remove(&old);
                 }
                 // Insert new hash→sequence mapping for proof matching
-                self.channel_hash_to_seq.insert(new_hash, sequence);
+                self.channel_hash_to_seq
+                    .insert(new_hash, (link_id, sequence));
             }
 
             LinkEvent::ChannelRetransmit {
@@ -2104,7 +2109,6 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "Bug B2: channel_hash_to_seq never cleaned on link close — will be fixed in Phase 3"]
     fn test_channel_hash_to_seq_cleanup_on_close() {
         let mut pair = establish_nodecore_link_pair();
 

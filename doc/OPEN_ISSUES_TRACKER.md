@@ -35,9 +35,6 @@ Work proceeds in TDD order: tests first, then fixes, then refactoring.
 | A4 | M | M | 3 | open | Structural | `data_receipts` + `channel_receipt_keys` tight coupling |
 | A5 | L | S | 4 | open | Structural | Event cascade: 13/20 pass-through translations |
 | A6 | L | S | 4 | open | Structural | Drain buffers exist only because of struct separation |
-| B1 | H | S | 2 | open | Bug | Closed links accumulate indefinitely (memory leak) |
-| B2 | M | S | 2 | open | Bug | `channel_hash_to_seq` never cleaned on link close |
-| B3 | L | S | 4 | open | Bug | Asymmetric cleanup between links and channels |
 | C2 | L | S | 2 | open | Dead Code | ~20 pub re-exports never imported |
 | C3 | L | S | 2 | open | Dead Code | Buffer types exported but unreachable |
 | C4 | L | S | 4 | open | Dead Code | 5 pure delegation methods |
@@ -54,7 +51,6 @@ Work proceeds in TDD order: tests first, then fixes, then refactoring.
 | D13 | L | S | 2 | open | Naming | Channel exhaustion indistinguishable from other closes |
 | E2 | L | S | 2 | open | Visibility | LinkManager drain methods are pub |
 | F2 | L | S | 2 | open | Coupling | `connect()` silently broadcasts when no path exists |
-| F4 | L | S | 2 | open | Coupling | `mark_channel_delivered()` return value ignored |
 | G1 | L | S | 2 | open | Perf | Lock-and-read pattern in event loop |
 | G2 | L | S | 4 | open | Perf | Pass-through parameters cross 3-5 boundaries |
 | H1 | M | M | 3 | open | SSOT | Destination in 3 maps |
@@ -85,7 +81,7 @@ Work proceeds in TDD order: tests first, then fixes, then refactoring.
 - **Category:** Structural
 - **Blocked-by:** —
 - **Ref:** doc/ISSUES.md A2, doc/ARCHITECTURE_REVIEW2.md (ownership graph), doc/ARCHITECTURE_REVIEW3.md (LinkManager dissolution plan)
-- **Detail:** `links`, `channels`, `pending_outgoing/incoming`, `connections` — all keyed by `LinkId`, all with different lifecycles. Root cause of the two-channel bug. Removal is not always paired (see B1, B3).
+- **Detail:** `links`, `channels`, `pending_outgoing/incoming`, `connections` — all keyed by `LinkId`, all with different lifecycles. Root cause of the two-channel bug. (B1/B3 cleanup asymmetry fixed; structural root cause remains.)
 - **Fix:** Channel → `Option<Channel>` on Link. Pending → phase enum on Link. Connection fields → Link. Reduces 4+ maps to 1. See doc/ARCHITECTURE_REVIEW3.md for the detailed dissolution plan with ownership graph and migration steps.
 - **Test:** Create link, establish channel, send message, close via each path, verify all maps are empty. (Currently: NO unit test, partial interop.)
 
@@ -136,40 +132,6 @@ Work proceeds in TDD order: tests first, then fixes, then refactoring.
 - **Fix:** Remove as consequence of LinkManager dissolution.
 - **Test:** N/A (removed with structural refactoring).
 
-### B1: Closed links accumulate indefinitely
-- **Status:** open
-- **Priority:** HIGH
-- **Effort:** S
-- **Phase:** 2
-- **Category:** Bug
-- **Blocked-by:** —
-- **Ref:** doc/ISSUES.md B1
-- **Detail:** `close()`, `check_stale_links()`, and PeerClosed paths set `LinkState::Closed` but never remove the entry from `self.links`. No periodic garbage collection exists. Unbounded memory leak for long-running nodes.
-- **Fix:** Add periodic GC that removes Closed-state links (and their associated `channels`, `data_receipts`, `channel_receipt_keys` entries). A few lines in `poll()`.
-- **Test:** Create 100 links, close them all, verify `links.len() == 0` after GC runs. (Currently: NO unit test, NO interop test.) Write test first (T16).
-
-### B2: `channel_hash_to_seq` never cleaned on link close
-- **Status:** open
-- **Priority:** MEDIUM
-- **Effort:** S
-- **Phase:** 2
-- **Category:** Bug
-- **Blocked-by:** —
-- **Ref:** doc/ISSUES.md B2
-- **Detail:** 34 bytes per entry, orphaned permanently. No cleanup path exists. Functionally benign (stale lookups return harmlessly) but unbounded over time.
-- **Fix:** In `handle_link_event(LinkClosed)`, iterate and remove all `channel_hash_to_seq` entries for the closed LinkId. Or move into Channel (see A3). A few lines.
-- **Test:** Send a message (populates channel_hash_to_seq), close the link, verify map entry removed. (Currently: NO unit test, NO interop test.) Write test first (T16).
-
-### B3: Asymmetric cleanup between links and channels
-- **Status:** open
-- **Priority:** LOW
-- **Effort:** S
-- **Phase:** 4
-- **Category:** Bug
-- **Blocked-by:** B1
-- **Detail:** `close()` and `check_stale_links()` remove neither from `links` nor `channels`. `check_channel_timeouts()` TearDownLink removes from `channels` but not `links`. `close_local()` removes both (correct). No path removes a Closed link from `links`.
-- **Fix:** Addressed by B1 (GC for Closed links).
-- **Test:** Close via each path, verify both maps cleaned. (Currently: NO unit test, NO interop test.)
 
 ### C2: ~20 pub re-exports never imported
 - **Status:** open
@@ -349,16 +311,6 @@ Work proceeds in TDD order: tests first, then fixes, then refactoring.
 - **Fix:** Return an enum indicating `Routed` vs `Broadcast`, or return an error.
 - **Test:** N/A (behavior change — add test with fix).
 
-### F4: `mark_channel_delivered()` return value ignored
-- **Status:** open
-- **Priority:** LOW
-- **Effort:** S
-- **Phase:** 2
-- **Category:** Coupling
-- **Blocked-by:** —
-- **Detail:** `NodeCore::handle_data_proof()` calls `link_manager.mark_channel_delivered()` which returns `Option<LinkEvent>`, but the return value is silently discarded. If a bogus sequence number ACK arrives, the failure is invisible.
-- **Fix:** Propagate the return value and log or handle the `None` case.
-- **Test:** Send bogus sequence ACK, verify failure is visible. (Currently: NO unit test, NO interop test.)
 
 ### G1: Lock-and-read pattern in event loop
 - **Status:** open
