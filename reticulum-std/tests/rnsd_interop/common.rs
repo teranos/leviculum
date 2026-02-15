@@ -237,6 +237,8 @@ pub async fn wait_for_announce(
 pub struct AnnounceRouteInfo {
     /// The announce packet
     pub packet: Packet,
+    /// Raw deframed bytes (for feeding to `NodeCore::handle_packet()`)
+    pub raw_data: Vec<u8>,
     /// The transport_id from HEADER_2 announces, or None for direct announces
     pub transport_id: Option<[u8; 16]>,
     /// The hop count from the announce
@@ -281,6 +283,7 @@ pub async fn wait_for_any_announce_with_route_info(
                                     transport_id: pkt.transport_id,
                                     hops: pkt.hops,
                                     packet: pkt,
+                                    raw_data: data,
                                 });
                             }
                         }
@@ -393,6 +396,42 @@ pub async fn receive_proof_for_link(
                                 && pkt.destination_hash == *link_id.as_bytes()
                             {
                                 return Some(pkt);
+                            }
+                        }
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+    None
+}
+
+/// Wait for a proof packet for a specific link ID, returning raw bytes.
+///
+/// Unlike `receive_proof_for_link` which returns a parsed `Packet`, this
+/// returns the raw deframed bytes suitable for `NodeCore::handle_packet()`.
+pub async fn receive_raw_proof_for_link(
+    stream: &mut TcpStream,
+    deframer: &mut Deframer,
+    link_id: &LinkId,
+    timeout_duration: Duration,
+) -> Option<Vec<u8>> {
+    let mut buffer = [0u8; 2048];
+    let start = std::time::Instant::now();
+
+    while start.elapsed() < timeout_duration {
+        match timeout(Duration::from_millis(100), stream.read(&mut buffer)).await {
+            Ok(Ok(0)) => return None,
+            Ok(Ok(n)) => {
+                let results = deframer.process(&buffer[..n]);
+                for result in results {
+                    if let DeframeResult::Frame(data) = result {
+                        if let Ok(pkt) = Packet::unpack(&data) {
+                            if pkt.flags.packet_type == PacketType::Proof
+                                && pkt.destination_hash == *link_id.as_bytes()
+                            {
+                                return Some(data);
                             }
                         }
                     }
@@ -546,6 +585,47 @@ pub async fn wait_for_data_packet(
                             if pkt.flags.packet_type == PacketType::Data
                                 && pkt.destination_hash == *link_id.as_bytes()
                                 && pkt.context == PacketContext::None
+                            {
+                                return Some(data);
+                            }
+                        }
+                    }
+                }
+            }
+            Ok(Err(_)) | Err(_) => continue,
+        }
+    }
+
+    None
+}
+
+/// Wait for any Data packet on a link (any context: None, Channel, etc.).
+///
+/// Unlike `wait_for_data_packet` which filters for `PacketContext::None`,
+/// this accepts any Data packet addressed to the link_id. Use this for
+/// Rust-to-Rust tests where `send_on_link()` goes through the Channel
+/// (producing packets with `PacketContext::Channel`).
+pub async fn wait_for_link_data_packet(
+    stream: &mut TcpStream,
+    deframer: &mut Deframer,
+    link_id: &LinkId,
+    timeout_duration: Duration,
+) -> Option<Vec<u8>> {
+    let mut buf = [0u8; 2048];
+    let deadline = tokio::time::Instant::now() + timeout_duration;
+
+    while tokio::time::Instant::now() < deadline {
+        let remaining = deadline - tokio::time::Instant::now();
+
+        match timeout(remaining, stream.read(&mut buf)).await {
+            Ok(Ok(0)) => return None,
+            Ok(Ok(n)) => {
+                let results = deframer.process(&buf[..n]);
+                for result in results {
+                    if let DeframeResult::Frame(data) = result {
+                        if let Ok(pkt) = Packet::unpack(&data) {
+                            if pkt.flags.packet_type == PacketType::Data
+                                && pkt.destination_hash == *link_id.as_bytes()
                             {
                                 return Some(data);
                             }
@@ -769,6 +849,7 @@ pub async fn wait_for_announce_for_dest(
                                     transport_id: pkt.transport_id,
                                     hops: pkt.hops,
                                     packet: pkt,
+                                    raw_data: data,
                                 });
                             }
                         }
