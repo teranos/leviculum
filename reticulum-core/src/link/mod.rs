@@ -24,13 +24,6 @@
 //! 4. Receive RTT packet
 //! 5. Finalize with `process_rtt()`
 //!
-//! ## High-Level API
-//!
-//! For easier link management, use the [`LinkManager`] which handles:
-//! - Tracking pending and active links
-//! - Processing incoming link packets
-//! - Emitting [`LinkEvent`]s for state changes
-//!
 //! ## Channel System
 //!
 //! For reliable message delivery, use the [`channel`] module which provides:
@@ -38,12 +31,23 @@
 //! - Message ordering via 16-bit sequence numbers
 //! - Flow control with adaptive window sizing
 //!
-//! [`LinkManager`]: manager::LinkManager
+//! ## Integration
+//!
+//! Link management is handled directly by [`NodeCore`](crate::node::NodeCore),
+//! which owns all link state and handles packet processing, timeouts,
+//! keepalives, and channel retransmissions.
 
 pub mod channel;
-mod manager;
 
-pub use manager::LinkManager;
+/// Receipt for a sent data packet awaiting proof (PROVE_ALL)
+pub(crate) struct DataReceipt {
+    /// Full SHA256 hash of the packet
+    pub(crate) full_hash: [u8; 32],
+    /// Link ID the packet was sent on
+    pub(crate) link_id: LinkId,
+    /// When the packet was sent (ms since epoch)
+    pub(crate) sent_at_ms: u64,
+}
 
 use crate::constants::{
     ED25519_SIGNATURE_SIZE, KEEPALIVE_INITIATOR_BYTE, KEEPALIVE_PAYLOAD_SIZE,
@@ -56,7 +60,6 @@ use crate::crypto::{derive_key, truncated_hash};
 use crate::destination::{DestinationHash, ProofStrategy};
 use crate::identity::Identity;
 use crate::packet::PacketContext;
-use alloc::vec::Vec;
 use channel::Channel;
 use rand_core::CryptoRngCore;
 
@@ -202,108 +205,6 @@ pub struct PeerKeys {
     pub ed25519_verifying: [u8; 32],
 }
 
-/// Events emitted by LinkManager
-#[derive(Debug)]
-pub enum LinkEvent {
-    /// Incoming link request received (responder should accept/reject)
-    LinkRequestReceived {
-        /// The link ID for this request
-        link_id: LinkId,
-        /// Destination hash the request was sent to
-        dest_hash: DestinationHash,
-        /// Peer's public keys
-        peer_keys: PeerKeys,
-    },
-    /// Link handshake completed
-    LinkEstablished {
-        /// The link ID
-        link_id: LinkId,
-        /// Whether we initiated this link
-        is_initiator: bool,
-    },
-    /// Data received on a link
-    DataReceived {
-        /// The link ID
-        link_id: LinkId,
-        /// The decrypted data
-        data: Vec<u8>,
-    },
-    /// Link became stale (no inbound for too long)
-    LinkStale {
-        /// The link ID
-        link_id: LinkId,
-    },
-    /// Link recovered from stale state (traffic resumed, Python Link.py:987-988)
-    LinkRecovered {
-        /// The link ID
-        link_id: LinkId,
-    },
-    /// Channel message received on a link
-    ChannelMessageReceived {
-        /// The link ID
-        link_id: LinkId,
-        /// Message type identifier
-        msgtype: u16,
-        /// Message sequence number
-        sequence: u16,
-        /// Deserialized message data
-        data: Vec<u8>,
-    },
-    /// Link closed or failed
-    LinkClosed {
-        /// The link ID
-        link_id: LinkId,
-        /// Why the link was closed
-        reason: LinkCloseReason,
-        /// Whether we initiated this link
-        is_initiator: bool,
-        /// The destination hash this link was to
-        destination_hash: DestinationHash,
-    },
-    /// Proof received confirming data delivery (PROVE_ALL)
-    ///
-    /// Emitted when a valid proof is received for a data packet we sent.
-    DataDelivered {
-        /// The link ID
-        link_id: LinkId,
-        /// The full packet hash that was proven
-        packet_hash: [u8; 32],
-    },
-    /// Channel receipt updated due to retransmit (re-encryption changed the hash)
-    ///
-    /// NodeCore must update its `channel_hash_to_seq` mapping: remove `old_hash`
-    /// (if present) and insert `new_hash` → `sequence`.
-    ChannelReceiptUpdated {
-        /// The link ID
-        link_id: LinkId,
-        /// New packet hash (from re-encrypted retransmit)
-        new_hash: [u8; 32],
-        /// Old packet hash to remove from tracking (`None` on first send)
-        old_hash: Option<[u8; 32]>,
-        /// Channel message sequence number
-        sequence: u16,
-    },
-    /// Channel message retransmitted due to timeout
-    ChannelRetransmit {
-        /// The link ID
-        link_id: LinkId,
-        /// Channel message sequence number
-        sequence: u16,
-        /// Which attempt this is (2 = first retry, 3 = second, etc.)
-        tries: u8,
-    },
-    /// Proof requested for received data (PROVE_APP)
-    ///
-    /// Emitted when data is received on a link with `ProofStrategy::App`.
-    /// The application should call `send_data_proof()` if it decides to prove.
-    ProofRequested {
-        /// The link ID
-        link_id: LinkId,
-        /// The full packet hash to potentially prove
-        packet_hash: [u8; 32],
-    },
-}
-
 /// A 16-byte link identifier (truncated hash of link request)
 ///
 /// In the Reticulum protocol, a link ID is derived from the SHA-256 hash of
@@ -388,25 +289,6 @@ impl core::fmt::Display for LinkId {
         }
         Ok(())
     }
-}
-
-/// A pending outbound packet queued by LinkManager
-///
-/// All link-level output (RTT, keepalive, close, channel, proof) flows through
-/// a single queue of these tagged packets. NodeCore drains the queue and routes
-/// each variant appropriately.
-#[derive(Debug)]
-pub(crate) enum PendingPacket {
-    /// RTT packet completing a handshake (broadcast on all interfaces)
-    Rtt { link_id: LinkId, data: Vec<u8> },
-    /// Keepalive packet (route to destination)
-    Keepalive { link_id: LinkId, data: Vec<u8> },
-    /// Close packet (broadcast on all interfaces)
-    Close { link_id: LinkId, data: Vec<u8> },
-    /// Channel data packet (route to destination)
-    Channel { link_id: LinkId, data: Vec<u8> },
-    /// Data proof packet (route to destination)
-    Proof { link_id: LinkId, data: Vec<u8> },
 }
 
 /// A verified point-to-point link
@@ -944,7 +826,7 @@ impl Link {
     ///
     /// This variant takes a raw signing key instead of a full Identity,
     /// which is useful when the signing key has been extracted and stored
-    /// separately (e.g., in LinkManager's DestinationEntry).
+    /// separately (e.g., in NodeCore's destination registry).
     ///
     /// # Arguments
     /// * `packet_hash` - The hash of the received packet

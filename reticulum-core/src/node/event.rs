@@ -1,8 +1,8 @@
 //! Node events - unified event system for all node operations
 //!
 //! This module provides a unified [`NodeEvent`] enum that combines events from
-//! Transport and LinkManager into a single stream, simplifying event handling
-//! for application developers.
+//! transport, link management, and channels into a single stream, simplifying
+//! event handling for application developers.
 
 use alloc::vec::Vec;
 
@@ -13,8 +13,8 @@ use crate::link::{LinkCloseReason, LinkId, PeerKeys};
 
 /// Unified event enum for all node operations
 ///
-/// This combines events from Transport, LinkManager, and Channel into a single
-/// stream that applications can handle uniformly.
+/// This combines events from transport, link management, and channels into a
+/// single stream that applications can handle uniformly.
 #[derive(Debug)]
 pub enum NodeEvent {
     // ─── Path Discovery Events ─────────────────────────────────────────────────

@@ -1567,7 +1567,7 @@ impl<C: Clock, S: Storage> Transport<C, S> {
         // - Not forwarded by transport (enable_transport is false, or link_id
         //   not in our link_table — initiator's own links are never in link_table)
         //
-        // The node layer routes Proof packets to LinkManager::process_packet(),
+        // The node layer routes Proof packets to process_link_packet(),
         // which distinguishes LRPROOF (link establishment) from data proofs
         // (PROOF_DATA_SIZE + context=None) and validates each cryptographically.
         if packet.flags.dest_type == DestinationType::Link {

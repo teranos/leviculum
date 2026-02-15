@@ -1,7 +1,7 @@
 //! High-level Node API for Reticulum
 //!
 //! This module provides [`NodeCore`], a unified interface that combines
-//! Transport and LinkManager functionality into a single, easy-to-use API.
+//! transport, link management, and routing into a single, easy-to-use API.
 //!
 //! # Overview
 //!
@@ -58,7 +58,7 @@ use crate::constants::TRUNCATED_HASHBYTES;
 use crate::destination::{Destination, DestinationHash, ProofStrategy};
 use crate::identity::Identity;
 use crate::link::channel::{ChannelError, Message};
-use crate::link::{LinkId, LinkManager};
+use crate::link::{DataReceipt, Link, LinkId};
 use crate::packet::packet_hash;
 use crate::traits::{Clock, Storage};
 use crate::transport::{Transport, TransportConfig, TransportEvent, TransportStats};
@@ -128,7 +128,7 @@ impl Message for RawBytesMessage<'_> {
     }
 
     fn unpack(data: &[u8]) -> Result<Self, ChannelError> {
-        // Not used for sending — receiving goes through LinkManager's channel.receive()
+        // Not used for sending — receiving goes through channel.receive()
         let _ = data;
         Err(ChannelError::EnvelopeTruncated)
     }
@@ -147,7 +147,7 @@ pub struct LinkStats {
     pub pacing_interval_ms: u64,
 }
 
-/// The unified Reticulum node - combines Transport + LinkManager
+/// The unified Reticulum node — owns all protocol state
 ///
 /// NodeCore is generic over RNG, Clock, and Storage traits, allowing it to run
 /// on both std and no_std environments.
@@ -162,8 +162,16 @@ pub struct NodeCore<R: CryptoRngCore, C: Clock, S: Storage> {
     rng: R,
     /// Transport layer (routing, paths, packets) - owns the node's identity
     transport: Transport<C, S>,
-    /// Link manager (connections, channels)
-    link_manager: LinkManager,
+    /// Active links by ID
+    links: BTreeMap<LinkId, Link>,
+    /// Receipts for sent data packets awaiting proofs (truncated_hash -> receipt)
+    data_receipts: BTreeMap<[u8; TRUNCATED_HASHBYTES], DataReceipt>,
+    /// Maps (link_id, channel_sequence) → truncated receipt hash for cleanup on retransmit
+    channel_receipt_keys: BTreeMap<(LinkId, u16), [u8; TRUNCATED_HASHBYTES]>,
+    /// Count of rx_ring full drops since last log
+    rx_ring_full_count: u64,
+    /// Timestamp (ms) when last rx_ring full log was emitted
+    rx_ring_full_last_log_ms: u64,
     /// Registered destinations
     destinations: BTreeMap<DestinationHash, Destination>,
     /// Default proof strategy for new destinations
@@ -202,7 +210,11 @@ impl<R: CryptoRngCore, C: Clock, S: Storage> NodeCore<R, C, S> {
             // We don't store identity separately - Transport owns it
             // Access via transport.identity()
             transport,
-            link_manager: LinkManager::new(),
+            links: BTreeMap::new(),
+            data_receipts: BTreeMap::new(),
+            channel_receipt_keys: BTreeMap::new(),
+            rx_ring_full_count: 0,
+            rx_ring_full_last_log_ms: 0,
             destinations: BTreeMap::new(),
             default_proof_strategy: proof_strategy,
             events: Vec::new(),
@@ -229,18 +241,12 @@ impl<R: CryptoRngCore, C: Clock, S: Storage> NodeCore<R, C, S> {
             None, // Identity is stored in the destination
         );
 
-        // Register with link manager if accepting links
-        if dest.accepts_links() {
-            self.link_manager.register_destination(hash);
-        }
-
         self.destinations.insert(hash, dest);
     }
 
     /// Unregister a destination
     pub fn unregister_destination(&mut self, hash: &DestinationHash) {
         self.transport.unregister_destination(hash.as_bytes());
-        self.link_manager.unregister_destination(hash);
         self.destinations.remove(hash);
     }
 
@@ -471,8 +477,12 @@ impl<R: CryptoRngCore, C: Clock, S: Storage> NodeCore<R, C, S> {
         // Run transport periodic tasks
         self.transport.poll();
 
-        // Run link manager periodic tasks
-        self.link_manager.poll(&mut self.rng, now_ms);
+        // Run link-layer periodic tasks
+        self.check_timeouts(now_ms);
+        let now_secs = now_ms / crate::constants::MS_PER_SECOND;
+        self.check_keepalives(now_secs);
+        self.check_stale_links(now_secs);
+        self.check_channel_timeouts(now_ms);
 
         // Process all resulting events and actions
         self.process_events_and_actions()
@@ -488,7 +498,7 @@ impl<R: CryptoRngCore, C: Clock, S: Storage> NodeCore<R, C, S> {
     pub fn next_deadline(&self) -> Option<u64> {
         let now_ms = self.transport.clock().now_ms();
         let transport_deadline = self.transport.next_deadline();
-        let link_deadline = self.link_manager.next_deadline(now_ms);
+        let link_deadline = self.link_next_deadline(now_ms);
 
         match (transport_deadline, link_deadline) {
             (Some(t), Some(l)) => Some(core::cmp::min(t, l)),
@@ -542,24 +552,15 @@ impl<R: CryptoRngCore, C: Clock, S: Storage> NodeCore<R, C, S> {
         }
     }
 
-    /// Internal: Process transport and link events, drain actions
+    /// Internal: Process transport events, drain actions
     ///
     /// Shared logic between `handle_packet` and `handle_timeout`.
     fn process_events_and_actions(&mut self) -> crate::transport::TickOutput {
-        // Drain transport events and feed to link manager / event buffer
+        // Drain transport events and dispatch
         let transport_events: Vec<_> = self.transport.drain_events().collect();
         for event in transport_events {
             self.handle_transport_event(event);
         }
-
-        // Drain link events and feed to event buffer
-        let link_events: Vec<_> = self.link_manager.drain_events().collect();
-        for event in link_events {
-            self.handle_link_event(event);
-        }
-
-        // Dispatch pending link packets (keepalives, RTT, close, etc.)
-        self.send_pending_packets();
 
         // Collect all actions and events
         let actions = self.transport.drain_actions();
@@ -664,12 +665,9 @@ impl<R: CryptoRngCore, C: Clock, S: Storage> NodeCore<R, C, S> {
                 if packet.flags.packet_type == crate::packet::PacketType::LinkRequest
                     || packet.flags.packet_type == crate::packet::PacketType::Proof
                     || (packet.flags.packet_type == crate::packet::PacketType::Data
-                        && self
-                            .link_manager
-                            .link(&LinkId::new(destination_hash))
-                            .is_some())
+                        && self.links.contains_key(&LinkId::new(destination_hash)))
                 {
-                    // Route to link manager
+                    // Route to link packet handler
                     let raw = self.repack_packet(&packet);
 
                     // Verify repack symmetry: if original wire hash is known,
@@ -688,13 +686,7 @@ impl<R: CryptoRngCore, C: Clock, S: Storage> NodeCore<R, C, S> {
                     }
 
                     let now_ms = self.transport.clock().now_ms();
-                    self.link_manager.process_packet(
-                        &packet,
-                        &raw,
-                        &mut self.rng,
-                        now_ms,
-                        interface_index,
-                    );
+                    self.process_link_packet(&packet, &raw, now_ms, interface_index);
                 } else {
                     // Regular packet event
                     self.events.push(NodeEvent::PacketReceived {

@@ -29,14 +29,10 @@ Work proceeds in TDD order: tests first, then fixes, then refactoring.
 
 | ID | P | Effort | Phase | Status | Category | Summary |
 |----|---|--------|-------|--------|----------|---------|
-| A2 | H | XL | 3 | in_progress | Structural | Four parallel LinkId maps — 3 of 4 eliminated (pending_outgoing, pending_incoming, channels) |
 | A3 | M | M | 3 | open | Structural | `channel_hash_to_seq` cross-layer dependency |
 | A4 | M | M | 3 | open | Structural | `data_receipts` + `channel_receipt_keys` tight coupling |
-| A5 | L | S | 4 | open | Structural | Event cascade: 13/20 pass-through translations |
-| A6 | L | S | 4 | open | Structural | Drain buffers exist only because of struct separation |
 | C2 | L | S | 2 | open | Dead Code | ~20 pub re-exports never imported |
 | C3 | L | S | 2 | open | Dead Code | Buffer types exported but unreachable |
-| C4 | L | S | 4 | open | Dead Code | 5 pure delegation methods |
 | D2 | M | S | 2 | open | Naming | `PacketEndpoint` isn't an endpoint |
 | D3 | M | S | 2 | open | Naming | `send()` vs `send_bytes()` hides real distinction |
 | D5 | M | S | 2 | open | Naming | `DataReceived` vs `MessageReceived` subtle distinction |
@@ -54,18 +50,6 @@ Work proceeds in TDD order: tests first, then fixes, then refactoring.
 ---
 
 ## Issues
-
-### A2: Four parallel LinkId maps
-- **Status:** in_progress
-- **Priority:** HIGH
-- **Effort:** XL
-- **Phase:** 3
-- **Category:** Structural
-- **Blocked-by:** —
-- **Ref:** doc/ISSUES.md A2, doc/ARCHITECTURE_REVIEW2.md (ownership graph), doc/ARCHITECTURE_REVIEW3.md (LinkManager dissolution plan)
-- **Detail:** Originally 4 parallel maps keyed by `LinkId`: `links`, `channels`, `pending_outgoing`, `pending_incoming`. Root cause of the two-channel bug. Phase 4 eliminated the `connections` map. Phase 5a+5b eliminated 3 more: `pending_outgoing` → `LinkPhase::PendingOutgoing` on Link, `pending_incoming` → `LinkPhase::PendingIncoming` on Link, `channels` → `Option<Channel>` on Link. Remaining: `channel_receipt_keys` and `data_receipts` (deferred to Phase 5c).
-- **Fix:** Remaining maps (`channel_receipt_keys`, `data_receipts`) require global hash-based lookup and cannot trivially move onto Link. Evaluate consolidation in Phase 5c.
-- **Test:** Existing tests cover all cleanup paths (close, close_local, timeout, peer close, channel exhaustion). 632 core tests pass.
 
 ### A3: `channel_hash_to_seq` cross-layer dependency
 - **Status:** open
@@ -87,33 +71,9 @@ Work proceeds in TDD order: tests first, then fixes, then refactoring.
 - **Category:** Structural
 - **Blocked-by:** —
 - **Ref:** doc/ISSUES.md A4, doc/ARCHITECTURE_REVIEW2.md (hot path analysis)
-- **Detail:** Two maps in LinkManager: `data_receipts` (keyed by packet hash, global) and `channel_receipt_keys` (keyed per link+sequence). Tightly coupled to each other and to both `links` and `channels`. Global hash-based lookup in `handle_data_proof()` prevents per-link storage.
-- **Fix:** Keep together. Move with slimmed LinkManager → LinkTable on NodeCore.
+- **Detail:** Two maps now on NodeCore (moved from LinkManager in Phase 5c): `data_receipts` (keyed by packet hash, global) and `channel_receipt_keys` (keyed per link+sequence). Tightly coupled to each other and to `links`. Global hash-based lookup in `handle_data_proof()` prevents per-link storage.
+- **Fix:** Consider moving per-link receipt data onto Link struct. Global hash lookup may still require a NodeCore-level index.
 - **Test:** Partially tested (receipt tests exist). Full coupling not verified.
-
-### A5: Event cascade: 13/20 pass-through translations
-- **Status:** open
-- **Priority:** LOW
-- **Effort:** S
-- **Phase:** 4
-- **Category:** Structural
-- **Blocked-by:** A2
-- **Ref:** doc/ISSUES.md A5, doc/ARCHITECTURE_REVIEW2.md (event cascade analysis)
-- **Detail:** 6/9 `TransportEvent` and 7/11 `LinkEvent` variants are 1:1 mechanical translations with only trivial `DestinationHash::new()` wrapping. Cost of clean layering.
-- **Fix:** Accept as layering cost. Optionally collapse after LinkManager dissolution.
-- **Test:** N/A (design issue).
-
-### A6: Drain buffers exist only because of struct separation
-- **Status:** open
-- **Priority:** LOW
-- **Effort:** S
-- **Phase:** 4
-- **Category:** Structural
-- **Blocked-by:** A2
-- **Detail:** `Vec<LinkEvent>`, `Vec<PendingPacket>`, `Vec<TransportEvent>`, `Vec<Action>` — exist solely because LinkManager cannot access Transport directly. Eliminated by A2 dissolution.
-- **Fix:** Remove as consequence of LinkManager dissolution.
-- **Test:** N/A (removed with structural refactoring).
-
 
 ### C2: ~20 pub re-exports never imported
 - **Status:** open
@@ -137,17 +97,6 @@ Work proceeds in TDD order: tests first, then fixes, then refactoring.
 - **Detail:** `RawChannelReader`, `RawChannelWriter`, `BufferedChannelWriter` — publicly exported from `lib.rs` but no path in the API to obtain or use them.
 - **Fix:** Remove from public exports until the Buffer API is implemented.
 - **Test:** N/A (visibility change).
-
-### C4: Pure delegation methods
-- **Status:** open
-- **Priority:** LOW
-- **Effort:** S
-- **Phase:** 4
-- **Category:** Dead Code
-- **Blocked-by:** A2
-- **Detail:** 5 methods that only forward to another method: `Channel::send()` → `send_internal()`, `LinkManager::process_packet()` → match dispatcher, `LinkManager::mark_channel_delivered()` → `Channel::mark_delivered()`, `handle_link_event(LinkRequestReceived)` → 1:1 → `NodeEvent::LinkRequest`, `handle_link_event(ChannelMessageReceived)` → 1:1 → `NodeEvent::MessageReceived`.
-- **Fix:** Inline where possible after structural refactoring.
-- **Test:** N/A (code simplification).
 
 ### D2: `PacketEndpoint` isn't an endpoint
 - **Status:** open
