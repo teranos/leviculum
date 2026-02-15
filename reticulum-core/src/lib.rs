@@ -97,6 +97,8 @@ pub mod packet;
 pub mod ratchet;
 pub mod receipt;
 mod resource;
+#[cfg(test)]
+pub(crate) mod test_utils;
 pub mod traits;
 pub mod transport;
 

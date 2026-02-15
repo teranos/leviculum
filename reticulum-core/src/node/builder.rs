@@ -145,27 +145,13 @@ impl NodeCoreBuilder {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::traits::{Clock, NoStorage};
-    use core::cell::Cell;
+    use crate::test_utils::{MockClock, TEST_TIME_MS};
+    use crate::traits::NoStorage;
     use rand_core::OsRng;
-
-    struct MockClock(Cell<u64>);
-
-    impl MockClock {
-        fn new(ms: u64) -> Self {
-            Self(Cell::new(ms))
-        }
-    }
-
-    impl Clock for MockClock {
-        fn now_ms(&self) -> u64 {
-            self.0.get()
-        }
-    }
 
     #[test]
     fn test_builder_default() {
-        let clock = MockClock::new(1_000_000);
+        let clock = MockClock::new(TEST_TIME_MS);
         let node = NodeCoreBuilder::new().build(OsRng, clock, NoStorage);
 
         assert_eq!(node.active_connection_count(), 0);
@@ -176,7 +162,7 @@ mod tests {
     fn test_builder_with_identity() {
         let identity = Identity::generate(&mut OsRng);
         let id_hash = *identity.hash();
-        let clock = MockClock::new(1_000_000);
+        let clock = MockClock::new(TEST_TIME_MS);
 
         let node = NodeCoreBuilder::new()
             .identity(identity)
@@ -187,7 +173,7 @@ mod tests {
 
     #[test]
     fn test_builder_with_proof_strategy() {
-        let clock = MockClock::new(1_000_000);
+        let clock = MockClock::new(TEST_TIME_MS);
         let node = NodeCoreBuilder::new()
             .proof_strategy(ProofStrategy::All)
             .build(OsRng, clock, NoStorage);
@@ -197,7 +183,7 @@ mod tests {
 
     #[test]
     fn test_builder_with_transport_config() {
-        let clock = MockClock::new(1_000_000);
+        let clock = MockClock::new(TEST_TIME_MS);
         let node = NodeCoreBuilder::new()
             .enable_transport(true)
             .max_hops(10)
@@ -212,7 +198,7 @@ mod tests {
     #[test]
     fn test_builder_chaining() {
         let identity = Identity::generate(&mut OsRng);
-        let clock = MockClock::new(1_000_000);
+        let clock = MockClock::new(TEST_TIME_MS);
 
         let node = NodeCoreBuilder::new()
             .identity(identity)

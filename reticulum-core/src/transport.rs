@@ -2427,86 +2427,15 @@ mod tests {
 
     mod transport_tests {
         use super::*;
-        use crate::traits::{Interface, InterfaceError, NoStorage};
+        use crate::test_utils::{test_transport, MockClock, MockInterface, TEST_TIME_MS};
+        use crate::traits::NoStorage;
         use rand_core::OsRng;
 
         extern crate std;
 
-        // Mock clock for deterministic testing
-        struct MockClock {
-            time_ms: core::cell::Cell<u64>,
-        }
-
-        impl MockClock {
-            fn new(time_ms: u64) -> Self {
-                Self {
-                    time_ms: core::cell::Cell::new(time_ms),
-                }
-            }
-
-            fn advance(&self, ms: u64) {
-                self.time_ms.set(self.time_ms.get() + ms);
-            }
-        }
-
-        impl Clock for MockClock {
-            fn now_ms(&self) -> u64 {
-                self.time_ms.get()
-            }
-        }
-
-        // Mock interface for testing
-        struct MockInterface {
-            name: &'static str,
-            hash: [u8; TRUNCATED_HASHBYTES],
-            sent: Vec<Vec<u8>>,
-            online: bool,
-        }
-
-        impl MockInterface {
-            fn new(name: &'static str, id: u8) -> Self {
-                let mut hash = [0u8; TRUNCATED_HASHBYTES];
-                hash[0] = id;
-                Self {
-                    name,
-                    hash,
-                    sent: Vec::new(),
-                    online: true,
-                }
-            }
-        }
-
-        impl Interface for MockInterface {
-            fn name(&self) -> &str {
-                self.name
-            }
-            fn mtu(&self) -> usize {
-                500
-            }
-            fn hash(&self) -> [u8; TRUNCATED_HASHBYTES] {
-                self.hash
-            }
-            fn send(&mut self, data: &[u8]) -> Result<(), InterfaceError> {
-                self.sent.push(data.to_vec());
-                Ok(())
-            }
-            fn recv(&mut self, _buf: &mut [u8]) -> Result<usize, InterfaceError> {
-                Err(InterfaceError::WouldBlock)
-            }
-            fn is_online(&self) -> bool {
-                self.online
-            }
-        }
-
-        fn make_transport() -> Transport<MockClock, NoStorage> {
-            let clock = MockClock::new(1_000_000);
-            let identity = Identity::generate(&mut OsRng);
-            Transport::new(TransportConfig::default(), clock, NoStorage, identity)
-        }
-
         #[test]
         fn test_transport_creation() {
-            let transport = make_transport();
+            let transport = test_transport();
             assert_eq!(transport.interface_count(), 0);
             assert_eq!(transport.path_count(), 0);
             assert_eq!(transport.pending_events(), 0);
@@ -2515,7 +2444,7 @@ mod tests {
 
         #[test]
         fn test_drain_actions_initially_empty() {
-            let mut transport = make_transport();
+            let mut transport = test_transport();
             let actions = transport.drain_actions();
             assert!(actions.is_empty());
             assert_eq!(transport.pending_action_count(), 0);
@@ -2523,7 +2452,7 @@ mod tests {
 
         #[test]
         fn test_register_interface() {
-            let mut transport = make_transport();
+            let mut transport = test_transport();
             let idx = transport.register_interface(Box::new(MockInterface::new("test", 1)));
             assert_eq!(idx, 0);
             assert_eq!(transport.interface_count(), 1);
@@ -2535,7 +2464,7 @@ mod tests {
 
         #[test]
         fn test_unregister_interface() {
-            let mut transport = make_transport();
+            let mut transport = test_transport();
             let idx = transport.register_interface(Box::new(MockInterface::new("test", 1)));
             assert_eq!(transport.interface_count(), 1);
 
@@ -2545,7 +2474,7 @@ mod tests {
 
         #[test]
         fn test_register_destination() {
-            let mut transport = make_transport();
+            let mut transport = test_transport();
             let hash = [0x42; TRUNCATED_HASHBYTES];
 
             transport.register_destination(hash, false);
@@ -2557,7 +2486,7 @@ mod tests {
 
         #[test]
         fn test_path_management() {
-            let mut transport = make_transport();
+            let mut transport = test_transport();
             let hash = [0x42; TRUNCATED_HASHBYTES];
 
             assert!(!transport.has_path(&hash));
@@ -2583,7 +2512,7 @@ mod tests {
 
         #[test]
         fn test_path_expiry() {
-            let mut transport = make_transport();
+            let mut transport = test_transport();
             let hash = [0x42; TRUNCATED_HASHBYTES];
 
             let now = transport.clock.now_ms();
@@ -2619,7 +2548,7 @@ mod tests {
 
         #[test]
         fn test_send_on_interface() {
-            let mut transport = make_transport();
+            let mut transport = test_transport();
             let idx = transport.register_interface(Box::new(MockInterface::new("test", 1)));
 
             let data = b"test packet";
@@ -2630,7 +2559,7 @@ mod tests {
 
         #[test]
         fn test_send_on_unregistered_interface_emits_action() {
-            let mut transport = make_transport();
+            let mut transport = test_transport();
             // Sending on an unregistered interface still emits an Action
             // (the driver is responsible for dispatching to real interfaces)
             let result = transport.send_on_interface(99, b"test");
@@ -2648,7 +2577,7 @@ mod tests {
 
         #[test]
         fn test_packet_deduplication() {
-            let mut transport = make_transport();
+            let mut transport = test_transport();
             transport.register_interface(Box::new(MockInterface::new("test", 1)));
             let hash = [0x42; TRUNCATED_HASHBYTES];
             transport.register_destination(hash, false);
@@ -2694,7 +2623,7 @@ mod tests {
 
         #[test]
         fn test_data_packet_delivery() {
-            let mut transport = make_transport();
+            let mut transport = test_transport();
             transport.register_interface(Box::new(MockInterface::new("test", 1)));
             let hash = [0x42; TRUNCATED_HASHBYTES];
             transport.register_destination(hash, false);
@@ -2744,7 +2673,7 @@ mod tests {
 
         #[test]
         fn test_unregistered_destination_dropped() {
-            let mut transport = make_transport();
+            let mut transport = test_transport();
             transport.register_interface(Box::new(MockInterface::new("test", 1)));
             // Don't register any destination
 
@@ -2780,7 +2709,7 @@ mod tests {
 
         #[test]
         fn test_packet_cache_expiry() {
-            let mut transport = make_transport();
+            let mut transport = test_transport();
             transport.register_interface(Box::new(MockInterface::new("test", 1)));
 
             let hash = [0x42; TRUNCATED_HASHBYTES];
@@ -2837,7 +2766,7 @@ mod tests {
                 HeaderType, PacketContext, PacketData, PacketFlags, TransportType,
             };
 
-            let mut transport = make_transport();
+            let mut transport = test_transport();
             transport.register_interface(Box::new(MockInterface::new("test", 1)));
 
             // Create a real announce
@@ -2983,7 +2912,7 @@ mod tests {
         }
 
         fn make_transport_enabled() -> Transport<MockClock, NoStorage> {
-            let clock = MockClock::new(1_000_000);
+            let clock = MockClock::new(TEST_TIME_MS);
             let identity = Identity::generate(&mut OsRng);
             let config = TransportConfig {
                 enable_transport: true,
@@ -3056,7 +2985,7 @@ mod tests {
 
         #[test]
         fn test_no_rebroadcast_when_transport_disabled() {
-            let mut transport = make_transport(); // transport disabled by default
+            let mut transport = test_transport(); // transport disabled by default
             let _idx0 = transport.register_interface(Box::new(MockInterface::new("if0", 1)));
             let _idx1 = transport.register_interface(Box::new(MockInterface::new("if1", 2)));
 
@@ -4777,7 +4706,7 @@ mod tests {
 
         #[test]
         fn test_send_on_interface_produces_action() {
-            let mut transport = make_transport();
+            let mut transport = test_transport();
             let idx = transport.register_interface(Box::new(MockInterface::new("if0", 1)));
 
             let data = b"hello world";
@@ -4796,7 +4725,7 @@ mod tests {
 
         #[test]
         fn test_send_on_interface_no_registered_iface_still_emits_action() {
-            let mut transport = make_transport();
+            let mut transport = test_transport();
 
             // No interfaces registered; action is still emitted for sans-I/O driver
             let result = transport.send_on_interface(99, b"data");
@@ -4815,7 +4744,7 @@ mod tests {
 
         #[test]
         fn test_send_on_all_interfaces_produces_broadcast_action() {
-            let mut transport = make_transport();
+            let mut transport = test_transport();
             let _idx0 = transport.register_interface(Box::new(MockInterface::new("if0", 1)));
             let _idx1 = transport.register_interface(Box::new(MockInterface::new("if1", 2)));
 
@@ -4856,7 +4785,7 @@ mod tests {
 
         #[test]
         fn test_send_on_all_interfaces_caches_packet_for_dedup() {
-            let mut transport = make_transport();
+            let mut transport = test_transport();
             transport.register_interface(Box::new(MockInterface::new("if0", 1)));
             transport.register_interface(Box::new(MockInterface::new("if1", 2)));
 
@@ -4900,7 +4829,7 @@ mod tests {
 
         #[test]
         fn test_send_to_destination_produces_send_action() {
-            let mut transport = make_transport();
+            let mut transport = test_transport();
             let idx = transport.register_interface(Box::new(MockInterface::new("if0", 1)));
 
             // Manually insert a path
@@ -4934,7 +4863,7 @@ mod tests {
         fn test_send_to_destination_relay_converts_type1_to_type2() {
             use crate::packet::{HeaderType, PacketFlags, TransportType};
 
-            let mut transport = make_transport();
+            let mut transport = test_transport();
             let idx = transport.register_interface(Box::new(MockInterface::new("if0", 1)));
 
             let dest_hash = [0x42; TRUNCATED_HASHBYTES];
@@ -4997,7 +4926,7 @@ mod tests {
         fn test_send_to_destination_type2_not_double_wrapped() {
             use crate::packet::{HeaderType, PacketFlags, TransportType};
 
-            let mut transport = make_transport();
+            let mut transport = test_transport();
             let idx = transport.register_interface(Box::new(MockInterface::new("if0", 1)));
 
             let dest_hash = [0x42; TRUNCATED_HASHBYTES];
@@ -5047,7 +4976,7 @@ mod tests {
 
         #[test]
         fn test_send_to_destination_no_path_no_action() {
-            let mut transport = make_transport();
+            let mut transport = test_transport();
             let _idx = transport.register_interface(Box::new(MockInterface::new("if0", 1)));
 
             let dest_hash = [0x42; TRUNCATED_HASHBYTES];
@@ -5059,7 +4988,7 @@ mod tests {
 
         #[test]
         fn test_drain_actions_clears_buffer() {
-            let mut transport = make_transport();
+            let mut transport = test_transport();
             let idx = transport.register_interface(Box::new(MockInterface::new("if0", 1)));
 
             transport.send_on_interface(idx, b"first").unwrap();
@@ -5078,7 +5007,7 @@ mod tests {
 
         #[test]
         fn test_multiple_sends_accumulate_actions() {
-            let mut transport = make_transport();
+            let mut transport = test_transport();
             let idx0 = transport.register_interface(Box::new(MockInterface::new("if0", 1)));
             let idx1 = transport.register_interface(Box::new(MockInterface::new("if1", 2)));
 
@@ -5297,7 +5226,7 @@ mod tests {
 
         #[test]
         fn test_send_proof_produces_send_action() {
-            let mut transport = make_transport();
+            let mut transport = test_transport();
             let idx = transport.register_interface(Box::new(MockInterface::new("if0", 1)));
 
             // Insert a path so send_proof can route
@@ -5333,7 +5262,7 @@ mod tests {
 
         #[test]
         fn test_request_path_produces_action() {
-            let mut transport = make_transport();
+            let mut transport = test_transport();
             let _idx = transport.register_interface(Box::new(MockInterface::new("if0", 1)));
 
             let dest_hash = [0x42; TRUNCATED_HASHBYTES];
@@ -5746,7 +5675,7 @@ mod tests {
             let a_fresh = make_announce_raw_for_dest(&dest, 1, 10_000_000); // newer emission, short path
 
             // Fresh announce arrives first at T=12M via iface_0
-            transport.clock.time_ms.set(12_000_000);
+            transport.clock.set(12_000_000);
             transport.process_incoming(0, &a_fresh).unwrap();
             assert_eq!(transport.hops_to(&dest_hash), Some(1));
             assert_eq!(transport.path(&dest_hash).unwrap().interface_index, 0);
@@ -5763,7 +5692,7 @@ mod tests {
 
             // Stale announce arrives later at T=15M via iface_1
             // (past rate limit relative to the fresh announce)
-            transport.clock.time_ms.set(15_000_000);
+            transport.clock.set(15_000_000);
             transport.process_incoming(1, &a_stale).unwrap();
 
             // Path must NOT be overwritten: older emission (5M < 10M),
@@ -5828,13 +5757,13 @@ mod tests {
             let a_fresh = make_announce_raw_for_dest(&dest, 1, 10_000_000);
 
             // Stale announce arrives first at T=8M via iface_1
-            transport.clock.time_ms.set(8_000_000);
+            transport.clock.set(8_000_000);
             transport.process_incoming(1, &a_stale).unwrap();
             assert_eq!(transport.hops_to(&dest_hash), Some(3));
             assert_eq!(transport.path(&dest_hash).unwrap().interface_index, 1);
 
             // Fresh announce arrives later at T=12M via iface_0
-            transport.clock.time_ms.set(12_000_000);
+            transport.clock.set(12_000_000);
             transport.process_incoming(0, &a_fresh).unwrap();
 
             // Path should be updated: newer emission (10M > 5M), better hops (1 < 3)
@@ -6110,7 +6039,7 @@ mod tests {
             use crate::destination::DestinationType;
             use crate::packet::{HeaderType, PacketData, PacketFlags, TransportType};
 
-            let mut transport = make_transport();
+            let mut transport = test_transport();
             transport.register_interface(Box::new(MockInterface::new("test", 1)));
             let dest_hash = [0xAA; TRUNCATED_HASHBYTES];
             transport.register_destination(dest_hash, false);
@@ -7218,7 +7147,7 @@ mod tests {
 
         #[test]
         fn test_link_expiry_non_transport_calls_expire_path() {
-            let mut transport = make_transport();
+            let mut transport = test_transport();
             let _idx0 = transport.register_interface(Box::new(MockInterface::new("if0", 1)));
 
             let dest_hash = [0xDD; TRUNCATED_HASHBYTES];
@@ -7379,7 +7308,7 @@ mod tests {
             grace: u8,
             penalty_ms: u64,
         ) -> Transport<MockClock, NoStorage> {
-            let clock = MockClock::new(1_000_000);
+            let clock = MockClock::new(TEST_TIME_MS);
             let identity = Identity::generate(&mut OsRng);
             let config = TransportConfig {
                 enable_transport: true,
@@ -7515,7 +7444,7 @@ mod tests {
             assert_eq!(rate_entry.blocked_until_ms, t0 + 10_000 + 5_000);
 
             // At t0 + 14_999 — still blocked
-            transport.clock.time_ms.set(t0 + 14_999);
+            transport.clock.set(t0 + 14_999);
             transport.packet_cache.clear();
             let now3 = transport.clock.now_ms();
             let raw3 = make_announce_raw_for_dest(&dest, 1, now3);
@@ -7527,7 +7456,7 @@ mod tests {
             );
 
             // At t0 + 15_001 — block expired
-            transport.clock.time_ms.set(t0 + 15_001);
+            transport.clock.set(t0 + 15_001);
             transport.packet_cache.clear();
             let now4 = transport.clock.now_ms();
             let raw4 = make_announce_raw_for_dest(&dest, 1, now4);
@@ -7719,7 +7648,7 @@ mod tests {
             assert!(rate_entry.blocked_until_ms > 0, "Should be blocked");
 
             // Advance past blocked_until (t0 + 10_000)
-            transport.clock.time_ms.set(t0 + 10_001);
+            transport.clock.set(t0 + 10_001);
             transport.packet_cache.clear();
             let now_after = transport.clock.now_ms();
             let raw3 = make_announce_raw_for_dest(&dest, 1, now_after);
@@ -7893,6 +7822,152 @@ mod tests {
             assert_eq!(
                 rate_entry.last_ms, t0,
                 "last_ms should still be anchored to original accepted announce"
+            );
+        }
+
+        // ─── T11: Transport Gap Tests ───────────────────────────────────
+
+        #[test]
+        fn test_hop_limit_forward_drops_at_max() {
+            // A packet at PATHFINDER_MAX_HOPS gets +1 on forward → exceeds limit → dropped
+            let mut transport = make_transport_enabled();
+            let _idx0 = transport.register_interface(Box::new(MockInterface::new("if0", 1)));
+            let _idx1 = transport.register_interface(Box::new(MockInterface::new("if1", 2)));
+
+            let dest_hash = [0x42; TRUNCATED_HASHBYTES];
+            let now = transport.clock.now_ms();
+            transport.path_table.insert(
+                dest_hash,
+                PathEntry {
+                    hops: 1,
+                    expires_ms: now + 100_000,
+                    interface_index: 1,
+                    random_blobs: Vec::new(),
+                    next_hop: None,
+                },
+            );
+
+            // Register as a local destination so process_incoming doesn't just
+            // drop it as unregistered — but we need it to go through forwarding.
+            // Actually: for forwarding, the destination must NOT be local but
+            // must have a path. Also need enable_transport=true (done above).
+
+            // Build a data packet with hops = PATHFINDER_MAX_HOPS (128)
+            let pkt = Packet {
+                flags: PacketFlags {
+                    ifac_flag: false,
+                    header_type: HeaderType::Type1,
+                    context_flag: false,
+                    transport_type: TransportType::Broadcast,
+                    dest_type: crate::destination::DestinationType::Single,
+                    packet_type: PacketType::Data,
+                },
+                hops: PATHFINDER_MAX_HOPS,
+                transport_id: None,
+                destination_hash: dest_hash,
+                context: PacketContext::None,
+                data: PacketData::Owned(b"should be dropped".to_vec()),
+            };
+
+            let mut buf = [0u8; 500];
+            let len = pkt.pack(&mut buf).unwrap();
+            let forwarded_before = transport.stats().packets_forwarded;
+            transport.process_incoming(0, &buf[..len]).unwrap();
+
+            assert_eq!(
+                transport.stats().packets_forwarded,
+                forwarded_before,
+                "Packet at max hops should NOT be forwarded (saturating_add(1) → 129 > 128)"
+            );
+        }
+
+        #[test]
+        fn test_announce_invalid_signature_dropped_at_transport() {
+            let mut transport = make_transport_enabled();
+            let _idx0 = transport.register_interface(Box::new(MockInterface::new("if0", 1)));
+
+            let (mut raw, dest_hash) = make_announce_raw(2, PacketContext::None);
+
+            // Tamper with one byte near the end (in the signature region)
+            // Announce payload layout: public_key(64) + name_hash(16) + random(16) + signature(64) + app_data
+            // The raw bytes include the header, so tamper near the end of raw data
+            let tamper_idx = raw.len() - 10;
+            raw[tamper_idx] ^= 0xFF;
+
+            // process_incoming returns an error for invalid signatures —
+            // the important thing is that no path is created
+            let _ = transport.process_incoming(0, &raw);
+
+            assert!(
+                !transport.has_path(&dest_hash),
+                "Tampered announce should not create a path"
+            );
+            assert_eq!(
+                transport.stats().announces_processed,
+                0,
+                "Tampered announce should not be counted as processed"
+            );
+        }
+
+        #[test]
+        fn test_register_destination_with_proof_creates_entry() {
+            let mut transport = test_transport();
+            let hash = [0x42; TRUNCATED_HASHBYTES];
+            let identity = Identity::generate(&mut OsRng);
+
+            transport.register_destination_with_proof(
+                hash,
+                true,
+                crate::destination::ProofStrategy::All,
+                Some(identity),
+            );
+
+            assert!(transport.has_destination(&hash));
+
+            // Verify the stored entry has correct attributes
+            let entry = transport.destinations.get(&hash).unwrap();
+            assert!(entry.accepts_links);
+            assert_eq!(entry.proof_strategy, crate::destination::ProofStrategy::All);
+            assert!(entry.identity.is_some());
+        }
+
+        #[test]
+        fn test_create_and_get_receipt() {
+            let mut transport = test_transport();
+            let dest_hash = [0x42; TRUNCATED_HASHBYTES];
+
+            // Build a minimal valid packet to create a receipt from
+            let pkt = Packet {
+                flags: PacketFlags {
+                    ifac_flag: false,
+                    header_type: HeaderType::Type1,
+                    context_flag: false,
+                    transport_type: TransportType::Broadcast,
+                    dest_type: crate::destination::DestinationType::Single,
+                    packet_type: PacketType::Data,
+                },
+                hops: 0,
+                transport_id: None,
+                destination_hash: dest_hash,
+                context: PacketContext::None,
+                data: PacketData::Owned(b"receipt test".to_vec()),
+            };
+
+            let mut buf = [0u8; 500];
+            let len = pkt.pack(&mut buf).unwrap();
+            let raw = &buf[..len];
+
+            let truncated = transport.create_receipt(raw, dest_hash);
+
+            // Should be retrievable
+            let receipt = transport.get_receipt(&truncated);
+            assert!(receipt.is_some(), "Receipt should exist after creation");
+
+            let receipt = receipt.unwrap();
+            assert_eq!(
+                receipt.destination_hash,
+                crate::destination::DestinationHash::new(dest_hash),
+                "Receipt should contain correct destination hash"
             );
         }
     }

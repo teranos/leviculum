@@ -236,6 +236,7 @@ impl Storage for NoStorage {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::test_utils::MockClock;
 
     #[test]
     fn test_no_storage() {
@@ -262,20 +263,9 @@ mod tests {
         assert!(!mode.multiple_access);
     }
 
-    // Mock clock for testing
-    struct MockClock {
-        time_ms: u64,
-    }
-
-    impl Clock for MockClock {
-        fn now_ms(&self) -> u64 {
-            self.time_ms
-        }
-    }
-
     #[test]
     fn test_clock_deadline() {
-        let clock = MockClock { time_ms: 1000 };
+        let clock = MockClock::new(1000);
 
         assert_eq!(clock.now_secs(), 1);
         assert_eq!(clock.deadline(500), 1500);

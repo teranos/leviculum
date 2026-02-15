@@ -1980,6 +1980,1021 @@ mod tests {
         assert_eq!(pair.initiator.data_receipts.len(), 0);
     }
 
+    // ─── T7: LinkManager Lifecycle ─────────────────────────────────────────
+
+    #[test]
+    fn test_close_produces_close_packet() {
+        let mut pair = establish_link_pair(ProofStrategy::None);
+
+        pair.initiator.close(&pair.initiator_link_id, &mut OsRng);
+
+        // Should have exactly 1 close packet
+        let close_packets = pair.initiator.drain_close_packets();
+        assert_eq!(close_packets.len(), 1);
+        assert_eq!(close_packets[0].0, pair.initiator_link_id);
+
+        // Should have emitted LinkClosed event
+        let events: Vec<_> = pair.initiator.drain_events().collect();
+        let has_close = events.iter().any(|e| {
+            matches!(
+                e,
+                LinkEvent::LinkClosed {
+                    reason: LinkCloseReason::Normal,
+                    ..
+                }
+            )
+        });
+        assert!(has_close, "Expected LinkClosed event with Normal reason");
+
+        // Link should still exist (in Closed state — B1: not removed from map)
+        let link = pair.initiator.link(&pair.initiator_link_id);
+        assert!(link.is_some(), "link should still be in map after close()");
+        assert_eq!(link.unwrap().state(), LinkState::Closed);
+    }
+
+    #[test]
+    fn test_check_stale_links_emits_stale_then_closed() {
+        let mut pair = establish_link_pair(ProofStrategy::None);
+        let link_id = pair.responder_link_id;
+
+        // Get link timing
+        let link = pair.responder.link(&link_id).unwrap();
+        let stale_time_secs = link.stale_time_secs();
+        let last_inbound = link.last_inbound_secs();
+
+        // Phase 1: Advance past stale threshold
+        let stale_secs = last_inbound + stale_time_secs + 1;
+        let stale_ms = stale_secs * 1000;
+        pair.responder.poll(&mut OsRng, stale_ms);
+
+        let events: Vec<_> = pair.responder.drain_events().collect();
+        let has_stale = events
+            .iter()
+            .any(|e| matches!(e, LinkEvent::LinkStale { .. }));
+        assert!(has_stale, "Expected LinkStale event");
+
+        let link = pair.responder.link(&link_id).unwrap();
+        assert_eq!(link.state(), LinkState::Stale);
+
+        // Phase 2: Advance past close threshold (stale_time + rtt*TIMEOUT_FACTOR + grace + 1)
+        let rtt_secs = link.rtt_secs().unwrap_or(0.0);
+        let close_timeout_secs = stale_time_secs
+            + (rtt_secs * crate::constants::LINK_KEEPALIVE_TIMEOUT_FACTOR as f64) as u64
+            + crate::constants::LINK_STALE_GRACE_SECS
+            + 1;
+        let close_secs = last_inbound + close_timeout_secs;
+        let close_ms = close_secs * 1000;
+        pair.responder.poll(&mut OsRng, close_ms);
+
+        let events: Vec<_> = pair.responder.drain_events().collect();
+        let has_closed = events.iter().any(|e| {
+            matches!(
+                e,
+                LinkEvent::LinkClosed {
+                    reason: LinkCloseReason::Stale,
+                    ..
+                }
+            )
+        });
+        assert!(has_closed, "Expected LinkClosed with Stale reason");
+
+        // Close packet should have been produced
+        let close_packets = pair.responder.drain_close_packets();
+        assert_eq!(close_packets.len(), 1);
+    }
+
+    #[test]
+    fn test_check_keepalives_produces_keepalive_packet() {
+        let mut pair = establish_link_pair(ProofStrategy::None);
+
+        // Only the initiator sends keepalives proactively
+        let link = pair.initiator.link(&pair.initiator_link_id).unwrap();
+        let keepalive_secs = link.keepalive_secs();
+        let established_at = link.established_at_secs().unwrap();
+
+        // Advance past keepalive interval
+        let keepalive_time_secs = established_at + keepalive_secs + 1;
+        let keepalive_time_ms = keepalive_time_secs * 1000;
+        pair.initiator.poll(&mut OsRng, keepalive_time_ms);
+
+        let keepalive_packets = pair.initiator.drain_keepalive_packets();
+        assert_eq!(
+            keepalive_packets.len(),
+            1,
+            "initiator should produce 1 keepalive packet"
+        );
+        assert_eq!(keepalive_packets[0].0, pair.initiator_link_id);
+
+        // Responder should NOT produce a keepalive (only echoes)
+        let resp_link = pair.responder.link(&pair.responder_link_id).unwrap();
+        let resp_established = resp_link.established_at_secs().unwrap();
+        let resp_time_ms = (resp_established + keepalive_secs + 1) * 1000;
+        pair.responder.poll(&mut OsRng, resp_time_ms);
+
+        let resp_keepalive = pair.responder.drain_keepalive_packets();
+        assert!(
+            resp_keepalive.is_empty(),
+            "responder should NOT produce keepalive proactively"
+        );
+    }
+
+    #[test]
+    fn test_check_channel_timeouts_produces_retransmit() {
+        use crate::link::channel::ChannelError;
+
+        struct TestMsg(Vec<u8>);
+        impl Message for TestMsg {
+            const MSGTYPE: u16 = 0x0001;
+            fn pack(&self) -> Vec<u8> {
+                self.0.clone()
+            }
+            fn unpack(data: &[u8]) -> Result<Self, ChannelError> {
+                Ok(Self(data.to_vec()))
+            }
+        }
+
+        let mut pair = establish_link_pair(ProofStrategy::None);
+        let link_id = pair.initiator_link_id;
+        let now_ms = pair.now_ms;
+
+        // Send a channel message (do NOT deliver proof)
+        let _channel_packet = pair
+            .initiator
+            .channel_send(&link_id, &TestMsg(b"test".to_vec()), &mut OsRng, now_ms)
+            .unwrap();
+        let _ = pair.initiator.drain_pending_packets().collect::<Vec<_>>();
+
+        // Advance time past the channel timeout
+        let retransmit_time = now_ms + 10_000; // well past any timeout
+        pair.initiator.poll(&mut OsRng, retransmit_time);
+
+        // Should have ChannelRetransmit event
+        let events: Vec<_> = pair.initiator.drain_events().collect();
+        let has_retransmit = events
+            .iter()
+            .any(|e| matches!(e, LinkEvent::ChannelRetransmit { .. }));
+        assert!(has_retransmit, "Expected ChannelRetransmit event");
+
+        // Should have a Channel packet in pending
+        let pending: Vec<_> = pair.initiator.drain_pending_packets().collect();
+        let has_channel_packet = pending
+            .iter()
+            .any(|p| matches!(p, PendingPacket::Channel { .. }));
+        assert!(has_channel_packet, "Expected Channel retransmit packet");
+    }
+
+    #[test]
+    fn test_concurrent_links_independent() {
+        use crate::link::channel::ChannelError;
+
+        struct TestMsg(Vec<u8>);
+        impl Message for TestMsg {
+            const MSGTYPE: u16 = 0x0001;
+            fn pack(&self) -> Vec<u8> {
+                self.0.clone()
+            }
+            fn unpack(data: &[u8]) -> Result<Self, ChannelError> {
+                Ok(Self(data.to_vec()))
+            }
+        }
+
+        // Establish two separate links
+        let mut pair1 = establish_link_pair(ProofStrategy::None);
+        let mut pair2 = establish_link_pair(ProofStrategy::None);
+
+        // Send data on both
+        let _p1 = pair1
+            .initiator
+            .channel_send(
+                &pair1.initiator_link_id,
+                &TestMsg(b"link1".to_vec()),
+                &mut OsRng,
+                pair1.now_ms,
+            )
+            .unwrap();
+        let _p2 = pair2
+            .initiator
+            .channel_send(
+                &pair2.initiator_link_id,
+                &TestMsg(b"link2".to_vec()),
+                &mut OsRng,
+                pair2.now_ms,
+            )
+            .unwrap();
+
+        // Close link1
+        pair1.initiator.close(&pair1.initiator_link_id, &mut OsRng);
+
+        // Link2 should still be active and functional
+        assert!(pair2.initiator.is_active(&pair2.initiator_link_id));
+    }
+
+    #[test]
+    #[ignore = "Bug B1: closed links accumulate indefinitely — will be fixed in Phase 3"]
+    fn test_memory_cleanup_on_close() {
+        let mut pair = establish_link_pair(ProofStrategy::None);
+        let link_id = pair.initiator_link_id;
+
+        // Establish channel and send messages
+        let _ = pair.initiator.get_channel(&link_id);
+
+        // Close the link
+        pair.initiator.close(&link_id, &mut OsRng);
+        pair.initiator.poll(&mut OsRng, pair.now_ms);
+
+        // Link should be removed from the map — FAILS: close() sets Closed but never removes
+        assert!(
+            pair.initiator.link(&link_id).is_none(),
+            "closed link should be removed from links map"
+        );
+    }
+
+    #[test]
+    fn test_peer_close_processing() {
+        let mut pair = establish_link_pair(ProofStrategy::None);
+
+        // Build close packet on initiator
+        pair.initiator.close(&pair.initiator_link_id, &mut OsRng);
+        let close_packets = pair.initiator.drain_close_packets();
+        assert_eq!(close_packets.len(), 1);
+        let (_, close_data) = &close_packets[0];
+
+        // Deliver close to responder
+        let close_packet = Packet::unpack(close_data).unwrap();
+        pair.responder
+            .process_packet(&close_packet, close_data, &mut OsRng, pair.now_ms, 0);
+
+        // Responder should emit LinkClosed with PeerClosed reason
+        let events: Vec<_> = pair.responder.drain_events().collect();
+        let has_peer_closed = events.iter().any(|e| {
+            matches!(
+                e,
+                LinkEvent::LinkClosed {
+                    reason: LinkCloseReason::PeerClosed,
+                    ..
+                }
+            )
+        });
+        assert!(
+            has_peer_closed,
+            "Expected LinkClosed with PeerClosed reason, got: {:?}",
+            events
+        );
+    }
+
+    #[test]
+    fn test_inbound_data_prevents_stale() {
+        let mut pair = establish_link_pair(ProofStrategy::None);
+        let link_id = pair.responder_link_id;
+
+        let link = pair.responder.link(&link_id).unwrap();
+        let stale_time_secs = link.stale_time_secs();
+        let last_inbound = link.last_inbound_secs();
+
+        // Advance time close to (but not past) stale threshold
+        let almost_stale_secs = last_inbound + stale_time_secs - 2;
+        let almost_stale_ms = almost_stale_secs * 1000;
+
+        // Send data from initiator → process on responder (updates last_inbound)
+        let data_packet = pair
+            .initiator
+            .send(&pair.initiator_link_id, b"keepalive data", &mut OsRng)
+            .unwrap();
+        let parsed = Packet::unpack(&data_packet).unwrap();
+        pair.responder
+            .process_packet(&parsed, &data_packet, &mut OsRng, almost_stale_ms, 0);
+        let _ = pair.responder.drain_events().collect::<Vec<_>>();
+
+        // Advance time past the ORIGINAL stale threshold, but within NEW stale time
+        let past_original_stale_secs = last_inbound + stale_time_secs + 1;
+        let past_original_stale_ms = past_original_stale_secs * 1000;
+        pair.responder.poll(&mut OsRng, past_original_stale_ms);
+
+        // Should NOT emit LinkStale (inbound data reset the timer)
+        let events: Vec<_> = pair.responder.drain_events().collect();
+        let has_stale = events
+            .iter()
+            .any(|e| matches!(e, LinkEvent::LinkStale { .. }));
+        assert!(
+            !has_stale,
+            "should NOT become stale — inbound data reset the timer"
+        );
+    }
+
+    #[test]
+    fn test_channel_receipt_keys_cleaned_on_close() {
+        use crate::link::channel::ChannelError;
+
+        struct TestMsg(Vec<u8>);
+        impl Message for TestMsg {
+            const MSGTYPE: u16 = 0x0001;
+            fn pack(&self) -> Vec<u8> {
+                self.0.clone()
+            }
+            fn unpack(data: &[u8]) -> Result<Self, ChannelError> {
+                Ok(Self(data.to_vec()))
+            }
+        }
+
+        let mut pair = establish_link_pair(ProofStrategy::All);
+        let link_id = pair.initiator_link_id;
+
+        // Send a channel message with receipt
+        let channel_packet = pair
+            .initiator
+            .channel_send(
+                &link_id,
+                &TestMsg(b"track me".to_vec()),
+                &mut OsRng,
+                pair.now_ms,
+            )
+            .unwrap();
+        let seq = pair
+            .initiator
+            .channel(&link_id)
+            .unwrap()
+            .last_sent_sequence();
+        let _ = pair
+            .initiator
+            .register_channel_receipt(&channel_packet, link_id, seq, pair.now_ms);
+
+        // Receipt should exist
+        assert_eq!(pair.initiator.data_receipts_count(), 1);
+
+        // Close the link
+        pair.initiator.close(&link_id, &mut OsRng);
+
+        // channel_receipt_keys for this link should be cleaned
+        let has_keys_for_link = pair
+            .initiator
+            .channel_receipt_keys
+            .keys()
+            .any(|(lid, _)| *lid == link_id);
+        assert!(
+            !has_keys_for_link,
+            "channel_receipt_keys should be cleaned on close"
+        );
+    }
+
+    // ─── T10: Link Lifecycle ────────────────────────────────────────────────
+
+    #[test]
+    fn test_attached_interface_set_on_handshake() {
+        let pair = establish_link_pair(ProofStrategy::None);
+
+        // Responder: set from link request (interface_index=0)
+        let resp_link = pair.responder.link(&pair.responder_link_id).unwrap();
+        assert_eq!(
+            resp_link.attached_interface(),
+            Some(0),
+            "responder should have attached_interface set from link request"
+        );
+
+        // Initiator: set from proof (interface_index=0)
+        let init_link = pair.initiator.link(&pair.initiator_link_id).unwrap();
+        assert_eq!(
+            init_link.attached_interface(),
+            Some(0),
+            "initiator should have attached_interface set from proof"
+        );
+    }
+
+    #[test]
+    fn test_keepalive_timer_reset_on_inbound() {
+        let mut pair = establish_link_pair(ProofStrategy::None);
+        let link_id = pair.responder_link_id;
+
+        // Note original last_inbound
+        let link = pair.responder.link(&link_id).unwrap();
+        let original_inbound = link.last_inbound_secs();
+        let stale_time_secs = link.stale_time_secs();
+
+        // Advance time partially
+        let midpoint_secs = original_inbound + stale_time_secs / 2;
+        let midpoint_ms = midpoint_secs * 1000;
+
+        // Send data → updates last_inbound
+        let data_packet = pair
+            .initiator
+            .send(&pair.initiator_link_id, b"ping", &mut OsRng)
+            .unwrap();
+        let parsed = Packet::unpack(&data_packet).unwrap();
+        pair.responder
+            .process_packet(&parsed, &data_packet, &mut OsRng, midpoint_ms, 0);
+        let _ = pair.responder.drain_events().collect::<Vec<_>>();
+
+        // Verify last_inbound was updated
+        let link = pair.responder.link(&link_id).unwrap();
+        assert_eq!(
+            link.last_inbound_secs(),
+            midpoint_secs,
+            "last_inbound should be updated to midpoint"
+        );
+
+        // Advance past original stale threshold but not past new one
+        let past_original = original_inbound + stale_time_secs + 1;
+        let past_original_ms = past_original * 1000;
+        pair.responder.poll(&mut OsRng, past_original_ms);
+
+        let events: Vec<_> = pair.responder.drain_events().collect();
+        let has_stale = events
+            .iter()
+            .any(|e| matches!(e, LinkEvent::LinkStale { .. }));
+        assert!(
+            !has_stale,
+            "should NOT be stale — inbound data reset the timer"
+        );
+    }
+
+    #[test]
+    fn test_active_stale_closed_lifecycle() {
+        let mut pair = establish_link_pair(ProofStrategy::None);
+        let link_id = pair.responder_link_id;
+
+        let link = pair.responder.link(&link_id).unwrap();
+        let stale_time_secs = link.stale_time_secs();
+        let last_inbound = link.last_inbound_secs();
+        let rtt_secs = link.rtt_secs().unwrap_or(0.0);
+
+        // Phase 1: Active → Stale
+        let stale_secs = last_inbound + stale_time_secs + 1;
+        pair.responder.poll(&mut OsRng, stale_secs * 1000);
+
+        let events: Vec<_> = pair.responder.drain_events().collect();
+        assert!(events
+            .iter()
+            .any(|e| matches!(e, LinkEvent::LinkStale { .. })));
+
+        let link = pair.responder.link(&link_id).unwrap();
+        assert_eq!(link.state(), LinkState::Stale);
+
+        // Phase 2: Stale → Closed
+        let close_timeout_secs = stale_time_secs
+            + (rtt_secs * crate::constants::LINK_KEEPALIVE_TIMEOUT_FACTOR as f64) as u64
+            + crate::constants::LINK_STALE_GRACE_SECS
+            + 1;
+        let close_secs = last_inbound + close_timeout_secs;
+        pair.responder.poll(&mut OsRng, close_secs * 1000);
+
+        let events: Vec<_> = pair.responder.drain_events().collect();
+        assert!(events.iter().any(|e| matches!(
+            e,
+            LinkEvent::LinkClosed {
+                reason: LinkCloseReason::Stale,
+                ..
+            }
+        )));
+    }
+
+    #[test]
+    fn test_stale_recovery_on_inbound() {
+        let mut pair = establish_link_pair(ProofStrategy::None);
+        let link_id = pair.responder_link_id;
+
+        // Force link to Stale
+        pair.responder
+            .link_mut(&link_id)
+            .unwrap()
+            .set_state(LinkState::Stale);
+
+        // Send data from initiator → process on responder (triggers try_recover_stale)
+        let data_packet = pair
+            .initiator
+            .send(&pair.initiator_link_id, b"recover me", &mut OsRng)
+            .unwrap();
+        let parsed = Packet::unpack(&data_packet).unwrap();
+        pair.responder
+            .process_packet(&parsed, &data_packet, &mut OsRng, pair.now_ms + 1000, 0);
+
+        // Should emit LinkRecovered
+        let events: Vec<_> = pair.responder.drain_events().collect();
+        let has_recovered = events
+            .iter()
+            .any(|e| matches!(e, LinkEvent::LinkRecovered { .. }));
+        assert!(has_recovered, "Expected LinkRecovered event");
+
+        // Link should be Active again
+        let link = pair.responder.link(&link_id).unwrap();
+        assert_eq!(link.state(), LinkState::Active);
+    }
+
+    // ─── T16: Regression Tests ──────────────────────────────────────────────
+
+    #[test]
+    #[ignore = "Bug B3: close() does not remove channel from channels map — will be fixed in Phase 3"]
+    fn test_b3_close_does_not_clean_channels_map() {
+        use crate::link::channel::ChannelError;
+
+        struct TestMsg(Vec<u8>);
+        impl Message for TestMsg {
+            const MSGTYPE: u16 = 0x0001;
+            fn pack(&self) -> Vec<u8> {
+                self.0.clone()
+            }
+            fn unpack(data: &[u8]) -> Result<Self, ChannelError> {
+                Ok(Self(data.to_vec()))
+            }
+        }
+
+        let mut pair = establish_link_pair(ProofStrategy::None);
+        let link_id = pair.initiator_link_id;
+
+        // Create channel and send a message
+        let _ = pair
+            .initiator
+            .channel_send(
+                &link_id,
+                &TestMsg(b"hello".to_vec()),
+                &mut OsRng,
+                pair.now_ms,
+            )
+            .unwrap();
+        assert!(pair.initiator.has_channel(&link_id));
+
+        // Close the link
+        pair.initiator.close(&link_id, &mut OsRng);
+
+        // Channel should be removed — FAILS: close() doesn't remove from self.channels
+        assert!(
+            !pair.initiator.has_channel(&link_id),
+            "channel should be removed after close()"
+        );
+    }
+
+    #[test]
+    fn test_f4_mark_delivered_bogus_sequence() {
+        let mut pair = establish_link_pair(ProofStrategy::None);
+        let link_id = pair.initiator_link_id;
+
+        // Create channel
+        let _ = pair.initiator.get_channel(&link_id);
+
+        // Call mark_channel_delivered with a sequence that was never sent
+        let result = pair
+            .initiator
+            .mark_channel_delivered(&link_id, 9999, pair.now_ms, 500);
+        assert!(
+            !result,
+            "mark_channel_delivered should return false for unknown sequence"
+        );
+    }
+
+    #[test]
+    fn test_d13_channel_exhaustion_produces_timeout_reason() {
+        use crate::link::channel::ChannelError;
+
+        struct TestMsg(Vec<u8>);
+        impl Message for TestMsg {
+            const MSGTYPE: u16 = 0x0001;
+            fn pack(&self) -> Vec<u8> {
+                self.0.clone()
+            }
+            fn unpack(data: &[u8]) -> Result<Self, ChannelError> {
+                Ok(Self(data.to_vec()))
+            }
+        }
+
+        let mut pair = establish_link_pair(ProofStrategy::None);
+        let link_id = pair.initiator_link_id;
+
+        // Send a channel message
+        let _ = pair
+            .initiator
+            .channel_send(
+                &link_id,
+                &TestMsg(b"exhaust".to_vec()),
+                &mut OsRng,
+                pair.now_ms,
+            )
+            .unwrap();
+        let _ = pair.initiator.drain_pending_packets().collect::<Vec<_>>();
+        let _ = pair.initiator.drain_events().collect::<Vec<_>>();
+
+        // Reduce max_tries so we hit TearDownLink quickly
+        pair.initiator
+            .channels
+            .get_mut(&link_id)
+            .unwrap()
+            .set_max_tries_for_test(2);
+
+        // First retransmit (tries 1→2)
+        let mut t = pair.now_ms + 50_000;
+        pair.initiator.poll(&mut OsRng, t);
+        let _ = pair.initiator.drain_events().collect::<Vec<_>>();
+        let _ = pair.initiator.drain_pending_packets().collect::<Vec<_>>();
+
+        // Second poll → tries=2 >= max_tries=2 → TearDownLink → LinkClosed with Timeout
+        t += 100_000;
+        pair.initiator.poll(&mut OsRng, t);
+
+        let events: Vec<_> = pair.initiator.drain_events().collect();
+        let has_timeout_close = events.iter().any(|e| {
+            matches!(
+                e,
+                LinkEvent::LinkClosed {
+                    reason: LinkCloseReason::Timeout,
+                    ..
+                }
+            )
+        });
+        assert!(
+            has_timeout_close,
+            "channel exhaustion should produce LinkClosed with Timeout reason (limitation D13), got: {:?}",
+            events
+        );
+    }
+
+    // ─── T13: Split large tests ─────────────────────────────────────────────
+
+    // Split of test_retransmit_registers_new_receipt_and_removes_old (137 LOC → 3 tests)
+
+    // Helper to set up a retransmit scenario: send a channel message, advance past timeout
+    fn setup_retransmit_scenario() -> (LinkPair, LinkId, u16, [u8; 32]) {
+        use crate::link::channel::ChannelError;
+
+        struct TestMsg(Vec<u8>);
+        impl Message for TestMsg {
+            const MSGTYPE: u16 = 0x0001;
+            fn pack(&self) -> Vec<u8> {
+                self.0.clone()
+            }
+            fn unpack(data: &[u8]) -> Result<Self, ChannelError> {
+                Ok(Self(data.to_vec()))
+            }
+        }
+
+        let mut pair = establish_link_pair(ProofStrategy::None);
+        let link_id = pair.initiator_link_id;
+        let now_ms = pair.now_ms;
+
+        // Send a channel message
+        let channel_packet = pair
+            .initiator
+            .channel_send(&link_id, &TestMsg(b"hello".to_vec()), &mut OsRng, now_ms)
+            .unwrap();
+        let sequence = pair
+            .initiator
+            .channel(&link_id)
+            .unwrap()
+            .last_sent_sequence();
+        let (hash_1, _) =
+            pair.initiator
+                .register_channel_receipt(&channel_packet, link_id, sequence, now_ms);
+        let _ = pair.initiator.drain_pending_packets().collect::<Vec<_>>();
+
+        // Trigger retransmit
+        let retransmit_time = now_ms + 5000;
+        pair.initiator.poll(&mut OsRng, retransmit_time);
+        pair.now_ms = retransmit_time;
+
+        (pair, link_id, sequence, hash_1)
+    }
+
+    #[test]
+    fn test_retransmit_emits_receipt_updated_event() {
+        let (mut pair, link_id, sequence, hash_1) = setup_retransmit_scenario();
+
+        let events: Vec<_> = pair.initiator.drain_events().collect();
+        let receipt_updated = events.iter().find_map(|e| match e {
+            LinkEvent::ChannelReceiptUpdated {
+                link_id: lid,
+                new_hash,
+                old_hash,
+                sequence: seq,
+            } => Some((*lid, *new_hash, *old_hash, *seq)),
+            _ => None,
+        });
+        assert!(
+            receipt_updated.is_some(),
+            "Expected ChannelReceiptUpdated event"
+        );
+        let (evt_lid, hash_2, old_hash, evt_seq) = receipt_updated.unwrap();
+        assert_eq!(evt_lid, link_id);
+        assert_eq!(evt_seq, sequence);
+        assert_eq!(old_hash, Some(hash_1));
+        assert_ne!(
+            hash_2, hash_1,
+            "re-encrypted packet must have different hash"
+        );
+    }
+
+    #[test]
+    fn test_retransmit_removes_old_receipt() {
+        let (pair, _link_id, _sequence, hash_1) = setup_retransmit_scenario();
+
+        // Only one receipt should exist
+        assert_eq!(pair.initiator.data_receipts.len(), 1);
+
+        // Old hash should not be in data_receipts
+        let mut old_truncated = [0u8; TRUNCATED_HASHBYTES];
+        old_truncated.copy_from_slice(&hash_1[..TRUNCATED_HASHBYTES]);
+        assert!(
+            !pair.initiator.data_receipts.contains_key(&old_truncated),
+            "old receipt should have been removed"
+        );
+    }
+
+    #[test]
+    fn test_retransmit_proof_matches_new_hash() {
+        let (mut pair, link_id, _sequence, _hash_1) = setup_retransmit_scenario();
+
+        let events: Vec<_> = pair.initiator.drain_events().collect();
+        let hash_2 = events
+            .iter()
+            .find_map(|e| match e {
+                LinkEvent::ChannelReceiptUpdated { new_hash, .. } => Some(*new_hash),
+                _ => None,
+            })
+            .expect("need ChannelReceiptUpdated");
+
+        // Get the retransmit packet and deliver to responder
+        let retransmit_packets: Vec<_> = pair.initiator.drain_pending_packets().collect();
+        let retransmit_data = retransmit_packets
+            .iter()
+            .find_map(|p| match p {
+                PendingPacket::Channel { data, .. } => Some(data.clone()),
+                _ => None,
+            })
+            .expect("should have retransmit packet");
+
+        let packet = Packet::unpack(&retransmit_data).unwrap();
+        pair.responder
+            .process_packet(&packet, &retransmit_data, &mut OsRng, pair.now_ms, 0);
+        let proofs = pair.responder.drain_proof_packets();
+        assert_eq!(proofs.len(), 1);
+
+        // Deliver proof to initiator
+        let (_, proof_packet) = &proofs[0];
+        let proof = Packet::unpack(proof_packet).unwrap();
+        pair.initiator
+            .process_packet(&proof, proof_packet, &mut OsRng, pair.now_ms, 0);
+
+        let events: Vec<_> = pair.initiator.drain_events().collect();
+        let delivered = events.iter().find_map(|e| match e {
+            LinkEvent::DataDelivered {
+                link_id: lid,
+                packet_hash,
+            } => Some((*lid, *packet_hash)),
+            _ => None,
+        });
+        assert!(delivered.is_some(), "Expected DataDelivered event");
+        let (dlid, dhash) = delivered.unwrap();
+        assert_eq!(dlid, link_id);
+        assert_eq!(dhash, hash_2, "proof should match retransmit hash");
+    }
+
+    // Split of test_multiple_retransmits_clean_up_receipts (109 LOC → 2 tests)
+
+    #[test]
+    fn test_multiple_retransmits_keep_single_receipt() {
+        use crate::link::channel::ChannelError;
+
+        struct TestMsg(Vec<u8>);
+        impl Message for TestMsg {
+            const MSGTYPE: u16 = 0x0001;
+            fn pack(&self) -> Vec<u8> {
+                self.0.clone()
+            }
+            fn unpack(data: &[u8]) -> Result<Self, ChannelError> {
+                Ok(Self(data.to_vec()))
+            }
+        }
+
+        let mut pair = establish_link_pair(ProofStrategy::None);
+        let link_id = pair.initiator_link_id;
+        let mut now_ms = pair.now_ms;
+
+        // Send a channel message
+        let channel_packet = pair
+            .initiator
+            .channel_send(&link_id, &TestMsg(b"retry me".to_vec()), &mut OsRng, now_ms)
+            .unwrap();
+        let sequence = pair
+            .initiator
+            .channel(&link_id)
+            .unwrap()
+            .last_sent_sequence();
+        let (hash_1, _) =
+            pair.initiator
+                .register_channel_receipt(&channel_packet, link_id, sequence, now_ms);
+        let _ = pair.initiator.drain_pending_packets().collect::<Vec<_>>();
+
+        // First retransmit
+        now_ms += 5000;
+        pair.initiator.poll(&mut OsRng, now_ms);
+        let events: Vec<_> = pair.initiator.drain_events().collect();
+        let hash_2 = events
+            .iter()
+            .find_map(|e| match e {
+                LinkEvent::ChannelReceiptUpdated {
+                    new_hash, old_hash, ..
+                } => {
+                    assert_eq!(*old_hash, Some(hash_1));
+                    Some(*new_hash)
+                }
+                _ => None,
+            })
+            .expect("expected ChannelReceiptUpdated");
+        assert_eq!(pair.initiator.data_receipts.len(), 1);
+        let _ = pair.initiator.drain_pending_packets().collect::<Vec<_>>();
+
+        // Second retransmit
+        now_ms += 5000;
+        pair.initiator.poll(&mut OsRng, now_ms);
+        let events: Vec<_> = pair.initiator.drain_events().collect();
+        let hash_3 = events
+            .iter()
+            .find_map(|e| match e {
+                LinkEvent::ChannelReceiptUpdated {
+                    new_hash, old_hash, ..
+                } => {
+                    assert_eq!(*old_hash, Some(hash_2));
+                    Some(*new_hash)
+                }
+                _ => None,
+            })
+            .expect("expected ChannelReceiptUpdated");
+
+        // Only 1 receipt should exist (no leaks)
+        assert_eq!(pair.initiator.data_receipts.len(), 1);
+        assert_ne!(hash_3, hash_2);
+        assert_ne!(hash_3, hash_1);
+    }
+
+    #[test]
+    fn test_proof_for_final_retransmit_delivers() {
+        use crate::link::channel::ChannelError;
+
+        struct TestMsg(Vec<u8>);
+        impl Message for TestMsg {
+            const MSGTYPE: u16 = 0x0001;
+            fn pack(&self) -> Vec<u8> {
+                self.0.clone()
+            }
+            fn unpack(data: &[u8]) -> Result<Self, ChannelError> {
+                Ok(Self(data.to_vec()))
+            }
+        }
+
+        let mut pair = establish_link_pair(ProofStrategy::None);
+        let link_id = pair.initiator_link_id;
+        let mut now_ms = pair.now_ms;
+
+        // Send and register receipt
+        let channel_packet = pair
+            .initiator
+            .channel_send(&link_id, &TestMsg(b"multi".to_vec()), &mut OsRng, now_ms)
+            .unwrap();
+        let seq = pair
+            .initiator
+            .channel(&link_id)
+            .unwrap()
+            .last_sent_sequence();
+        let _ = pair
+            .initiator
+            .register_channel_receipt(&channel_packet, link_id, seq, now_ms);
+        let _ = pair.initiator.drain_pending_packets().collect::<Vec<_>>();
+
+        // Three retransmits — keep the last retransmit packet for proof delivery
+        let mut last_retransmit = None;
+        for _ in 0..3 {
+            now_ms += 10_000;
+            pair.initiator.poll(&mut OsRng, now_ms);
+            let _ = pair.initiator.drain_events().collect::<Vec<_>>();
+            let packets: Vec<_> = pair.initiator.drain_pending_packets().collect();
+            if let Some(data) = packets.iter().find_map(|p| match p {
+                PendingPacket::Channel { data, .. } => Some(data.clone()),
+                _ => None,
+            }) {
+                last_retransmit = Some(data);
+            }
+        }
+        let retransmit_data = last_retransmit.expect("should have retransmit packet");
+
+        let packet = Packet::unpack(&retransmit_data).unwrap();
+        pair.responder
+            .process_packet(&packet, &retransmit_data, &mut OsRng, now_ms, 0);
+        let proofs = pair.responder.drain_proof_packets();
+        assert!(!proofs.is_empty());
+
+        let (_, proof_packet) = &proofs[0];
+        let proof = Packet::unpack(proof_packet).unwrap();
+        pair.initiator
+            .process_packet(&proof, proof_packet, &mut OsRng, now_ms, 0);
+
+        let events: Vec<_> = pair.initiator.drain_events().collect();
+        assert!(
+            events
+                .iter()
+                .any(|e| matches!(e, LinkEvent::DataDelivered { .. })),
+            "Expected DataDelivered after proof for latest retransmit"
+        );
+        assert_eq!(pair.initiator.data_receipts.len(), 0);
+    }
+
+    // Split of test_channel_proof_suppressed_on_rx_ring_full (84 LOC → 2 tests)
+
+    #[test]
+    fn test_channel_proof_generated_for_in_order_message() {
+        use crate::link::channel::ChannelError;
+
+        struct TestMsg(Vec<u8>);
+        impl Message for TestMsg {
+            const MSGTYPE: u16 = 0x0001;
+            fn pack(&self) -> Vec<u8> {
+                self.0.clone()
+            }
+            fn unpack(data: &[u8]) -> Result<Self, ChannelError> {
+                Ok(Self(data.to_vec()))
+            }
+        }
+
+        let mut pair = establish_link_pair(ProofStrategy::None);
+
+        let channel_packet = pair
+            .initiator
+            .channel_send(
+                &pair.initiator_link_id,
+                &TestMsg(b"normal message".to_vec()),
+                &mut OsRng,
+                pair.now_ms,
+            )
+            .unwrap();
+
+        let packet = Packet::unpack(&channel_packet).unwrap();
+        pair.responder
+            .process_packet(&packet, &channel_packet, &mut OsRng, pair.now_ms, 0);
+
+        let proofs = pair.responder.drain_proof_packets();
+        assert_eq!(
+            proofs.len(),
+            1,
+            "proof should be generated for normal in-order message"
+        );
+    }
+
+    #[test]
+    fn test_channel_proof_suppressed_when_rx_ring_full() {
+        use crate::link::channel::ChannelError;
+
+        struct TestMsg(Vec<u8>);
+        impl Message for TestMsg {
+            const MSGTYPE: u16 = 0x0001;
+            fn pack(&self) -> Vec<u8> {
+                self.0.clone()
+            }
+            fn unpack(data: &[u8]) -> Result<Self, ChannelError> {
+                Ok(Self(data.to_vec()))
+            }
+        }
+
+        let mut pair = establish_link_pair(ProofStrategy::None);
+
+        // First: send a normal message so responder's channel advances to expect seq 1
+        let channel_packet = pair
+            .initiator
+            .channel_send(
+                &pair.initiator_link_id,
+                &TestMsg(b"first".to_vec()),
+                &mut OsRng,
+                pair.now_ms,
+            )
+            .unwrap();
+        let packet = Packet::unpack(&channel_packet).unwrap();
+        pair.responder
+            .process_packet(&packet, &channel_packet, &mut OsRng, pair.now_ms, 0);
+        let _ = pair.responder.drain_proof_packets(); // consume baseline proof
+        let _ = pair.responder.drain_events().collect::<Vec<_>>();
+
+        // Jump initiator's sequence far ahead to trigger rx_ring full
+        let target_seq = 1 + crate::constants::CHANNEL_RX_RING_MAX as u16;
+        pair.initiator
+            .channels
+            .get_mut(&pair.initiator_link_id)
+            .unwrap()
+            .force_next_tx_sequence_for_test(target_seq);
+
+        let far_packet = pair
+            .initiator
+            .channel_send(
+                &pair.initiator_link_id,
+                &TestMsg(b"far future".to_vec()),
+                &mut OsRng,
+                pair.now_ms,
+            )
+            .unwrap();
+        let packet = Packet::unpack(&far_packet).unwrap();
+        pair.responder
+            .process_packet(&packet, &far_packet, &mut OsRng, pair.now_ms, 0);
+
+        let proofs = pair.responder.drain_proof_packets();
+        assert_eq!(
+            proofs.len(),
+            0,
+            "proof must be suppressed when rx_ring is full"
+        );
+    }
+
     #[test]
     fn test_channel_immutable_accessor() {
         let mut manager = LinkManager::new();
@@ -2150,341 +3165,5 @@ mod tests {
             "Initiator must generate channel proof using ephemeral signing key"
         );
         assert_eq!(proofs[0].0, pair.initiator_link_id);
-    }
-
-    #[test]
-    fn test_retransmit_registers_new_receipt_and_removes_old() {
-        use crate::link::channel::ChannelError;
-
-        struct TestMsg(Vec<u8>);
-        impl Message for TestMsg {
-            const MSGTYPE: u16 = 0x0001;
-            fn pack(&self) -> Vec<u8> {
-                self.0.clone()
-            }
-            fn unpack(data: &[u8]) -> Result<Self, ChannelError> {
-                Ok(Self(data.to_vec()))
-            }
-        }
-
-        let mut pair = establish_link_pair(ProofStrategy::None);
-        let link_id = pair.initiator_link_id;
-        let now_ms = pair.now_ms;
-
-        // Send a channel message from initiator
-        let channel_packet = pair
-            .initiator
-            .channel_send(&link_id, &TestMsg(b"hello".to_vec()), &mut OsRng, now_ms)
-            .unwrap();
-
-        // Register receipt (mimicking what NodeCore does on initial send)
-        let sequence = pair
-            .initiator
-            .channel(&link_id)
-            .unwrap()
-            .last_sent_sequence();
-        let (hash_1, old) =
-            pair.initiator
-                .register_channel_receipt(&channel_packet, link_id, sequence, now_ms);
-        assert!(old.is_none(), "first send should have no old receipt");
-        assert_eq!(pair.initiator.data_receipts.len(), 1);
-
-        // Do NOT deliver a proof — advance time past the channel timeout.
-        // RTT fallback = 500ms. Live timeout with queue_len=1:
-        // max(500*2.5, 25) * 1.5^0 * (1+1.5) = 1250 * 2.5 = 3125ms
-        let retransmit_time = now_ms + 5000;
-        pair.initiator.poll(&mut OsRng, retransmit_time);
-
-        // Should have a ChannelReceiptUpdated event
-        let events: Vec<_> = pair.initiator.drain_events().collect();
-        let receipt_updated = events.iter().find_map(|e| match e {
-            LinkEvent::ChannelReceiptUpdated {
-                link_id: lid,
-                new_hash,
-                old_hash,
-                sequence: seq,
-            } => Some((*lid, *new_hash, *old_hash, *seq)),
-            _ => None,
-        });
-        assert!(
-            receipt_updated.is_some(),
-            "Expected ChannelReceiptUpdated event, got: {:?}",
-            events
-        );
-        let (evt_link_id, hash_2, old_hash, evt_seq) = receipt_updated.unwrap();
-        assert_eq!(evt_link_id, link_id);
-        assert_eq!(evt_seq, sequence);
-        assert_eq!(
-            old_hash,
-            Some(hash_1),
-            "old_hash should be the initial send hash"
-        );
-        assert_ne!(
-            hash_2, hash_1,
-            "re-encrypted packet must have different hash"
-        );
-
-        // Only one receipt should exist (for hash_2, not hash_1)
-        assert_eq!(pair.initiator.data_receipts.len(), 1);
-
-        // The old truncated hash should not be in data_receipts
-        let mut old_truncated = [0u8; TRUNCATED_HASHBYTES];
-        old_truncated.copy_from_slice(&hash_1[..TRUNCATED_HASHBYTES]);
-        assert!(
-            !pair.initiator.data_receipts.contains_key(&old_truncated),
-            "old receipt should have been removed"
-        );
-
-        // The new truncated hash should be in data_receipts
-        let mut new_truncated = [0u8; TRUNCATED_HASHBYTES];
-        new_truncated.copy_from_slice(&hash_2[..TRUNCATED_HASHBYTES]);
-        assert!(
-            pair.initiator.data_receipts.contains_key(&new_truncated),
-            "new receipt should be present"
-        );
-
-        // Now simulate the responder receiving the retransmit packet and sending proof
-        let retransmit_packets: Vec<_> = pair.initiator.drain_pending_packets().collect();
-        let channel_retransmit = retransmit_packets
-            .iter()
-            .find_map(|p| match p {
-                PendingPacket::Channel { data, .. } => Some(data.clone()),
-                _ => None,
-            })
-            .expect("should have a retransmit packet");
-
-        // Deliver retransmit to responder → responder generates proof
-        let packet = Packet::unpack(&channel_retransmit).unwrap();
-        pair.responder
-            .process_packet(&packet, &channel_retransmit, &mut OsRng, retransmit_time, 0);
-        let proofs = pair.responder.drain_proof_packets();
-        assert_eq!(
-            proofs.len(),
-            1,
-            "responder should generate proof for retransmit"
-        );
-
-        // Deliver proof to initiator
-        let (_, proof_packet) = &proofs[0];
-        let proof = Packet::unpack(proof_packet).unwrap();
-        pair.initiator
-            .process_packet(&proof, proof_packet, &mut OsRng, retransmit_time, 0);
-
-        // Should emit DataDelivered
-        let events: Vec<_> = pair.initiator.drain_events().collect();
-        let data_delivered = events.iter().find_map(|e| match e {
-            LinkEvent::DataDelivered {
-                link_id: lid,
-                packet_hash,
-            } => Some((*lid, *packet_hash)),
-            _ => None,
-        });
-        assert!(data_delivered.is_some(), "Expected DataDelivered event");
-        let (delivered_lid, delivered_hash) = data_delivered.unwrap();
-        assert_eq!(delivered_lid, link_id);
-        assert_eq!(
-            delivered_hash, hash_2,
-            "proof should match the retransmit hash"
-        );
-
-        // Receipt should be consumed
-        assert_eq!(pair.initiator.data_receipts.len(), 0);
-    }
-
-    #[test]
-    fn test_multiple_retransmits_clean_up_receipts() {
-        use crate::link::channel::ChannelError;
-
-        struct TestMsg(Vec<u8>);
-        impl Message for TestMsg {
-            const MSGTYPE: u16 = 0x0001;
-            fn pack(&self) -> Vec<u8> {
-                self.0.clone()
-            }
-            fn unpack(data: &[u8]) -> Result<Self, ChannelError> {
-                Ok(Self(data.to_vec()))
-            }
-        }
-
-        let mut pair = establish_link_pair(ProofStrategy::None);
-        let link_id = pair.initiator_link_id;
-        let mut now_ms = pair.now_ms;
-
-        // Send a channel message
-        let channel_packet = pair
-            .initiator
-            .channel_send(&link_id, &TestMsg(b"retry me".to_vec()), &mut OsRng, now_ms)
-            .unwrap();
-        let sequence = pair
-            .initiator
-            .channel(&link_id)
-            .unwrap()
-            .last_sent_sequence();
-        let (hash_1, _) =
-            pair.initiator
-                .register_channel_receipt(&channel_packet, link_id, sequence, now_ms);
-        assert_eq!(pair.initiator.data_receipts.len(), 1);
-        let _ = pair.initiator.drain_pending_packets().collect::<Vec<_>>();
-
-        // First retransmit: live timeout with queue_len=1, rtt=500:
-        // max(500*2.5, 25) * 1.5^0 * (1+1.5) = 1250 * 2.5 = 3125ms
-        now_ms += 5000;
-        pair.initiator.poll(&mut OsRng, now_ms);
-        let events: Vec<_> = pair.initiator.drain_events().collect();
-        let hash_2 = events
-            .iter()
-            .find_map(|e| match e {
-                LinkEvent::ChannelReceiptUpdated {
-                    new_hash, old_hash, ..
-                } => {
-                    assert_eq!(*old_hash, Some(hash_1));
-                    Some(*new_hash)
-                }
-                _ => None,
-            })
-            .expect("expected ChannelReceiptUpdated after first retransmit");
-        assert_eq!(pair.initiator.data_receipts.len(), 1);
-        let _ = pair.initiator.drain_pending_packets().collect::<Vec<_>>();
-
-        // Second retransmit: backoff with tries=2:
-        // 1250 * 1.5^1 * 2.5 = 4687ms
-        now_ms += 5000;
-        pair.initiator.poll(&mut OsRng, now_ms);
-        let events: Vec<_> = pair.initiator.drain_events().collect();
-        let hash_3 = events
-            .iter()
-            .find_map(|e| match e {
-                LinkEvent::ChannelReceiptUpdated {
-                    new_hash, old_hash, ..
-                } => {
-                    assert_eq!(*old_hash, Some(hash_2));
-                    Some(*new_hash)
-                }
-                _ => None,
-            })
-            .expect("expected ChannelReceiptUpdated after second retransmit");
-        assert_eq!(
-            pair.initiator.data_receipts.len(),
-            1,
-            "should only have one receipt (no leaks)"
-        );
-        assert_ne!(hash_3, hash_2);
-        assert_ne!(hash_3, hash_1);
-
-        // Deliver proof for hash_3 — should succeed
-        let retransmit_packets: Vec<_> = pair.initiator.drain_pending_packets().collect();
-        let retransmit_data = retransmit_packets
-            .iter()
-            .find_map(|p| match p {
-                PendingPacket::Channel { data, .. } => Some(data.clone()),
-                _ => None,
-            })
-            .expect("should have retransmit packet");
-
-        let packet = Packet::unpack(&retransmit_data).unwrap();
-        pair.responder
-            .process_packet(&packet, &retransmit_data, &mut OsRng, now_ms, 0);
-        let proofs = pair.responder.drain_proof_packets();
-        assert_eq!(proofs.len(), 1);
-
-        let (_, proof_packet) = &proofs[0];
-        let proof = Packet::unpack(proof_packet).unwrap();
-        pair.initiator
-            .process_packet(&proof, proof_packet, &mut OsRng, now_ms, 0);
-
-        let events: Vec<_> = pair.initiator.drain_events().collect();
-        assert!(
-            events
-                .iter()
-                .any(|e| matches!(e, LinkEvent::DataDelivered { .. })),
-            "Expected DataDelivered after proof for third hash"
-        );
-        assert_eq!(pair.initiator.data_receipts.len(), 0);
-    }
-
-    #[test]
-    fn test_channel_proof_suppressed_on_rx_ring_full() {
-        use crate::link::channel::ChannelError;
-
-        struct TestMsg(Vec<u8>);
-        impl Message for TestMsg {
-            const MSGTYPE: u16 = 0x0001;
-            fn pack(&self) -> Vec<u8> {
-                self.0.clone()
-            }
-            fn unpack(data: &[u8]) -> Result<Self, ChannelError> {
-                Ok(Self(data.to_vec()))
-            }
-        }
-
-        let mut pair = establish_link_pair(ProofStrategy::None);
-
-        // First, send a normal channel message — proof should be generated (baseline)
-        let channel_packet = pair
-            .initiator
-            .channel_send(
-                &pair.initiator_link_id,
-                &TestMsg(b"normal message".to_vec()),
-                &mut OsRng,
-                pair.now_ms,
-            )
-            .unwrap();
-
-        let packet = Packet::unpack(&channel_packet).unwrap();
-        pair.responder
-            .process_packet(&packet, &channel_packet, &mut OsRng, pair.now_ms, 0);
-
-        let proofs = pair.responder.drain_proof_packets();
-        assert_eq!(
-            proofs.len(),
-            1,
-            "baseline: proof should be generated for normal message"
-        );
-
-        // Now create an out-of-order gap: send seq 1 (skip seq 0 from responder's
-        // perspective by consuming seq 0 above, so responder now expects seq 1).
-        // Then we need to trigger RxRingFull. To do this, we need to send a packet
-        // with a sequence number offset >= CHANNEL_RX_RING_MAX from what the
-        // responder's channel expects.
-        //
-        // The responder's channel has received seq 0, so it expects seq 1.
-        // We need to skip enough sequences on the initiator's side so that
-        // the offset from expected is >= CHANNEL_RX_RING_MAX.
-        //
-        // Strategy: manually advance the initiator's channel sequence counter
-        // past CHANNEL_RX_RING_MAX, then send. The responder's channel expects
-        // seq 1, so sending seq (1 + CHANNEL_RX_RING_MAX) will trigger RxRingFull.
-        let target_seq = 1 + crate::constants::CHANNEL_RX_RING_MAX as u16;
-
-        // Access the initiator's channel and advance its sequence counter
-        let init_channel = pair
-            .initiator
-            .channels
-            .get_mut(&pair.initiator_link_id)
-            .unwrap();
-        init_channel.force_next_tx_sequence_for_test(target_seq);
-
-        // Send the far-future message
-        let far_packet = pair
-            .initiator
-            .channel_send(
-                &pair.initiator_link_id,
-                &TestMsg(b"far future".to_vec()),
-                &mut OsRng,
-                pair.now_ms,
-            )
-            .unwrap();
-
-        let packet = Packet::unpack(&far_packet).unwrap();
-        pair.responder
-            .process_packet(&packet, &far_packet, &mut OsRng, pair.now_ms, 0);
-
-        // Proof should NOT be generated because the message was dropped (RxRingFull)
-        let proofs = pair.responder.drain_proof_packets();
-        assert_eq!(
-            proofs.len(),
-            0,
-            "proof must be suppressed when rx_ring is full"
-        );
     }
 }

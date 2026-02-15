@@ -1043,6 +1043,18 @@ impl Link {
         self.state = state;
     }
 
+    #[cfg(test)]
+    pub(crate) fn set_timing_for_test(
+        &mut self,
+        keepalive_secs: u64,
+        stale_time_secs: u64,
+        last_inbound: u64,
+    ) {
+        self.keepalive_secs = keepalive_secs;
+        self.stale_time_secs = stale_time_secs;
+        self.last_inbound = last_inbound;
+    }
+
     /// Close the link (transition to Closed state)
     pub fn close(&mut self) {
         self.state = LinkState::Closed;
@@ -1718,6 +1730,7 @@ impl Link {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::constants::MTU;
     use crate::destination::DestinationHash;
     use alloc::vec;
     use alloc::vec::Vec;
@@ -1744,8 +1757,8 @@ mod tests {
         assert_eq!(request.len(), 64);
 
         // Check that keys are embedded
-        assert_eq!(&request[..32], link.ephemeral_public.as_bytes());
-        assert_eq!(&request[32..64], &link.verifying_key.to_bytes());
+        assert_eq!(&request[..32], &link.ephemeral_public_bytes());
+        assert_eq!(&request[32..64], &link.verifying_key_bytes());
     }
 
     #[test]
@@ -1753,12 +1766,12 @@ mod tests {
         let dest_hash = DestinationHash::new([0x42; TRUNCATED_HASHBYTES]);
         let link = Link::new_outgoing(dest_hash, &mut OsRng);
 
-        let request = link.create_link_request_with_mtu(500, 1);
+        let request = link.create_link_request_with_mtu(MTU as u32, 1);
         assert_eq!(request.len(), 67);
 
         // Check that keys are embedded
-        assert_eq!(&request[..32], link.ephemeral_public.as_bytes());
-        assert_eq!(&request[32..64], &link.verifying_key.to_bytes());
+        assert_eq!(&request[..32], &link.ephemeral_public_bytes());
+        assert_eq!(&request[32..64], &link.verifying_key_bytes());
 
         // Check MTU signaling bytes encode MTU and mode
         // MTU 500 = 0x1F4, mode 1 -> signaling = 0x1F4 | (1 << 21) = 0x2001F4
@@ -1806,8 +1819,7 @@ mod tests {
         let dest_hash = DestinationHash::new([0x42; TRUNCATED_HASHBYTES]);
         let mut link = Link::new_outgoing(dest_hash, &mut OsRng);
 
-        // Manually set state to Active
-        link.state = LinkState::Active;
+        link.set_state(LinkState::Active);
 
         let fake_proof = [0u8; PROOF_DATA_SIZE];
         let result = link.process_proof(&fake_proof);
@@ -1937,59 +1949,21 @@ mod tests {
 
     #[test]
     fn test_link_encrypt_decrypt() {
-        use ed25519_dalek::Signer;
+        let (initiator, _responder) = setup_active_link_pair();
 
-        // Set up a link with completed handshake (reuse handshake simulation)
-        let dest_hash = DestinationHash::new([0x42; TRUNCATED_HASHBYTES]);
-        let mut link = Link::new_outgoing(dest_hash, &mut OsRng);
-        let request = link.create_link_request();
-
-        // Build raw packet
-        let mut raw_packet = Vec::new();
-        raw_packet.push(0x02);
-        raw_packet.push(0x00);
-        raw_packet.extend_from_slice(dest_hash.as_bytes());
-        raw_packet.push(0x00);
-        raw_packet.extend_from_slice(&request);
-
-        let link_id = Link::calculate_link_id(&raw_packet);
-        link.set_link_id(link_id);
-
-        // Simulate destination side
-        let dest_signing_key = ed25519_dalek::SigningKey::from_bytes(&[0x33; 32]);
-        let dest_verifying_key = dest_signing_key.verifying_key();
-        let dest_ephemeral_private = x25519_dalek::StaticSecret::random_from_rng(rand_core::OsRng);
-        let dest_ephemeral_public = x25519_dalek::PublicKey::from(&dest_ephemeral_private);
-
-        let signalling_bytes: [u8; 3] = [0x43, 0x0f, 0x38];
-        let mut signed_data = [0u8; 83];
-        signed_data[..TRUNCATED_HASHBYTES].copy_from_slice(link_id.as_bytes());
-        signed_data[TRUNCATED_HASHBYTES..TRUNCATED_HASHBYTES + 32]
-            .copy_from_slice(dest_ephemeral_public.as_bytes());
-        signed_data[TRUNCATED_HASHBYTES + 32..TRUNCATED_HASHBYTES + 64]
-            .copy_from_slice(&dest_verifying_key.to_bytes());
-        signed_data[TRUNCATED_HASHBYTES + 64..].copy_from_slice(&signalling_bytes);
-        let signature = dest_signing_key.sign(&signed_data);
-
-        let mut proof = [0u8; 99];
-        proof[..64].copy_from_slice(&signature.to_bytes());
-        proof[64..96].copy_from_slice(dest_ephemeral_public.as_bytes());
-        proof[96..99].copy_from_slice(&signalling_bytes);
-
-        link.set_destination_keys(&dest_verifying_key.to_bytes())
-            .unwrap();
-        link.process_proof(&proof).unwrap();
-
-        // Now test encrypt/decrypt
         let plaintext = b"Hello, encrypted link!";
         let encrypted_len = Link::encrypted_size(plaintext.len());
         let mut encrypted = vec![0u8; encrypted_len];
 
-        let enc_len = link.encrypt(plaintext, &mut encrypted, &mut OsRng).unwrap();
-        assert!(enc_len > plaintext.len()); // Should be larger due to IV + padding + HMAC
+        let enc_len = initiator
+            .encrypt(plaintext, &mut encrypted, &mut OsRng)
+            .unwrap();
+        assert!(enc_len > plaintext.len());
 
-        let mut decrypted = vec![0u8; plaintext.len() + 16]; // Allow for padding
-        let dec_len = link.decrypt(&encrypted[..enc_len], &mut decrypted).unwrap();
+        let mut decrypted = vec![0u8; plaintext.len() + 16];
+        let dec_len = initiator
+            .decrypt(&encrypted[..enc_len], &mut decrypted)
+            .unwrap();
 
         assert_eq!(dec_len, plaintext.len());
         assert_eq!(&decrypted[..dec_len], plaintext);
@@ -1997,58 +1971,20 @@ mod tests {
 
     #[test]
     fn test_link_decrypt_tampered() {
-        use ed25519_dalek::Signer;
+        let (initiator, _responder) = setup_active_link_pair();
 
-        // Set up a link with completed handshake
-        let dest_hash = DestinationHash::new([0x42; TRUNCATED_HASHBYTES]);
-        let mut link = Link::new_outgoing(dest_hash, &mut OsRng);
-        let request = link.create_link_request();
-
-        let mut raw_packet = Vec::new();
-        raw_packet.push(0x02);
-        raw_packet.push(0x00);
-        raw_packet.extend_from_slice(dest_hash.as_bytes());
-        raw_packet.push(0x00);
-        raw_packet.extend_from_slice(&request);
-
-        let link_id = Link::calculate_link_id(&raw_packet);
-        link.set_link_id(link_id);
-
-        let dest_signing_key = ed25519_dalek::SigningKey::from_bytes(&[0x33; 32]);
-        let dest_verifying_key = dest_signing_key.verifying_key();
-        let dest_ephemeral_private = x25519_dalek::StaticSecret::random_from_rng(rand_core::OsRng);
-        let dest_ephemeral_public = x25519_dalek::PublicKey::from(&dest_ephemeral_private);
-
-        let signalling_bytes: [u8; 3] = [0x43, 0x0f, 0x38];
-        let mut signed_data = [0u8; 83];
-        signed_data[..TRUNCATED_HASHBYTES].copy_from_slice(link_id.as_bytes());
-        signed_data[TRUNCATED_HASHBYTES..TRUNCATED_HASHBYTES + 32]
-            .copy_from_slice(dest_ephemeral_public.as_bytes());
-        signed_data[TRUNCATED_HASHBYTES + 32..TRUNCATED_HASHBYTES + 64]
-            .copy_from_slice(&dest_verifying_key.to_bytes());
-        signed_data[TRUNCATED_HASHBYTES + 64..].copy_from_slice(&signalling_bytes);
-        let signature = dest_signing_key.sign(&signed_data);
-
-        let mut proof = [0u8; 99];
-        proof[..64].copy_from_slice(&signature.to_bytes());
-        proof[64..96].copy_from_slice(dest_ephemeral_public.as_bytes());
-        proof[96..99].copy_from_slice(&signalling_bytes);
-
-        link.set_destination_keys(&dest_verifying_key.to_bytes())
-            .unwrap();
-        link.process_proof(&proof).unwrap();
-
-        // Encrypt some data
         let plaintext = b"Secret message";
         let mut encrypted = vec![0u8; Link::encrypted_size(plaintext.len())];
-        let enc_len = link.encrypt(plaintext, &mut encrypted, &mut OsRng).unwrap();
+        let enc_len = initiator
+            .encrypt(plaintext, &mut encrypted, &mut OsRng)
+            .unwrap();
 
         // Tamper with the ciphertext
         encrypted[20] ^= 0xFF;
 
         // Decrypt should fail due to HMAC verification
         let mut decrypted = vec![0u8; 64];
-        let result = link.decrypt(&encrypted[..enc_len], &mut decrypted);
+        let result = initiator.decrypt(&encrypted[..enc_len], &mut decrypted);
         assert!(result.is_err());
     }
 
@@ -2072,56 +2008,15 @@ mod tests {
 
     #[test]
     fn test_build_data_packet() {
-        use ed25519_dalek::Signer;
+        let (initiator, _responder) = setup_active_link_pair();
 
-        // Set up a link with completed handshake
-        let dest_hash = DestinationHash::new([0x42; TRUNCATED_HASHBYTES]);
-        let mut link = Link::new_outgoing(dest_hash, &mut OsRng);
-        let request = link.create_link_request();
-
-        let mut raw_packet = Vec::new();
-        raw_packet.push(0x02);
-        raw_packet.push(0x00);
-        raw_packet.extend_from_slice(dest_hash.as_bytes());
-        raw_packet.push(0x00);
-        raw_packet.extend_from_slice(&request);
-
-        let link_id = Link::calculate_link_id(&raw_packet);
-        link.set_link_id(link_id);
-
-        let dest_signing_key = ed25519_dalek::SigningKey::from_bytes(&[0x33; 32]);
-        let dest_verifying_key = dest_signing_key.verifying_key();
-        let dest_ephemeral_private = x25519_dalek::StaticSecret::random_from_rng(rand_core::OsRng);
-        let dest_ephemeral_public = x25519_dalek::PublicKey::from(&dest_ephemeral_private);
-
-        let signalling_bytes: [u8; 3] = [0x43, 0x0f, 0x38];
-        let mut signed_data = [0u8; 83];
-        signed_data[..TRUNCATED_HASHBYTES].copy_from_slice(link_id.as_bytes());
-        signed_data[TRUNCATED_HASHBYTES..TRUNCATED_HASHBYTES + 32]
-            .copy_from_slice(dest_ephemeral_public.as_bytes());
-        signed_data[TRUNCATED_HASHBYTES + 32..TRUNCATED_HASHBYTES + 64]
-            .copy_from_slice(&dest_verifying_key.to_bytes());
-        signed_data[TRUNCATED_HASHBYTES + 64..].copy_from_slice(&signalling_bytes);
-        let signature = dest_signing_key.sign(&signed_data);
-
-        let mut proof = [0u8; 99];
-        proof[..64].copy_from_slice(&signature.to_bytes());
-        proof[64..96].copy_from_slice(dest_ephemeral_public.as_bytes());
-        proof[96..99].copy_from_slice(&signalling_bytes);
-
-        link.set_destination_keys(&dest_verifying_key.to_bytes())
-            .unwrap();
-        link.process_proof(&proof).unwrap();
-
-        // Now test build_data_packet
         let message = b"Hello, link!";
-        let packet = link.build_data_packet(message, &mut OsRng).unwrap();
+        let packet = initiator.build_data_packet(message, &mut OsRng).unwrap();
 
         // Verify packet structure:
         // [flags (1)] [hops (1)] [link_id (16)] [context (1)] [encrypted_data]
         assert!(packet.len() >= 19 + 48); // header + min encrypted size
 
-        // Flags should be: Type1, no context, broadcast, Link dest type, Data packet type
         // dest_type=Link=0b11, packet_type=Data=0b00 -> bits 3-0 = 0b1100 = 0x0C
         assert_eq!(packet[0] & 0x0F, 0x0C);
 
@@ -2129,16 +2024,15 @@ mod tests {
         assert_eq!(packet[1], 0x00);
 
         // Link ID should be in bytes 2-17
-        assert_eq!(&packet[2..18], link_id.as_bytes());
+        assert_eq!(&packet[2..18], initiator.id().as_bytes());
 
         // Context should be None (0x00)
         assert_eq!(packet[18], 0x00);
 
-        // Encrypted data starts at byte 19
-        // We can decrypt it to verify
+        // Decrypt payload to verify round-trip
         let encrypted_data = &packet[19..];
         let mut decrypted = vec![0u8; message.len() + 16];
-        let dec_len = link.decrypt(encrypted_data, &mut decrypted).unwrap();
+        let dec_len = initiator.decrypt(encrypted_data, &mut decrypted).unwrap();
         assert_eq!(dec_len, message.len());
         assert_eq!(&decrypted[..dec_len], message);
     }
@@ -2222,7 +2116,9 @@ mod tests {
             Link::new_incoming(&request_data, link_id, dest_hash, &mut OsRng).unwrap();
 
         // Build proof packet
-        let proof_packet = responder.build_proof_packet(&identity, 500, 1).unwrap();
+        let proof_packet = responder
+            .build_proof_packet(&identity, MTU as u32, 1)
+            .unwrap();
 
         // Verify responder state
         assert_eq!(responder.state(), LinkState::Handshake);
@@ -2255,10 +2151,12 @@ mod tests {
             Link::new_incoming(&request_data, link_id, dest_hash, &mut OsRng).unwrap();
 
         // Build proof once (transitions to Handshake)
-        responder.build_proof_packet(&identity, 500, 1).unwrap();
+        responder
+            .build_proof_packet(&identity, MTU as u32, 1)
+            .unwrap();
 
         // Second call should fail (wrong state)
-        let result = responder.build_proof_packet(&identity, 500, 1);
+        let result = responder.build_proof_packet(&identity, MTU as u32, 1);
         assert!(matches!(result, Err(LinkError::InvalidState)));
     }
 
@@ -2272,7 +2170,7 @@ mod tests {
         // Initiator should not be able to build proof
         let mut initiator = Link::new_outgoing(dest_hash, &mut OsRng);
 
-        let result = initiator.build_proof_packet(&identity, 500, 1);
+        let result = initiator.build_proof_packet(&identity, MTU as u32, 1);
         assert!(matches!(result, Err(LinkError::InvalidState)));
     }
 
@@ -2305,7 +2203,7 @@ mod tests {
 
         // Build proof packet
         let proof_packet = responder
-            .build_proof_packet(&dest_identity, 500, 1)
+            .build_proof_packet(&dest_identity, MTU as u32, 1)
             .unwrap();
 
         // --- Back to initiator ---
@@ -2350,7 +2248,7 @@ mod tests {
 
         // Build and process proof
         let proof_packet = responder
-            .build_proof_packet(&dest_identity, 500, 1)
+            .build_proof_packet(&dest_identity, MTU as u32, 1)
             .unwrap();
         initiator
             .set_destination_keys(dest_identity.ed25519_verifying().as_bytes())
@@ -2392,43 +2290,12 @@ mod tests {
 
     #[test]
     fn test_bidirectional_data_after_handshake() {
-        use crate::identity::Identity;
+        let (initiator, responder) = setup_active_link_pair();
 
-        let dest_hash = DestinationHash::new([0x42; TRUNCATED_HASHBYTES]);
-        let dest_identity = Identity::generate(&mut OsRng);
-
-        // Full handshake
-        let mut initiator = Link::new_outgoing(dest_hash, &mut OsRng);
-        let request_data = initiator.create_link_request();
-
-        let mut raw_packet = Vec::new();
-        raw_packet.push(0x02);
-        raw_packet.push(0x00);
-        raw_packet.extend_from_slice(dest_hash.as_bytes());
-        raw_packet.push(0x00);
-        raw_packet.extend_from_slice(&request_data);
-        let link_id = Link::calculate_link_id(&raw_packet);
-        initiator.set_link_id(link_id);
-
-        let mut responder =
-            Link::new_incoming(&request_data, link_id, dest_hash, &mut OsRng).unwrap();
-
-        let proof_packet = responder
-            .build_proof_packet(&dest_identity, 500, 1)
-            .unwrap();
-        initiator
-            .set_destination_keys(dest_identity.ed25519_verifying().as_bytes())
-            .unwrap();
-        initiator.process_proof(&proof_packet[19..]).unwrap();
-
-        let rtt_packet = initiator.build_rtt_packet(0.05, &mut OsRng).unwrap();
-        responder.process_rtt(&rtt_packet[19..]).unwrap();
-
-        // Both sides active
         assert_eq!(initiator.state(), LinkState::Active);
         assert_eq!(responder.state(), LinkState::Active);
 
-        // Test initiator -> responder
+        // Initiator -> responder
         let message1 = b"Hello from initiator!";
         let mut encrypted1 = vec![0u8; Link::encrypted_size(message1.len())];
         let enc_len1 = initiator
@@ -2441,7 +2308,7 @@ mod tests {
             .unwrap();
         assert_eq!(&decrypted1[..dec_len1], message1);
 
-        // Test responder -> initiator
+        // Responder -> initiator
         let message2 = b"Hello from responder!";
         let mut encrypted2 = vec![0u8; Link::encrypted_size(message2.len())];
         let enc_len2 = responder
@@ -2646,10 +2513,9 @@ mod tests {
         // Not active yet - should not send
         assert!(!initiator.should_send_keepalive(1000));
 
-        // Manually set to active state for testing
-        initiator.state = LinkState::Active;
+        initiator.set_state(LinkState::Active);
         initiator.mark_established(1000);
-        initiator.keepalive_secs = 10;
+        initiator.set_timing_for_test(10, initiator.stale_time_secs(), 1000);
 
         // Just established - should not send yet
         assert!(!initiator.should_send_keepalive(1005));
@@ -2660,9 +2526,9 @@ mod tests {
         // Responder should never proactively send keepalives
         let mut responder =
             Link::new_incoming(&request_data, link_id, dest_hash, &mut OsRng).unwrap();
-        responder.state = LinkState::Active;
+        responder.set_state(LinkState::Active);
         responder.mark_established(1000);
-        responder.keepalive_secs = 10;
+        responder.set_timing_for_test(10, responder.stale_time_secs(), 1000);
 
         // Even after interval, responder should not send
         assert!(!responder.should_send_keepalive(2000));
@@ -2673,11 +2539,8 @@ mod tests {
         let dest_hash = DestinationHash::new([0x42; TRUNCATED_HASHBYTES]);
         let mut link = Link::new_outgoing(dest_hash, &mut OsRng);
 
-        // Configure for easier testing
-        link.keepalive_secs = 10;
-        link.stale_time_secs = 20; // stale after 20s of no inbound
-        link.state = LinkState::Active;
-        link.last_inbound = 1000;
+        link.set_state(LinkState::Active);
+        link.set_timing_for_test(10, 20, 1000); // stale after 20s of no inbound
 
         // Not stale yet
         assert!(!link.is_stale(1015));
@@ -2686,7 +2549,7 @@ mod tests {
         assert!(link.is_stale(1021));
 
         // is_stale only works for Active state
-        link.state = LinkState::Stale;
+        link.set_state(LinkState::Stale);
         assert!(!link.is_stale(1021));
 
         // should_close only works for Stale state
@@ -2718,7 +2581,7 @@ mod tests {
             Link::new_incoming(&request_data, link_id, dest_hash, &mut OsRng).unwrap();
 
         let proof_packet = responder
-            .build_proof_packet(&dest_identity, 500, 1)
+            .build_proof_packet(&dest_identity, MTU as u32, 1)
             .unwrap();
         initiator
             .set_destination_keys(dest_identity.ed25519_verifying().as_bytes())

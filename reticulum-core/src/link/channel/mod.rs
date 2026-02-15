@@ -292,6 +292,39 @@ impl Channel {
         self.rttvar_ms
     }
 
+    /// Check if the receive ring is empty
+    pub fn rx_ring_is_empty(&self) -> bool {
+        self.rx_ring.is_empty()
+    }
+
+    #[cfg(test)]
+    pub(crate) fn set_window_for_test(&mut self, w: usize) {
+        self.window = w;
+    }
+
+    #[cfg(test)]
+    pub(crate) fn set_max_tries_for_test(&mut self, t: u8) {
+        self.max_tries = t;
+    }
+
+    #[cfg(test)]
+    pub(crate) fn set_pacing_for_test(&mut self, interval_ms: u64, next_send_at_ms: u64) {
+        self.pacing_interval_ms = interval_ms;
+        self.next_send_at_ms = next_send_at_ms;
+    }
+
+    #[cfg(test)]
+    pub(crate) fn set_window_bounds_for_test(&mut self, window: usize, min: usize, max: usize) {
+        self.window = window;
+        self.window_min = min;
+        self.window_max = max;
+    }
+
+    #[cfg(test)]
+    pub(crate) fn set_next_rx_sequence_for_test(&mut self, seq: u16) {
+        self.next_rx_sequence = seq;
+    }
+
     /// Update SRTT from a sample RTT measurement (RFC 6298).
     fn update_srtt(&mut self, sample_ms: u64) {
         let sample = sample_ms as f64;
@@ -809,6 +842,7 @@ impl Channel {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::constants::MDU;
     use alloc::vec;
 
     /// Test message implementation
@@ -834,8 +868,8 @@ mod tests {
     fn test_channel_new() {
         let channel = Channel::new();
         assert_eq!(channel.next_tx_sequence, 0);
-        assert_eq!(channel.next_rx_sequence, 0);
-        assert_eq!(channel.window, CHANNEL_WINDOW_INITIAL);
+        assert_eq!(channel.next_rx_sequence(), 0);
+        assert_eq!(channel.window(), CHANNEL_WINDOW_INITIAL);
         assert!(channel.is_ready_to_send());
     }
 
@@ -859,7 +893,7 @@ mod tests {
     #[test]
     fn test_mdu_calculation() {
         let channel = Channel::new();
-        let link_mdu = 464;
+        let link_mdu = MDU;
         let expected = link_mdu - CHANNEL_ENVELOPE_HEADER_SIZE;
         assert_eq!(channel.mdu(link_mdu), expected);
     }
@@ -870,7 +904,7 @@ mod tests {
         let msg = TestMessage {
             data: vec![1, 2, 3],
         };
-        let result = channel.send(&msg, 464, 1000, 100);
+        let result = channel.send(&msg, MDU, 1000, 100);
         assert!(result.is_ok());
 
         let packed = result.unwrap();
@@ -896,16 +930,16 @@ mod tests {
     #[test]
     fn test_send_window_full() {
         let mut channel = Channel::new();
-        channel.window = 1;
+        channel.set_window_for_test(1);
 
         let msg = TestMessage { data: vec![1] };
 
         // First send should succeed
-        assert!(channel.send(&msg, 464, 1000, 100).is_ok());
+        assert!(channel.send(&msg, MDU, 1000, 100).is_ok());
 
         // Second send should fail (window full)
         assert_eq!(
-            channel.send(&msg, 464, 1000, 100),
+            channel.send(&msg, MDU, 1000, 100),
             Err(ChannelError::WindowFull)
         );
     }
@@ -914,7 +948,7 @@ mod tests {
     fn test_invalid_msgtype() {
         struct ReservedMessage;
         impl Message for ReservedMessage {
-            const MSGTYPE: u16 = 0xf000;
+            const MSGTYPE: u16 = CHANNEL_MSGTYPE_RESERVED;
             fn pack(&self) -> Vec<u8> {
                 Vec::new()
             }
@@ -924,7 +958,7 @@ mod tests {
         }
 
         let mut channel = Channel::new();
-        let result = channel.send(&ReservedMessage, 464, 1000, 100);
+        let result = channel.send(&ReservedMessage, MDU, 1000, 100);
         assert_eq!(result, Err(ChannelError::InvalidMsgType));
     }
 
@@ -940,7 +974,7 @@ mod tests {
         let received = result.unwrap();
         assert!(received.is_some());
         assert_eq!(received.unwrap().sequence, 0);
-        assert_eq!(channel.next_rx_sequence, 1);
+        assert_eq!(channel.next_rx_sequence(), 1);
     }
 
     #[test]
@@ -952,7 +986,7 @@ mod tests {
         let result = channel.receive(&envelope1.pack());
         assert!(result.is_ok());
         assert!(result.unwrap().is_none()); // Buffered
-        assert_eq!(channel.next_rx_sequence, 0); // Still expecting 0
+        assert_eq!(channel.next_rx_sequence(), 0); // Still expecting 0
 
         // Now receive sequence 0
         let envelope0 = Envelope::new(0x0001, 0, vec![1]);
@@ -961,13 +995,13 @@ mod tests {
         let received = result.unwrap();
         assert!(received.is_some());
         assert_eq!(received.unwrap().sequence, 0);
-        assert_eq!(channel.next_rx_sequence, 1);
+        assert_eq!(channel.next_rx_sequence(), 1);
 
         // Drain should give us sequence 1
         let drained = channel.drain_received();
         assert_eq!(drained.len(), 1);
         assert_eq!(drained[0].sequence, 1);
-        assert_eq!(channel.next_rx_sequence, 2);
+        assert_eq!(channel.next_rx_sequence(), 2);
     }
 
     #[test]
@@ -975,7 +1009,7 @@ mod tests {
         let mut channel = Channel::new();
         let msg = TestMessage { data: vec![1] };
 
-        channel.send(&msg, 464, 1000, 100).unwrap();
+        channel.send(&msg, MDU, 1000, 100).unwrap();
         assert_eq!(channel.outstanding(), 1);
 
         // Should return true for known sequence
@@ -993,7 +1027,7 @@ mod tests {
         let msg = TestMessage { data: vec![1] };
 
         // Send message at time 1000
-        channel.send(&msg, 464, 1000, 100).unwrap();
+        channel.send(&msg, MDU, 1000, 100).unwrap();
 
         // Poll before timeout - no actions
         let actions = channel.poll(1000, 100);
@@ -1013,10 +1047,10 @@ mod tests {
     #[test]
     fn test_poll_max_retries() {
         let mut channel = Channel::new();
-        channel.max_tries = 2;
+        channel.set_max_tries_for_test(2);
         let msg = TestMessage { data: vec![1] };
 
-        channel.send(&msg, 464, 0, 100).unwrap();
+        channel.send(&msg, MDU, 0, 100).unwrap();
 
         // First timeout - retransmit
         let actions = channel.poll(10_000, 100);
@@ -1035,15 +1069,15 @@ mod tests {
 
         // Fast RTT should increase max window
         channel.update_window_for_rtt(100);
-        assert_eq!(channel.window_max, CHANNEL_WINDOW_MAX_FAST);
+        assert_eq!(channel.window_max(), CHANNEL_WINDOW_MAX_FAST);
 
         // Medium RTT
         channel.update_window_for_rtt(500);
-        assert_eq!(channel.window_max, CHANNEL_WINDOW_MAX_MEDIUM);
+        assert_eq!(channel.window_max(), CHANNEL_WINDOW_MAX_MEDIUM);
 
         // Slow RTT
         channel.update_window_for_rtt(2000);
-        assert_eq!(channel.window_max, CHANNEL_WINDOW_MAX_SLOW);
+        assert_eq!(channel.window_max(), CHANNEL_WINDOW_MAX_SLOW);
     }
 
     #[test]
@@ -1063,7 +1097,7 @@ mod tests {
         let msg = StreamDataMessage::new(0, vec![1, 2, 3], false, false);
 
         let mut channel = Channel::new();
-        let result = channel.send_system(&msg, 464, 1000, 100);
+        let result = channel.send_system(&msg, MDU, 1000, 100);
         assert!(result.is_ok(), "send_system should allow reserved MSGTYPE");
 
         let packed = result.unwrap();
@@ -1078,7 +1112,7 @@ mod tests {
         let msg = StreamDataMessage::new(0, vec![1, 2, 3], false, false);
 
         let mut channel = Channel::new();
-        let result = channel.send(&msg, 464, 1000, 100);
+        let result = channel.send(&msg, MDU, 1000, 100);
         assert_eq!(
             result,
             Err(ChannelError::InvalidMsgType),
@@ -1089,16 +1123,16 @@ mod tests {
     #[test]
     fn test_send_system_respects_window() {
         let mut channel = Channel::new();
-        channel.window = 1;
+        channel.set_window_for_test(1);
 
         let msg = StreamDataMessage::new(0, vec![1], false, false);
 
         // First send should succeed
-        assert!(channel.send_system(&msg, 464, 1000, 100).is_ok());
+        assert!(channel.send_system(&msg, MDU, 1000, 100).is_ok());
 
         // Second send should fail (window full)
         assert_eq!(
-            channel.send_system(&msg, 464, 1000, 100),
+            channel.send_system(&msg, MDU, 1000, 100),
             Err(ChannelError::WindowFull)
         );
     }
@@ -1135,7 +1169,7 @@ mod tests {
         };
 
         // Send message
-        let packed = sender.send(&msg, 464, 1000, 100).unwrap();
+        let packed = sender.send(&msg, MDU, 1000, 100).unwrap();
 
         // Receive using typed API
         let received: Option<TestMessage> = receiver.receive_message(&packed).unwrap();
@@ -1157,8 +1191,8 @@ mod tests {
             data: vec![40, 50, 60],
         };
 
-        let packed1 = sender.send(&msg1, 464, 1000, 100).unwrap();
-        let packed2 = sender.send(&msg2, 464, 2000, 100).unwrap();
+        let packed1 = sender.send(&msg1, MDU, 1000, 100).unwrap();
+        let packed2 = sender.send(&msg2, MDU, 2000, 100).unwrap();
 
         // Receive in order
         let r1: Option<TestMessage> = receiver.receive_message(&packed1).unwrap();
@@ -1197,7 +1231,7 @@ mod tests {
 
         // Send OtherMessage
         let msg = OtherMessage { value: 42 };
-        let packed = sender.send(&msg, 464, 1000, 100).unwrap();
+        let packed = sender.send(&msg, MDU, 1000, 100).unwrap();
 
         // Try to receive as TestMessage - should return None (type mismatch)
         let result: Option<TestMessage> = receiver.receive_message(&packed).unwrap();
@@ -1212,8 +1246,8 @@ mod tests {
         let msg0 = TestMessage { data: vec![0] };
         let msg1 = TestMessage { data: vec![1] };
 
-        let packed0 = sender.send(&msg0, 464, 1000, 100).unwrap();
-        let packed1 = sender.send(&msg1, 464, 2000, 100).unwrap();
+        let packed0 = sender.send(&msg0, MDU, 1000, 100).unwrap();
+        let packed1 = sender.send(&msg1, MDU, 2000, 100).unwrap();
 
         // Receive out of order (msg1 first)
         let r1: Option<TestMessage> = receiver.receive_message(&packed1).unwrap();
@@ -1280,7 +1314,7 @@ mod tests {
         assert_eq!(result, Ok(None));
 
         // rx_ring must not grow (duplicate was not buffered)
-        assert!(channel.rx_ring.is_empty());
+        assert!(channel.rx_ring_is_empty());
     }
 
     #[test]
@@ -1295,7 +1329,7 @@ mod tests {
             let result = channel.receive(&env.pack());
             assert!(result.unwrap().is_some());
         }
-        assert_eq!(channel.next_rx_sequence, 141);
+        assert_eq!(channel.next_rx_sequence(), 141);
 
         // Retransmit seq=128 (the scenario from the bug report)
         let env_retx = Envelope::new(0x0001, 128, vec![128]);
@@ -1311,7 +1345,7 @@ mod tests {
         let mut channel = Channel::new();
 
         // Set next_rx_sequence near the modulus boundary
-        channel.next_rx_sequence = 5;
+        channel.set_next_rx_sequence_for_test(5);
 
         // Receive seq=65534 — behind next_rx=5 across the wraparound boundary
         // offset = (65536 - 5 + 65534) % 65536 = 65529, which is >= 32768
@@ -1325,29 +1359,28 @@ mod tests {
     #[test]
     fn test_pacing_delay_returned() {
         let mut channel = Channel::new();
-        channel.pacing_interval_ms = 100;
-        channel.next_send_at_ms = 1100;
+        channel.set_pacing_for_test(100, 1100);
 
         let msg = TestMessage { data: vec![1] };
 
         // Send at t=1000, before next_send_at (1100) → PacingDelay
-        let result = channel.send(&msg, 464, 1000, 100);
+        let result = channel.send(&msg, MDU, 1000, 100);
         assert_eq!(result, Err(ChannelError::PacingDelay { ready_at_ms: 1100 }));
 
         // Send at t=1100, at next_send_at → Ok
-        let result = channel.send(&msg, 464, 1100, 100);
+        let result = channel.send(&msg, MDU, 1100, 100);
         assert!(result.is_ok());
     }
 
     #[test]
     fn test_pacing_next_send_set_on_send() {
         let mut channel = Channel::new();
-        channel.pacing_interval_ms = 50;
+        channel.set_pacing_for_test(50, 0);
 
         let msg = TestMessage { data: vec![1] };
-        channel.send(&msg, 464, 1000, 100).unwrap();
+        channel.send(&msg, MDU, 1000, 100).unwrap();
 
-        assert_eq!(channel.next_send_at_ms, 1050);
+        assert_eq!(channel.next_send_at_ms(), 1050);
     }
 
     #[test]
@@ -1355,14 +1388,14 @@ mod tests {
         // Window=1 with pacing active. After one send, the second should
         // return WindowFull (not PacingDelay), because there's no window slot.
         let mut channel = Channel::new();
-        channel.window = 1;
-        channel.pacing_interval_ms = 10;
+        channel.set_window_for_test(1);
+        channel.set_pacing_for_test(10, 0);
 
         let msg = TestMessage { data: vec![1] };
-        channel.send(&msg, 464, 1000, 100).unwrap();
+        channel.send(&msg, MDU, 1000, 100).unwrap();
 
         // Second send: window full takes priority over pacing
-        let result = channel.send(&msg, 464, 1000, 100);
+        let result = channel.send(&msg, MDU, 1000, 100);
         assert_eq!(result, Err(ChannelError::WindowFull));
     }
 
@@ -1373,14 +1406,14 @@ mod tests {
         let rtt_ms = 2000u64;
         let msg = TestMessage { data: vec![1] };
 
-        channel.send(&msg, 464, 0, rtt_ms).unwrap();
+        channel.send(&msg, MDU, 0, rtt_ms).unwrap();
 
         // First retransmit (tries=1→2): window shrinks but pacing does NOT
         // double (Change D: first retransmit may be spurious)
         let actions = channel.poll(100_000, rtt_ms);
         assert!(!actions.is_empty());
         assert!(matches!(&actions[0], ChannelAction::Retransmit { .. }));
-        let pacing_after_first = channel.pacing_interval_ms;
+        let pacing_after_first = channel.pacing_interval_ms();
 
         // Second retransmit (tries=2→3): now pacing DOES double
         let actions = channel.poll(200_000, rtt_ms);
@@ -1388,25 +1421,25 @@ mod tests {
         assert!(matches!(&actions[0], ChannelAction::Retransmit { .. }));
 
         // After recalculate_pacing + MD: pacing > base pacing
-        let base_pacing = rtt_ms / channel.window as u64;
+        let base_pacing = rtt_ms / channel.window() as u64;
         assert!(
-            channel.pacing_interval_ms > base_pacing,
+            channel.pacing_interval_ms() > base_pacing,
             "MD should push pacing {} above recalculated base {}",
-            channel.pacing_interval_ms,
+            channel.pacing_interval_ms(),
             base_pacing
         );
         // Pacing should have increased from the first retransmit's level
         assert!(
-            channel.pacing_interval_ms > pacing_after_first,
+            channel.pacing_interval_ms() > pacing_after_first,
             "second retransmit pacing {} should exceed first retransmit pacing {}",
-            channel.pacing_interval_ms,
+            channel.pacing_interval_ms(),
             pacing_after_first
         );
         // And pacing should not exceed rtt_ms
         assert!(
-            channel.pacing_interval_ms <= rtt_ms,
+            channel.pacing_interval_ms() <= rtt_ms,
             "pacing {} should not exceed rtt {}",
-            channel.pacing_interval_ms,
+            channel.pacing_interval_ms(),
             rtt_ms
         );
     }
@@ -1417,21 +1450,21 @@ mod tests {
         let rtt_ms = 100u64;
 
         let msg = TestMessage { data: vec![1] };
-        channel.send(&msg, 464, 0, rtt_ms).unwrap();
+        channel.send(&msg, MDU, 0, rtt_ms).unwrap();
 
         // First retransmit (tries=1→2): no pacing MD (Change D)
         channel.poll(100_000, rtt_ms);
 
         // Set pacing near the ceiling before second retransmit
-        channel.pacing_interval_ms = 80;
+        channel.set_pacing_for_test(80, 0);
 
         // Second retransmit (tries=2→3): MD doubles to 160, capped at rtt_ms=100
         channel.poll(200_000, rtt_ms);
 
         assert!(
-            channel.pacing_interval_ms <= rtt_ms,
+            channel.pacing_interval_ms() <= rtt_ms,
             "pacing {} should not exceed rtt {}",
-            channel.pacing_interval_ms,
+            channel.pacing_interval_ms(),
             rtt_ms
         );
     }
@@ -1441,24 +1474,24 @@ mod tests {
         let mut channel = Channel::new();
 
         // rtt=100, window=5 → 20ms
-        channel.window = 5;
+        channel.set_window_for_test(5);
         channel.recalculate_pacing(100);
-        assert_eq!(channel.pacing_interval_ms, 20);
+        assert_eq!(channel.pacing_interval_ms(), 20);
 
         // rtt=1000, window=2 → 500ms
-        channel.window = 2;
+        channel.set_window_for_test(2);
         channel.recalculate_pacing(1000);
-        assert_eq!(channel.pacing_interval_ms, 500);
+        assert_eq!(channel.pacing_interval_ms(), 500);
 
         // window=0 → no change (stays at 500)
-        channel.window = 0;
+        channel.set_window_for_test(0);
         channel.recalculate_pacing(100);
-        assert_eq!(channel.pacing_interval_ms, 500);
+        assert_eq!(channel.pacing_interval_ms(), 500);
 
         // rtt=0 → no change (stays at 500)
-        channel.window = 5;
+        channel.set_window_for_test(5);
         channel.recalculate_pacing(0);
-        assert_eq!(channel.pacing_interval_ms, 500);
+        assert_eq!(channel.pacing_interval_ms(), 500);
     }
 
     #[test]
@@ -1466,19 +1499,17 @@ mod tests {
         let mut channel = Channel::new();
         // Use medium RTT (180..750ms): window_min=2, window_max=12
         let rtt_ms = 500u64;
-        channel.window = 5;
-        channel.window_min = CHANNEL_WINDOW_MIN_SLOW;
-        channel.window_max = CHANNEL_WINDOW_MAX_MEDIUM;
-        channel.pacing_interval_ms = rtt_ms / 5; // 100ms
+        channel.set_window_bounds_for_test(5, CHANNEL_WINDOW_MIN_SLOW, CHANNEL_WINDOW_MAX_MEDIUM);
+        channel.set_pacing_for_test(rtt_ms / 5, 0); // 100ms
 
         let msg = TestMessage { data: vec![1] };
-        channel.send(&msg, 464, 1000, rtt_ms).unwrap();
+        channel.send(&msg, MDU, 1000, rtt_ms).unwrap();
 
         // Deliver → window goes to 6, pacing = 500/6 = 83
         channel.mark_delivered(0, 1500, rtt_ms);
 
-        assert_eq!(channel.window, 6);
-        assert_eq!(channel.pacing_interval_ms, 83); // 500/6 = 83
+        assert_eq!(channel.window(), 6);
+        assert_eq!(channel.pacing_interval_ms(), 83); // 500/6 = 83
     }
 
     #[test]
@@ -1486,13 +1517,13 @@ mod tests {
         // Fresh channel: pacing_interval=0, next_send_at=0
         // Should allow immediate sends at any time
         let mut channel = Channel::new();
-        assert_eq!(channel.pacing_interval_ms, 0);
-        assert_eq!(channel.next_send_at_ms, 0);
+        assert_eq!(channel.pacing_interval_ms(), 0);
+        assert_eq!(channel.next_send_at_ms(), 0);
 
         let msg = TestMessage { data: vec![1] };
 
         // Send at t=5000 → should succeed (no PacingDelay)
-        let result = channel.send(&msg, 464, 5000, 0);
+        let result = channel.send(&msg, MDU, 5000, 0);
         assert!(
             result.is_ok(),
             "fresh channel should not pace: {:?}",
@@ -1500,7 +1531,7 @@ mod tests {
         );
 
         // next_send_at should be 5000 + 0 = 5000
-        assert_eq!(channel.next_send_at_ms, 5000);
+        assert_eq!(channel.next_send_at_ms(), 5000);
     }
 
     // ─── Live Timeout Tests ──────────────────────────────────────────────────
@@ -1511,13 +1542,13 @@ mod tests {
         // live timeout based on queue_len=2 (shorter). Verify retransmit
         // triggers earlier than it would with queue_len=5.
         let mut channel = Channel::new();
-        channel.window = 10;
+        channel.set_window_for_test(10);
         let rtt_ms = 100;
 
         // Send 5 messages at t=0
         for i in 0..5u8 {
             let msg = TestMessage { data: vec![i] };
-            channel.send(&msg, 464, 0, rtt_ms).unwrap();
+            channel.send(&msg, MDU, 0, rtt_ms).unwrap();
         }
         assert_eq!(channel.outstanding(), 5);
 
@@ -1557,17 +1588,17 @@ mod tests {
         // Poll: the first message's timeout is based on queue_len=5 (longer).
         // Verify it does NOT trigger at a time that queue_len=1 timeout would.
         let mut channel = Channel::new();
-        channel.window = 10;
+        channel.set_window_for_test(10);
         let rtt_ms = 100;
 
         // Send 1 message at t=0
         let msg = TestMessage { data: vec![0] };
-        channel.send(&msg, 464, 0, rtt_ms).unwrap();
+        channel.send(&msg, MDU, 0, rtt_ms).unwrap();
 
         // Send 4 more (queue grows to 5)
         for i in 1..5u8 {
             let msg = TestMessage { data: vec![i] };
-            channel.send(&msg, 464, 0, rtt_ms).unwrap();
+            channel.send(&msg, MDU, 0, rtt_ms).unwrap();
         }
         assert_eq!(channel.outstanding(), 5);
 
@@ -1587,11 +1618,11 @@ mod tests {
     fn test_srtt_first_measurement() {
         // Send message at t=1000, deliver at t=1100. SRTT = 100, RTTVAR = 50.
         let mut channel = Channel::new();
-        channel.window = 10;
+        channel.set_window_for_test(10);
         let rtt_ms = 500; // handshake RTT (fallback)
 
         let msg = TestMessage { data: vec![1] };
-        channel.send(&msg, 464, 1000, rtt_ms).unwrap();
+        channel.send(&msg, MDU, 1000, rtt_ms).unwrap();
 
         assert_eq!(channel.srtt_ms(), 0.0, "SRTT should start unmeasured");
 
@@ -1614,7 +1645,7 @@ mod tests {
         // Send and deliver multiple messages. Verify SRTT converges
         // toward the average and reflects the samples.
         let mut channel = Channel::new();
-        channel.window = 10;
+        channel.set_window_for_test(10);
         let rtt_ms = 500;
 
         // Sample RTTs: 100, 120, 80, 110, 90
@@ -1624,7 +1655,7 @@ mod tests {
                 data: vec![i as u8],
             };
             let t_send = (i as u64) * 1000;
-            channel.send(&msg, 464, t_send, rtt_ms).unwrap();
+            channel.send(&msg, MDU, t_send, rtt_ms).unwrap();
             channel.mark_delivered(i as u16, t_send + sample, rtt_ms);
         }
 
@@ -1641,11 +1672,11 @@ mod tests {
         // Send, timeout, retransmit, deliver. SRTT should NOT be updated
         // (Karn's algorithm: ambiguous RTT for retransmitted messages).
         let mut channel = Channel::new();
-        channel.window = 10;
+        channel.set_window_for_test(10);
         let rtt_ms = 100;
 
         let msg = TestMessage { data: vec![1] };
-        channel.send(&msg, 464, 0, rtt_ms).unwrap();
+        channel.send(&msg, MDU, 0, rtt_ms).unwrap();
 
         // Force a retransmit by polling after timeout
         let actions = channel.poll(100_000, rtt_ms);
@@ -1667,7 +1698,7 @@ mod tests {
         // Before any deliveries, effective_rtt_ms returns fallback.
         // After delivery with sample, it returns SRTT.
         let mut channel = Channel::new();
-        channel.window = 10;
+        channel.set_window_for_test(10);
 
         assert_eq!(
             channel.effective_rtt_ms(500),
@@ -1677,7 +1708,7 @@ mod tests {
 
         // Send and deliver to establish SRTT
         let msg = TestMessage { data: vec![1] };
-        channel.send(&msg, 464, 1000, 500).unwrap();
+        channel.send(&msg, MDU, 1000, 500).unwrap();
         channel.mark_delivered(0, 1200, 500);
 
         assert_eq!(
@@ -1698,7 +1729,7 @@ mod tests {
         let rtt_ms = 100;
 
         let msg = TestMessage { data: vec![1] };
-        channel.send(&msg, 464, 0, rtt_ms).unwrap();
+        channel.send(&msg, MDU, 0, rtt_ms).unwrap();
 
         // 7 retransmits (tries 1→2, 2→3, ..., 7→8)
         let mut t = 0u64;
@@ -1740,7 +1771,7 @@ mod tests {
         let rtt_ms = 2000u64; // slow RTT for manageable window
         let msg = TestMessage { data: vec![1] };
 
-        channel.send(&msg, 464, 0, rtt_ms).unwrap();
+        channel.send(&msg, MDU, 0, rtt_ms).unwrap();
 
         // First retransmit
         let actions = channel.poll(100_000, rtt_ms);
@@ -1751,8 +1782,8 @@ mod tests {
         ));
 
         // Pacing should be recalculate_pacing result only (no MD doubling)
-        let pacing_after_first = channel.pacing_interval_ms;
-        let base_pacing = rtt_ms / channel.window as u64;
+        let pacing_after_first = channel.pacing_interval_ms();
+        let base_pacing = rtt_ms / channel.window() as u64;
         assert_eq!(
             pacing_after_first, base_pacing,
             "first retransmit: pacing {} should equal base {} (no MD)",
@@ -1769,11 +1800,103 @@ mod tests {
 
         // Now pacing SHOULD be doubled (MD kicks in for tries >= 2)
         assert!(
-            channel.pacing_interval_ms > base_pacing,
+            channel.pacing_interval_ms() > base_pacing,
             "second retransmit: pacing {} should exceed base {} (MD applied)",
-            channel.pacing_interval_ms,
+            channel.pacing_interval_ms(),
             base_pacing
         );
+    }
+
+    // ─── T8: FAST Tier Guard ────────────────────────────────────────────────
+
+    #[test]
+    fn test_fast_tier_guard_handshake_rtt_prevents_promotion() {
+        // Guards the v0.5.19 fix: mark_delivered() calls adjust_window(true, rtt_ms)
+        // where rtt_ms is the handshake RTT, not the SRTT. This prevents spurious
+        // promotion to FAST tier when proof round-trips are fast but the link is slow.
+        let mut channel = Channel::new();
+
+        // Default window bounds: SLOW tier (min=2, max=5)
+        assert_eq!(channel.window_max(), CHANNEL_WINDOW_MAX_SLOW);
+
+        // Send a message at t=1000 with a slow handshake RTT (1200ms)
+        let msg = TestMessage {
+            data: vec![1, 2, 3],
+        };
+        channel.send(&msg, MDU, 1000, 1200).unwrap();
+
+        // Deliver it: handshake RTT=1200ms, sample RTT=(1200-1000)=200ms
+        channel.mark_delivered(0, 1200, 1200);
+
+        // Window tier should remain SLOW because handshake RTT (1200ms) >= CHANNEL_RTT_MEDIUM_MS (750ms)
+        assert_eq!(
+            channel.window_max(),
+            CHANNEL_WINDOW_MAX_SLOW,
+            "window_max should stay SLOW (5) because handshake RTT 1200ms > 750ms threshold"
+        );
+
+        // SRTT should be ~200ms (fast), but that doesn't affect the tier
+        assert!(
+            (channel.srtt_ms() - 200.0).abs() < 1.0,
+            "SRTT should be ~200ms from sample, got {}",
+            channel.srtt_ms()
+        );
+    }
+
+    // ─── T9: Channel Edge Cases ─────────────────────────────────────────────
+
+    #[test]
+    fn test_poll_empty_tx_ring() {
+        let mut channel = Channel::new();
+        // Poll on empty channel — should return no actions
+        let actions = channel.poll(1000, 500);
+        assert!(actions.is_empty());
+    }
+
+    #[test]
+    fn test_poll_after_delivery_no_retransmit() {
+        let mut channel = Channel::new();
+        let msg = TestMessage { data: vec![1] };
+
+        // Send a message, then mark it delivered
+        channel.send(&msg, MDU, 1000, 100).unwrap();
+        assert_eq!(channel.outstanding(), 1);
+        channel.mark_delivered(0, 1100, 100);
+        assert_eq!(channel.outstanding(), 0);
+
+        // Poll should return no actions (tx_ring is empty)
+        let actions = channel.poll(100_000, 100);
+        assert!(actions.is_empty());
+    }
+
+    #[test]
+    fn test_window_floor_enforcement() {
+        let mut channel = Channel::new();
+        channel.set_window_bounds_for_test(3, 2, 5);
+
+        // Decrement window: 3 → 2
+        channel.adjust_window(false, 2000);
+        assert_eq!(channel.window(), 2);
+
+        // Decrement again: should stay at 2 (floor = window_min)
+        channel.adjust_window(false, 2000);
+        assert_eq!(channel.window(), 2, "window should not go below window_min");
+    }
+
+    #[test]
+    fn test_adjust_window_increment_to_max() {
+        let mut channel = Channel::new();
+        channel.set_window_bounds_for_test(3, 2, 5);
+
+        // Increment: 3 → 4 → 5
+        channel.adjust_window(true, 2000);
+        assert_eq!(channel.window(), 4);
+        channel.adjust_window(true, 2000);
+        assert_eq!(channel.window(), 5);
+
+        // At max — should not go higher
+        channel.adjust_window(true, 2000);
+        assert_eq!(channel.window(), 5, "window should not exceed window_max");
     }
 
     #[test]
@@ -1787,12 +1910,12 @@ mod tests {
         let msg1 = TestMessage {
             data: vec![1, 2, 3],
         };
-        channel.send(&msg1, 464, 1000, handshake_rtt).unwrap();
+        channel.send(&msg1, MDU, 1000, handshake_rtt).unwrap();
 
         // Deliver at t=1200 → sample RTT = 200ms, SRTT = 200.0 (first sample)
         channel.mark_delivered(0, 1200, handshake_rtt);
         assert!(
-            (channel.srtt_ms - 200.0).abs() < 1.0,
+            (channel.srtt_ms() - 200.0).abs() < 1.0,
             "SRTT should be ~200ms"
         );
 
@@ -1800,11 +1923,11 @@ mod tests {
         let msg2 = TestMessage {
             data: vec![4, 5, 6],
         };
-        channel.send(&msg2, 464, 1300, handshake_rtt).unwrap();
+        channel.send(&msg2, MDU, 1300, handshake_rtt).unwrap();
         channel.mark_delivered(1, 1500, handshake_rtt);
 
         // SRTT should still be ~200ms (second sample also 200ms)
-        let srtt = channel.srtt_ms as u64;
+        let srtt = channel.srtt_ms() as u64;
         assert!(
             (180..=220).contains(&srtt),
             "SRTT should be ~200ms, got {}",
@@ -1812,19 +1935,23 @@ mod tests {
         );
 
         // Pacing should be based on SRTT (~200ms), NOT handshake RTT (1200ms)
-        let expected_pacing = srtt / channel.window as u64;
+        let expected_pacing = srtt / channel.window() as u64;
         assert_eq!(
-            channel.pacing_interval_ms, expected_pacing,
+            channel.pacing_interval_ms(),
+            expected_pacing,
             "pacing should be SRTT/window = {}/{} = {}, got {}",
-            srtt, channel.window, expected_pacing, channel.pacing_interval_ms
+            srtt,
+            channel.window(),
+            expected_pacing,
+            channel.pacing_interval_ms()
         );
 
         // Specifically: pacing must NOT be based on handshake RTT
-        let handshake_pacing = handshake_rtt / channel.window as u64;
+        let handshake_pacing = handshake_rtt / channel.window() as u64;
         assert!(
-            channel.pacing_interval_ms < handshake_pacing,
+            channel.pacing_interval_ms() < handshake_pacing,
             "pacing {} should be less than handshake-based pacing {}",
-            channel.pacing_interval_ms,
+            channel.pacing_interval_ms(),
             handshake_pacing
         );
     }
