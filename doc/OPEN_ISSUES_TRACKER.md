@@ -18,38 +18,27 @@ Phase numbering follows `doc/BATTLEPLAN.md`. Phases 0–5 are complete.
 | 6 | Consolidation (SSOT, receipt tracking) | **next** |
 | 7 | API polish (naming, visibility, perf) | open |
 
-## Effort
-
-| Size | Meaning |
-|------|---------|
-| S | Hours — single file, mechanical change |
-| M | Day — multiple files, some thinking needed |
-| L | Days — many files, new infrastructure |
-| XL | Week — touches entire codebase, cascading changes |
-
----
-
 ## Status Overview
 
-| ID | P | Effort | Phase | Status | Category | Summary |
-|----|---|--------|-------|--------|----------|---------|
-| A4 | M | M | 6 | open | Structural | `data_receipts` + `channel_receipt_keys` tight coupling |
-| E1 | M | S | 6 | open | Structural | `handle_link_data` god method (241 lines) |
-| E2 | M | S | 7 | open | API | `pub(crate)` field audit |
-| E3 | M | S | 7 | open | Robustness | Silent send failures (`let _ =` on transport calls) |
-| E4 | L | S | 7 | open | SSOT | Identity table asymmetry |
-| E5 | H | S | 6 | open | Bug | H1 unregister path missing |
-| D2 | M | S | 7 | open | Naming | `PacketEndpoint` isn't an endpoint |
-| D3 | M | S | 7 | open | Naming | `send()` vs `send_bytes()` hides real distinction |
-| D5 | M | S | 7 | open | Naming | `DataReceived` vs `MessageReceived` subtle distinction |
-| D6 | M | S | 7 | open | Naming | `DeliveryConfirmed` vs `LinkDeliveryConfirmed` |
-| D7 | M | S | 7 | open | Naming | `ProofRequested` vs `LinkProofRequested` |
-| D12 | L | S | 7 | open | Naming | No distinction between handshake and active-link timeout |
-| D13 | L | S | 7 | open | Naming | Channel exhaustion indistinguishable from other closes |
-| F2 | L | S | 7 | open | Coupling | `connect()` silently broadcasts when no path exists |
-| G1 | L | S | 7 | open | Perf | Lock-and-read pattern in event loop |
-| H1 | M | M | 6 | open | SSOT | Destination in 2 maps |
-| H4 | M | M | 6 | open | SSOT | `channel_receipt_keys` and `channel_hash_to_seq` — same mapping, two directions |
+| ID | P | Phase | Status | Category | Summary |
+|----|---|-------|--------|----------|---------|
+| A4 | M | 6 | open | Structural | `data_receipts` + `channel_receipt_keys` tight coupling |
+| E1 | M | 6 | open | Structural | `handle_link_data` god method (241 lines) |
+| E2 | M | 7 | open | API | `pub(crate)` field audit |
+| E3 | M | 7 | open | Robustness | Silent send failures (`let _ =` on transport calls) |
+| E4 | L | 7 | open | SSOT | Identity table asymmetry |
+| E5 | H | 6 | open | Bug | H1 unregister path missing |
+| D2 | M | 7 | open | Naming | `PacketEndpoint` isn't an endpoint |
+| D3 | M | 7 | open | Naming | `send()` vs `send_bytes()` hides real distinction |
+| D5 | M | 7 | open | Naming | `DataReceived` vs `MessageReceived` subtle distinction |
+| D6 | M | 7 | open | Naming | `DeliveryConfirmed` vs `LinkDeliveryConfirmed` |
+| D7 | M | 7 | open | Naming | `ProofRequested` vs `LinkProofRequested` |
+| D12 | L | 7 | open | Naming | No distinction between handshake and active-link timeout |
+| D13 | L | 7 | open | Naming | Channel exhaustion indistinguishable from other closes |
+| F2 | L | 7 | open | Coupling | `connect()` silently broadcasts when no path exists |
+| G1 | L | 7 | open | Perf | Lock-and-read pattern in event loop |
+| H1 | M | 6 | open | SSOT | Destination in 2 maps |
+| H4 | M | 6 | open | SSOT | `channel_receipt_keys` and `channel_hash_to_seq` — same mapping, two directions |
 
 ---
 
@@ -58,7 +47,6 @@ Phase numbering follows `doc/BATTLEPLAN.md`. Phases 0–5 are complete.
 ### A4: `data_receipts` + `channel_receipt_keys` tight coupling
 - **Status:** open
 - **Priority:** MEDIUM
-- **Effort:** M
 - **Phase:** 6
 - **Category:** Structural
 - **Blocked-by:** —
@@ -70,7 +58,6 @@ Phase numbering follows `doc/BATTLEPLAN.md`. Phases 0–5 are complete.
 ### E1: `handle_link_data` god method (241 lines)
 - **Status:** open
 - **Priority:** MEDIUM
-- **Effort:** S
 - **Phase:** 6
 - **Category:** Structural
 - **Blocked-by:** —
@@ -82,7 +69,6 @@ Phase numbering follows `doc/BATTLEPLAN.md`. Phases 0–5 are complete.
 ### E2: `pub(crate)` field audit
 - **Status:** open
 - **Priority:** MEDIUM
-- **Effort:** S
 - **Phase:** 7
 - **Category:** API
 - **Blocked-by:** —
@@ -92,7 +78,6 @@ Phase numbering follows `doc/BATTLEPLAN.md`. Phases 0–5 are complete.
 ### E3: Silent send failures (`let _ =` on transport calls)
 - **Status:** open
 - **Priority:** MEDIUM
-- **Effort:** S
 - **Phase:** 7
 - **Category:** Robustness
 - **Blocked-by:** —
@@ -102,7 +87,6 @@ Phase numbering follows `doc/BATTLEPLAN.md`. Phases 0–5 are complete.
 ### E4: Identity table asymmetry
 - **Status:** open
 - **Priority:** LOW
-- **Effort:** S
 - **Phase:** 7
 - **Category:** SSOT
 - **Blocked-by:** —
@@ -112,7 +96,6 @@ Phase numbering follows `doc/BATTLEPLAN.md`. Phases 0–5 are complete.
 ### E5: H1 unregister path missing
 - **Status:** open
 - **Priority:** HIGH
-- **Effort:** S
 - **Phase:** 6
 - **Category:** Bug
 - **Blocked-by:** —
@@ -122,7 +105,6 @@ Phase numbering follows `doc/BATTLEPLAN.md`. Phases 0–5 are complete.
 ### D2: `PacketEndpoint` isn't an endpoint
 - **Status:** open
 - **Priority:** MEDIUM
-- **Effort:** S
 - **Phase:** 7
 - **Category:** Naming
 - **Blocked-by:** —
@@ -133,7 +115,6 @@ Phase numbering follows `doc/BATTLEPLAN.md`. Phases 0–5 are complete.
 ### D3: `send()` vs `send_bytes()` hides real distinction
 - **Status:** open
 - **Priority:** MEDIUM
-- **Effort:** S
 - **Phase:** 7
 - **Category:** Naming
 - **Blocked-by:** —
@@ -144,7 +125,6 @@ Phase numbering follows `doc/BATTLEPLAN.md`. Phases 0–5 are complete.
 ### D5: `DataReceived` vs `MessageReceived` subtle distinction
 - **Status:** open
 - **Priority:** MEDIUM
-- **Effort:** S
 - **Phase:** 7
 - **Category:** Naming
 - **Blocked-by:** —
@@ -155,7 +135,6 @@ Phase numbering follows `doc/BATTLEPLAN.md`. Phases 0–5 are complete.
 ### D6: `DeliveryConfirmed` vs `LinkDeliveryConfirmed`
 - **Status:** open
 - **Priority:** MEDIUM
-- **Effort:** S
 - **Phase:** 7
 - **Category:** Naming
 - **Blocked-by:** —
@@ -166,7 +145,6 @@ Phase numbering follows `doc/BATTLEPLAN.md`. Phases 0–5 are complete.
 ### D7: `ProofRequested` vs `LinkProofRequested`
 - **Status:** open
 - **Priority:** MEDIUM
-- **Effort:** S
 - **Phase:** 7
 - **Category:** Naming
 - **Blocked-by:** —
@@ -177,7 +155,6 @@ Phase numbering follows `doc/BATTLEPLAN.md`. Phases 0–5 are complete.
 ### D12: No distinction between handshake timeout and active-link timeout
 - **Status:** open
 - **Priority:** LOW
-- **Effort:** S
 - **Phase:** 7
 - **Category:** Naming
 - **Blocked-by:** —
@@ -188,7 +165,6 @@ Phase numbering follows `doc/BATTLEPLAN.md`. Phases 0–5 are complete.
 ### D13: Channel exhaustion indistinguishable from other closes
 - **Status:** open
 - **Priority:** LOW
-- **Effort:** S
 - **Phase:** 7
 - **Category:** Naming
 - **Blocked-by:** —
@@ -199,7 +175,6 @@ Phase numbering follows `doc/BATTLEPLAN.md`. Phases 0–5 are complete.
 ### F2: `connect()` silently broadcasts when no path exists
 - **Status:** open
 - **Priority:** LOW
-- **Effort:** S
 - **Phase:** 7
 - **Category:** Coupling
 - **Blocked-by:** —
@@ -210,7 +185,6 @@ Phase numbering follows `doc/BATTLEPLAN.md`. Phases 0–5 are complete.
 ### G1: Lock-and-read pattern in event loop
 - **Status:** open
 - **Priority:** LOW
-- **Effort:** S
 - **Phase:** 7
 - **Category:** Perf
 - **Blocked-by:** —
@@ -221,7 +195,6 @@ Phase numbering follows `doc/BATTLEPLAN.md`. Phases 0–5 are complete.
 ### H1: Destination in 2 maps
 - **Status:** open
 - **Priority:** MEDIUM
-- **Effort:** M
 - **Phase:** 6
 - **Category:** SSOT
 - **Blocked-by:** —
@@ -233,7 +206,6 @@ Phase numbering follows `doc/BATTLEPLAN.md`. Phases 0–5 are complete.
 ### H4: `channel_receipt_keys` and `channel_hash_to_seq` — same mapping, two directions
 - **Status:** open
 - **Priority:** MEDIUM
-- **Effort:** M
 - **Phase:** 6
 - **Category:** SSOT
 - **Blocked-by:** —
