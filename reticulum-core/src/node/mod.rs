@@ -565,9 +565,11 @@ impl<R: CryptoRngCore, C: Clock, S: Storage> NodeCore<R, C, S> {
         // Emit the InterfaceDown event
         self.events.push(NodeEvent::InterfaceDown(iface_idx));
 
+        let next_deadline_ms = self.next_deadline();
         crate::transport::TickOutput {
             actions: Vec::new(),
             events: core::mem::take(&mut self.events),
+            next_deadline_ms,
         }
     }
 
@@ -581,11 +583,16 @@ impl<R: CryptoRngCore, C: Clock, S: Storage> NodeCore<R, C, S> {
             self.handle_transport_event(event);
         }
 
-        // Collect all actions and events
+        // Collect all actions, events, and next deadline
         let actions = self.transport.drain_actions();
         let events = core::mem::take(&mut self.events);
+        let next_deadline_ms = self.next_deadline();
 
-        crate::transport::TickOutput { actions, events }
+        crate::transport::TickOutput {
+            actions,
+            events,
+            next_deadline_ms,
+        }
     }
 
     // ─── Accessors ─────────────────────────────────────────────────────────────

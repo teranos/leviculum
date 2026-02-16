@@ -23,7 +23,6 @@ Phase numbering follows `doc/BATTLEPLAN.md`. Phases 0–6 are complete.
 | ID | P | Phase | Status | Category | Summary |
 |----|---|-------|--------|----------|---------|
 | F2 | L | 7 | open | Coupling | `connect()` silently broadcasts when no path exists |
-| G1 | L | 7 | open | Perf | Lock-and-read pattern in event loop |
 | E7 | M | 7 | open | Structural | Split transport.rs (8k+ LoC) |
 | E8 | H | 7 | open | Feature gap | Single-packet encryption missing |
 
@@ -40,16 +39,6 @@ Phase numbering follows `doc/BATTLEPLAN.md`. Phases 0–6 are complete.
 - **Detail:** Falls back to broadcast instead of returning an error. Caller doesn't know whether the link request was routed or broadcast.
 - **Fix:** Return an enum indicating `Routed` vs `Broadcast`, or return an error.
 - **Test:** N/A (behavior change — add test with fix).
-
-### G1: Lock-and-read pattern in event loop
-- **Status:** open
-- **Priority:** LOW
-- **Phase:** 7
-- **Category:** Perf
-- **Blocked-by:** —
-- **Detail:** After `handle_timeout()` releases the Mutex, it's immediately re-acquired solely to read `next_deadline()` and `now_ms()`. Two lock acquisitions where one suffices.
-- **Fix:** Return next_deadline from `handle_timeout()` as part of `TickOutput`.
-- **Test:** N/A (optimization — existing tests cover behavior).
 
 ### E8: Single-packet encryption missing
 - **Status:** open

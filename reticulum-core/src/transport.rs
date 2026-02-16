@@ -110,6 +110,9 @@ pub struct TickOutput {
     pub actions: Vec<Action>,
     /// Application-visible events
     pub events: Vec<super::node::NodeEvent>,
+    /// Earliest deadline across all timers, if any.
+    /// The driver should call `handle_timeout()` at or before this time.
+    pub next_deadline_ms: Option<u64>,
 }
 
 impl TickOutput {
@@ -120,7 +123,7 @@ impl TickOutput {
 
     /// Check if this output contains no actions or events
     pub fn is_empty(&self) -> bool {
-        self.actions.is_empty() && self.events.is_empty()
+        self.actions.is_empty() && self.events.is_empty() && self.next_deadline_ms.is_none()
     }
 
     /// Merge another TickOutput into this one
@@ -129,6 +132,10 @@ impl TickOutput {
     pub fn merge(&mut self, other: TickOutput) {
         self.actions.extend(other.actions);
         self.events.extend(other.events);
+        self.next_deadline_ms = match (self.next_deadline_ms, other.next_deadline_ms) {
+            (Some(a), Some(b)) => Some(core::cmp::min(a, b)),
+            (a, b) => a.or(b),
+        };
     }
 }
 
@@ -137,6 +144,7 @@ impl core::fmt::Debug for TickOutput {
         f.debug_struct("TickOutput")
             .field("actions", &self.actions.len())
             .field("events", &self.events.len())
+            .field("next_deadline_ms", &self.next_deadline_ms)
             .finish()
     }
 }
@@ -2367,6 +2375,7 @@ mod tests {
                     data: vec![42],
                 }],
                 events: Vec::new(),
+                next_deadline_ms: None,
             };
             assert!(!output.is_empty());
             assert_eq!(output.actions.len(), 1);
@@ -2386,6 +2395,7 @@ mod tests {
                     },
                 ],
                 events: Vec::new(),
+                next_deadline_ms: None,
             };
 
             extern crate std;

@@ -561,27 +561,26 @@ async fn run_event_loop(
 
             // Branch 3: Timer — persistent deadline, not recomputed per iteration
             _ = tokio::time::sleep_until(next_poll) => {
-                let output = {
+                let (output, now_ms) = {
                     let mut core = inner.lock().unwrap();
-                    core.handle_timeout()
+                    let output = core.handle_timeout();
+                    let now_ms = core.now_ms();
+                    (output, now_ms)
                 };
+                let next = output.next_deadline_ms;
                 dispatch_output(
                     output,
                     &registry,
                     &event_tx,
                 );
 
-                // Advance next_poll based on next_deadline(), clamped to [250ms, 1s]
-                let interval = {
-                    let core = inner.lock().unwrap();
-                    match core.next_deadline() {
-                        Some(deadline_ms) => {
-                            let now_ms = core.now_ms();
-                            let delta = deadline_ms.saturating_sub(now_ms);
-                            Duration::from_millis(delta.clamp(250, 1000))
-                        }
-                        None => Duration::from_secs(1),
+                // Advance next_poll based on next_deadline_ms, clamped to [250ms, 1s]
+                let interval = match next {
+                    Some(deadline_ms) => {
+                        let delta = deadline_ms.saturating_sub(now_ms);
+                        Duration::from_millis(delta.clamp(250, 1000))
                     }
+                    None => Duration::from_secs(1),
                 };
                 next_poll = tokio::time::Instant::now() + interval;
             }
