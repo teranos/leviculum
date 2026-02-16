@@ -1,6 +1,6 @@
 # leviculum — Refactoring Battle Plan
 
-Phases 0–6 complete. Phase 7 in progress (7 of 14 done).
+Phases 0–6 complete. Phase 7 in progress (13 of 14 done).
 
 ---
 
@@ -54,12 +54,12 @@ Phases 0–6 complete. Phase 7 in progress (7 of 14 done).
 
 ## Phase 7: API Polish
 
-**14 issues (12 done, 2 remaining). The public face of the library.**
+**14 issues (13 done, 1 remaining). The public face of the library.**
 
 | # | Issue | P | What | Status |
 |---|-------|---|------|--------|
 | 1 | E8 | H | Single-packet encryption (blocks all single-packet interop) | open |
-| 2 | E7 | M | Split transport.rs (8k+ LoC) into submodules | open |
+| 2 | E7 | M | Split transport.rs — won't-fix (2253 LoC production, no natural boundaries) | **closed** |
 | 3 | D2 | M | `PacketEndpoint` → `PacketSender` | **done** |
 | 4 | D3 | M | `send()` → `try_send()`, `send_bytes()` → `send()` | **done** |
 | 5 | D5 | M | `DataReceived` → `LinkDataReceived` | **done** |
@@ -72,7 +72,7 @@ Phases 0–6 complete. Phase 7 in progress (7 of 14 done).
 | 12 | F2 | L | `connect()` returns `was_routed` flag | **done** |
 | 13 | G1 | L | `next_deadline_ms` in TickOutput, double-lock eliminated | **done** |
 
-**Naming renames complete** (D2, D3, D5, D6, D7, D12+D13). **E2 verified clean, E4 dead code removed.** Remaining: E8 (highest priority — blocks single-packet interop), E7 (structural).
+**Naming renames complete** (D2, D3, D5, D6, D7, D12+D13). **E2 verified clean, E4 dead code removed. E7 closed (won't-fix).** Remaining: E8 (single-packet encryption — blocks interop).
 
 ---
 
@@ -87,14 +87,12 @@ Phases 0–6 complete. Phase 7 in progress (7 of 14 done).
 | 4 — Rename | 7 | One concept, one name | **done** |
 | 5 — Structure | 3 | 4 maps → 1, LinkManager dissolved | **done** |
 | 6 — Consolidation | 5 | Single source of truth, proof bugs fixed | **done** |
-| 7 — API Polish | 14 | Clean public API, encryption, split transport | **12 done** |
+| 7 — API Polish | 14 | Clean public API, encryption, split transport | **13 done** |
 | **Total** | **63** | **Complete codebase overhaul** | |
-| **Remaining** | **2** | | |
+| **Remaining** | **1** | | |
 
 **Dependency chain (remaining):**
 ```
 Phase 7:
-  E8 (single-packet encryption — highest priority, blocks interop)
-  E7 (split transport.rs — independent)
-  (no remaining cleanup items)
+  E8 (single-packet encryption — blocks interop, last issue)
 ```
