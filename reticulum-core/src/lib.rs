@@ -103,23 +103,20 @@ pub mod traits;
 pub mod transport;
 
 // Re-export key types
-pub use announce::{generate_random_hash, AnnounceError, ReceivedAnnounce};
+pub use announce::{AnnounceError, ReceivedAnnounce};
 #[cfg(feature = "compression")]
 pub use compression::{compress, decompress, decompress_auto, CompressionError};
 pub use destination::{Destination, DestinationHash, DestinationType, Direction, ProofStrategy};
 pub use identity::Identity;
-pub use ifac::{IfacConfig, IfacError};
 #[cfg(feature = "compression")]
 pub use link::channel::CompressingWriter;
-pub use link::channel::{Channel, ChannelAction, ChannelError, Envelope, Message, MessageState};
+pub use link::channel::{Channel, ChannelError, Message};
 pub use link::{Link, LinkCloseReason, LinkError, LinkId, LinkState, PeerKeys};
 pub use node::{
     DeliveryError, LinkStats, NodeCore, NodeCoreBuilder, NodeEvent, RoutingDecision, SendError,
-    SendHandle, SendMethod, SendOptions, SendResult,
+    SendOptions,
 };
 pub use packet::Packet;
-pub use ratchet::{KnownRatchets, Ratchet, RatchetError};
-pub use receipt::{PacketReceipt, ReceiptStatus};
 pub use transport::{Action, InterfaceId, TickOutput};
 
 // Re-export traits

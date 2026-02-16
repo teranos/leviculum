@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+- **Remove 14 unused re-exports from `reticulum-core` root** — `generate_random_hash`, `IfacConfig`, `IfacError`, `ChannelAction`, `Envelope`, `MessageState`, `SendHandle`, `SendMethod`, `SendResult`, `PacketReceipt`, `ReceiptStatus`, `KnownRatchets`, `Ratchet`, `RatchetError` were publicly re-exported from `lib.rs` but never imported by any external crate. These types remain accessible via their module paths (e.g. `reticulum_core::ifac::IfacConfig`).
+- **Restrict buffer type visibility** — `RawChannelReader`, `RawChannelWriter`, `BufferedChannelWriter` changed from `pub` to `pub(crate)` in `link::channel`. No production code uses them yet (Buffer API not integrated — ROADMAP C10). Removed 2 misplaced unit tests from interop test suite that used these types.
+
 ### Added
 - **Architecture review documentation** — 3-part architecture audit (`doc/ARCHITECTURE_REVIEW.md`, `ARCHITECTURE_REVIEW2.md`, `ARCHITECTURE_REVIEW3.md`) covering ownership graphs, hot path call chains, split-brain risks, LinkManager dissolution feasibility, core/std layering purity, and API surface quality (16 issues identified)
 - **Test review documentation** — 2-part test audit (`doc/TEST_REVIEW.md`, `TEST_REVIEW2.md`) with 938-test inventory, duplicate analysis, coverage gap identification (35 missing test areas), fragility assessment (24 private-field accesses), and consolidation plan (~615 LOC savings)

@@ -98,7 +98,8 @@ pub enum ReadResult {
 /// the data before calling `receive()`, or use the compression wrappers
 /// in `reticulum-std`.
 #[derive(Debug)]
-pub struct RawChannelReader {
+#[allow(dead_code)] // Buffer API not yet integrated — see ROADMAP C10
+pub(crate) struct RawChannelReader {
     /// Stream identifier this reader accepts
     stream_id: u16,
     /// Internal buffer for received data
@@ -107,12 +108,13 @@ pub struct RawChannelReader {
     eof: bool,
 }
 
+#[allow(dead_code)] // Buffer API not yet integrated — see ROADMAP C10
 impl RawChannelReader {
     /// Create a new reader for the given stream ID
     ///
     /// # Arguments
     /// * `stream_id` - The stream identifier to accept messages for (0-16383)
-    pub fn new(stream_id: u16) -> Self {
+    pub(crate) fn new(stream_id: u16) -> Self {
         Self {
             stream_id,
             buffer: VecDeque::new(),
@@ -121,22 +123,22 @@ impl RawChannelReader {
     }
 
     /// Get the stream ID this reader is listening on
-    pub fn stream_id(&self) -> u16 {
+    pub(crate) fn stream_id(&self) -> u16 {
         self.stream_id
     }
 
     /// Check if EOF has been received
-    pub fn is_eof(&self) -> bool {
+    pub(crate) fn is_eof(&self) -> bool {
         self.eof
     }
 
     /// Get the number of bytes available in the buffer
-    pub fn available(&self) -> usize {
+    pub(crate) fn available(&self) -> usize {
         self.buffer.len()
     }
 
     /// Check if data is available to read
-    pub fn has_data(&self) -> bool {
+    pub(crate) fn has_data(&self) -> bool {
         !self.buffer.is_empty()
     }
 
@@ -153,7 +155,7 @@ impl RawChannelReader {
     /// If the message has `compressed == true`, the caller must decompress
     /// `message.data` before calling this method. This no_std implementation
     /// does not include decompression.
-    pub fn receive(&mut self, message: &StreamDataMessage) -> bool {
+    pub(crate) fn receive(&mut self, message: &StreamDataMessage) -> bool {
         if message.stream_id != self.stream_id {
             return false;
         }
@@ -174,7 +176,7 @@ impl RawChannelReader {
     /// # Arguments
     /// * `data` - The data to buffer
     /// * `eof` - Whether this marks end of stream
-    pub fn receive_data(&mut self, data: &[u8], eof: bool) {
+    pub(crate) fn receive_data(&mut self, data: &[u8], eof: bool) {
         self.buffer.extend(data);
         if eof {
             self.eof = true;
@@ -190,7 +192,7 @@ impl RawChannelReader {
     /// - `ReadResult::Read(n)` - Successfully read n bytes
     /// - `ReadResult::WouldBlock` - No data available (not EOF)
     /// - `ReadResult::Eof` - End of stream, no more data will arrive
-    pub fn read(&mut self, buf: &mut [u8]) -> ReadResult {
+    pub(crate) fn read(&mut self, buf: &mut [u8]) -> ReadResult {
         if self.buffer.is_empty() {
             if self.eof {
                 return ReadResult::Eof;
@@ -209,7 +211,7 @@ impl RawChannelReader {
     /// Read all available data into a new Vec
     ///
     /// Returns the buffered data and clears the internal buffer.
-    pub fn read_all(&mut self) -> Vec<u8> {
+    pub(crate) fn read_all(&mut self) -> Vec<u8> {
         self.buffer.drain(..).collect()
     }
 
@@ -220,7 +222,7 @@ impl RawChannelReader {
     ///
     /// # Returns
     /// Number of bytes copied (may be less than buf.len())
-    pub fn peek(&self, buf: &mut [u8]) -> usize {
+    pub(crate) fn peek(&self, buf: &mut [u8]) -> usize {
         let len = buf.len().min(self.buffer.len());
         for (i, &byte) in self.buffer.iter().take(len).enumerate() {
             buf[i] = byte;
@@ -235,7 +237,7 @@ impl RawChannelReader {
     /// but still respect that the stream has ended.
     ///
     /// To fully reset the reader (clear buffer AND reset EOF), use [`reset`](Self::reset).
-    pub fn clear_buffer(&mut self) {
+    pub(crate) fn clear_buffer(&mut self) {
         self.buffer.clear();
     }
 
@@ -243,7 +245,7 @@ impl RawChannelReader {
     ///
     /// Clears all buffered data AND resets the EOF flag, allowing the reader
     /// to accept new data for a new stream on the same stream_id.
-    pub fn reset(&mut self) {
+    pub(crate) fn reset(&mut self) {
         self.buffer.clear();
         self.eof = false;
     }
@@ -275,7 +277,7 @@ impl RawChannelReader {
 /// channel.send_system(&msg, link_mdu, now_ms, rtt_ms)?;
 /// ```
 #[derive(Debug, Clone)]
-pub struct RawChannelWriter {
+pub(crate) struct RawChannelWriter {
     /// Stream identifier for outgoing messages
     stream_id: u16,
     /// Maximum data length per message
@@ -288,7 +290,7 @@ impl RawChannelWriter {
     /// # Arguments
     /// * `stream_id` - The stream identifier to send messages as (0-16383)
     /// * `channel_mdu` - The channel's maximum data unit (from `Channel::mdu()`)
-    pub fn new(stream_id: u16, channel_mdu: usize) -> Self {
+    pub(crate) fn new(stream_id: u16, channel_mdu: usize) -> Self {
         Self {
             stream_id,
             max_data_len: max_data_len(channel_mdu),
@@ -296,12 +298,12 @@ impl RawChannelWriter {
     }
 
     /// Get the stream ID this writer sends as
-    pub fn stream_id(&self) -> u16 {
+    pub(crate) fn stream_id(&self) -> u16 {
         self.stream_id
     }
 
     /// Get the maximum data length per chunk
-    pub fn max_data_len(&self) -> usize {
+    pub(crate) fn max_data_len(&self) -> usize {
         self.max_data_len
     }
 
@@ -316,7 +318,7 @@ impl RawChannelWriter {
     ///
     /// # Returns
     /// A tuple of (StreamDataMessage, bytes_consumed)
-    pub fn prepare_chunk(&self, data: &[u8], eof: bool) -> (StreamDataMessage, usize) {
+    pub(crate) fn prepare_chunk(&self, data: &[u8], eof: bool) -> (StreamDataMessage, usize) {
         let chunk_len = data.len().min(MAX_CHUNK_LEN).min(self.max_data_len);
         let msg = StreamDataMessage::new(
             self.stream_id,
@@ -338,7 +340,7 @@ impl RawChannelWriter {
     ///
     /// # Returns
     /// The StreamDataMessage ready to send
-    pub fn prepare_compressed_chunk(
+    pub(crate) fn prepare_compressed_chunk(
         &self,
         compressed_data: Vec<u8>,
         eof: bool,
@@ -349,7 +351,7 @@ impl RawChannelWriter {
     /// Prepare an EOF marker message
     ///
     /// This creates an empty message with the EOF flag set.
-    pub fn prepare_eof(&self) -> StreamDataMessage {
+    pub(crate) fn prepare_eof(&self) -> StreamDataMessage {
         StreamDataMessage::eof(self.stream_id)
     }
 }
@@ -364,7 +366,8 @@ impl RawChannelWriter {
 /// This type is fully no_std compatible. Messages are produced without
 /// compression. For compression support, use the wrappers in `reticulum-std`.
 #[derive(Debug)]
-pub struct BufferedChannelWriter {
+#[allow(dead_code)] // Buffer API not yet integrated — see ROADMAP C10
+pub(crate) struct BufferedChannelWriter {
     /// The underlying raw writer
     raw: RawChannelWriter,
     /// Buffered data waiting to be sent
@@ -373,13 +376,14 @@ pub struct BufferedChannelWriter {
     eof: bool,
 }
 
+#[allow(dead_code)] // Buffer API not yet integrated — see ROADMAP C10
 impl BufferedChannelWriter {
     /// Create a new buffered writer
     ///
     /// # Arguments
     /// * `stream_id` - The stream identifier to send messages as (0-16383)
     /// * `channel_mdu` - The channel's maximum data unit
-    pub fn new(stream_id: u16, channel_mdu: usize) -> Self {
+    pub(crate) fn new(stream_id: u16, channel_mdu: usize) -> Self {
         Self {
             raw: RawChannelWriter::new(stream_id, channel_mdu),
             buffer: Vec::new(),
@@ -388,22 +392,22 @@ impl BufferedChannelWriter {
     }
 
     /// Get the stream ID
-    pub fn stream_id(&self) -> u16 {
+    pub(crate) fn stream_id(&self) -> u16 {
         self.raw.stream_id()
     }
 
     /// Get the maximum data length per chunk
-    pub fn max_data_len(&self) -> usize {
+    pub(crate) fn max_data_len(&self) -> usize {
         self.raw.max_data_len()
     }
 
     /// Get the number of bytes buffered
-    pub fn buffered(&self) -> usize {
+    pub(crate) fn buffered(&self) -> usize {
         self.buffer.len()
     }
 
     /// Check if there is pending data
-    pub fn has_pending(&self) -> bool {
+    pub(crate) fn has_pending(&self) -> bool {
         !self.buffer.is_empty() || self.eof
     }
 
@@ -414,18 +418,18 @@ impl BufferedChannelWriter {
     ///
     /// # Returns
     /// Number of bytes written (always data.len())
-    pub fn write(&mut self, data: &[u8]) -> usize {
+    pub(crate) fn write(&mut self, data: &[u8]) -> usize {
         self.buffer.extend_from_slice(data);
         data.len()
     }
 
     /// Mark the stream as finished (will set EOF on next take_pending)
-    pub fn finish(&mut self) {
+    pub(crate) fn finish(&mut self) {
         self.eof = true;
     }
 
     /// Check if finish() has been called
-    pub fn is_finished(&self) -> bool {
+    pub(crate) fn is_finished(&self) -> bool {
         self.eof
     }
 
@@ -435,7 +439,7 @@ impl BufferedChannelWriter {
     /// the last message will have EOF set.
     ///
     /// Messages are produced without compression.
-    pub fn take_pending(&mut self) -> Vec<StreamDataMessage> {
+    pub(crate) fn take_pending(&mut self) -> Vec<StreamDataMessage> {
         let mut messages = Vec::new();
 
         while !self.buffer.is_empty() {
@@ -459,13 +463,13 @@ impl BufferedChannelWriter {
     }
 
     /// Clear buffered data without sending
-    pub fn clear(&mut self) {
+    pub(crate) fn clear(&mut self) {
         self.buffer.clear();
         self.eof = false;
     }
 
     /// Get access to the underlying RawChannelWriter
-    pub fn raw_writer(&self) -> &RawChannelWriter {
+    pub(crate) fn raw_writer(&self) -> &RawChannelWriter {
         &self.raw
     }
 }
@@ -488,6 +492,7 @@ mod compression_support {
     /// Maximum decompressed size for safety (1 MB)
     pub const MAX_DECOMPRESS_SIZE: usize = 1024 * 1024;
 
+    #[allow(dead_code)] // Buffer API not yet integrated — see ROADMAP C10
     impl RawChannelReader {
         /// Receive and decompress a StreamDataMessage
         ///
@@ -501,7 +506,7 @@ mod compression_support {
         /// - `Ok(true)` if the message was accepted (stream_id matched)
         /// - `Ok(false)` if the message was for a different stream
         /// - `Err(...)` if decompression failed
-        pub fn receive_decompress(
+        pub(crate) fn receive_decompress(
             &mut self,
             message: &StreamDataMessage,
         ) -> Result<bool, CompressionError> {
@@ -556,7 +561,8 @@ mod compression_support {
         }
 
         /// Get the inner RawChannelWriter
-        pub fn inner(&self) -> &RawChannelWriter {
+        #[allow(dead_code)] // Buffer API not yet integrated — see ROADMAP C10
+        pub(crate) fn inner(&self) -> &RawChannelWriter {
             &self.inner
         }
 

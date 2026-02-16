@@ -40,10 +40,7 @@ mod envelope;
 mod error;
 mod stream;
 
-pub use buffer::{
-    max_data_len, stream_overhead, BufferedChannelWriter, RawChannelReader, RawChannelWriter,
-    ReadResult, MAX_CHUNK_LEN,
-};
+pub use buffer::{max_data_len, stream_overhead, ReadResult, MAX_CHUNK_LEN};
 #[cfg(feature = "compression")]
 pub use buffer::{CompressingWriter, COMPRESSION_MIN_SIZE, COMPRESSION_TRIES, MAX_DECOMPRESS_SIZE};
 pub use envelope::Envelope;
