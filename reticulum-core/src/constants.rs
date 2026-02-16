@@ -191,6 +191,12 @@ pub const PROVE_ALL: u8 = 0x23;
 /// Proof data size (explicit format): packet_hash (32) + signature (64)
 pub const PROOF_DATA_SIZE: usize = 32 + 64; // 96 bytes
 
+/// Implicit proof size: signature only (64 bytes)
+/// Python Reticulum uses implicit proofs by default.
+/// The proof packet's destination_hash is the truncated_packet_hash,
+/// allowing the receiver to look up the full packet_hash from its receipt.
+pub const IMPLICIT_PROOF_SIZE: usize = 64;
+
 /// Default receipt timeout in milliseconds
 pub const RECEIPT_TIMEOUT_DEFAULT_MS: u64 = 30_000;
 

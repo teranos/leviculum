@@ -281,6 +281,110 @@ async fn test_python_prove_all_sends_proof() {
         .expect("Daemon should still be responsive");
 }
 
+/// Rust→Python single-packet proof round-trip via ReticulumNode
+///
+/// This is the definitive interop test for single-packet proofs:
+/// 1. Python registers destination with PROVE_ALL
+/// 2. Rust sends a single data packet to Python's destination
+/// 3. Python auto-proves → proof travels back over TCP
+/// 4. Rust receives proof → NodeEvent::DeliveryConfirmed
+///
+/// Verifies the proof wire format is correct end-to-end.
+///
+/// IGNORED: Blocked on E8 (single-packet encryption missing).
+/// Python Destination.SINGLE always decrypts incoming data packets with
+/// its identity keys. Our send_single_packet() sends plaintext, so Python
+/// silently drops the packet and never proves.
+#[tokio::test]
+#[ignore = "blocked on E8: send_single_packet sends plaintext, Python requires encryption"]
+async fn test_single_packet_proof_round_trip_via_node() {
+    use reticulum_core::NodeEvent;
+    use reticulum_std::driver::ReticulumNodeBuilder;
+
+    use crate::common::{parse_dest_hash, wait_for_path_on_node};
+
+    let daemon = TestDaemon::start().await.expect("Failed to start daemon");
+
+    // 1. Python: register destination with PROVE_ALL
+    let dest_info = daemon
+        .register_destination("proof_test", &["roundtrip"])
+        .await
+        .expect("Failed to register destination");
+
+    daemon
+        .set_proof_strategy(&dest_info.hash, "PROVE_ALL")
+        .await
+        .expect("Failed to set proof strategy");
+
+    let py_dest_hash = parse_dest_hash(&dest_info.hash);
+
+    // 2. Build Rust node connected to Python daemon
+    let mut rust_node = ReticulumNodeBuilder::new()
+        .add_tcp_client(daemon.rns_addr())
+        .build()
+        .await
+        .expect("Failed to build node");
+
+    let mut event_rx = rust_node.take_event_receiver().unwrap();
+    rust_node.start().await.expect("Failed to start node");
+
+    tokio::time::sleep(Duration::from_secs(1)).await;
+
+    // 3. Register Python's destination on Rust side (public-key-only identity)
+    //    so NodeCore can verify the proof signature
+    let py_pub_bytes = hex::decode(&dest_info.public_key).expect("Invalid public key hex");
+    let py_identity =
+        Identity::from_public_key_bytes(&py_pub_bytes).expect("Failed to parse Python identity");
+    let py_dest_on_rust = Destination::new(
+        Some(py_identity),
+        Direction::Out,
+        DestinationType::Single,
+        "proof_test",
+        &["roundtrip"],
+    )
+    .expect("Failed to create destination");
+    rust_node.register_destination(py_dest_on_rust);
+
+    // 4. Python announces its destination so Rust learns the path
+    daemon
+        .announce_destination(&dest_info.hash, b"roundtrip-test")
+        .await
+        .expect("Python announce should succeed");
+
+    let found = wait_for_path_on_node(&rust_node, &py_dest_hash, Duration::from_secs(10)).await;
+    assert!(found, "Rust node should learn path to Python destination");
+
+    // 5. Send a single packet from Rust to Python
+    let endpoint = rust_node.packet_endpoint(&py_dest_hash);
+    let _receipt_hash = endpoint
+        .send(b"proof roundtrip test")
+        .await
+        .expect("send should succeed");
+
+    // 6. Wait for DeliveryConfirmed event (Python PROVE_ALL → proof → Rust verifies)
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(10);
+    let mut got_confirmed = false;
+    while tokio::time::Instant::now() < deadline {
+        let remaining = deadline - tokio::time::Instant::now();
+        match tokio::time::timeout(remaining, event_rx.recv()).await {
+            Ok(Some(NodeEvent::DeliveryConfirmed { .. })) => {
+                got_confirmed = true;
+                break;
+            }
+            Ok(Some(_)) => continue,
+            Ok(None) | Err(_) => break,
+        }
+    }
+
+    assert!(
+        got_confirmed,
+        "Rust should receive DeliveryConfirmed after Python PROVE_ALL proof"
+    );
+
+    // Clean up
+    rust_node.stop().await.expect("Failed to stop node");
+}
+
 /// Test that Python daemon with PROVE_NONE does not send proofs
 #[tokio::test]
 async fn test_python_prove_none_no_proof() {

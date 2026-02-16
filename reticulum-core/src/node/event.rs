@@ -156,6 +156,8 @@ pub enum NodeEvent {
     /// Application should decide whether to prove this packet
     ///
     /// Emitted when a packet is received at a destination with `ProofStrategy::App`.
+    /// Call `NodeCore::send_proof()` if the application decides to prove delivery.
+    /// Not emitted for `ProofStrategy::All` (handled automatically by the library).
     ProofRequested {
         /// Full SHA256 hash of the packet to potentially prove
         packet_hash: [u8; 32],

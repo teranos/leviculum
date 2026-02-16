@@ -435,6 +435,36 @@ impl<R: CryptoRngCore, C: Clock, S: Storage> NodeCore<R, C, S> {
         Ok((packet_hash, output))
     }
 
+    /// Send a proof for a received single packet (`ProofStrategy::App`)
+    ///
+    /// Call this after receiving `NodeEvent::ProofRequested` if the
+    /// application decides to prove delivery. Uses path-table routing
+    /// to reach the original sender.
+    ///
+    /// # Arguments
+    /// * `packet_hash` - The full SHA256 hash from `NodeEvent::ProofRequested`
+    /// * `destination_hash` - The destination hash from `NodeEvent::ProofRequested`
+    pub fn send_proof(
+        &mut self,
+        packet_hash: &[u8; 32],
+        destination_hash: &DestinationHash,
+    ) -> Result<crate::transport::TickOutput, crate::transport::TransportError> {
+        let identity = self
+            .destinations
+            .get(destination_hash)
+            .and_then(|d| d.identity())
+            .ok_or(crate::transport::TransportError::NoPath)?;
+
+        self.transport.send_proof(
+            packet_hash,
+            destination_hash.as_bytes(),
+            identity,
+            None, // path-based routing for App strategy
+        )?;
+
+        Ok(self.process_events_and_actions())
+    }
+
     // ─── Sans-I/O Entry Points ────────────────────────────────────────────────
 
     /// Process an incoming packet from an interface (sans-I/O)
@@ -710,18 +740,51 @@ impl<R: CryptoRngCore, C: Clock, S: Storage> NodeCore<R, C, S> {
             TransportEvent::ProofRequested {
                 packet_hash,
                 destination_hash,
+                proof_strategy,
+                interface_index,
             } => {
-                self.events.push(NodeEvent::ProofRequested {
-                    packet_hash,
-                    destination_hash: DestinationHash::new(destination_hash),
-                });
+                match proof_strategy {
+                    ProofStrategy::All => {
+                        let dest_hash = DestinationHash::new(destination_hash);
+                        if let Some(identity) =
+                            self.destinations.get(&dest_hash).and_then(|d| d.identity())
+                        {
+                            if let Err(e) = self.transport.send_proof(
+                                &packet_hash,
+                                &destination_hash,
+                                identity,
+                                Some(interface_index),
+                            ) {
+                                tracing::warn!("failed to send auto-proof for PROVE_ALL: {}", e);
+                            }
+                        }
+                    }
+                    ProofStrategy::App => {
+                        self.events.push(NodeEvent::ProofRequested {
+                            packet_hash,
+                            destination_hash: DestinationHash::new(destination_hash),
+                        });
+                    }
+                    ProofStrategy::None => {} // unreachable — filtered in Transport
+                }
             }
 
             TransportEvent::ProofReceived {
                 packet_hash,
-                is_valid,
+                destination_hash,
+                expected_packet_hash,
+                proof_data,
             } => {
+                let dest_hash = DestinationHash::new(destination_hash);
+                let is_valid = self
+                    .destinations
+                    .get(&dest_hash)
+                    .and_then(|dest| dest.identity())
+                    .map(|identity| identity.verify_proof(&proof_data, &expected_packet_hash))
+                    .unwrap_or(false);
+
                 if is_valid {
+                    self.transport.mark_receipt_delivered(&packet_hash);
                     self.events
                         .push(NodeEvent::DeliveryConfirmed { packet_hash });
                 } else {
@@ -755,7 +818,7 @@ mod tests {
     use super::*;
     use crate::destination::{DestinationType, Direction};
     use crate::link::{LinkCloseReason, LinkState};
-    use crate::test_utils::{MockClock, TEST_TIME_MS};
+    use crate::test_utils::{MockClock, MockInterface, TEST_TIME_MS};
     use crate::traits::NoStorage;
     use rand_core::OsRng;
 
@@ -3081,5 +3144,455 @@ mod tests {
             "LinkDeliveryConfirmed must not fire when receipt was already expired"
         );
         assert_eq!(pair.initiator.receipt_count(), 0);
+    }
+
+    // ─── Group H1: Single-packet proof verification at NodeCore ─────────
+
+    #[test]
+    fn test_single_packet_proof_delivery_confirmed() {
+        // ProofStrategy::All: receiver auto-generates proof via Transport,
+        // sender receives it and emits DeliveryConfirmed.
+        use crate::transport::{InterfaceId, PathEntry};
+
+        // 1. Create receiver with a destination that has ProofStrategy::All
+        let recv_identity = Identity::generate(&mut OsRng);
+        let recv_clock = MockClock::new(TEST_TIME_MS);
+        let mut receiver = NodeCoreBuilder::new().build(OsRng, recv_clock, NoStorage);
+
+        let mut dest = Destination::new(
+            Some(recv_identity),
+            Direction::In,
+            DestinationType::Single,
+            "testapp",
+            &["proof"],
+        )
+        .unwrap();
+        dest.set_proof_strategy(ProofStrategy::All);
+        let dest_hash = *dest.hash();
+        receiver.register_destination(dest);
+
+        // Receiver needs an interface so the auto-proof can be sent
+        let _recv_iface = receiver
+            .transport
+            .register_interface(alloc::boxed::Box::new(MockInterface::new("recv_if", 2)));
+
+        // 2. Create sender — register destination on sender too so NodeCore
+        //    can look up the identity for proof verification
+        let send_clock = MockClock::new(TEST_TIME_MS);
+        let mut sender = NodeCoreBuilder::new().build(OsRng, send_clock, NoStorage);
+
+        // 3. Set up paths: sender → receiver (interface 0)
+        let sender_iface = sender
+            .transport
+            .register_interface(alloc::boxed::Box::new(MockInterface::new("if0", 1)));
+        sender.transport.insert_path(
+            dest_hash.into_bytes(),
+            PathEntry {
+                hops: 1,
+                expires_ms: u64::MAX,
+                interface_index: sender_iface,
+                random_blobs: Vec::new(),
+                next_hop: None,
+            },
+        );
+
+        // Sender needs a copy of the destination registered so NodeCore can
+        // find the identity for proof verification. Use public-key-only identity.
+        let recv_dest_ref = receiver.destination(&dest_hash).unwrap();
+        let recv_pub_bytes = recv_dest_ref.identity().unwrap().public_key_bytes();
+        let sender_side_identity = Identity::from_public_key_bytes(&recv_pub_bytes).unwrap();
+        let sender_side_dest = Destination::new(
+            Some(sender_side_identity),
+            Direction::Out,
+            DestinationType::Single,
+            "testapp",
+            &["proof"],
+        )
+        .unwrap();
+        sender.register_destination(sender_side_dest);
+
+        // 4. Sender sends a single packet → creates receipt
+        let (receipt_hash, output) = sender
+            .send_single_packet(&dest_hash, b"hello proof test")
+            .unwrap();
+        let sent_raw = extract_broadcast_data(&output);
+
+        // Verify receipt was created
+        assert!(
+            sender.transport.get_receipt(&receipt_hash).is_some(),
+            "sender should have a receipt"
+        );
+
+        // 5. Receiver processes the packet → auto-generates proof (no NodeEvent)
+        let recv_output = receiver.handle_packet(InterfaceId(0), &sent_raw);
+
+        // Bug 1 fix: All strategy must NOT emit ProofRequested to the app
+        let has_proof_requested = recv_output
+            .events
+            .iter()
+            .any(|e| matches!(e, NodeEvent::ProofRequested { .. }));
+        assert!(
+            !has_proof_requested,
+            "ProofStrategy::All must NOT emit NodeEvent::ProofRequested"
+        );
+
+        // Auto-proof should appear as a SendPacket action
+        let proof_raw = recv_output
+            .actions
+            .iter()
+            .find_map(|a| match a {
+                crate::transport::Action::SendPacket { data, .. } => Some(data.clone()),
+                _ => None,
+            })
+            .expect("ProofStrategy::All should auto-generate a SendPacket proof");
+
+        // 6. Feed proof to sender → should get DeliveryConfirmed
+        let sender_output = sender.handle_packet(InterfaceId(0), &proof_raw);
+
+        let has_confirmed = sender_output
+            .events
+            .iter()
+            .any(|e| matches!(e, NodeEvent::DeliveryConfirmed { .. }));
+        let has_failed = sender_output
+            .events
+            .iter()
+            .any(|e| matches!(e, NodeEvent::DeliveryFailed { .. }));
+
+        assert!(
+            has_confirmed,
+            "valid proof should produce DeliveryConfirmed, got events: {:?}",
+            sender_output.events
+        );
+        assert!(!has_failed, "valid proof should NOT produce DeliveryFailed");
+
+        // Verify receipt is now marked as delivered
+        let receipt = sender.transport.get_receipt(&receipt_hash).unwrap();
+        assert_eq!(
+            receipt.status,
+            crate::receipt::ReceiptStatus::Delivered,
+            "receipt should be marked Delivered"
+        );
+    }
+
+    #[test]
+    fn test_single_packet_proof_invalid_signature_delivery_failed() {
+        // When a proof has a bad signature, NodeCore should emit DeliveryFailed.
+        use crate::packet::build_proof_packet;
+        use crate::transport::{InterfaceId, PathEntry};
+
+        let recv_identity = Identity::generate(&mut OsRng);
+        let recv_clock = MockClock::new(TEST_TIME_MS);
+        let mut receiver = NodeCoreBuilder::new().build(OsRng, recv_clock, NoStorage);
+
+        let mut dest = Destination::new(
+            Some(recv_identity),
+            Direction::In,
+            DestinationType::Single,
+            "testapp",
+            &["badproof"],
+        )
+        .unwrap();
+        dest.set_proof_strategy(ProofStrategy::All);
+        let dest_hash = *dest.hash();
+        receiver.register_destination(dest);
+
+        // Receiver needs an interface for auto-proof
+        let _recv_iface = receiver
+            .transport
+            .register_interface(alloc::boxed::Box::new(MockInterface::new("recv_if", 2)));
+
+        let send_clock = MockClock::new(TEST_TIME_MS);
+        let mut sender = NodeCoreBuilder::new().build(OsRng, send_clock, NoStorage);
+
+        let sender_iface = sender
+            .transport
+            .register_interface(alloc::boxed::Box::new(MockInterface::new("if0", 1)));
+        sender.transport.insert_path(
+            dest_hash.into_bytes(),
+            PathEntry {
+                hops: 1,
+                expires_ms: u64::MAX,
+                interface_index: sender_iface,
+                random_blobs: Vec::new(),
+                next_hop: None,
+            },
+        );
+
+        // Register dest on sender with the real identity for proof verification
+        let recv_dest_ref = receiver.destination(&dest_hash).unwrap();
+        let recv_pub_bytes = recv_dest_ref.identity().unwrap().public_key_bytes();
+        let sender_side_identity = Identity::from_public_key_bytes(&recv_pub_bytes).unwrap();
+        let sender_side_dest = Destination::new(
+            Some(sender_side_identity),
+            Direction::Out,
+            DestinationType::Single,
+            "testapp",
+            &["badproof"],
+        )
+        .unwrap();
+        sender.register_destination(sender_side_dest);
+
+        let (receipt_hash, output) = sender
+            .send_single_packet(&dest_hash, b"hello bad proof")
+            .unwrap();
+        let _sent_raw = extract_broadcast_data(&output);
+
+        // We need a packet_hash to craft a bad proof against. Use any 32-byte
+        // hash that matches the sender's receipt. The receipt tracks by truncated
+        // dest hash, and the proof packet carries the full packet hash.
+        // For this test, just use a known hash from the receipt.
+        let receipt = sender.transport.get_receipt(&receipt_hash).unwrap();
+        let packet_hash = receipt.packet_hash;
+
+        // Create proof with a WRONG identity (not the destination's)
+        let wrong_identity = Identity::generate(&mut OsRng);
+        let bad_proof_data = wrong_identity.create_proof(&packet_hash).unwrap();
+
+        let proof_packet = build_proof_packet(&dest_hash.into_bytes(), &bad_proof_data);
+        let mut buf = [0u8; crate::constants::MTU];
+        let len = proof_packet.pack(&mut buf).unwrap();
+
+        // Feed bad proof to sender → should get DeliveryFailed
+        let sender_output = sender.handle_packet(InterfaceId(0), &buf[..len]);
+
+        let has_failed = sender_output
+            .events
+            .iter()
+            .any(|e| matches!(e, NodeEvent::DeliveryFailed { .. }));
+        let has_confirmed = sender_output
+            .events
+            .iter()
+            .any(|e| matches!(e, NodeEvent::DeliveryConfirmed { .. }));
+
+        assert!(has_failed, "bad proof should produce DeliveryFailed");
+        assert!(
+            !has_confirmed,
+            "bad proof should NOT produce DeliveryConfirmed"
+        );
+
+        // Receipt should NOT be marked delivered
+        let receipt = sender.transport.get_receipt(&receipt_hash).unwrap();
+        assert_ne!(
+            receipt.status,
+            crate::receipt::ReceiptStatus::Delivered,
+            "receipt should NOT be marked Delivered with bad proof"
+        );
+    }
+
+    #[test]
+    fn test_single_packet_prove_all_no_app_event() {
+        // Bug 1 fix: ProofStrategy::All must auto-generate proof via Transport
+        // and must NOT emit NodeEvent::ProofRequested to the app.
+        use crate::transport::InterfaceId;
+
+        let recv_identity = Identity::generate(&mut OsRng);
+        let recv_clock = MockClock::new(TEST_TIME_MS);
+        let mut receiver = NodeCoreBuilder::new().build(OsRng, recv_clock, NoStorage);
+
+        let mut dest = Destination::new(
+            Some(recv_identity),
+            Direction::In,
+            DestinationType::Single,
+            "testapp",
+            &["allproof"],
+        )
+        .unwrap();
+        dest.set_proof_strategy(ProofStrategy::All);
+        let dest_hash = *dest.hash();
+        receiver.register_destination(dest);
+
+        // Receiver needs an interface for auto-proof delivery
+        let _recv_iface = receiver
+            .transport
+            .register_interface(alloc::boxed::Box::new(MockInterface::new("recv_if", 1)));
+
+        // Create a sender to produce a valid data packet
+        let send_clock = MockClock::new(TEST_TIME_MS);
+        let mut sender = NodeCoreBuilder::new().build(OsRng, send_clock, NoStorage);
+        let sender_iface = sender
+            .transport
+            .register_interface(alloc::boxed::Box::new(MockInterface::new("send_if", 2)));
+        sender.transport.insert_path(
+            dest_hash.into_bytes(),
+            crate::transport::PathEntry {
+                hops: 1,
+                expires_ms: u64::MAX,
+                interface_index: sender_iface,
+                random_blobs: Vec::new(),
+                next_hop: None,
+            },
+        );
+        let (_receipt_hash, output) = sender
+            .send_single_packet(&dest_hash, b"prove all test")
+            .unwrap();
+        let sent_raw = extract_broadcast_data(&output);
+
+        // Feed packet to receiver
+        let recv_output = receiver.handle_packet(InterfaceId(0), &sent_raw);
+
+        // Must NOT have ProofRequested event (Bug 1)
+        let has_proof_event = recv_output
+            .events
+            .iter()
+            .any(|e| matches!(e, NodeEvent::ProofRequested { .. }));
+        assert!(
+            !has_proof_event,
+            "ProofStrategy::All must NOT emit NodeEvent::ProofRequested"
+        );
+
+        // Must have a PacketReceived event (data still delivered to app)
+        let has_packet_event = recv_output
+            .events
+            .iter()
+            .any(|e| matches!(e, NodeEvent::PacketReceived { .. }));
+        assert!(has_packet_event, "data packet should still be delivered");
+
+        // Must have a SendPacket action (the auto-generated proof)
+        let has_send_action = recv_output
+            .actions
+            .iter()
+            .any(|a| matches!(a, crate::transport::Action::SendPacket { .. }));
+        assert!(
+            has_send_action,
+            "ProofStrategy::All should auto-generate a proof SendPacket action"
+        );
+    }
+
+    #[test]
+    fn test_single_packet_prove_app_emits_event_and_send_proof_works() {
+        // Bug 2 fix: ProofStrategy::App emits NodeEvent::ProofRequested
+        // and the app can call NodeCore::send_proof() to respond.
+        use crate::transport::{InterfaceId, PathEntry};
+
+        let recv_identity = Identity::generate(&mut OsRng);
+        let recv_clock = MockClock::new(TEST_TIME_MS);
+        let mut receiver = NodeCoreBuilder::new().build(OsRng, recv_clock, NoStorage);
+
+        let mut dest = Destination::new(
+            Some(recv_identity),
+            Direction::In,
+            DestinationType::Single,
+            "testapp",
+            &["appproof"],
+        )
+        .unwrap();
+        dest.set_proof_strategy(ProofStrategy::App);
+        let dest_hash = *dest.hash();
+        receiver.register_destination(dest);
+
+        // Receiver needs an interface and a path back to sender for send_proof()
+        let recv_iface = receiver
+            .transport
+            .register_interface(alloc::boxed::Box::new(MockInterface::new("recv_if", 1)));
+
+        // Create a sender to produce a valid data packet
+        let send_clock = MockClock::new(TEST_TIME_MS);
+        let mut sender = NodeCoreBuilder::new().build(OsRng, send_clock, NoStorage);
+        let sender_iface = sender
+            .transport
+            .register_interface(alloc::boxed::Box::new(MockInterface::new("send_if", 2)));
+        sender.transport.insert_path(
+            dest_hash.into_bytes(),
+            PathEntry {
+                hops: 1,
+                expires_ms: u64::MAX,
+                interface_index: sender_iface,
+                random_blobs: Vec::new(),
+                next_hop: None,
+            },
+        );
+
+        // Sender needs the receiver's public key for proof verification
+        let recv_dest_ref = receiver.destination(&dest_hash).unwrap();
+        let recv_pub_bytes = recv_dest_ref.identity().unwrap().public_key_bytes();
+        let sender_side_identity = Identity::from_public_key_bytes(&recv_pub_bytes).unwrap();
+        let sender_side_dest = Destination::new(
+            Some(sender_side_identity),
+            Direction::Out,
+            DestinationType::Single,
+            "testapp",
+            &["appproof"],
+        )
+        .unwrap();
+        sender.register_destination(sender_side_dest);
+
+        // Sender sends a single packet
+        let (receipt_hash, output) = sender
+            .send_single_packet(&dest_hash, b"app proof test")
+            .unwrap();
+        let sent_raw = extract_broadcast_data(&output);
+
+        // Feed packet to receiver — should get ProofRequested event (App strategy)
+        let recv_output = receiver.handle_packet(InterfaceId(0), &sent_raw);
+
+        let proof_req = recv_output
+            .events
+            .iter()
+            .find_map(|e| match e {
+                NodeEvent::ProofRequested {
+                    packet_hash,
+                    destination_hash,
+                } => Some((*packet_hash, *destination_hash)),
+                _ => None,
+            })
+            .expect("ProofStrategy::App should emit NodeEvent::ProofRequested");
+        let (packet_hash, req_dest_hash) = proof_req;
+
+        // Must NOT have any auto-generated proof action
+        let has_send_action = recv_output
+            .actions
+            .iter()
+            .any(|a| matches!(a, crate::transport::Action::SendPacket { .. }));
+        assert!(
+            !has_send_action,
+            "ProofStrategy::App must NOT auto-generate a proof"
+        );
+
+        // Now the app decides to prove: set up a path on receiver for send_proof()
+        // (In real usage the path would exist from the announce; here we add it manually)
+        receiver.transport.insert_path(
+            dest_hash.into_bytes(),
+            PathEntry {
+                hops: 1,
+                expires_ms: u64::MAX,
+                interface_index: recv_iface,
+                random_blobs: Vec::new(),
+                next_hop: None,
+            },
+        );
+
+        // Call send_proof() — Bug 2 fix: this method now exists
+        let proof_output = receiver
+            .send_proof(&packet_hash, &req_dest_hash)
+            .expect("send_proof should succeed");
+
+        // Should have a SendPacket action containing the proof
+        let proof_raw = proof_output
+            .actions
+            .iter()
+            .find_map(|a| match a {
+                crate::transport::Action::SendPacket { data, .. } => Some(data.clone()),
+                _ => None,
+            })
+            .expect("send_proof should produce a SendPacket action");
+
+        // Feed proof to sender → should get DeliveryConfirmed
+        let sender_output = sender.handle_packet(InterfaceId(0), &proof_raw);
+        let has_confirmed = sender_output
+            .events
+            .iter()
+            .any(|e| matches!(e, NodeEvent::DeliveryConfirmed { .. }));
+        assert!(
+            has_confirmed,
+            "valid proof via send_proof() should produce DeliveryConfirmed, got: {:?}",
+            sender_output.events
+        );
+
+        let receipt = sender.transport.get_receipt(&receipt_hash).unwrap();
+        assert_eq!(
+            receipt.status,
+            crate::receipt::ReceiptStatus::Delivered,
+            "receipt should be marked Delivered"
+        );
     }
 }

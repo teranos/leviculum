@@ -354,25 +354,37 @@ pub enum TransportEvent {
     InterfaceDown(usize),
 
     // ─── Proof Events ────────────────────────────────────────────────────────
-    /// Application should decide whether to prove this packet (PROVE_APP strategy)
+    /// Proof generation requested for a received packet
     ///
-    /// Emitted when a packet is received at a destination with `ProofStrategy::App`.
-    /// The application should call `send_proof()` if it decides to prove.
+    /// Emitted when a packet is received at a destination with `ProofStrategy::All`
+    /// or `ProofStrategy::App`. NodeCore dispatches based on `proof_strategy`:
+    /// - `All`: auto-generates proof via `Transport::send_proof()`
+    /// - `App`: forwards to application as `NodeEvent::ProofRequested`
     ProofRequested {
         /// Full SHA256 hash of the packet to potentially prove
         packet_hash: [u8; 32],
         /// Destination that received the packet
         destination_hash: [u8; TRUNCATED_HASHBYTES],
+        /// The proof strategy of the receiving destination
+        proof_strategy: ProofStrategy,
+        /// The interface the packet was received on
+        interface_index: usize,
     },
 
     /// A proof was received for a sent packet
     ///
-    /// Emitted when a proof packet is received and validated (or fails validation).
+    /// Emitted when a proof packet arrives matching a tracked receipt.
+    /// NodeCore performs the actual signature verification using its
+    /// Destination's identity.
     ProofReceived {
         /// Truncated hash identifying the receipt
         packet_hash: [u8; TRUNCATED_HASHBYTES],
-        /// Whether the proof was valid
-        is_valid: bool,
+        /// Destination hash (to find the identity on NodeCore)
+        destination_hash: [u8; TRUNCATED_HASHBYTES],
+        /// Full packet hash from the receipt (for cross-check in verify_proof)
+        expected_packet_hash: [u8; 32],
+        /// Raw proof data (96 bytes: full_hash(32) + signature(64))
+        proof_data: Vec<u8>,
     },
 
     /// A receipt timed out without receiving a proof
@@ -773,6 +785,16 @@ impl<C: Clock, S: Storage> Transport<C, S> {
         self.receipts.get(truncated_hash)
     }
 
+    /// Mark a receipt as delivered after NodeCore verified the proof
+    ///
+    /// Called by NodeCore when it successfully validates a single-packet proof
+    /// using the destination's identity.
+    pub fn mark_receipt_delivered(&mut self, truncated_hash: &[u8; TRUNCATED_HASHBYTES]) {
+        if let Some(receipt) = self.receipts.get_mut(truncated_hash) {
+            receipt.set_delivered();
+        }
+    }
+
     /// Send a proof for a received packet
     ///
     /// Call this when the application decides to prove a packet (after ProofRequested event).
@@ -781,6 +803,9 @@ impl<C: Clock, S: Storage> Transport<C, S> {
     /// * `packet_hash` - The full SHA256 hash of the packet to prove
     /// * `destination_hash` - The destination to send the proof to (the original sender)
     /// * `identity` - The identity to sign the proof with
+    /// * `receiving_interface` - If `Some`, send proof on this interface (used for
+    ///   `ProofStrategy::All` where we know the receiving interface). If `None`,
+    ///   fall back to path table lookup (used for `ProofStrategy::App`).
     ///
     /// # Returns
     /// `Ok(())` if the proof was sent, `Err` if there's no path to the destination
@@ -789,6 +814,7 @@ impl<C: Clock, S: Storage> Transport<C, S> {
         packet_hash: &[u8; 32],
         destination_hash: &[u8; TRUNCATED_HASHBYTES],
         identity: &Identity,
+        receiving_interface: Option<usize>,
     ) -> Result<(), TransportError> {
         let proof_data = identity
             .create_proof(packet_hash)
@@ -796,12 +822,15 @@ impl<C: Clock, S: Storage> Transport<C, S> {
 
         let packet = build_proof_packet(destination_hash, &proof_data);
 
-        // Send via the same path we'd use for any packet to this destination
-        let interface_index = self
-            .path_table
-            .get(destination_hash)
-            .map(|p| p.interface_index)
-            .ok_or(TransportError::NoPath)?;
+        // Prefer explicit interface (PROVE_ALL), fall back to path lookup (PROVE_APP)
+        let interface_index = match receiving_interface {
+            Some(iface) => iface,
+            None => self
+                .path_table
+                .get(destination_hash)
+                .map(|p| p.interface_index)
+                .ok_or(TransportError::NoPath)?,
+        };
 
         self.send_packet_on_interface(interface_index, &packet)
     }
@@ -1088,6 +1117,12 @@ impl<C: Clock, S: Storage> Transport<C, S> {
     /// Read-only access to the path table (for sans-I/O deadline computation)
     pub(crate) fn path_table(&self) -> &BTreeMap<[u8; TRUNCATED_HASHBYTES], PathEntry> {
         &self.path_table
+    }
+
+    /// Insert a path entry (test-only, for setting up direct routing)
+    #[cfg(test)]
+    pub(crate) fn insert_path(&mut self, hash: [u8; TRUNCATED_HASHBYTES], entry: PathEntry) {
+        self.path_table.insert(hash, entry);
     }
 
     /// Remove a path entry by destination hash
@@ -1428,40 +1463,44 @@ impl<C: Clock, S: Storage> Transport<C, S> {
         let dest_hash = packet.destination_hash;
         let proof_data = packet.data.as_slice();
 
-        // Check if this is a proof for a receipt we're tracking
-        // Proof data format: [packet_hash (32)] + [signature (64)] = 96 bytes
+        // Check if this is a proof for a receipt we're tracking.
+        // Two proof formats (Python defaults to implicit):
+        //   Explicit: [packet_hash (32)] + [signature (64)] = 96 bytes
+        //   Implicit: [signature (64)] only — destination_hash IS the truncated_packet_hash
         if proof_data.len() == crate::constants::PROOF_DATA_SIZE {
-            // Extract the packet hash from the proof (first 32 bytes)
+            // Explicit proof: extract packet hash from proof data
             let mut proof_packet_hash = [0u8; 32];
             proof_packet_hash.copy_from_slice(&proof_data[..32]);
             let truncated = truncated_hash(&proof_packet_hash);
 
-            // Check if we have a receipt for this packet
             if let Some(receipt) = self.receipts.get(&truncated) {
-                // Get the destination identity to verify the signature
-                // The proof should be signed by the destination that received our packet
-                if let Some(dest_entry) = self.destinations.get(receipt.destination_hash.as_bytes())
-                {
-                    if let Some(ref identity) = dest_entry.identity {
-                        let is_valid = receipt.validate_proof(proof_data, identity);
-                        if is_valid {
-                            // Mark receipt as delivered
-                            if let Some(r) = self.receipts.get_mut(&truncated) {
-                                r.set_delivered();
-                            }
-                        }
-                        self.events.push(TransportEvent::ProofReceived {
-                            packet_hash: truncated,
-                            is_valid,
-                        });
-                        return Ok(());
-                    }
-                }
-
-                // If we don't have the identity, we still emit the event but can't validate
+                let receipt_dest = *receipt.destination_hash.as_bytes();
+                let expected = receipt.packet_hash;
                 self.events.push(TransportEvent::ProofReceived {
                     packet_hash: truncated,
-                    is_valid: false,
+                    destination_hash: receipt_dest,
+                    expected_packet_hash: expected,
+                    proof_data: proof_data.to_vec(),
+                });
+                return Ok(());
+            }
+        } else if proof_data.len() == crate::constants::IMPLICIT_PROOF_SIZE {
+            // Implicit proof: destination_hash of the proof packet IS the
+            // truncated packet hash (see Python ProofDestination class).
+            // Look up receipt by that hash, then reconstruct explicit format
+            // so NodeCore can verify uniformly.
+            if let Some(receipt) = self.receipts.get(&dest_hash) {
+                let receipt_dest = *receipt.destination_hash.as_bytes();
+                let expected = receipt.packet_hash;
+                // Normalize to explicit format: packet_hash + signature
+                let mut explicit = Vec::with_capacity(crate::constants::PROOF_DATA_SIZE);
+                explicit.extend_from_slice(&expected);
+                explicit.extend_from_slice(proof_data);
+                self.events.push(TransportEvent::ProofReceived {
+                    packet_hash: dest_hash,
+                    destination_hash: receipt_dest,
+                    expected_packet_hash: expected,
+                    proof_data: explicit,
                 });
                 return Ok(());
             }
@@ -1612,16 +1651,12 @@ impl<C: Clock, S: Storage> Transport<C, S> {
 
             // Handle proof generation based on strategy
             match proof_strategy {
-                ProofStrategy::All => {
+                ProofStrategy::All | ProofStrategy::App => {
                     self.events.push(TransportEvent::ProofRequested {
                         packet_hash: full_packet_hash,
                         destination_hash: dest_hash,
-                    });
-                }
-                ProofStrategy::App => {
-                    self.events.push(TransportEvent::ProofRequested {
-                        packet_hash: full_packet_hash,
-                        destination_hash: dest_hash,
+                        proof_strategy,
+                        interface_index,
                     });
                 }
                 ProofStrategy::None => {}
@@ -5246,7 +5281,7 @@ mod tests {
             let packet_hash = [0xAA; 32];
 
             transport
-                .send_proof(&packet_hash, &dest_hash, &identity)
+                .send_proof(&packet_hash, &dest_hash, &identity, None)
                 .unwrap();
 
             let actions = transport.drain_actions();
