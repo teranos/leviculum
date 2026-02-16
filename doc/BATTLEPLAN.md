@@ -22,16 +22,14 @@ Phases 0–5 complete. Remaining: Phase 6 (consolidation) and Phase 7 (polish).
 
 ## Phase 6: Consolidation
 
-**4 issues remaining (E1 done). E5 verified clean (no bug).**
+**2 issues remaining (E1, H4, A4 done). E5 verified clean (no bug).**
 
 | # | Issue | What | Notes |
 |---|-------|------|-------|
-| 1 | H4 | Consolidate bidirectional hash/seq maps | Both maps now on NodeCore — straightforward. |
-| 2 | E6 | Split `handle_channel_packet` (131 lines) | 4 responsibilities: decrypt, receive+drain, proof, rx_ring. Blocked by H4. |
-| 3 | A4 | Formalize receipt tracking (data_receipts + channel_receipt_keys) | Receipt code lives in the split methods. |
-| 4 | H1 | Deduplicate `Transport.destinations` vs `NodeCore.destinations` | Transport queries NodeCore's registry. |
+| 1 | E6 | Split `handle_channel_packet` (131 lines) | 4 responsibilities: decrypt, receive+drain, proof, rx_ring. Unblocked (H4 done). |
+| 2 | H1 | Deduplicate `Transport.destinations` vs `NodeCore.destinations` | Transport queries NodeCore's registry. |
 
-**Order:** H4 first. E6 second (boundaries stable after H4). A4 third. H1 last (largest, benefits from all prior cleanup).
+**Order:** E6 first (boundaries stable after H4). H1 last (largest, benefits from all prior cleanup).
 
 **Issues eliminated by Phase 5c (no longer needed):**
 
@@ -59,7 +57,7 @@ Phases 0–5 complete. Remaining: Phase 6 (consolidation) and Phase 7 (polish).
 | 5 | D7 | `ProofRequested` → `PacketProofRequested` |
 | 6 | D12 | Separate handshake vs active-link timeout events |
 | 7 | D13 | `ChannelExhausted` close reason |
-| 8 | E2 | `pub(crate)` field audit (DataReceipt confirmed, others TBD) |
+| 8 | E2 | `pub(crate)` field audit (DataReceipt eliminated, others TBD) |
 | 9 | E3 | Silent send failures — audit `let _ =` on transport calls |
 | 10 | E4 | Identity table asymmetry (Transport + NodeCore) |
 | 11 | F2 | `connect()` broadcast fallback transparent |
@@ -79,18 +77,17 @@ Phases 0–5 complete. Remaining: Phase 6 (consolidation) and Phase 7 (polish).
 | 3 — Bug Fixes | 4 | Tests go green | **done** |
 | 4 — Rename | 7 | One concept, one name | **done** |
 | 5 — Structure | 3 | 4 maps → 1, LinkManager dissolved | **done** |
-| 6 — Consolidation | 5 (1 done) | Single source of truth | **next** |
+| 6 — Consolidation | 5 (3 done) | Single source of truth | **next** |
 | 7 — API Polish | 12 | Clean public API | open |
 | **Total** | **62** | **Complete codebase overhaul** | |
-| **Remaining** | **16** | | |
+| **Remaining** | **14** | | |
 
 **Dependency chain (remaining):**
 ```
 Phase 6:
   E1 ✓ (split god method — done)
-    → H4 (consolidate receipt maps)
+    → H4 ✓ + A4 ✓ (receipt tracking consolidated into ReceiptTracker)
       → E6 (split channel handler — boundaries stable after H4)
-    → A4 (receipt tracking — code lives in split methods)
   H1 (deduplicate destinations — independent)
     → Phase 7 (API polish — all 12 issues independent of each other)
 ```

@@ -22,7 +22,6 @@ Phase numbering follows `doc/BATTLEPLAN.md`. Phases 0–5 are complete.
 
 | ID | P | Phase | Status | Category | Summary |
 |----|---|-------|--------|----------|---------|
-| A4 | M | 6 | open | Structural | `data_receipts` + `channel_receipt_keys` tight coupling |
 | E6 | M | 6 | open | Structural | `handle_channel_packet` still 131 lines |
 | E2 | M | 7 | open | API | `pub(crate)` field audit |
 | E3 | M | 7 | open | Robustness | Silent send failures (`let _ =` on transport calls) |
@@ -37,30 +36,18 @@ Phase numbering follows `doc/BATTLEPLAN.md`. Phases 0–5 are complete.
 | F2 | L | 7 | open | Coupling | `connect()` silently broadcasts when no path exists |
 | G1 | L | 7 | open | Perf | Lock-and-read pattern in event loop |
 | H1 | M | 6 | open | SSOT | Destination in 2 maps |
-| H4 | M | 6 | open | SSOT | `channel_receipt_keys` and `channel_hash_to_seq` — same mapping, two directions |
 
 ---
 
 ## Issues
-
-### A4: `data_receipts` + `channel_receipt_keys` tight coupling
-- **Status:** open
-- **Priority:** MEDIUM
-- **Phase:** 6
-- **Category:** Structural
-- **Blocked-by:** —
-- **Ref:** doc/ISSUES.md A4, doc/ARCHITECTURE_REVIEW2.md (hot path analysis)
-- **Detail:** Two maps on NodeCore: `data_receipts` (keyed by truncated packet hash, global) and `channel_receipt_keys` (keyed per link+sequence). Tightly coupled to each other and to `links`. Global hash-based lookup in `handle_data_proof()` prevents per-link storage.
-- **Fix:** Consider moving per-link receipt data onto Link struct. Global hash lookup may still require a NodeCore-level index.
-- **Test:** Receipt lifecycle tested (`test_channel_receipt_lifecycle`, `test_data_receipts_expire_after_timeout`, etc.). Full coupling not verified.
 
 ### E6: `handle_channel_packet` still 131 lines
 - **Status:** open
 - **Priority:** MEDIUM
 - **Phase:** 6
 - **Category:** Structural
-- **Blocked-by:** H4
-- **Detail:** After E1 extracts it from `handle_link_data`, `handle_channel_packet` is still 131 lines with 4 distinct responsibilities: decrypt, channel receive + drain, proof generation, rx_ring overflow handling. Split into sub-handlers after H4 has simplified the receipt/proof logic — don't split before H4 or the boundaries will shift.
+- **Blocked-by:** —
+- **Detail:** `handle_channel_packet` is still 131 lines with 4 distinct responsibilities: decrypt, channel receive + drain, proof generation, rx_ring overflow handling. Now that H4 (ReceiptTracker consolidation) is done, the receipt/proof boundaries are stable — safe to split into sub-handlers.
 - **Test:** Existing tests cover all paths. No new tests needed (refactor, not behavior change).
 
 ### E2: `pub(crate)` field audit
@@ -69,7 +56,7 @@ Phase numbering follows `doc/BATTLEPLAN.md`. Phases 0–5 are complete.
 - **Phase:** 7
 - **Category:** API
 - **Blocked-by:** —
-- **Detail:** The strangler fig migration left `pub(crate)` fields on structs that should expose methods instead (confirmed: `DataReceipt.full_hash`, `DataReceipt.link_id`, `DataReceipt.sent_at_ms`). Audit all `pub(crate)` fields in non-test code across `link/`, `node/`, `transport/`. Each one is either (a) correct because the module boundary requires it, or (b) a method that was never written. Fix the (b) cases.
+- **Detail:** The strangler fig migration left `pub(crate)` fields on structs that should expose methods instead. `DataReceipt` was eliminated (absorbed into `ReceiptTracker`), but other structs may still have this pattern. Audit all `pub(crate)` fields in non-test code across `link/`, `node/`, `transport/`. Each one is either (a) correct because the module boundary requires it, or (b) a method that was never written. Fix the (b) cases.
 - **Test:** N/A (visibility change — compilation verifies).
 
 ### E3: Silent send failures (`let _ =` on transport calls)
@@ -191,14 +178,4 @@ Phase numbering follows `doc/BATTLEPLAN.md`. Phases 0–5 are complete.
 - **Fix:** Single canonical `Destination` registry on NodeCore. Transport queries it.
 - **Test:** Currently untested. Verify both maps stay in sync after register/unregister.
 
-### H4: `channel_receipt_keys` and `channel_hash_to_seq` — same mapping, two directions
-- **Status:** open
-- **Priority:** MEDIUM
-- **Phase:** 6
-- **Category:** SSOT
-- **Blocked-by:** —
-- **Ref:** doc/ISSUES.md H4
-- **Detail:** Both maps on NodeCore: `channel_receipt_keys` maps `(LinkId, seq) → truncated_hash`, `channel_hash_to_seq` maps `full_hash → (LinkId, seq)`. Same logical association, indexed from opposite directions. No guarantee they stay in sync.
-- **Fix:** Consolidate into one structure with bidirectional lookup. Move to Channel or Link.
-- **Test:** Tested: `test_channel_receipt_lifecycle`, `test_channel_receipt_keys_cleaned_on_close`. Sync between the two maps not explicitly verified.
 

@@ -13,9 +13,7 @@ use crate::constants::{
 use crate::destination::{DestinationHash, ProofStrategy};
 use crate::hex_fmt::HexFmt;
 use crate::link::channel::{ChannelAction, ChannelError};
-use crate::link::{
-    DataReceipt, Link, LinkCloseReason, LinkError, LinkId, LinkPhase, LinkState, PeerKeys,
-};
+use crate::link::{Link, LinkCloseReason, LinkError, LinkId, LinkPhase, LinkState, PeerKeys};
 use crate::packet::{packet_hash, Packet, PacketContext, PacketType};
 use crate::traits::{Clock, Storage};
 use rand_core::CryptoRngCore;
@@ -23,6 +21,128 @@ use rand_core::CryptoRngCore;
 use super::event::NodeEvent;
 use super::send;
 use super::{LinkStats, NodeCore, RawBytesMessage};
+
+/// Tracks channel message receipts awaiting delivery proofs.
+///
+/// Each entry records a sent channel message: its packet hashes, link, sequence
+/// number, and timestamp. A single `Vec<ReceiptEntry>` replaces the three
+/// separate maps that previously encoded this relationship in different
+/// directions (`data_receipts`, `channel_receipt_keys`, `channel_hash_to_seq`).
+///
+/// Every datum exists exactly once. Lookups are linear scans — n is bounded
+/// by channel window size × active links (realistically < 100, typically < 20).
+pub(super) struct ReceiptTracker {
+    entries: Vec<ReceiptEntry>,
+}
+
+pub(super) struct ReceiptEntry {
+    pub(super) truncated_hash: [u8; TRUNCATED_HASHBYTES],
+    pub(super) full_hash: [u8; 32],
+    pub(super) link_id: LinkId,
+    pub(super) sequence: u16,
+    pub(super) sent_at_ms: u64,
+}
+
+impl ReceiptTracker {
+    pub(super) fn new() -> Self {
+        Self {
+            entries: Vec::new(),
+        }
+    }
+
+    /// Register a receipt for a channel message, replacing any existing entry
+    /// for the same `(link_id, sequence)`.
+    pub(super) fn register(
+        &mut self,
+        packet_data: &[u8],
+        link_id: LinkId,
+        sequence: u16,
+        now_ms: u64,
+    ) {
+        self.entries
+            .retain(|e| !(e.link_id == link_id && e.sequence == sequence));
+
+        let full_hash = packet_hash(packet_data);
+        let mut truncated_hash = [0u8; TRUNCATED_HASHBYTES];
+        truncated_hash.copy_from_slice(&full_hash[..TRUNCATED_HASHBYTES]);
+
+        tracing::debug!(
+            hash = %HexFmt(&full_hash),
+            truncated = %HexFmt(&truncated_hash),
+            link = %HexFmt(link_id.as_bytes()),
+            "link_mgr: registered channel receipt"
+        );
+
+        self.entries.push(ReceiptEntry {
+            truncated_hash,
+            full_hash,
+            link_id,
+            sequence,
+            sent_at_ms: now_ms,
+        });
+    }
+
+    /// Look up a receipt by truncated hash. Returns `(link_id, full_hash)`.
+    pub(super) fn lookup_receipt(
+        &self,
+        truncated: &[u8; TRUNCATED_HASHBYTES],
+    ) -> Option<(LinkId, [u8; 32])> {
+        self.entries
+            .iter()
+            .find(|e| e.truncated_hash == *truncated)
+            .map(|e| (e.link_id, e.full_hash))
+    }
+
+    /// Remove the entry matching `truncated_hash` and return its sequence number.
+    pub(super) fn confirm_delivery(
+        &mut self,
+        truncated: &[u8; TRUNCATED_HASHBYTES],
+    ) -> Option<u16> {
+        let idx = self
+            .entries
+            .iter()
+            .position(|e| e.truncated_hash == *truncated)?;
+        let entry = self.entries.swap_remove(idx);
+        Some(entry.sequence)
+    }
+
+    /// Remove all entries for a given link.
+    pub(super) fn remove_for_link(&mut self, link_id: &LinkId) {
+        self.entries.retain(|e| e.link_id != *link_id);
+    }
+
+    /// Remove entries older than `DATA_RECEIPT_TIMEOUT_MS`.
+    pub(super) fn expire(&mut self, now_ms: u64) {
+        self.entries
+            .retain(|e| now_ms.saturating_sub(e.sent_at_ms) <= DATA_RECEIPT_TIMEOUT_MS);
+    }
+
+    /// Number of tracked receipts.
+    pub(super) fn len(&self) -> usize {
+        self.entries.len()
+    }
+
+    /// Earliest expiry deadline across all entries, if any.
+    pub(super) fn earliest_expiry(&self) -> Option<u64> {
+        self.entries
+            .iter()
+            .map(|e| e.sent_at_ms.saturating_add(DATA_RECEIPT_TIMEOUT_MS))
+            .min()
+    }
+
+    #[cfg(test)]
+    pub(crate) fn count_for_link(&self, link_id: &LinkId) -> usize {
+        self.entries
+            .iter()
+            .filter(|e| e.link_id == *link_id)
+            .count()
+    }
+
+    #[cfg(test)]
+    pub(crate) fn contains_truncated(&self, truncated: &[u8; TRUNCATED_HASHBYTES]) -> bool {
+        self.entries.iter().any(|e| e.truncated_hash == *truncated)
+    }
+}
 
 impl<R: CryptoRngCore, C: Clock, S: Storage> NodeCore<R, C, S> {
     // ─── Link Management (Public API) ─────────────────────────────────────────
@@ -154,8 +274,6 @@ impl<R: CryptoRngCore, C: Clock, S: Storage> NodeCore<R, C, S> {
             } else {
                 link.close();
             }
-            self.channel_receipt_keys
-                .retain(|(lid, _), _| *lid != *link_id);
             self.links.remove(link_id);
             self.emit_link_closed(
                 *link_id,
@@ -237,9 +355,8 @@ impl<R: CryptoRngCore, C: Clock, S: Storage> NodeCore<R, C, S> {
             .and_then(|l| l.channel())
             .map(|ch| ch.last_sent_sequence())
         {
-            let (full_hash, _old) =
-                self.register_channel_receipt(&packet_bytes, *link_id, seq, now_ms);
-            self.channel_hash_to_seq.insert(full_hash, (*link_id, seq));
+            self.receipt_tracker
+                .register(&packet_bytes, *link_id, seq, now_ms);
         }
 
         // Route via attached interface
@@ -438,18 +555,16 @@ impl<R: CryptoRngCore, C: Clock, S: Storage> NodeCore<R, C, S> {
             proof_hash = %HexFmt(&proof_hash),
             truncated = %HexFmt(&truncated),
             link = %HexFmt(link_id.as_bytes()),
-            receipts = self.data_receipts.len(),
+            receipts = self.receipt_tracker.len(),
             "link_mgr: data proof received"
         );
 
-        // Look up receipt — extract needed data before any mutable borrow
-        let receipt_info = self
-            .data_receipts
-            .get(&truncated)
-            .map(|r| (r.full_hash, r.link_id));
-        let Some((receipt_full_hash, receipt_link_id)) = receipt_info else {
+        // Look up receipt
+        let Some((receipt_link_id, receipt_full_hash)) =
+            self.receipt_tracker.lookup_receipt(&truncated)
+        else {
             tracing::debug!(
-                receipts = self.data_receipts.len(),
+                receipts = self.receipt_tracker.len(),
                 "link_mgr: data proof — no matching receipt"
             );
             return;
@@ -468,14 +583,15 @@ impl<R: CryptoRngCore, C: Clock, S: Storage> NodeCore<R, C, S> {
             .unwrap_or(false);
 
         if is_valid {
-            self.data_receipts.remove(&truncated);
-            tracing::debug!(
-                receipts = self.data_receipts.len(),
-                "link_mgr: data proof validated — delivered"
-            );
+            // confirm_delivery removes the entry entirely (fixes orphan path #1).
+            // Event only fires when the receipt still exists — a valid proof for
+            // an already-expired/removed receipt is silently dropped.
+            if let Some(sequence) = self.receipt_tracker.confirm_delivery(&truncated) {
+                tracing::debug!(
+                    receipts = self.receipt_tracker.len(),
+                    "link_mgr: data proof validated — delivered"
+                );
 
-            // Inline delivery tracking
-            if let Some((_, sequence)) = self.channel_hash_to_seq.remove(&receipt_full_hash) {
                 let now_ms = self.transport.clock().now_ms();
                 let rtt_ms = self.links.get(link_id).map(|l| l.rtt_ms()).unwrap_or(500);
                 if let Some(link) = self.links.get_mut(link_id) {
@@ -483,12 +599,12 @@ impl<R: CryptoRngCore, C: Clock, S: Storage> NodeCore<R, C, S> {
                         ch.mark_delivered(sequence, now_ms, rtt_ms);
                     }
                 }
-            }
 
-            self.events.push(NodeEvent::LinkDeliveryConfirmed {
-                link_id: *link_id,
-                packet_hash: receipt_full_hash,
-            });
+                self.events.push(NodeEvent::LinkDeliveryConfirmed {
+                    link_id: *link_id,
+                    packet_hash: receipt_full_hash,
+                });
+            }
         } else {
             tracing::debug!("link_mgr: data proof — signature validation failed");
         }
@@ -824,12 +940,8 @@ impl<R: CryptoRngCore, C: Clock, S: Storage> NodeCore<R, C, S> {
             );
         }
 
-        // Clean up expired data receipts and their channel_receipt_keys
-        self.data_receipts.retain(|_, receipt| {
-            now_ms.saturating_sub(receipt.sent_at_ms) <= DATA_RECEIPT_TIMEOUT_MS
-        });
-        self.channel_receipt_keys
-            .retain(|_, truncated| self.data_receipts.contains_key(truncated));
+        // Clean up expired receipts
+        self.receipt_tracker.expire(now_ms);
     }
 
     /// Check if any active links need to send keepalives (initiator only)
@@ -894,8 +1006,6 @@ impl<R: CryptoRngCore, C: Clock, S: Storage> NodeCore<R, C, S> {
                 if let Some(ref pkt) = close_packet {
                     self.route_link_packet(&link_id, pkt);
                 }
-                self.channel_receipt_keys
-                    .retain(|(lid, _), _| *lid != link_id);
                 self.links.remove(&link_id);
                 self.emit_link_closed(
                     link_id,
@@ -954,15 +1064,8 @@ impl<R: CryptoRngCore, C: Clock, S: Storage> NodeCore<R, C, S> {
 
                         if let Some(packet) = packet {
                             // Register receipt for the re-encrypted packet
-                            let (new_hash, old_hash) =
-                                self.register_channel_receipt(&packet, link_id, sequence, now_ms);
-
-                            // Update channel_hash_to_seq inline
-                            if let Some(old) = old_hash {
-                                self.channel_hash_to_seq.remove(&old);
-                            }
-                            self.channel_hash_to_seq
-                                .insert(new_hash, (link_id, sequence));
+                            self.receipt_tracker
+                                .register(&packet, link_id, sequence, now_ms);
 
                             self.events.push(NodeEvent::ChannelRetransmit {
                                 link_id,
@@ -995,8 +1098,6 @@ impl<R: CryptoRngCore, C: Clock, S: Storage> NodeCore<R, C, S> {
                         }
 
                         self.links.remove(&link_id);
-                        self.channel_receipt_keys
-                            .retain(|(lid, _), _| *lid != link_id);
                         self.emit_link_closed(
                             link_id,
                             LinkCloseReason::Timeout,
@@ -1035,8 +1136,8 @@ impl<R: CryptoRngCore, C: Clock, S: Storage> NodeCore<R, C, S> {
         }
 
         // Data receipt timeouts
-        for receipt in self.data_receipts.values() {
-            update(receipt.sent_at_ms.saturating_add(DATA_RECEIPT_TIMEOUT_MS));
+        if let Some(deadline) = self.receipt_tracker.earliest_expiry() {
+            update(deadline);
         }
 
         // Active link keepalive and stale deadlines
@@ -1074,46 +1175,6 @@ impl<R: CryptoRngCore, C: Clock, S: Storage> NodeCore<R, C, S> {
         earliest
     }
 
-    /// Register a data receipt for a channel message, removing any previous receipt
-    /// for the same (link_id, sequence).
-    fn register_channel_receipt(
-        &mut self,
-        packet_data: &[u8],
-        link_id: LinkId,
-        sequence: u16,
-        now_ms: u64,
-    ) -> ([u8; 32], Option<[u8; 32]>) {
-        // Remove old receipt for this (link_id, sequence) if present
-        let old_full_hash = self
-            .channel_receipt_keys
-            .remove(&(link_id, sequence))
-            .and_then(|old_truncated| self.data_receipts.remove(&old_truncated))
-            .map(|old_receipt| old_receipt.full_hash);
-
-        // Register new receipt
-        let full_hash = packet_hash(packet_data);
-        let mut truncated = [0u8; TRUNCATED_HASHBYTES];
-        truncated.copy_from_slice(&full_hash[..TRUNCATED_HASHBYTES]);
-        tracing::debug!(
-            hash = %HexFmt(&full_hash),
-            truncated = %HexFmt(&truncated),
-            link = %HexFmt(link_id.as_bytes()),
-            "link_mgr: registered channel receipt"
-        );
-        self.data_receipts.insert(
-            truncated,
-            DataReceipt {
-                full_hash,
-                link_id,
-                sent_at_ms: now_ms,
-            },
-        );
-        self.channel_receipt_keys
-            .insert((link_id, sequence), truncated);
-
-        (full_hash, old_full_hash)
-    }
-
     // ─── Internal: Helpers ────────────────────────────────────────────────────
 
     /// Route a link packet via attached interface, with path lookup fallback.
@@ -1141,9 +1202,8 @@ impl<R: CryptoRngCore, C: Clock, S: Storage> NodeCore<R, C, S> {
         is_initiator: bool,
         destination_hash: DestinationHash,
     ) {
-        // Clean up channel hash→seq entries for this link
-        self.channel_hash_to_seq
-            .retain(|_, (lid, _)| *lid != link_id);
+        // Clean up all receipt entries for this link
+        self.receipt_tracker.remove_for_link(&link_id);
 
         // Path recovery for locally-initiated links that never activated
         // (Python Transport.py:472-494)
@@ -1172,5 +1232,119 @@ impl<R: CryptoRngCore, C: Clock, S: Storage> NodeCore<R, C, S> {
         let mut buf = [0u8; crate::constants::MTU];
         let len = packet.pack(&mut buf).unwrap_or(0);
         buf[..len].to_vec()
+    }
+}
+
+#[cfg(test)]
+mod receipt_tracker_tests {
+    use super::*;
+
+    fn make_link_id(b: u8) -> LinkId {
+        LinkId::new([b; 16])
+    }
+
+    #[test]
+    fn test_register_retransmit_replaces_entry() {
+        let mut tracker = ReceiptTracker::new();
+        let link = make_link_id(0xAA);
+
+        // Use data with distinct hashable parts (packet_hash strips first 2 bytes)
+        let data_v1 = [0x00u8; 64];
+        let data_v2 = [0xFFu8; 64];
+
+        tracker.register(&data_v1, link, 1, 1000);
+        assert_eq!(tracker.len(), 1);
+
+        // Re-register same (link, seq) with different data
+        tracker.register(&data_v2, link, 1, 2000);
+        assert_eq!(tracker.len(), 1);
+
+        // Entry should have the new hashes
+        let new_hash = packet_hash(&data_v2);
+        let mut new_truncated = [0u8; TRUNCATED_HASHBYTES];
+        new_truncated.copy_from_slice(&new_hash[..TRUNCATED_HASHBYTES]);
+        assert!(tracker.contains_truncated(&new_truncated));
+
+        // Old entry should be gone
+        let old_hash = packet_hash(&data_v1);
+        let mut old_truncated = [0u8; TRUNCATED_HASHBYTES];
+        old_truncated.copy_from_slice(&old_hash[..TRUNCATED_HASHBYTES]);
+        assert!(!tracker.contains_truncated(&old_truncated));
+    }
+
+    #[test]
+    fn test_confirm_delivery_unknown_hash_returns_none() {
+        let mut tracker = ReceiptTracker::new();
+        let link = make_link_id(0xBB);
+
+        tracker.register(b"some_packet", link, 5, 1000);
+        assert_eq!(tracker.len(), 1);
+
+        let unknown = [0xFFu8; TRUNCATED_HASHBYTES];
+        assert!(tracker.confirm_delivery(&unknown).is_none());
+        assert_eq!(tracker.len(), 1);
+    }
+
+    #[test]
+    fn test_remove_for_link_only_affects_target() {
+        let mut tracker = ReceiptTracker::new();
+        let link_a = make_link_id(0xAA);
+        let link_b = make_link_id(0xBB);
+
+        tracker.register(b"a1", link_a, 1, 1000);
+        tracker.register(b"a2", link_a, 2, 1000);
+        tracker.register(b"b1", link_b, 1, 1000);
+        assert_eq!(tracker.count_for_link(&link_a), 2);
+        assert_eq!(tracker.count_for_link(&link_b), 1);
+
+        tracker.remove_for_link(&link_a);
+        assert_eq!(tracker.count_for_link(&link_a), 0);
+        assert_eq!(tracker.count_for_link(&link_b), 1);
+        assert_eq!(tracker.len(), 1);
+    }
+
+    #[test]
+    fn test_expire_partial() {
+        let mut tracker = ReceiptTracker::new();
+        let link = make_link_id(0xCC);
+
+        tracker.register(b"old_packet", link, 1, 1000);
+        tracker.register(b"new_packet", link, 2, 1000 + DATA_RECEIPT_TIMEOUT_MS);
+
+        // Advance time so only the first has expired
+        let now = 1000 + DATA_RECEIPT_TIMEOUT_MS + 1;
+        tracker.expire(now);
+
+        assert_eq!(tracker.len(), 1);
+        // The surviving entry should be the newer one (seq=2)
+        let new_hash = packet_hash(b"new_packet");
+        let mut new_truncated = [0u8; TRUNCATED_HASHBYTES];
+        new_truncated.copy_from_slice(&new_hash[..TRUNCATED_HASHBYTES]);
+        assert!(tracker.contains_truncated(&new_truncated));
+    }
+
+    #[test]
+    fn test_register_then_confirm_then_register_same_seq() {
+        let mut tracker = ReceiptTracker::new();
+        let link = make_link_id(0xDD);
+
+        // Register, confirm delivery, register again with same sequence
+        tracker.register(b"msg_v1", link, 1, 1000);
+        let hash1 = packet_hash(b"msg_v1");
+        let mut trunc1 = [0u8; TRUNCATED_HASHBYTES];
+        trunc1.copy_from_slice(&hash1[..TRUNCATED_HASHBYTES]);
+
+        let seq = tracker.confirm_delivery(&trunc1);
+        assert_eq!(seq, Some(1));
+        assert_eq!(tracker.len(), 0);
+
+        // Re-register same sequence (after wraparound or new message)
+        tracker.register(b"msg_v2", link, 1, 2000);
+        assert_eq!(tracker.len(), 1);
+
+        let hash2 = packet_hash(b"msg_v2");
+        let mut trunc2 = [0u8; TRUNCATED_HASHBYTES];
+        trunc2.copy_from_slice(&hash2[..TRUNCATED_HASHBYTES]);
+        assert!(tracker.contains_truncated(&trunc2));
     }
 }

@@ -39,16 +39,6 @@
 
 pub mod channel;
 
-/// Receipt for a sent data packet awaiting proof (PROVE_ALL)
-pub(crate) struct DataReceipt {
-    /// Full SHA256 hash of the packet
-    pub(crate) full_hash: [u8; 32],
-    /// Link ID the packet was sent on
-    pub(crate) link_id: LinkId,
-    /// When the packet was sent (ms since epoch)
-    pub(crate) sent_at_ms: u64,
-}
-
 use crate::constants::{
     ED25519_SIGNATURE_SIZE, KEEPALIVE_INITIATOR_BYTE, KEEPALIVE_PAYLOAD_SIZE,
     KEEPALIVE_RESPONDER_BYTE, LINK_KEEPALIVE_MAX_RTT, LINK_KEEPALIVE_MIN_SECS, LINK_KEEPALIVE_SECS,

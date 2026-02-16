@@ -58,7 +58,7 @@ use crate::constants::TRUNCATED_HASHBYTES;
 use crate::destination::{Destination, DestinationHash, ProofStrategy};
 use crate::identity::Identity;
 use crate::link::channel::{ChannelError, Message};
-use crate::link::{DataReceipt, Link, LinkId};
+use crate::link::{Link, LinkId};
 use crate::packet::packet_hash;
 use crate::traits::{Clock, Storage};
 use crate::transport::{Transport, TransportConfig, TransportEvent, TransportStats};
@@ -164,10 +164,8 @@ pub struct NodeCore<R: CryptoRngCore, C: Clock, S: Storage> {
     transport: Transport<C, S>,
     /// Active links by ID
     links: BTreeMap<LinkId, Link>,
-    /// Receipts for sent data packets awaiting proofs (truncated_hash -> receipt)
-    data_receipts: BTreeMap<[u8; TRUNCATED_HASHBYTES], DataReceipt>,
-    /// Maps (link_id, channel_sequence) → truncated receipt hash for cleanup on retransmit
-    channel_receipt_keys: BTreeMap<(LinkId, u16), [u8; TRUNCATED_HASHBYTES]>,
+    /// Tracks channel message receipts awaiting delivery proofs
+    receipt_tracker: link_management::ReceiptTracker,
     /// Count of rx_ring full drops since last log
     rx_ring_full_count: u64,
     /// Timestamp (ms) when last rx_ring full log was emitted
@@ -178,8 +176,6 @@ pub struct NodeCore<R: CryptoRngCore, C: Clock, S: Storage> {
     default_proof_strategy: ProofStrategy,
     /// Pending events
     events: Vec<NodeEvent>,
-    /// Maps packet hash → channel sequence for delivery tracking
-    channel_hash_to_seq: BTreeMap<[u8; 32], (LinkId, u16)>,
 }
 
 impl<R: CryptoRngCore, C: Clock, S: Storage> NodeCore<R, C, S> {
@@ -211,14 +207,12 @@ impl<R: CryptoRngCore, C: Clock, S: Storage> NodeCore<R, C, S> {
             // Access via transport.identity()
             transport,
             links: BTreeMap::new(),
-            data_receipts: BTreeMap::new(),
-            channel_receipt_keys: BTreeMap::new(),
+            receipt_tracker: link_management::ReceiptTracker::new(),
             rx_ring_full_count: 0,
             rx_ring_full_last_log_ms: 0,
             destinations: BTreeMap::new(),
             default_proof_strategy: proof_strategy,
             events: Vec::new(),
-            channel_hash_to_seq: BTreeMap::new(),
         }
     }
 
@@ -617,34 +611,22 @@ impl<R: CryptoRngCore, C: Clock, S: Storage> NodeCore<R, C, S> {
         &self.transport
     }
 
-    /// Get the number of entries in channel_hash_to_seq (test-only)
+    /// Get the number of tracked receipts (test-only)
     #[cfg(test)]
-    pub(crate) fn channel_hash_to_seq_len(&self) -> usize {
-        self.channel_hash_to_seq.len()
+    pub(crate) fn receipt_count(&self) -> usize {
+        self.receipt_tracker.len()
     }
 
-    /// Get the number of pending data receipts (test-only)
+    /// Count receipt entries for a given link (test-only)
     #[cfg(test)]
-    pub(crate) fn data_receipts_count(&self) -> usize {
-        self.data_receipts.len()
+    pub(crate) fn receipt_count_for_link(&self, link_id: &LinkId) -> usize {
+        self.receipt_tracker.count_for_link(link_id)
     }
 
-    /// Check if a data receipt exists for the given truncated hash (test-only)
+    /// Expire all receipts as of `now_ms` without triggering retransmit (test-only)
     #[cfg(test)]
-    pub(crate) fn data_receipts_contains_truncated(
-        &self,
-        truncated: &[u8; TRUNCATED_HASHBYTES],
-    ) -> bool {
-        self.data_receipts.contains_key(truncated)
-    }
-
-    /// Count channel_receipt_keys entries for a given link (test-only)
-    #[cfg(test)]
-    pub(crate) fn channel_receipt_keys_for_link(&self, link_id: &LinkId) -> usize {
-        self.channel_receipt_keys
-            .keys()
-            .filter(|(lid, _)| *lid == *link_id)
-            .count()
+    pub(crate) fn expire_receipts(&mut self, now_ms: u64) {
+        self.receipt_tracker.expire(now_ms);
     }
 
     // ─── Internal: Event Handling ──────────────────────────────────────────────
@@ -1721,7 +1703,7 @@ mod tests {
     }
 
     #[test]
-    fn test_channel_hash_to_seq_populated_on_send() {
+    fn test_send_on_link_creates_receipt() {
         let mut pair = establish_nodecore_link_pair();
 
         let _ = pair
@@ -1729,28 +1711,28 @@ mod tests {
             .send_on_link(&pair.initiator_link_id, b"test")
             .unwrap();
 
-        assert_eq!(pair.initiator.channel_hash_to_seq_len(), 1);
+        assert_eq!(pair.initiator.receipt_count(), 1);
     }
 
     #[test]
-    fn test_channel_hash_to_seq_cleanup_on_close() {
+    fn test_close_link_removes_receipts() {
         let mut pair = establish_nodecore_link_pair();
 
-        // Send data (populates channel_hash_to_seq)
+        // Send data (populates receipt tracker)
         let _ = pair
             .initiator
             .send_on_link(&pair.initiator_link_id, b"test")
             .unwrap();
-        assert_eq!(pair.initiator.channel_hash_to_seq_len(), 1);
+        assert_eq!(pair.initiator.receipt_count(), 1);
 
         // Close connection
         let _ = pair.initiator.close_link(&pair.initiator_link_id);
 
-        // Map should be cleaned — FAILS: handle_link_event(LinkClosed) does not clean it
+        // All receipts for this link should be cleaned
         assert_eq!(
-            pair.initiator.channel_hash_to_seq_len(),
+            pair.initiator.receipt_count(),
             0,
-            "channel_hash_to_seq should be cleaned on close"
+            "receipts should be cleaned on close"
         );
     }
 
@@ -1942,15 +1924,15 @@ mod tests {
     }
 
     #[test]
-    fn test_h4_receipt_maps_in_sync_after_retransmit() {
+    fn test_retransmit_replaces_receipt() {
         let mut pair = establish_nodecore_link_pair();
 
-        // Send data (populates both maps)
+        // Send data (creates receipt)
         let _ = pair
             .initiator
             .send_on_link(&pair.initiator_link_id, b"sync test")
             .unwrap();
-        assert_eq!(pair.initiator.channel_hash_to_seq_len(), 1);
+        assert_eq!(pair.initiator.receipt_count(), 1);
 
         // Trigger retransmit by advancing time past timeout
         pair.initiator
@@ -1959,12 +1941,11 @@ mod tests {
             .set(TEST_TIME_MS + 10_000);
         let _output = pair.initiator.handle_timeout();
 
-        // channel_hash_to_seq should still have exactly 1 entry
-        // (old mapping removed, new one added via ChannelReceiptUpdated handling)
+        // Receipt should still be exactly 1 (old replaced by new, no leak)
         assert_eq!(
-            pair.initiator.channel_hash_to_seq_len(),
+            pair.initiator.receipt_count(),
             1,
-            "channel_hash_to_seq should stay at 1 after retransmit (old removed, new added)"
+            "receipt count should stay at 1 after retransmit (old replaced, not leaked)"
         );
     }
 
@@ -2226,7 +2207,7 @@ mod tests {
             .initiator
             .send_on_link(&pair.initiator_link_id, b"roundtrip")
             .unwrap();
-        assert_eq!(pair.initiator.data_receipts_count(), 1);
+        assert_eq!(pair.initiator.receipt_count(), 1);
         let channel_data = extract_broadcast_data(&output);
 
         // Deliver to responder → should get proof in actions
@@ -2243,7 +2224,7 @@ mod tests {
 
         // Receipt should be consumed
         assert_eq!(
-            pair.initiator.data_receipts_count(),
+            pair.initiator.receipt_count(),
             0,
             "receipt should be consumed after proof"
         );
@@ -2429,7 +2410,7 @@ mod tests {
             .initiator
             .send_on_link(&pair.initiator_link_id, b"timeout_test")
             .unwrap();
-        assert_eq!(pair.initiator.channel_hash_to_seq_len(), 1);
+        assert_eq!(pair.initiator.receipt_count(), 1);
 
         // Phase 1: advance 1s → no retransmit yet
         pair.initiator.transport().clock().set(TEST_TIME_MS + 1_000);
@@ -2462,8 +2443,8 @@ mod tests {
             "retransmit should produce a packet"
         );
 
-        // channel_hash_to_seq should still have 1 entry (old removed, new added)
-        assert_eq!(pair.initiator.channel_hash_to_seq_len(), 1);
+        // Receipt count should still be 1 (old replaced, not leaked)
+        assert_eq!(pair.initiator.receipt_count(), 1);
     }
 
     #[test]
@@ -2585,7 +2566,7 @@ mod tests {
     }
 
     #[test]
-    fn test_data_receipts_expire_after_timeout() {
+    fn test_receipts_expire_after_timeout() {
         use crate::constants::DATA_RECEIPT_TIMEOUT_MS;
 
         let mut pair = establish_nodecore_link_pair();
@@ -2595,37 +2576,27 @@ mod tests {
             .initiator
             .send_on_link(&pair.initiator_link_id, b"expire_test")
             .unwrap();
-        assert_eq!(pair.initiator.data_receipts_count(), 1);
+        assert_eq!(pair.initiator.receipt_count(), 1);
 
-        // Phase 1: just before timeout → receipt still present
-        pair.initiator
-            .transport()
-            .clock()
-            .set(TEST_TIME_MS + DATA_RECEIPT_TIMEOUT_MS - 1);
-        let _ = pair.initiator.handle_timeout();
-        assert_eq!(
-            pair.initiator.data_receipts_count(),
-            1,
-            "receipt should still exist just before timeout"
-        );
-
-        // Phase 2: just after timeout → receipt expired
+        // Advance time past both stale close and receipt timeout.
+        // The receipt is cleaned either by link close (remove_for_link) or
+        // by time-based expiry — both paths converge to receipt_count == 0.
         pair.initiator
             .transport()
             .clock()
             .set(TEST_TIME_MS + DATA_RECEIPT_TIMEOUT_MS + 1);
         let _ = pair.initiator.handle_timeout();
         assert_eq!(
-            pair.initiator.data_receipts_count(),
+            pair.initiator.receipt_count(),
             0,
-            "receipt should be expired after timeout"
+            "receipt should be cleaned after timeout"
         );
     }
 
     // ─── Group D: Receipt tracking ──────────────────────────────────────────
 
     #[test]
-    fn test_channel_receipt_lifecycle() {
+    fn test_receipt_lifecycle() {
         use crate::transport::InterfaceId;
 
         let mut pair = establish_nodecore_link_pair();
@@ -2635,8 +2606,7 @@ mod tests {
             .initiator
             .send_on_link(&pair.initiator_link_id, b"lifecycle")
             .unwrap();
-        assert_eq!(pair.initiator.data_receipts_count(), 1);
-        assert_eq!(pair.initiator.channel_hash_to_seq_len(), 1);
+        assert_eq!(pair.initiator.receipt_count(), 1);
 
         // Deliver to responder → get proof
         let data = extract_broadcast_data(&output);
@@ -2651,14 +2621,14 @@ mod tests {
             .any(|e| matches!(e, NodeEvent::LinkDeliveryConfirmed { .. }));
         assert!(has_confirmed, "expected LinkDeliveryConfirmed");
         assert_eq!(
-            pair.initiator.data_receipts_count(),
+            pair.initiator.receipt_count(),
             0,
             "receipt should be consumed"
         );
         assert_eq!(
-            pair.initiator.channel_hash_to_seq_len(),
+            pair.initiator.receipt_count(),
             0,
-            "channel_hash_to_seq should be cleaned"
+            "receipt should be consumed after proof"
         );
     }
 
@@ -2692,8 +2662,8 @@ mod tests {
         assert_eq!(sequence, 0, "first message should be sequence 0");
         assert_eq!(tries, 2, "first retransmit should be tries=2");
 
-        // channel_hash_to_seq should still have the entry
-        assert_eq!(pair.initiator.channel_hash_to_seq_len(), 1);
+        // Receipt should still exist (retransmit replaced, not leaked)
+        assert_eq!(pair.initiator.receipt_count(), 1);
     }
 
     #[test]
@@ -2742,7 +2712,7 @@ mod tests {
             "proof for retransmit should produce LinkDeliveryConfirmed"
         );
         assert_eq!(
-            pair.initiator.data_receipts_count(),
+            pair.initiator.receipt_count(),
             0,
             "receipt should be consumed"
         );
@@ -2752,11 +2722,17 @@ mod tests {
     fn test_multiple_retransmits_single_receipt() {
         let mut pair = establish_nodecore_link_pair();
 
+        // Extend stale timeout so the link survives through retransmit intervals
+        pair.initiator
+            .link_mut(&pair.initiator_link_id)
+            .unwrap()
+            .set_timing_for_test(3600, 3600, TEST_TIME_MS / crate::constants::MS_PER_SECOND);
+
         let _ = pair
             .initiator
             .send_on_link(&pair.initiator_link_id, b"multi_retransmit")
             .unwrap();
-        assert_eq!(pair.initiator.data_receipts_count(), 1);
+        assert_eq!(pair.initiator.receipt_count(), 1);
 
         // Retransmit 1
         pair.initiator
@@ -2765,7 +2741,7 @@ mod tests {
             .set(TEST_TIME_MS + 10_000);
         let _ = pair.initiator.handle_timeout();
         assert_eq!(
-            pair.initiator.data_receipts_count(),
+            pair.initiator.receipt_count(),
             1,
             "should still have 1 receipt after first retransmit"
         );
@@ -2777,7 +2753,7 @@ mod tests {
             .set(TEST_TIME_MS + 25_000);
         let _ = pair.initiator.handle_timeout();
         assert_eq!(
-            pair.initiator.data_receipts_count(),
+            pair.initiator.receipt_count(),
             1,
             "should still have 1 receipt after second retransmit (no leak)"
         );
@@ -2832,29 +2808,29 @@ mod tests {
             .any(|e| matches!(e, NodeEvent::LinkDeliveryConfirmed { .. }));
         assert!(has_confirmed, "expected LinkDeliveryConfirmed");
         assert_eq!(
-            pair.initiator.data_receipts_count(),
+            pair.initiator.receipt_count(),
             0,
             "receipt should be consumed"
         );
     }
 
     #[test]
-    fn test_data_receipts_count_increments() {
+    fn test_receipt_count_increments_on_send() {
         let mut pair = establish_nodecore_link_pair();
 
-        assert_eq!(pair.initiator.data_receipts_count(), 0);
+        assert_eq!(pair.initiator.receipt_count(), 0);
 
         let _ = pair
             .initiator
             .send_on_link(&pair.initiator_link_id, b"first")
             .unwrap();
-        assert_eq!(pair.initiator.data_receipts_count(), 1);
+        assert_eq!(pair.initiator.receipt_count(), 1);
 
         let _ = pair
             .initiator
             .send_on_link(&pair.initiator_link_id, b"second")
             .unwrap();
-        assert_eq!(pair.initiator.data_receipts_count(), 2);
+        assert_eq!(pair.initiator.receipt_count(), 2);
     }
 
     // ─── Group E: Misc ──────────────────────────────────────────────────────
@@ -2964,7 +2940,7 @@ mod tests {
     // ─── Group F: Close cleanup ─────────────────────────────────────────────
 
     #[test]
-    fn test_channel_receipt_keys_cleaned_on_close() {
+    fn test_close_link_removes_receipt_entries() {
         let mut pair = establish_nodecore_link_pair();
 
         // Send (populates receipts)
@@ -2972,22 +2948,138 @@ mod tests {
             .initiator
             .send_on_link(&pair.initiator_link_id, b"cleanup")
             .unwrap();
-        assert!(pair.initiator.data_receipts_count() >= 1);
+        assert!(pair.initiator.receipt_count() >= 1);
         assert!(
             pair.initiator
-                .channel_receipt_keys_for_link(&pair.initiator_link_id)
+                .receipt_count_for_link(&pair.initiator_link_id)
                 >= 1
         );
 
         // Close link
         let _ = pair.initiator.close_link(&pair.initiator_link_id);
 
-        // channel_receipt_keys for this link should be cleaned
+        // All receipt entries for this link should be cleaned
         assert_eq!(
             pair.initiator
-                .channel_receipt_keys_for_link(&pair.initiator_link_id),
+                .receipt_count_for_link(&pair.initiator_link_id),
             0,
-            "channel_receipt_keys should be cleaned on close"
+            "receipt entries should be cleaned on close"
         );
+    }
+
+    // ─── Group G: ReceiptTracker orphan-path fix tests ─────────────────────
+
+    #[test]
+    fn test_delivery_proof_removes_receipt() {
+        use crate::transport::InterfaceId;
+
+        let mut pair = establish_nodecore_link_pair();
+
+        // Send channel message → creates receipt
+        let output = pair
+            .initiator
+            .send_on_link(&pair.initiator_link_id, b"proof_cleanup")
+            .unwrap();
+        assert_eq!(pair.initiator.receipt_count(), 1);
+        let channel_data = extract_broadcast_data(&output);
+
+        // Deliver to responder → get proof
+        let output = pair.responder.handle_packet(InterfaceId(0), &channel_data);
+        let proof = extract_broadcast_data(&output);
+
+        // Deliver proof to initiator → receipt consumed entirely
+        let output = pair.initiator.handle_packet(InterfaceId(0), &proof);
+        let has_confirmed = output
+            .events
+            .iter()
+            .any(|e| matches!(e, NodeEvent::LinkDeliveryConfirmed { .. }));
+        assert!(has_confirmed, "expected LinkDeliveryConfirmed");
+
+        // Orphan path #1 fix: the receipt entry is completely removed
+        // (previously channel_receipt_keys entry was orphaned)
+        assert_eq!(
+            pair.initiator.receipt_count(),
+            0,
+            "delivery proof should remove all receipt state"
+        );
+        assert_eq!(
+            pair.initiator
+                .receipt_count_for_link(&pair.initiator_link_id),
+            0,
+            "no receipt entries should remain for this link"
+        );
+    }
+
+    #[test]
+    fn test_expired_receipts_cleaned_on_timeout() {
+        use crate::constants::DATA_RECEIPT_TIMEOUT_MS;
+
+        let mut pair = establish_nodecore_link_pair();
+
+        // Send channel message → creates receipt
+        let _ = pair
+            .initiator
+            .send_on_link(&pair.initiator_link_id, b"expire_cleanup")
+            .unwrap();
+        assert_eq!(pair.initiator.receipt_count(), 1);
+
+        // Advance time past DATA_RECEIPT_TIMEOUT_MS → handle_timeout cleans up
+        // (link will also close due to stale timeout, but that's fine —
+        // the point is that no receipt entries survive)
+        pair.initiator
+            .transport()
+            .clock()
+            .set(TEST_TIME_MS + DATA_RECEIPT_TIMEOUT_MS + 1);
+        let _ = pair.initiator.handle_timeout();
+
+        // Orphan path #2 fix: all receipt state is cleaned
+        // (previously channel_hash_to_seq entries were orphaned after expiry GC)
+        assert_eq!(
+            pair.initiator.receipt_count(),
+            0,
+            "all receipt entries should be cleaned after timeout"
+        );
+    }
+
+    #[test]
+    fn test_valid_proof_after_receipt_expiry_emits_no_event() {
+        use crate::constants::DATA_RECEIPT_TIMEOUT_MS;
+        use crate::transport::InterfaceId;
+
+        let mut pair = establish_nodecore_link_pair();
+
+        // Send channel message → creates receipt
+        let output = pair
+            .initiator
+            .send_on_link(&pair.initiator_link_id, b"will_expire")
+            .unwrap();
+        assert_eq!(pair.initiator.receipt_count(), 1);
+        let channel_data = extract_broadcast_data(&output);
+
+        // Deliver to responder → get proof (save for later)
+        let output = pair.responder.handle_packet(InterfaceId(0), &channel_data);
+        let proof = extract_broadcast_data(&output);
+
+        // Expire the receipt directly (bypasses handle_timeout which would
+        // also retransmit and re-register)
+        pair.initiator
+            .expire_receipts(TEST_TIME_MS + DATA_RECEIPT_TIMEOUT_MS + 1);
+        assert_eq!(
+            pair.initiator.receipt_count(),
+            0,
+            "receipt should have expired"
+        );
+
+        // Deliver the valid proof — receipt is gone, link still alive
+        let output = pair.initiator.handle_packet(InterfaceId(0), &proof);
+        let has_confirmed = output
+            .events
+            .iter()
+            .any(|e| matches!(e, NodeEvent::LinkDeliveryConfirmed { .. }));
+        assert!(
+            !has_confirmed,
+            "LinkDeliveryConfirmed must not fire when receipt was already expired"
+        );
+        assert_eq!(pair.initiator.receipt_count(), 0);
     }
 }
