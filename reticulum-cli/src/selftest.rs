@@ -17,7 +17,7 @@ use tokio::sync::Notify;
 use reticulum_core::link::LinkId;
 use reticulum_core::node::NodeEvent;
 use reticulum_core::{Destination, DestinationHash, DestinationType, Direction, Identity};
-use reticulum_std::driver::{LinkHandle, PacketEndpoint, ReticulumNodeBuilder};
+use reticulum_std::driver::{LinkHandle, PacketSender, ReticulumNodeBuilder};
 
 // ─── Message Format ──────────────────────────────────────────────────────────
 
@@ -467,7 +467,7 @@ async fn send_msg(
 ) {
     let now_ms = start_time.elapsed().as_millis() as u64;
     let msg = build_message(dir, seq, now_ms);
-    match stream.send_bytes(&msg).await {
+    match stream.send(&msg).await {
         Ok(()) => {
             let mut st = state.stats.lock().unwrap();
             if is_a {
@@ -488,7 +488,7 @@ async fn send_msg(
 }
 
 async fn send_single_msg(
-    endpoint: &PacketEndpoint,
+    endpoint: &PacketSender,
     dir: &str,
     seq: u64,
     start_time: Instant,
@@ -875,16 +875,13 @@ pub async fn run_selftest(
             println!("[selftest] Phase 7: Skipped (link dead)");
         } else {
             // ── Phase 6: Burst ──────────────────────────────────────────
-            // Send 10 messages as fast as possible. send_bytes() absorbs
+            // Send 10 messages as fast as possible. send() absorbs
             // pacing delays and window-full automatically.
             let mut burst_ok = 0u64;
             for seq in 0..10u64 {
                 let msg = build_message("ab", 10000 + seq, start_time.elapsed().as_millis() as u64);
-                match tokio::time::timeout(
-                    std::time::Duration::from_secs(10),
-                    stream_a.send_bytes(&msg),
-                )
-                .await
+                match tokio::time::timeout(std::time::Duration::from_secs(10), stream_a.send(&msg))
+                    .await
                 {
                     Ok(Ok(())) => {
                         state.stats.lock().unwrap().sent_a += 1;
@@ -992,8 +989,8 @@ pub async fn run_selftest(
         println!("[selftest] Phase 8: Single-packet exchange ({duration}s)");
         state.single_packet_phase.store(true, Ordering::Relaxed);
 
-        let ep_a = node_a.packet_endpoint(&dest_hash_b);
-        let ep_b = node_b.packet_endpoint(&dest_hash_a);
+        let ep_a = node_a.packet_sender(&dest_hash_b);
+        let ep_b = node_b.packet_sender(&dest_hash_a);
 
         let mut sp_seq_a = 0u64;
         let mut sp_seq_b = 0u64;

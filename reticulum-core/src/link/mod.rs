@@ -176,7 +176,8 @@ impl core::fmt::Display for LinkError {
 pub enum LinkCloseReason {
     /// Normal close requested
     Normal,
-    /// Handshake timed out
+    /// Link handshake did not complete within the timeout period.
+    /// The peer may be unreachable or the path may be invalid.
     Timeout,
     /// Invalid proof received
     InvalidProof,
@@ -184,6 +185,10 @@ pub enum LinkCloseReason {
     PeerClosed,
     /// Link became stale (no activity)
     Stale,
+    /// Channel message delivery failed after maximum retries.
+    /// The link was established and operational, but a message could not
+    /// be delivered despite repeated retransmission attempts.
+    ChannelExhausted,
 }
 
 /// Peer's public keys from a link request

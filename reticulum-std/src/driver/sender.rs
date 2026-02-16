@@ -16,22 +16,22 @@ use crate::error::Error;
 
 /// Async handle for sending single packets to a destination
 ///
-/// `PacketEndpoint` provides a self-contained handle for fire-and-forget
+/// `PacketSender` provides a self-contained handle for fire-and-forget
 /// packet delivery to a specific destination hash. It is the single-packet
 /// analog of [`super::LinkHandle`].
 ///
-/// Created via [`super::ReticulumNode::packet_endpoint()`]. The handle
+/// Created via [`super::ReticulumNode::packet_sender()`]. The handle
 /// locks the core to build the packet and dispatches the resulting actions
 /// through the event loop.
 ///
 /// # Example
 ///
 /// ```no_run
-/// # use reticulum_std::driver::{ReticulumNodeBuilder, PacketEndpoint};
+/// # use reticulum_std::driver::{ReticulumNodeBuilder, PacketSender};
 /// # async fn example() -> Result<(), Box<dyn std::error::Error>> {
 /// # let node = ReticulumNodeBuilder::new().build().await?;
 /// # let dest_hash = reticulum_core::DestinationHash::new([0; 16]);
-/// let endpoint = node.packet_endpoint(&dest_hash);
+/// let endpoint = node.packet_sender(&dest_hash);
 ///
 /// // Send a single packet
 /// let _hash = endpoint.send(b"Hello!").await?;
@@ -39,14 +39,14 @@ use crate::error::Error;
 /// # }
 /// ```
 #[derive(Clone)]
-pub struct PacketEndpoint {
+pub struct PacketSender {
     dest_hash: DestinationHash,
     inner: Arc<Mutex<StdNodeCore>>,
     action_dispatch_tx: mpsc::Sender<TickOutput>,
 }
 
-impl PacketEndpoint {
-    /// Create a new PacketEndpoint (crate-private, like LinkHandle)
+impl PacketSender {
+    /// Create a new PacketSender (crate-private, like LinkHandle)
     pub(crate) fn new(
         dest_hash: DestinationHash,
         inner: Arc<Mutex<StdNodeCore>>,
@@ -101,26 +101,26 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_packet_endpoint_dest_hash() {
+    async fn test_packet_sender_dest_hash() {
         let (inner, tx) = make_node_and_inner();
         let dest_hash = DestinationHash::new([0xAB; 16]);
-        let ep = PacketEndpoint::new(dest_hash, inner, tx);
+        let ep = PacketSender::new(dest_hash, inner, tx);
 
         assert_eq!(*ep.dest_hash(), dest_hash);
     }
 
     #[tokio::test]
-    async fn test_packet_endpoint_send_no_path_returns_error() {
+    async fn test_packet_sender_send_no_path_returns_error() {
         let (inner, tx) = make_node_and_inner();
         let dest_hash = DestinationHash::new([0xAB; 16]);
-        let ep = PacketEndpoint::new(dest_hash, inner, tx);
+        let ep = PacketSender::new(dest_hash, inner, tx);
 
         let result = ep.send(b"hello").await;
         assert!(result.is_err(), "send with no path should fail");
     }
 
     #[tokio::test]
-    async fn test_packet_endpoint_send_closed_channel() {
+    async fn test_packet_sender_send_closed_channel() {
         let (inner, _) = make_node_and_inner();
 
         // Register a destination and announce so a path exists
@@ -142,7 +142,7 @@ mod tests {
         let (tx, rx) = mpsc::channel::<TickOutput>(1);
         drop(rx); // close the receiver
 
-        let ep = PacketEndpoint::new(dest_hash, Arc::clone(&inner), tx);
+        let ep = PacketSender::new(dest_hash, Arc::clone(&inner), tx);
         let result = ep.send(b"hello").await;
         assert!(result.is_err(), "send on closed channel should fail");
     }

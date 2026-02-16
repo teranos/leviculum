@@ -1,7 +1,7 @@
 //! Send-only async handle for Links
 //!
 //! Locks the core directly and dispatches actions through the event loop,
-//! matching the pattern used by `PacketEndpoint`. This ensures that
+//! matching the pattern used by `PacketSender`. This ensures that
 //! `send()` returns the real result from `send_on_link()` — including
 //! `WindowFull` — instead of silently buffering through an mpsc channel.
 
@@ -22,7 +22,7 @@ use super::StdNodeCore;
 /// It locks the core directly for each send, ensuring the caller sees
 /// the real result (including `WindowFull` mapped to `WouldBlock`).
 ///
-/// Incoming data is delivered via `NodeEvent::DataReceived` /
+/// Incoming data is delivered via `NodeEvent::LinkDataReceived` /
 /// `NodeEvent::MessageReceived` on the node's event channel.
 ///
 /// # Example
@@ -78,12 +78,12 @@ impl LinkHandle {
         self.closed
     }
 
-    /// Send data on this link
+    /// Try to send data on this link (non-blocking)
     ///
     /// Locks the core, calls `send_on_link()`, and dispatches the
     /// resulting actions. Returns `WouldBlock` if the channel window is full
     /// or pacing delay is active.
-    pub async fn send(&self, data: &[u8]) -> io::Result<()> {
+    pub async fn try_send(&self, data: &[u8]) -> io::Result<()> {
         if self.closed {
             return Err(io::Error::new(io::ErrorKind::BrokenPipe, "stream closed"));
         }
@@ -112,10 +112,10 @@ impl LinkHandle {
 
     /// Send data on this link, absorbing pacing delays and window-full
     ///
-    /// Unlike `send()`, this method retries automatically when the channel
+    /// Unlike `try_send()`, this method retries automatically when the channel
     /// reports a pacing delay or window-full condition, sleeping until ready.
     /// Only returns an error on fatal conditions (link lost, handle closed).
-    pub async fn send_bytes(&self, data: &[u8]) -> io::Result<()> {
+    pub async fn send(&self, data: &[u8]) -> io::Result<()> {
         loop {
             if self.closed {
                 return Err(io::Error::new(io::ErrorKind::BrokenPipe, "stream closed"));
@@ -200,7 +200,7 @@ mod tests {
         let handle = LinkHandle::new(link_id, inner, tx);
 
         // Sending on a non-existent link should return NotConnected
-        let result = handle.send(b"hello").await;
+        let result = handle.try_send(b"hello").await;
         assert!(result.is_err());
         assert_eq!(result.unwrap_err().kind(), io::ErrorKind::NotConnected);
     }
@@ -218,7 +218,7 @@ mod tests {
         assert!(handle.is_closed());
 
         // Send should fail after close
-        let result = handle.send(b"test").await;
+        let result = handle.try_send(b"test").await;
         assert!(result.is_err());
         assert_eq!(result.unwrap_err().kind(), io::ErrorKind::BrokenPipe);
     }
@@ -249,7 +249,7 @@ mod tests {
 
         // Send fails because there's no link, so dispatch channel
         // closure is not reached — but NotConnected is returned first
-        let result = handle.send(b"hello").await;
+        let result = handle.try_send(b"hello").await;
         assert!(result.is_err());
     }
 }

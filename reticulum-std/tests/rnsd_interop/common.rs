@@ -924,7 +924,7 @@ pub async fn wait_for_event<T>(
     }
 }
 
-/// Wait for a `DataReceived` or `MessageReceived` event for a specific link ID.
+/// Wait for a `LinkDataReceived` or `MessageReceived` event for a specific link ID.
 /// Drains other events while waiting.
 pub async fn wait_for_data_event(
     event_rx: &mut mpsc::Receiver<NodeEvent>,
@@ -933,7 +933,7 @@ pub async fn wait_for_data_event(
 ) -> Option<Vec<u8>> {
     let link_id = *link_id;
     wait_for_event(event_rx, timeout, move |event| match event {
-        NodeEvent::DataReceived { link_id: id, data } if id == link_id => Some(data),
+        NodeEvent::LinkDataReceived { link_id: id, data } if id == link_id => Some(data),
         NodeEvent::MessageReceived {
             link_id: id, data, ..
         } if id == link_id => Some(data),

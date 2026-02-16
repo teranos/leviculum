@@ -885,7 +885,7 @@ impl<R: CryptoRngCore, C: Clock, S: Storage> NodeCore<R, C, S> {
                     ProofStrategy::None => {}
                 }
 
-                self.events.push(NodeEvent::DataReceived {
+                self.events.push(NodeEvent::LinkDataReceived {
                     link_id,
                     data: plaintext,
                 });
@@ -1107,7 +1107,7 @@ impl<R: CryptoRngCore, C: Clock, S: Storage> NodeCore<R, C, S> {
                         self.links.remove(&link_id);
                         self.emit_link_closed(
                             link_id,
-                            LinkCloseReason::Timeout,
+                            LinkCloseReason::ChannelExhausted,
                             is_initiator,
                             destination_hash,
                         );

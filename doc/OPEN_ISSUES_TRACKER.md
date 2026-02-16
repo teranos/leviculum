@@ -16,7 +16,7 @@ Phase numbering follows `doc/BATTLEPLAN.md`. Phases 0–6 are complete.
 | 4 | The big rename (Connection → Link) | done |
 | 5 | Structural refactoring (LinkManager dissolution) | done |
 | 6 | Consolidation (SSOT, receipt tracking) | done |
-| 7 | API polish (naming, visibility, perf) | **next** |
+| 7 | API polish (naming, visibility, perf) | **in progress** |
 
 ## Status Overview
 
@@ -25,13 +25,6 @@ Phase numbering follows `doc/BATTLEPLAN.md`. Phases 0–6 are complete.
 | E2 | M | 7 | open | API | `pub(crate)` field audit |
 | E3 | M | 7 | open | Robustness | Silent send failures (`let _ =` on transport calls) |
 | E4 | L | 7 | open | SSOT | Identity table asymmetry |
-| D2 | M | 7 | open | Naming | `PacketEndpoint` isn't an endpoint |
-| D3 | M | 7 | open | Naming | `send()` vs `send_bytes()` hides real distinction |
-| D5 | M | 7 | open | Naming | `DataReceived` vs `MessageReceived` subtle distinction |
-| D6 | M | 7 | open | Naming | `DeliveryConfirmed` vs `LinkDeliveryConfirmed` |
-| D7 | M | 7 | open | Naming | `ProofRequested` vs `LinkProofRequested` |
-| D12 | L | 7 | open | Naming | No distinction between handshake and active-link timeout |
-| D13 | L | 7 | open | Naming | Channel exhaustion indistinguishable from other closes |
 | F2 | L | 7 | open | Coupling | `connect()` silently broadcasts when no path exists |
 | G1 | L | 7 | open | Perf | Lock-and-read pattern in event loop |
 | E7 | M | 7 | open | Structural | Split transport.rs (8k+ LoC) |
@@ -67,76 +60,6 @@ Phase numbering follows `doc/BATTLEPLAN.md`. Phases 0–6 are complete.
 - **Blocked-by:** —
 - **Detail:** Local destinations have their Identity in both `Transport.identity_table` and `NodeCore.destinations[hash].identity`. Remote peers only in `Transport.identity_table`. Asymmetric ownership. Identities are immutable so this isn't a consistency bug, but it's wasted memory and a confusing data model. Evaluate whether Transport should be the sole owner of the identity table, with NodeCore querying it.
 - **Test:** N/A (data model simplification).
-
-### D2: `PacketEndpoint` isn't an endpoint
-- **Status:** open
-- **Priority:** MEDIUM
-- **Phase:** 7
-- **Category:** Naming
-- **Blocked-by:** —
-- **Detail:** Send handle scoped to a destination hash. Not a listener, not an addressable entity.
-- **Fix:** Rename to `PacketSender` or `SinglePacketSender`.
-- **Test:** N/A (rename).
-
-### D3: `send()` vs `send_bytes()` hides real distinction
-- **Status:** open
-- **Priority:** MEDIUM
-- **Phase:** 7
-- **Category:** Naming
-- **Blocked-by:** —
-- **Detail:** `send()` = non-blocking, returns `WouldBlock` on backpressure. `send_bytes()` = async retry loop. Impossible to tell from names.
-- **Fix:** `send()` → `try_send()`, `send_bytes()` → `send()`.
-- **Test:** N/A (rename — existing tests cover behavior).
-
-### D5: `DataReceived` vs `MessageReceived` subtle distinction
-- **Status:** open
-- **Priority:** MEDIUM
-- **Phase:** 7
-- **Category:** Naming
-- **Blocked-by:** —
-- **Detail:** `DataReceived` = raw link data without channel framing. `MessageReceived` = channel message with type/sequence. A new developer won't know the difference.
-- **Fix:** Rename to `LinkDataReceived` / `ChannelMessageReceived`, or document prominently.
-- **Test:** N/A (rename).
-
-### D6: `DeliveryConfirmed` vs `LinkDeliveryConfirmed`
-- **Status:** open
-- **Priority:** MEDIUM
-- **Phase:** 7
-- **Category:** Naming
-- **Blocked-by:** —
-- **Detail:** Both confirm delivery, for different transport methods. Only the `Link` prefix distinguishes. Easy to confuse.
-- **Fix:** Rename to `PacketDeliveryConfirmed` / `LinkDeliveryConfirmed`. Or `SinglePacketDelivered` / `LinkMessageDelivered`.
-- **Test:** N/A (rename).
-
-### D7: `ProofRequested` vs `LinkProofRequested`
-- **Status:** open
-- **Priority:** MEDIUM
-- **Phase:** 7
-- **Category:** Naming
-- **Blocked-by:** —
-- **Detail:** Same pattern as D6. Both request proofs, different paths.
-- **Fix:** Rename to `PacketProofRequested` / `LinkProofRequested`.
-- **Test:** N/A (rename).
-
-### D12: No distinction between handshake timeout and active-link timeout
-- **Status:** open
-- **Priority:** LOW
-- **Phase:** 7
-- **Category:** Naming
-- **Blocked-by:** —
-- **Detail:** Both "link request never answered" and "established link went silent" produce the same `LinkClosed { reason: Timeout }` event. The application cannot distinguish a failed link attempt from a dropped link.
-- **Fix:** Add separate event variants or reason sub-types (e.g., `Timeout::Handshake` vs `Timeout::Keepalive`).
-- **Test:** Currently untested. Verify the two timeout paths produce distinct events.
-
-### D13: Channel exhaustion indistinguishable from other closes
-- **Status:** open
-- **Priority:** LOW
-- **Phase:** 7
-- **Category:** Naming
-- **Blocked-by:** —
-- **Detail:** When a channel hits max retries, it tears down the link. The resulting `LinkClosed` event carries a generic close reason. The application cannot tell "channel gave up retransmitting" from "peer closed cleanly" or "keepalive timeout".
-- **Fix:** Add a `ChannelExhausted` close reason, or emit a separate `ChannelFailed` event before the close.
-- **Test:** Currently untested. Verify exhaustion produces a distinct close reason.
 
 ### F2: `connect()` silently broadcasts when no path exists
 - **Status:** open

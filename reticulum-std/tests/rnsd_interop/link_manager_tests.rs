@@ -295,7 +295,7 @@ async fn test_manager_initiator_basic_handshake() {
 /// - node.send_on_link() encrypts and returns packet in actions
 /// - Daemon receives and decrypts data
 /// - Daemon can send data back
-/// - DataReceived/MessageReceived event is emitted
+/// - LinkDataReceived/MessageReceived event is emitted
 #[tokio::test]
 async fn test_manager_initiator_data_exchange() {
     let daemon = TestDaemon::start().await.expect("Failed to start daemon");
@@ -725,9 +725,9 @@ async fn test_manager_responder_data_exchange() {
 
     let output = node.handle_packet(InterfaceId(0), &data_raw);
 
-    // Check for DataReceived or MessageReceived event
+    // Check for LinkDataReceived or MessageReceived event
     let received_data = output.events.iter().find_map(|e| match e {
-        NodeEvent::DataReceived { link_id: id, data } if *id == link_id => Some(data.clone()),
+        NodeEvent::LinkDataReceived { link_id: id, data } if *id == link_id => Some(data.clone()),
         NodeEvent::MessageReceived {
             link_id: id, data, ..
         } if *id == link_id => Some(data.clone()),
@@ -1013,7 +1013,7 @@ async fn test_rust_to_rust_via_daemon() {
     dispatch_actions(&mut stream_a, &output).await;
 
     let received_a = output.events.iter().find_map(|e| match e {
-        NodeEvent::DataReceived { data, .. } => Some(data.clone()),
+        NodeEvent::LinkDataReceived { data, .. } => Some(data.clone()),
         NodeEvent::MessageReceived { data, .. } => Some(data.clone()),
         _ => None,
     });
@@ -1042,7 +1042,7 @@ async fn test_rust_to_rust_via_daemon() {
     dispatch_actions(&mut stream_b, &output).await;
 
     let received_b = output.events.iter().find_map(|e| match e {
-        NodeEvent::DataReceived { data, .. } => Some(data.clone()),
+        NodeEvent::LinkDataReceived { data, .. } => Some(data.clone()),
         NodeEvent::MessageReceived { data, .. } => Some(data.clone()),
         _ => None,
     });
@@ -1185,7 +1185,7 @@ async fn test_rust_to_rust_multiple_messages() {
                 for event in &output.events {
                     if matches!(
                         event,
-                        NodeEvent::DataReceived { .. } | NodeEvent::MessageReceived { .. }
+                        NodeEvent::LinkDataReceived { .. } | NodeEvent::MessageReceived { .. }
                     ) {
                         count += 1;
                     }

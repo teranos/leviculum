@@ -47,11 +47,11 @@
 //! ```
 
 mod builder;
-mod endpoint;
+mod sender;
 mod stream;
 
 pub use builder::ReticulumNodeBuilder;
-pub use endpoint::PacketEndpoint;
+pub use sender::PacketSender;
 pub use stream::LinkHandle;
 
 use std::sync::{Arc, Mutex};
@@ -442,12 +442,12 @@ impl ReticulumNode {
         Ok(packet_hash)
     }
 
-    /// Create a PacketEndpoint for a destination
+    /// Create a PacketSender for a destination
     ///
     /// Returns a self-contained handle for sending single packets.
     /// No path or destination validation — errors are reported on send().
-    pub fn packet_endpoint(&self, dest_hash: &DestinationHash) -> PacketEndpoint {
-        PacketEndpoint::new(
+    pub fn packet_sender(&self, dest_hash: &DestinationHash) -> PacketSender {
+        PacketSender::new(
             *dest_hash,
             Arc::clone(&self.inner),
             self.action_dispatch_tx.clone(),

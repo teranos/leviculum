@@ -115,7 +115,7 @@ async fn test_full_link_lifecycle_through_relay() {
 
     // Step 8: Rust → Python
     stream
-        .send(b"hello-from-rust")
+        .try_send(b"hello-from-rust")
         .await
         .expect("Failed to send Rust→Python");
 
@@ -149,7 +149,7 @@ async fn test_full_link_lifecycle_through_relay() {
     for i in 0..5 {
         let msg = format!("lifecycle-ack-{}", i);
         loop {
-            match stream.send(msg.as_bytes()).await {
+            match stream.try_send(msg.as_bytes()).await {
                 Ok(()) => break,
                 Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {
                     tokio::time::sleep(Duration::from_millis(500)).await;
@@ -235,7 +235,7 @@ async fn test_full_link_lifecycle_through_relay() {
 
     // Step 16: Verify the new link works (one message each direction)
     stream2
-        .send(b"link2-rust-to-py")
+        .try_send(b"link2-rust-to-py")
         .await
         .expect("Failed to send on second link");
 

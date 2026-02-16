@@ -287,7 +287,7 @@ async fn test_python_prove_all_sends_proof() {
 /// 1. Python registers destination with PROVE_ALL
 /// 2. Rust sends a single data packet to Python's destination
 /// 3. Python auto-proves → proof travels back over TCP
-/// 4. Rust receives proof → NodeEvent::DeliveryConfirmed
+/// 4. Rust receives proof → NodeEvent::PacketDeliveryConfirmed
 ///
 /// Verifies the proof wire format is correct end-to-end.
 ///
@@ -355,19 +355,19 @@ async fn test_single_packet_proof_round_trip_via_node() {
     assert!(found, "Rust node should learn path to Python destination");
 
     // 5. Send a single packet from Rust to Python
-    let endpoint = rust_node.packet_endpoint(&py_dest_hash);
+    let endpoint = rust_node.packet_sender(&py_dest_hash);
     let _receipt_hash = endpoint
         .send(b"proof roundtrip test")
         .await
         .expect("send should succeed");
 
-    // 6. Wait for DeliveryConfirmed event (Python PROVE_ALL → proof → Rust verifies)
+    // 6. Wait for PacketDeliveryConfirmed event (Python PROVE_ALL → proof → Rust verifies)
     let deadline = tokio::time::Instant::now() + Duration::from_secs(10);
     let mut got_confirmed = false;
     while tokio::time::Instant::now() < deadline {
         let remaining = deadline - tokio::time::Instant::now();
         match tokio::time::timeout(remaining, event_rx.recv()).await {
-            Ok(Some(NodeEvent::DeliveryConfirmed { .. })) => {
+            Ok(Some(NodeEvent::PacketDeliveryConfirmed { .. })) => {
                 got_confirmed = true;
                 break;
             }
@@ -378,7 +378,7 @@ async fn test_single_packet_proof_round_trip_via_node() {
 
     assert!(
         got_confirmed,
-        "Rust should receive DeliveryConfirmed after Python PROVE_ALL proof"
+        "Rust should receive PacketDeliveryConfirmed after Python PROVE_ALL proof"
     );
 
     // Clean up

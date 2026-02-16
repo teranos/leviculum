@@ -64,7 +64,7 @@ pub enum NodeEvent {
     },
 
     /// Delivery confirmation for a sent packet
-    DeliveryConfirmed {
+    PacketDeliveryConfirmed {
         /// The packet hash identifying the sent packet
         packet_hash: [u8; TRUNCATED_HASHBYTES],
     },
@@ -109,7 +109,7 @@ pub enum NodeEvent {
     },
 
     /// Raw data received on a link (without Channel framing)
-    DataReceived {
+    LinkDataReceived {
         /// The link ID
         link_id: LinkId,
         /// The decrypted data
@@ -158,7 +158,7 @@ pub enum NodeEvent {
     /// Emitted when a packet is received at a destination with `ProofStrategy::App`.
     /// Call `NodeCore::send_proof()` if the application decides to prove delivery.
     /// Not emitted for `ProofStrategy::All` (handled automatically by the library).
-    ProofRequested {
+    PacketProofRequested {
         /// Full SHA256 hash of the packet to potentially prove
         packet_hash: [u8; 32],
         /// Destination that received the packet

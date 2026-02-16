@@ -19,7 +19,7 @@ mod selftest;
 use reticulum_core::link::LinkId;
 use reticulum_core::node::NodeEvent;
 use reticulum_core::{Destination, DestinationHash, DestinationType, Direction, Identity};
-use reticulum_std::driver::{LinkHandle, PacketEndpoint, ReticulumNodeBuilder};
+use reticulum_std::driver::{LinkHandle, PacketSender, ReticulumNodeBuilder};
 
 fn hex_encode(bytes: &[u8]) -> String {
     use std::fmt::Write;
@@ -434,7 +434,7 @@ struct SessionState {
     discovered: BTreeMap<String, AnnounceInfo>,
     pending_requests: VecDeque<(LinkId, DestinationHash)>,
     active_link_id: Option<LinkId>,
-    packet_endpoint: Option<PacketEndpoint>,
+    packet_sender: Option<PacketSender>,
     show_announces: bool,
 }
 
@@ -540,7 +540,7 @@ async fn run_connect(
         discovered: BTreeMap::new(),
         pending_requests: VecDeque::new(),
         active_link_id: None,
-        packet_endpoint: None,
+        packet_sender: None,
         show_announces: false,
     }));
 
@@ -617,7 +617,7 @@ async fn run_connect(
                             print_prompt();
                             continue;
                         }
-                        if st.packet_endpoint.is_some() {
+                        if st.packet_sender.is_some() {
                             eprintln!("clear single-packet target first (/untarget)");
                             print_prompt();
                             continue;
@@ -786,14 +786,14 @@ async fn run_connect(
 
                     {
                         let mut st = state.lock().expect("lock poisoned");
-                        st.packet_endpoint = Some(node.packet_endpoint(&dest_hash));
+                        st.packet_sender = Some(node.packet_sender(&dest_hash));
                     }
                     println!("[target] sending to {hash_str}");
                 }
 
                 "/untarget" => {
                     let mut st = state.lock().expect("lock poisoned");
-                    st.packet_endpoint = None;
+                    st.packet_sender = None;
                     println!("[untarget] single-packet target cleared");
                 }
 
@@ -827,7 +827,7 @@ async fn run_connect(
                     );
                     println!(
                         "Target:      {}",
-                        st.packet_endpoint
+                        st.packet_sender
                             .as_ref()
                             .map(|ep| hex_encode(ep.dest_hash().as_bytes()))
                             .unwrap_or_else(|| "none".to_string())
@@ -873,7 +873,7 @@ async fn try_send(
 ) -> Result<(), String> {
     let (link_alive, has_endpoint) = {
         let st = state.lock().expect("lock poisoned");
-        (st.active_link_id.is_some(), st.packet_endpoint.is_some())
+        (st.active_link_id.is_some(), st.packet_sender.is_some())
     };
 
     // Prefer link if active
@@ -886,8 +886,8 @@ async fn try_send(
             return Err(format!("message too long ({} bytes, max 458)", msg.len()));
         }
 
-        return s.send(msg.as_bytes()).await.map_err(|e| {
-            tracing::debug!(error = %e, msg_len = msg.len(), "try_send: stream.send() failed");
+        return s.try_send(msg.as_bytes()).await.map_err(|e| {
+            tracing::debug!(error = %e, msg_len = msg.len(), "try_send: stream.try_send() failed");
             format!("send failed: {e}")
         });
     }
@@ -901,7 +901,7 @@ async fn try_send(
     if has_endpoint {
         let ep = {
             let st = state.lock().expect("lock poisoned");
-            st.packet_endpoint.clone().unwrap()
+            st.packet_sender.clone().unwrap()
         };
         return ep
             .send(msg.as_bytes())
@@ -989,7 +989,7 @@ async fn event_loop(
                 format!("[connected] link {link_id} (initiator: {is_initiator})")
             }
 
-            NodeEvent::DataReceived { link_id: _, data } => {
+            NodeEvent::LinkDataReceived { link_id: _, data } => {
                 let text = String::from_utf8_lossy(&data);
                 format!("[received] {text}")
             }

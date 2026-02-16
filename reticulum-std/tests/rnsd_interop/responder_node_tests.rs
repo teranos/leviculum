@@ -158,7 +158,7 @@ async fn test_rust_node_as_responder() {
 
     // ── Phase 4: Bidirectional Data ─────────────────────────────────────
 
-    // Python → Rust (raw data via send_on_link — produces DataReceived)
+    // Python → Rust (raw data via send_on_link — produces LinkDataReceived)
     py_initiator
         .send_on_link(&link_hash, b"hello-from-python-initiator")
         .await
@@ -166,7 +166,7 @@ async fn test_rust_node_as_responder() {
 
     let data = wait_for_data_event(&mut event_rx, &req_link_id, Duration::from_secs(10))
         .await
-        .expect("Should receive DataReceived from Python within 10s");
+        .expect("Should receive LinkDataReceived from Python within 10s");
     assert_eq!(
         data, b"hello-from-python-initiator",
         "Rust should receive exact data from Python"
@@ -174,12 +174,12 @@ async fn test_rust_node_as_responder() {
     eprintln!("Rust received Python→Rust data: OK");
 
     // Rust → Python (via Channel / send() — produces MessageReceived on receiver)
-    // This is the key test for the MessageReceived routing fix: LinkHandle::send()
-    // uses Channel internally, which produces MessageReceived events, not DataReceived.
+    // This is the key test for the MessageReceived routing fix: LinkHandle::try_send()
+    // uses Channel internally, which produces MessageReceived events, not LinkDataReceived.
     stream
-        .send(b"hello-from-rust-responder")
+        .try_send(b"hello-from-rust-responder")
         .await
-        .expect("Rust stream.send() should succeed");
+        .expect("Rust stream.try_send() should succeed");
 
     // Poll Python for received packets
     let py_recv_deadline = tokio::time::Instant::now() + Duration::from_secs(10);

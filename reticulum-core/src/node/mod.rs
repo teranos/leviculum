@@ -432,13 +432,13 @@ impl<R: CryptoRngCore, C: Clock, S: Storage> NodeCore<R, C, S> {
 
     /// Send a proof for a received single packet (`ProofStrategy::App`)
     ///
-    /// Call this after receiving `NodeEvent::ProofRequested` if the
+    /// Call this after receiving `NodeEvent::PacketProofRequested` if the
     /// application decides to prove delivery. Uses path-table routing
     /// to reach the original sender.
     ///
     /// # Arguments
-    /// * `packet_hash` - The full SHA256 hash from `NodeEvent::ProofRequested`
-    /// * `destination_hash` - The destination hash from `NodeEvent::ProofRequested`
+    /// * `packet_hash` - The full SHA256 hash from `NodeEvent::PacketProofRequested`
+    /// * `destination_hash` - The destination hash from `NodeEvent::PacketProofRequested`
     pub fn send_proof(
         &mut self,
         packet_hash: &[u8; 32],
@@ -760,7 +760,7 @@ impl<R: CryptoRngCore, C: Clock, S: Storage> NodeCore<R, C, S> {
                         }
                     }
                     ProofStrategy::App => {
-                        self.events.push(NodeEvent::ProofRequested {
+                        self.events.push(NodeEvent::PacketProofRequested {
                             packet_hash,
                             destination_hash: dest_hash,
                         });
@@ -786,7 +786,7 @@ impl<R: CryptoRngCore, C: Clock, S: Storage> NodeCore<R, C, S> {
                 if is_valid {
                     self.transport.mark_receipt_delivered(&packet_hash);
                     self.events
-                        .push(NodeEvent::DeliveryConfirmed { packet_hash });
+                        .push(NodeEvent::PacketDeliveryConfirmed { packet_hash });
                 } else {
                     self.events.push(NodeEvent::DeliveryFailed {
                         packet_hash,
@@ -2170,12 +2170,12 @@ mod tests {
         // Deliver to responder
         let output = pair.responder.handle_packet(InterfaceId(0), &raw_packet);
 
-        // Should have DataReceived event
+        // Should have LinkDataReceived event
         let has_data = output
             .events
             .iter()
-            .any(|e| matches!(e, NodeEvent::DataReceived { .. }));
-        assert!(has_data, "expected DataReceived event");
+            .any(|e| matches!(e, NodeEvent::LinkDataReceived { .. }));
+        assert!(has_data, "expected LinkDataReceived event");
 
         // Should NOT have LinkProofRequested (that's for App strategy)
         let has_proof_requested = output
@@ -2211,8 +2211,11 @@ mod tests {
         let has_data = output
             .events
             .iter()
-            .any(|e| matches!(e, NodeEvent::DataReceived { .. }));
-        assert!(has_data, "expected DataReceived even with None strategy");
+            .any(|e| matches!(e, NodeEvent::LinkDataReceived { .. }));
+        assert!(
+            has_data,
+            "expected LinkDataReceived even with None strategy"
+        );
     }
 
     #[test]
@@ -2233,7 +2236,7 @@ mod tests {
         // Deliver to responder
         let output = pair.responder.handle_packet(InterfaceId(0), &raw_packet);
 
-        // Should have LinkProofRequested BEFORE DataReceived
+        // Should have LinkProofRequested BEFORE LinkDataReceived
         let proof_req_pos = output
             .events
             .iter()
@@ -2241,15 +2244,18 @@ mod tests {
         let data_pos = output
             .events
             .iter()
-            .position(|e| matches!(e, NodeEvent::DataReceived { .. }));
+            .position(|e| matches!(e, NodeEvent::LinkDataReceived { .. }));
         assert!(
             proof_req_pos.is_some(),
             "App strategy should emit LinkProofRequested"
         );
-        assert!(data_pos.is_some(), "App strategy should emit DataReceived");
+        assert!(
+            data_pos.is_some(),
+            "App strategy should emit LinkDataReceived"
+        );
         assert!(
             proof_req_pos.unwrap() < data_pos.unwrap(),
-            "LinkProofRequested should come before DataReceived"
+            "LinkProofRequested should come before LinkDataReceived"
         );
 
         // No auto-proof in actions
@@ -2570,7 +2576,7 @@ mod tests {
     }
 
     #[test]
-    fn test_channel_exhaustion_produces_timeout_close() {
+    fn test_channel_exhaustion_produces_channel_exhausted_close() {
         let mut pair = establish_nodecore_link_pair();
 
         // Send a message and reduce max_tries to 2
@@ -2607,14 +2613,14 @@ mod tests {
             matches!(
                 e,
                 NodeEvent::LinkClosed {
-                    reason: LinkCloseReason::Timeout,
+                    reason: LinkCloseReason::ChannelExhausted,
                     ..
                 }
             )
         });
         assert!(
             has_closed,
-            "expected LinkClosed with Timeout after exhaustion"
+            "expected LinkClosed with ChannelExhausted after exhaustion"
         );
 
         assert_eq!(
@@ -3230,10 +3236,10 @@ mod tests {
         let has_proof_requested = recv_output
             .events
             .iter()
-            .any(|e| matches!(e, NodeEvent::ProofRequested { .. }));
+            .any(|e| matches!(e, NodeEvent::PacketProofRequested { .. }));
         assert!(
             !has_proof_requested,
-            "ProofStrategy::All must NOT emit NodeEvent::ProofRequested"
+            "ProofStrategy::All must NOT emit NodeEvent::PacketProofRequested"
         );
 
         // Auto-proof should appear as a SendPacket action
@@ -3252,7 +3258,7 @@ mod tests {
         let has_confirmed = sender_output
             .events
             .iter()
-            .any(|e| matches!(e, NodeEvent::DeliveryConfirmed { .. }));
+            .any(|e| matches!(e, NodeEvent::PacketDeliveryConfirmed { .. }));
         let has_failed = sender_output
             .events
             .iter()
@@ -3362,7 +3368,7 @@ mod tests {
         let has_confirmed = sender_output
             .events
             .iter()
-            .any(|e| matches!(e, NodeEvent::DeliveryConfirmed { .. }));
+            .any(|e| matches!(e, NodeEvent::PacketDeliveryConfirmed { .. }));
 
         assert!(has_failed, "bad proof should produce DeliveryFailed");
         assert!(
@@ -3382,7 +3388,7 @@ mod tests {
     #[test]
     fn test_single_packet_prove_all_no_app_event() {
         // Bug 1 fix: ProofStrategy::All must auto-generate proof via Transport
-        // and must NOT emit NodeEvent::ProofRequested to the app.
+        // and must NOT emit NodeEvent::PacketProofRequested to the app.
         use crate::transport::InterfaceId;
 
         let recv_identity = Identity::generate(&mut OsRng);
@@ -3434,10 +3440,10 @@ mod tests {
         let has_proof_event = recv_output
             .events
             .iter()
-            .any(|e| matches!(e, NodeEvent::ProofRequested { .. }));
+            .any(|e| matches!(e, NodeEvent::PacketProofRequested { .. }));
         assert!(
             !has_proof_event,
-            "ProofStrategy::All must NOT emit NodeEvent::ProofRequested"
+            "ProofStrategy::All must NOT emit NodeEvent::PacketProofRequested"
         );
 
         // Must have a PacketReceived event (data still delivered to app)
@@ -3460,7 +3466,7 @@ mod tests {
 
     #[test]
     fn test_single_packet_prove_app_emits_event_and_send_proof_works() {
-        // Bug 2 fix: ProofStrategy::App emits NodeEvent::ProofRequested
+        // Bug 2 fix: ProofStrategy::App emits NodeEvent::PacketProofRequested
         // and the app can call NodeCore::send_proof() to respond.
         use crate::transport::{InterfaceId, PathEntry};
 
@@ -3529,13 +3535,13 @@ mod tests {
             .events
             .iter()
             .find_map(|e| match e {
-                NodeEvent::ProofRequested {
+                NodeEvent::PacketProofRequested {
                     packet_hash,
                     destination_hash,
                 } => Some((*packet_hash, *destination_hash)),
                 _ => None,
             })
-            .expect("ProofStrategy::App should emit NodeEvent::ProofRequested");
+            .expect("ProofStrategy::App should emit NodeEvent::PacketProofRequested");
         let (packet_hash, req_dest_hash) = proof_req;
 
         // Must NOT have any auto-generated proof action
@@ -3581,7 +3587,7 @@ mod tests {
         let has_confirmed = sender_output
             .events
             .iter()
-            .any(|e| matches!(e, NodeEvent::DeliveryConfirmed { .. }));
+            .any(|e| matches!(e, NodeEvent::PacketDeliveryConfirmed { .. }));
         assert!(
             has_confirmed,
             "valid proof via send_proof() should produce DeliveryConfirmed, got: {:?}",

@@ -61,7 +61,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                         println!("  Link ID: {:02x?}", &link_id.as_bytes()[..4]);
                         println!("  We initiated: {}", is_initiator);
                     }
-                    NodeEvent::DataReceived { link_id, data } => {
+                    NodeEvent::LinkDataReceived { link_id, data } => {
                         println!("Data received on link {:02x?}", &link_id.as_bytes()[..4]);
                         println!("  {} bytes: {:?}", data.len(), String::from_utf8_lossy(&data));
                         // Echo the data back

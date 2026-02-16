@@ -146,7 +146,7 @@ async fn test_rust_node_path_recovery_on_link_timeout() {
 
     // Step 7: Send data and verify Py-Dest receives it
     stream1
-        .send(b"phase1-hello")
+        .try_send(b"phase1-hello")
         .await
         .expect("Failed to send on first link");
 
@@ -253,7 +253,7 @@ async fn test_rust_node_path_recovery_on_link_timeout() {
 
     // Step 20: Send data and verify Py-Dest receives it
     stream3
-        .send(b"phase3-recovered")
+        .try_send(b"phase3-recovered")
         .await
         .expect("Failed to send on recovered link");
 

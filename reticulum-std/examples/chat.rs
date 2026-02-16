@@ -106,7 +106,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     print!("> ");
                     io::stdout().flush().ok();
                 }
-                NodeEvent::DataReceived { link_id, data } => {
+                NodeEvent::LinkDataReceived { link_id, data } => {
                     println!();
                     println!(
                         "[MESSAGE] From {:02x?}: {}",
