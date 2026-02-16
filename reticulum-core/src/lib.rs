@@ -112,10 +112,7 @@ pub use identity::Identity;
 pub use link::channel::CompressingWriter;
 pub use link::channel::{Channel, ChannelError, Message};
 pub use link::{Link, LinkCloseReason, LinkError, LinkId, LinkState, PeerKeys};
-pub use node::{
-    DeliveryError, LinkStats, NodeCore, NodeCoreBuilder, NodeEvent, RoutingDecision, SendError,
-    SendOptions,
-};
+pub use node::{DeliveryError, LinkStats, NodeCore, NodeCoreBuilder, NodeEvent, SendError};
 pub use packet::Packet;
 pub use transport::{Action, InterfaceId, TickOutput};
 

@@ -7,13 +7,13 @@
 //!
 //! The Node API provides:
 //! - **Unified event handling**: All events (announces, packets, links) through one stream
-//! - **Smart routing**: Automatic selection of single-packet vs Link/Channel based on options
+//! - **Single-packet delivery**: Encrypted single-packet sends via [`NodeCore::send_single_packet()`]
 //! - **Builder pattern**: Easy configuration via [`NodeCoreBuilder`]
 //!
 //! # Example
 //!
 //! ```no_run
-//! use reticulum_core::node::{NodeCore, NodeCoreBuilder, NodeEvent, SendOptions};
+//! use reticulum_core::node::{NodeCore, NodeCoreBuilder, NodeEvent};
 //! use reticulum_core::destination::{Destination, DestinationType, Direction};
 //! use reticulum_core::identity::Identity;
 //! use reticulum_core::traits::{Clock, NoStorage};
@@ -48,7 +48,7 @@ mod send;
 
 pub use builder::NodeCoreBuilder;
 pub use event::{DeliveryError, NodeEvent};
-pub use send::{RoutingDecision, SendError, SendHandle, SendMethod, SendResult};
+pub use send::SendError;
 
 use alloc::collections::{BTreeMap, VecDeque};
 use alloc::vec::Vec;
@@ -57,7 +57,6 @@ use crate::announce::AnnounceError;
 use crate::constants::TRUNCATED_HASHBYTES;
 use crate::destination::{Destination, DestinationHash, ProofStrategy};
 use crate::identity::Identity;
-use crate::link::channel::{ChannelError, Message};
 use crate::link::{Link, LinkId};
 use crate::packet::packet_hash;
 use crate::traits::{Clock, Storage};
@@ -65,74 +64,6 @@ use crate::transport::{Transport, TransportConfig, TransportEvent, TransportStat
 use rand_core::CryptoRngCore;
 
 use crate::hex_fmt::HexFmt;
-
-/// Send options for controlling how data is delivered
-///
-/// These options allow applications to specify delivery requirements
-/// that the node uses to choose the best transport method.
-#[derive(Debug, Clone)]
-pub struct SendOptions {
-    /// Require reliable delivery (will use Link/Channel if needed)
-    pub reliable: bool,
-    /// Maximum acceptable latency before failing (milliseconds)
-    pub timeout_ms: Option<u64>,
-    /// Prefer existing connection if available
-    pub prefer_existing: bool,
-    /// Enable compression for this message
-    pub compress: bool,
-}
-
-impl Default for SendOptions {
-    fn default() -> Self {
-        Self {
-            reliable: false, // Single-Packet by default
-            timeout_ms: None,
-            prefer_existing: true,
-            compress: false,
-        }
-    }
-}
-
-impl SendOptions {
-    /// Create options for unreliable (single-packet) delivery
-    pub fn unreliable() -> Self {
-        Self::default()
-    }
-
-    /// Create options for reliable (Link/Channel) delivery
-    pub fn reliable() -> Self {
-        Self {
-            reliable: true,
-            ..Self::default()
-        }
-    }
-
-    /// Create options for reliable delivery with compression
-    pub fn reliable_compressed() -> Self {
-        Self {
-            reliable: true,
-            compress: true,
-            ..Self::default()
-        }
-    }
-}
-
-/// Simple message type for sending raw bytes over a channel
-struct RawBytesMessage<'a>(&'a [u8]);
-
-impl Message for RawBytesMessage<'_> {
-    const MSGTYPE: u16 = 0x0000;
-
-    fn pack(&self) -> Vec<u8> {
-        self.0.to_vec()
-    }
-
-    fn unpack(data: &[u8]) -> Result<Self, ChannelError> {
-        // Not used for sending — receiving goes through channel.receive()
-        let _ = data;
-        Err(ChannelError::EnvelopeTruncated)
-    }
-}
 
 /// Link statistics for observability
 #[derive(Debug, Clone)]
@@ -348,81 +279,6 @@ impl<R: CryptoRngCore, C: Clock, S: Storage> NodeCore<R, C, S> {
 
         self.transport.send_on_all_interfaces(&buf[..len]);
         Ok(self.process_events_and_actions())
-    }
-
-    // ─── Smart Send API ────────────────────────────────────────────────────────
-
-    /// Send data to a destination with automatic routing
-    ///
-    /// This is the primary API for sending data. It automatically chooses the
-    /// best transport method based on the options and network state:
-    ///
-    /// - **Unreliable** (`reliable: false`): Uses single-packet delivery if data
-    ///   fits and a path is known. Falls back to Link/Channel for larger data.
-    /// - **Reliable** (`reliable: true`): Uses an existing connection if available,
-    ///   or indicates that a connection needs to be established.
-    ///
-    /// # Arguments
-    /// * `dest_hash` - The destination to send to
-    /// * `data` - The data to send
-    /// * `opts` - Send options controlling routing behavior
-    ///
-    /// # Returns
-    /// - `Ok(SendResult)` with the routing decision and any packet data to send
-    /// - `Err(SendError)` if sending is not possible
-    ///
-    /// # Example
-    ///
-    /// ```no_run
-    /// # use reticulum_core::node::{NodeCoreBuilder, SendOptions};
-    /// # use reticulum_core::destination::DestinationHash;
-    /// # use reticulum_core::traits::{Clock, NoStorage};
-    /// # use core::cell::Cell;
-    /// # struct MyClock(Cell<u64>);
-    /// # impl MyClock { fn new(ms: u64) -> Self { Self(Cell::new(ms)) } }
-    /// # impl Clock for MyClock { fn now_ms(&self) -> u64 { self.0.get() } }
-    /// # fn example() {
-    /// # let node = NodeCoreBuilder::new().build(rand_core::OsRng, MyClock::new(0), NoStorage);
-    /// # let dest_hash = DestinationHash::new([0x42; 16]);
-    /// // Simple unreliable send (single-packet if possible)
-    /// let result = node.send(&dest_hash, b"Hello!", &SendOptions::default());
-    ///
-    /// // Reliable send (requires connection)
-    /// let result = node.send(&dest_hash, b"Important!", &SendOptions::reliable());
-    /// # }
-    /// ```
-    pub fn send(
-        &self,
-        dest_hash: &DestinationHash,
-        data: &[u8],
-        opts: &SendOptions,
-    ) -> Result<send::RoutingDecision, send::SendError> {
-        // Check if we have an existing link to this destination
-        let existing_link = self.find_link_to(dest_hash);
-
-        // Check if we have a path
-        let has_path = self.transport.has_path(dest_hash.as_bytes());
-
-        // Maximum size for single-packet delivery
-        // This is the packet data portion minus some overhead
-        let max_single_packet_size = crate::constants::MDU - 50; // Leave room for header
-
-        // Decide routing
-        let decision = send::decide_routing(
-            data.len(),
-            opts.reliable,
-            opts.prefer_existing,
-            has_path,
-            existing_link,
-            max_single_packet_size,
-        );
-
-        // Convert CannotSend to error
-        if decision == send::RoutingDecision::CannotSend {
-            return Err(send::SendError::NoPath);
-        }
-
-        Ok(decision)
     }
 
     /// Send unreliable data via single packet
@@ -973,29 +829,6 @@ mod tests {
     }
 
     #[test]
-    fn test_send_options_default() {
-        let opts = SendOptions::default();
-        assert!(!opts.reliable);
-        assert!(opts.timeout_ms.is_none());
-        assert!(opts.prefer_existing);
-        assert!(!opts.compress);
-    }
-
-    #[test]
-    fn test_send_options_reliable() {
-        let opts = SendOptions::reliable();
-        assert!(opts.reliable);
-        assert!(opts.prefer_existing);
-    }
-
-    #[test]
-    fn test_send_options_reliable_compressed() {
-        let opts = SendOptions::reliable_compressed();
-        assert!(opts.reliable);
-        assert!(opts.compress);
-    }
-
-    #[test]
     fn test_nodecore_has_path_empty() {
         let clock = MockClock::new(TEST_TIME_MS);
         let node = NodeCoreBuilder::new().build(OsRng, clock, NoStorage);
@@ -1012,32 +845,6 @@ mod tests {
 
         let fake_id = LinkId::new([0xFF; 16]);
         assert!(node.link_stats(&fake_id).is_none());
-    }
-
-    #[test]
-    fn test_send_no_path_returns_error() {
-        let clock = MockClock::new(TEST_TIME_MS);
-        let node = NodeCoreBuilder::new().build(OsRng, clock, NoStorage);
-
-        let dest_hash = DestinationHash::new([0x42; 16]);
-        let result = node.send(&dest_hash, b"Hello!", &SendOptions::default());
-
-        // Should fail because no path exists
-        assert!(result.is_err());
-        assert_eq!(result.unwrap_err(), send::SendError::NoPath);
-    }
-
-    #[test]
-    fn test_send_reliable_no_path_returns_error() {
-        let clock = MockClock::new(TEST_TIME_MS);
-        let node = NodeCoreBuilder::new().build(OsRng, clock, NoStorage);
-
-        let dest_hash = DestinationHash::new([0x42; 16]);
-        let result = node.send(&dest_hash, b"Hello!", &SendOptions::reliable());
-
-        // Should fail because no path exists for reliable send
-        assert!(result.is_err());
-        assert_eq!(result.unwrap_err(), send::SendError::NoPath);
     }
 
     #[test]

@@ -12,7 +12,7 @@ use crate::constants::{
 };
 use crate::destination::{DestinationHash, ProofStrategy};
 use crate::hex_fmt::HexFmt;
-use crate::link::channel::{ChannelAction, ChannelError};
+use crate::link::channel::{ChannelAction, ChannelError, Message};
 use crate::link::{Link, LinkCloseReason, LinkError, LinkId, LinkPhase, LinkState, PeerKeys};
 use crate::packet::{packet_hash, Packet, PacketContext, PacketType};
 use crate::traits::{Clock, Storage};
@@ -20,7 +20,23 @@ use rand_core::CryptoRngCore;
 
 use super::event::NodeEvent;
 use super::send;
-use super::{LinkStats, NodeCore, RawBytesMessage};
+use super::{LinkStats, NodeCore};
+
+/// Simple message type for sending raw bytes over a channel
+struct RawBytesMessage<'a>(&'a [u8]);
+
+impl Message for RawBytesMessage<'_> {
+    const MSGTYPE: u16 = 0x0000;
+
+    fn pack(&self) -> Vec<u8> {
+        self.0.to_vec()
+    }
+
+    fn unpack(data: &[u8]) -> Result<Self, ChannelError> {
+        let _ = data;
+        Err(ChannelError::EnvelopeTruncated)
+    }
+}
 
 /// Tracks channel message receipts awaiting delivery proofs.
 ///
@@ -380,6 +396,7 @@ impl<R: CryptoRngCore, C: Clock, S: Storage> NodeCore<R, C, S> {
     }
 
     /// Find an existing active link to a destination
+    #[cfg(test)]
     pub(crate) fn find_link_to(&self, dest_hash: &DestinationHash) -> Option<LinkId> {
         self.links
             .iter()
