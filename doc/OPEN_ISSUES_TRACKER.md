@@ -5,7 +5,7 @@ When an issue is fixed, remove it from this file entirely.
 
 ## Phases
 
-Phase numbering follows `doc/BATTLEPLAN.md`. Phases 0–5 are complete.
+Phase numbering follows `doc/BATTLEPLAN.md`. Phases 0–6 are complete.
 
 | Phase | Description | Status |
 |-------|-------------|--------|
@@ -15,8 +15,8 @@ Phase numbering follows `doc/BATTLEPLAN.md`. Phases 0–5 are complete.
 | 3 | Bug fixes | done |
 | 4 | The big rename (Connection → Link) | done |
 | 5 | Structural refactoring (LinkManager dissolution) | done |
-| 6 | Consolidation (SSOT, receipt tracking) | **next** |
-| 7 | API polish (naming, visibility, perf) | open |
+| 6 | Consolidation (SSOT, receipt tracking) | done |
+| 7 | API polish (naming, visibility, perf) | **next** |
 
 ## Status Overview
 
@@ -35,8 +35,7 @@ Phase numbering follows `doc/BATTLEPLAN.md`. Phases 0–5 are complete.
 | F2 | L | 7 | open | Coupling | `connect()` silently broadcasts when no path exists |
 | G1 | L | 7 | open | Perf | Lock-and-read pattern in event loop |
 | E7 | M | 7 | open | Structural | Split transport.rs (8k+ LoC) |
-| E8 | H | post-H1 | open | Feature gap | Single-packet encryption missing |
-| H1 | M | 6 | open | SSOT | Destination in 2 maps |
+| E8 | H | 7 | open | Feature gap | Single-packet encryption missing |
 
 ---
 
@@ -162,7 +161,7 @@ Phase numbering follows `doc/BATTLEPLAN.md`. Phases 0–5 are complete.
 ### E8: Single-packet encryption missing
 - **Status:** open
 - **Priority:** HIGH
-- **Phase:** post-H1
+- **Phase:** 7
 - **Category:** Feature gap
 - **Blocked-by:** —
 - **Detail:** `send_single_packet()` sends plaintext. Python `Destination.SINGLE` always decrypts incoming data via X25519 (`Destination.decrypt()` → `Identity.decrypt()`). Every single packet from Rust to Python is silently dropped because decryption fails and `Destination.receive()` returns `False`. This blocks all single-packet interop including the proof round-trip test (`test_single_packet_proof_round_trip_via_node`, currently `#[ignore]`). Needs: encrypt payload using destination's public key before sending, matching Python's `Packet.encrypt()` / `Identity.encrypt()`.
@@ -174,20 +173,9 @@ Phase numbering follows `doc/BATTLEPLAN.md`. Phases 0–5 are complete.
 - **Priority:** MEDIUM
 - **Phase:** 7
 - **Category:** Structural
-- **Blocked-by:** H1 (eliminating DestinationEntry clarifies boundaries)
+- **Blocked-by:** —
 - **Detail:** transport.rs is the largest file in the codebase at 8k+ lines. After H1 eliminates DestinationEntry, evaluate natural split boundaries (routing, announce handling, proof handling, path management). Not urgent — Transport's internals are stable and well-tested. But new features (Resource Transfers, Transport Nodes) will make it worse if not addressed.
 - **Fix:** Split into submodules under `transport/` (e.g., `transport/routing.rs`, `transport/announce.rs`, `transport/proof.rs`, `transport/path.rs`). The `Transport` struct stays as the coordinator; handler methods move to focused files.
 - **Test:** Existing tests must continue to pass. No behavioral change.
-
-### H1: Destination in 2 maps
-- **Status:** open
-- **Priority:** MEDIUM
-- **Phase:** 6
-- **Category:** SSOT
-- **Blocked-by:** —
-- **Ref:** doc/ISSUES.md H1, doc/ARCHITECTURE_REVIEW2.md (ownership graph)
-- **Detail:** `Transport.destinations` (DestinationEntry: routing, proof strategy, identity=None) and `NodeCore.destinations` (Destination: full object). Two representations, two locations, one concept. (Previously 3 maps — `LinkManager.accepted_destinations` was eliminated in Phase 5c.)
-- **Fix:** Single canonical `Destination` registry on NodeCore. Transport queries it.
-- **Test:** Currently untested. Verify both maps stay in sync after register/unregister.
 
 

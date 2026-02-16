@@ -35,6 +35,7 @@
 
 use alloc::boxed::Box;
 use alloc::collections::BTreeMap;
+use alloc::collections::BTreeSet;
 use alloc::collections::VecDeque;
 use alloc::vec::Vec;
 
@@ -48,7 +49,7 @@ use crate::constants::{
 
 use crate::announce::{emission_from_random_hash, max_emission_from_blobs, ReceivedAnnounce};
 use crate::crypto::truncated_hash;
-use crate::destination::{Destination, DestinationHash, DestinationType, ProofStrategy};
+use crate::destination::{Destination, DestinationHash, DestinationType};
 use crate::identity::Identity;
 use crate::link::Link;
 use crate::packet::{
@@ -356,17 +357,14 @@ pub enum TransportEvent {
     // ─── Proof Events ────────────────────────────────────────────────────────
     /// Proof generation requested for a received packet
     ///
-    /// Emitted when a packet is received at a destination with `ProofStrategy::All`
-    /// or `ProofStrategy::App`. NodeCore dispatches based on `proof_strategy`:
-    /// - `All`: auto-generates proof via `Transport::send_proof()`
-    /// - `App`: forwards to application as `NodeEvent::ProofRequested`
+    /// Emitted for every data packet received at a local destination.
+    /// NodeCore looks up the proof strategy from its own destination registry
+    /// and dispatches accordingly (auto-prove, forward to app, or ignore).
     ProofRequested {
         /// Full SHA256 hash of the packet to potentially prove
         packet_hash: [u8; 32],
         /// Destination that received the packet
         destination_hash: [u8; TRUNCATED_HASHBYTES],
-        /// The proof strategy of the receiving destination
-        proof_strategy: ProofStrategy,
         /// The interface the packet was received on
         interface_index: usize,
     },
@@ -423,18 +421,6 @@ impl From<PacketError> for TransportError {
     }
 }
 
-// ─── Destination Entry ──────────────────────────────────────────────────────
-
-/// Entry for a registered destination
-struct DestinationEntry {
-    /// Whether this destination accepts incoming links
-    accepts_links: bool,
-    /// Proof generation strategy for incoming packets
-    proof_strategy: ProofStrategy,
-    /// Identity for this destination (needed to create proofs)
-    identity: Option<Identity>,
-}
-
 // ─── Transport ──────────────────────────────────────────────────────────────
 
 /// The Transport layer (sans-I/O state machine)
@@ -468,7 +454,7 @@ pub struct Transport<C: Clock, S: Storage> {
     reverse_table: BTreeMap<[u8; TRUNCATED_HASHBYTES], ReverseEntry>,
 
     /// Registered destinations we accept packets for
-    destinations: BTreeMap<[u8; TRUNCATED_HASHBYTES], DestinationEntry>,
+    local_destinations: BTreeSet<[u8; TRUNCATED_HASHBYTES]>,
 
     /// Packet deduplication cache: packet_hash -> timestamp_ms
     packet_cache: BTreeMap<[u8; TRUNCATED_HASHBYTES], u64>,
@@ -522,7 +508,7 @@ impl<C: Clock, S: Storage> Transport<C, S> {
             announce_table: BTreeMap::new(),
             link_table: BTreeMap::new(),
             reverse_table: BTreeMap::new(),
-            destinations: BTreeMap::new(),
+            local_destinations: BTreeSet::new(),
             packet_cache: BTreeMap::new(),
             receipts: BTreeMap::new(),
             events: Vec::new(),
@@ -598,52 +584,20 @@ impl<C: Clock, S: Storage> Transport<C, S> {
 
     /// Register a destination to receive packets
     ///
-    /// # Arguments
-    /// * `hash` - The destination hash
-    /// * `accepts_links` - Whether this destination accepts incoming links
-    pub fn register_destination(&mut self, hash: [u8; TRUNCATED_HASHBYTES], accepts_links: bool) {
-        self.destinations.insert(
-            hash,
-            DestinationEntry {
-                accepts_links,
-                proof_strategy: ProofStrategy::None,
-                identity: None,
-            },
-        );
-    }
-
-    /// Register a destination with proof support
-    ///
-    /// # Arguments
-    /// * `hash` - The destination hash
-    /// * `accepts_links` - Whether this destination accepts incoming links
-    /// * `proof_strategy` - How to handle proof generation
-    /// * `identity` - The destination's identity (needed to create proofs)
-    pub fn register_destination_with_proof(
-        &mut self,
-        hash: [u8; TRUNCATED_HASHBYTES],
-        accepts_links: bool,
-        proof_strategy: ProofStrategy,
-        identity: Option<Identity>,
-    ) {
-        self.destinations.insert(
-            hash,
-            DestinationEntry {
-                accepts_links,
-                proof_strategy,
-                identity,
-            },
-        );
+    /// Transport only tracks whether a hash is local. All destination metadata
+    /// (proof strategy, accepts_links, identity) lives on NodeCore.
+    pub fn register_destination(&mut self, hash: [u8; TRUNCATED_HASHBYTES]) {
+        self.local_destinations.insert(hash);
     }
 
     /// Unregister a destination
     pub fn unregister_destination(&mut self, hash: &[u8; TRUNCATED_HASHBYTES]) {
-        self.destinations.remove(hash);
+        self.local_destinations.remove(hash);
     }
 
     /// Check if a destination is registered
     pub fn has_destination(&self, hash: &[u8; TRUNCATED_HASHBYTES]) -> bool {
-        self.destinations.contains_key(hash)
+        self.local_destinations.contains(hash)
     }
 
     // ─── Path Management ────────────────────────────────────────────────
@@ -804,8 +758,8 @@ impl<C: Clock, S: Storage> Transport<C, S> {
     /// * `destination_hash` - The destination to send the proof to (the original sender)
     /// * `identity` - The identity to sign the proof with
     /// * `receiving_interface` - If `Some`, send proof on this interface (used for
-    ///   `ProofStrategy::All` where we know the receiving interface). If `None`,
-    ///   fall back to path table lookup (used for `ProofStrategy::App`).
+    ///   auto-proofs where we know the receiving interface). If `None`,
+    ///   fall back to path table lookup (used for app-initiated proofs).
     ///
     /// # Returns
     /// `Ok(())` if the proof was sent, `Err` if there's no path to the destination
@@ -1363,18 +1317,15 @@ impl<C: Clock, S: Storage> Transport<C, S> {
     ) -> Result<(), TransportError> {
         let dest_hash = packet.destination_hash;
 
-        // Check if we have this destination registered and it accepts links
-        if let Some(entry) = self.destinations.get(&dest_hash) {
-            if entry.accepts_links {
-                // Emit event for application to handle
-                self.events.push(TransportEvent::PacketReceived {
-                    destination_hash: dest_hash,
-                    packet: Box::new(packet),
-                    interface_index,
-                    raw_hash: Some(packet_hash(raw)),
-                });
-                return Ok(());
-            }
+        // Check if we have this destination registered (NodeCore gates accepts_links)
+        if self.local_destinations.contains(&dest_hash) {
+            self.events.push(TransportEvent::PacketReceived {
+                destination_hash: dest_hash,
+                packet: Box::new(packet),
+                interface_index,
+                raw_hash: Some(packet_hash(raw)),
+            });
+            return Ok(());
         }
 
         // If we're a transport node, forward the link request and populate link table
@@ -1507,7 +1458,7 @@ impl<C: Clock, S: Storage> Transport<C, S> {
         }
 
         // Check if this is for a registered destination (legacy behavior)
-        if self.destinations.contains_key(&dest_hash) {
+        if self.local_destinations.contains(&dest_hash) {
             // Deferred cache insert for LRPROOF local delivery
             // (Python Transport.py:2072). Non-LRPROOF proofs for registered
             // destinations were already cached in process_incoming().
@@ -1638,10 +1589,7 @@ impl<C: Clock, S: Storage> Transport<C, S> {
         }
 
         // Check if we have this destination registered
-        if let Some(dest_entry) = self.destinations.get(&dest_hash) {
-            let proof_strategy = dest_entry.proof_strategy;
-
-            // Emit PacketReceived event
+        if self.local_destinations.contains(&dest_hash) {
             self.events.push(TransportEvent::PacketReceived {
                 destination_hash: dest_hash,
                 packet: Box::new(packet),
@@ -1649,18 +1597,12 @@ impl<C: Clock, S: Storage> Transport<C, S> {
                 raw_hash: Some(full_packet_hash),
             });
 
-            // Handle proof generation based on strategy
-            match proof_strategy {
-                ProofStrategy::All | ProofStrategy::App => {
-                    self.events.push(TransportEvent::ProofRequested {
-                        packet_hash: full_packet_hash,
-                        destination_hash: dest_hash,
-                        proof_strategy,
-                        interface_index,
-                    });
-                }
-                ProofStrategy::None => {}
-            }
+            // Always emit ProofRequested — NodeCore decides based on strategy
+            self.events.push(TransportEvent::ProofRequested {
+                packet_hash: full_packet_hash,
+                destination_hash: dest_hash,
+                interface_index,
+            });
 
             return Ok(());
         }
@@ -1951,7 +1893,7 @@ impl<C: Clock, S: Storage> Transport<C, S> {
         }
 
         // 1. Check if it's a local destination
-        if self.destinations.contains_key(&requested_hash) {
+        if self.local_destinations.contains(&requested_hash) {
             self.events.push(TransportEvent::PathRequestReceived {
                 destination_hash: requested_hash,
             });
@@ -2512,7 +2454,7 @@ mod tests {
             let mut transport = test_transport();
             let hash = [0x42; TRUNCATED_HASHBYTES];
 
-            transport.register_destination(hash, false);
+            transport.register_destination(hash);
             assert!(transport.has_destination(&hash));
 
             transport.unregister_destination(&hash);
@@ -2615,7 +2557,7 @@ mod tests {
             let mut transport = test_transport();
             transport.register_interface(Box::new(MockInterface::new("test", 1)));
             let hash = [0x42; TRUNCATED_HASHBYTES];
-            transport.register_destination(hash, false);
+            transport.register_destination(hash);
 
             // Create a simple data packet
             use crate::destination::DestinationType;
@@ -2643,10 +2585,10 @@ mod tests {
             let len = packet.pack(&mut buf).unwrap();
             let raw = &buf[..len];
 
-            // First time: should process
+            // First time: should process (PacketReceived + ProofRequested)
             transport.process_incoming(0, raw).unwrap();
             assert_eq!(transport.stats().packets_received, 1);
-            assert_eq!(transport.pending_events(), 1);
+            assert_eq!(transport.pending_events(), 2);
 
             // Second time: should be deduplicated
             transport.drain_events();
@@ -2661,7 +2603,7 @@ mod tests {
             let mut transport = test_transport();
             transport.register_interface(Box::new(MockInterface::new("test", 1)));
             let hash = [0x42; TRUNCATED_HASHBYTES];
-            transport.register_destination(hash, false);
+            transport.register_destination(hash);
 
             use crate::destination::DestinationType;
             use crate::packet::{
@@ -2690,7 +2632,7 @@ mod tests {
             transport.process_incoming(0, &buf[..len]).unwrap();
 
             let events: Vec<_> = transport.drain_events().collect();
-            assert_eq!(events.len(), 1);
+            assert_eq!(events.len(), 2); // PacketReceived + ProofRequested
             match &events[0] {
                 TransportEvent::PacketReceived {
                     destination_hash,
@@ -2704,6 +2646,10 @@ mod tests {
                 }
                 _ => panic!("Expected PacketReceived event"),
             }
+            assert!(
+                matches!(&events[1], TransportEvent::ProofRequested { .. }),
+                "Expected ProofRequested event"
+            );
         }
 
         #[test]
@@ -2748,7 +2694,7 @@ mod tests {
             transport.register_interface(Box::new(MockInterface::new("test", 1)));
 
             let hash = [0x42; TRUNCATED_HASHBYTES];
-            transport.register_destination(hash, false);
+            transport.register_destination(hash);
 
             use crate::destination::DestinationType;
             use crate::packet::{
@@ -2774,9 +2720,9 @@ mod tests {
             let mut buf = [0u8; 500];
             let len = packet.pack(&mut buf).unwrap();
 
-            // First delivery
+            // First delivery (PacketReceived + ProofRequested)
             transport.process_incoming(0, &buf[..len]).unwrap();
-            assert_eq!(transport.pending_events(), 1);
+            assert_eq!(transport.pending_events(), 2);
             transport.drain_events();
 
             // Second: deduplicated
@@ -2789,9 +2735,9 @@ mod tests {
                 .advance(transport.config.packet_cache_expiry_ms + 1);
             transport.poll();
 
-            // Now the packet should be accepted again
+            // Now the packet should be accepted again (PacketReceived + ProofRequested)
             transport.process_incoming(0, &buf[..len]).unwrap();
-            assert_eq!(transport.pending_events(), 1);
+            assert_eq!(transport.pending_events(), 2);
         }
 
         #[test]
@@ -3314,7 +3260,7 @@ mod tests {
             let _idx0 = transport.register_interface(Box::new(MockInterface::new("if0", 1)));
 
             let dest_hash = [0x42; TRUNCATED_HASHBYTES];
-            transport.register_destination(dest_hash, false);
+            transport.register_destination(dest_hash);
 
             // Build a path request packet targeting the local destination
             let path_req_hash = transport.path_request_hash;
@@ -3671,7 +3617,7 @@ mod tests {
             let _idx0 = transport.register_interface(Box::new(MockInterface::new("if0", 1)));
 
             let dest_hash = [0x42; TRUNCATED_HASHBYTES];
-            transport.register_destination(dest_hash, false);
+            transport.register_destination(dest_hash);
 
             // Populate announce cache for this destination (simulate prior announce)
             let (raw, _) = make_announce_raw(0, PacketContext::None);
@@ -4825,7 +4771,7 @@ mod tests {
             transport.register_interface(Box::new(MockInterface::new("if1", 2)));
 
             let hash = [0x42; TRUNCATED_HASHBYTES];
-            transport.register_destination(hash, false);
+            transport.register_destination(hash);
 
             // Build a valid data packet
             use crate::destination::DestinationType;
@@ -6077,7 +6023,7 @@ mod tests {
             let mut transport = test_transport();
             transport.register_interface(Box::new(MockInterface::new("test", 1)));
             let dest_hash = [0xAA; TRUNCATED_HASHBYTES];
-            transport.register_destination(dest_hash, false);
+            transport.register_destination(dest_hash);
 
             let packet = Packet {
                 flags: PacketFlags {
@@ -6408,7 +6354,7 @@ mod tests {
             let _idx1 = transport.register_interface(Box::new(MockInterface::new("if1", 2)));
 
             let dest_hash = [0xBB; TRUNCATED_HASHBYTES];
-            transport.register_destination(dest_hash, false);
+            transport.register_destination(dest_hash);
 
             let pkt = build_link_data_packet(dest_hash, 0);
             let mut buf = [0u8; 500];
@@ -6497,7 +6443,7 @@ mod tests {
             let _idx0 = transport.register_interface(Box::new(MockInterface::new("if0", 1)));
 
             let dest_hash = [0xDD; TRUNCATED_HASHBYTES];
-            transport.register_destination(dest_hash, false);
+            transport.register_destination(dest_hash);
 
             // Build LRPROOF targeting the registered destination (not in link_table)
             let pkt = Packet {
@@ -7942,28 +7888,6 @@ mod tests {
                 0,
                 "Tampered announce should not be counted as processed"
             );
-        }
-
-        #[test]
-        fn test_register_destination_with_proof_creates_entry() {
-            let mut transport = test_transport();
-            let hash = [0x42; TRUNCATED_HASHBYTES];
-            let identity = Identity::generate(&mut OsRng);
-
-            transport.register_destination_with_proof(
-                hash,
-                true,
-                crate::destination::ProofStrategy::All,
-                Some(identity),
-            );
-
-            assert!(transport.has_destination(&hash));
-
-            // Verify the stored entry has correct attributes
-            let entry = transport.destinations.get(&hash).unwrap();
-            assert!(entry.accepts_links);
-            assert_eq!(entry.proof_strategy, crate::destination::ProofStrategy::All);
-            assert!(entry.identity.is_some());
         }
 
         #[test]

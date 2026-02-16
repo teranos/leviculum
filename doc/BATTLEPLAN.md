@@ -1,7 +1,7 @@
 # leviculum — Refactoring Battle Plan
 
-16 open issues from OPEN_ISSUES_TRACKER.md, ordered for maximum efficiency.
-Phases 0–5 complete. Remaining: Phase 6 (consolidation) and Phase 7 (polish).
+14 open issues from OPEN_ISSUES_TRACKER.md, ordered for maximum efficiency.
+Phases 0–6 complete. Remaining: Phase 7 (polish).
 
 ---
 
@@ -20,19 +20,31 @@ Phases 0–5 complete. Remaining: Phase 6 (consolidation) and Phase 7 (polish).
 
 ---
 
-## Phase 6: Consolidation
+## Phase 6: Consolidation — Complete
 
-**1 issue remaining (E1, H4, A4, E6 done). E5 verified clean (no bug).**
+**All 5 issues done (E5, E1, H4+A4, E6, H1). Bugs found and fixed during H1.**
 
-| # | Issue | What | Notes |
-|---|-------|------|-------|
-| 1 | H1 | Deduplicate `Transport.destinations` vs `NodeCore.destinations` | Transport queries NodeCore's registry. |
+| # | Issue | What | Status |
+|---|-------|------|--------|
+| 1 | E5 | Verify cleanup path for unregister_destination | Verified clean (no bug) |
+| 2 | E1 | Split `handle_link_data` god method | Done — 5 per-context handlers |
+| 3 | H4+A4 | Consolidate receipt tracking into `ReceiptTracker` | Done — single owner for receipt state |
+| 4 | E6 | Split `handle_channel_packet` into sub-methods | Done |
+| 5 | H1 | Deduplicate `Transport.destinations` vs `NodeCore.destinations` | Done — `DestinationEntry` eliminated, Transport uses `BTreeSet<hash>` |
+
+**Bugs found and fixed during H1:**
+
+| Bug | Detail | Commit |
+|-----|--------|--------|
+| Proof verification identity always `None` | `register_destination_with_proof()` passed `None` for identity; proof verification used Transport's copy (always `None`) instead of NodeCore's Destination. Moved verification to NodeCore. | Step 1 |
+| Proof generation Bug 1: All/App dispatch inverted | `ProofStrategy::All` emitted `NodeEvent::ProofRequested` (app callback) instead of auto-sending. `App` auto-sent instead of emitting. | 9358fad |
+| Proof generation Bug 2: missing `send_proof` call | `ProofStrategy::All` branch never called `transport.send_proof()`. | 9358fad |
+| Proof generation Bug 3: docstring mismatch | Docstring described correct behavior but code did the opposite. | 9358fad |
 
 **Issues eliminated by Phase 5c (no longer needed):**
 
 | Issue | Why eliminated |
 |-------|--------------|
-| E5 | Verified clean — `Transport::unregister_destination()` calls `self.destinations.remove()` |
 | A3 | `channel_hash_to_seq` already on NodeCore — no cross-layer dependency |
 | A5 | `LinkEvent` no longer exists — no pass-through translations |
 | A6 | Drain buffers no longer exist |
@@ -43,24 +55,26 @@ Phases 0–5 complete. Remaining: Phase 6 (consolidation) and Phase 7 (polish).
 
 ## Phase 7: API Polish
 
-**12 issues. The public face of the library. 3 new issues added post-Phase 5c.**
+**14 issues. The public face of the library.**
 
-| # | Issue | What |
-|---|-------|------|
-| 1 | D2 | `PacketEndpoint` → `PacketSender` |
-| 2 | D3 | `send()` → `try_send()`, `send_bytes()` → `send()` |
-| 3 | D5 | `DataReceived` → `LinkDataReceived` |
-| 4 | D6 | `DeliveryConfirmed` → `PacketDeliveryConfirmed` |
-| 5 | D7 | `ProofRequested` → `PacketProofRequested` |
-| 6 | D12 | Separate handshake vs active-link timeout events |
-| 7 | D13 | `ChannelExhausted` close reason |
-| 8 | E2 | `pub(crate)` field audit (DataReceipt eliminated, others TBD) |
-| 9 | E3 | Silent send failures — audit `let _ =` on transport calls |
-| 10 | E4 | Identity table asymmetry (Transport + NodeCore) |
-| 11 | F2 | `connect()` broadcast fallback transparent |
-| 12 | G1 | Merge lock-and-read in event loop |
+| # | Issue | P | What |
+|---|-------|---|------|
+| 1 | E8 | H | Single-packet encryption (blocks all single-packet interop) |
+| 2 | E7 | M | Split transport.rs (8k+ LoC) into submodules |
+| 3 | D2 | M | `PacketEndpoint` → `PacketSender` |
+| 4 | D3 | M | `send()` → `try_send()`, `send_bytes()` → `send()` |
+| 5 | D5 | M | `DataReceived` → `LinkDataReceived` |
+| 6 | D6 | M | `DeliveryConfirmed` → `PacketDeliveryConfirmed` |
+| 7 | D7 | M | `ProofRequested` → `PacketProofRequested` |
+| 8 | D12 | L | Separate handshake vs active-link timeout events |
+| 9 | D13 | L | `ChannelExhausted` close reason |
+| 10 | E2 | M | `pub(crate)` field audit (DataReceipt eliminated, others TBD) |
+| 11 | E3 | M | Silent send failures — audit `let _ =` on transport calls |
+| 12 | E4 | L | Identity table asymmetry (Transport + NodeCore) |
+| 13 | F2 | L | `connect()` broadcast fallback transparent |
+| 14 | G1 | L | Merge lock-and-read in event loop |
 
-**Why last:** API renames after structural refactoring — don't rename what will change again. D12 and D13 need new event variants. E2/E3 are cleanup that shouldn't block consolidation. E4 is a minor data model improvement.
+**Why last:** API renames after structural refactoring — don't rename what will change again. D12 and D13 need new event variants. E2/E3 are cleanup that shouldn't block consolidation. E4 is a minor data model improvement. E8 is the highest priority — it blocks single-packet interop.
 
 ---
 
@@ -74,17 +88,16 @@ Phases 0–5 complete. Remaining: Phase 6 (consolidation) and Phase 7 (polish).
 | 3 — Bug Fixes | 4 | Tests go green | **done** |
 | 4 — Rename | 7 | One concept, one name | **done** |
 | 5 — Structure | 3 | 4 maps → 1, LinkManager dissolved | **done** |
-| 6 — Consolidation | 5 (4 done) | Single source of truth | **next** |
-| 7 — API Polish | 12 | Clean public API | open |
-| **Total** | **62** | **Complete codebase overhaul** | |
-| **Remaining** | **13** | | |
+| 6 — Consolidation | 5 | Single source of truth, proof bugs fixed | **done** |
+| 7 — API Polish | 14 | Clean public API, encryption, split transport | **next** |
+| **Total** | **63** | **Complete codebase overhaul** | |
+| **Remaining** | **14** | | |
 
 **Dependency chain (remaining):**
 ```
-Phase 6:
-  E1 ✓ (split god method — done)
-    → H4 ✓ + A4 ✓ (receipt tracking consolidated into ReceiptTracker)
-      → E6 ✓ (split channel handler — done)
-  H1 (deduplicate destinations — independent)
-    → Phase 7 (API polish — all 12 issues independent of each other)
+Phase 7:
+  E8 (single-packet encryption — highest priority, blocks interop)
+  E7 (split transport.rs — independent)
+  D2..D7, D12, D13 (naming — all independent of each other)
+  E2, E3, E4, F2, G1 (cleanup — all independent)
 ```

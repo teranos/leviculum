@@ -225,15 +225,10 @@ impl<R: CryptoRngCore, C: Clock, S: Storage> NodeCore<R, C, S> {
     pub fn register_destination(&mut self, dest: Destination) {
         let hash = *dest.hash();
 
-        // Register with transport for packet routing
-        // Note: We pass None for identity since Identity doesn't implement Clone.
-        // Proof handling is done at the NodeCore level using the destination's identity.
-        self.transport.register_destination_with_proof(
-            hash.into_bytes(),
-            dest.accepts_links(),
-            dest.proof_strategy(),
-            None, // Identity is stored in the destination
-        );
+        // Register with transport for packet routing.
+        // All destination metadata (proof strategy, accepts_links, identity)
+        // stays on NodeCore — Transport only knows "is this hash local?".
+        self.transport.register_destination(hash.into_bytes());
 
         self.destinations.insert(hash, dest);
     }
@@ -740,12 +735,17 @@ impl<R: CryptoRngCore, C: Clock, S: Storage> NodeCore<R, C, S> {
             TransportEvent::ProofRequested {
                 packet_hash,
                 destination_hash,
-                proof_strategy,
                 interface_index,
             } => {
+                let dest_hash = DestinationHash::new(destination_hash);
+                let proof_strategy = self
+                    .destinations
+                    .get(&dest_hash)
+                    .map(|d| d.proof_strategy())
+                    .unwrap_or(ProofStrategy::None);
+
                 match proof_strategy {
                     ProofStrategy::All => {
-                        let dest_hash = DestinationHash::new(destination_hash);
                         if let Some(identity) =
                             self.destinations.get(&dest_hash).and_then(|d| d.identity())
                         {
@@ -762,10 +762,10 @@ impl<R: CryptoRngCore, C: Clock, S: Storage> NodeCore<R, C, S> {
                     ProofStrategy::App => {
                         self.events.push(NodeEvent::ProofRequested {
                             packet_hash,
-                            destination_hash: DestinationHash::new(destination_hash),
+                            destination_hash: dest_hash,
                         });
                     }
-                    ProofStrategy::None => {} // unreachable — filtered in Transport
+                    ProofStrategy::None => {}
                 }
             }
 
