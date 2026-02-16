@@ -1252,7 +1252,7 @@ mod tests {
         assert!(node.has_path(&dest_hash), "should have path from announce");
 
         // Call connect() — actions are returned immediately in TickOutput
-        let (link_id, output) = node.connect(dest_hash, &remote_signing_key);
+        let (link_id, _, output) = node.connect(dest_hash, &remote_signing_key);
 
         // The link request should have been returned as an Action (SendPacket
         // to the path's interface since we have a path, or Broadcast if no path)
@@ -1265,6 +1265,85 @@ mod tests {
             "connect() should return an Action in TickOutput, \
              link_id={:?}, actions={:?}",
             link_id, output.actions
+        );
+    }
+
+    #[test]
+    fn test_connect_was_routed_false_without_path() {
+        use crate::transport::Action;
+
+        let clock = MockClock::new(TEST_TIME_MS);
+        let mut node = NodeCoreBuilder::new().build(OsRng, clock, NoStorage);
+
+        // Create a destination hash with no path entry
+        let remote_identity = Identity::generate(&mut OsRng);
+        let signing_key = remote_identity.ed25519_verifying().to_bytes();
+        let dest = Destination::new(
+            Some(remote_identity),
+            Direction::In,
+            DestinationType::Single,
+            "testapp",
+            &["nopath"],
+        )
+        .unwrap();
+        let dest_hash = *dest.hash();
+
+        // Connect without any path — should broadcast
+        let (_link_id, was_routed, output) = node.connect(dest_hash, &signing_key);
+        assert!(!was_routed, "should not be routed without a path");
+
+        // Verify it broadcast instead
+        assert!(
+            output
+                .actions
+                .iter()
+                .any(|a| matches!(a, Action::Broadcast { .. })),
+            "should have broadcast the link request"
+        );
+    }
+
+    #[test]
+    fn test_connect_was_routed_true_with_path() {
+        use crate::transport::{Action, InterfaceId};
+
+        let clock = MockClock::new(TEST_TIME_MS);
+        let mut node = NodeCoreBuilder::new().build(OsRng, clock, NoStorage);
+
+        // Create remote destination and announce to establish a path
+        let remote_identity = Identity::generate(&mut OsRng);
+        let signing_key = remote_identity.ed25519_verifying().to_bytes();
+        let mut remote_dest = Destination::new(
+            Some(remote_identity),
+            Direction::In,
+            DestinationType::Single,
+            "testapp",
+            &["routed"],
+        )
+        .unwrap();
+
+        let announce_packet = remote_dest
+            .announce(None, &mut OsRng, TEST_TIME_MS)
+            .unwrap();
+        let mut buf = [0u8; crate::constants::MTU];
+        let len = announce_packet.pack(&mut buf).unwrap();
+
+        let _ = node.handle_packet(InterfaceId(0), &buf[..len]);
+        let _ = node.handle_timeout();
+
+        let dest_hash = *remote_dest.hash();
+        assert!(node.has_path(&dest_hash), "should have path from announce");
+
+        // Connect with path — should be routed
+        let (_link_id, was_routed, output) = node.connect(dest_hash, &signing_key);
+        assert!(was_routed, "should be routed with a known path");
+
+        // Verify it sent via SendPacket (not Broadcast)
+        assert!(
+            output
+                .actions
+                .iter()
+                .any(|a| matches!(a, Action::SendPacket { .. })),
+            "should have sent via specific interface"
         );
     }
 
@@ -1313,7 +1392,7 @@ mod tests {
         assert!(node.has_path(&dest_hash), "should have path from announce");
 
         // Initiate connection — actions returned in output
-        let (link_id, _output) = node.connect(dest_hash, &remote_signing_key);
+        let (link_id, _, _output) = node.connect(dest_hash, &remote_signing_key);
 
         (node, dest_hash, link_id)
     }
@@ -1473,7 +1552,7 @@ mod tests {
         let mut initiator = NodeCoreBuilder::new().build(OsRng, clock, NoStorage);
 
         // 3. Initiator connects (broadcasts since no path)
-        let (init_link_id, output) = initiator.connect(dest_hash, &resp_signing_key);
+        let (init_link_id, _, output) = initiator.connect(dest_hash, &resp_signing_key);
         let link_req_data = extract_broadcast_data(&output);
 
         // 4. Responder receives link request → LinkRequest event
@@ -1539,7 +1618,7 @@ mod tests {
         let mut initiator = NodeCoreBuilder::new().build(OsRng, clock, NoStorage);
 
         // 3. Initiator connects (broadcasts since no path)
-        let (init_link_id, output) = initiator.connect(dest_hash, &resp_signing_key);
+        let (init_link_id, _, output) = initiator.connect(dest_hash, &resp_signing_key);
         let link_req_data = extract_broadcast_data(&output);
 
         // 4. Responder receives link request → LinkRequest event
@@ -1612,7 +1691,7 @@ mod tests {
         let clock = MockClock::new(TEST_TIME_MS);
         let mut initiator = NodeCoreBuilder::new().build(OsRng, clock, NoStorage);
 
-        let (_init_link_id, output) = initiator.connect(dest_hash, &resp_signing_key);
+        let (_init_link_id, _, output) = initiator.connect(dest_hash, &resp_signing_key);
         let link_req_data = extract_broadcast_data(&output);
 
         let output = responder.handle_packet(InterfaceId(0), &link_req_data);
@@ -1741,7 +1820,7 @@ mod tests {
         // First initiator connects
         let clock = MockClock::new(TEST_TIME_MS);
         let mut init1 = NodeCoreBuilder::new().build(OsRng, clock, NoStorage);
-        let (link1, out1) = init1.connect(hash1, &signing1);
+        let (link1, _, out1) = init1.connect(hash1, &signing1);
         let data1 = extract_broadcast_data(&out1);
         let out = responder.handle_packet(InterfaceId(0), &data1);
         let rlid1 = extract_link_request_link_id(&out);
@@ -1754,7 +1833,7 @@ mod tests {
         // Second initiator connects
         let clock = MockClock::new(TEST_TIME_MS);
         let mut init2 = NodeCoreBuilder::new().build(OsRng, clock, NoStorage);
-        let (_link2, out2) = init2.connect(hash2, &signing2);
+        let (_link2, _, out2) = init2.connect(hash2, &signing2);
         let data2 = extract_broadcast_data(&out2);
         let out = responder.handle_packet(InterfaceId(0), &data2);
         let rlid2 = extract_link_request_link_id(&out);
@@ -1828,7 +1907,7 @@ mod tests {
 
         let clock = MockClock::new(TEST_TIME_MS);
         let mut initiator = NodeCoreBuilder::new().build(OsRng, clock, NoStorage);
-        let (_, output) = initiator.connect(dest_hash, &resp_signing_key);
+        let (_, _, output) = initiator.connect(dest_hash, &resp_signing_key);
         let req_data = extract_broadcast_data(&output);
 
         let output = responder.handle_packet(InterfaceId(0), &req_data);
@@ -1862,7 +1941,7 @@ mod tests {
 
         let clock = MockClock::new(TEST_TIME_MS);
         let mut initiator = NodeCoreBuilder::new().build(OsRng, clock, NoStorage);
-        let (_, output) = initiator.connect(dest_hash, &resp_signing_key);
+        let (_, _, output) = initiator.connect(dest_hash, &resp_signing_key);
         let req_data = extract_broadcast_data(&output);
 
         let output = responder.handle_packet(InterfaceId(0), &req_data);
@@ -2100,8 +2179,8 @@ mod tests {
 
         let hash1 = *dest1.hash();
         let hash2 = *dest2.hash();
-        let (_, _) = node.connect(hash1, &signing1);
-        let (_, _) = node.connect(hash2, &signing2);
+        let (_, _, _) = node.connect(hash1, &signing1);
+        let (_, _, _) = node.connect(hash2, &signing2);
 
         node.transport()
             .clock()
@@ -2949,7 +3028,7 @@ mod tests {
 
         let clock = MockClock::new(TEST_TIME_MS);
         let mut init = NodeCoreBuilder::new().build(OsRng, clock, NoStorage);
-        let (link_id, _) = init.connect(dest_hash, &resp_signing_key);
+        let (link_id, _, _) = init.connect(dest_hash, &resp_signing_key);
         let pending_link = init.link(&link_id).unwrap();
         assert_eq!(
             pending_link.attached_interface(),

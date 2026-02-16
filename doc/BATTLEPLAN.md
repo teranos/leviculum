@@ -54,7 +54,7 @@ Phases 0–6 complete. Phase 7 in progress (7 of 14 done).
 
 ## Phase 7: API Polish
 
-**14 issues (11 done, 3 remaining). The public face of the library.**
+**14 issues (12 done, 2 remaining). The public face of the library.**
 
 | # | Issue | P | What | Status |
 |---|-------|---|------|--------|
@@ -69,10 +69,10 @@ Phases 0–6 complete. Phase 7 in progress (7 of 14 done).
 | 9 | E2 | M | `pub(crate)` field audit (verified clean — no violations found) | **done** |
 | 10 | E3 | M | Silent send failures — `let _ =` replaced with tracing | **done** |
 | 11 | E4 | L | Identity table asymmetry — dead `identity_table` removed | **done** |
-| 12 | F2 | L | `connect()` broadcast fallback transparent | open |
+| 12 | F2 | L | `connect()` returns `was_routed` flag | **done** |
 | 13 | G1 | L | `next_deadline_ms` in TickOutput, double-lock eliminated | **done** |
 
-**Naming renames complete** (D2, D3, D5, D6, D7, D12+D13). **E2 verified clean, E4 dead code removed.** Remaining: E8 (highest priority — blocks single-packet interop), E7 (structural), F2 (cleanup).
+**Naming renames complete** (D2, D3, D5, D6, D7, D12+D13). **E2 verified clean, E4 dead code removed.** Remaining: E8 (highest priority — blocks single-packet interop), E7 (structural).
 
 ---
 
@@ -87,14 +87,14 @@ Phases 0–6 complete. Phase 7 in progress (7 of 14 done).
 | 4 — Rename | 7 | One concept, one name | **done** |
 | 5 — Structure | 3 | 4 maps → 1, LinkManager dissolved | **done** |
 | 6 — Consolidation | 5 | Single source of truth, proof bugs fixed | **done** |
-| 7 — API Polish | 14 | Clean public API, encryption, split transport | **11 done** |
+| 7 — API Polish | 14 | Clean public API, encryption, split transport | **12 done** |
 | **Total** | **63** | **Complete codebase overhaul** | |
-| **Remaining** | **3** | | |
+| **Remaining** | **2** | | |
 
 **Dependency chain (remaining):**
 ```
 Phase 7:
   E8 (single-packet encryption — highest priority, blocks interop)
   E7 (split transport.rs — independent)
-  F2 (cleanup)
+  (no remaining cleanup items)
 ```

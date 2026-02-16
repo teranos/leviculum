@@ -154,13 +154,14 @@ impl<R: CryptoRngCore, C: Clock, S: Storage> NodeCore<R, C, S> {
     /// * `dest_signing_key` - The destination's signing key (from announce)
     ///
     /// # Returns
-    /// The `LinkId` for the new connection and a `TickOutput` containing the
-    /// link request action.
+    /// A tuple of `(LinkId, was_routed, TickOutput)`:
+    /// - `was_routed`: `true` if the link request was sent via a known path,
+    ///   `false` if it was broadcast (no path existed).
     pub fn connect(
         &mut self,
         dest_hash: DestinationHash,
         dest_signing_key: &[u8; 32],
-    ) -> (LinkId, crate::transport::TickOutput) {
+    ) -> (LinkId, bool, crate::transport::TickOutput) {
         // Check if we have path info for this destination
         let (next_hop, hops) = if let Some(path) = self.transport.path(dest_hash.as_bytes()) {
             if path.needs_relay() {
@@ -187,16 +188,16 @@ impl<R: CryptoRngCore, C: Clock, S: Storage> NodeCore<R, C, S> {
         self.links.insert(link_id, link);
 
         // Route through transport: path lookup first, broadcast if no path
-        if self
+        let was_routed = self
             .transport
             .send_to_destination(dest_hash.as_bytes(), &packet)
-            .is_err()
-        {
+            .is_ok();
+        if !was_routed {
             self.transport.send_on_all_interfaces(&packet);
         }
 
         let output = self.process_events_and_actions();
-        (link_id, output)
+        (link_id, was_routed, output)
     }
 
     /// Accept an incoming link request

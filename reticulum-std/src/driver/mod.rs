@@ -280,7 +280,7 @@ impl ReticulumNode {
         dest_signing_key: &[u8; 32],
     ) -> Result<LinkHandle, Error> {
         // Request link from NodeCore
-        let (link_id, output) = {
+        let (link_id, _was_routed, output) = {
             let mut inner = self.inner.lock().unwrap();
             inner.connect(*dest_hash, dest_signing_key)
         };

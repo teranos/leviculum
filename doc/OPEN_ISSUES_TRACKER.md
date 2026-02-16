@@ -22,23 +22,12 @@ Phase numbering follows `doc/BATTLEPLAN.md`. Phases 0–6 are complete.
 
 | ID | P | Phase | Status | Category | Summary |
 |----|---|-------|--------|----------|---------|
-| F2 | L | 7 | open | Coupling | `connect()` silently broadcasts when no path exists |
 | E7 | M | 7 | open | Structural | Split transport.rs (8k+ LoC) |
 | E8 | H | 7 | open | Feature gap | Single-packet encryption missing |
 
 ---
 
 ## Issues
-
-### F2: `connect()` silently broadcasts when no path exists
-- **Status:** open
-- **Priority:** LOW
-- **Phase:** 7
-- **Category:** Coupling
-- **Blocked-by:** —
-- **Detail:** Falls back to broadcast instead of returning an error. Caller doesn't know whether the link request was routed or broadcast.
-- **Fix:** Return an enum indicating `Routed` vs `Broadcast`, or return an error.
-- **Test:** N/A (behavior change — add test with fix).
 
 ### E8: Single-packet encryption missing
 - **Status:** open
