@@ -34,6 +34,11 @@ Phase numbering follows `doc/BATTLEPLAN.md`. Phases 0–5 are complete.
 | ID | P | Effort | Phase | Status | Category | Summary |
 |----|---|--------|-------|--------|----------|---------|
 | A4 | M | M | 6 | open | Structural | `data_receipts` + `channel_receipt_keys` tight coupling |
+| E1 | M | S | 6 | open | Structural | `handle_link_data` god method (241 lines) |
+| E2 | M | S | 7 | open | API | `pub(crate)` field audit |
+| E3 | M | S | 7 | open | Robustness | Silent send failures (`let _ =` on transport calls) |
+| E4 | L | S | 7 | open | SSOT | Identity table asymmetry |
+| E5 | H | S | 6 | open | Bug | H1 unregister path missing |
 | D2 | M | S | 7 | open | Naming | `PacketEndpoint` isn't an endpoint |
 | D3 | M | S | 7 | open | Naming | `send()` vs `send_bytes()` hides real distinction |
 | D5 | M | S | 7 | open | Naming | `DataReceived` vs `MessageReceived` subtle distinction |
@@ -61,6 +66,58 @@ Phase numbering follows `doc/BATTLEPLAN.md`. Phases 0–5 are complete.
 - **Detail:** Two maps on NodeCore: `data_receipts` (keyed by truncated packet hash, global) and `channel_receipt_keys` (keyed per link+sequence). Tightly coupled to each other and to `links`. Global hash-based lookup in `handle_data_proof()` prevents per-link storage.
 - **Fix:** Consider moving per-link receipt data onto Link struct. Global hash lookup may still require a NodeCore-level index.
 - **Test:** Receipt lifecycle tested (`test_channel_receipt_lifecycle`, `test_data_receipts_expire_after_timeout`, etc.). Full coupling not verified.
+
+### E1: `handle_link_data` god method (241 lines)
+- **Status:** open
+- **Priority:** MEDIUM
+- **Effort:** S
+- **Phase:** 6
+- **Category:** Structural
+- **Blocked-by:** —
+- **Blocks:** H4 (split makes migration readable)
+- **Detail:** `node/link_management.rs:498-738` dispatches 6+ link-layer message types (RTT, keepalive, close, channel data, channel proof, proof request) in a single match. Every new link-layer feature grows this method. At 241 lines it's the largest production method in the codebase.
+- **Fix:** Extract `handle_rtt_packet()`, `handle_keepalive_packet()`, `handle_close_packet()`, `handle_channel_packet()`, `handle_data_packet()`. Pure mechanical extraction, no behavior change.
+- **Test:** Existing tests cover all arms. No new tests needed (refactor, not behavior change).
+
+### E2: `pub(crate)` field audit
+- **Status:** open
+- **Priority:** MEDIUM
+- **Effort:** S
+- **Phase:** 7
+- **Category:** API
+- **Blocked-by:** —
+- **Detail:** The strangler fig migration left `pub(crate)` fields on structs that should expose methods instead (confirmed: `DataReceipt.full_hash`, `DataReceipt.link_id`, `DataReceipt.sent_at_ms`). Audit all `pub(crate)` fields in non-test code across `link/`, `node/`, `transport/`. Each one is either (a) correct because the module boundary requires it, or (b) a method that was never written. Fix the (b) cases.
+- **Test:** N/A (visibility change — compilation verifies).
+
+### E3: Silent send failures (`let _ =` on transport calls)
+- **Status:** open
+- **Priority:** MEDIUM
+- **Effort:** S
+- **Phase:** 7
+- **Category:** Robustness
+- **Blocked-by:** —
+- **Detail:** `route_link_packet()` uses `let _ = self.transport.send_on_interface(...)`. Count all `let _ =` on send/transport calls in non-test code. Each one silently swallows a send failure. At minimum add `tracing::debug!` on failure. Evaluate whether any callers should propagate the error.
+- **Test:** N/A (observability improvement — existing tests cover behavior).
+
+### E4: Identity table asymmetry
+- **Status:** open
+- **Priority:** LOW
+- **Effort:** S
+- **Phase:** 7
+- **Category:** SSOT
+- **Blocked-by:** —
+- **Detail:** Local destinations have their Identity in both `Transport.identity_table` and `NodeCore.destinations[hash].identity`. Remote peers only in `Transport.identity_table`. Asymmetric ownership. Identities are immutable so this isn't a consistency bug, but it's wasted memory and a confusing data model. Evaluate whether Transport should be the sole owner of the identity table, with NodeCore querying it.
+- **Test:** N/A (data model simplification).
+
+### E5: H1 unregister path missing
+- **Status:** open
+- **Priority:** HIGH
+- **Effort:** S
+- **Phase:** 6
+- **Category:** Bug
+- **Blocked-by:** —
+- **Detail:** `unregister_destination()` removes from `NodeCore.destinations` and calls `transport.unregister_destination()`, but verify that Transport actually cleans up its `DestinationEntry`. If Transport keeps a ghost entry after unregister, that's a bug — stale `accepts_links` and `proof_strategy` values for a destination that no longer exists. This is part of H1 but the bug aspect should be verified and fixed independently.
+- **Test:** Write test: register destination, unregister, verify Transport's `DestinationEntry` is gone.
 
 ### D2: `PacketEndpoint` isn't an endpoint
 - **Status:** open
