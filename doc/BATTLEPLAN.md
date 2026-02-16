@@ -1,6 +1,6 @@
 # leviculum — Refactoring Battle Plan
 
-17 open issues from OPEN_ISSUES_TRACKER.md, ordered for maximum efficiency.
+16 open issues from OPEN_ISSUES_TRACKER.md, ordered for maximum efficiency.
 Phases 0–5 complete. Remaining: Phase 6 (consolidation) and Phase 7 (polish).
 
 ---
@@ -22,22 +22,22 @@ Phases 0–5 complete. Remaining: Phase 6 (consolidation) and Phase 7 (polish).
 
 ## Phase 6: Consolidation
 
-**5 issues. Down from 8 — LinkManager dissolution eliminated 5 automatically. 2 new issues added post-Phase 5c.**
+**4 issues remaining (E1 done). E5 verified clean (no bug).**
 
 | # | Issue | What | Notes |
 |---|-------|------|-------|
-| 1 | E5 | Verify `unregister_destination()` cleans up Transport's DestinationEntry | Potential bug — verify first, fix if broken. Prerequisite for H1. |
-| 2 | E1 | Split `handle_link_data` god method (241 lines) | Extract per-message-type handlers. Pure mechanical. Prerequisite for H4 and A4. |
-| 3 | H4 | Consolidate bidirectional hash/seq maps | Both maps now on NodeCore — straightforward. Easier after E1 split. |
-| 4 | A4 | Formalize receipt tracking (data_receipts + channel_receipt_keys) | Receipt code lives in handle_link_data — easier after E1 split. |
-| 5 | H1 | Deduplicate `Transport.destinations` vs `NodeCore.destinations` | Transport queries NodeCore's registry. E5 must be verified first. |
+| 1 | H4 | Consolidate bidirectional hash/seq maps | Both maps now on NodeCore — straightforward. |
+| 2 | E6 | Split `handle_channel_packet` (131 lines) | 4 responsibilities: decrypt, receive+drain, proof, rx_ring. Blocked by H4. |
+| 3 | A4 | Formalize receipt tracking (data_receipts + channel_receipt_keys) | Receipt code lives in the split methods. |
+| 4 | H1 | Deduplicate `Transport.destinations` vs `NodeCore.destinations` | Transport queries NodeCore's registry. |
 
-**Order:** E5 first (potential bug — quick verify/fix). E1 second (makes H4 and A4 readable). H4 third. A4 fourth (receipt code lives in the split methods). H1 last (largest, benefits from all prior cleanup).
+**Order:** H4 first. E6 second (boundaries stable after H4). A4 third. H1 last (largest, benefits from all prior cleanup).
 
 **Issues eliminated by Phase 5c (no longer needed):**
 
 | Issue | Why eliminated |
 |-------|--------------|
+| E5 | Verified clean — `Transport::unregister_destination()` calls `self.destinations.remove()` |
 | A3 | `channel_hash_to_seq` already on NodeCore — no cross-layer dependency |
 | A5 | `LinkEvent` no longer exists — no pass-through translations |
 | A6 | Drain buffers no longer exist |
@@ -79,18 +79,18 @@ Phases 0–5 complete. Remaining: Phase 6 (consolidation) and Phase 7 (polish).
 | 3 — Bug Fixes | 4 | Tests go green | **done** |
 | 4 — Rename | 7 | One concept, one name | **done** |
 | 5 — Structure | 3 | 4 maps → 1, LinkManager dissolved | **done** |
-| 6 — Consolidation | 5 | Single source of truth | **next** |
+| 6 — Consolidation | 5 (1 done) | Single source of truth | **next** |
 | 7 — API Polish | 12 | Clean public API | open |
-| **Total** | **61** | **Complete codebase overhaul** | |
-| **Remaining** | **17** | | |
+| **Total** | **62** | **Complete codebase overhaul** | |
+| **Remaining** | **16** | | |
 
 **Dependency chain (remaining):**
 ```
 Phase 6:
-  E5 (verify unregister bug)
-    → H1 (deduplicate destinations)
-  E1 (split god method)
+  E1 ✓ (split god method — done)
     → H4 (consolidate receipt maps)
+      → E6 (split channel handler — boundaries stable after H4)
     → A4 (receipt tracking — code lives in split methods)
+  H1 (deduplicate destinations — independent)
     → Phase 7 (API polish — all 12 issues independent of each other)
 ```

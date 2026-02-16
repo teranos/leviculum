@@ -23,11 +23,10 @@ Phase numbering follows `doc/BATTLEPLAN.md`. Phases 0–5 are complete.
 | ID | P | Phase | Status | Category | Summary |
 |----|---|-------|--------|----------|---------|
 | A4 | M | 6 | open | Structural | `data_receipts` + `channel_receipt_keys` tight coupling |
-| E1 | M | 6 | open | Structural | `handle_link_data` god method (241 lines) |
+| E6 | M | 6 | open | Structural | `handle_channel_packet` still 131 lines |
 | E2 | M | 7 | open | API | `pub(crate)` field audit |
 | E3 | M | 7 | open | Robustness | Silent send failures (`let _ =` on transport calls) |
 | E4 | L | 7 | open | SSOT | Identity table asymmetry |
-| E5 | H | 6 | open | Bug | H1 unregister path missing |
 | D2 | M | 7 | open | Naming | `PacketEndpoint` isn't an endpoint |
 | D3 | M | 7 | open | Naming | `send()` vs `send_bytes()` hides real distinction |
 | D5 | M | 7 | open | Naming | `DataReceived` vs `MessageReceived` subtle distinction |
@@ -55,16 +54,14 @@ Phase numbering follows `doc/BATTLEPLAN.md`. Phases 0–5 are complete.
 - **Fix:** Consider moving per-link receipt data onto Link struct. Global hash lookup may still require a NodeCore-level index.
 - **Test:** Receipt lifecycle tested (`test_channel_receipt_lifecycle`, `test_data_receipts_expire_after_timeout`, etc.). Full coupling not verified.
 
-### E1: `handle_link_data` god method (241 lines)
+### E6: `handle_channel_packet` still 131 lines
 - **Status:** open
 - **Priority:** MEDIUM
 - **Phase:** 6
 - **Category:** Structural
-- **Blocked-by:** —
-- **Blocks:** H4, A4 (split makes both migrations readable)
-- **Detail:** `node/link_management.rs:498-738` dispatches 6+ link-layer message types (RTT, keepalive, close, channel data, channel proof, proof request) in a single match. Every new link-layer feature grows this method. At 241 lines it's the largest production method in the codebase.
-- **Fix:** Extract `handle_rtt_packet()`, `handle_keepalive_packet()`, `handle_close_packet()`, `handle_channel_packet()`, `handle_data_packet()`. Pure mechanical extraction, no behavior change.
-- **Test:** Existing tests cover all arms. No new tests needed (refactor, not behavior change).
+- **Blocked-by:** H4
+- **Detail:** After E1 extracts it from `handle_link_data`, `handle_channel_packet` is still 131 lines with 4 distinct responsibilities: decrypt, channel receive + drain, proof generation, rx_ring overflow handling. Split into sub-handlers after H4 has simplified the receipt/proof logic — don't split before H4 or the boundaries will shift.
+- **Test:** Existing tests cover all paths. No new tests needed (refactor, not behavior change).
 
 ### E2: `pub(crate)` field audit
 - **Status:** open
@@ -92,15 +89,6 @@ Phase numbering follows `doc/BATTLEPLAN.md`. Phases 0–5 are complete.
 - **Blocked-by:** —
 - **Detail:** Local destinations have their Identity in both `Transport.identity_table` and `NodeCore.destinations[hash].identity`. Remote peers only in `Transport.identity_table`. Asymmetric ownership. Identities are immutable so this isn't a consistency bug, but it's wasted memory and a confusing data model. Evaluate whether Transport should be the sole owner of the identity table, with NodeCore querying it.
 - **Test:** N/A (data model simplification).
-
-### E5: H1 unregister path missing
-- **Status:** open
-- **Priority:** HIGH
-- **Phase:** 6
-- **Category:** Bug
-- **Blocked-by:** —
-- **Detail:** `unregister_destination()` removes from `NodeCore.destinations` and calls `transport.unregister_destination()`, but verify that Transport actually cleans up its `DestinationEntry`. If Transport keeps a ghost entry after unregister, that's a bug — stale `accepts_links` and `proof_strategy` values for a destination that no longer exists. This is part of H1 but the bug aspect should be verified and fixed independently.
-- **Test:** Write test: register destination, unregister, verify Transport's `DestinationEntry` is gone.
 
 ### D2: `PacketEndpoint` isn't an endpoint
 - **Status:** open

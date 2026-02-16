@@ -494,7 +494,9 @@ impl<R: CryptoRngCore, C: Clock, S: Storage> NodeCore<R, C, S> {
         }
     }
 
-    /// Handle an incoming DATA packet on a link
+    /// Handle an incoming DATA packet on a link.
+    ///
+    /// Dispatches to per-context handlers after stale-link recovery.
     fn handle_link_data(&mut self, packet: &Packet, raw_packet: &[u8], now_ms: u64) {
         let link_id = LinkId::new(packet.destination_hash);
         let now_secs = now_ms / MS_PER_SECOND;
@@ -502,194 +504,228 @@ impl<R: CryptoRngCore, C: Clock, S: Storage> NodeCore<R, C, S> {
         // Recover stale links on any inbound traffic (Python Link.py:987-988)
         self.try_recover_stale(&link_id, now_secs);
 
+        if !self.links.contains_key(&link_id) {
+            return;
+        }
+
+        match packet.context {
+            PacketContext::Lrrtt => self.handle_rtt_packet(link_id, packet, now_secs),
+            PacketContext::Keepalive => self.handle_keepalive_packet(link_id, packet, now_secs),
+            PacketContext::LinkClose => self.handle_close_packet(link_id, packet),
+            PacketContext::Channel => {
+                self.handle_channel_packet(link_id, packet, raw_packet, now_ms, now_secs)
+            }
+            _ => self.handle_plain_data_packet(link_id, packet, raw_packet, now_secs),
+        }
+    }
+
+    /// RTT packet (context = Lrrtt) — responder side
+    fn handle_rtt_packet(&mut self, link_id: LinkId, packet: &Packet, now_secs: u64) {
         let Some(link) = self.links.get_mut(&link_id) else {
             return;
         };
-
-        // RTT packet (context = Lrrtt) — responder side
-        if packet.context == PacketContext::Lrrtt {
-            if link.state() != LinkState::Handshake || link.is_initiator() {
-                return;
-            }
-            let encrypted_data = packet.data.as_slice();
-            if let Ok(rtt_secs) = link.process_rtt(encrypted_data) {
-                link.update_keepalive_from_rtt(rtt_secs);
-                link.mark_established(now_secs);
-                link.set_phase(LinkPhase::Established);
-                self.events.push(NodeEvent::LinkEstablished {
-                    link_id,
-                    is_initiator: false,
-                });
-            }
+        if link.state() != LinkState::Handshake || link.is_initiator() {
             return;
         }
+        let encrypted_data = packet.data.as_slice();
+        if let Ok(rtt_secs) = link.process_rtt(encrypted_data) {
+            link.update_keepalive_from_rtt(rtt_secs);
+            link.mark_established(now_secs);
+            link.set_phase(LinkPhase::Established);
+            self.events.push(NodeEvent::LinkEstablished {
+                link_id,
+                is_initiator: false,
+            });
+        }
+    }
 
-        // KEEPALIVE packet
-        if packet.context == PacketContext::Keepalive {
-            link.record_inbound(now_secs);
-            let data = packet.data.as_slice();
-            if let Ok(should_echo) = link.process_keepalive(data) {
-                if should_echo {
-                    if let Ok(echo_packet) = link.build_keepalive_packet() {
-                        self.route_link_packet(&link_id, &echo_packet);
-                    }
+    /// Keepalive packet — record activity and echo if requested
+    fn handle_keepalive_packet(&mut self, link_id: LinkId, packet: &Packet, now_secs: u64) {
+        let Some(link) = self.links.get_mut(&link_id) else {
+            return;
+        };
+        link.record_inbound(now_secs);
+        let data = packet.data.as_slice();
+        if let Ok(should_echo) = link.process_keepalive(data) {
+            if should_echo {
+                if let Ok(echo_packet) = link.build_keepalive_packet() {
+                    self.route_link_packet(&link_id, &echo_packet);
                 }
             }
+        }
+    }
+
+    /// Link close packet — verify and tear down the link
+    fn handle_close_packet(&mut self, link_id: LinkId, packet: &Packet) {
+        let Some(link) = self.links.get_mut(&link_id) else {
+            return;
+        };
+        let encrypted_data = packet.data.as_slice();
+        if link.process_close(encrypted_data).is_ok() {
+            let is_initiator = link.is_initiator();
+            let destination_hash = *link.destination_hash();
+            self.links.remove(&link_id);
+            self.emit_link_closed(
+                link_id,
+                LinkCloseReason::PeerClosed,
+                is_initiator,
+                destination_hash,
+            );
+        }
+    }
+
+    /// Channel packet — decrypt, process through channel, build proof
+    fn handle_channel_packet(
+        &mut self,
+        link_id: LinkId,
+        packet: &Packet,
+        raw_packet: &[u8],
+        now_ms: u64,
+        now_secs: u64,
+    ) {
+        let Some(link) = self.links.get_mut(&link_id) else {
+            return;
+        };
+        if link.state() != LinkState::Active {
             return;
         }
 
-        // LINKCLOSE packet
-        if packet.context == PacketContext::LinkClose {
-            let encrypted_data = packet.data.as_slice();
-            if link.process_close(encrypted_data).is_ok() {
-                let is_initiator = link.is_initiator();
-                let destination_hash = *link.destination_hash();
-                self.links.remove(&link_id);
-                self.emit_link_closed(
-                    link_id,
-                    LinkCloseReason::PeerClosed,
-                    is_initiator,
-                    destination_hash,
-                );
-            }
-            return;
-        }
+        link.record_inbound(now_secs);
 
-        // CHANNEL packet
-        if packet.context == PacketContext::Channel {
-            if link.state() != LinkState::Active {
-                return;
-            }
+        // Decrypt the envelope data
+        let encrypted_data = packet.data.as_slice();
+        let max_plaintext_len = encrypted_data.len();
+        let mut plaintext = alloc::vec![0u8; max_plaintext_len];
+        let decrypted_len = match link.decrypt(encrypted_data, &mut plaintext) {
+            Ok(len) => len,
+            Err(_) => return,
+        };
+        plaintext.truncate(decrypted_len);
 
-            link.record_inbound(now_secs);
+        // Process through channel — all link operations happen in this block
+        // to allow the link borrow to be dropped before accessing other
+        // fields (rx_ring_full counters, route_link_packet).
+        let mut rx_ring_full = false;
+        let proof_packet = {
+            let rtt_ms = link.rtt_ms();
+            let channel = link.ensure_channel(rtt_ms);
 
-            // Decrypt the envelope data
-            let encrypted_data = packet.data.as_slice();
-            let max_plaintext_len = encrypted_data.len();
-            let mut plaintext = alloc::vec![0u8; max_plaintext_len];
-            let decrypted_len = match link.decrypt(encrypted_data, &mut plaintext) {
-                Ok(len) => len,
-                Err(_) => return,
-            };
-            plaintext.truncate(decrypted_len);
-
-            // Process through channel — all link operations happen in this block
-            // to allow the link borrow to be dropped before accessing other
-            // fields (rx_ring_full counters, route_link_packet).
-            let mut rx_ring_full = false;
-            let proof_packet = {
-                let rtt_ms = link.rtt_ms();
-                let channel = link.ensure_channel(rtt_ms);
-
-                let message_accepted = match channel.receive(&plaintext) {
-                    Ok(Some(envelope)) => {
-                        tracing::debug!(
-                            seq = envelope.sequence,
-                            msgtype = envelope.msgtype,
-                            len = envelope.data.len(),
-                            "link_mgr: channel message received (in-order)"
-                        );
-                        self.events.push(NodeEvent::MessageReceived {
-                            link_id,
-                            msgtype: envelope.msgtype,
-                            sequence: envelope.sequence,
-                            data: envelope.data,
-                        });
-                        true
-                    }
-                    Ok(None) => {
-                        tracing::debug!("link_mgr: channel message buffered (out-of-order)");
-                        true
-                    }
-                    Err(ChannelError::RxRingFull) => {
-                        rx_ring_full = true;
-                        false
-                    }
-                    Err(e) => {
-                        tracing::debug!(?e, "link_mgr: channel receive failed");
-                        false
-                    }
-                };
-
-                // Drain any buffered messages that are now ready
-                let drained: Vec<_> = link
-                    .channel_mut()
-                    .map(|ch| ch.drain_received())
-                    .unwrap_or_default();
-                for envelope in drained {
+            let message_accepted = match channel.receive(&plaintext) {
+                Ok(Some(envelope)) => {
+                    tracing::debug!(
+                        seq = envelope.sequence,
+                        msgtype = envelope.msgtype,
+                        len = envelope.data.len(),
+                        "link_mgr: channel message received (in-order)"
+                    );
                     self.events.push(NodeEvent::MessageReceived {
                         link_id,
                         msgtype: envelope.msgtype,
                         sequence: envelope.sequence,
                         data: envelope.data,
                     });
+                    true
                 }
-
-                // Build proof while link borrow is still held (if message accepted)
-                if message_accepted {
-                    let full_packet_hash = packet_hash(raw_packet);
-                    if let Some(signing_key) = link.proof_signing_key() {
-                        match link.build_data_proof_packet_with_signing_key(
-                            &full_packet_hash,
-                            signing_key,
-                        ) {
-                            Ok(proof) => {
-                                tracing::debug!(
-                                    hash = %HexFmt(&full_packet_hash),
-                                    link = %HexFmt(link_id.as_bytes()),
-                                    proof_len = proof.len(),
-                                    "link_mgr: channel proof generated"
-                                );
-                                Some(proof)
-                            }
-                            Err(e) => {
-                                tracing::warn!(
-                                    hash = %HexFmt(&full_packet_hash),
-                                    link = %HexFmt(link_id.as_bytes()),
-                                    error = %e,
-                                    "link_mgr: channel proof build failed"
-                                );
-                                None
-                            }
-                        }
-                    } else {
-                        tracing::warn!(
-                            link = %HexFmt(link_id.as_bytes()),
-                            "link_mgr: channel proof skipped — no signing key"
-                        );
-                        None
-                    }
-                } else {
-                    None
+                Ok(None) => {
+                    tracing::debug!("link_mgr: channel message buffered (out-of-order)");
+                    true
+                }
+                Err(ChannelError::RxRingFull) => {
+                    rx_ring_full = true;
+                    false
+                }
+                Err(e) => {
+                    tracing::debug!(?e, "link_mgr: channel receive failed");
+                    false
                 }
             };
-            // link borrow released here (NLL: last use was inside the block)
 
-            // Deferred rx_ring_full counter update (safe now — link borrow dropped)
-            if rx_ring_full {
-                self.rx_ring_full_count += 1;
-                let elapsed = now_ms.saturating_sub(self.rx_ring_full_last_log_ms);
-                if self.rx_ring_full_last_log_ms == 0 || elapsed >= 5000 {
+            // Drain any buffered messages that are now ready
+            let drained: Vec<_> = link
+                .channel_mut()
+                .map(|ch| ch.drain_received())
+                .unwrap_or_default();
+            for envelope in drained {
+                self.events.push(NodeEvent::MessageReceived {
+                    link_id,
+                    msgtype: envelope.msgtype,
+                    sequence: envelope.sequence,
+                    data: envelope.data,
+                });
+            }
+
+            // Build proof while link borrow is still held (if message accepted)
+            if message_accepted {
+                let full_packet_hash = packet_hash(raw_packet);
+                if let Some(signing_key) = link.proof_signing_key() {
+                    match link
+                        .build_data_proof_packet_with_signing_key(&full_packet_hash, signing_key)
+                    {
+                        Ok(proof) => {
+                            tracing::debug!(
+                                hash = %HexFmt(&full_packet_hash),
+                                link = %HexFmt(link_id.as_bytes()),
+                                proof_len = proof.len(),
+                                "link_mgr: channel proof generated"
+                            );
+                            Some(proof)
+                        }
+                        Err(e) => {
+                            tracing::warn!(
+                                hash = %HexFmt(&full_packet_hash),
+                                link = %HexFmt(link_id.as_bytes()),
+                                error = %e,
+                                "link_mgr: channel proof build failed"
+                            );
+                            None
+                        }
+                    }
+                } else {
                     tracing::warn!(
-                        "link_mgr: channel rx_ring full — {} messages dropped in last {}s (cap={})",
-                        self.rx_ring_full_count,
-                        elapsed / 1000,
-                        crate::constants::CHANNEL_RX_RING_MAX
+                        link = %HexFmt(link_id.as_bytes()),
+                        "link_mgr: channel proof skipped — no signing key"
                     );
-                    self.rx_ring_full_count = 0;
-                    self.rx_ring_full_last_log_ms = now_ms;
+                    None
                 }
+            } else {
+                None
             }
+        };
+        // link borrow released here (NLL: last use was inside the block)
 
-            // Route proof via transport (safe now — link borrow dropped)
-            if let Some(proof) = proof_packet {
-                self.route_link_packet(&link_id, &proof);
+        // Deferred rx_ring_full counter update (safe now — link borrow dropped)
+        if rx_ring_full {
+            self.rx_ring_full_count += 1;
+            let elapsed = now_ms.saturating_sub(self.rx_ring_full_last_log_ms);
+            if self.rx_ring_full_last_log_ms == 0 || elapsed >= 5000 {
+                tracing::warn!(
+                    "link_mgr: channel rx_ring full — {} messages dropped in last {}s (cap={})",
+                    self.rx_ring_full_count,
+                    elapsed / 1000,
+                    crate::constants::CHANNEL_RX_RING_MAX
+                );
+                self.rx_ring_full_count = 0;
+                self.rx_ring_full_last_log_ms = now_ms;
             }
-
-            return;
         }
 
-        // Regular data packet
+        // Route proof via transport (safe now — link borrow dropped)
+        if let Some(proof) = proof_packet {
+            self.route_link_packet(&link_id, &proof);
+        }
+    }
+
+    /// Regular data packet — decrypt, handle proof strategy, emit data event
+    fn handle_plain_data_packet(
+        &mut self,
+        link_id: LinkId,
+        packet: &Packet,
+        raw_packet: &[u8],
+        now_secs: u64,
+    ) {
+        let Some(link) = self.links.get_mut(&link_id) else {
+            return;
+        };
         if link.state() != LinkState::Active {
             return;
         }
