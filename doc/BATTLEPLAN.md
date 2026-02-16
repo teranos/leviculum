@@ -1,6 +1,6 @@
 # leviculum — Refactoring Battle Plan
 
-Phases 0–6 complete. Phase 7 in progress (13 of 14 done).
+Phases 0–7 complete.
 
 ---
 
@@ -54,11 +54,11 @@ Phases 0–6 complete. Phase 7 in progress (13 of 14 done).
 
 ## Phase 7: API Polish
 
-**14 issues (13 done, 1 remaining). The public face of the library.**
+**14 issues (all done). The public face of the library.**
 
 | # | Issue | P | What | Status |
 |---|-------|---|------|--------|
-| 1 | E8 | H | Single-packet encryption (blocks all single-packet interop) | open |
+| 1 | E8 | H | Single-packet encryption (blocks all single-packet interop) | **done** |
 | 2 | E7 | M | Split transport.rs — won't-fix (2253 LoC production, no natural boundaries) | **closed** |
 | 3 | D2 | M | `PacketEndpoint` → `PacketSender` | **done** |
 | 4 | D3 | M | `send()` → `try_send()`, `send_bytes()` → `send()` | **done** |
@@ -72,7 +72,7 @@ Phases 0–6 complete. Phase 7 in progress (13 of 14 done).
 | 12 | F2 | L | `connect()` returns `was_routed` flag | **done** |
 | 13 | G1 | L | `next_deadline_ms` in TickOutput, double-lock eliminated | **done** |
 
-**Naming renames complete** (D2, D3, D5, D6, D7, D12+D13). **E2 verified clean, E4 dead code removed. E7 closed (won't-fix).** Remaining: E8 (single-packet encryption — blocks interop).
+**Naming renames complete** (D2, D3, D5, D6, D7, D12+D13). **E2 verified clean, E4 dead code removed. E7 closed (won't-fix). E8 done (single-packet encryption + decryption).**
 
 ---
 
@@ -87,12 +87,5 @@ Phases 0–6 complete. Phase 7 in progress (13 of 14 done).
 | 4 — Rename | 7 | One concept, one name | **done** |
 | 5 — Structure | 3 | 4 maps → 1, LinkManager dissolved | **done** |
 | 6 — Consolidation | 5 | Single source of truth, proof bugs fixed | **done** |
-| 7 — API Polish | 14 | Clean public API, encryption, split transport | **13 done** |
-| **Total** | **63** | **Complete codebase overhaul** | |
-| **Remaining** | **1** | | |
-
-**Dependency chain (remaining):**
-```
-Phase 7:
-  E8 (single-packet encryption — blocks interop, last issue)
-```
+| 7 — API Polish | 14 | Clean public API, encryption, split transport | **done** |
+| **Total** | **63** | **Complete codebase overhaul** | **all done** |

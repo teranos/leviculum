@@ -5,7 +5,7 @@ When an issue is fixed, remove it from this file entirely.
 
 ## Phases
 
-Phase numbering follows `doc/BATTLEPLAN.md`. Phases 0–6 are complete.
+Phase numbering follows `doc/BATTLEPLAN.md`. Phases 0–7 are complete.
 
 | Phase | Description | Status |
 |-------|-------------|--------|
@@ -16,26 +16,24 @@ Phase numbering follows `doc/BATTLEPLAN.md`. Phases 0–6 are complete.
 | 4 | The big rename (Connection → Link) | done |
 | 5 | Structural refactoring (LinkManager dissolution) | done |
 | 6 | Consolidation (SSOT, receipt tracking) | done |
-| 7 | API polish (naming, visibility, perf) | **in progress** |
+| 7 | API polish (naming, visibility, perf) | done |
 
 ## Status Overview
 
 | ID | P | Phase | Status | Category | Summary |
 |----|---|-------|--------|----------|---------|
-| E8 | H | 7 | open | Feature gap | Single-packet encryption missing |
+| E9 | M | post-7 | open | Feature | Persistent storage for known_identities and path_table |
 
 ---
 
 ## Issues
 
-### E8: Single-packet encryption missing
+### E9: Persistent storage for known_identities and path_table
 - **Status:** open
-- **Priority:** HIGH
-- **Phase:** 7
-- **Category:** Feature gap
+- **Priority:** M
+- **Phase:** post-7
+- **Category:** Feature
 - **Blocked-by:** —
-- **Detail:** `send_single_packet()` sends plaintext. Python `Destination.SINGLE` always decrypts incoming data via X25519 (`Destination.decrypt()` → `Identity.decrypt()`). Every single packet from Rust to Python is silently dropped because decryption fails and `Destination.receive()` returns `False`. This blocks all single-packet interop including the proof round-trip test (`test_single_packet_proof_round_trip_via_node`, currently `#[ignore]`). Needs: encrypt payload using destination's public key before sending, matching Python's `Packet.encrypt()` / `Identity.encrypt()`.
-- **Fix:** In `send_single_packet()`, look up the destination's public key and encrypt the payload with X25519+AES before packing. Mirror Python's `Identity.encrypt()` which uses ephemeral X25519 key exchange + Fernet token.
-- **Test:** Un-ignore `test_single_packet_proof_round_trip_via_node` in `proof_tests.rs`. Add dedicated encrypt/decrypt interop test.
-
-
+- **Detail:** Use the existing Storage trait to persist known_identities, path_table, and other node state across restarts. Match Python's save_known_destinations() / save_path_table(). Currently in-memory only — state is lost on restart, requiring fresh announces before single-packet communication is possible.
+- **Fix:** Implement Storage-backed persistence for NodeCore.known_identities and Transport.path_table. Load on startup, save on insert/update.
+- **Test:** Interop test: restart Rust node, verify previously-known destinations are still reachable without re-announce.

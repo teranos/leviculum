@@ -58,6 +58,8 @@ pub enum SendError {
     WindowFull,
     /// Channel is pacing sends — retry at the given time (mirrors [`ChannelError::PacingDelay`])
     PacingDelay { ready_at_ms: u64 },
+    /// Encryption failed (identity not found in known_identities, or crypto error)
+    EncryptionFailed,
 }
 
 impl core::fmt::Display for SendError {
@@ -71,6 +73,7 @@ impl core::fmt::Display for SendError {
             SendError::PacingDelay { ready_at_ms } => {
                 write!(f, "pacing delay until {}ms", ready_at_ms)
             }
+            SendError::EncryptionFailed => write!(f, "encryption failed"),
         }
     }
 }

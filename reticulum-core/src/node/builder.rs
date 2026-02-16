@@ -38,6 +38,7 @@ pub struct NodeCoreBuilder {
     identity: Option<Identity>,
     proof_strategy: ProofStrategy,
     transport_config: TransportConfig,
+    max_known_identities: usize,
 }
 
 impl Default for NodeCoreBuilder {
@@ -53,6 +54,7 @@ impl NodeCoreBuilder {
             identity: None,
             proof_strategy: ProofStrategy::None,
             transport_config: TransportConfig::default(),
+            max_known_identities: 256,
         }
     }
 
@@ -100,6 +102,15 @@ impl NodeCoreBuilder {
         self
     }
 
+    /// Set the maximum number of remote identities to cache
+    ///
+    /// Identities are learned from announces and used for single-packet encryption.
+    /// Default: 256.
+    pub fn max_known_identities(mut self, n: usize) -> Self {
+        self.max_known_identities = n;
+        self
+    }
+
     /// Set the full transport configuration
     pub fn transport_config(mut self, config: TransportConfig) -> Self {
         self.transport_config = config;
@@ -135,6 +146,7 @@ impl NodeCoreBuilder {
             identity,
             self.transport_config,
             self.proof_strategy,
+            self.max_known_identities,
             rng,
             clock,
             storage,

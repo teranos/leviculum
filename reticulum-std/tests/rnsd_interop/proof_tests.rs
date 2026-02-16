@@ -291,12 +291,7 @@ async fn test_python_prove_all_sends_proof() {
 ///
 /// Verifies the proof wire format is correct end-to-end.
 ///
-/// IGNORED: Blocked on E8 (single-packet encryption missing).
-/// Python Destination.SINGLE always decrypts incoming data packets with
-/// its identity keys. Our send_single_packet() sends plaintext, so Python
-/// silently drops the packet and never proves.
 #[tokio::test]
-#[ignore = "blocked on E8: send_single_packet sends plaintext, Python requires encryption"]
 async fn test_single_packet_proof_round_trip_via_node() {
     use reticulum_core::NodeEvent;
     use reticulum_std::driver::ReticulumNodeBuilder;

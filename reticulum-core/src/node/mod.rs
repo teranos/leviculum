@@ -50,7 +50,7 @@ pub use builder::NodeCoreBuilder;
 pub use event::{DeliveryError, NodeEvent};
 pub use send::{RoutingDecision, SendError, SendHandle, SendMethod, SendResult};
 
-use alloc::collections::BTreeMap;
+use alloc::collections::{BTreeMap, VecDeque};
 use alloc::vec::Vec;
 
 use crate::announce::AnnounceError;
@@ -147,6 +147,51 @@ pub struct LinkStats {
     pub pacing_interval_ms: u64,
 }
 
+/// Bounded identity cache for remote identities learned from announces.
+///
+/// Keyed by destination hash. FIFO eviction when capacity is exceeded.
+/// Removal: entries are evicted oldest-first when capacity is exceeded.
+struct KnownIdentities {
+    map: BTreeMap<DestinationHash, Identity>,
+    order: VecDeque<DestinationHash>,
+    capacity: usize,
+}
+
+impl KnownIdentities {
+    fn new(capacity: usize) -> Self {
+        Self {
+            map: BTreeMap::new(),
+            order: VecDeque::new(),
+            capacity,
+        }
+    }
+
+    fn insert(&mut self, dest_hash: DestinationHash, identity: Identity) {
+        if let Some(existing) = self.map.get_mut(&dest_hash) {
+            // Update existing — leave FIFO order unchanged
+            *existing = identity;
+            return;
+        }
+        // Evict oldest if at capacity
+        if self.map.len() >= self.capacity {
+            if let Some(oldest) = self.order.pop_front() {
+                self.map.remove(&oldest);
+            }
+        }
+        self.map.insert(dest_hash, identity);
+        self.order.push_back(dest_hash);
+    }
+
+    fn get(&self, dest_hash: &DestinationHash) -> Option<&Identity> {
+        self.map.get(dest_hash)
+    }
+
+    #[cfg(test)]
+    fn len(&self) -> usize {
+        self.map.len()
+    }
+}
+
 /// The unified Reticulum node — owns all protocol state
 ///
 /// NodeCore is generic over RNG, Clock, and Storage traits, allowing it to run
@@ -172,6 +217,8 @@ pub struct NodeCore<R: CryptoRngCore, C: Clock, S: Storage> {
     rx_ring_full_last_log_ms: u64,
     /// Registered destinations
     destinations: BTreeMap<DestinationHash, Destination>,
+    /// Remote identities learned from announces (for single-packet encryption)
+    known_identities: KnownIdentities,
     /// Default proof strategy for new destinations
     default_proof_strategy: ProofStrategy,
     /// Pending events
@@ -192,6 +239,7 @@ impl<R: CryptoRngCore, C: Clock, S: Storage> NodeCore<R, C, S> {
         identity: Identity,
         config: TransportConfig,
         proof_strategy: ProofStrategy,
+        max_known_identities: usize,
         rng: R,
         clock: C,
         storage: S,
@@ -211,6 +259,7 @@ impl<R: CryptoRngCore, C: Clock, S: Storage> NodeCore<R, C, S> {
             rx_ring_full_count: 0,
             rx_ring_full_last_log_ms: 0,
             destinations: BTreeMap::new(),
+            known_identities: KnownIdentities::new(max_known_identities),
             default_proof_strategy: proof_strategy,
             events: Vec::new(),
         }
@@ -247,6 +296,14 @@ impl<R: CryptoRngCore, C: Clock, S: Storage> NodeCore<R, C, S> {
     /// Get a mutable reference to a registered destination
     pub fn destination_mut(&mut self, hash: &DestinationHash) -> Option<&mut Destination> {
         self.destinations.get_mut(hash)
+    }
+
+    /// Register a remote identity for single-packet encryption.
+    ///
+    /// Identities are normally learned automatically from received announces.
+    /// Use this for out-of-band identity registration or testing.
+    pub fn remember_identity(&mut self, dest_hash: DestinationHash, identity: Identity) {
+        self.known_identities.insert(dest_hash, identity);
     }
 
     /// Announce a registered destination on all interfaces
@@ -394,6 +451,15 @@ impl<R: CryptoRngCore, C: Clock, S: Storage> NodeCore<R, C, S> {
             HeaderType, PacketContext, PacketData, PacketFlags, PacketType, TransportType,
         };
 
+        // Encrypt payload using remote identity from known_identities
+        let payload = if let Some(identity) = self.known_identities.get(dest_hash) {
+            identity
+                .encrypt_for_destination(data, None, &mut self.rng)
+                .map_err(|_| send::SendError::EncryptionFailed)?
+        } else {
+            return Err(send::SendError::EncryptionFailed);
+        };
+
         let packet = crate::packet::Packet {
             flags: PacketFlags {
                 ifac_flag: false,
@@ -407,7 +473,7 @@ impl<R: CryptoRngCore, C: Clock, S: Storage> NodeCore<R, C, S> {
             transport_id: None,
             destination_hash: dest_hash.into_bytes(),
             context: PacketContext::None,
-            data: PacketData::Owned(data.to_vec()),
+            data: PacketData::Owned(payload),
         };
 
         // Pack the packet
@@ -669,6 +735,11 @@ impl<R: CryptoRngCore, C: Clock, S: Storage> NodeCore<R, C, S> {
                 announce,
                 interface_index,
             } => {
+                // Remember remote identity for single-packet encryption
+                if let Ok(identity) = announce.to_identity() {
+                    let dest_hash = *announce.destination_hash();
+                    self.known_identities.insert(dest_hash, identity);
+                }
                 self.events.push(NodeEvent::AnnounceReceived {
                     announce,
                     interface_index,
@@ -726,10 +797,26 @@ impl<R: CryptoRngCore, C: Clock, S: Storage> NodeCore<R, C, S> {
                     let now_ms = self.transport.clock().now_ms();
                     self.process_link_packet(&packet, &raw, now_ms, interface_index);
                 } else {
-                    // Regular packet event
+                    // Regular packet — decrypt if Single destination
+                    let dest_hash_typed = DestinationHash::new(destination_hash);
+                    let plaintext = if let Some(dest) = self.destinations.get(&dest_hash_typed) {
+                        if dest.dest_type() == crate::destination::DestinationType::Single {
+                            match dest.decrypt(packet.data.as_slice()) {
+                                Ok(data) => data,
+                                Err(_) => return, // Drop silently (matches Python)
+                            }
+                        } else {
+                            // Plain destination — pass through
+                            packet.data.as_slice().to_vec()
+                        }
+                    } else {
+                        // No destination registered — drop
+                        return;
+                    };
+
                     self.events.push(NodeEvent::PacketReceived {
-                        destination: DestinationHash::new(destination_hash),
-                        data: packet.data.as_slice().to_vec(),
+                        destination: dest_hash_typed,
+                        data: plaintext,
                         interface_index,
                     });
                 }
@@ -3293,6 +3380,11 @@ mod tests {
         let recv_dest_ref = receiver.destination(&dest_hash).unwrap();
         let recv_pub_bytes = recv_dest_ref.identity().unwrap().public_key_bytes();
         let sender_side_identity = Identity::from_public_key_bytes(&recv_pub_bytes).unwrap();
+
+        // Teach sender about receiver's identity for encryption
+        let recv_pub_for_encrypt = Identity::from_public_key_bytes(&recv_pub_bytes).unwrap();
+        sender.remember_identity(dest_hash, recv_pub_for_encrypt);
+
         let sender_side_dest = Destination::new(
             Some(sender_side_identity),
             Direction::Out,
@@ -3414,6 +3506,11 @@ mod tests {
         let recv_dest_ref = receiver.destination(&dest_hash).unwrap();
         let recv_pub_bytes = recv_dest_ref.identity().unwrap().public_key_bytes();
         let sender_side_identity = Identity::from_public_key_bytes(&recv_pub_bytes).unwrap();
+
+        // Teach sender about receiver's identity for encryption
+        let recv_pub_for_encrypt = Identity::from_public_key_bytes(&recv_pub_bytes).unwrap();
+        sender.remember_identity(dest_hash, recv_pub_for_encrypt);
+
         let sender_side_dest = Destination::new(
             Some(sender_side_identity),
             Direction::Out,
@@ -3514,6 +3611,13 @@ mod tests {
                 next_hop: None,
             },
         );
+
+        // Teach sender about receiver's identity for encryption
+        let recv_dest_ref = receiver.destination(&dest_hash).unwrap();
+        let recv_pub_bytes = recv_dest_ref.identity().unwrap().public_key_bytes();
+        let recv_pub_for_encrypt = Identity::from_public_key_bytes(&recv_pub_bytes).unwrap();
+        sender.remember_identity(dest_hash, recv_pub_for_encrypt);
+
         let (_receipt_hash, output) = sender
             .send_single_packet(&dest_hash, b"prove all test")
             .unwrap();
@@ -3598,6 +3702,11 @@ mod tests {
         let recv_dest_ref = receiver.destination(&dest_hash).unwrap();
         let recv_pub_bytes = recv_dest_ref.identity().unwrap().public_key_bytes();
         let sender_side_identity = Identity::from_public_key_bytes(&recv_pub_bytes).unwrap();
+
+        // Teach sender about receiver's identity for encryption
+        let recv_pub_for_encrypt = Identity::from_public_key_bytes(&recv_pub_bytes).unwrap();
+        sender.remember_identity(dest_hash, recv_pub_for_encrypt);
+
         let sender_side_dest = Destination::new(
             Some(sender_side_identity),
             Direction::Out,
@@ -3685,6 +3794,193 @@ mod tests {
             receipt.status,
             crate::receipt::ReceiptStatus::Delivered,
             "receipt should be marked Delivered"
+        );
+    }
+
+    // ─── KnownIdentities tests ────────────────────────────────────────────
+
+    #[test]
+    fn test_known_identities_insert_and_get() {
+        let mut ki = super::KnownIdentities::new(4);
+        let id = Identity::generate(&mut OsRng);
+        let hash = DestinationHash::new([0x01; 16]);
+        ki.insert(hash, id);
+
+        assert_eq!(ki.len(), 1);
+        assert!(ki.get(&hash).is_some());
+        assert!(ki.get(&DestinationHash::new([0x02; 16])).is_none());
+    }
+
+    #[test]
+    fn test_known_identities_eviction() {
+        let mut ki = super::KnownIdentities::new(2);
+
+        let h1 = DestinationHash::new([0x01; 16]);
+        let h2 = DestinationHash::new([0x02; 16]);
+        let h3 = DestinationHash::new([0x03; 16]);
+
+        ki.insert(h1, Identity::generate(&mut OsRng));
+        ki.insert(h2, Identity::generate(&mut OsRng));
+        assert_eq!(ki.len(), 2);
+
+        // Inserting a third evicts the oldest (h1)
+        ki.insert(h3, Identity::generate(&mut OsRng));
+        assert_eq!(ki.len(), 2);
+        assert!(ki.get(&h1).is_none(), "h1 should have been evicted");
+        assert!(ki.get(&h2).is_some());
+        assert!(ki.get(&h3).is_some());
+    }
+
+    #[test]
+    fn test_known_identities_update_preserves_order() {
+        let mut ki = super::KnownIdentities::new(2);
+
+        let h1 = DestinationHash::new([0x01; 16]);
+        let h2 = DestinationHash::new([0x02; 16]);
+        let h3 = DestinationHash::new([0x03; 16]);
+
+        ki.insert(h1, Identity::generate(&mut OsRng));
+        ki.insert(h2, Identity::generate(&mut OsRng));
+
+        // Updating h1 should NOT change eviction order
+        ki.insert(h1, Identity::generate(&mut OsRng));
+        assert_eq!(ki.len(), 2);
+
+        // Inserting h3 should evict h1 (still oldest in FIFO order)
+        ki.insert(h3, Identity::generate(&mut OsRng));
+        assert!(ki.get(&h1).is_none(), "h1 should have been evicted");
+        assert!(ki.get(&h2).is_some());
+        assert!(ki.get(&h3).is_some());
+    }
+
+    #[test]
+    fn test_send_single_packet_without_known_identity_fails() {
+        let clock = MockClock::new(TEST_TIME_MS);
+        let mut node = NodeCoreBuilder::new().build(OsRng, clock, NoStorage);
+
+        let dest_hash = DestinationHash::new([0x42; 16]);
+        let result = node.send_single_packet(&dest_hash, b"hello");
+        assert_eq!(
+            result.unwrap_err(),
+            send::SendError::EncryptionFailed,
+            "send without known identity should fail with EncryptionFailed"
+        );
+    }
+
+    #[test]
+    fn test_send_single_packet_encrypts_and_receiver_decrypts() {
+        // Verify the full encrypt→send→receive→decrypt round trip
+        use crate::transport::{InterfaceId, PathEntry};
+
+        let recv_identity = Identity::generate(&mut OsRng);
+        let recv_pub_bytes = recv_identity.public_key_bytes();
+        let recv_clock = MockClock::new(TEST_TIME_MS);
+        let mut receiver = NodeCoreBuilder::new().build(OsRng, recv_clock, NoStorage);
+
+        let dest = Destination::new(
+            Some(recv_identity),
+            Direction::In,
+            DestinationType::Single,
+            "testapp",
+            &["enc"],
+        )
+        .unwrap();
+        let dest_hash = *dest.hash();
+        receiver.register_destination(dest);
+
+        let _recv_iface = receiver
+            .transport
+            .register_interface(alloc::boxed::Box::new(MockInterface::new("recv_if", 1)));
+
+        let send_clock = MockClock::new(TEST_TIME_MS);
+        let mut sender = NodeCoreBuilder::new().build(OsRng, send_clock, NoStorage);
+        let sender_iface = sender
+            .transport
+            .register_interface(alloc::boxed::Box::new(MockInterface::new("send_if", 2)));
+        sender.transport.insert_path(
+            dest_hash.into_bytes(),
+            PathEntry {
+                hops: 1,
+                expires_ms: u64::MAX,
+                interface_index: sender_iface,
+                random_blobs: Vec::new(),
+                next_hop: None,
+            },
+        );
+
+        // Teach sender about receiver's identity for encryption
+        let pub_identity = Identity::from_public_key_bytes(&recv_pub_bytes).unwrap();
+        sender.remember_identity(dest_hash, pub_identity);
+
+        // Send encrypted packet
+        let payload = b"encrypted hello";
+        let (_receipt_hash, output) = sender.send_single_packet(&dest_hash, payload).unwrap();
+        let sent_raw = extract_broadcast_data(&output);
+
+        // Receiver processes the packet — should decrypt and emit plaintext
+        let recv_output = receiver.handle_packet(InterfaceId(0), &sent_raw);
+        let received_data = recv_output
+            .events
+            .iter()
+            .find_map(|e| match e {
+                NodeEvent::PacketReceived { data, .. } => Some(data.clone()),
+                _ => None,
+            })
+            .expect("receiver should emit PacketReceived with decrypted data");
+
+        assert_eq!(
+            received_data, payload,
+            "decrypted data should match original plaintext"
+        );
+    }
+
+    #[test]
+    fn test_announce_populates_known_identities() {
+        // When a node receives an announce, it should populate known_identities
+        use crate::transport::InterfaceId;
+
+        let clock = MockClock::new(TEST_TIME_MS);
+        let mut node = NodeCoreBuilder::new()
+            .enable_transport(true)
+            .build(OsRng, clock, NoStorage);
+
+        // Register an interface for the announce to arrive on
+        node.transport
+            .register_interface(alloc::boxed::Box::new(MockInterface::new("if0", 1)));
+
+        // Build a valid announce from a remote identity
+        let remote_identity = Identity::generate(&mut OsRng);
+        let mut remote_dest = Destination::new(
+            Some(remote_identity),
+            Direction::In,
+            DestinationType::Single,
+            "testapp",
+            &["announce"],
+        )
+        .unwrap();
+
+        let announce_packet = remote_dest
+            .announce(None, &mut OsRng, TEST_TIME_MS)
+            .unwrap();
+        let remote_dest_hash = *remote_dest.hash();
+
+        let mut buf = [0u8; crate::constants::MTU];
+        let len = announce_packet.pack(&mut buf).unwrap();
+
+        // Feed announce to node
+        let output = node.handle_packet(InterfaceId(0), &buf[..len]);
+
+        // Should have an AnnounceReceived event
+        let has_announce = output
+            .events
+            .iter()
+            .any(|e| matches!(e, NodeEvent::AnnounceReceived { .. }));
+        assert!(has_announce, "should emit AnnounceReceived event");
+
+        // known_identities should now contain the remote identity
+        assert!(
+            node.known_identities.get(&remote_dest_hash).is_some(),
+            "announce should populate known_identities"
         );
     }
 }

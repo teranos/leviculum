@@ -125,6 +125,7 @@ mod tests {
 
         // Register a destination and announce so a path exists
         let id = reticulum_core::Identity::generate(&mut rand_core::OsRng);
+        let pub_bytes = id.public_key_bytes();
         let dest = reticulum_core::Destination::new(
             Some(id),
             reticulum_core::Direction::In,
@@ -134,7 +135,13 @@ mod tests {
         )
         .unwrap();
         let dest_hash = *dest.hash();
-        inner.lock().unwrap().register_destination(dest);
+        {
+            let mut core = inner.lock().unwrap();
+            core.register_destination(dest);
+            // Teach sender about the identity for encryption
+            let pub_identity = reticulum_core::Identity::from_public_key_bytes(&pub_bytes).unwrap();
+            core.remember_identity(dest_hash, pub_identity);
+        }
         // Announce creates a local path entry
         let _ = inner.lock().unwrap().announce_destination(&dest_hash, None);
 
