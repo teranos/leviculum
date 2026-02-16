@@ -349,10 +349,9 @@ async fn test_single_packet_proof_round_trip_via_node() {
     let found = wait_for_path_on_node(&rust_node, &py_dest_hash, Duration::from_secs(10)).await;
     assert!(found, "Rust node should learn path to Python destination");
 
-    // 5. Send a single packet from Rust to Python
-    let endpoint = rust_node.packet_sender(&py_dest_hash);
-    let _receipt_hash = endpoint
-        .send(b"proof roundtrip test")
+    // 5. Send an encrypted single packet from Rust to Python
+    let _receipt_hash = rust_node
+        .send_single_packet(&py_dest_hash, b"proof roundtrip test")
         .await
         .expect("send should succeed");
 

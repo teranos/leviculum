@@ -28,7 +28,6 @@
 //! ```
 
 use crate::constants::{PROOF_DATA_SIZE, RECEIPT_TIMEOUT_DEFAULT_MS, TRUNCATED_HASHBYTES};
-use crate::crypto::truncated_hash;
 use crate::destination::DestinationHash;
 use crate::identity::Identity;
 
@@ -82,7 +81,12 @@ impl PacketReceipt {
     /// let receipt = PacketReceipt::new(packet_hash, dest_hash, 1000);
     /// ```
     pub fn new(packet_hash: [u8; 32], destination_hash: DestinationHash, sent_at_ms: u64) -> Self {
-        let truncated = truncated_hash(&packet_hash);
+        // Take the first 16 bytes of the full hash directly — do NOT re-hash.
+        // truncated_hash() would SHA256 the already-hashed input, producing
+        // SHA256(SHA256(hashable))[0:16] instead of SHA256(hashable)[0:16].
+        // Python uses packet.get_hash()[:16] which is a simple slice.
+        let mut truncated = [0u8; TRUNCATED_HASHBYTES];
+        truncated.copy_from_slice(&packet_hash[..TRUNCATED_HASHBYTES]);
         Self {
             packet_hash,
             truncated_hash: truncated,
@@ -106,7 +110,8 @@ impl PacketReceipt {
         sent_at_ms: u64,
         timeout_ms: u64,
     ) -> Self {
-        let truncated = truncated_hash(&packet_hash);
+        let mut truncated = [0u8; TRUNCATED_HASHBYTES];
+        truncated.copy_from_slice(&packet_hash[..TRUNCATED_HASHBYTES]);
         Self {
             packet_hash,
             truncated_hash: truncated,
@@ -204,8 +209,8 @@ mod tests {
         assert_eq!(receipt.status, ReceiptStatus::Sent);
         assert_eq!(receipt.timeout_ms, RECEIPT_TIMEOUT_DEFAULT_MS);
 
-        // Truncated hash should be computed
-        assert_eq!(receipt.truncated_hash, truncated_hash(&packet_hash));
+        // Truncated hash is the first 16 bytes of the full packet hash
+        assert_eq!(receipt.truncated_hash, packet_hash[..TRUNCATED_HASHBYTES]);
     }
 
     #[test]
@@ -362,7 +367,7 @@ mod tests {
         // Different packet hashes should give different truncated hashes
         assert_ne!(receipt1.truncated_hash, receipt2.truncated_hash);
 
-        // Truncated hash should match what we'd compute directly
-        assert_eq!(receipt1.truncated_hash, truncated_hash(&packet_hash1));
+        // Truncated hash should be first 16 bytes of full hash
+        assert_eq!(receipt1.truncated_hash, packet_hash1[..TRUNCATED_HASHBYTES]);
     }
 }

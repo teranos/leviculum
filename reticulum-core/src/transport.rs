@@ -1421,7 +1421,10 @@ impl<C: Clock, S: Storage> Transport<C, S> {
             // Explicit proof: extract packet hash from proof data
             let mut proof_packet_hash = [0u8; 32];
             proof_packet_hash.copy_from_slice(&proof_data[..32]);
-            let truncated = truncated_hash(&proof_packet_hash);
+            // Simple truncation — first 16 bytes of the full hash.
+            // Do NOT use truncated_hash() which would SHA256 it again.
+            let mut truncated = [0u8; TRUNCATED_HASHBYTES];
+            truncated.copy_from_slice(&proof_packet_hash[..TRUNCATED_HASHBYTES]);
 
             if let Some(receipt) = self.receipts.get(&truncated) {
                 let receipt_dest = *receipt.destination_hash.as_bytes();

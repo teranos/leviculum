@@ -597,6 +597,14 @@ class TestDaemon:
                             dest_hash_hex = raw[2:18].hex()
                             if len(raw) > 18:
                                 context_val = raw[18]
+                        # Compute packet hash (same algorithm as Packet.get_hash)
+                        import hashlib
+                        if header_type == 1:  # HEADER_2
+                            hashable = bytes([flags & 0x0F]) + raw[18:]
+                        else:  # HEADER_1
+                            hashable = bytes([flags & 0x0F]) + raw[2:]
+                        full_hash = hashlib.sha256(hashable).digest()
+                        computed_hash_hex = full_hash[:16].hex()
                         daemon_ref.inbound_trace.append({
                             "time": time.time(),
                             "flags": f"0x{flags:02x}",
@@ -610,6 +618,9 @@ class TestDaemon:
                             "interface": str(interface),
                             "raw_len": len(raw),
                             "hops": raw[1] if len(raw) > 1 else None,
+                            "computed_packet_hash": computed_hash_hex,
+                            "hashable_hex": hashable.hex(),
+                            "raw_head_hex": raw[:20].hex() if len(raw) >= 20 else raw.hex(),
                         })
                 except Exception as e:
                     daemon_ref.inbound_trace.append({"error": str(e)})
