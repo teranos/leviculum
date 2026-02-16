@@ -623,6 +623,30 @@ impl<R: CryptoRngCore, C: Clock, S: Storage> NodeCore<R, C, S> {
         self.channel_hash_to_seq.len()
     }
 
+    /// Get the number of pending data receipts (test-only)
+    #[cfg(test)]
+    pub(crate) fn data_receipts_count(&self) -> usize {
+        self.data_receipts.len()
+    }
+
+    /// Check if a data receipt exists for the given truncated hash (test-only)
+    #[cfg(test)]
+    pub(crate) fn data_receipts_contains_truncated(
+        &self,
+        truncated: &[u8; TRUNCATED_HASHBYTES],
+    ) -> bool {
+        self.data_receipts.contains_key(truncated)
+    }
+
+    /// Count channel_receipt_keys entries for a given link (test-only)
+    #[cfg(test)]
+    pub(crate) fn channel_receipt_keys_for_link(&self, link_id: &LinkId) -> usize {
+        self.channel_receipt_keys
+            .keys()
+            .filter(|(lid, _)| *lid == *link_id)
+            .count()
+    }
+
     // ─── Internal: Event Handling ──────────────────────────────────────────────
 
     fn handle_transport_event(&mut self, event: TransportEvent) {
@@ -748,7 +772,7 @@ impl<R: CryptoRngCore, C: Clock, S: Storage> NodeCore<R, C, S> {
 mod tests {
     use super::*;
     use crate::destination::{DestinationType, Direction};
-    use crate::link::LinkCloseReason;
+    use crate::link::{LinkCloseReason, LinkState};
     use crate::test_utils::{MockClock, TEST_TIME_MS};
     use crate::traits::NoStorage;
     use rand_core::OsRng;
@@ -1333,7 +1357,7 @@ mod tests {
         initiator: NodeCore<OsRng, MockClock, NoStorage>,
         responder: NodeCore<OsRng, MockClock, NoStorage>,
         initiator_link_id: LinkId,
-        _responder_link_id: LinkId,
+        responder_link_id: LinkId,
         _dest_hash: DestinationHash,
     }
 
@@ -1358,6 +1382,84 @@ mod tests {
                 _ => None,
             })
             .expect("expected LinkRequest event")
+    }
+
+    fn extract_all_action_data(output: &crate::transport::TickOutput) -> Vec<Vec<u8>> {
+        output
+            .actions
+            .iter()
+            .map(|a| match a {
+                crate::transport::Action::Broadcast { data, .. }
+                | crate::transport::Action::SendPacket { data, .. } => data.clone(),
+            })
+            .collect()
+    }
+
+    fn establish_nodecore_link_pair_with_strategy(strategy: ProofStrategy) -> NodeCoreLinkPair {
+        use crate::transport::InterfaceId;
+
+        // 1. Create responder with a destination that accepts links
+        let resp_identity = Identity::generate(&mut OsRng);
+        let resp_signing_key = resp_identity.ed25519_verifying().to_bytes();
+        let clock = MockClock::new(TEST_TIME_MS);
+        let mut responder = NodeCoreBuilder::new().build(OsRng, clock, NoStorage);
+        let mut resp_dest = Destination::new(
+            Some(resp_identity),
+            Direction::In,
+            DestinationType::Single,
+            "testapp",
+            &["echo"],
+        )
+        .unwrap();
+        resp_dest.set_accepts_links(true);
+        resp_dest.set_proof_strategy(strategy);
+        let dest_hash = *resp_dest.hash();
+        responder.register_destination(resp_dest);
+
+        // 2. Create initiator
+        let clock = MockClock::new(TEST_TIME_MS);
+        let mut initiator = NodeCoreBuilder::new().build(OsRng, clock, NoStorage);
+
+        // 3. Initiator connects (broadcasts since no path)
+        let (init_link_id, output) = initiator.connect(dest_hash, &resp_signing_key);
+        let link_req_data = extract_broadcast_data(&output);
+
+        // 4. Responder receives link request → LinkRequest event
+        let output = responder.handle_packet(InterfaceId(0), &link_req_data);
+        let resp_link_id = extract_link_request_link_id(&output);
+
+        // 5. Responder accepts → proof packet in actions
+        let output = responder.accept_link(&resp_link_id).unwrap();
+        let proof_data = extract_broadcast_data(&output);
+
+        // 6. Initiator receives proof → LinkEstablished + RTT action
+        let output = initiator.handle_packet(InterfaceId(0), &proof_data);
+        assert!(
+            output
+                .events
+                .iter()
+                .any(|e| matches!(e, NodeEvent::LinkEstablished { .. })),
+            "initiator should get LinkEstablished"
+        );
+        let rtt_data = extract_broadcast_data(&output);
+
+        // 7. Responder receives RTT → LinkEstablished
+        let output = responder.handle_packet(InterfaceId(0), &rtt_data);
+        assert!(
+            output
+                .events
+                .iter()
+                .any(|e| matches!(e, NodeEvent::LinkEstablished { .. })),
+            "responder should get LinkEstablished"
+        );
+
+        NodeCoreLinkPair {
+            initiator,
+            responder,
+            initiator_link_id: init_link_id,
+            responder_link_id: resp_link_id,
+            _dest_hash: dest_hash,
+        }
     }
 
     fn establish_nodecore_link_pair() -> NodeCoreLinkPair {
@@ -1422,7 +1524,7 @@ mod tests {
             initiator,
             responder,
             initiator_link_id: init_link_id,
-            _responder_link_id: resp_link_id,
+            responder_link_id: resp_link_id,
             _dest_hash: dest_hash,
         }
     }
@@ -1974,6 +2076,918 @@ mod tests {
             broadcast_count >= 2,
             "both path requests should succeed (different destinations), got {}",
             broadcast_count
+        );
+    }
+
+    // ─── Restored LinkManager Tests (as NodeCore tests) ─────────────────────
+
+    // ─── Group A: ProofStrategy propagation ─────────────────────────────────
+
+    #[test]
+    fn test_proof_strategy_propagated_on_accept() {
+        for strategy in [ProofStrategy::All, ProofStrategy::App, ProofStrategy::None] {
+            let pair = establish_nodecore_link_pair_with_strategy(strategy);
+
+            // Responder's link should have the requested proof strategy
+            let resp_link = pair
+                .responder
+                .link(&pair.responder_link_id)
+                .expect("responder link must exist");
+            assert_eq!(
+                resp_link.proof_strategy(),
+                strategy,
+                "proof_strategy mismatch for {:?}",
+                strategy
+            );
+            // Responder always has a dest_signing_key (set during accept_link)
+            assert!(
+                resp_link.dest_signing_key().is_some(),
+                "dest_signing_key should always be set on responder for {:?}",
+                strategy
+            );
+        }
+    }
+
+    #[test]
+    fn test_prove_all_auto_generates_proof_on_data() {
+        use crate::packet::PacketContext;
+        use crate::transport::InterfaceId;
+
+        let mut pair = establish_nodecore_link_pair_with_strategy(ProofStrategy::All);
+
+        // Build raw data packet (not channel) on initiator
+        let raw_packet = pair
+            .initiator
+            .link(&pair.initiator_link_id)
+            .unwrap()
+            .build_data_packet_with_context(b"hello", PacketContext::None, &mut OsRng)
+            .unwrap();
+
+        // Deliver to responder
+        let output = pair.responder.handle_packet(InterfaceId(0), &raw_packet);
+
+        // Should have DataReceived event
+        let has_data = output
+            .events
+            .iter()
+            .any(|e| matches!(e, NodeEvent::DataReceived { .. }));
+        assert!(has_data, "expected DataReceived event");
+
+        // Should NOT have LinkProofRequested (that's for App strategy)
+        let has_proof_requested = output
+            .events
+            .iter()
+            .any(|e| matches!(e, NodeEvent::LinkProofRequested { .. }));
+        assert!(
+            !has_proof_requested,
+            "All strategy should NOT emit LinkProofRequested"
+        );
+
+        // Should have a proof packet in actions (auto-generated)
+        assert!(
+            !output.actions.is_empty(),
+            "All strategy should auto-generate proof packet"
+        );
+
+        // Negative: ProofStrategy::None should NOT generate proof
+        let mut pair_none = establish_nodecore_link_pair_with_strategy(ProofStrategy::None);
+        let raw_packet = pair_none
+            .initiator
+            .link(&pair_none.initiator_link_id)
+            .unwrap()
+            .build_data_packet_with_context(b"hello", PacketContext::None, &mut OsRng)
+            .unwrap();
+        let output = pair_none
+            .responder
+            .handle_packet(InterfaceId(0), &raw_packet);
+        assert!(
+            output.actions.is_empty(),
+            "None strategy should NOT generate proof"
+        );
+        let has_data = output
+            .events
+            .iter()
+            .any(|e| matches!(e, NodeEvent::DataReceived { .. }));
+        assert!(has_data, "expected DataReceived even with None strategy");
+    }
+
+    #[test]
+    fn test_prove_app_emits_proof_requested_no_auto_proof() {
+        use crate::packet::PacketContext;
+        use crate::transport::InterfaceId;
+
+        let mut pair = establish_nodecore_link_pair_with_strategy(ProofStrategy::App);
+
+        // Build raw data packet on initiator
+        let raw_packet = pair
+            .initiator
+            .link(&pair.initiator_link_id)
+            .unwrap()
+            .build_data_packet_with_context(b"appdata", PacketContext::None, &mut OsRng)
+            .unwrap();
+
+        // Deliver to responder
+        let output = pair.responder.handle_packet(InterfaceId(0), &raw_packet);
+
+        // Should have LinkProofRequested BEFORE DataReceived
+        let proof_req_pos = output
+            .events
+            .iter()
+            .position(|e| matches!(e, NodeEvent::LinkProofRequested { .. }));
+        let data_pos = output
+            .events
+            .iter()
+            .position(|e| matches!(e, NodeEvent::DataReceived { .. }));
+        assert!(
+            proof_req_pos.is_some(),
+            "App strategy should emit LinkProofRequested"
+        );
+        assert!(data_pos.is_some(), "App strategy should emit DataReceived");
+        assert!(
+            proof_req_pos.unwrap() < data_pos.unwrap(),
+            "LinkProofRequested should come before DataReceived"
+        );
+
+        // No auto-proof in actions
+        assert!(
+            output.actions.is_empty(),
+            "App strategy should NOT auto-generate proof"
+        );
+    }
+
+    #[test]
+    fn test_channel_proof_round_trip_delivery() {
+        use crate::transport::InterfaceId;
+
+        let mut pair = establish_nodecore_link_pair();
+
+        // Send channel message from initiator
+        let output = pair
+            .initiator
+            .send_on_link(&pair.initiator_link_id, b"roundtrip")
+            .unwrap();
+        assert_eq!(pair.initiator.data_receipts_count(), 1);
+        let channel_data = extract_broadcast_data(&output);
+
+        // Deliver to responder → should get proof in actions
+        let output = pair.responder.handle_packet(InterfaceId(0), &channel_data);
+        let proof_data = extract_broadcast_data(&output);
+
+        // Deliver proof to initiator → LinkDeliveryConfirmed
+        let output = pair.initiator.handle_packet(InterfaceId(0), &proof_data);
+        let has_confirmed = output
+            .events
+            .iter()
+            .any(|e| matches!(e, NodeEvent::LinkDeliveryConfirmed { .. }));
+        assert!(has_confirmed, "expected LinkDeliveryConfirmed event");
+
+        // Receipt should be consumed
+        assert_eq!(
+            pair.initiator.data_receipts_count(),
+            0,
+            "receipt should be consumed after proof"
+        );
+    }
+
+    // ─── Group B: Channel proof generation ──────────────────────────────────
+
+    #[test]
+    fn test_channel_proof_generated_for_in_order_message() {
+        use crate::transport::InterfaceId;
+
+        let mut pair = establish_nodecore_link_pair();
+
+        let output = pair
+            .initiator
+            .send_on_link(&pair.initiator_link_id, b"ordered")
+            .unwrap();
+        let channel_data = extract_broadcast_data(&output);
+
+        let output = pair.responder.handle_packet(InterfaceId(0), &channel_data);
+
+        // Exactly 1 action (the proof)
+        assert_eq!(
+            output.actions.len(),
+            1,
+            "expected exactly 1 proof action, got {}",
+            output.actions.len()
+        );
+
+        // MessageReceived event
+        let has_msg = output
+            .events
+            .iter()
+            .any(|e| matches!(e, NodeEvent::MessageReceived { .. }));
+        assert!(has_msg, "expected MessageReceived event");
+    }
+
+    #[test]
+    fn test_channel_proof_suppressed_on_rx_ring_full() {
+        use crate::constants::CHANNEL_RX_RING_MAX;
+        use crate::transport::InterfaceId;
+
+        let mut pair = establish_nodecore_link_pair();
+
+        // Send 1 in-order message (seq=0), deliver, get proof, deliver proof
+        let output = pair
+            .initiator
+            .send_on_link(&pair.initiator_link_id, b"first")
+            .unwrap();
+        let data = extract_broadcast_data(&output);
+        let output = pair.responder.handle_packet(InterfaceId(0), &data);
+        let proof = extract_broadcast_data(&output);
+        let _ = pair.initiator.handle_packet(InterfaceId(0), &proof);
+
+        // Force next tx sequence to jump past rx ring capacity
+        let jumped_seq = 1 + CHANNEL_RX_RING_MAX as u16;
+        pair.initiator
+            .link_mut(&pair.initiator_link_id)
+            .unwrap()
+            .channel_mut()
+            .unwrap()
+            .force_next_tx_sequence_for_test(jumped_seq);
+
+        // Send jumped-sequence msg (window is free after proof delivery)
+        let output = pair
+            .initiator
+            .send_on_link(&pair.initiator_link_id, b"jumped")
+            .unwrap();
+        let data = extract_broadcast_data(&output);
+        let output = pair.responder.handle_packet(InterfaceId(0), &data);
+
+        // No proof (rx_ring full, message dropped)
+        assert!(
+            output.actions.is_empty(),
+            "expected no proof when rx_ring is full"
+        );
+        // No MessageReceived event
+        let has_msg = output
+            .events
+            .iter()
+            .any(|e| matches!(e, NodeEvent::MessageReceived { .. }));
+        assert!(!has_msg, "should not get MessageReceived when rx_ring full");
+
+        // Now send in-order msg (next expected is seq=1) → proof IS generated
+        // Advance clock past pacing delay (proof delivery set pacing ~166ms)
+        pair.initiator.transport().clock().set(TEST_TIME_MS + 1_000);
+        pair.initiator
+            .link_mut(&pair.initiator_link_id)
+            .unwrap()
+            .channel_mut()
+            .unwrap()
+            .force_next_tx_sequence_for_test(1);
+        let output = pair
+            .initiator
+            .send_on_link(&pair.initiator_link_id, b"inorder")
+            .unwrap();
+        let data = extract_broadcast_data(&output);
+        let output = pair.responder.handle_packet(InterfaceId(0), &data);
+        assert!(
+            !output.actions.is_empty(),
+            "in-order message after full should generate proof"
+        );
+    }
+
+    #[test]
+    fn test_channel_proof_generated_with_prove_none() {
+        use crate::transport::InterfaceId;
+
+        let mut pair = establish_nodecore_link_pair_with_strategy(ProofStrategy::None);
+
+        // Even with ProofStrategy::None on destination, channel proofs are unconditional
+        let resp_link = pair.responder.link(&pair.responder_link_id).unwrap();
+        assert!(
+            resp_link.dest_signing_key().is_some(),
+            "responder should always have dest_signing_key"
+        );
+
+        let output = pair
+            .initiator
+            .send_on_link(&pair.initiator_link_id, b"prove_none")
+            .unwrap();
+        let data = extract_broadcast_data(&output);
+        let output = pair.responder.handle_packet(InterfaceId(0), &data);
+
+        assert!(
+            !output.actions.is_empty(),
+            "channel proof should be generated regardless of ProofStrategy::None"
+        );
+    }
+
+    #[test]
+    fn test_channel_proof_by_initiator_round_trip() {
+        use crate::transport::InterfaceId;
+
+        let mut pair = establish_nodecore_link_pair();
+
+        // Initiator has no dest_signing_key but has ephemeral proof_signing_key
+        let init_link = pair.initiator.link(&pair.initiator_link_id).unwrap();
+        assert!(
+            init_link.dest_signing_key().is_none(),
+            "initiator should not have dest_signing_key"
+        );
+        assert!(
+            init_link.proof_signing_key().is_some(),
+            "initiator should have ephemeral proof_signing_key"
+        );
+
+        // Send channel message from responder to initiator
+        let output = pair
+            .responder
+            .send_on_link(&pair.responder_link_id, b"resp_msg")
+            .unwrap();
+        let data = extract_broadcast_data(&output);
+
+        // Deliver to initiator → proof in actions
+        let output = pair.initiator.handle_packet(InterfaceId(0), &data);
+        assert!(
+            !output.actions.is_empty(),
+            "initiator should generate channel proof"
+        );
+        let proof_data = extract_broadcast_data(&output);
+
+        // Deliver proof back to responder → LinkDeliveryConfirmed
+        let output = pair.responder.handle_packet(InterfaceId(0), &proof_data);
+        let has_confirmed = output
+            .events
+            .iter()
+            .any(|e| matches!(e, NodeEvent::LinkDeliveryConfirmed { .. }));
+        assert!(
+            has_confirmed,
+            "responder should get LinkDeliveryConfirmed from initiator proof"
+        );
+    }
+
+    // ─── Group C: Timing ────────────────────────────────────────────────────
+
+    #[test]
+    fn test_channel_retransmit_on_timeout() {
+        let mut pair = establish_nodecore_link_pair();
+
+        // Send channel message (don't deliver proof)
+        let _ = pair
+            .initiator
+            .send_on_link(&pair.initiator_link_id, b"timeout_test")
+            .unwrap();
+        assert_eq!(pair.initiator.channel_hash_to_seq_len(), 1);
+
+        // Phase 1: advance 1s → no retransmit yet
+        pair.initiator.transport().clock().set(TEST_TIME_MS + 1_000);
+        let output = pair.initiator.handle_timeout();
+        let has_retransmit = output
+            .events
+            .iter()
+            .any(|e| matches!(e, NodeEvent::ChannelRetransmit { .. }));
+        assert!(!has_retransmit, "no retransmit at 1s");
+
+        // Phase 2: advance 10s → retransmit with tries=2
+        pair.initiator
+            .transport()
+            .clock()
+            .set(TEST_TIME_MS + 10_000);
+        let output = pair.initiator.handle_timeout();
+        let retransmit = output.events.iter().find_map(|e| match e {
+            NodeEvent::ChannelRetransmit { tries, .. } => Some(*tries),
+            _ => None,
+        });
+        assert_eq!(
+            retransmit,
+            Some(2),
+            "expected ChannelRetransmit with tries=2"
+        );
+
+        // Retransmit packet should be in actions
+        assert!(
+            !output.actions.is_empty(),
+            "retransmit should produce a packet"
+        );
+
+        // channel_hash_to_seq should still have 1 entry (old removed, new added)
+        assert_eq!(pair.initiator.channel_hash_to_seq_len(), 1);
+    }
+
+    #[test]
+    fn test_stale_recovery_on_inbound() {
+        use crate::transport::InterfaceId;
+
+        let mut pair = establish_nodecore_link_pair();
+
+        // Force responder's link to Stale state
+        pair.responder
+            .link_mut(&pair.responder_link_id)
+            .unwrap()
+            .set_state(LinkState::Stale);
+        assert_eq!(
+            pair.responder
+                .link(&pair.responder_link_id)
+                .unwrap()
+                .state(),
+            LinkState::Stale
+        );
+
+        // Send channel message from initiator
+        let output = pair
+            .initiator
+            .send_on_link(&pair.initiator_link_id, b"recover")
+            .unwrap();
+        let data = extract_broadcast_data(&output);
+
+        // Deliver to stale responder
+        let output = pair.responder.handle_packet(InterfaceId(0), &data);
+
+        // Should get LinkRecovered event
+        let has_recovered = output
+            .events
+            .iter()
+            .any(|e| matches!(e, NodeEvent::LinkRecovered { .. }));
+        assert!(has_recovered, "expected LinkRecovered event");
+
+        // Link should be Active again
+        assert_eq!(
+            pair.responder
+                .link(&pair.responder_link_id)
+                .unwrap()
+                .state(),
+            LinkState::Active
+        );
+
+        // Negative: active link receiving data does NOT emit LinkRecovered
+        let output2 = pair
+            .initiator
+            .send_on_link(&pair.initiator_link_id, b"normal")
+            .unwrap();
+        let data2 = extract_broadcast_data(&output2);
+        let output2 = pair.responder.handle_packet(InterfaceId(0), &data2);
+        let has_recovered2 = output2
+            .events
+            .iter()
+            .any(|e| matches!(e, NodeEvent::LinkRecovered { .. }));
+        assert!(!has_recovered2, "active link should NOT emit LinkRecovered");
+    }
+
+    #[test]
+    fn test_channel_exhaustion_produces_timeout_close() {
+        let mut pair = establish_nodecore_link_pair();
+
+        // Send a message and reduce max_tries to 2
+        let _ = pair
+            .initiator
+            .send_on_link(&pair.initiator_link_id, b"exhaust")
+            .unwrap();
+
+        pair.initiator
+            .link_mut(&pair.initiator_link_id)
+            .unwrap()
+            .channel_mut()
+            .unwrap()
+            .set_max_tries_for_test(2);
+
+        // With RTT≈0, stale_time=10s. Keep under that to avoid stale close.
+        // Channel timeout for tries=1 at default RTT=500ms: ~3125ms.
+
+        // Phase 1: first retransmit (tries=2 — first send was try 1)
+        pair.initiator.transport().clock().set(TEST_TIME_MS + 4_000);
+        let output = pair.initiator.handle_timeout();
+        let has_retransmit = output
+            .events
+            .iter()
+            .any(|e| matches!(e, NodeEvent::ChannelRetransmit { .. }));
+        assert!(has_retransmit, "expected retransmit at tries=2");
+
+        // Phase 2: tries=2 >= max_tries=2 → TearDownLink → LinkClosed
+        // Timeout for tries=2: ~4687ms. 4000+5000=9000ms < 10s stale.
+        pair.initiator.transport().clock().set(TEST_TIME_MS + 9_000);
+        let output = pair.initiator.handle_timeout();
+
+        let has_closed = output.events.iter().any(|e| {
+            matches!(
+                e,
+                NodeEvent::LinkClosed {
+                    reason: LinkCloseReason::Timeout,
+                    ..
+                }
+            )
+        });
+        assert!(
+            has_closed,
+            "expected LinkClosed with Timeout after exhaustion"
+        );
+
+        assert_eq!(
+            pair.initiator.active_link_count(),
+            0,
+            "link should be removed"
+        );
+        assert!(
+            pair.initiator.link(&pair.initiator_link_id).is_none(),
+            "link should not be found"
+        );
+    }
+
+    #[test]
+    fn test_data_receipts_expire_after_timeout() {
+        use crate::constants::DATA_RECEIPT_TIMEOUT_MS;
+
+        let mut pair = establish_nodecore_link_pair();
+
+        // Send (don't deliver proof)
+        let _ = pair
+            .initiator
+            .send_on_link(&pair.initiator_link_id, b"expire_test")
+            .unwrap();
+        assert_eq!(pair.initiator.data_receipts_count(), 1);
+
+        // Phase 1: just before timeout → receipt still present
+        pair.initiator
+            .transport()
+            .clock()
+            .set(TEST_TIME_MS + DATA_RECEIPT_TIMEOUT_MS - 1);
+        let _ = pair.initiator.handle_timeout();
+        assert_eq!(
+            pair.initiator.data_receipts_count(),
+            1,
+            "receipt should still exist just before timeout"
+        );
+
+        // Phase 2: just after timeout → receipt expired
+        pair.initiator
+            .transport()
+            .clock()
+            .set(TEST_TIME_MS + DATA_RECEIPT_TIMEOUT_MS + 1);
+        let _ = pair.initiator.handle_timeout();
+        assert_eq!(
+            pair.initiator.data_receipts_count(),
+            0,
+            "receipt should be expired after timeout"
+        );
+    }
+
+    // ─── Group D: Receipt tracking ──────────────────────────────────────────
+
+    #[test]
+    fn test_channel_receipt_lifecycle() {
+        use crate::transport::InterfaceId;
+
+        let mut pair = establish_nodecore_link_pair();
+
+        // Send → receipt registered
+        let output = pair
+            .initiator
+            .send_on_link(&pair.initiator_link_id, b"lifecycle")
+            .unwrap();
+        assert_eq!(pair.initiator.data_receipts_count(), 1);
+        assert_eq!(pair.initiator.channel_hash_to_seq_len(), 1);
+
+        // Deliver to responder → get proof
+        let data = extract_broadcast_data(&output);
+        let output = pair.responder.handle_packet(InterfaceId(0), &data);
+        let proof = extract_broadcast_data(&output);
+
+        // Deliver proof to initiator → confirmed, receipts cleared
+        let output = pair.initiator.handle_packet(InterfaceId(0), &proof);
+        let has_confirmed = output
+            .events
+            .iter()
+            .any(|e| matches!(e, NodeEvent::LinkDeliveryConfirmed { .. }));
+        assert!(has_confirmed, "expected LinkDeliveryConfirmed");
+        assert_eq!(
+            pair.initiator.data_receipts_count(),
+            0,
+            "receipt should be consumed"
+        );
+        assert_eq!(
+            pair.initiator.channel_hash_to_seq_len(),
+            0,
+            "channel_hash_to_seq should be cleaned"
+        );
+    }
+
+    #[test]
+    fn test_retransmit_event_payload() {
+        let mut pair = establish_nodecore_link_pair();
+
+        let _ = pair
+            .initiator
+            .send_on_link(&pair.initiator_link_id, b"retransmit_payload")
+            .unwrap();
+
+        // Advance past timeout
+        pair.initiator
+            .transport()
+            .clock()
+            .set(TEST_TIME_MS + 10_000);
+        let output = pair.initiator.handle_timeout();
+
+        // Find the ChannelRetransmit event and check its fields
+        let retransmit = output.events.iter().find_map(|e| match e {
+            NodeEvent::ChannelRetransmit {
+                link_id,
+                sequence,
+                tries,
+            } => Some((*link_id, *sequence, *tries)),
+            _ => None,
+        });
+        let (link_id, sequence, tries) = retransmit.expect("expected ChannelRetransmit");
+        assert_eq!(link_id, pair.initiator_link_id);
+        assert_eq!(sequence, 0, "first message should be sequence 0");
+        assert_eq!(tries, 2, "first retransmit should be tries=2");
+
+        // channel_hash_to_seq should still have the entry
+        assert_eq!(pair.initiator.channel_hash_to_seq_len(), 1);
+    }
+
+    #[test]
+    fn test_retransmit_proof_matches_new_hash() {
+        use crate::transport::InterfaceId;
+
+        let mut pair = establish_nodecore_link_pair();
+
+        // Suppress keepalives so handle_timeout only produces the retransmit action
+        pair.initiator
+            .link_mut(&pair.initiator_link_id)
+            .unwrap()
+            .set_timing_for_test(3600, 3600, TEST_TIME_MS / crate::constants::MS_PER_SECOND);
+
+        let _ = pair
+            .initiator
+            .send_on_link(&pair.initiator_link_id, b"retransmit_proof")
+            .unwrap();
+
+        // Trigger retransmit
+        pair.initiator
+            .transport()
+            .clock()
+            .set(TEST_TIME_MS + 10_000);
+        let output = pair.initiator.handle_timeout();
+        let retransmit_packet = extract_all_action_data(&output);
+        assert!(
+            !retransmit_packet.is_empty(),
+            "retransmit should produce a packet"
+        );
+
+        // Deliver retransmit to responder → proof
+        let output = pair
+            .responder
+            .handle_packet(InterfaceId(0), &retransmit_packet[0]);
+        let proof = extract_broadcast_data(&output);
+
+        // Deliver proof to initiator → confirmed
+        let output = pair.initiator.handle_packet(InterfaceId(0), &proof);
+        let has_confirmed = output
+            .events
+            .iter()
+            .any(|e| matches!(e, NodeEvent::LinkDeliveryConfirmed { .. }));
+        assert!(
+            has_confirmed,
+            "proof for retransmit should produce LinkDeliveryConfirmed"
+        );
+        assert_eq!(
+            pair.initiator.data_receipts_count(),
+            0,
+            "receipt should be consumed"
+        );
+    }
+
+    #[test]
+    fn test_multiple_retransmits_single_receipt() {
+        let mut pair = establish_nodecore_link_pair();
+
+        let _ = pair
+            .initiator
+            .send_on_link(&pair.initiator_link_id, b"multi_retransmit")
+            .unwrap();
+        assert_eq!(pair.initiator.data_receipts_count(), 1);
+
+        // Retransmit 1
+        pair.initiator
+            .transport()
+            .clock()
+            .set(TEST_TIME_MS + 10_000);
+        let _ = pair.initiator.handle_timeout();
+        assert_eq!(
+            pair.initiator.data_receipts_count(),
+            1,
+            "should still have 1 receipt after first retransmit"
+        );
+
+        // Retransmit 2
+        pair.initiator
+            .transport()
+            .clock()
+            .set(TEST_TIME_MS + 25_000);
+        let _ = pair.initiator.handle_timeout();
+        assert_eq!(
+            pair.initiator.data_receipts_count(),
+            1,
+            "should still have 1 receipt after second retransmit (no leak)"
+        );
+    }
+
+    #[test]
+    fn test_proof_for_final_retransmit_delivers() {
+        use crate::transport::InterfaceId;
+
+        let mut pair = establish_nodecore_link_pair();
+
+        // Extend stale timeout to prevent link closure during retransmit intervals.
+        // Default stale_time is 10s (keepalive 5s * factor 2), which is too short
+        // for the 50s intervals below.
+        pair.initiator
+            .link_mut(&pair.initiator_link_id)
+            .unwrap()
+            .set_timing_for_test(5, 3600, TEST_TIME_MS / crate::constants::MS_PER_SECOND);
+
+        let _ = pair
+            .initiator
+            .send_on_link(&pair.initiator_link_id, b"final_retransmit")
+            .unwrap();
+
+        // Perform 3 retransmits, keep the last packet.
+        // At intervals ≥5s, keepalive fires before retransmit in actions,
+        // so use .last() to get the retransmit packet (not the keepalive).
+        let mut last_packet = Vec::new();
+        let intervals = [10_000u64, 25_000, 50_000];
+        for &dt in &intervals {
+            pair.initiator.transport().clock().set(TEST_TIME_MS + dt);
+            let output = pair.initiator.handle_timeout();
+            let packets = extract_all_action_data(&output);
+            if !packets.is_empty() {
+                last_packet = packets.last().unwrap().clone();
+            }
+        }
+        assert!(!last_packet.is_empty(), "should have a retransmit packet");
+
+        // Deliver last retransmit to responder → proof
+        let output = pair.responder.handle_packet(InterfaceId(0), &last_packet);
+        // Responder might see it as duplicate or new depending on channel state,
+        // but should generate a proof for the packet
+        let proofs = extract_all_action_data(&output);
+        assert!(!proofs.is_empty(), "should get a proof for the retransmit");
+
+        // Deliver proof to initiator → confirmed
+        let output = pair.initiator.handle_packet(InterfaceId(0), &proofs[0]);
+        let has_confirmed = output
+            .events
+            .iter()
+            .any(|e| matches!(e, NodeEvent::LinkDeliveryConfirmed { .. }));
+        assert!(has_confirmed, "expected LinkDeliveryConfirmed");
+        assert_eq!(
+            pair.initiator.data_receipts_count(),
+            0,
+            "receipt should be consumed"
+        );
+    }
+
+    #[test]
+    fn test_data_receipts_count_increments() {
+        let mut pair = establish_nodecore_link_pair();
+
+        assert_eq!(pair.initiator.data_receipts_count(), 0);
+
+        let _ = pair
+            .initiator
+            .send_on_link(&pair.initiator_link_id, b"first")
+            .unwrap();
+        assert_eq!(pair.initiator.data_receipts_count(), 1);
+
+        let _ = pair
+            .initiator
+            .send_on_link(&pair.initiator_link_id, b"second")
+            .unwrap();
+        assert_eq!(pair.initiator.data_receipts_count(), 2);
+    }
+
+    // ─── Group E: Misc ──────────────────────────────────────────────────────
+
+    #[test]
+    fn test_attached_interface_set_on_handshake() {
+        let pair = establish_nodecore_link_pair();
+
+        // Both sides should have attached_interface set to 0
+        let init_link = pair.initiator.link(&pair.initiator_link_id).unwrap();
+        assert_eq!(
+            init_link.attached_interface(),
+            Some(0),
+            "initiator should have attached_interface=0"
+        );
+
+        let resp_link = pair.responder.link(&pair.responder_link_id).unwrap();
+        assert_eq!(
+            resp_link.attached_interface(),
+            Some(0),
+            "responder should have attached_interface=0"
+        );
+
+        // Negative: pending link (before proof) should have no attached_interface on initiator
+        let resp_identity = Identity::generate(&mut OsRng);
+        let resp_signing_key = resp_identity.ed25519_verifying().to_bytes();
+        let clock = MockClock::new(TEST_TIME_MS);
+        let mut resp = NodeCoreBuilder::new().build(OsRng, clock, NoStorage);
+        let mut dest = Destination::new(
+            Some(resp_identity),
+            Direction::In,
+            DestinationType::Single,
+            "testapp",
+            &["iface"],
+        )
+        .unwrap();
+        dest.set_accepts_links(true);
+        let dest_hash = *dest.hash();
+        resp.register_destination(dest);
+
+        let clock = MockClock::new(TEST_TIME_MS);
+        let mut init = NodeCoreBuilder::new().build(OsRng, clock, NoStorage);
+        let (link_id, _) = init.connect(dest_hash, &resp_signing_key);
+        let pending_link = init.link(&link_id).unwrap();
+        assert_eq!(
+            pending_link.attached_interface(),
+            None,
+            "pending initiator should have no attached_interface"
+        );
+    }
+
+    #[test]
+    fn test_mark_delivered_bogus_sequence() {
+        let mut pair = establish_nodecore_link_pair();
+
+        // Send to create channel
+        let _ = pair
+            .initiator
+            .send_on_link(&pair.initiator_link_id, b"create_channel")
+            .unwrap();
+
+        let now_ms = pair.initiator.now_ms();
+        let result = pair
+            .initiator
+            .link_mut(&pair.initiator_link_id)
+            .unwrap()
+            .channel_mut()
+            .unwrap()
+            .mark_delivered(9999, now_ms, 500);
+        assert!(
+            !result,
+            "mark_delivered with bogus sequence should return false"
+        );
+    }
+
+    #[test]
+    fn test_channel_accessor_none_when_absent() {
+        let pair = establish_nodecore_link_pair();
+
+        // Before any send, channel should be None
+        let link = pair.initiator.link(&pair.initiator_link_id).unwrap();
+        assert!(
+            link.channel().is_none(),
+            "channel should be None before any send"
+        );
+
+        // After send, channel should be Some
+        let mut pair = establish_nodecore_link_pair();
+        let _ = pair
+            .initiator
+            .send_on_link(&pair.initiator_link_id, b"data")
+            .unwrap();
+        let link = pair.initiator.link(&pair.initiator_link_id).unwrap();
+        assert!(
+            link.channel().is_some(),
+            "channel should be Some after send"
+        );
+
+        // Fake link_id → link().is_none()
+        let fake_id = LinkId::new([0xFF; 16]);
+        assert!(
+            pair.initiator.link(&fake_id).is_none(),
+            "fake link_id should return None"
+        );
+    }
+
+    // ─── Group F: Close cleanup ─────────────────────────────────────────────
+
+    #[test]
+    fn test_channel_receipt_keys_cleaned_on_close() {
+        let mut pair = establish_nodecore_link_pair();
+
+        // Send (populates receipts)
+        let _ = pair
+            .initiator
+            .send_on_link(&pair.initiator_link_id, b"cleanup")
+            .unwrap();
+        assert!(pair.initiator.data_receipts_count() >= 1);
+        assert!(
+            pair.initiator
+                .channel_receipt_keys_for_link(&pair.initiator_link_id)
+                >= 1
+        );
+
+        // Close link
+        let _ = pair.initiator.close_link(&pair.initiator_link_id);
+
+        // channel_receipt_keys for this link should be cleaned
+        assert_eq!(
+            pair.initiator
+                .channel_receipt_keys_for_link(&pair.initiator_link_id),
+            0,
+            "channel_receipt_keys should be cleaned on close"
         );
     }
 }
