@@ -22,7 +22,6 @@ Phase numbering follows `doc/BATTLEPLAN.md`. Phases 0–5 are complete.
 
 | ID | P | Phase | Status | Category | Summary |
 |----|---|-------|--------|----------|---------|
-| E6 | M | 6 | open | Structural | `handle_channel_packet` still 131 lines |
 | E2 | M | 7 | open | API | `pub(crate)` field audit |
 | E3 | M | 7 | open | Robustness | Silent send failures (`let _ =` on transport calls) |
 | E4 | L | 7 | open | SSOT | Identity table asymmetry |
@@ -40,15 +39,6 @@ Phase numbering follows `doc/BATTLEPLAN.md`. Phases 0–5 are complete.
 ---
 
 ## Issues
-
-### E6: `handle_channel_packet` still 131 lines
-- **Status:** open
-- **Priority:** MEDIUM
-- **Phase:** 6
-- **Category:** Structural
-- **Blocked-by:** —
-- **Detail:** `handle_channel_packet` is still 131 lines with 4 distinct responsibilities: decrypt, channel receive + drain, proof generation, rx_ring overflow handling. Now that H4 (ReceiptTracker consolidation) is done, the receipt/proof boundaries are stable — safe to split into sub-handlers.
-- **Test:** Existing tests cover all paths. No new tests needed (refactor, not behavior change).
 
 ### E2: `pub(crate)` field audit
 - **Status:** open

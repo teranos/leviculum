@@ -708,7 +708,7 @@ impl<R: CryptoRngCore, C: Clock, S: Storage> NodeCore<R, C, S> {
 
         link.record_inbound(now_secs);
 
-        // Decrypt the envelope data
+        // 1. Decrypt the envelope data
         let encrypted_data = packet.data.as_slice();
         let max_plaintext_len = encrypted_data.len();
         let mut plaintext = alloc::vec![0u8; max_plaintext_len];
@@ -718,9 +718,8 @@ impl<R: CryptoRngCore, C: Clock, S: Storage> NodeCore<R, C, S> {
         };
         plaintext.truncate(decrypted_len);
 
-        // Process through channel — all link operations happen in this block
-        // to allow the link borrow to be dropped before accessing other
-        // fields (rx_ring_full counters, route_link_packet).
+        // 2. Channel receive + drain + proof — link borrow scoped in this block
+        // so that route_link_packet (which needs &mut self) can run afterward.
         let mut rx_ring_full = false;
         let proof_packet = {
             let rtt_ms = link.rtt_ms();
@@ -770,64 +769,72 @@ impl<R: CryptoRngCore, C: Clock, S: Storage> NodeCore<R, C, S> {
                 });
             }
 
-            // Build proof while link borrow is still held (if message accepted)
+            // 3. Build proof while link borrow is still held
             if message_accepted {
-                let full_packet_hash = packet_hash(raw_packet);
-                if let Some(signing_key) = link.proof_signing_key() {
-                    match link
-                        .build_data_proof_packet_with_signing_key(&full_packet_hash, signing_key)
-                    {
-                        Ok(proof) => {
-                            tracing::debug!(
-                                hash = %HexFmt(&full_packet_hash),
-                                link = %HexFmt(link_id.as_bytes()),
-                                proof_len = proof.len(),
-                                "link_mgr: channel proof generated"
-                            );
-                            Some(proof)
-                        }
-                        Err(e) => {
-                            tracing::warn!(
-                                hash = %HexFmt(&full_packet_hash),
-                                link = %HexFmt(link_id.as_bytes()),
-                                error = %e,
-                                "link_mgr: channel proof build failed"
-                            );
-                            None
-                        }
-                    }
-                } else {
-                    tracing::warn!(
-                        link = %HexFmt(link_id.as_bytes()),
-                        "link_mgr: channel proof skipped — no signing key"
-                    );
-                    None
-                }
+                Self::build_channel_proof(link, &link_id, raw_packet)
             } else {
                 None
             }
         };
-        // link borrow released here (NLL: last use was inside the block)
 
-        // Deferred rx_ring_full counter update (safe now — link borrow dropped)
+        // 4. Post-processing (link borrow released)
         if rx_ring_full {
-            self.rx_ring_full_count += 1;
-            let elapsed = now_ms.saturating_sub(self.rx_ring_full_last_log_ms);
-            if self.rx_ring_full_last_log_ms == 0 || elapsed >= 5000 {
-                tracing::warn!(
-                    "link_mgr: channel rx_ring full — {} messages dropped in last {}s (cap={})",
-                    self.rx_ring_full_count,
-                    elapsed / 1000,
-                    crate::constants::CHANNEL_RX_RING_MAX
-                );
-                self.rx_ring_full_count = 0;
-                self.rx_ring_full_last_log_ms = now_ms;
-            }
+            self.update_rx_ring_full(now_ms);
         }
-
-        // Route proof via transport (safe now — link borrow dropped)
         if let Some(proof) = proof_packet {
             self.route_link_packet(&link_id, &proof);
+        }
+    }
+
+    /// Build a data proof for an accepted channel message.
+    ///
+    /// This is an associated function (not `&self`) to avoid borrow conflicts —
+    /// the caller holds `link` via `self.links.get_mut()`.
+    fn build_channel_proof(link: &Link, link_id: &LinkId, raw_packet: &[u8]) -> Option<Vec<u8>> {
+        let full_packet_hash = packet_hash(raw_packet);
+        if let Some(signing_key) = link.proof_signing_key() {
+            match link.build_data_proof_packet_with_signing_key(&full_packet_hash, signing_key) {
+                Ok(proof) => {
+                    tracing::debug!(
+                        hash = %HexFmt(&full_packet_hash),
+                        link = %HexFmt(link_id.as_bytes()),
+                        proof_len = proof.len(),
+                        "link_mgr: channel proof generated"
+                    );
+                    Some(proof)
+                }
+                Err(e) => {
+                    tracing::warn!(
+                        hash = %HexFmt(&full_packet_hash),
+                        link = %HexFmt(link_id.as_bytes()),
+                        error = %e,
+                        "link_mgr: channel proof build failed"
+                    );
+                    None
+                }
+            }
+        } else {
+            tracing::warn!(
+                link = %HexFmt(link_id.as_bytes()),
+                "link_mgr: channel proof skipped — no signing key"
+            );
+            None
+        }
+    }
+
+    /// Update rx_ring overflow counter with rate-limited warning.
+    fn update_rx_ring_full(&mut self, now_ms: u64) {
+        self.rx_ring_full_count += 1;
+        let elapsed = now_ms.saturating_sub(self.rx_ring_full_last_log_ms);
+        if self.rx_ring_full_last_log_ms == 0 || elapsed >= 5000 {
+            tracing::warn!(
+                "link_mgr: channel rx_ring full — {} messages dropped in last {}s (cap={})",
+                self.rx_ring_full_count,
+                elapsed / 1000,
+                crate::constants::CHANNEL_RX_RING_MAX
+            );
+            self.rx_ring_full_count = 0;
+            self.rx_ring_full_last_log_ms = now_ms;
         }
     }
 

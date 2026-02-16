@@ -22,14 +22,11 @@ Phases 0–5 complete. Remaining: Phase 6 (consolidation) and Phase 7 (polish).
 
 ## Phase 6: Consolidation
 
-**2 issues remaining (E1, H4, A4 done). E5 verified clean (no bug).**
+**1 issue remaining (E1, H4, A4, E6 done). E5 verified clean (no bug).**
 
 | # | Issue | What | Notes |
 |---|-------|------|-------|
-| 1 | E6 | Split `handle_channel_packet` (131 lines) | 4 responsibilities: decrypt, receive+drain, proof, rx_ring. Unblocked (H4 done). |
-| 2 | H1 | Deduplicate `Transport.destinations` vs `NodeCore.destinations` | Transport queries NodeCore's registry. |
-
-**Order:** E6 first (boundaries stable after H4). H1 last (largest, benefits from all prior cleanup).
+| 1 | H1 | Deduplicate `Transport.destinations` vs `NodeCore.destinations` | Transport queries NodeCore's registry. |
 
 **Issues eliminated by Phase 5c (no longer needed):**
 
@@ -77,17 +74,17 @@ Phases 0–5 complete. Remaining: Phase 6 (consolidation) and Phase 7 (polish).
 | 3 — Bug Fixes | 4 | Tests go green | **done** |
 | 4 — Rename | 7 | One concept, one name | **done** |
 | 5 — Structure | 3 | 4 maps → 1, LinkManager dissolved | **done** |
-| 6 — Consolidation | 5 (3 done) | Single source of truth | **next** |
+| 6 — Consolidation | 5 (4 done) | Single source of truth | **next** |
 | 7 — API Polish | 12 | Clean public API | open |
 | **Total** | **62** | **Complete codebase overhaul** | |
-| **Remaining** | **14** | | |
+| **Remaining** | **13** | | |
 
 **Dependency chain (remaining):**
 ```
 Phase 6:
   E1 ✓ (split god method — done)
     → H4 ✓ + A4 ✓ (receipt tracking consolidated into ReceiptTracker)
-      → E6 (split channel handler — boundaries stable after H4)
+      → E6 ✓ (split channel handler — done)
   H1 (deduplicate destinations — independent)
     → Phase 7 (API polish — all 12 issues independent of each other)
 ```
