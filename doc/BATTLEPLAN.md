@@ -54,7 +54,7 @@ Phases 0–6 complete. Phase 7 in progress (7 of 14 done).
 
 ## Phase 7: API Polish
 
-**14 issues (7 done, 7 remaining). The public face of the library.**
+**14 issues (9 done, 5 remaining). The public face of the library.**
 
 | # | Issue | P | What | Status |
 |---|-------|---|------|--------|
@@ -66,13 +66,13 @@ Phases 0–6 complete. Phase 7 in progress (7 of 14 done).
 | 6 | D6 | M | `DeliveryConfirmed` → `PacketDeliveryConfirmed` | **done** |
 | 7 | D7 | M | `ProofRequested` → `PacketProofRequested` | **done** |
 | 8 | D12+D13 | L | `ChannelExhausted` close reason (distinct from handshake timeout) | **done** |
-| 9 | E2 | M | `pub(crate)` field audit (DataReceipt eliminated, others TBD) | open |
+| 9 | E2 | M | `pub(crate)` field audit (verified clean — no violations found) | **done** |
 | 10 | E3 | M | Silent send failures — audit `let _ =` on transport calls | open |
-| 11 | E4 | L | Identity table asymmetry (Transport + NodeCore) | open |
+| 11 | E4 | L | Identity table asymmetry — dead `identity_table` removed | **done** |
 | 12 | F2 | L | `connect()` broadcast fallback transparent | open |
 | 13 | G1 | L | Merge lock-and-read in event loop | open |
 
-**Naming renames complete** (D2, D3, D5, D6, D7, D12+D13). Remaining: E8 (highest priority — blocks single-packet interop), E7 (structural), E2/E3/E4/F2/G1 (cleanup).
+**Naming renames complete** (D2, D3, D5, D6, D7, D12+D13). **E2 verified clean, E4 dead code removed.** Remaining: E8 (highest priority — blocks single-packet interop), E7 (structural), E3/F2/G1 (cleanup).
 
 ---
 
@@ -87,14 +87,14 @@ Phases 0–6 complete. Phase 7 in progress (7 of 14 done).
 | 4 — Rename | 7 | One concept, one name | **done** |
 | 5 — Structure | 3 | 4 maps → 1, LinkManager dissolved | **done** |
 | 6 — Consolidation | 5 | Single source of truth, proof bugs fixed | **done** |
-| 7 — API Polish | 14 | Clean public API, encryption, split transport | **7 done** |
+| 7 — API Polish | 14 | Clean public API, encryption, split transport | **9 done** |
 | **Total** | **63** | **Complete codebase overhaul** | |
-| **Remaining** | **7** | | |
+| **Remaining** | **5** | | |
 
 **Dependency chain (remaining):**
 ```
 Phase 7:
   E8 (single-packet encryption — highest priority, blocks interop)
   E7 (split transport.rs — independent)
-  E2, E3, E4, F2, G1 (cleanup — all independent)
+  E3, F2, G1 (cleanup — all independent)
 ```

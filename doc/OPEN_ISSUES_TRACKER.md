@@ -22,9 +22,7 @@ Phase numbering follows `doc/BATTLEPLAN.md`. Phases 0–6 are complete.
 
 | ID | P | Phase | Status | Category | Summary |
 |----|---|-------|--------|----------|---------|
-| E2 | M | 7 | open | API | `pub(crate)` field audit |
 | E3 | M | 7 | open | Robustness | Silent send failures (`let _ =` on transport calls) |
-| E4 | L | 7 | open | SSOT | Identity table asymmetry |
 | F2 | L | 7 | open | Coupling | `connect()` silently broadcasts when no path exists |
 | G1 | L | 7 | open | Perf | Lock-and-read pattern in event loop |
 | E7 | M | 7 | open | Structural | Split transport.rs (8k+ LoC) |
@@ -34,15 +32,6 @@ Phase numbering follows `doc/BATTLEPLAN.md`. Phases 0–6 are complete.
 
 ## Issues
 
-### E2: `pub(crate)` field audit
-- **Status:** open
-- **Priority:** MEDIUM
-- **Phase:** 7
-- **Category:** API
-- **Blocked-by:** —
-- **Detail:** The strangler fig migration left `pub(crate)` fields on structs that should expose methods instead. `DataReceipt` was eliminated (absorbed into `ReceiptTracker`), but other structs may still have this pattern. Audit all `pub(crate)` fields in non-test code across `link/`, `node/`, `transport/`. Each one is either (a) correct because the module boundary requires it, or (b) a method that was never written. Fix the (b) cases.
-- **Test:** N/A (visibility change — compilation verifies).
-
 ### E3: Silent send failures (`let _ =` on transport calls)
 - **Status:** open
 - **Priority:** MEDIUM
@@ -51,15 +40,6 @@ Phase numbering follows `doc/BATTLEPLAN.md`. Phases 0–6 are complete.
 - **Blocked-by:** —
 - **Detail:** `route_link_packet()` uses `let _ = self.transport.send_on_interface(...)`. Count all `let _ =` on send/transport calls in non-test code. Each one silently swallows a send failure. At minimum add `tracing::debug!` on failure. Evaluate whether any callers should propagate the error.
 - **Test:** N/A (observability improvement — existing tests cover behavior).
-
-### E4: Identity table asymmetry
-- **Status:** open
-- **Priority:** LOW
-- **Phase:** 7
-- **Category:** SSOT
-- **Blocked-by:** —
-- **Detail:** Local destinations have their Identity in both `Transport.identity_table` and `NodeCore.destinations[hash].identity`. Remote peers only in `Transport.identity_table`. Asymmetric ownership. Identities are immutable so this isn't a consistency bug, but it's wasted memory and a confusing data model. Evaluate whether Transport should be the sole owner of the identity table, with NodeCore querying it.
-- **Test:** N/A (data model simplification).
 
 ### F2: `connect()` silently broadcasts when no path exists
 - **Status:** open

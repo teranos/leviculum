@@ -480,9 +480,6 @@ pub struct Transport<C: Clock, S: Storage> {
     /// Cached raw announce bytes for path responses: dest_hash -> raw bytes
     announce_cache: BTreeMap<[u8; TRUNCATED_HASHBYTES], Vec<u8>>,
 
-    /// Known identities from received announces: dest_hash -> Identity
-    identity_table: BTreeMap<[u8; TRUNCATED_HASHBYTES], Identity>,
-
     /// Per-destination announce rate tracking (Python: announce_rate_table)
     announce_rate_table: BTreeMap<[u8; TRUNCATED_HASHBYTES], AnnounceRateEntry>,
 
@@ -517,7 +514,6 @@ impl<C: Clock, S: Storage> Transport<C, S> {
             path_request_tags: VecDeque::new(),
             path_requests: BTreeMap::new(),
             announce_cache: BTreeMap::new(),
-            identity_table: BTreeMap::new(),
             announce_rate_table: BTreeMap::new(),
             pending_actions: Vec::new(),
             #[cfg(test)]
@@ -1273,11 +1269,6 @@ impl<C: Clock, S: Storage> Transport<C, S> {
             // Cache raw announce for path responses (when transport is enabled)
             if self.config.enable_transport {
                 self.announce_cache.insert(dest_hash, raw.to_vec());
-            }
-
-            // Store identity from announce for proof validation
-            if let Ok(identity) = announce.to_identity() {
-                self.identity_table.insert(dest_hash, identity);
             }
 
             self.stats.announces_processed += 1;
@@ -3539,20 +3530,6 @@ mod tests {
         }
 
         // ─── Stage 8: LRPROOF validation ────────────────────────────────
-
-        #[test]
-        fn test_identity_stored_from_announce() {
-            let mut transport = make_transport_enabled();
-            let _idx0 = transport.register_interface(Box::new(MockInterface::new("if0", 1)));
-
-            let (raw, dest_hash) = make_announce_raw(2, PacketContext::None);
-            transport.process_incoming(0, &raw).unwrap();
-
-            assert!(
-                transport.identity_table.contains_key(&dest_hash),
-                "Identity should be stored from announce"
-            );
-        }
 
         #[test]
         fn test_lrproof_invalid_length_not_forwarded() {
