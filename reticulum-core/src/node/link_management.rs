@@ -178,7 +178,9 @@ impl<R: CryptoRngCore, C: Clock, S: Storage> NodeCore<R, C, S> {
         let mut link = Link::new_outgoing(dest_hash, &mut self.rng);
         let packet = link.build_link_request_packet_with_transport(next_hop, hops);
         let link_id = *link.id();
-        let _ = link.set_destination_keys(dest_signing_key);
+        if let Err(e) = link.set_destination_keys(dest_signing_key) {
+            tracing::debug!(%e, "set_destination_keys failed");
+        }
         link.set_phase(LinkPhase::PendingOutgoing {
             created_at_ms: now_ms,
         });
@@ -248,7 +250,9 @@ impl<R: CryptoRngCore, C: Clock, S: Storage> NodeCore<R, C, S> {
             link_id
         );
         if let Some(iface_idx) = attached {
-            let _ = self.transport.send_on_interface(iface_idx, &proof);
+            if let Err(e) = self.transport.send_on_interface(iface_idx, &proof) {
+                tracing::debug!(%e, "send_on_interface failed");
+            }
         } else {
             self.transport.send_on_all_interfaces(&proof);
         }
@@ -361,11 +365,14 @@ impl<R: CryptoRngCore, C: Clock, S: Storage> NodeCore<R, C, S> {
 
         // Route via attached interface
         if let Some(iface_idx) = attached_iface {
-            let _ = self.transport.send_on_interface(iface_idx, &packet_bytes);
-        } else {
-            let _ = self
-                .transport
-                .send_to_destination(dest_hash.as_bytes(), &packet_bytes);
+            if let Err(e) = self.transport.send_on_interface(iface_idx, &packet_bytes) {
+                tracing::debug!(%e, "send_on_interface failed");
+            }
+        } else if let Err(e) = self
+            .transport
+            .send_to_destination(dest_hash.as_bytes(), &packet_bytes)
+        {
+            tracing::warn!(%e, "send_to_destination failed — packet lost");
         }
 
         Ok(self.process_events_and_actions())
@@ -1188,12 +1195,17 @@ impl<R: CryptoRngCore, C: Clock, S: Storage> NodeCore<R, C, S> {
     fn route_link_packet(&mut self, link_id: &LinkId, data: &[u8]) {
         if let Some(link) = self.links.get(link_id) {
             if let Some(iface_idx) = link.attached_interface() {
-                let _ = self.transport.send_on_interface(iface_idx, data);
+                if let Err(e) = self.transport.send_on_interface(iface_idx, data) {
+                    tracing::debug!(%e, "send_on_interface failed");
+                }
             } else {
                 let dest_hash = *link.destination_hash();
-                let _ = self
+                if let Err(e) = self
                     .transport
-                    .send_to_destination(dest_hash.as_bytes(), data);
+                    .send_to_destination(dest_hash.as_bytes(), data)
+                {
+                    tracing::warn!(%e, "send_to_destination failed — packet lost");
+                }
             }
         }
     }
@@ -1224,7 +1236,9 @@ impl<R: CryptoRngCore, C: Clock, S: Storage> NodeCore<R, C, S> {
             let mut tag = [0u8; TRUNCATED_HASHBYTES];
             tag[..8].copy_from_slice(&now.to_be_bytes());
             tag[8..16].copy_from_slice(&dest_hash[..8]);
-            let _ = self.transport.request_path(&dest_hash, None, &tag);
+            if let Err(e) = self.transport.request_path(&dest_hash, None, &tag) {
+                tracing::debug!(%e, "path request failed (best-effort)");
+            }
         }
 
         self.events.push(NodeEvent::LinkClosed {

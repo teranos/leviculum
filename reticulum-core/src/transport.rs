@@ -2154,7 +2154,9 @@ impl<C: Clock, S: Storage> Transport<C, S> {
                 let now_bytes = now.to_be_bytes();
                 tag[..8].copy_from_slice(&now_bytes);
                 tag[8..16].copy_from_slice(&dest_hash[..8]);
-                let _ = self.request_path(&dest_hash, None, &tag);
+                if let Err(e) = self.request_path(&dest_hash, None, &tag) {
+                    tracing::debug!(%e, "path request failed (best-effort)");
+                }
             }
         }
     }

@@ -22,7 +22,6 @@ Phase numbering follows `doc/BATTLEPLAN.md`. Phases 0–6 are complete.
 
 | ID | P | Phase | Status | Category | Summary |
 |----|---|-------|--------|----------|---------|
-| E3 | M | 7 | open | Robustness | Silent send failures (`let _ =` on transport calls) |
 | F2 | L | 7 | open | Coupling | `connect()` silently broadcasts when no path exists |
 | G1 | L | 7 | open | Perf | Lock-and-read pattern in event loop |
 | E7 | M | 7 | open | Structural | Split transport.rs (8k+ LoC) |
@@ -31,15 +30,6 @@ Phase numbering follows `doc/BATTLEPLAN.md`. Phases 0–6 are complete.
 ---
 
 ## Issues
-
-### E3: Silent send failures (`let _ =` on transport calls)
-- **Status:** open
-- **Priority:** MEDIUM
-- **Phase:** 7
-- **Category:** Robustness
-- **Blocked-by:** —
-- **Detail:** `route_link_packet()` uses `let _ = self.transport.send_on_interface(...)`. Count all `let _ =` on send/transport calls in non-test code. Each one silently swallows a send failure. At minimum add `tracing::debug!` on failure. Evaluate whether any callers should propagate the error.
-- **Test:** N/A (observability improvement — existing tests cover behavior).
 
 ### F2: `connect()` silently broadcasts when no path exists
 - **Status:** open
