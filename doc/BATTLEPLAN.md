@@ -27,12 +27,12 @@ Phases 0–5 complete. Remaining: Phase 6 (consolidation) and Phase 7 (polish).
 | # | Issue | What | Effort | Notes |
 |---|-------|------|--------|-------|
 | 1 | E5 | Verify `unregister_destination()` cleans up Transport's DestinationEntry | 30 min | Potential bug — verify first, fix if broken. Prerequisite for H1. |
-| 2 | E1 | Split `handle_link_data` god method (241 lines) | 1h | Extract per-message-type handlers. Pure mechanical. Prerequisite for H4. |
+| 2 | E1 | Split `handle_link_data` god method (241 lines) | 1h | Extract per-message-type handlers. Pure mechanical. Prerequisite for H4 and A4. |
 | 3 | H4 | Consolidate bidirectional hash/seq maps | 2h | Both maps now on NodeCore — straightforward. Easier after E1 split. |
-| 4 | A4 | Formalize receipt tracking (data_receipts + channel_receipt_keys) | 1h | Small helper struct or just documented fields |
+| 4 | A4 | Formalize receipt tracking (data_receipts + channel_receipt_keys) | 1h | Receipt code lives in handle_link_data — easier after E1 split. |
 | 5 | H1 | Deduplicate `Transport.destinations` vs `NodeCore.destinations` | 3-4h | Transport queries NodeCore's registry. E5 must be verified first. |
 
-**Order:** E5 first (potential bug — quick verify/fix). E1 second (makes H4 readable). H4 third. A4 fourth (independent). H1 last (largest, benefits from all prior cleanup).
+**Order:** E5 first (potential bug — quick verify/fix). E1 second (makes H4 and A4 readable). H4 third. A4 fourth (receipt code lives in the split methods). H1 last (largest, benefits from all prior cleanup).
 
 **Issues eliminated by Phase 5c (no longer needed):**
 
@@ -95,6 +95,6 @@ Phase 6:
     → H1 (deduplicate destinations)
   E1 (split god method)
     → H4 (consolidate receipt maps)
-  A4 (receipt tracking — independent)
+    → A4 (receipt tracking — code lives in split methods)
     → Phase 7 (API polish — all 12 issues independent of each other)
 ```

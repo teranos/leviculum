@@ -74,7 +74,7 @@ Phase numbering follows `doc/BATTLEPLAN.md`. Phases 0–5 are complete.
 - **Phase:** 6
 - **Category:** Structural
 - **Blocked-by:** —
-- **Blocks:** H4 (split makes migration readable)
+- **Blocks:** H4, A4 (split makes both migrations readable)
 - **Detail:** `node/link_management.rs:498-738` dispatches 6+ link-layer message types (RTT, keepalive, close, channel data, channel proof, proof request) in a single match. Every new link-layer feature grows this method. At 241 lines it's the largest production method in the codebase.
 - **Fix:** Extract `handle_rtt_packet()`, `handle_keepalive_packet()`, `handle_close_packet()`, `handle_channel_packet()`, `handle_data_packet()`. Pure mechanical extraction, no behavior change.
 - **Test:** Existing tests cover all arms. No new tests needed (refactor, not behavior change).
