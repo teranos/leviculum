@@ -576,11 +576,7 @@ async fn test_wrong_key_packet_silently_dropped_by_python() {
     let wrong_identity = Identity::generate(&mut rand_core::OsRng);
     let wrong_pub = wrong_identity.public_key_bytes();
     let wrong_pub_only = Identity::from_public_key_bytes(&wrong_pub).expect("Bad key");
-    {
-        let inner = rust_node.inner();
-        let mut core = inner.lock().unwrap();
-        core.remember_identity(py_dest_hash, wrong_pub_only);
-    }
+    rust_node.remember_identity(py_dest_hash, wrong_pub_only);
 
     // Send encrypted packet (encrypted with wrong key)
     rust_node

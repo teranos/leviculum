@@ -5,14 +5,14 @@ use std::path::{Path, PathBuf};
 use crate::error::{Error, Result};
 
 /// Storage manager for persistent data
-pub struct Storage {
+pub(crate) struct Storage {
     /// Base directory for all storage
     base_path: PathBuf,
 }
 
 impl Storage {
     /// Create a new storage manager
-    pub fn new<P: AsRef<Path>>(base_path: P) -> Result<Self> {
+    pub(crate) fn new<P: AsRef<Path>>(base_path: P) -> Result<Self> {
         let base_path = base_path.as_ref().to_path_buf();
 
         // Create directories if they don't exist
@@ -22,18 +22,13 @@ impl Storage {
         Ok(Self { base_path })
     }
 
-    /// Get the base path
-    pub fn base_path(&self) -> &Path {
-        &self.base_path
-    }
-
     /// Get path for a specific storage category
-    pub fn category_path(&self, category: &str) -> PathBuf {
+    pub(crate) fn category_path(&self, category: &str) -> PathBuf {
         self.base_path.join(category)
     }
 
     /// Ensure a category directory exists
-    pub fn ensure_category(&self, category: &str) -> Result<PathBuf> {
+    pub(crate) fn ensure_category(&self, category: &str) -> Result<PathBuf> {
         let path = self.category_path(category);
         std::fs::create_dir_all(&path)
             .map_err(|e| Error::Storage(format!("Failed to create category dir: {e}")))?;
@@ -41,14 +36,14 @@ impl Storage {
     }
 
     /// Read raw bytes from storage
-    pub fn read_raw(&self, category: &str, name: &str) -> Result<Vec<u8>> {
+    pub(crate) fn read_raw(&self, category: &str, name: &str) -> Result<Vec<u8>> {
         let path = self.category_path(category).join(name);
         std::fs::read(&path)
             .map_err(|e| Error::Storage(format!("Failed to read {}: {e}", path.display())))
     }
 
     /// Write raw bytes to storage
-    pub fn write_raw(&self, category: &str, name: &str, data: &[u8]) -> Result<()> {
+    pub(crate) fn write_raw(&self, category: &str, name: &str, data: &[u8]) -> Result<()> {
         let category_path = self.ensure_category(category)?;
         let path = category_path.join(name);
 
@@ -63,26 +58,35 @@ impl Storage {
     }
 
     /// Read msgpack-serialized data
-    pub fn read<T: serde::de::DeserializeOwned>(&self, category: &str, name: &str) -> Result<T> {
+    pub(crate) fn read<T: serde::de::DeserializeOwned>(
+        &self,
+        category: &str,
+        name: &str,
+    ) -> Result<T> {
         let data = self.read_raw(category, name)?;
         rmp_serde::from_slice(&data)
             .map_err(|e| Error::Serialization(format!("Failed to deserialize: {e}")))
     }
 
     /// Write msgpack-serialized data
-    pub fn write<T: serde::Serialize>(&self, category: &str, name: &str, value: &T) -> Result<()> {
+    pub(crate) fn write<T: serde::Serialize>(
+        &self,
+        category: &str,
+        name: &str,
+        value: &T,
+    ) -> Result<()> {
         let data = rmp_serde::to_vec(value)
             .map_err(|e| Error::Serialization(format!("Failed to serialize: {e}")))?;
         self.write_raw(category, name, &data)
     }
 
     /// Check if a file exists
-    pub fn exists(&self, category: &str, name: &str) -> bool {
+    pub(crate) fn exists(&self, category: &str, name: &str) -> bool {
         self.category_path(category).join(name).exists()
     }
 
     /// Delete a file
-    pub fn delete(&self, category: &str, name: &str) -> Result<()> {
+    pub(crate) fn delete(&self, category: &str, name: &str) -> Result<()> {
         let path = self.category_path(category).join(name);
         if path.exists() {
             std::fs::remove_file(&path)
@@ -92,7 +96,7 @@ impl Storage {
     }
 
     /// List files in a category
-    pub fn list(&self, category: &str) -> Result<Vec<String>> {
+    pub(crate) fn list(&self, category: &str) -> Result<Vec<String>> {
         let path = self.category_path(category);
         if !path.exists() {
             return Ok(Vec::new());

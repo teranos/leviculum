@@ -12,13 +12,13 @@
 
 #![warn(unreachable_pub)]
 
-pub mod clock;
+pub(crate) mod clock;
 pub mod config;
 pub mod driver;
 pub mod error;
 pub mod interfaces;
 pub mod reticulum;
-pub mod storage;
+pub(crate) mod storage;
 
 // Re-export commonly used core types for the high-level API
 pub use reticulum_core::node::NodeEvent;
@@ -26,9 +26,7 @@ pub use reticulum_core::{
     Destination, DestinationHash, DestinationType, Direction, Identity, ProofStrategy,
 };
 
-pub use clock::SystemClock;
-pub use config::{Config, InterfaceConfig, ReticulumConfig};
-pub use driver::{LinkHandle, PacketSender, ReticulumNode, ReticulumNodeBuilder, StdNodeCore};
+pub use config::Config;
+pub use driver::{LinkHandle, PacketSender, ReticulumNode, ReticulumNodeBuilder};
 pub use error::{Error, Result};
 pub use reticulum::Reticulum;
-pub use storage::Storage;

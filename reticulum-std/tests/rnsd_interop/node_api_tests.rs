@@ -199,19 +199,17 @@ async fn test_node_inner_accessor() {
 
     node.start().await.expect("Failed to start node");
 
-    // Access inner NodeCore (like chat.rs does for /status)
-    let inner = node.inner();
-    {
-        let core = inner.lock().unwrap();
-
-        // Verify link counts are accessible
-        let active = core.active_link_count();
-        let pending = core.pending_link_count();
-
-        // Initially should have no links
-        assert_eq!(active, 0, "Should have no active links initially");
-        assert_eq!(pending, 0, "Should have no pending links initially");
-    }
+    // Verify link counts are accessible via wrapper methods
+    assert_eq!(
+        node.active_link_count(),
+        0,
+        "Should have no active links initially"
+    );
+    assert_eq!(
+        node.pending_link_count(),
+        0,
+        "Should have no pending links initially"
+    );
 
     node.stop().await.expect("Failed to stop node");
 }
@@ -325,23 +323,16 @@ async fn test_node_learns_path_from_announce() {
     assert!(saw_announce, "Should receive announce event");
 
     // Verify the node now has a path to the destination
-    {
-        let inner = node.inner();
-        let core = inner.lock().unwrap();
+    let dest_hash_bytes: [u8; 16] = hex::decode(&dest.hash)
+        .expect("Invalid hex")
+        .try_into()
+        .expect("Wrong length");
+    let dest_hash = reticulum_core::DestinationHash::new(dest_hash_bytes);
 
-        // Decode the destination hash
-        let dest_hash_bytes: [u8; 16] = hex::decode(&dest.hash)
-            .expect("Invalid hex")
-            .try_into()
-            .expect("Wrong length");
-        let dest_hash = reticulum_core::DestinationHash::new(dest_hash_bytes);
-
-        let has_path = core.has_path(&dest_hash);
-        assert!(
-            has_path,
-            "Node should have a path to the announced destination"
-        );
-    } // Lock is dropped here before await
+    assert!(
+        node.has_path(&dest_hash),
+        "Node should have a path to the announced destination"
+    );
 
     node.stop().await.expect("Failed to stop node");
 }
@@ -356,13 +347,9 @@ async fn test_node_builder_creates_node_without_interfaces() {
         .expect("Failed to build node without interfaces");
 
     // Node should be created but have no interfaces
-    let inner = node.inner();
-    let core = inner.lock().unwrap();
-
     // Verify identity exists
-    let identity = core.identity();
     assert_eq!(
-        identity.hash().len(),
+        node.identity_hash().len(),
         16,
         "Identity hash should be 16 bytes"
     );

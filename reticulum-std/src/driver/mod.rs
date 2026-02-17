@@ -76,7 +76,7 @@ use crate::interfaces::InterfaceRegistry;
 use crate::storage::Storage;
 
 /// Type alias for the concrete NodeCore used by std platforms
-pub type StdNodeCore = NodeCore<rand_core::OsRng, SystemClock, Storage>;
+pub(crate) type StdNodeCore = NodeCore<rand_core::OsRng, SystemClock, Storage>;
 
 /// Event channel capacity for NodeEvent delivery to the application.
 /// Must be large enough that slow consumers don't block the event loop.
@@ -333,10 +333,40 @@ impl ReticulumNode {
         self.event_rx.take()
     }
 
+    /// Get the number of active (established) links
+    pub fn active_link_count(&self) -> usize {
+        self.inner.lock().unwrap().active_link_count()
+    }
+
+    /// Get the number of pending (not yet established) links
+    pub fn pending_link_count(&self) -> usize {
+        self.inner.lock().unwrap().pending_link_count()
+    }
+
+    /// Get the node's identity hash (16 bytes)
+    pub fn identity_hash(&self) -> [u8; 16] {
+        *self.inner.lock().unwrap().identity().hash()
+    }
+
+    /// Register a known identity for a destination
+    ///
+    /// Identities are normally learned automatically from received announces.
+    /// Use this for out-of-band identity registration or testing.
+    pub fn remember_identity(
+        &self,
+        dest_hash: DestinationHash,
+        identity: reticulum_core::Identity,
+    ) {
+        self.inner
+            .lock()
+            .unwrap()
+            .remember_identity(dest_hash, identity);
+    }
+
     /// Get a handle to the inner NodeCore
     ///
     /// Use this for direct access to the core API.
-    pub fn inner(&self) -> Arc<Mutex<StdNodeCore>> {
+    pub(crate) fn inner(&self) -> Arc<Mutex<StdNodeCore>> {
         Arc::clone(&self.inner)
     }
 

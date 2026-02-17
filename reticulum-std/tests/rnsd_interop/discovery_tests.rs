@@ -380,30 +380,22 @@ async fn test_multiple_daemon_announces() {
     );
 
     // Verify all paths exist in the node
-    {
-        let inner = node.inner();
-        let core = inner.lock().unwrap();
+    let hash_a: [u8; TRUNCATED_HASHBYTES] = hex::decode(&dest_a.hash).unwrap().try_into().unwrap();
+    let hash_b: [u8; TRUNCATED_HASHBYTES] = hex::decode(&dest_b.hash).unwrap().try_into().unwrap();
+    let hash_c: [u8; TRUNCATED_HASHBYTES] = hex::decode(&dest_c.hash).unwrap().try_into().unwrap();
 
-        let hash_a: [u8; TRUNCATED_HASHBYTES] =
-            hex::decode(&dest_a.hash).unwrap().try_into().unwrap();
-        let hash_b: [u8; TRUNCATED_HASHBYTES] =
-            hex::decode(&dest_b.hash).unwrap().try_into().unwrap();
-        let hash_c: [u8; TRUNCATED_HASHBYTES] =
-            hex::decode(&dest_c.hash).unwrap().try_into().unwrap();
-
-        assert!(
-            core.has_path(&DestinationHash::new(hash_a)),
-            "Path A must exist"
-        );
-        assert!(
-            core.has_path(&DestinationHash::new(hash_b)),
-            "Path B must exist"
-        );
-        assert!(
-            core.has_path(&DestinationHash::new(hash_c)),
-            "Path C must exist"
-        );
-    } // Lock dropped before await
+    assert!(
+        node.has_path(&DestinationHash::new(hash_a)),
+        "Path A must exist"
+    );
+    assert!(
+        node.has_path(&DestinationHash::new(hash_b)),
+        "Path B must exist"
+    );
+    assert!(
+        node.has_path(&DestinationHash::new(hash_c)),
+        "Path C must exist"
+    );
 
     println!("All 3 announces processed and paths verified");
 

@@ -8,13 +8,13 @@ use std::time::Instant;
 /// System clock using `std::time::Instant`
 ///
 /// Monotonic, suitable for timeouts and RTT measurement.
-pub struct SystemClock {
+pub(crate) struct SystemClock {
     start: Instant,
 }
 
 impl SystemClock {
     /// Create a new system clock (epoch = now)
-    pub fn new() -> Self {
+    pub(crate) fn new() -> Self {
         Self {
             start: Instant::now(),
         }

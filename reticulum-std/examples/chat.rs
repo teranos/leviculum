@@ -41,9 +41,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Start the node
     node.start().await?;
 
-    // Get a handle to the inner node for direct operations
-    let inner = node.inner();
-
     // Take the event receiver
     let mut events = node
         .take_event_receiver()
@@ -167,10 +164,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     break;
                 }
                 "/status" => {
-                    let core = inner.lock().unwrap();
                     println!("Node Status:");
-                    println!("  Active links: {}", core.active_link_count());
-                    println!("  Pending links: {}", core.pending_link_count());
+                    println!("  Active links: {}", node.active_link_count());
+                    println!("  Pending links: {}", node.pending_link_count());
                 }
                 "/help" | "/?" => {
                     println!("Commands:");
