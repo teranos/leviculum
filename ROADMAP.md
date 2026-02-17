@@ -20,8 +20,9 @@
 | Version | Phase | Status |
 |---------|-------|--------|
 | 0.1.0 | Phase 1: Protokoll-Fundament | ✅ |
-| **0.2.0** | Phase 2: Core API & Full Node | 🔶 Aktuell (~80%) |
-| 0.3.0 | Phase 3: Datenübertragung & Release-Vorbereitung | ⬜ |
+| 0.2.0 | Phase 2: Core API & Full Node | ✅ (bis auf TCP Server) |
+| **0.5.19** | Aktuelle Version (Refactoring Phasen 0–7 abgeschlossen) | 🔶 Aktuell |
+| 0.6.0 | Phase 3: Datenübertragung & Release-Vorbereitung | ⬜ |
 | **1.0.0** | Erstes stabiles Release | ⬜ |
 | 1.1.0 | Phase 5-7: Hardware, C-API, Android | ⬜ |
 
@@ -29,56 +30,53 @@
 
 ## Aktueller Stand
 
-Das Projekt hat Phase 1 vollständig abgeschlossen und Phase 2 ist zu ~85% fertig — neben TCP Server (Meilenstein 2.4) fehlen IFAC/Ratchet-Integration und API-Vervollständigung. Kritische Bugs C8 (Link-Daten verworfen), C9 (Channel-ACKs) und D12 (close_connection) sind in v0.5.5 behoben. **Responder-Pfad komplett (v0.5.6):** `ReticulumNode::accept_connection()` exponiert, `MessageReceived`-Routing im Driver repariert, `NodeCore::accept_connection()` sucht Identity intern aus der registrierten Destination. Meilensteine 2.1 (Destination API), 2.2 (Link-Responder), 2.3 (High-Level Link API inkl. Keepalive) und 2.5 (Transport Layer) sind abgeschlossen. Meilenstein 3.2 (Channel-System inkl. Buffer-System) ist ebenfalls fertig — StreamDataMessage für binäre Streams und RawChannelReader/Writer für gepufferte I/O sind implementiert. **High-Level Node API** (`NodeCore` in reticulum-core, `ReticulumNode` in reticulum-std) bietet eine einheitliche async-kompatible Schnittstelle mit Smart Routing, Connection-Abstraktion und symmetrischer Channel-API. Vollständige Interoperabilität mit Python rnsd ist nachgewiesen. **CLI-Tool `lrns`** existiert mit Subcommands: `status`, `path`, `identity`, `probe`, `interfaces`, `connect`. `identity` und `connect` sind voll implementiert (`connect` bietet interaktive Sessions mit Announce-Discovery, Link-Management und bidirektionalem Datenaustausch), die anderen sind Gerüste mit "Not implemented yet".
+**Aktuelle Version: 0.5.19.** Phase 1 (Protokoll-Fundament) und Phase 2 (Core API & Full Node) sind vollständig abgeschlossen bis auf Meilenstein 2.4 (TCP Server / lrnsd-Daemon). Zusätzlich wurde ein umfassendes 7-phasiges Code-Refactoring durchgeführt (63 Issues in `doc/BATTLEPLAN.md`), das die gesamte Codebasis bereinigt hat: Cleanup, Test-Infrastruktur, Bug-Fixes, Renames (Connection→Link), strukturelle Auflösung des LinkManagers, Konsolidierung (Receipt-Tracking, Destination-SSOT), und API-Polish (Naming, Visibility, Single-Packet-Verschlüsselung). Nur ein offenes Issue verbleibt: E9 (persistente Speicherung von `known_identities` und `path_table`).
 
-**Sans-I/O-Architektur abgeschlossen:** `reticulum-core` ist jetzt ein reiner Zustandsautomat ohne jegliche direkte I/O-Operationen. `NodeCore` nimmt eingehende Pakete via `handle_packet()` entgegen und gibt `Action`-Werte (`SendPacket`, `Broadcast`) zurück, die der Treiber ausführt. Der Treiber in `reticulum-std` besitzt die Interfaces, liest Pakete, speist sie in den Core, und dispatcht die resultierenden Actions. `TransportRunner` wurde entfernt; `ReticulumNode` ist der einheitliche Treiber. Diese Architektur ermöglicht den Einsatz auf Embedded-Plattformen ohne `std`.
+**Kernfunktionalität:** `NodeCore` (reticulum-core) und `ReticulumNode` (reticulum-std) bieten eine einheitliche async-kompatible API für Destinations, Links, Channels, Single-Packet-Verschlüsselung und Proof-Delivery. Vollständige Interoperabilität mit Python rnsd ist nachgewiesen (176 Interop-Tests). **CLI-Tool `lrns`** existiert mit Subcommands: `status`, `path`, `identity`, `probe`, `interfaces`, `connect`. `identity` und `connect` sind voll implementiert, die anderen sind Gerüste.
 
-**Async Event Loop (v0.3.2):** Die Event-Loop in `reticulum-std` nutzt jetzt `tokio::select!` statt 50ms-Polling. Der Treiber wacht sofort auf bei Socket-Lesbarkeit, ausgehenden Daten oder Timer-Ablauf — ohne Latenz-Overhead und mit minimalem CPU-Verbrauch im Leerlauf.
-
-**ConnectionStream send-only (v0.5.10):** `ConnectionStream` ist jetzt rein send-only — `recv()`, `sender()`, `AsyncRead`-Impl und `ConnectionSender` wurden entfernt. Empfangene Daten werden ausschließlich über `NodeEvent::DataReceived`/`MessageReceived` auf dem Event-Channel zugestellt. Die vorherige Dual-Delivery-Architektur (Event-Channel + per-Stream `incoming_rx`) verursachte stille "channel full"-Warnungen, da Konsumenten immer nur einen Pfad nutzten. Python Reticulum hat genau einen Zustellpfad pro Paketkontext — diese Änderung stellt die Übereinstimmung her. **ConnectionStream WindowFull-Fix (v0.5.14):** `send()` routete Daten über einen mpsc-Kanal zur Event-Loop, die `WindowFull`-Fehler still verwarf — der Caller erhielt `Ok(())` für nie gesendete Nachrichten. Jetzt lockt `ConnectionStream` den Core direkt (wie `PacketEndpoint`) und gibt den echten Fehler zurück (`WouldBlock` für `WindowFull`). mpsc-Branch und `AsyncWrite`-Impl entfernt.
-
-**Channel-Bridge-Architektur (v0.4.0):** Interfaces laufen jetzt als eigenständige Tokio-Tasks und kommunizieren über `mpsc`-Channels mit der Event-Loop. `reticulum-net` (neues `no_std`-Crate) definiert die gemeinsamen Datentypen (`IncomingPacket`, `OutgoingPacket`, `InterfaceInfo`), die sowohl auf std- als auch Embedded-Plattformen funktionieren. `reticulum-nrf` ist ein Embassy-basiertes Firmware-Crate für den Heltec Mesh Node T114 (nRF52840 + SX1262) mit vollständigen Pin-Mappings, USB Composite CDC-ACM (Debug-Log + Reticulum-Transport als zwei serielle Ports), `info!`/`warn!`-Logging-Makros, FICR-basierter USB-Seriennummer, udev-Regeln für stabile Gerätesymlinks, und einem automatisierten Flash-und-Verify-Testharnisch (`tools/flash-and-read.sh`).
-
-**Sofortige Action-Rückgabe (v0.5.0, vormals Deferred-Dispatch v0.3.1):** Alle Applikationsmethoden (`connect()`, `accept_connection()`, `send_on_connection()`, `close_connection()`, `send_single_packet()`, `announce_destination()`) geben `TickOutput` direkt zurück — Actions werden sofort geflusht statt erst beim nächsten `handle_timeout()`. Der Treiber dispatcht die zurückgegebenen Actions genauso wie bei `handle_packet()`/`handle_timeout()`. `Link.attached_interface` (analog zu Python) steuert das Routing für Link-gebundenen Verkehr.
-
-**Architektur-Migration abgeschlossen:** `NodeCore` besitzt RNG intern als generischen Parameter (`NodeCore<R, C, S>`). Alle Runtime-Methoden (`handle_packet()`, `connect()`, etc.) benötigen keinen `Context`-Parameter mehr. Die `Context`-Trait-Abstraktion wurde vollständig entfernt — Funktionen nehmen direkt `rng: &mut R` und `now_ms: u64` als Parameter. Alle `#[cfg(feature = "alloc")]` wurden entfernt — `alloc` ist immer verfügbar. Das `std` Feature aktiviert nur noch optimierte Crypto-Implementierungen.
+**Sans-I/O-Architektur:** `reticulum-core` ist ein reiner Zustandsautomat. `NodeCore` nimmt Pakete via `handle_packet()` entgegen und gibt `Action`-Werte (`SendPacket`, `Broadcast`) über `TickOutput` zurück. Der Treiber `ReticulumNode` in `reticulum-std` besitzt die Interfaces, liest Pakete, speist sie in den Core, und dispatcht Actions. Interfaces laufen als eigenständige Tokio-Tasks (Channel-Bridge-Architektur). Die Event-Loop nutzt `tokio::select!` — kein Polling. `reticulum-nrf` ist ein Embassy-basiertes Firmware-Crate für den Heltec Mesh Node T114 (nRF52840 + SX1262).
 
 **Ratchet & IFAC:** Kryptographische Module implementiert und unit-getestet. IFAC ist noch nicht in den Paketempfangspfad eingebunden. Ratchet-Validierung ist bei Announces und Link-Establishment noch nicht aktiv.
 
-**Transport Layer vollständig (3.676 LOC):** Announce-Rebroadcast, PATH_REQUEST/PATH_RESPONSE, Reverse-Path-Routing, Link-Tabellenverwaltung, Hop-Count-Validation, Header-Stripping am letzten Hop, Announce-Replay-Schutz, LRPROOF-Validierung, Auto-Re-Announce auf PATH_REQUEST. **Path Recovery** (v0.4.2/v0.4.3): Pfad-Zustandsverfolgung (`PathState`), automatische Markierung als unresponsive bei abgelaufenen unvalidierten Links, Akzeptanz von Same-Emission-Announces über Alternativrouten, direkte `request_path()`-Aufrufe aus dem Core für Pfad-Neuentdeckung. **Announce Rate Limiting** (v0.4.4): Per-Destination-Violation/Grace/Penalty-Eskalationsmechanismus analog zu Python Transport.py:1692-1719, blockiert nur Rebroadcast (nicht Pfad-Updates), konfigurierbar und standardmäßig deaktiviert. **Hop-Threshold-Korrektur** (v0.5.2): 4 Off-by-One-Bugs in Forwarding-Schwellwerten behoben (Python inkrementiert `hops` bei Empfang, Rust nicht — aus Python kopierte Schwellwerte waren um 1 daneben). `PathEntry::is_direct()` und `PathEntry::needs_relay()` kapseln die Semantik-Differenz und verhindern Wiederholung. **Rust Transport Relay** funktioniert vollständig: Announce-Rebroadcast, Link-Routing und Datenweiterleitung zwischen zwei Python-Daemons getestet. **Gemischte Relay-Ketten** (Rust + Python Relays in Serie) funktionieren inklusive Link-Establishment und bidirektionaler Datenübertragung über die volle Kette.
+**Transport Layer vollständig (~2.250 LOC Produktion):** Announce-Rebroadcast, PATH_REQUEST/PATH_RESPONSE, Reverse-Path-Routing, Link-Tabellenverwaltung, Hop-Count-Validation, LRPROOF-Validierung, Path Recovery, Announce Rate Limiting. Multi-Hop-Relay funktioniert vollständig, inklusive gemischter Rust+Python-Ketten.
 
-**Code-Qualität:** LinkManager intern auf einheitliche Paket-Queue (`PendingPacket` Enum) umgestellt, Timeout-Konstanten zentralisiert, `LinkId` und `DestinationHash` als Newtype-Structs für vollständige Typ-Sicherheit (keine `Deref` mehr, kein `as_bytes_mut()`). Proof-Strategy und Signing-Key von LinkManager's Destination-Map auf den `Link` selbst verschoben — reduziert duplizierte State zwischen Transport, LinkManager und NodeCore. **Post-Audit-Cleanup (v0.5.11):** `Identity::encrypt()` gibt jetzt `Result` zurück (kein `unwrap()` in Produktion), `pub use reticulum_core::*` in reticulum-std durch gezielte Re-Exports ersetzt, ungenutzte Konstante und leeres `resource`-Modul entfernt, `Direction`/`DestinationType` von Crate-Root re-exportiert. **PacketEndpoint & Single-Packet-Fix (v0.5.12):** `PacketEndpoint`-Handle als Gegenstück zu `ConnectionStream` für single-packet Destinations, `send_to_destination()` konvertiert jetzt Type1→Type2 bei Relay-Routing (analog Python Transport.outbound()). `lrns connect`: `/target`, `/untarget` Befehle; `lrns selftest --mode packet|link|all` mit Phase 8 (single-packet sustained exchange). **Peers-Anzeige-Fix (v0.5.13):** `/peers` Hop-Count statt `?` (PathFound-Event-Ordering), Msgpack-Parser für app_data (fixarray, fixmap, bin/str-Wrapper, printable-ASCII-Fallback) — kein `from_utf8_lossy`-Datenmüll mehr. ~907 Tests bestehen (590 Core-Unit + 24 Std-Lib + 177 Interop + 26 Doctests + 18 Proptest + 31 Test-Vektoren + 7 Core-Integration + 3 Std-Integration + 29 CLI + 1 FFI). **Architektur- und Test-Review abgeschlossen:** 3-teiliges Architektur-Audit (Ownership-Graph, Hot Paths, Split-Brain-Risiken, Core/Std-Schichtentrennung, API-Oberfläche) und 2-teiliges Test-Audit (938-Test-Inventar, Abdeckungslücken, Fragilität, Konsolidierungsplan). 58 identifizierte Issues in `doc/OPEN_ISSUES_TRACKER.md` mit 4-Phasen-Bereinigungsplan.
+**Single-Packet-Verschlüsselung (E8):** `send_single_packet()` verschlüsselt automatisch mit der Remote-Identity aus `known_identities` (gelernt aus Announces). Empfangsseitig wird mit der lokalen Destination entschlüsselt. Proof-Delivery-Chain vollständig (PROVE_ALL, PROVE_APP, PROVE_NONE).
 
-| Komponente | Status | LOC |
+| Komponente | Status | LOC (gesamt) |
 |------------|--------|-----|
-| Kryptographie (AES, SHA, HMAC, HKDF, Token) | ✅ Fertig | 1.030 |
-| Identity-Management (Schlüsselpaare, Signaturen, Encrypt/Decrypt) | ✅ Fertig | 1.194 |
-| Packet-Strukturen (alle Typen, Header 1/2) | ✅ Fertig | 411 |
-| Announce (Erstellung, Validierung, Signaturprüfung) | ✅ Fertig | 681 |
-| Destination (Hashing, Typen, Ratchets) | ✅ Fertig | 921 |
-| Ratchet (Forward Secrecy) | ⚠️ Krypto fertig, Validierung nicht eingebunden | 419 |
-| IFAC (Interface Access Codes) | ⚠️ Modul fertig, nicht in Empfangspfad eingebunden | 378 |
-| Link-State-Machine (Handshake, Proof, RTT, Data) | ✅ Initiator + Responder | 1.800 |
-| Transport Layer (Routing, Pfade, Announces, Relay) | ✅ Fertig | 3.676 |
-| HDLC-Framing (no_std + alloc) | ✅ Fertig | 577 |
-| Interface-Traits + TCP-Client (Channel-basiert) | ✅ Fertig | 623 |
-| reticulum-net (Shared Interface-Datentypen, no_std) | ✅ Fertig | 48 |
-| Sans-I/O Driver (async select!, kein Polling) | ✅ Fertig | 224 |
-| Reticulum-Instanz + Config + Storage | ✅ Fertig | 597 |
-| FFI/C-API | ✅ Grundfunktionen | 361 |
-| Tests (Rust + C) | | ~19.700 |
-| **Gesamt** | | **~25.000** |
+| Kryptographie (AES, SHA, HMAC, HKDF, Token) | ✅ Fertig | 1.465 |
+| Identity-Management (Schlüsselpaare, Signaturen, Encrypt/Decrypt) | ✅ Fertig | 1.239 |
+| Packet-Strukturen (alle Typen, Header 1/2) | ✅ Fertig | 619 |
+| Announce (Erstellung, Validierung, Signaturprüfung) | ✅ Fertig | 777 |
+| Destination (Hashing, Typen, Ratchets, Encrypt/Decrypt) | ✅ Fertig | 1.536 |
+| Receipt (Delivery-Tracking, Proof-Validierung) | ✅ Fertig | 373 |
+| Ratchet (Forward Secrecy) | ⚠️ Krypto fertig, Validierung nicht eingebunden | 651 |
+| IFAC (Interface Access Codes) | ⚠️ Modul fertig, nicht in Empfangspfad eingebunden | 484 |
+| Link-State-Machine (Handshake, Proof, RTT, Data) | ✅ Initiator + Responder | 2.727 |
+| Channel/Buffer (Reliable Messaging, Streams) | ✅ Fertig | 3.790 |
+| Node (High-Level API, Builder, Events, LinkManagement) | ✅ Fertig | 5.671 |
+| Transport Layer (Routing, Pfade, Announces, Relay) | ✅ Fertig | 7.925 |
+| HDLC-Framing (no_std + alloc) | ✅ Fertig | 583 |
+| Constants, Traits, Utilities | ✅ Fertig | 750 |
+| **reticulum-core Gesamt** | | **~29.000** |
+| reticulum-net (Shared Interface-Datentypen, no_std) | ✅ Fertig | 44 |
+| reticulum-std (Driver, TCP, Storage) | ✅ Fertig | 2.450 |
+| reticulum-ffi (C-API) | ✅ Grundfunktionen | 368 |
+| reticulum-cli (lrns) | 🔶 Teilweise | 2.800 |
+| Tests (alle Crates) | | ~38.500 |
+| **Gesamt** | | **~73.000** |
 
 **Crate-Aufteilung:**
 | Crate | src LOC | test LOC | Beschreibung |
 |-------|---------|----------|-------------|
-| reticulum-core | 22.087 | 1.527 | Protokoll-Logik (no_std) |
-| reticulum-net | 48 | — | Shared Interface-Datentypen (no_std) |
-| reticulum-std | 2.182 | 10.418 | Plattform-Glue (tokio, TCP) |
+| reticulum-core | 28.993 | 1.536 | Protokoll-Logik (no_std), inkl. ~16K inline tests |
+| reticulum-net | 44 | — | Shared Interface-Datentypen (no_std) |
+| reticulum-std | 2.450 | 19.366 | Plattform-Glue (tokio, TCP), inkl. 176 Interop-Tests |
 | reticulum-nrf | ~400 | — | Embedded-Firmware (Embassy, nRF52840, USB CDC-ACM) |
-| reticulum-ffi | 361 | 404 | C-API |
+| reticulum-ffi | 368 | 97 | C-API |
+| reticulum-cli | 2.800 | — | CLI-Tool (lrns) |
 
-**Test-Abdeckung:** ~907 Tests (590 Core-Unit + 18 Proptest + 31 Test-Vektoren + 26 Doctests + 24 Std-Lib + 7 Core-Integration + 3 Std-Integration + 177 Interop gegen rnsd + 29 CLI + 1 FFI)
+**Test-Abdeckung:** ~960 Tests (619 Core-Unit + 19 Doctests + 49 Core-Integration (Proptest + Test-Vektoren) + 28 Std-Lib + 176 Interop gegen rnsd + 1 FFI + CLI)
 
 **Architektur:** Siehe [doc/ARCHITECTURE.md](doc/ARCHITECTURE.md) — no_std/embedded-freundlich, sans-I/O Core (reine Zustandsmaschine), I/O via Action-Rückgabewerte an den Treiber.
 
@@ -182,7 +180,7 @@ let events = link_manager.drain_events();
 - [x] Link-Stale-Erkennung und automatisches Schließen nach Timeout
 - [x] Link-Teardown (ordnungsgemäßes Schließen via `close()` mit LINKCLOSE-Paket)
 
-**Einschränkungen behoben (v0.5.5):** C8 (Link-adressierte Pakete verworfen) und D12 (close_connection nicht exponiert) sind behoben — LINKCLOSE, Keepalive-Echos und Channel-ACKs erreichen jetzt LinkManager korrekt. **Responder-Pfad komplett (v0.5.6):** `ReticulumNode::accept_connection()` als async Wrapper, `MessageReceived`-Routing im Driver repariert. **Stale→Active Recovery (v0.5.8):** Links können jetzt aus dem Stale-Zustand zurück in Active wechseln wenn Traffic eingeht (analog zu Python Link.py:987-988). Proof-Chain-Instrumentierung mit `tracing` für Debugging von Channel-Proof-Delivery-Problemen. **Channel-Proof-Fix (v0.5.9):** Channel-Data-Proofs wurden still nicht generiert — Signing-Key-Speicherung war auf `proof_strategy != None` beschränkt (Responder-Bug), und Initiator hatte keinen Zugriff auf den ephemeren Signing-Key für Proof-Generierung. `Link::proof_signing_key()` vereinheitlicht beide Pfade analog zu Pythons `Link.sig_prv`.
+Alle bekannten Bugs behoben: Link-adressierte Pakete (C8), Channel-ACKs (C9), Close-API (D12), Stale→Active Recovery, Channel-Proof-Generierung. Proof-Strategy und Signing-Key auf dem Link-Objekt konsolidiert.
 
 ```rust
 // Implementierte API (via LinkManager):
@@ -245,8 +243,8 @@ Die folgende Liste wurde durch eine systematische 5-Runden-Lückenanalyse (Start
 |----|---------|-------------|------------------|
 | C8 | ✅ Behoben (v0.5.5) | `Transport::handle_data()` verwirft Link-adressierte Data-Pakete auf Non-Transport-Nodes still — behoben durch Link-adressierte Paket-Zustellung + Proof-Routing-Erweiterung. | `transport.rs` |
 | C9 | ✅ Behoben (v0.5.5) | `Channel::mark_delivered()` wird in Produktion nie aufgerufen — behoben durch vollständige Proof-Delivery-Chain (Receiver-Proof-Generierung, Sender-Receipt-Registrierung, mark_delivered-Aufruf). | `link/manager.rs`, `node/mod.rs` |
-| D11 | 🟡 Mittel | `handle_interface_down()` räumt Transport-Tabellen auf, aber nicht LinkManager. Links auf toten Interfaces bleiben ~12 Min als Zombies bestehen. | `node/mod.rs:701-737` |
-| D13 | 🟠 Niedrig | Geschlossene Links werden nie aus `LinkManager::links` entfernt — `close()` setzt Status aber löscht nicht aus BTreeMap. Speicherleck bei langlebigen Nodes. | `link/manager.rs:421-441` |
+| D11 | ✅ Behoben | `handle_interface_down()` räumt jetzt Pfade, Link-Tabelle und Reverse-Tabelle auf. Links auf toten Interfaces werden per Keepalive-Timeout geschlossen. LinkManager aufgelöst (Phase 5). | `node/mod.rs` |
+| D13 | ✅ Behoben | `close_link()` entfernt Links aus der BTreeMap. Stale- und Timeout-Links werden ebenfalls korrekt entfernt. | `node/link_management.rs` |
 
 #### Fehlende Integrationen
 
@@ -254,16 +252,15 @@ Die folgende Liste wurde durch eine systematische 5-Runden-Lückenanalyse (Start
 |----|-------------|--------|
 | B3 | IFAC-Modul existiert, ist aber nicht in den Paketempfangspfad eingebunden | ⚠️ Modul fertig |
 | B4 | Ratchet-Krypto funktioniert, aber Validierung bei Announces/Links nicht aktiv | ⚠️ Krypto fertig |
-| C10 | Buffer/Stream-System (1091 LOC) existiert, ist aber nicht in ConnectionStream integriert | ⚠️ Code fertig |
-| D12 | `NodeCore::close_connection()` funktioniert, aber nicht über `ReticulumNode` exponiert | ✅ Behoben (v0.5.5) |
+| C10 | Buffer/Stream-System existiert, ist aber nicht in LinkHandle integriert | ⚠️ Code fertig |
+| D12 | `NodeCore::close_link()` über `ReticulumNode` exponiert | ✅ Behoben |
 
 #### Fehlende Features
 
 | ID | Beschreibung |
 |----|-------------|
 | A2 | Keine TCP-Reconnection-Logik — Interface geht bei Verbindungsabbruch permanent verloren |
-| E15 | Kein `wait_established()` API auf ConnectionStream — Anwendungen können nicht auf Link-Handshake warten |
-| E16 | LRPROOF und Receipt sind beide 96 Bytes — Disambiguierung nur über Receipt-Tabellen-Lookup, kein Typ-Feld |
+| E9 | Persistente Speicherung für known_identities und path_table (siehe `doc/OPEN_ISSUES_TRACKER.md`) |
 
 ---
 
@@ -291,7 +288,7 @@ Zuverlässiger Dateitransfer zwischen Rust und Python. Release-Qualität erreich
 - [x] Buffer-System (RawChannelReader, RawChannelWriter, BufferedChannelWriter)
 - [x] BZ2-Kompression für Stream-Daten
 
-**Deliverable:** ⚠️ Channel-Envelope funktioniert inkl. mark_delivered() und Retransmission (v0.5.5/v0.5.15). Backward-Sequence-Handling für verloren gegangene Proofs behoben (v0.5.16). Sender-seitiges Pacing mit AIMD-Congestion-Control (v0.5.17): Sends werden gleichmäßig über die RTT verteilt statt burst-artig bis WindowFull; Additive Increase bei Delivery, Multiplicative Decrease bei Retransmit. Timeout- und RTT-Tuning (v0.5.18): Live-Timeout-Berechnung in poll() statt eingefrorener Werte, Smoothed-RTT (RFC 6298) mit Karn-Algorithmus, MAX_TRIES 5→8, erste Retransmission überspringt Pacing-MD. Pacing-Fix (v0.5.19): `recalculate_pacing()` nutzt jetzt SRTT statt Handshake-RTT — bei gemessenem SRTT (~200ms) und hohem Handshake-RTT (1200ms) war Pacing viel zu konservativ. Buffer/Stream-Layer nicht in ConnectionStream integriert
+**Deliverable:** ⚠️ Channel-Envelope funktioniert inkl. mark_delivered(), Retransmission, AIMD-Congestion-Control und Smoothed-RTT (RFC 6298). Buffer/Stream-Layer nicht in LinkHandle integriert
 
 ---
 
@@ -317,7 +314,7 @@ Production-ready: QA, zusätzliche Interfaces, Dokumentation.
 - [ ] Async interface connect path — `spawn_tcp_interface()` connects synchronously (blocking on tokio thread), which is fine at startup but blocks the event loop for runtime hot-plug. Prerequisite for USB and BLE interface support. The channel-based `InterfaceRegistry` already supports dynamic `register()`, only the connect step needs an async variant.
 
 ### Qualitätssicherung
-- [x] Integration-Tests gegen rnsd-Daemon (177 Tests)
+- [x] Integration-Tests gegen rnsd-Daemon (176 Tests)
 - [ ] Performance-Optimierung
 - [ ] Speicher-Profiling mit Valgrind
 - [ ] Fuzzing der Paket-Parser
@@ -381,7 +378,7 @@ Testumgebung:
 └─────────────┘      └─────────────┘
 ```
 
-Automatisierte Test-Suite (177 Interop-Tests in 26 Modulen gegen rnsd):
+Automatisierte Test-Suite (176 Interop-Tests in 26 Modulen gegen rnsd):
 - ✅ TCP-Verbindung zu rnsd
 - ✅ Pakete empfangen und senden
 - ✅ Announce-Erstellung und -Validierung
@@ -410,13 +407,12 @@ Automatisierte Test-Suite (177 Interop-Tests in 26 Modulen gegen rnsd):
 
 ## Aufwandsschätzung
 
-| Phase | Geschätzte LOC | Komplexität |
-|-------|---------------|-------------|
-| Phase 1: Protokoll-Fundament | ~3.000 ✅ | Mittel |
-| Phase 2: Core API & Full Node | ~2.500 🔶 (~80%) | Hoch |
-| Phase 3: Datenübertragung & Release | ~4.500 | Mittel |
-| **Gesamt neu** | **~10.000** | |
-| **Gesamt (inkl. bestehend)** | **~25.000** | |
+| Phase | Status |
+|-------|--------|
+| Phase 1: Protokoll-Fundament | ✅ Fertig |
+| Phase 2: Core API & Full Node | ✅ Fertig (bis auf TCP Server) |
+| Refactoring Phasen 0–7 (63 Issues) | ✅ Fertig |
+| Phase 3: Datenübertragung & Release | ⬜ Offen |
 
 ---
 
@@ -425,7 +421,7 @@ Automatisierte Test-Suite (177 Interop-Tests in 26 Modulen gegen rnsd):
 | Risiko | Wahrscheinlichkeit | Mitigation |
 |--------|-------------------|------------|
 | Transport Layer komplexer als erwartet | ✅ Gelöst | 3.676 LOC, vollständig implementiert |
-| Interop-Probleme mit Python | Mittel | Frühe und kontinuierliche Tests (177 Interop-Tests) |
+| Interop-Probleme mit Python | Mittel | Frühe und kontinuierliche Tests (176 Interop-Tests) |
 | Performance-Probleme bei async | Niedrig | Profiling ab Phase 2 |
 | no_std-Kompatibilitätsprobleme | ✅ Gelöst | Context-Trait entfernt, direkte RNG/time-Parameter |
 | Resource Transfer Komplexität | Mittel | Sliding-Window, Hashmap, Compression — frühzeitig planen |
@@ -435,31 +431,23 @@ Automatisierte Test-Suite (177 Interop-Tests in 26 Modulen gegen rnsd):
 ## Meilenstein-Übersicht
 
 ```
-Monat 1    Monat 2    Monat 3       Monat 4       Monat 5         Monat 6
-   │          │          │             │             │               │
-   ▼          ▼          ▼             ▼             ▼               ▼
 ┌──────────────────┐┌─────────────────────────┐┌────────────────────────────────┐
 │ Phase 1          ││ Phase 2                 ││ Phase 3                        │
 │ Protokoll-       ││ Core API & Full Node    ││ Datenübertragung &             │
-│ Fundament ✅     ││ (~80%) 🔶              ││ Release-Vorbereitung           │
+│ Fundament ✅     ││ ✅ (bis auf TCP Server) ││ Release-Vorbereitung ⬜        │
 └──────────────────┘└─────────────────────────┘└────────────────────────────────┘
         │                      │                           │
         ▼                      ▼                           ▼
-   Link zu Python      Transport Relay ✅           Resource Transfer
-   funktioniert ✅     High-Level Link API ✅       TCP Server → lrnsd
-                       lrns CLI (teilw.)             Version 1.0 Release
+   Link zu Python ✅    Transport Relay ✅           Resource Transfer
+   Verschlüsselung ✅   High-Level Link API ✅       TCP Server → lrnsd
+   Proofs ✅             Refactoring ✅ (63 Issues)   Version 1.0 Release
 ```
 
 ### Kritischer Pfad bis v1.0
 
 ```
 ┌─────────────────────┐
-│ C8 handle_data-Bug  │ ✅ Behoben (v0.5.5)
-│     fix             │
-└─────────┬───────────┘
-          ▼
-┌─────────────────────┐
-│ 2.4 TCP Server      │ ⬜ Offen — letzter Phase-2-Meilenstein
+│ 2.4 TCP Server      │ ⬜ Offen
 │     lrnsd Basis     │
 └─────────┬───────────┘
           ▼
@@ -469,7 +457,7 @@ Monat 1    Monat 2    Monat 3       Monat 4       Monat 5         Monat 6
 └─────────┬───────────┘
           ▼
 ┌─────────────────────┐
-│ 3b Release QA       │ ⬜ Offen — Fuzzing, Valgrind, Docs
+│ 3b Release QA       │ ⬜ Offen — Fuzzing, Docs, IFAC, Ratchet
 │    Version 1.0      │
 └─────────────────────┘
 ```
@@ -487,7 +475,7 @@ Monat 1    Monat 2    Monat 3       Monat 4       Monat 5         Monat 6
 - [ ] Resource Transfer: Dateien übertragen
 - [ ] TCP Server Interface
 - [ ] `lrnsd` Daemon läuft standalone
-- [x] Integration-Tests gegen Python rnsd bestehen (177 Interop-Tests)
+- [x] Integration-Tests gegen Python rnsd bestehen (176 Interop-Tests)
 - [x] no_std-Kompatibilität für reticulum-core
 - [ ] Forward Secrecy via Ratchets — ⚠️ Krypto fertig, Validierung nicht eingebunden
 - [ ] Interface Access Codes (IFAC) — ⚠️ Modul fertig, nicht in Empfangspfad eingebunden
@@ -975,13 +963,10 @@ Minimale Hürden für Android-Entwickler durch native Kotlin-API und AAR-Paket.
 ## Meilenstein-Übersicht (Gesamt)
 
 ```
-Monat 1-2      Monat 3-4      Monat 5-6                  Monat 7        Monat 8        Monat 9
-    │              │             │                          │              │              │
-    ▼              ▼             ▼                          ▼              ▼              ▼
 ┌────────────┐┌────────────┐┌───────────────────────┐  ┌────────────┐┌────────────┐┌────────────┐
 │  Phase 1   ││  Phase 2   ││ Phase 3               │  │  Phase 5   ││  Phase 6   ││  Phase 7   │
 │  Protokoll ││  Netzwerk  ││ Datenübertragung &    │  │  Hardware  ││  C-API &   ││  Android   │
-│   ✅       ││  (~80%) 🔶 ││ Release-Vorbereitung  │  │  Interfaces││  Debian    ││            │
+│   ✅       ││  ✅        ││ Release ⬜            │  │  Interfaces││  Debian    ││            │
 └────────────┘└────────────┘└───────────────────────┘  └────────────┘└────────────┘└────────────┘
       │              │                  │                    │              │              │
       ▼              ▼                  ▼                    ▼              ▼              ▼
@@ -1024,6 +1009,6 @@ Für spätere Versionen:
 
 ---
 
-*Stand: 15. Februar 2026*
+*Stand: 17. Februar 2026*
 *Projekt: leviculum*
 *Lizenz: MIT*
