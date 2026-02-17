@@ -10,11 +10,11 @@ use std::io;
 use std::net::ToSocketAddrs;
 use std::time::Duration;
 
+use super::{IncomingPacket, InterfaceInfo, OutgoingPacket};
 use rand_core::RngCore;
 use reticulum_core::constants::MTU;
 use reticulum_core::framing::hdlc::{frame, DeframeResult, Deframer};
 use reticulum_core::transport::InterfaceId;
-use reticulum_net::{IncomingPacket, InterfaceInfo, InterfaceKind, OutgoingPacket};
 use tokio::io::AsyncWriteExt;
 use tokio::sync::mpsc;
 
@@ -108,11 +108,7 @@ pub(crate) fn spawn_tcp_interface<A: ToSocketAddrs>(
     });
 
     Ok(InterfaceHandle {
-        info: InterfaceInfo {
-            id,
-            name,
-            kind: InterfaceKind::Tcp,
-        },
+        info: InterfaceInfo { id, name },
         incoming: incoming_rx,
         outgoing: outgoing_tx,
     })
@@ -246,7 +242,6 @@ mod tests {
 
         assert_eq!(handle.info.name, "test_tcp");
         assert_eq!(handle.info.id, InterfaceId(0));
-        assert_eq!(handle.info.kind, InterfaceKind::Tcp);
 
         // Accept the connection on the listener side
         let (_server_stream, _peer) = listener.accept().unwrap();

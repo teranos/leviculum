@@ -14,7 +14,6 @@ compression = ["reticulum-core/compression"]
 
 [dependencies]
 reticulum-core = { path = "../reticulum-core", default-features = true }
-reticulum-net = { path = "../reticulum-net", features = ["std"] }
 rand_core = { version = "0.6", features = ["std", "getrandom"] }
 
 tokio.workspace = true

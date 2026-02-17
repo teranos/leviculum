@@ -14,8 +14,23 @@ pub(crate) mod tcp;
 
 use reticulum_core::traits::{InterfaceError, InterfaceMode};
 use reticulum_core::transport::InterfaceId;
-use reticulum_net::{IncomingPacket, InterfaceInfo, OutgoingPacket};
 use tokio::sync::mpsc;
+
+/// Packet received from an interface, ready for the event loop
+pub(crate) struct IncomingPacket {
+    pub data: Vec<u8>,
+}
+
+/// Packet to send out through an interface
+pub(crate) struct OutgoingPacket {
+    pub data: Vec<u8>,
+}
+
+/// Metadata describing a registered interface
+pub(crate) struct InterfaceInfo {
+    pub id: InterfaceId,
+    pub name: String,
+}
 
 /// Incoming channel capacity for TCP interfaces.
 /// Sized to absorb short bursts without backpressure; at MTU=500 this is 16 KB.

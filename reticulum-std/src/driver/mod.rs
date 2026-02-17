@@ -60,13 +60,13 @@ use std::time::Duration;
 
 use tokio::sync::{mpsc, watch};
 
+use crate::interfaces::IncomingPacket;
 use reticulum_core::constants::TRUNCATED_HASHBYTES;
 use reticulum_core::link::LinkId;
 use reticulum_core::node::{NodeCore, NodeEvent};
 use reticulum_core::traits::InterfaceError;
 use reticulum_core::transport::{InterfaceId, TickOutput};
 use reticulum_core::{Destination, DestinationHash};
-use reticulum_net::IncomingPacket;
 
 use crate::clock::SystemClock;
 use crate::config::InterfaceConfig;

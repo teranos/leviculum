@@ -59,7 +59,6 @@
 | HDLC-Framing (no_std + alloc) | ✅ Fertig | 583 |
 | Constants, Traits, Utilities | ✅ Fertig | 750 |
 | **reticulum-core Gesamt** | | **~29.000** |
-| reticulum-net (Shared Interface-Datentypen, no_std) | ✅ Fertig | 44 |
 | reticulum-std (Driver, TCP, Storage) | ✅ Fertig | 2.450 |
 | reticulum-ffi (C-API) | ✅ Grundfunktionen | 368 |
 | reticulum-cli (lrns) | 🔶 Teilweise | 2.800 |
@@ -70,7 +69,6 @@
 | Crate | src LOC | test LOC | Beschreibung |
 |-------|---------|----------|-------------|
 | reticulum-core | 28.993 | 1.536 | Protokoll-Logik (no_std), inkl. ~16K inline tests |
-| reticulum-net | 44 | — | Shared Interface-Datentypen (no_std) |
 | reticulum-std | 2.450 | 19.366 | Plattform-Glue (tokio, TCP), inkl. 176 Interop-Tests |
 | reticulum-nrf | ~400 | — | Embedded-Firmware (Embassy, nRF52840, USB CDC-ACM) |
 | reticulum-ffi | 368 | 97 | C-API |

@@ -940,13 +940,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "reticulum-net"
-version = "0.5.19"
-dependencies = [
- "reticulum-core",
-]
-
-[[package]]
 name = "reticulum-std"
 version = "0.5.19"
 dependencies = [
@@ -954,7 +947,6 @@ dependencies = [
  "hex",
  "rand_core 0.6.4",
  "reticulum-core",
- "reticulum-net",
  "rmp-serde",
  "serde",
  "serde_json",

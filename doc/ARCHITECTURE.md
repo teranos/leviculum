@@ -37,10 +37,6 @@ leviculum/
 │   │       └── event.rs     # NodeEvent enum and helpers
 │   └── Cargo.toml
 │
-├── reticulum-net/           # no_std + alloc — Shared interface data types
-│   └── src/lib.rs           # IncomingPacket, OutgoingPacket, InterfaceInfo
-│                            # Separate crate to avoid circular deps between core and drivers
-│
 ├── reticulum-std/           # std — Platform driver for desktop/server
 │   ├── src/
 │   │   ├── lib.rs

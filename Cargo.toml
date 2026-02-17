@@ -2,7 +2,6 @@
 resolver = "2"
 members = [
     "reticulum-core",
-    "reticulum-net",
     "reticulum-std",
     "reticulum-ffi",
     "reticulum-cli",

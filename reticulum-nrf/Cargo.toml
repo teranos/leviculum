@@ -8,7 +8,6 @@ description = "Reticulum firmware for nRF52840-based boards (Heltec Mesh Node T1
 
 [dependencies]
 reticulum-core = { path = "../reticulum-core", default-features = false }
-reticulum-net = { path = "../reticulum-net", default-features = false }
 
 # Embassy async runtime
 embassy-executor = { version = "0.9", features = ["arch-cortex-m", "executor-thread"] }
