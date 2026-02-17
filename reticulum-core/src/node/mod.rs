@@ -3790,4 +3790,400 @@ mod tests {
             "announce should populate known_identities"
         );
     }
+
+    // ─── Encryption Wire Inspection Tests ─────────────────────────────────────
+    //
+    // Security invariant: plaintext user data must NEVER appear in outgoing
+    // Action::SendPacket or Action::Broadcast bytes.
+
+    #[test]
+    fn test_single_packet_wire_bytes_never_contain_plaintext() {
+        use crate::transport::PathEntry;
+
+        let recv_identity = Identity::generate(&mut OsRng);
+        let recv_pub_bytes = recv_identity.public_key_bytes();
+        let dest = Destination::new(
+            Some(recv_identity),
+            Direction::In,
+            DestinationType::Single,
+            "testapp",
+            &["wire"],
+        )
+        .unwrap();
+        let dest_hash = *dest.hash();
+
+        let clock = MockClock::new(TEST_TIME_MS);
+        let mut sender = NodeCoreBuilder::new().build(OsRng, clock, NoStorage);
+        let iface = sender
+            .transport
+            .register_interface(alloc::boxed::Box::new(MockInterface::new("if0", 1)));
+        sender.transport.insert_path(
+            dest_hash.into_bytes(),
+            PathEntry {
+                hops: 1,
+                expires_ms: u64::MAX,
+                interface_index: iface,
+                random_blobs: Vec::new(),
+                next_hop: None,
+            },
+        );
+        let pub_identity = Identity::from_public_key_bytes(&recv_pub_bytes).unwrap();
+        sender.remember_identity(dest_hash, pub_identity);
+
+        let plaintext = b"KNOWN_PLAINTEXT_MARKER_XYZZY_12345678";
+        let (_hash, output) = sender.send_single_packet(&dest_hash, plaintext).unwrap();
+        let wire = extract_broadcast_data(&output);
+
+        assert!(
+            !wire.windows(plaintext.len()).any(|w| w == plaintext),
+            "plaintext must not appear in wire bytes"
+        );
+        // Wire bytes should be longer than plaintext (header + encryption overhead)
+        assert!(
+            wire.len() > plaintext.len(),
+            "encrypted packet should be longer than plaintext"
+        );
+    }
+
+    #[test]
+    fn test_single_packet_ciphertext_differs_each_send() {
+        use crate::transport::PathEntry;
+
+        let recv_identity = Identity::generate(&mut OsRng);
+        let recv_pub_bytes = recv_identity.public_key_bytes();
+        let dest = Destination::new(
+            Some(recv_identity),
+            Direction::In,
+            DestinationType::Single,
+            "testapp",
+            &["nonce"],
+        )
+        .unwrap();
+        let dest_hash = *dest.hash();
+
+        let clock = MockClock::new(TEST_TIME_MS);
+        let mut sender = NodeCoreBuilder::new().build(OsRng, clock, NoStorage);
+        let iface = sender
+            .transport
+            .register_interface(alloc::boxed::Box::new(MockInterface::new("if0", 1)));
+        sender.transport.insert_path(
+            dest_hash.into_bytes(),
+            PathEntry {
+                hops: 1,
+                expires_ms: u64::MAX,
+                interface_index: iface,
+                random_blobs: Vec::new(),
+                next_hop: None,
+            },
+        );
+        let pub_identity = Identity::from_public_key_bytes(&recv_pub_bytes).unwrap();
+        sender.remember_identity(dest_hash, pub_identity);
+
+        let plaintext = b"same payload both times";
+        let (_h1, out1) = sender.send_single_packet(&dest_hash, plaintext).unwrap();
+        let wire1 = extract_broadcast_data(&out1);
+
+        let (_h2, out2) = sender.send_single_packet(&dest_hash, plaintext).unwrap();
+        let wire2 = extract_broadcast_data(&out2);
+
+        assert_ne!(
+            wire1, wire2,
+            "two encryptions of the same plaintext must produce different ciphertext (ephemeral key)"
+        );
+    }
+
+    #[test]
+    fn test_link_data_wire_bytes_never_contain_plaintext() {
+        let pair = establish_nodecore_link_pair();
+        let mut initiator = pair.initiator;
+        let link_id = pair.initiator_link_id;
+
+        let plaintext = b"KNOWN_PLAINTEXT_MARKER_LINK_DATA_9876";
+        let output = initiator.send_on_link(&link_id, plaintext).unwrap();
+
+        for action_data in extract_all_action_data(&output) {
+            assert!(
+                !action_data.windows(plaintext.len()).any(|w| w == plaintext),
+                "plaintext must not appear in link data wire bytes"
+            );
+        }
+    }
+
+    #[test]
+    fn test_channel_message_wire_bytes_never_contain_plaintext() {
+        // send_on_link goes through Channel, which is the channel message path
+        let pair = establish_nodecore_link_pair();
+        let mut responder = pair.responder;
+        let link_id = pair.responder_link_id;
+
+        let plaintext = b"KNOWN_PLAINTEXT_MARKER_CHANNEL_MSG_ABCD";
+        let output = responder.send_on_link(&link_id, plaintext).unwrap();
+
+        for action_data in extract_all_action_data(&output) {
+            assert!(
+                !action_data.windows(plaintext.len()).any(|w| w == plaintext),
+                "plaintext must not appear in channel message wire bytes"
+            );
+        }
+    }
+
+    // ─── Encryption Edge Cases and Failure Modes ──────────────────────────────
+
+    #[test]
+    fn test_send_before_announce_returns_encryption_failed() {
+        // register destination but DON'T call remember_identity
+        let clock = MockClock::new(TEST_TIME_MS);
+        let mut node = NodeCoreBuilder::new().build(OsRng, clock, NoStorage);
+
+        let identity = Identity::generate(&mut OsRng);
+        let dest = Destination::new(
+            Some(identity),
+            Direction::In,
+            DestinationType::Single,
+            "testapp",
+            &["noannounce"],
+        )
+        .unwrap();
+        let dest_hash = *dest.hash();
+        node.register_destination(dest);
+
+        let result = node.send_single_packet(&dest_hash, b"should fail");
+        assert_eq!(result.unwrap_err(), send::SendError::EncryptionFailed);
+        // No actions should be emitted — no plaintext leak
+    }
+
+    #[test]
+    fn test_known_identities_eviction_fifo_via_node() {
+        // Build node with small capacity, verify send fails after eviction
+        let clock = MockClock::new(TEST_TIME_MS);
+        let mut node = NodeCoreBuilder::new()
+            .max_known_identities(4)
+            .build(OsRng, clock, NoStorage);
+
+        let mut hashes = Vec::new();
+        for i in 0..5u8 {
+            let id = Identity::generate(&mut OsRng);
+            let pub_bytes = id.public_key_bytes();
+            let dest = Destination::new(
+                Some(id),
+                Direction::In,
+                DestinationType::Single,
+                "testapp",
+                &[&alloc::format!("evict{}", i)],
+            )
+            .unwrap();
+            let h = *dest.hash();
+            let pub_id = Identity::from_public_key_bytes(&pub_bytes).unwrap();
+            node.remember_identity(h, pub_id);
+            hashes.push(h);
+        }
+
+        // Oldest (index 0) should be evicted
+        assert!(
+            node.known_identities.get(&hashes[0]).is_none(),
+            "first identity should be evicted after exceeding capacity"
+        );
+        // Newest (index 4) should still be present
+        assert!(
+            node.known_identities.get(&hashes[4]).is_some(),
+            "newest identity should still be present"
+        );
+
+        // send to evicted hash fails
+        let result = node.send_single_packet(&hashes[0], b"to evicted");
+        assert_eq!(result.unwrap_err(), send::SendError::EncryptionFailed);
+    }
+
+    #[test]
+    fn test_receive_encrypted_packet_for_unregistered_destination() {
+        use crate::transport::InterfaceId;
+
+        // Build an encrypted packet for a destination that the receiver doesn't have
+        let remote_identity = Identity::generate(&mut OsRng);
+        let pub_bytes = remote_identity.public_key_bytes();
+        let dest = Destination::new(
+            Some(remote_identity),
+            Direction::In,
+            DestinationType::Single,
+            "testapp",
+            &["unknown"],
+        )
+        .unwrap();
+        let dest_hash = *dest.hash();
+
+        // Encrypt data targeting this destination using the public key
+        let pub_only = Identity::from_public_key_bytes(&pub_bytes).unwrap();
+        let ciphertext = pub_only
+            .encrypt_for_destination(b"secret data", None, &mut OsRng)
+            .unwrap();
+
+        // Build a raw data packet
+        let packet = crate::packet::Packet {
+            flags: crate::packet::PacketFlags {
+                ifac_flag: false,
+                header_type: crate::packet::HeaderType::Type1,
+                context_flag: false,
+                transport_type: crate::packet::TransportType::Broadcast,
+                dest_type: DestinationType::Single,
+                packet_type: crate::packet::PacketType::Data,
+            },
+            hops: 0,
+            transport_id: None,
+            destination_hash: dest_hash.into_bytes(),
+            context: crate::packet::PacketContext::None,
+            data: crate::packet::PacketData::Owned(ciphertext),
+        };
+        let mut buf = [0u8; crate::constants::MTU];
+        let len = packet.pack(&mut buf).unwrap();
+
+        // Create a receiver node WITHOUT registering that destination
+        let clock = MockClock::new(TEST_TIME_MS);
+        let mut receiver = NodeCoreBuilder::new().build(OsRng, clock, NoStorage);
+
+        let output = receiver.handle_packet(InterfaceId(0), &buf[..len]);
+
+        // No PacketReceived events and no actions
+        assert!(
+            !output
+                .events
+                .iter()
+                .any(|e| matches!(e, NodeEvent::PacketReceived { .. })),
+            "unregistered destination should produce no PacketReceived events"
+        );
+    }
+
+    #[test]
+    fn test_receive_corrupted_ciphertext_silently_dropped() {
+        use crate::transport::InterfaceId;
+
+        // Build a valid encrypted packet targeting a destination, then corrupt the ciphertext
+        let recv_identity = Identity::generate(&mut OsRng);
+        let recv_pub = recv_identity.public_key_bytes();
+        let dest = Destination::new(
+            Some(recv_identity),
+            Direction::In,
+            DestinationType::Single,
+            "testapp",
+            &["corrupt"],
+        )
+        .unwrap();
+        let dest_hash = *dest.hash();
+
+        // Encrypt using the public-key-only identity (simulates remote sender)
+        let recv_pub_only = Identity::from_public_key_bytes(&recv_pub).unwrap();
+        let mut ciphertext = recv_pub_only
+            .encrypt_for_destination(b"valid data before corruption", None, &mut OsRng)
+            .unwrap();
+
+        // Flip a bit in the ciphertext payload (past the ephemeral key prefix)
+        if ciphertext.len() > 40 {
+            ciphertext[40] ^= 0xFF;
+        }
+
+        let packet = crate::packet::Packet {
+            flags: crate::packet::PacketFlags {
+                ifac_flag: false,
+                header_type: crate::packet::HeaderType::Type1,
+                context_flag: false,
+                transport_type: crate::packet::TransportType::Broadcast,
+                dest_type: DestinationType::Single,
+                packet_type: crate::packet::PacketType::Data,
+            },
+            hops: 0,
+            transport_id: None,
+            destination_hash: dest_hash.into_bytes(),
+            context: crate::packet::PacketContext::None,
+            data: crate::packet::PacketData::Owned(ciphertext),
+        };
+        let mut buf = [0u8; crate::constants::MTU];
+        let len = packet.pack(&mut buf).unwrap();
+
+        let clock = MockClock::new(TEST_TIME_MS);
+        let mut receiver = NodeCoreBuilder::new().build(OsRng, clock, NoStorage);
+        receiver.register_destination(dest);
+
+        let output = receiver.handle_packet(InterfaceId(0), &buf[..len]);
+
+        assert!(
+            !output
+                .events
+                .iter()
+                .any(|e| matches!(e, NodeEvent::PacketReceived { .. })),
+            "corrupted ciphertext should be silently dropped (HMAC reject)"
+        );
+    }
+
+    #[test]
+    fn test_receive_with_wrong_key_silently_dropped() {
+        use crate::transport::InterfaceId;
+
+        // Encrypt with identity A's key, but send to identity B's destination
+        let identity_a = Identity::generate(&mut OsRng);
+        let pub_a_bytes = identity_a.public_key_bytes();
+        let identity_b = Identity::generate(&mut OsRng);
+
+        let dest_b = Destination::new(
+            Some(identity_b),
+            Direction::In,
+            DestinationType::Single,
+            "testapp",
+            &["wrongkey"],
+        )
+        .unwrap();
+        let dest_hash_b = *dest_b.hash();
+
+        // Encrypt targeting identity A (wrong key for dest B)
+        let pub_a = Identity::from_public_key_bytes(&pub_a_bytes).unwrap();
+        let ciphertext = pub_a
+            .encrypt_for_destination(b"encrypted for wrong dest", None, &mut OsRng)
+            .unwrap();
+
+        let packet = crate::packet::Packet {
+            flags: crate::packet::PacketFlags {
+                ifac_flag: false,
+                header_type: crate::packet::HeaderType::Type1,
+                context_flag: false,
+                transport_type: crate::packet::TransportType::Broadcast,
+                dest_type: DestinationType::Single,
+                packet_type: crate::packet::PacketType::Data,
+            },
+            hops: 0,
+            transport_id: None,
+            destination_hash: dest_hash_b.into_bytes(),
+            context: crate::packet::PacketContext::None,
+            data: crate::packet::PacketData::Owned(ciphertext),
+        };
+        let mut buf = [0u8; crate::constants::MTU];
+        let len = packet.pack(&mut buf).unwrap();
+
+        let clock = MockClock::new(TEST_TIME_MS);
+        let mut receiver = NodeCoreBuilder::new().build(OsRng, clock, NoStorage);
+        receiver.register_destination(dest_b);
+
+        let output = receiver.handle_packet(InterfaceId(0), &buf[..len]);
+
+        assert!(
+            !output
+                .events
+                .iter()
+                .any(|e| matches!(e, NodeEvent::PacketReceived { .. })),
+            "packet encrypted with wrong key should be silently dropped"
+        );
+    }
+
+    #[test]
+    fn test_send_single_packet_never_sends_plaintext_on_missing_identity() {
+        // Verify that EncryptionFailed path produces zero Actions
+        // (this is a security test — no plaintext leak even on error)
+        let clock = MockClock::new(TEST_TIME_MS);
+        let mut node = NodeCoreBuilder::new().build(OsRng, clock, NoStorage);
+
+        let dest_hash = DestinationHash::new([0xAB; 16]);
+        let result = node.send_single_packet(&dest_hash, b"should never be sent");
+
+        assert_eq!(result.unwrap_err(), send::SendError::EncryptionFailed);
+        // Since send_single_packet returns Err, no TickOutput is produced.
+        // The error path cannot possibly emit actions because no TickOutput
+        // is returned. This is correct by construction.
+    }
 }
