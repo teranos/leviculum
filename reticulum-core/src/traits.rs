@@ -10,15 +10,19 @@
 //! |-------|---------|---------------|------------------|
 //! | [`Clock`] | Monotonic time | `SystemClock` | Hardware timer |
 //! | [`Storage`] | Key-value persistence | `FileStorage` | Flash storage |
-//! | [`Interface`] | Network I/O (driver-side) | `TcpInterface` | LoRa / BLE driver |
+//! | [`Interface`] | Send-only network interface | `InterfaceHandle` (channel) | LoRa / BLE driver |
 //!
 //! # Sans-I/O Architecture
 //!
 //! The core protocol engine (`NodeCore`, `Transport`) never performs I/O
 //! directly. Instead, it accepts incoming packets and emits [`Action`](crate::transport::Action)
-//! values for the driver to execute. The [`Interface`] trait is provided here
-//! as a common definition for driver implementations — it is **not** used by
-//! the core engine itself.
+//! values for the driver to execute.
+//!
+//! The [`Interface`] trait defines the **send side** of the interface contract:
+//! the driver calls [`dispatch_actions()`](crate::transport::dispatch_actions)
+//! which routes `Action` values to interfaces via [`Interface::try_send()`].
+//! The **receive side** is driver-specific (async channels for tokio, interrupts
+//! for embedded) and not part of this trait.
 //!
 //! # Platform Dependencies
 //!
@@ -29,38 +33,26 @@
 //!
 //! For devices that do not need persistence, use [`NoStorage`].
 
-use crate::constants::TRUNCATED_HASHBYTES;
-
 extern crate alloc;
 
 use alloc::vec::Vec;
 
-/// Error type for interface operations
+use crate::transport::InterfaceId;
+
+/// Error type for interface send operations
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum InterfaceError {
-    /// Would block (non-blocking mode)
-    WouldBlock,
-    /// Connection closed or unavailable
+    /// Outbound buffer full — packet dropped (non-fatal)
+    BufferFull,
+    /// Interface disconnected — driver must call handle_interface_down()
     Disconnected,
-    /// Buffer too small for received data
-    BufferTooSmall,
-    /// Invalid data or framing error
-    InvalidData,
-    /// Interface not ready
-    NotReady,
-    /// Other error
-    Other,
 }
 
 impl core::fmt::Display for InterfaceError {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         match self {
-            InterfaceError::WouldBlock => write!(f, "would block"),
+            InterfaceError::BufferFull => write!(f, "buffer full"),
             InterfaceError::Disconnected => write!(f, "disconnected"),
-            InterfaceError::BufferTooSmall => write!(f, "buffer too small"),
-            InterfaceError::InvalidData => write!(f, "invalid data"),
-            InterfaceError::NotReady => write!(f, "interface not ready"),
-            InterfaceError::Other => write!(f, "interface error"),
         }
     }
 }
@@ -76,55 +68,51 @@ pub struct InterfaceMode {
     pub multiple_access: bool,
 }
 
-/// A network interface that can send and receive packets
+/// A network interface that can send packets (sync, non-blocking)
 ///
-/// This trait is implemented by **driver** code (in `reticulum-std` or
-/// embedded crates). The core engine (`NodeCore`, `Transport`) does not
-/// call these methods — it emits [`Action`](crate::transport::Action) values
-/// instead. The driver dispatches actions to interfaces and feeds received
-/// packets back into core via `handle_packet()`.
+/// This trait defines the **send side** of the interface contract. The driver
+/// implements it on whatever holds the outbound channel (e.g., a tokio mpsc
+/// sender, an Embassy SPI handle, a LoRa radio driver).
 ///
-/// Implementations provide the actual I/O:
-/// - `std`: TCP, UDP, Serial
-/// - `embedded`: LoRa (SX1262), BLE, WiFi
+/// The **receive side** is intentionally absent — receiving is async and
+/// driver-specific (tokio channels, hardware interrupts, DMA). The driver
+/// feeds received packets into core via `handle_packet()`.
 ///
-/// The interface handles framing internally (e.g., HDLC).
+/// Core's [`dispatch_actions()`](crate::transport::dispatch_actions) calls
+/// `try_send()` on interfaces to route `Action` values to the network.
+/// This keeps broadcast-exclusion and interface-selection logic in core,
+/// so every driver (tokio, Embassy, bare-metal) gets it for free.
+///
+/// # Error handling
+///
+/// - `BufferFull`: non-fatal, packet dropped — Reticulum is best-effort
+/// - `Disconnected`: driver must call `handle_interface_down()` for cleanup
 pub trait Interface {
+    /// Opaque identifier used by core for routing tables
+    fn id(&self) -> InterfaceId;
+
     /// Human-readable name for logging
     fn name(&self) -> &str;
 
     /// Maximum transmission unit (max packet payload size)
     fn mtu(&self) -> usize;
 
-    /// Unique hash identifying this interface (for routing)
-    fn hash(&self) -> [u8; TRUNCATED_HASHBYTES];
-
-    /// Send a packet (implementation handles framing)
-    fn send(&mut self, data: &[u8]) -> Result<(), InterfaceError>;
-
-    /// Receive a packet into buffer, returns bytes read
-    ///
-    /// Returns `WouldBlock` if no data available (non-blocking).
-    /// The implementation handles deframing internally.
-    fn recv(&mut self, buf: &mut [u8]) -> Result<usize, InterfaceError>;
-
-    /// Check if interface is online/connected
-    fn is_online(&self) -> bool;
-
-    /// Get interface mode flags
+    /// Interface mode flags (broadcast, local, multiple_access)
     fn mode(&self) -> InterfaceMode {
         InterfaceMode::default()
     }
 
-    /// Bring interface up (connect, start listening)
-    fn up(&mut self) -> Result<(), InterfaceError> {
-        Ok(())
-    }
+    /// Check if interface is online/connected
+    fn is_online(&self) -> bool;
 
-    /// Bring interface down (disconnect, stop)
-    fn down(&mut self) -> Result<(), InterfaceError> {
-        Ok(())
-    }
+    /// Try to send a packet (non-blocking, fire-and-forget)
+    ///
+    /// Returns `Ok(())` if the packet was accepted for delivery.
+    /// Returns `Err(BufferFull)` if the outbound buffer is full — packet is dropped.
+    /// Returns `Err(Disconnected)` if the interface is dead.
+    ///
+    /// The implementation handles framing internally (e.g., HDLC for TCP).
+    fn try_send(&mut self, data: &[u8]) -> Result<(), InterfaceError>;
 }
 
 /// Clock for timestamps and timeouts

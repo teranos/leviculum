@@ -149,6 +149,52 @@ impl core::fmt::Debug for TickOutput {
     }
 }
 
+// ─── Action Dispatch (protocol logic for drivers) ───────────────────────────
+
+/// Dispatch actions to interfaces (protocol logic)
+///
+/// Routes each [`Action`] to the correct interface(s) via [`Interface::try_send()`].
+/// This is protocol knowledge — broadcast-exclusion, interface selection — that
+/// belongs in core so every driver (tokio, Embassy, bare-metal) gets it for free.
+///
+/// Returns errors from `try_send()` so the driver can react:
+/// - `BufferFull`: log it (non-fatal, expected on constrained links)
+/// - `Disconnected`: call `handle_interface_down()` for that interface
+///
+/// The driver calls this after every `handle_packet()`, `handle_timeout()`,
+/// or deferred operation (connect, send, close, announce).
+pub fn dispatch_actions(
+    interfaces: &mut [&mut dyn crate::traits::Interface],
+    actions: &[Action],
+) -> Vec<(InterfaceId, crate::traits::InterfaceError)> {
+    let mut errors = Vec::new();
+    for action in actions {
+        match action {
+            Action::SendPacket { iface, data } => {
+                if let Some(iface_obj) = interfaces.iter_mut().find(|i| i.id() == *iface) {
+                    if let Err(e) = iface_obj.try_send(data) {
+                        errors.push((*iface, e));
+                    }
+                }
+            }
+            Action::Broadcast {
+                data,
+                exclude_iface,
+            } => {
+                for iface_obj in interfaces.iter_mut() {
+                    if Some(iface_obj.id()) == *exclude_iface {
+                        continue;
+                    }
+                    if let Err(e) = iface_obj.try_send(data) {
+                        errors.push((iface_obj.id(), e));
+                    }
+                }
+            }
+        }
+    }
+    errors
+}
+
 // ─── Data Structures (always available) ─────────────────────────────────────
 
 /// Path quality state (for path recovery)

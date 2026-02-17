@@ -4,10 +4,15 @@
 //! Each interface type runs as a spawned tokio task communicating through
 //! channels. `InterfaceHandle` represents the event loop's end of the
 //! channel pair, and `InterfaceRegistry` manages all active handles.
+//!
+//! `InterfaceHandle` implements [`reticulum_core::traits::Interface`] so that
+//! core's [`dispatch_actions()`](reticulum_core::transport::dispatch_actions)
+//! can route packets to interfaces directly.
 
 pub mod hdlc;
 pub(crate) mod tcp;
 
+use reticulum_core::traits::{InterfaceError, InterfaceMode};
 use reticulum_core::transport::InterfaceId;
 use reticulum_net::{IncomingPacket, InterfaceInfo, OutgoingPacket};
 use tokio::sync::mpsc;
@@ -29,6 +34,35 @@ pub(crate) struct InterfaceHandle {
     pub outgoing: mpsc::Sender<OutgoingPacket>,
 }
 
+impl reticulum_core::traits::Interface for InterfaceHandle {
+    fn id(&self) -> InterfaceId {
+        self.info.id
+    }
+    fn name(&self) -> &str {
+        &self.info.name
+    }
+    fn mtu(&self) -> usize {
+        reticulum_core::constants::MTU
+    }
+    fn mode(&self) -> InterfaceMode {
+        InterfaceMode::default()
+    }
+    fn is_online(&self) -> bool {
+        !self.outgoing.is_closed()
+    }
+    fn try_send(&mut self, data: &[u8]) -> Result<(), InterfaceError> {
+        match self.outgoing.try_send(OutgoingPacket {
+            data: data.to_vec(),
+        }) {
+            Ok(()) => Ok(()),
+            Err(tokio::sync::mpsc::error::TrySendError::Full(_)) => Err(InterfaceError::BufferFull),
+            Err(tokio::sync::mpsc::error::TrySendError::Closed(_)) => {
+                Err(InterfaceError::Disconnected)
+            }
+        }
+    }
+}
+
 /// Registry of active interface handles with round-robin polling
 pub(crate) struct InterfaceRegistry {
     handles: Vec<InterfaceHandle>,
@@ -48,14 +82,6 @@ impl InterfaceRegistry {
     /// Register a new interface handle
     pub(crate) fn register(&mut self, handle: InterfaceHandle) {
         self.handles.push(handle);
-    }
-
-    /// Get the outgoing sender for a specific interface
-    pub(crate) fn get_sender(&self, id: InterfaceId) -> Option<&mpsc::Sender<OutgoingPacket>> {
-        self.handles
-            .iter()
-            .find(|h| h.info.id == id)
-            .map(|h| &h.outgoing)
     }
 
     /// Remove an interface by ID, returns true if found
@@ -85,15 +111,13 @@ impl InterfaceRegistry {
             .unwrap_or("unknown")
     }
 
-    /// Iterator over all interface IDs and their outgoing senders (for broadcast)
-    pub(crate) fn senders(
-        &self,
-    ) -> impl Iterator<Item = (InterfaceId, &mpsc::Sender<OutgoingPacket>)> {
-        self.handles.iter().map(|h| (h.info.id, &h.outgoing))
-    }
-
     /// Mutable access to handles and poll_start for recv_any
     pub(crate) fn handles_mut(&mut self) -> (&mut Vec<InterfaceHandle>, &mut usize) {
         (&mut self.handles, &mut self.poll_start)
+    }
+
+    /// Mutable slice of all handles for dispatch_actions()
+    pub(crate) fn handles_mut_slice(&mut self) -> &mut [InterfaceHandle] {
+        &mut self.handles
     }
 }

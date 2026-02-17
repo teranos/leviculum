@@ -8,10 +8,9 @@ use core::cell::Cell;
 use alloc::vec::Vec;
 use rand_core::OsRng;
 
-use crate::constants::TRUNCATED_HASHBYTES;
 use crate::identity::Identity;
 use crate::traits::{Clock, Interface, InterfaceError, NoStorage};
-use crate::transport::{Transport, TransportConfig};
+use crate::transport::{InterfaceId, Transport, TransportConfig};
 
 /// Standard initial time for deterministic tests (1 second in ms).
 pub(crate) const TEST_TIME_MS: u64 = 1_000_000;
@@ -44,18 +43,16 @@ impl Clock for MockClock {
 /// Mock interface for testing — records sent packets.
 pub(crate) struct MockInterface {
     name: &'static str,
-    hash: [u8; TRUNCATED_HASHBYTES],
+    id: InterfaceId,
     pub(crate) sent: Vec<Vec<u8>>,
     pub(crate) online: bool,
 }
 
 impl MockInterface {
     pub(crate) fn new(name: &'static str, id: u8) -> Self {
-        let mut hash = [0u8; TRUNCATED_HASHBYTES];
-        hash[0] = id;
         Self {
             name,
-            hash,
+            id: InterfaceId(id as usize),
             sent: Vec::new(),
             online: true,
         }
@@ -63,24 +60,21 @@ impl MockInterface {
 }
 
 impl Interface for MockInterface {
+    fn id(&self) -> InterfaceId {
+        self.id
+    }
     fn name(&self) -> &str {
         self.name
     }
     fn mtu(&self) -> usize {
         500
     }
-    fn hash(&self) -> [u8; TRUNCATED_HASHBYTES] {
-        self.hash
-    }
-    fn send(&mut self, data: &[u8]) -> Result<(), InterfaceError> {
-        self.sent.push(data.to_vec());
-        Ok(())
-    }
-    fn recv(&mut self, _buf: &mut [u8]) -> Result<usize, InterfaceError> {
-        Err(InterfaceError::WouldBlock)
-    }
     fn is_online(&self) -> bool {
         self.online
+    }
+    fn try_send(&mut self, data: &[u8]) -> Result<(), InterfaceError> {
+        self.sent.push(data.to_vec());
+        Ok(())
     }
 }
 

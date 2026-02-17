@@ -63,9 +63,10 @@ use tokio::sync::{mpsc, watch};
 use reticulum_core::constants::TRUNCATED_HASHBYTES;
 use reticulum_core::link::LinkId;
 use reticulum_core::node::{NodeCore, NodeEvent};
-use reticulum_core::transport::{Action, InterfaceId, TickOutput};
+use reticulum_core::traits::InterfaceError;
+use reticulum_core::transport::{InterfaceId, TickOutput};
 use reticulum_core::{Destination, DestinationHash};
-use reticulum_net::{IncomingPacket, OutgoingPacket};
+use reticulum_net::IncomingPacket;
 
 use crate::clock::SystemClock;
 use crate::config::InterfaceConfig;
@@ -529,7 +530,7 @@ async fn run_event_loop(
                         };
                         dispatch_output(
                             output,
-                            &registry,
+                            &mut registry,
                             &event_tx,
                         );
                     }
@@ -541,7 +542,7 @@ async fn run_event_loop(
                         };
                         dispatch_output(
                             output,
-                            &registry,
+                            &mut registry,
                             &event_tx,
                         );
                         registry.remove(iface_id);
@@ -554,7 +555,7 @@ async fn run_event_loop(
             Some(output) = action_dispatch_rx.recv() => {
                 dispatch_output(
                     output,
-                    &registry,
+                    &mut registry,
                     &event_tx,
                 );
             }
@@ -570,7 +571,7 @@ async fn run_event_loop(
                 let next = output.next_deadline_ms;
                 dispatch_output(
                     output,
-                    &registry,
+                    &mut registry,
                     &event_tx,
                 );
 
@@ -596,39 +597,35 @@ async fn run_event_loop(
     }
 }
 
-/// Dispatch a TickOutput: execute Actions on interface channels and forward Events
+/// Dispatch a TickOutput: route Actions to interfaces via core, forward Events
 fn dispatch_output(
     output: TickOutput,
-    registry: &InterfaceRegistry,
+    registry: &mut InterfaceRegistry,
     event_tx: &mpsc::Sender<NodeEvent>,
 ) {
-    // Execute I/O actions
-    for action in &output.actions {
-        match action {
-            Action::SendPacket { iface, data } => {
-                if let Some(sender) = registry.get_sender(*iface) {
-                    if let Err(e) = sender.try_send(OutgoingPacket { data: data.clone() }) {
-                        tracing::debug!("Send error on {}: {:?}", iface, e);
-                    }
-                } else {
-                    tracing::debug!("No interface {} for SendPacket", iface);
-                }
+    // 1. Dispatch actions to interfaces (protocol logic in core)
+    let mut ifaces: Vec<&mut dyn reticulum_core::traits::Interface> = registry
+        .handles_mut_slice()
+        .iter_mut()
+        .map(|h| h as &mut dyn reticulum_core::traits::Interface)
+        .collect();
+    let errors = reticulum_core::transport::dispatch_actions(&mut ifaces, &output.actions);
+
+    // 2. React to dispatch errors
+    for (iface_id, error) in &errors {
+        match error {
+            InterfaceError::BufferFull => {
+                tracing::warn!("Interface {} buffer full, packet dropped", iface_id);
             }
-            Action::Broadcast {
-                data,
-                exclude_iface,
-            } => {
-                for (id, sender) in registry.senders() {
-                    if Some(id) == *exclude_iface {
-                        continue;
-                    }
-                    let _ = sender.try_send(OutgoingPacket { data: data.clone() });
-                }
+            InterfaceError::Disconnected => {
+                tracing::warn!("Interface {} disconnected during dispatch", iface_id);
+                // Actual cleanup happens when recv_any() detects channel closure
+                // and triggers handle_interface_down(). This is a secondary signal.
             }
         }
     }
 
-    // Forward events to application (best effort — drop if full)
+    // 3. Forward events to application (best effort — drop if full)
     for event in output.events {
         if let NodeEvent::LinkEstablished { link_id, .. } = &event {
             tracing::debug!("Link established: {:?}", link_id);
