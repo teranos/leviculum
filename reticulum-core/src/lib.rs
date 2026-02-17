@@ -13,8 +13,6 @@
 //! | Identity | [`Identity`] | Dual keypair (X25519 + Ed25519) for encryption and signing |
 //! | Destination | [`Destination`] | Addressable endpoint identified by a 16-byte hash |
 //! | Announce | [`ReceivedAnnounce`] | Broadcast presence notification with public keys |
-//! | Link | [`Link`] | Point-to-point encrypted connection with perfect forward secrecy |
-//! | Channel | [`Channel`] | Reliable ordered messaging over a Link |
 //! | Transport | [`transport`] | Routing, path discovery, and packet forwarding |
 //! | NodeCore | [`NodeCore`] | High-level unified API that ties everything together |
 //!
@@ -23,9 +21,8 @@
 //! 1. Create an [`Identity`] (or load an existing one)
 //! 2. Register a [`Destination`] on a [`NodeCore`]
 //! 3. Send an announce so the network learns about this destination
-//! 4. Receive announces from peers and open a [`Link`] to them
-//! 5. Open a [`Channel`] on the link for reliable messaging
-//! 6. Exchange [`Message`]s over the channel
+//! 4. Receive announces from peers and open links to them
+//! 5. Exchange messages over established links
 //!
 //! # Platform Dependencies
 //!
@@ -58,35 +55,18 @@
 //! | Feature | Default | Description |
 //! |---------|---------|-------------|
 //! | `compression` | off | BZ2 compression via `libbz2-rs-sys` (pure-Rust) |
-//!
-//! # Modules
-//!
-//! **Protocol core:**
-//! [`identity`], [`destination`], [`packet`], [`announce`], [`receipt`]
-//!
-//! **Links:**
-//! [`link`], [`link::channel`]
-//!
-//! **Infrastructure:**
-//! [`transport`], [`node`]
-//!
-//! **Crypto and encoding:**
-//! [`crypto`], [`ratchet`], [`ifac`], [`framing`]
-//!
-//! **Platform abstraction:**
-//! [`traits`], [`constants`]
 
 #![no_std]
 #![warn(unreachable_pub)]
 
 extern crate alloc;
 
-pub mod announce;
+pub(crate) mod announce;
 #[cfg(feature = "compression")]
 pub mod compression;
 pub mod constants;
 pub mod crypto;
-pub mod destination;
+pub(crate) mod destination;
 pub mod framing;
 mod hex_fmt;
 pub mod identity;
@@ -94,8 +74,8 @@ pub mod ifac;
 pub mod link;
 pub mod node;
 pub mod packet;
-pub mod ratchet;
-pub mod receipt;
+pub(crate) mod ratchet;
+pub(crate) mod receipt;
 mod resource;
 #[cfg(test)]
 pub(crate) mod test_utils;
@@ -104,16 +84,12 @@ pub mod transport;
 
 // Re-export key types
 pub use announce::{AnnounceError, ReceivedAnnounce};
-#[cfg(feature = "compression")]
-pub use compression::{compress, decompress, decompress_auto, CompressionError};
-pub use destination::{Destination, DestinationHash, DestinationType, Direction, ProofStrategy};
+pub use destination::{
+    Destination, DestinationError, DestinationHash, DestinationType, Direction, ProofStrategy,
+};
 pub use identity::Identity;
-#[cfg(feature = "compression")]
-pub use link::channel::CompressingWriter;
-pub use link::channel::{Channel, ChannelError, Message};
-pub use link::{Link, LinkCloseReason, LinkError, LinkId, LinkState, PeerKeys};
+pub use link::{LinkCloseReason, LinkError, LinkId, PeerKeys};
 pub use node::{DeliveryError, LinkStats, NodeCore, NodeCoreBuilder, NodeEvent, SendError};
-pub use packet::Packet;
 pub use transport::{Action, InterfaceId, TickOutput};
 
 // Re-export traits

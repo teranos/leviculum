@@ -51,8 +51,7 @@ use crate::constants::{
 /// # Example
 ///
 /// ```
-/// use reticulum_core::link::channel::StreamDataMessage;
-/// use reticulum_core::Message;
+/// use reticulum_core::link::channel::{StreamDataMessage, Message};
 ///
 /// let msg = StreamDataMessage::new(0, vec![1, 2, 3], false, false);
 /// let packed = msg.pack();

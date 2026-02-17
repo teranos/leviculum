@@ -30,7 +30,7 @@
 
 use std::time::Duration;
 
-use reticulum_core::destination::Destination;
+use reticulum_core::Destination;
 
 use crate::common::*;
 use crate::harness::TestDaemon;

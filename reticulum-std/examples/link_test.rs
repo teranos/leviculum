@@ -12,8 +12,8 @@ use std::net::TcpStream;
 use std::time::Duration;
 
 use reticulum_core::constants::TRUNCATED_HASHBYTES;
-use reticulum_core::destination::DestinationHash;
 use reticulum_core::link::Link;
+use reticulum_core::DestinationHash;
 use reticulum_std::interfaces::hdlc::{frame, DeframeResult, Deframer};
 
 fn hex_to_bytes(hex: &str) -> Result<Vec<u8>, String> {

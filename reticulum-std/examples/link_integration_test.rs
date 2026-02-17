@@ -17,8 +17,8 @@ use std::net::TcpStream;
 use std::time::{Duration, Instant};
 
 use reticulum_core::constants::TRUNCATED_HASHBYTES;
-use reticulum_core::destination::DestinationHash;
 use reticulum_core::link::{Link, LinkState};
+use reticulum_core::DestinationHash;
 use reticulum_std::interfaces::hdlc::{frame, DeframeResult, Deframer};
 
 const PROOF_TIMEOUT_SECS: u64 = 10;

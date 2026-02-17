@@ -203,7 +203,7 @@ pub fn dispatch_actions(
 /// Used to allow accepting same-emission worse-hop announces when the
 /// current path has been marked unresponsive (Python Transport.py:1672-1681).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum PathState {
+pub(crate) enum PathState {
     /// Default state — no knowledge about path quality
     Unknown,
     /// Communication attempt failed (unvalidated link expired)
@@ -348,16 +348,38 @@ impl Default for TransportConfig {
 /// Transport statistics
 #[derive(Debug, Default, Clone)]
 pub struct TransportStats {
+    pub(crate) packets_sent: u64,
+    pub(crate) packets_received: u64,
+    pub(crate) packets_forwarded: u64,
+    pub(crate) announces_processed: u64,
+    pub(crate) packets_dropped: u64,
+}
+
+impl TransportStats {
     /// Packets sent
-    pub packets_sent: u64,
+    pub fn packets_sent(&self) -> u64 {
+        self.packets_sent
+    }
+
     /// Packets received
-    pub packets_received: u64,
+    pub fn packets_received(&self) -> u64 {
+        self.packets_received
+    }
+
     /// Packets forwarded (transport mode)
-    pub packets_forwarded: u64,
+    pub fn packets_forwarded(&self) -> u64 {
+        self.packets_forwarded
+    }
+
     /// Announces processed
-    pub announces_processed: u64,
+    pub fn announces_processed(&self) -> u64 {
+        self.announces_processed
+    }
+
     /// Packets dropped (duplicate, expired, etc.)
-    pub packets_dropped: u64,
+    pub fn packets_dropped(&self) -> u64 {
+        self.packets_dropped
+    }
 }
 
 // ─── Events ─────────────────────────────────────────────────────────────────

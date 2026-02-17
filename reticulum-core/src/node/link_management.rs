@@ -410,12 +410,12 @@ impl<R: CryptoRngCore, C: Clock, S: Storage> NodeCore<R, C, S> {
     pub fn link_stats(&self, link_id: &LinkId) -> Option<LinkStats> {
         self.links.get(link_id)?;
         let ch = self.links.get(link_id).and_then(|l| l.channel());
-        Some(LinkStats {
-            tx_ring_size: ch.map(|c| c.outstanding()).unwrap_or(0),
-            window: ch.map(|c| c.window()).unwrap_or(0),
-            window_max: ch.map(|c| c.window_max()).unwrap_or(0),
-            pacing_interval_ms: ch.map(|c| c.pacing_interval_ms()).unwrap_or(0),
-        })
+        Some(LinkStats::new(
+            ch.map(|c| c.outstanding()).unwrap_or(0),
+            ch.map(|c| c.window()).unwrap_or(0),
+            ch.map(|c| c.window_max()).unwrap_or(0),
+            ch.map(|c| c.pacing_interval_ms()).unwrap_or(0),
+        ))
     }
 
     // ─── Internal: Link Packet Processing ─────────────────────────────────────

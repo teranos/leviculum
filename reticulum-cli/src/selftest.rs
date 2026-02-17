@@ -751,7 +751,7 @@ pub async fn run_selftest(
 
         // Check window
         let link_id = link_id_a.lock().unwrap().ok_or("no link_id on A")?;
-        let window = node_a.link_stats(&link_id).map(|s| s.window).unwrap_or(0);
+        let window = node_a.link_stats(&link_id).map(|s| s.window()).unwrap_or(0);
 
         if window <= 2 && Instant::now() > warmup_deadline {
             println!(
@@ -823,7 +823,7 @@ pub async fn run_selftest(
                 let retx = st.retransmits_a + st.retransmits_b;
                 drop(st);
 
-                let win = node_a.link_stats(&link_id).map(|s| s.window).unwrap_or(0);
+                let win = node_a.link_stats(&link_id).map(|s| s.window()).unwrap_or(0);
 
                 let recv_progress = recv_a > last_recv_a || recv_b > last_recv_b;
 
@@ -864,10 +864,10 @@ pub async fn run_selftest(
             println!("[selftest] Phase 5 complete: sent {total_sent} messages, entering drain");
         }
 
-        final_win = node_a.link_stats(&link_id).map(|s| s.window).unwrap_or(0);
+        final_win = node_a.link_stats(&link_id).map(|s| s.window()).unwrap_or(0);
         final_win_max = node_a
             .link_stats(&link_id)
-            .map(|s| s.window_max)
+            .map(|s| s.window_max())
             .unwrap_or(0);
 
         if state.link_dead.load(Ordering::Relaxed) {
@@ -967,10 +967,10 @@ pub async fn run_selftest(
                 }
             }
 
-            final_win = node_a.link_stats(&link_id).map(|s| s.window).unwrap_or(0);
+            final_win = node_a.link_stats(&link_id).map(|s| s.window()).unwrap_or(0);
             final_win_max = node_a
                 .link_stats(&link_id)
-                .map(|s| s.window_max)
+                .map(|s| s.window_max())
                 .unwrap_or(0);
 
             // Close from B side

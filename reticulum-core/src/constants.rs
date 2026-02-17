@@ -37,7 +37,7 @@
 /// # Panics
 /// Panics if `src.len() < offset + N`.
 #[inline]
-pub fn slice_to_array<const N: usize>(src: &[u8], offset: usize) -> [u8; N] {
+pub(crate) fn slice_to_array<const N: usize>(src: &[u8], offset: usize) -> [u8; N] {
     let mut arr = [0u8; N];
     arr.copy_from_slice(&src[offset..offset + N]);
     arr

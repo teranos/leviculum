@@ -385,7 +385,7 @@ impl Destination {
     ///
     /// # Example
     /// ```
-    /// use reticulum_core::destination::{Destination, DestinationType, Direction};
+    /// use reticulum_core::{Destination, DestinationType, Direction};
     /// use reticulum_core::identity::Identity;
     /// use rand_core::OsRng;
     ///
@@ -630,7 +630,7 @@ impl Destination {
     ///
     /// # Example
     /// ```
-    /// use reticulum_core::destination::{Destination, DestinationType, Direction};
+    /// use reticulum_core::{Destination, DestinationType, Direction};
     /// use reticulum_core::identity::Identity;
     /// use rand_core::OsRng;
     ///

@@ -283,7 +283,7 @@ impl Identity {
     }
 
     /// Get the X25519 public key
-    pub fn x25519_public(&self) -> &x25519_dalek::PublicKey {
+    pub(crate) fn x25519_public(&self) -> &x25519_dalek::PublicKey {
         &self.x25519_public
     }
 
@@ -293,7 +293,7 @@ impl Identity {
     }
 
     /// Get the Ed25519 signing key (if this is a full identity with private keys)
-    pub fn ed25519_signing_key(&self) -> Option<&ed25519_dalek::SigningKey> {
+    pub(crate) fn ed25519_signing_key(&self) -> Option<&ed25519_dalek::SigningKey> {
         self.ed25519_signing.as_ref()
     }
 
@@ -441,7 +441,7 @@ impl Identity {
     /// `[ephemeral_pub (32)] [token (variable)]`
     ///
     /// The token contains: `[IV (16)] [ciphertext (variable)] [HMAC (32)]`
-    pub fn encrypt_for_destination<R: rand_core::CryptoRngCore>(
+    pub(crate) fn encrypt_for_destination<R: rand_core::CryptoRngCore>(
         &self,
         plaintext: &[u8],
         ratchet_public: Option<&[u8; crate::constants::RATCHET_SIZE]>,
@@ -517,7 +517,7 @@ impl Identity {
     ///
     /// # Errors
     /// Returns `DecryptionFailed` if no ratchet or identity key can decrypt.
-    pub fn decrypt_with_ratchets(
+    pub(crate) fn decrypt_with_ratchets(
         &self,
         ciphertext: &[u8],
         ratchets: &[crate::ratchet::Ratchet],

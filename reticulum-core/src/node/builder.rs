@@ -17,7 +17,7 @@ use super::NodeCore;
 /// ```no_run
 /// use reticulum_core::node::NodeCoreBuilder;
 /// use reticulum_core::identity::Identity;
-/// use reticulum_core::destination::ProofStrategy;
+/// use reticulum_core::ProofStrategy;
 /// use reticulum_core::traits::{Clock, NoStorage};
 /// # use core::cell::Cell;
 /// # struct MyClock(Cell<u64>);

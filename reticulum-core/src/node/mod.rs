@@ -14,7 +14,7 @@
 //!
 //! ```no_run
 //! use reticulum_core::node::{NodeCore, NodeCoreBuilder, NodeEvent};
-//! use reticulum_core::destination::{Destination, DestinationType, Direction};
+//! use reticulum_core::{Destination, DestinationType, Direction};
 //! use reticulum_core::identity::Identity;
 //! use reticulum_core::traits::{Clock, NoStorage};
 //! # use core::cell::Cell;
@@ -68,14 +68,46 @@ use crate::hex_fmt::HexFmt;
 /// Link statistics for observability
 #[derive(Debug, Clone)]
 pub struct LinkStats {
+    tx_ring_size: usize,
+    window: usize,
+    window_max: usize,
+    pacing_interval_ms: u64,
+}
+
+impl LinkStats {
+    pub(crate) fn new(
+        tx_ring_size: usize,
+        window: usize,
+        window_max: usize,
+        pacing_interval_ms: u64,
+    ) -> Self {
+        Self {
+            tx_ring_size,
+            window,
+            window_max,
+            pacing_interval_ms,
+        }
+    }
+
     /// Number of outstanding (unacknowledged) messages in the channel tx ring
-    pub tx_ring_size: usize,
+    pub fn tx_ring_size(&self) -> usize {
+        self.tx_ring_size
+    }
+
     /// Current channel window size
-    pub window: usize,
+    pub fn window(&self) -> usize {
+        self.window
+    }
+
     /// Maximum channel window size
-    pub window_max: usize,
+    pub fn window_max(&self) -> usize {
+        self.window_max
+    }
+
     /// Current pacing interval between sends (milliseconds)
-    pub pacing_interval_ms: u64,
+    pub fn pacing_interval_ms(&self) -> u64 {
+        self.pacing_interval_ms
+    }
 }
 
 /// Bounded identity cache for remote identities learned from announces.

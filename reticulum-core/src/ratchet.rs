@@ -29,10 +29,10 @@ use rand_core::CryptoRngCore;
 use alloc::collections::BTreeMap;
 
 /// Ratchet ID size (first 10 bytes of SHA256(public_key))
-pub const RATCHET_ID_SIZE: usize = 10;
+pub(crate) const RATCHET_ID_SIZE: usize = 10;
 
 /// Default number of ratchets to retain for decryption
-pub const DEFAULT_RETAINED_RATCHETS: usize = 512;
+pub(crate) const DEFAULT_RETAINED_RATCHETS: usize = 512;
 
 /// Serialized ratchet size: 32 (private key) + 8 (timestamp)
 const SERIALIZED_RATCHET_SIZE: usize = RATCHET_SIZE + 8;
@@ -42,7 +42,7 @@ const RATCHETS_CATEGORY: &str = "ratchets";
 
 /// Error types for ratchet operations
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum RatchetError {
+pub(crate) enum RatchetError {
     /// Invalid serialized data length
     InvalidLength,
     /// Ratchet has expired
@@ -74,7 +74,7 @@ impl From<StorageError> for RatchetError {
 ///
 /// Ratchets are ephemeral key pairs that are rotated periodically.
 /// The private key is used for decryption, the public key is announced.
-pub struct Ratchet {
+pub(crate) struct Ratchet {
     /// X25519 private key (32 bytes)
     private_key: x25519_dalek::StaticSecret,
     /// X25519 public key (32 bytes)
@@ -89,16 +89,7 @@ impl Ratchet {
     /// # Arguments
     /// * `rng` - Random number generator
     /// * `now_ms` - Current timestamp in milliseconds
-    ///
-    /// # Example
-    /// ```
-    /// use reticulum_core::ratchet::Ratchet;
-    /// use rand_core::OsRng;
-    ///
-    /// let ratchet = Ratchet::generate(&mut OsRng, 1704067200000);
-    /// assert_eq!(ratchet.public_key_bytes().len(), 32);
-    /// ```
-    pub fn generate<R: CryptoRngCore>(rng: &mut R, now_ms: u64) -> Self {
+    pub(crate) fn generate<R: CryptoRngCore>(rng: &mut R, now_ms: u64) -> Self {
         let private_key = x25519_dalek::StaticSecret::random_from_rng(rng);
         let public_key = x25519_dalek::PublicKey::from(&private_key);
 
@@ -110,26 +101,26 @@ impl Ratchet {
     }
 
     /// Get the public key bytes (32 bytes)
-    pub fn public_key_bytes(&self) -> [u8; RATCHET_SIZE] {
+    pub(crate) fn public_key_bytes(&self) -> [u8; RATCHET_SIZE] {
         *self.public_key.as_bytes()
     }
 
     /// Get the ratchet ID (first 10 bytes of SHA256(public_key))
     ///
     /// The ratchet ID is used to identify which ratchet was used for encryption.
-    pub fn id(&self) -> [u8; RATCHET_ID_SIZE] {
+    pub(crate) fn id(&self) -> [u8; RATCHET_ID_SIZE] {
         ratchet_id(&self.public_key_bytes())
     }
 
     /// Get the creation timestamp in milliseconds
-    pub fn created_at_ms(&self) -> u64 {
+    pub(crate) fn created_at_ms(&self) -> u64 {
         self.created_at_ms
     }
 
     /// Check if this ratchet has expired
     ///
     /// Ratchets expire after RATCHET_EXPIRY_SECS (30 days by default).
-    pub fn is_expired(&self, current_time_ms: u64) -> bool {
+    pub(crate) fn is_expired(&self, current_time_ms: u64) -> bool {
         let age_ms = current_time_ms.saturating_sub(self.created_at_ms);
         let age_secs = age_ms / MS_PER_SECOND;
         age_secs > RATCHET_EXPIRY_SECS
@@ -142,7 +133,7 @@ impl Ratchet {
     ///
     /// # Returns
     /// The shared secret (32 bytes)
-    pub fn derive_shared_secret(&self, peer_public: &[u8; RATCHET_SIZE]) -> [u8; 32] {
+    pub(crate) fn derive_shared_secret(&self, peer_public: &[u8; RATCHET_SIZE]) -> [u8; 32] {
         let peer_key = x25519_dalek::PublicKey::from(*peer_public);
         let shared = self.private_key.diffie_hellman(&peer_key);
         *shared.as_bytes()
@@ -151,7 +142,7 @@ impl Ratchet {
     /// Serialize this ratchet for storage
     ///
     /// Format: private_key (32 bytes) + created_at_ms (8 bytes big-endian)
-    pub fn to_bytes(&self) -> [u8; SERIALIZED_RATCHET_SIZE] {
+    pub(crate) fn to_bytes(&self) -> [u8; SERIALIZED_RATCHET_SIZE] {
         let mut bytes = [0u8; SERIALIZED_RATCHET_SIZE];
         bytes[..RATCHET_SIZE].copy_from_slice(self.private_key.as_bytes());
         bytes[RATCHET_SIZE..].copy_from_slice(&self.created_at_ms.to_be_bytes());
@@ -165,7 +156,7 @@ impl Ratchet {
     ///
     /// # Returns
     /// The ratchet, or error if data is invalid
-    pub fn from_bytes(bytes: &[u8]) -> Result<Self, RatchetError> {
+    pub(crate) fn from_bytes(bytes: &[u8]) -> Result<Self, RatchetError> {
         if bytes.len() != SERIALIZED_RATCHET_SIZE {
             return Err(RatchetError::InvalidLength);
         }
@@ -206,7 +197,7 @@ impl core::fmt::Debug for Ratchet {
 ///
 /// The ratchet ID is the first 10 bytes of SHA256(public_key).
 /// This matches the Python Reticulum implementation.
-pub fn ratchet_id(public_key: &[u8; RATCHET_SIZE]) -> [u8; RATCHET_ID_SIZE] {
+pub(crate) fn ratchet_id(public_key: &[u8; RATCHET_SIZE]) -> [u8; RATCHET_ID_SIZE] {
     let hash = sha256(public_key);
     let mut id = [0u8; RATCHET_ID_SIZE];
     id.copy_from_slice(&hash[..RATCHET_ID_SIZE]);
@@ -222,29 +213,29 @@ pub fn ratchet_id(public_key: &[u8; RATCHET_SIZE]) -> [u8; RATCHET_ID_SIZE] {
 ///
 /// # Returns
 /// True if rotation is needed
-pub fn should_rotate(last_rotation_ms: u64, current_time_ms: u64, interval_ms: u64) -> bool {
+pub(crate) fn should_rotate(last_rotation_ms: u64, current_time_ms: u64, interval_ms: u64) -> bool {
     let elapsed = current_time_ms.saturating_sub(last_rotation_ms);
     elapsed >= interval_ms
 }
 
 /// Default rotation interval in milliseconds
-pub const DEFAULT_INTERVAL_MS: u64 = RATCHET_INTERVAL_SECS * 1000;
+pub(crate) const DEFAULT_INTERVAL_MS: u64 = RATCHET_INTERVAL_SECS * 1000;
 
 /// Expiry time in milliseconds
-pub const EXPIRY_MS: u64 = RATCHET_EXPIRY_SECS * 1000;
+pub(crate) const EXPIRY_MS: u64 = RATCHET_EXPIRY_SECS * 1000;
 
 /// Manages ratchets received from other destinations (sender side)
 ///
 /// When we receive an announce with a ratchet, we store it here so we can
 /// use it when sending encrypted packets to that destination.
-pub struct KnownRatchets {
+pub(crate) struct KnownRatchets {
     /// In-memory cache: destination_hash -> (ratchet_public, received_at_ms)
     cache: BTreeMap<DestinationHash, ([u8; RATCHET_SIZE], u64)>,
 }
 
 impl KnownRatchets {
     /// Create a new empty known ratchets manager
-    pub fn new() -> Self {
+    pub(crate) fn new() -> Self {
         Self {
             cache: BTreeMap::new(),
         }
@@ -256,7 +247,7 @@ impl KnownRatchets {
     /// * `dest_hash` - Destination hash (16 bytes)
     /// * `ratchet` - Ratchet public key (32 bytes)
     /// * `timestamp_ms` - When the ratchet was received
-    pub fn remember(
+    pub(crate) fn remember(
         &mut self,
         dest_hash: &DestinationHash,
         ratchet: &[u8; RATCHET_SIZE],
@@ -268,17 +259,17 @@ impl KnownRatchets {
     /// Get the ratchet for a destination
     ///
     /// Returns None if no ratchet is known for this destination.
-    pub fn get(&self, dest_hash: &DestinationHash) -> Option<&[u8; RATCHET_SIZE]> {
+    pub(crate) fn get(&self, dest_hash: &DestinationHash) -> Option<&[u8; RATCHET_SIZE]> {
         self.cache.get(dest_hash).map(|(ratchet, _)| ratchet)
     }
 
     /// Check if we have a ratchet for a destination
-    pub fn has(&self, dest_hash: &DestinationHash) -> bool {
+    pub(crate) fn has(&self, dest_hash: &DestinationHash) -> bool {
         self.cache.contains_key(dest_hash)
     }
 
     /// Remove a ratchet for a destination
-    pub fn remove(&mut self, dest_hash: &DestinationHash) {
+    pub(crate) fn remove(&mut self, dest_hash: &DestinationHash) {
         self.cache.remove(dest_hash);
     }
 
@@ -289,7 +280,7 @@ impl KnownRatchets {
     ///
     /// # Returns
     /// Number of ratchets removed
-    pub fn clean_expired(&mut self, current_time_ms: u64) -> usize {
+    pub(crate) fn clean_expired(&mut self, current_time_ms: u64) -> usize {
         let before_count = self.cache.len();
 
         self.cache.retain(|_, (_, received_at)| {
@@ -301,12 +292,12 @@ impl KnownRatchets {
     }
 
     /// Get the number of known ratchets
-    pub fn len(&self) -> usize {
+    pub(crate) fn len(&self) -> usize {
         self.cache.len()
     }
 
     /// Check if empty
-    pub fn is_empty(&self) -> bool {
+    pub(crate) fn is_empty(&self) -> bool {
         self.cache.is_empty()
     }
 
@@ -315,7 +306,7 @@ impl KnownRatchets {
     /// Each ratchet is stored as a separate key-value pair:
     /// - Key: destination_hash (16 bytes)
     /// - Value: ratchet_public (32 bytes) + received_at (8 bytes)
-    pub fn save(&self, storage: &mut impl Storage) -> Result<(), RatchetError> {
+    pub(crate) fn save(&self, storage: &mut impl Storage) -> Result<(), RatchetError> {
         for (dest_hash, (ratchet, received_at)) in &self.cache {
             let mut value = [0u8; RATCHET_SIZE + 8];
             value[..RATCHET_SIZE].copy_from_slice(ratchet);
@@ -328,7 +319,7 @@ impl KnownRatchets {
     }
 
     /// Load from storage
-    pub fn load(storage: &impl Storage) -> Self {
+    pub(crate) fn load(storage: &impl Storage) -> Self {
         let mut cache = BTreeMap::new();
 
         for key in storage.list_keys(RATCHETS_CATEGORY) {

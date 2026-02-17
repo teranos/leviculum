@@ -34,7 +34,6 @@ use reticulum_core::constants::{
     LINK_KEEPALIVE_SECS, LINK_STALE_FACTOR, LINK_STALE_GRACE_SECS, MS_PER_SECOND,
     TRUNCATED_HASHBYTES,
 };
-use reticulum_core::destination::{Destination, DestinationType, Direction};
 use reticulum_core::identity::Identity;
 use reticulum_core::link::{LinkCloseReason, LinkId, LinkState};
 use reticulum_core::node::{NodeCoreBuilder, NodeEvent};
@@ -42,6 +41,7 @@ use reticulum_core::packet::PacketContext;
 use reticulum_core::traits::{Clock, NoStorage};
 use reticulum_core::transport::{Action, InterfaceId};
 use reticulum_core::DestinationHash;
+use reticulum_core::{Destination, DestinationType, Direction};
 use reticulum_std::interfaces::hdlc::Deframer;
 
 use crate::common::{

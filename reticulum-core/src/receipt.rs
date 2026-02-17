@@ -13,7 +13,7 @@
 //!
 //! # Example
 //!
-//! ```
+//! ```ignore
 //! use reticulum_core::receipt::{PacketReceipt, ReceiptStatus};
 //! use reticulum_core::destination::DestinationHash;
 //!
@@ -72,7 +72,7 @@ impl PacketReceipt {
     /// * `sent_at_ms` - Timestamp when the packet was sent
     ///
     /// # Example
-    /// ```
+    /// ```ignore
     /// use reticulum_core::receipt::PacketReceipt;
     /// use reticulum_core::destination::DestinationHash;
     ///

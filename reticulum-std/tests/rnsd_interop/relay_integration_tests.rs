@@ -167,7 +167,7 @@ async fn test_diamond_relay_and_failure_recovery() {
     // R1 should have forwarded packets
     let r1_stats = relay_r1.transport_stats();
     assert!(
-        r1_stats.packets_forwarded > 0,
+        r1_stats.packets_forwarded() > 0,
         "R1 should have forwarded packets"
     );
 
@@ -241,7 +241,7 @@ async fn test_diamond_relay_and_failure_recovery() {
     // Step 22: R2 should have forwarded packets
     let r2_stats = relay_r2.transport_stats();
     assert!(
-        r2_stats.packets_forwarded > 0,
+        r2_stats.packets_forwarded() > 0,
         "R2 should have forwarded packets"
     );
 
@@ -383,11 +383,11 @@ async fn test_mixed_python_rust_relay_chain() {
     // R forwarded announces from both directions
     let r_stats = rust_relay.transport_stats();
     assert!(
-        r_stats.packets_forwarded > 0,
+        r_stats.packets_forwarded() > 0,
         "Rust relay should have forwarded packets"
     );
     assert!(
-        r_stats.announces_processed >= 2,
+        r_stats.announces_processed() >= 2,
         "R should have processed announces from both A and B"
     );
 

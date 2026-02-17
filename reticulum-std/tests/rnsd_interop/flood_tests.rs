@@ -192,10 +192,10 @@ async fn test_triangle_echo_prevention() {
     let stats = rust_node.transport_stats();
     eprintln!(
         "[triangle_echo] Transport stats: recv={}, fwd={}, drop={}, ann={}",
-        stats.packets_received,
-        stats.packets_forwarded,
-        stats.packets_dropped,
-        stats.announces_processed
+        stats.packets_received(),
+        stats.packets_forwarded(),
+        stats.packets_dropped(),
+        stats.announces_processed()
     );
 
     // CRITICAL ASSERTION: Rust-Node must NOT have a path to its own destination
@@ -209,9 +209,11 @@ async fn test_triangle_echo_prevention() {
     tokio::time::sleep(Duration::from_secs(5)).await;
     let stats_2 = rust_node.transport_stats();
     assert_eq!(
-        stats_1.packets_received, stats_2.packets_received,
+        stats_1.packets_received(),
+        stats_2.packets_received(),
         "Packet count must stabilize (no receive storm): {} vs {}",
-        stats_1.packets_received, stats_2.packets_received
+        stats_1.packets_received(),
+        stats_2.packets_received()
     );
 
     // Clean up
@@ -327,10 +329,10 @@ async fn test_diamond_originator_echo() {
     let stats = rust_node.transport_stats();
     eprintln!(
         "[diamond_echo] Transport stats: recv={}, fwd={}, drop={}, ann={}",
-        stats.packets_received,
-        stats.packets_forwarded,
-        stats.packets_dropped,
-        stats.announces_processed
+        stats.packets_received(),
+        stats.packets_forwarded(),
+        stats.packets_dropped(),
+        stats.announces_processed()
     );
 
     // CRITICAL ASSERTION: Rust-Node must NOT have a path to its own destination
@@ -346,14 +348,18 @@ async fn test_diamond_originator_echo() {
     tokio::time::sleep(Duration::from_secs(5)).await;
     let stats_2 = rust_node.transport_stats();
     assert_eq!(
-        stats_1.packets_received, stats_2.packets_received,
+        stats_1.packets_received(),
+        stats_2.packets_received(),
         "No receive storm after propagation: {} vs {}",
-        stats_1.packets_received, stats_2.packets_received
+        stats_1.packets_received(),
+        stats_2.packets_received()
     );
     assert_eq!(
-        stats_1.packets_forwarded, stats_2.packets_forwarded,
+        stats_1.packets_forwarded(),
+        stats_2.packets_forwarded(),
         "No forwarding storm after propagation: {} vs {}",
-        stats_1.packets_forwarded, stats_2.packets_forwarded
+        stats_1.packets_forwarded(),
+        stats_2.packets_forwarded()
     );
 
     // Clean up
@@ -491,10 +497,10 @@ async fn test_diamond_link_redundant_paths() {
     let relay_stats = rust_relay.transport_stats();
     eprintln!(
         "[diamond_link] Rust-Relay stats: recv={}, fwd={}, drop={}, ann={}",
-        relay_stats.packets_received,
-        relay_stats.packets_forwarded,
-        relay_stats.packets_dropped,
-        relay_stats.announces_processed
+        relay_stats.packets_received(),
+        relay_stats.packets_forwarded(),
+        relay_stats.packets_dropped(),
+        relay_stats.announces_processed()
     );
 
     assert!(
@@ -509,11 +515,13 @@ async fn test_diamond_link_redundant_paths() {
     tokio::time::sleep(Duration::from_secs(5)).await;
     let stats_2 = rust_relay.transport_stats();
     let delta = stats_2
-        .packets_received
-        .saturating_sub(stats_1.packets_received);
+        .packets_received()
+        .saturating_sub(stats_1.packets_received());
     eprintln!(
         "[diamond_link] Packet delta over 5s: {} (recv {} -> {})",
-        delta, stats_1.packets_received, stats_2.packets_received
+        delta,
+        stats_1.packets_received(),
+        stats_2.packets_received()
     );
 
     // Clean up

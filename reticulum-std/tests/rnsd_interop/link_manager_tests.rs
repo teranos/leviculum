@@ -36,7 +36,6 @@ use tokio::net::TcpStream;
 use tokio::time::timeout;
 
 use reticulum_core::constants::TRUNCATED_HASHBYTES;
-use reticulum_core::destination::{Destination, DestinationType, Direction};
 use reticulum_core::identity::Identity;
 use reticulum_core::link::{LinkCloseReason, LinkId, LinkState};
 use reticulum_core::node::{NodeCoreBuilder, NodeEvent};
@@ -44,6 +43,7 @@ use reticulum_core::packet::{Packet, PacketType};
 use reticulum_core::traits::{Clock, NoStorage};
 use reticulum_core::transport::{Action, InterfaceId};
 use reticulum_core::DestinationHash;
+use reticulum_core::{Destination, DestinationType, Direction};
 use reticulum_std::interfaces::hdlc::{DeframeResult, Deframer};
 
 use crate::common::{

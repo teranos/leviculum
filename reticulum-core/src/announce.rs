@@ -93,18 +93,21 @@ fn build_signed_data(
 
 /// Minimum announce payload size (without ratchet, without app_data)
 /// public_key(64) + name_hash(10) + random_hash(10) + signature(64) = 148
-pub const ANNOUNCE_MIN_SIZE: usize =
+pub(crate) const ANNOUNCE_MIN_SIZE: usize =
     IDENTITY_KEY_SIZE + NAME_HASHBYTES + RANDOM_HASHBYTES + ED25519_SIGNATURE_SIZE;
 
 /// Minimum announce payload size with ratchet (without app_data)
 /// public_key(64) + name_hash(10) + random_hash(10) + ratchet(32) + signature(64) = 180
-pub const ANNOUNCE_RATCHETED_MIN_SIZE: usize = ANNOUNCE_MIN_SIZE + RATCHET_SIZE;
+pub(crate) const ANNOUNCE_RATCHETED_MIN_SIZE: usize = ANNOUNCE_MIN_SIZE + RATCHET_SIZE;
 
 /// Generate a random hash for announces (5 random + 5 timestamp bytes).
 ///
 /// The random hash ensures announce uniqueness even for the same destination.
 /// Format: 5 bytes from truncated_hash(random_16) + 5 bytes from timestamp_ms.
-pub fn generate_random_hash(rng: &mut impl CryptoRngCore, now_ms: u64) -> [u8; RANDOM_HASHBYTES] {
+pub(crate) fn generate_random_hash(
+    rng: &mut impl CryptoRngCore,
+    now_ms: u64,
+) -> [u8; RANDOM_HASHBYTES] {
     let mut random_16 = [0u8; 16];
     rng.fill_bytes(&mut random_16);
     let random_part = truncated_hash(&random_16);
@@ -125,7 +128,7 @@ pub fn generate_random_hash(rng: &mut impl CryptoRngCore, now_ms: u64) -> [u8; R
 /// as a big-endian integer, matching Python's `int.from_bytes(random_blob[5:10], "big")`
 /// (Transport.py:2935-2936). The result is a 40-bit value used only for
 /// relative comparison — not a full millisecond timestamp.
-pub fn emission_from_random_hash(random_hash: &[u8; RANDOM_HASHBYTES]) -> u64 {
+pub(crate) fn emission_from_random_hash(random_hash: &[u8; RANDOM_HASHBYTES]) -> u64 {
     let ts = &random_hash[RANDOM_HASH_RANDOM_SIZE..];
     // Read 5 bytes big-endian into u64
     ((ts[0] as u64) << 32)
@@ -138,7 +141,7 @@ pub fn emission_from_random_hash(random_hash: &[u8; RANDOM_HASHBYTES]) -> u64 {
 /// Get the maximum emission timestamp from a list of random_hashes.
 ///
 /// Matches Python `Transport.timebase_from_random_blobs()` (Transport.py:2939).
-pub fn max_emission_from_blobs(blobs: &[[u8; RANDOM_HASHBYTES]]) -> u64 {
+pub(crate) fn max_emission_from_blobs(blobs: &[[u8; RANDOM_HASHBYTES]]) -> u64 {
     blobs
         .iter()
         .map(emission_from_random_hash)
@@ -281,7 +284,7 @@ impl ReceivedAnnounce {
     ///
     /// The `context_flag` in the packet header indicates whether a ratchet is present.
     /// This is the authoritative indicator per the Reticulum protocol specification.
-    pub fn from_packet(packet: &Packet) -> Result<Self, AnnounceError> {
+    pub(crate) fn from_packet(packet: &Packet) -> Result<Self, AnnounceError> {
         if packet.flags.packet_type != PacketType::Announce {
             return Err(AnnounceError::NotAnnounce);
         }
@@ -439,7 +442,7 @@ impl ReceivedAnnounce {
     /// 2. Signature is valid
     ///
     /// Returns `Ok(())` if valid, or an error describing what failed.
-    pub fn validate(&self) -> Result<(), AnnounceError> {
+    pub(crate) fn validate(&self) -> Result<(), AnnounceError> {
         if !self.verify_destination_hash() {
             return Err(AnnounceError::HashMismatch);
         }

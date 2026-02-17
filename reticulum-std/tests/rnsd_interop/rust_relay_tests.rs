@@ -207,7 +207,7 @@ async fn test_rust_relay_announce_and_link_data() {
     // Step 11: Verify relay stats
     let stats = relay.transport_stats();
     assert!(
-        stats.packets_forwarded > 0,
+        stats.packets_forwarded() > 0,
         "Rust relay should have forwarded packets"
     );
 

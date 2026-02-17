@@ -38,7 +38,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let stats = node.transport_stats();
     println!(
         "Stats: received={}, forwarded={}, sent={}",
-        stats.packets_received, stats.packets_forwarded, stats.packets_sent
+        stats.packets_received(),
+        stats.packets_forwarded(),
+        stats.packets_sent()
     );
 
     node.stop().await?;
