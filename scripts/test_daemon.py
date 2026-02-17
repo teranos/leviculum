@@ -107,6 +107,7 @@ class TestDaemon:
         self.destinations = {}  # hash -> (identity, destination)
         self.links = {}  # link_hash -> link
         self.received_packets = []  # [(timestamp, link, data)]
+        self.received_single_packets = []  # [(timestamp, dest_hash, data_hex)]
         self.client_interfaces = {}  # name -> TCPClientInterface
         self.inbound_trace = []  # [(timestamp, flags, packet_type, dest_hash_hex, transport_id_hex)]
 
@@ -285,6 +286,11 @@ class TestDaemon:
             # Set up link acceptance
             dest.set_link_established_callback(
                 lambda link, d=dest: self._on_link_established(link, d)
+            )
+
+            # Set up single-packet receive callback
+            dest.set_packet_callback(
+                lambda data, pkt, d=dest: self._on_single_packet(d, data, pkt)
             )
 
             dest_hash = dest.hash.hex()
@@ -982,12 +988,71 @@ class TestDaemon:
             except Exception as e:
                 return {"error": f"Failed to get announce cache: {str(e)}"}
 
+        elif method == "get_received_single_packets":
+            # Return single packets received at destinations (not via links)
+            packets = []
+            for ts, dest_hash, data_hex in self.received_single_packets:
+                packets.append({
+                    "timestamp": ts,
+                    "dest_hash": dest_hash,
+                    "data": data_hex,
+                })
+            return {"result": packets}
+
+        elif method == "send_single_packet":
+            # Send a single (non-link) packet to a remote destination
+            dest_hash_hex = params.get("dest_hash")
+            data_hex = params.get("data")
+
+            if not dest_hash_hex or not data_hex:
+                return {"error": "dest_hash and data required"}
+
+            try:
+                dest_hash_bytes = bytes.fromhex(dest_hash_hex)
+
+                # Look up identity from RNS identity cache (populated by announces)
+                recalled_identity = RNS.Identity.recall(dest_hash_bytes)
+                if recalled_identity is None:
+                    return {"error": f"No identity known for {dest_hash_hex} (no announce received?)"}
+
+                # Create Destination.OUT with the recalled identity
+                # We need app_name + aspects to match the dest hash, but for OUT
+                # destinations we can just override the hash directly
+                out_dest = RNS.Destination(
+                    recalled_identity,
+                    RNS.Destination.OUT,
+                    RNS.Destination.SINGLE,
+                    "unknown",
+                    "app"
+                )
+                out_dest.hash = dest_hash_bytes
+
+                # Build and send the packet
+                data_bytes = bytes.fromhex(data_hex)
+                packet = RNS.Packet(out_dest, data_bytes)
+                packet.send()
+
+                return {"result": "sent"}
+            except Exception as e:
+                return {"error": f"Failed to send single packet: {str(e)}"}
+
         elif method == "shutdown":
             self.running = False
             return {"result": "shutting_down"}
 
         else:
             return {"error": f"Unknown method: {method}"}
+
+    def _on_single_packet(self, dest, data, packet):
+        """Called when a single (non-link) packet is received at a destination."""
+        if self.verbose:
+            print(f"Single packet received at {dest.hash.hex()}: {len(data)} bytes")
+
+        self.received_single_packets.append((
+            time.time(),
+            dest.hash.hex(),
+            data.hex() if isinstance(data, bytes) else data.encode().hex(),
+        ))
 
     def _on_link_established(self, link, dest):
         """Called when a link is established to one of our destinations."""

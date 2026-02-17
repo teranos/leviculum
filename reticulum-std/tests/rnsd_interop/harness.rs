@@ -579,6 +579,63 @@ impl TestDaemon {
         Ok(packets)
     }
 
+    /// Get single packets received at destinations (not via links).
+    pub async fn get_received_single_packets(
+        &self,
+    ) -> Result<Vec<ReceivedSinglePacket>, HarnessError> {
+        let result = self
+            .query("get_received_single_packets", serde_json::json!({}))
+            .await?;
+        let mut packets = Vec::new();
+
+        if let serde_json::Value::Array(arr) = result {
+            for entry in arr {
+                let timestamp = entry.get("timestamp").and_then(|v| v.as_f64());
+                let dest_hash = entry
+                    .get("dest_hash")
+                    .and_then(|v| v.as_str())
+                    .map(|s| s.to_string());
+                let data = entry
+                    .get("data")
+                    .and_then(|v| v.as_str())
+                    .map(|s| hex::decode(s).unwrap_or_default())
+                    .unwrap_or_default();
+
+                packets.push(ReceivedSinglePacket {
+                    timestamp,
+                    dest_hash,
+                    data,
+                });
+            }
+        }
+
+        Ok(packets)
+    }
+
+    /// Send a single (non-link) packet from Python to a remote destination.
+    ///
+    /// Requires that Python has already received an announce for the destination
+    /// (so that `RNS.Identity.recall()` can find the identity).
+    ///
+    /// # Arguments
+    /// * `dest_hash` - The destination hash (hex string)
+    /// * `data` - The data to send (will be hex-encoded)
+    pub async fn send_single_packet(
+        &self,
+        dest_hash: &str,
+        data: &[u8],
+    ) -> Result<(), HarnessError> {
+        self.query(
+            "send_single_packet",
+            serde_json::json!({
+                "dest_hash": dest_hash,
+                "data": hex::encode(data),
+            }),
+        )
+        .await?;
+        Ok(())
+    }
+
     /// Send data on an existing link (Python as sender).
     ///
     /// # Arguments
@@ -1233,6 +1290,15 @@ pub struct LinkInfo {
 pub struct ReceivedPacket {
     pub timestamp: Option<f64>,
     pub link_hash: Option<String>,
+    pub data: Vec<u8>,
+}
+
+/// A single (non-link) packet received at a destination.
+#[derive(Debug, Clone)]
+#[allow(dead_code)]
+pub struct ReceivedSinglePacket {
+    pub timestamp: Option<f64>,
+    pub dest_hash: Option<String>,
     pub data: Vec<u8>,
 }
 
