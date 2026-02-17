@@ -33,42 +33,6 @@ use crate::harness::TestDaemon;
 const DAEMON_SETTLE_TIME: Duration = Duration::from_millis(500);
 const PACKET_WAIT_TIMEOUT: Duration = Duration::from_secs(5);
 
-/// Wait for a proof packet for a specific destination hash
-#[allow(dead_code)]
-async fn wait_for_proof_packet(
-    stream: &mut TcpStream,
-    deframer: &mut Deframer,
-    dest_hash: &[u8; TRUNCATED_HASHBYTES],
-    timeout_duration: Duration,
-) -> Option<Packet> {
-    let mut buf = [0u8; 2048];
-    let deadline = tokio::time::Instant::now() + timeout_duration;
-
-    while tokio::time::Instant::now() < deadline {
-        let remaining = deadline - tokio::time::Instant::now();
-
-        match timeout(remaining, stream.read(&mut buf)).await {
-            Ok(Ok(0)) => return None,
-            Ok(Ok(n)) => {
-                let results = deframer.process(&buf[..n]);
-                for result in results {
-                    if let DeframeResult::Frame(data) = result {
-                        if let Ok(pkt) = Packet::unpack(&data) {
-                            if pkt.flags.packet_type == PacketType::Proof
-                                && pkt.destination_hash == *dest_hash
-                            {
-                                return Some(pkt);
-                            }
-                        }
-                    }
-                }
-            }
-            _ => {}
-        }
-    }
-    None
-}
-
 use reticulum_core::link::LinkId;
 
 /// Wait for any proof packet

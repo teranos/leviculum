@@ -96,37 +96,6 @@ impl Message for PingMessage {
     }
 }
 
-/// Pong message sent in response to Ping
-#[allow(dead_code)]
-#[derive(Debug, Clone)]
-struct PongMessage {
-    ping_sequence: u32,
-    response_timestamp_ms: u64,
-}
-
-impl Message for PongMessage {
-    const MSGTYPE: u16 = 0x0101;
-
-    fn pack(&self) -> Vec<u8> {
-        let mut data = Vec::with_capacity(12);
-        data.extend_from_slice(&self.ping_sequence.to_be_bytes());
-        data.extend_from_slice(&self.response_timestamp_ms.to_be_bytes());
-        data
-    }
-
-    fn unpack(data: &[u8]) -> Result<Self, ChannelError> {
-        if data.len() < 12 {
-            return Err(ChannelError::EnvelopeTruncated);
-        }
-        Ok(Self {
-            ping_sequence: u32::from_be_bytes([data[0], data[1], data[2], data[3]]),
-            response_timestamp_ms: u64::from_be_bytes([
-                data[4], data[5], data[6], data[7], data[8], data[9], data[10], data[11],
-            ]),
-        })
-    }
-}
-
 /// Bulk data message for transfer testing
 #[derive(Debug, Clone)]
 struct BulkDataMessage {
@@ -163,25 +132,15 @@ impl Message for BulkDataMessage {
 // =============================================================================
 
 /// A Rust node in the test network
-#[allow(dead_code)]
 struct RustTestNode {
-    name: String,
     stream: TcpStream,
     deframer: Deframer,
     destination: Destination,
     dest_hash: DestinationHash,
-    has_ratchets: bool,
-    channel: Channel,
 }
 
 impl RustTestNode {
-    async fn new(
-        name: &str,
-        daemon: &TestDaemon,
-        app_name: &str,
-        aspects: &[&str],
-        has_ratchets: bool,
-    ) -> Self {
+    async fn new(daemon: &TestDaemon, app_name: &str, aspects: &[&str]) -> Self {
         let stream = TcpStream::connect(daemon.rns_addr())
             .await
             .expect("Failed to connect to daemon");
@@ -202,13 +161,10 @@ impl RustTestNode {
         let dest_hash = *destination.hash();
 
         Self {
-            name: name.to_string(),
             stream,
             deframer: Deframer::new(),
             destination,
             dest_hash,
-            has_ratchets,
-            channel: Channel::new(),
         }
     }
 
@@ -231,30 +187,19 @@ impl RustTestNode {
 
         send_framed(&mut self.stream, &raw[..size]).await;
     }
-
-    /// Get the public key bytes (64 bytes)
-    #[allow(dead_code)]
-    fn public_key_bytes(&self) -> Vec<u8> {
-        self.identity().public_key_bytes().to_vec()
-    }
 }
 
 /// Information about an active link in the test
-#[allow(dead_code)]
 struct ActiveLink {
-    link_id: [u8; 16],
     link: Link,
     channel: Channel,
-    initiator_name: String,
-    responder_name: String,
 }
 
 /// The complete test network
 struct MultiNodeTestNetwork {
     // Python daemons
     py_1: TestDaemon,
-    #[allow(dead_code)] // Hub daemon - kept alive for routing, not directly accessed
-    py_2: TestDaemon,
+    _py_2: TestDaemon,
     py_3: TestDaemon,
     py_4: TestDaemon,
 
@@ -331,10 +276,10 @@ impl MultiNodeTestNetwork {
         // Create Rust nodes
         println!("Creating Rust nodes...");
 
-        let rust_a = RustTestNode::new("Rust-A", &py_1, "rust", &["node", "a"], true).await;
-        let rust_b = RustTestNode::new("Rust-B", &py_1, "rust", &["node", "b"], false).await;
-        let rust_c = RustTestNode::new("Rust-C", &py_3, "rust", &["node", "c"], true).await;
-        let rust_d = RustTestNode::new("Rust-D", &py_3, "rust", &["node", "d"], false).await;
+        let rust_a = RustTestNode::new(&py_1, "rust", &["node", "a"]).await;
+        let rust_b = RustTestNode::new(&py_1, "rust", &["node", "b"]).await;
+        let rust_c = RustTestNode::new(&py_3, "rust", &["node", "c"]).await;
+        let rust_d = RustTestNode::new(&py_3, "rust", &["node", "d"]).await;
 
         println!(
             "  Rust-A: {} (ratchets=true)",
@@ -355,7 +300,7 @@ impl MultiNodeTestNetwork {
 
         Self {
             py_1,
-            py_2,
+            _py_2: py_2,
             py_3,
             py_4,
             py_4_dest: None,
@@ -538,11 +483,8 @@ async fn phase2_link_establishment(network: &mut MultiNodeTestNetwork) {
                     network.active_links.insert(
                         "L1".to_string(),
                         ActiveLink {
-                            link_id: *link.id().as_bytes(),
                             link,
                             channel: Channel::new(),
-                            initiator_name: "Rust-A".to_string(),
-                            responder_name: "Py-4".to_string(),
                         },
                     );
                 } else {
@@ -671,11 +613,8 @@ async fn phase2_link_establishment(network: &mut MultiNodeTestNetwork) {
                 network.active_links.insert(
                     "L3".to_string(),
                     ActiveLink {
-                        link_id: *link_ab.id().as_bytes(),
                         link: link_ab,
                         channel: Channel::new(),
-                        initiator_name: "Rust-A".to_string(),
-                        responder_name: "Rust-B".to_string(),
                     },
                 );
             } else {
@@ -796,11 +735,8 @@ async fn phase2_link_establishment(network: &mut MultiNodeTestNetwork) {
                 network.active_links.insert(
                     "L5".to_string(),
                     ActiveLink {
-                        link_id: *link_cd.id().as_bytes(),
                         link: link_cd,
                         channel: Channel::new(),
-                        initiator_name: "Rust-C".to_string(),
-                        responder_name: "Rust-D".to_string(),
                     },
                 );
             } else {
@@ -1186,7 +1122,7 @@ async fn test_rust_to_python_link() {
     let daemon = TestDaemon::start().await.expect("Failed to start daemon");
 
     // Create Rust node connected to daemon
-    let mut node_a = RustTestNode::new("NodeA", &daemon, "test", &["a"], false).await;
+    let mut node_a = RustTestNode::new(&daemon, "test", &["a"]).await;
 
     // Announce Rust node
     node_a.announce(b"node_a_data").await;

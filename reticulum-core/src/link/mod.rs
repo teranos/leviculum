@@ -297,7 +297,6 @@ pub struct Link {
     /// Our ephemeral X25519 public key
     ephemeral_public: x25519_dalek::PublicKey,
     /// Our ephemeral Ed25519 signing key (retained for future link-level authentication)
-    #[allow(dead_code)]
     signing_key: Option<ed25519_dalek::SigningKey>,
     /// Our ephemeral Ed25519 verifying key
     verifying_key: ed25519_dalek::VerifyingKey,

@@ -47,9 +47,6 @@ pub enum HarnessError {
     StartupTimeout,
     /// Failed to parse daemon output
     ParseError(String),
-    /// Port is not available
-    #[allow(dead_code)] // Reserved for future error handling
-    PortUnavailable(u16),
     /// JSON-RPC command failed
     CommandFailed(String),
     /// Connection to daemon failed
@@ -64,7 +61,6 @@ impl std::fmt::Display for HarnessError {
             HarnessError::SpawnFailed(e) => write!(f, "Failed to spawn daemon: {}", e),
             HarnessError::StartupTimeout => write!(f, "Daemon did not become ready in time"),
             HarnessError::ParseError(s) => write!(f, "Failed to parse daemon output: {}", s),
-            HarnessError::PortUnavailable(p) => write!(f, "Port {} is not available", p),
             HarnessError::CommandFailed(s) => write!(f, "JSON-RPC command failed: {}", s),
             HarnessError::ConnectionFailed(e) => write!(f, "Connection to daemon failed: {}", e),
             HarnessError::SubmoduleInitFailed(s) => {
@@ -299,12 +295,6 @@ impl TestDaemon {
         self.rns_port
     }
 
-    /// Get the command port number.
-    #[allow(dead_code)] // Reserved for future test scenarios
-    pub fn cmd_port(&self) -> u16 {
-        self.cmd_port
-    }
-
     /// Send a JSON-RPC command to the daemon and return the result.
     async fn query(
         &self,
@@ -382,42 +372,13 @@ impl TestDaemon {
         if let serde_json::Value::Object(map) = result {
             for (hash, entry) in map {
                 let timestamp = entry.get("timestamp").and_then(|v| v.as_f64());
-                let next_hop = entry
-                    .get("next_hop")
-                    .and_then(|v| v.as_str())
-                    .map(|s| s.to_string());
                 let hops = entry.get("hops").and_then(|v| v.as_u64()).map(|v| v as u8);
-                let expires = entry.get("expires").and_then(|v| v.as_f64());
 
-                paths.insert(
-                    hash,
-                    PathEntry {
-                        timestamp,
-                        next_hop,
-                        hops,
-                        expires,
-                    },
-                );
+                paths.insert(hash, PathEntry { timestamp, hops });
             }
         }
 
         Ok(paths)
-    }
-
-    /// Get pending announces from the daemon.
-    #[allow(dead_code)] // Reserved for future test scenarios
-    pub async fn get_announces(&self) -> Result<HashMap<String, AnnounceEntry>, HarnessError> {
-        let result = self.query("get_announces", serde_json::json!({})).await?;
-        let mut announces = HashMap::new();
-
-        if let serde_json::Value::Object(map) = result {
-            for (hash, entry) in map {
-                let timestamp = entry.get("timestamp").and_then(|v| v.as_f64());
-                announces.insert(hash, AnnounceEntry { timestamp });
-            }
-        }
-
-        Ok(announces)
     }
 
     /// Get interface information from the daemon.
@@ -508,41 +469,15 @@ impl TestDaemon {
         Ok(())
     }
 
-    /// Request the daemon to shut down gracefully.
-    #[allow(dead_code)] // Reserved for future test scenarios
-    pub async fn shutdown(&self) -> Result<(), HarnessError> {
-        let _ = self.query("shutdown", serde_json::json!({})).await;
-        Ok(())
-    }
-
     /// Get established links from the daemon.
     pub async fn get_links(&self) -> Result<HashMap<String, LinkInfo>, HarnessError> {
         let result = self.query("get_links", serde_json::json!({})).await?;
         let mut links = HashMap::new();
 
         if let serde_json::Value::Object(map) = result {
-            for (hash, entry) in map {
-                let status = entry
-                    .get("status")
-                    .and_then(|v| v.as_str())
-                    .unwrap_or("unknown")
-                    .to_string();
-                let activated_at = entry.get("activated_at").and_then(|v| v.as_f64());
-
-                links.insert(
-                    hash,
-                    LinkInfo {
-                        hash: String::new(), // Will be set from key
-                        status,
-                        activated_at,
-                    },
-                );
+            for (hash, _entry) in map {
+                links.insert(hash, LinkInfo);
             }
-        }
-
-        // Fill in hashes from keys
-        for (hash, info) in links.iter_mut() {
-            info.hash = hash.clone();
         }
 
         Ok(links)
@@ -557,22 +492,13 @@ impl TestDaemon {
 
         if let serde_json::Value::Array(arr) = result {
             for entry in arr {
-                let timestamp = entry.get("timestamp").and_then(|v| v.as_f64());
-                let link_hash = entry
-                    .get("link_hash")
-                    .and_then(|v| v.as_str())
-                    .map(|s| s.to_string());
                 let data = entry
                     .get("data")
                     .and_then(|v| v.as_str())
                     .map(|s| hex::decode(s).unwrap_or_default())
                     .unwrap_or_default();
 
-                packets.push(ReceivedPacket {
-                    timestamp,
-                    link_hash,
-                    data,
-                });
+                packets.push(ReceivedPacket { data });
             }
         }
 
@@ -590,7 +516,6 @@ impl TestDaemon {
 
         if let serde_json::Value::Array(arr) = result {
             for entry in arr {
-                let timestamp = entry.get("timestamp").and_then(|v| v.as_f64());
                 let dest_hash = entry
                     .get("dest_hash")
                     .and_then(|v| v.as_str())
@@ -601,11 +526,7 @@ impl TestDaemon {
                     .map(|s| hex::decode(s).unwrap_or_default())
                     .unwrap_or_default();
 
-                packets.push(ReceivedSinglePacket {
-                    timestamp,
-                    dest_hash,
-                    data,
-                });
+                packets.push(ReceivedSinglePacket { dest_hash, data });
             }
         }
 
@@ -703,16 +624,10 @@ impl TestDaemon {
             .get("enabled")
             .and_then(|v| v.as_bool())
             .unwrap_or(false);
-        let ratchet_dir = result
-            .get("ratchet_dir")
-            .and_then(|v| v.as_str())
-            .map(|s| s.to_string());
-
         Ok(RatchetInfo {
             enabled,
             count: None,
             latest_id: None,
-            ratchet_dir,
         })
     }
 
@@ -747,7 +662,6 @@ impl TestDaemon {
             enabled,
             count,
             latest_id,
-            ratchet_dir: None,
         })
     }
 
@@ -772,33 +686,9 @@ impl TestDaemon {
             params["name"] = serde_json::json!(n);
         }
 
-        let result = self.query("add_client_interface", params).await?;
+        let _result = self.query("add_client_interface", params).await?;
 
-        let iface_name = result
-            .get("name")
-            .and_then(|v| v.as_str())
-            .unwrap_or("")
-            .to_string();
-        let online = result
-            .get("online")
-            .and_then(|v| v.as_bool())
-            .unwrap_or(false);
-        let ip = result
-            .get("target_ip")
-            .and_then(|v| v.as_str())
-            .unwrap_or(target_ip)
-            .to_string();
-        let port = result
-            .get("target_port")
-            .and_then(|v| v.as_u64())
-            .unwrap_or(target_port as u64) as u16;
-
-        Ok(ClientInterfaceInfo {
-            name: iface_name,
-            online,
-            target_ip: ip,
-            target_port: port,
-        })
+        Ok(ClientInterfaceInfo)
     }
 
     /// Get transport/routing status.
@@ -819,14 +709,6 @@ impl TestDaemon {
             .get("path_table_size")
             .and_then(|v| v.as_u64())
             .unwrap_or(0) as usize;
-        let link_table_size = result
-            .get("link_table_size")
-            .and_then(|v| v.as_u64())
-            .unwrap_or(0) as usize;
-        let announce_table_size = result
-            .get("announce_table_size")
-            .and_then(|v| v.as_u64())
-            .unwrap_or(0) as usize;
         let interface_count = result
             .get("interface_count")
             .and_then(|v| v.as_u64())
@@ -836,8 +718,6 @@ impl TestDaemon {
             enabled,
             identity_hash,
             path_table_size,
-            link_table_size,
-            announce_table_size,
             interface_count,
         })
     }
@@ -848,22 +728,8 @@ impl TestDaemon {
         let mut link_table = HashMap::new();
 
         if let serde_json::Value::Object(map) = result {
-            for (link_id, entry) in map {
-                let timestamp = entry.get("timestamp").and_then(|v| v.as_f64());
-                let interface = entry
-                    .get("interface")
-                    .and_then(|v| v.as_str())
-                    .map(|s| s.to_string());
-                let hops = entry.get("hops").and_then(|v| v.as_u64()).map(|v| v as u8);
-
-                link_table.insert(
-                    link_id,
-                    LinkTableEntry {
-                        timestamp,
-                        interface,
-                        hops,
-                    },
-                );
+            for (link_id, _entry) in map {
+                link_table.insert(link_id, LinkTableEntry);
             }
         }
 
@@ -958,21 +824,11 @@ impl TestDaemon {
             .get("state")
             .and_then(|v| v.as_str())
             .map(|s| s.to_string());
-        let is_initiator = result.get("is_initiator").and_then(|v| v.as_bool());
-        let rtt = result.get("rtt").and_then(|v| v.as_f64());
-        let established_at = result.get("established_at").and_then(|v| v.as_f64());
-        let last_inbound = result.get("last_inbound").and_then(|v| v.as_f64());
-        let last_outbound = result.get("last_outbound").and_then(|v| v.as_f64());
 
         Ok(LinkStatusInfo {
             status,
             link_hash: link_hash_result,
             state,
-            is_initiator,
-            rtt,
-            established_at,
-            last_inbound,
-            last_outbound,
         })
     }
 
@@ -1027,7 +883,6 @@ impl TestDaemon {
     ///
     /// Returns the full announce_table with rebroadcast info (timestamp,
     /// retransmit_timeout, retries, received_from, hops, local_rebroadcasts, etc.)
-    #[allow(dead_code)]
     pub async fn get_announce_table_detail(
         &self,
     ) -> Result<HashMap<String, AnnounceTableDetail>, HarnessError> {
@@ -1041,17 +896,6 @@ impl TestDaemon {
                 table.insert(
                     hash,
                     AnnounceTableDetail {
-                        timestamp: entry.get("timestamp").and_then(|v| v.as_f64()),
-                        retransmit_timeout: entry
-                            .get("retransmit_timeout")
-                            .and_then(|v| v.as_f64()),
-                        retries: entry.get("retries").and_then(|v| v.as_u64()),
-                        received_from: entry
-                            .get("received_from")
-                            .and_then(|v| v.as_str())
-                            .map(|s| s.to_string()),
-                        hops: entry.get("hops").and_then(|v| v.as_u64()),
-                        packet_length: entry.get("packet_length").and_then(|v| v.as_u64()),
                         local_rebroadcasts: entry
                             .get("local_rebroadcasts")
                             .and_then(|v| v.as_u64()),
@@ -1064,79 +908,6 @@ impl TestDaemon {
         }
 
         Ok(table)
-    }
-
-    /// Get the reverse table from the daemon.
-    #[allow(dead_code)]
-    pub async fn get_reverse_table(
-        &self,
-    ) -> Result<HashMap<String, ReverseTableEntry>, HarnessError> {
-        let result = self
-            .query("get_reverse_table", serde_json::json!({}))
-            .await?;
-        let mut table = HashMap::new();
-
-        if let serde_json::Value::Object(map) = result {
-            for (hash, entry) in map {
-                table.insert(
-                    hash,
-                    ReverseTableEntry {
-                        received_from: entry
-                            .get("received_from")
-                            .and_then(|v| v.as_str())
-                            .map(|s| s.to_string()),
-                        interface: entry
-                            .get("interface")
-                            .and_then(|v| v.as_str())
-                            .map(|s| s.to_string()),
-                        timestamp: entry.get("timestamp").and_then(|v| v.as_f64()),
-                    },
-                );
-            }
-        }
-
-        Ok(table)
-    }
-
-    /// Trigger a path request for a given destination hash.
-    #[allow(dead_code)]
-    pub async fn trigger_path_request(&self, dest_hash: &str) -> Result<(), HarnessError> {
-        self.query(
-            "trigger_path_request",
-            serde_json::json!({"hash": dest_hash}),
-        )
-        .await?;
-        Ok(())
-    }
-
-    /// Get the announce cache (destination_table) from the daemon.
-    #[allow(dead_code)]
-    pub async fn get_announce_cache(
-        &self,
-    ) -> Result<HashMap<String, AnnounceCacheEntry>, HarnessError> {
-        let result = self
-            .query("get_announce_cache", serde_json::json!({}))
-            .await?;
-        let mut cache = HashMap::new();
-
-        if let serde_json::Value::Object(map) = result {
-            for (hash, entry) in map {
-                cache.insert(
-                    hash,
-                    AnnounceCacheEntry {
-                        timestamp: entry.get("timestamp").and_then(|v| v.as_f64()),
-                        received_from: entry
-                            .get("received_from")
-                            .and_then(|v| v.as_str())
-                            .map(|s| s.to_string()),
-                        hops: entry.get("hops").and_then(|v| v.as_u64()),
-                        expires: entry.get("expires").and_then(|v| v.as_f64()),
-                    },
-                );
-            }
-        }
-
-        Ok(cache)
     }
 
     /// Wait for a link to reach a specific state.
@@ -1171,20 +942,9 @@ impl TestDaemon {
             .get("state")
             .and_then(|v| v.as_str())
             .map(|s| s.to_string());
-        let expected = result
-            .get("expected")
-            .and_then(|v| v.as_str())
-            .map(|s| s.to_string());
-        let current = result
-            .get("current")
-            .and_then(|v| v.as_str())
-            .map(|s| s.to_string());
-
         Ok(WaitForLinkStateResult {
             status,
             state: state_result,
-            expected,
-            current,
         })
     }
 
@@ -1241,18 +1001,7 @@ impl Drop for TestDaemon {
 #[derive(Debug, Clone)]
 pub struct PathEntry {
     pub timestamp: Option<f64>,
-    #[allow(dead_code)]
-    pub next_hop: Option<String>,
     pub hops: Option<u8>,
-    #[allow(dead_code)]
-    pub expires: Option<f64>,
-}
-
-/// Entry in the announce table.
-#[derive(Debug, Clone)]
-#[allow(dead_code)]
-pub struct AnnounceEntry {
-    pub timestamp: Option<f64>,
 }
 
 /// Information about a Reticulum interface.
@@ -1271,81 +1020,53 @@ pub struct DestinationInfo {
     /// Full 64-byte public key (X25519 + Ed25519)
     pub public_key: String,
     /// Ed25519 signing key (last 32 bytes of public_key)
-    #[allow(dead_code)]
     pub signing_key: String,
 }
 
 /// Information about an established link.
 #[derive(Debug, Clone)]
-#[allow(dead_code)]
-pub struct LinkInfo {
-    pub hash: String,
-    pub status: String,
-    pub activated_at: Option<f64>,
-}
+pub struct LinkInfo;
 
 /// A packet received over a link.
 #[derive(Debug, Clone)]
-#[allow(dead_code)]
 pub struct ReceivedPacket {
-    pub timestamp: Option<f64>,
-    pub link_hash: Option<String>,
     pub data: Vec<u8>,
 }
 
 /// A single (non-link) packet received at a destination.
 #[derive(Debug, Clone)]
-#[allow(dead_code)]
 pub struct ReceivedSinglePacket {
-    pub timestamp: Option<f64>,
     pub dest_hash: Option<String>,
     pub data: Vec<u8>,
 }
 
 /// Information about ratchet state for a destination.
 #[derive(Debug, Clone)]
-#[allow(dead_code)]
 pub struct RatchetInfo {
     pub enabled: bool,
     pub count: Option<usize>,
     pub latest_id: Option<String>,
-    pub ratchet_dir: Option<String>,
 }
 
 /// Information about transport status.
 #[derive(Debug, Clone)]
-#[allow(dead_code)]
 pub struct TransportStatus {
     pub enabled: bool,
     pub identity_hash: Option<String>,
     pub path_table_size: usize,
-    pub link_table_size: usize,
-    pub announce_table_size: usize,
     pub interface_count: usize,
 }
 
 /// Information about a link table entry.
 #[derive(Debug, Clone)]
-#[allow(dead_code)]
-pub struct LinkTableEntry {
-    pub timestamp: Option<f64>,
-    pub interface: Option<String>,
-    pub hops: Option<u8>,
-}
+pub struct LinkTableEntry;
 
 /// Information about a client interface.
 #[derive(Debug, Clone)]
-#[allow(dead_code)]
-pub struct ClientInterfaceInfo {
-    pub name: String,
-    pub online: bool,
-    pub target_ip: String,
-    pub target_port: u16,
-}
+pub struct ClientInterfaceInfo;
 
 /// Result from rotating a ratchet.
 #[derive(Debug, Clone)]
-#[allow(dead_code)]
 pub struct RatchetRotationResult {
     pub rotated: bool,
     pub ratchet_count: usize,
@@ -1354,59 +1075,24 @@ pub struct RatchetRotationResult {
 
 /// Detailed status of a link.
 #[derive(Debug, Clone)]
-#[allow(dead_code)]
 pub struct LinkStatusInfo {
     pub status: String,
     pub link_hash: String,
     pub state: Option<String>,
-    pub is_initiator: Option<bool>,
-    pub rtt: Option<f64>,
-    pub established_at: Option<f64>,
-    pub last_inbound: Option<f64>,
-    pub last_outbound: Option<f64>,
 }
 
 /// Result from waiting for a link state.
 #[derive(Debug, Clone)]
-#[allow(dead_code)]
 pub struct WaitForLinkStateResult {
     pub status: String,
     pub state: Option<String>,
-    pub expected: Option<String>,
-    pub current: Option<String>,
 }
 
 /// Detailed announce table entry from the Python daemon.
 #[derive(Debug, Clone)]
-#[allow(dead_code)]
 pub struct AnnounceTableDetail {
-    pub timestamp: Option<f64>,
-    pub retransmit_timeout: Option<f64>,
-    pub retries: Option<u64>,
-    pub received_from: Option<String>,
-    pub hops: Option<u64>,
-    pub packet_length: Option<u64>,
     pub local_rebroadcasts: Option<u64>,
     pub block_rebroadcasts: Option<bool>,
-}
-
-/// Reverse table entry from the Python daemon.
-#[derive(Debug, Clone)]
-#[allow(dead_code)]
-pub struct ReverseTableEntry {
-    pub received_from: Option<String>,
-    pub interface: Option<String>,
-    pub timestamp: Option<f64>,
-}
-
-/// Announce cache entry from the Python daemon.
-#[derive(Debug, Clone)]
-#[allow(dead_code)]
-pub struct AnnounceCacheEntry {
-    pub timestamp: Option<f64>,
-    pub received_from: Option<String>,
-    pub hops: Option<u64>,
-    pub expires: Option<f64>,
 }
 
 /// Find two distinct available TCP ports.
@@ -1530,56 +1216,9 @@ impl DaemonTopology {
         self.daemons.get(index)
     }
 
-    /// Create a star topology with a central hub and spoke daemons.
-    ///
-    /// The topology forms a star: D1, D2, ..., Dn all connect to D0 (hub).
-    ///
-    /// ```text
-    ///        ┌─────┐
-    ///        │ Hub │  (D0 - central daemon)
-    ///        └──┬──┘
-    ///       ┌───┼───┐
-    ///       │   │   │
-    ///      D1  D2  D3  (spokes)
-    /// ```
-    ///
-    /// # Arguments
-    /// * `spoke_count` - Number of spoke daemons to create (must be >= 1)
-    #[allow(dead_code)]
-    pub async fn star(spoke_count: usize) -> Result<Self, HarnessError> {
-        if spoke_count < 1 {
-            return Err(HarnessError::ParseError(
-                "Star topology requires at least 1 spoke".to_string(),
-            ));
-        }
-
-        let hub = TestDaemon::start().await?;
-        let mut daemons = vec![hub];
-
-        for i in 0..spoke_count {
-            let spoke = TestDaemon::start().await?;
-            let interface_name = format!("LinkTo_Hub_{}", i);
-            spoke
-                .add_client_interface("127.0.0.1", daemons[0].rns_port(), Some(&interface_name))
-                .await?;
-            daemons.push(spoke);
-        }
-
-        // Wait for connections to stabilize
-        tokio::time::sleep(Duration::from_millis(500)).await;
-
-        Ok(Self { daemons })
-    }
-
     /// Get the number of daemons in the topology.
     pub fn len(&self) -> usize {
         self.daemons.len()
-    }
-
-    /// Check if the topology is empty.
-    #[allow(dead_code)]
-    pub fn is_empty(&self) -> bool {
-        self.daemons.is_empty()
     }
 }
 

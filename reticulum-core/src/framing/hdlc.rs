@@ -135,7 +135,6 @@ pub fn frame(data: &[u8], output: &mut Vec<u8>) {
 }
 
 /// Frame data with HDLC encoding including CRC-16
-#[allow(dead_code)] // Reserved for interfaces that need CRC
 pub fn frame_with_crc(data: &[u8], output: &mut Vec<u8>) {
     output.clear();
 
