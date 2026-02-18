@@ -52,3 +52,12 @@ libc = "0.2"
 
 # Testing
 proptest = "1"
+
+# Crypto libs are unusably slow without optimizations (constant-time field
+# arithmetic, scalar multiplication). Build them at max opt even in debug.
+[profile.dev.package.curve25519-dalek]
+opt-level = 3
+[profile.dev.package.ed25519-dalek]
+opt-level = 3
+[profile.dev.package.x25519-dalek]
+opt-level = 3
