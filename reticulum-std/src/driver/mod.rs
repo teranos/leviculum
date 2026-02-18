@@ -601,10 +601,22 @@ async fn run_event_loop(
             event = recv_any(&mut registry) => {
                 match event {
                     RecvEvent::Packet(iface_id, pkt) => {
-                        let output = {
+                        let (output, now_ms) = {
                             let mut core = inner.lock().unwrap();
-                            core.handle_packet(iface_id, &pkt.data)
+                            let output = core.handle_packet(iface_id, &pkt.data);
+                            let now_ms = core.now_ms();
+                            (output, now_ms)
                         };
+                        // Packet handling may schedule new deadlines (e.g. announce
+                        // rebroadcast retries) — advance next_poll if sooner.
+                        if let Some(deadline_ms) = output.next_deadline_ms {
+                            let delta = deadline_ms.saturating_sub(now_ms);
+                            let wake_at = tokio::time::Instant::now()
+                                + Duration::from_millis(delta);
+                            if wake_at < next_poll {
+                                next_poll = wake_at;
+                            }
+                        }
                         dispatch_output(
                             output,
                             &mut registry,
@@ -652,11 +664,12 @@ async fn run_event_loop(
                     &event_tx,
                 );
 
-                // Advance next_poll based on next_deadline_ms, clamped to [250ms, 1s]
+                // Advance next_poll based on next_deadline_ms
                 let interval = match next {
                     Some(deadline_ms) => {
                         let delta = deadline_ms.saturating_sub(now_ms);
-                        Duration::from_millis(delta.clamp(250, 1000))
+                        debug_assert!(delta > 0, "next_deadline() returned zero — would cause spin loop");
+                        Duration::from_millis(delta.max(1).min(1000))
                     }
                     None => Duration::from_secs(1),
                 };

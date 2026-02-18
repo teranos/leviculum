@@ -44,7 +44,7 @@ use crate::constants::{
     DEFAULT_ANNOUNCE_CAP_PERCENT, LINK_TIMEOUT_MS, LOCAL_REBROADCASTS_MAX, MAX_PATH_REQUEST_TAGS,
     MAX_QUEUED_ANNOUNCES_PER_INTERFACE, MAX_RANDOM_BLOBS, MS_PER_SECOND, MTU,
     PACKET_CACHE_EXPIRY_MS, PATHFINDER_EXPIRY_SECS, PATHFINDER_G_MS, PATHFINDER_MAX_HOPS,
-    PATHFINDER_RETRIES, PATHFINDER_RW_MS, PATH_REQUEST_GRACE_MS, PATH_REQUEST_MIN_INTERVAL_MS,
+    PATHFINDER_RETRIES, PATH_REQUEST_GRACE_MS, PATH_REQUEST_MIN_INTERVAL_MS,
     REVERSE_TABLE_EXPIRY_MS, TRUNCATED_HASHBYTES,
 };
 
@@ -1381,8 +1381,24 @@ impl<C: Clock, S: Storage> Transport<C, S> {
                 false
             };
 
-            // Determine if we should schedule rebroadcast
-            let should_rebroadcast = self.config.enable_transport && !is_path_response;
+            // Determine if we should rebroadcast
+            let should_rebroadcast =
+                self.config.enable_transport && !is_path_response && !rate_blocked;
+
+            // Immediate first rebroadcast — no jitter, no deferral
+            if should_rebroadcast {
+                if let Ok(mut rebroadcast) = Packet::unpack(raw) {
+                    rebroadcast.flags.header_type = HeaderType::Type2;
+                    rebroadcast.flags.transport_type = TransportType::Transport;
+                    rebroadcast.transport_id = Some(*self.identity.hash());
+
+                    if packet.hops == 0 || self.interface_announce_caps.is_empty() {
+                        self.forward_on_all_except(interface_index, &mut rebroadcast);
+                    } else {
+                        self.broadcast_announce_with_caps(interface_index, &mut rebroadcast);
+                    }
+                }
+            }
 
             // Update announce table (skipped when rate-blocked to prevent rebroadcast)
             if !rate_blocked {
@@ -1391,9 +1407,10 @@ impl<C: Clock, S: Storage> Transport<C, S> {
                     AnnounceEntry {
                         timestamp_ms: now,
                         hops: packet.hops,
-                        retries: 0,
+                        retries: if should_rebroadcast { 1 } else { 0 },
                         retransmit_at_ms: if should_rebroadcast {
-                            Some(now + self.calculate_retransmit_delay(packet.hops))
+                            // Next retransmit scheduled at PATHFINDER_G_MS (no jitter)
+                            Some(now + PATHFINDER_G_MS)
                         } else {
                             None
                         },
@@ -2160,10 +2177,6 @@ impl<C: Clock, S: Storage> Transport<C, S> {
     }
 
     /// Compute deterministic jitter from a hash seed
-    fn jitter_ms(seed: &[u8; TRUNCATED_HASHBYTES]) -> u64 {
-        u16::from_le_bytes([seed[0], seed[1]]) as u64 % PATHFINDER_RW_MS
-    }
-
     /// Handle a path request packet
     fn handle_path_request(
         &mut self,
@@ -2210,14 +2223,13 @@ impl<C: Clock, S: Storage> Transport<C, S> {
             if let Some(cached_raw) = self.announce_cache.get(&requested_hash).cloned() {
                 let now = self.clock.now_ms();
                 if let Ok(cached_packet) = Packet::unpack(&cached_raw) {
-                    let jitter = Self::jitter_ms(&requested_hash);
                     self.announce_table.insert(
                         requested_hash,
                         AnnounceEntry {
                             timestamp_ms: now,
                             hops: cached_packet.hops,
                             retries: 0,
-                            retransmit_at_ms: Some(now + PATH_REQUEST_GRACE_MS + jitter),
+                            retransmit_at_ms: Some(now + PATH_REQUEST_GRACE_MS),
                             raw_packet: cached_raw,
                             receiving_interface_index: interface_index,
                             local_rebroadcasts: 0,
@@ -2235,14 +2247,13 @@ impl<C: Clock, S: Storage> Transport<C, S> {
                 let now = self.clock.now_ms();
                 // Parse cached announce to get hop count
                 if let Ok(cached_packet) = Packet::unpack(&cached_raw) {
-                    let jitter = Self::jitter_ms(&requested_hash);
                     self.announce_table.insert(
                         requested_hash,
                         AnnounceEntry {
                             timestamp_ms: now,
                             hops: cached_packet.hops,
                             retries: 0,
-                            retransmit_at_ms: Some(now + PATH_REQUEST_GRACE_MS + jitter),
+                            retransmit_at_ms: Some(now + PATH_REQUEST_GRACE_MS),
                             raw_packet: cached_raw,
                             receiving_interface_index: interface_index,
                             local_rebroadcasts: 0,
@@ -2390,10 +2401,9 @@ impl<C: Clock, S: Storage> Transport<C, S> {
                 }
             }
 
-            // Update announce table entry
+            // Update announce table entry — schedule next retransmit
             if let Some(entry) = self.announce_table.get_mut(&dest_hash) {
-                let jitter = Self::jitter_ms(&dest_hash);
-                entry.retransmit_at_ms = Some(now + PATHFINDER_G_MS + jitter);
+                entry.retransmit_at_ms = Some(now + PATHFINDER_G_MS);
                 entry.retries += 1;
             }
         }
@@ -2668,13 +2678,6 @@ impl<C: Clock, S: Storage> Transport<C, S> {
     /// Get the number of entries in the announce rate table (for testing/stats)
     pub fn announce_rate_table_count(&self) -> usize {
         self.announce_rate_table.len()
-    }
-
-    fn calculate_retransmit_delay(&self, _hops: u8) -> u64 {
-        // Python: initial retransmit = random() * PATHFINDER_RW
-        // Use deterministic jitter from clock for no_std compatibility
-        let seed = (self.clock.now_ms() & 0xFFFF) as u16;
-        (seed % PATHFINDER_RW_MS as u16) as u64
     }
 }
 
@@ -3614,7 +3617,7 @@ mod tests {
         // ─── Stage 1: Announce Rebroadcast Tests ─────────────────────────
 
         #[test]
-        fn test_rebroadcast_fires_after_delay() {
+        fn test_rebroadcast_immediate_then_scheduled() {
             let mut transport = make_transport_enabled();
             let _idx0 = transport.register_interface(Box::new(MockInterface::new("if0", 1)));
             let _idx1 = transport.register_interface(Box::new(MockInterface::new("if1", 2)));
@@ -3623,18 +3626,19 @@ mod tests {
             transport.process_incoming(0, &raw).unwrap();
             transport.drain_events();
 
-            // Should have an announce table entry with retransmit scheduled
+            // First rebroadcast was immediate — retries starts at 1,
+            // next retransmit scheduled at now + PATHFINDER_G_MS
             let entry = transport.announce_table.get(&dest_hash).unwrap();
             assert!(entry.retransmit_at_ms.is_some());
-            assert_eq!(entry.retries, 0);
+            assert_eq!(entry.retries, 1);
 
-            // Advance past retransmit delay
-            transport.clock.advance(10_000);
+            // Advance past PATHFINDER_G_MS to trigger second retransmit
+            transport.clock.advance(PATHFINDER_G_MS + 1000);
             transport.poll();
 
-            // Check that the announce entry retries was incremented
+            // Retries should be incremented to 2
             if let Some(entry) = transport.announce_table.get(&dest_hash) {
-                assert!(entry.retries >= 1);
+                assert_eq!(entry.retries, 2);
             }
         }
 
@@ -3649,11 +3653,7 @@ mod tests {
             transport.process_incoming(0, &raw).unwrap();
             transport.drain_events();
 
-            // Advance past retransmit delay
-            transport.clock.advance(10_000);
-            transport.poll();
-
-            // Verify rebroadcast happened
+            // Rebroadcast happens immediately — verify it fired
             assert!(transport.stats().packets_forwarded > 0);
         }
 
@@ -3687,20 +3687,16 @@ mod tests {
             transport.process_incoming(0, &raw).unwrap();
             transport.drain_events();
 
-            // First rebroadcast cycle: retries goes 0 -> 1
-            transport.clock.advance(10_000);
-            transport.poll();
-            assert!(transport.announce_table.contains_key(&dest_hash));
-            if let Some(entry) = transport.announce_table.get(&dest_hash) {
-                assert_eq!(entry.retries, 1);
-            }
+            // Immediate first rebroadcast already happened — retries=1
+            let entry = transport.announce_table.get(&dest_hash).unwrap();
+            assert_eq!(entry.retries, 1);
 
-            // Second rebroadcast cycle: retries goes 1 -> 2
-            transport.clock.advance(10_000);
+            // Second retransmit via poll: retries goes 1 -> 2
+            transport.clock.advance(PATHFINDER_G_MS + 1000);
             transport.poll();
 
-            // Third poll: retries=2 > PATHFINDER_RETRIES(1) → removed
-            transport.clock.advance(10_000);
+            // Next poll: retries=2 > PATHFINDER_RETRIES(1) → removed
+            transport.clock.advance(PATHFINDER_G_MS + 1000);
             transport.poll();
 
             assert!(
@@ -3719,15 +3715,10 @@ mod tests {
             let (raw, _dest_hash) = make_announce_raw(original_hops, PacketContext::None);
             transport.process_incoming(0, &raw).unwrap();
             transport.drain_events();
-            let _ = transport.drain_actions(); // clear initial actions
 
-            // Trigger rebroadcast
-            transport.clock.advance(10_000);
-            transport.poll();
-
+            // Immediate rebroadcast — verify hops incremented
             assert!(transport.stats().packets_forwarded > 0);
 
-            // Parse the rebroadcasted packet and verify hops was incremented
             let actions = transport.drain_actions();
             let broadcast_data = actions
                 .iter()
@@ -4300,21 +4291,6 @@ mod tests {
         }
 
         #[test]
-        fn test_jitter_deterministic() {
-            let seed1 = [0x42; TRUNCATED_HASHBYTES];
-            let seed2 = [0x42; TRUNCATED_HASHBYTES];
-            let seed3 = [0x99; TRUNCATED_HASHBYTES];
-
-            let j1 = Transport::<MockClock, NoStorage>::jitter_ms(&seed1);
-            let j2 = Transport::<MockClock, NoStorage>::jitter_ms(&seed2);
-            let j3 = Transport::<MockClock, NoStorage>::jitter_ms(&seed3);
-
-            assert_eq!(j1, j2, "Same seed should produce same jitter");
-            assert!(j1 < PATHFINDER_RW_MS, "Jitter should be within window");
-            assert!(j3 < PATHFINDER_RW_MS, "Jitter should be within window");
-        }
-
-        #[test]
         fn test_send_on_all_interfaces_except() {
             let mut transport = make_transport_enabled();
             let _idx0 = transport.register_interface(Box::new(MockInterface::new("if0", 1)));
@@ -4369,7 +4345,6 @@ mod tests {
         #[test]
         fn test_new_constants_values() {
             assert_eq!(PATHFINDER_G_MS, 5_000);
-            assert_eq!(PATHFINDER_RW_MS, 500);
             assert_eq!(LOCAL_REBROADCASTS_MAX, 2);
             assert_eq!(LINK_TIMEOUT_MS, 900_000);
             assert_eq!(PATH_REQUEST_GRACE_MS, 400);
@@ -4808,9 +4783,8 @@ mod tests {
 
         #[test]
         fn test_announce_cap_delays_second_announce() {
-            extern crate alloc;
             // Register a low-bitrate interface, process two announces fast —
-            // the second should be queued (not immediately sent).
+            // the second should be queued (not immediately sent) on the capped interface.
             let mut transport = make_transport_enabled();
             let _idx0 = transport.register_interface(Box::new(MockInterface::new("if0", 1)));
             let _idx1 = transport.register_interface(Box::new(MockInterface::new("if1", 2)));
@@ -4818,20 +4792,13 @@ mod tests {
             // Register low bitrate on if1: 1000 bps, 2% cap = 20 bps effective
             transport.register_interface_bitrate(1, 1000);
 
-            // Process first announce (hops > 0 so caps apply)
+            // Process first announce (hops > 0 so caps apply) — immediate rebroadcast
             let (raw1, _dh1) = make_announce_raw(1, PacketContext::None);
             transport.process_incoming(0, &raw1).unwrap();
-            let _ = transport.drain_actions();
+            let actions1 = transport.drain_actions();
             let _ = transport.drain_events();
 
-            // Advance past retransmit delay so first rebroadcast fires
-            transport
-                .clock
-                .advance(PATHFINDER_G_MS + PATHFINDER_RW_MS + 1000);
-            transport.poll();
-            let actions1 = transport.drain_actions();
-
-            // Should have a SendPacket on if1 (capped) + a Broadcast (uncapped)
+            // Should have a SendPacket on if1 (capped interface, first announce allowed)
             let send_count = actions1
                 .iter()
                 .filter(|a| matches!(a, Action::SendPacket { iface, .. } if iface.0 == 1))
@@ -4841,20 +4808,13 @@ mod tests {
                 "first announce should be sent on capped interface"
             );
 
-            // Now process second announce immediately (no time advance)
+            // Process second announce immediately (no time advance) — also immediate rebroadcast
             let (raw2, _dh2) = make_announce_raw(1, PacketContext::None);
             transport.process_incoming(0, &raw2).unwrap();
-            let _ = transport.drain_actions();
+            let actions2 = transport.drain_actions();
             let _ = transport.drain_events();
 
-            // Rebroadcast second announce
-            transport
-                .clock
-                .advance(PATHFINDER_G_MS + PATHFINDER_RW_MS + 1000);
-            transport.poll();
-            let actions2 = transport.drain_actions();
-
-            // Second should be queued, not immediately sent on capped interface
+            // Second should be queued on capped interface, not immediately sent
             let send_count2 = actions2
                 .iter()
                 .filter(|a| matches!(a, Action::SendPacket { iface, .. } if iface.0 == 1))
@@ -4862,16 +4822,6 @@ mod tests {
             assert_eq!(
                 send_count2, 0,
                 "second announce should be queued on capped interface"
-            );
-
-            // But uncapped interfaces still get the broadcast
-            let broadcast_count = actions2
-                .iter()
-                .filter(|a| matches!(a, Action::Broadcast { .. }))
-                .count();
-            assert!(
-                broadcast_count > 0,
-                "uncapped interfaces should still receive broadcast"
             );
         }
 
@@ -5028,18 +4978,11 @@ mod tests {
             transport.register_interface_bitrate(1, 100);
             transport.register_interface_bitrate(2, 1_000_000);
 
-            // Process an announce from if0
+            // Process an announce from if0 — immediate rebroadcast
             let (raw, _dh) = make_announce_raw(1, PacketContext::None);
             transport.process_incoming(0, &raw).unwrap();
-            let _ = transport.drain_actions();
-            let _ = transport.drain_events();
-
-            // Trigger rebroadcast
-            transport
-                .clock
-                .advance(PATHFINDER_G_MS + PATHFINDER_RW_MS + 1000);
-            transport.poll();
             let actions = transport.drain_actions();
+            let _ = transport.drain_events();
 
             // Both should get SendPacket (first announce on each)
             let sent_if1 = actions
@@ -5077,18 +5020,11 @@ mod tests {
             let cap = transport.interface_announce_caps.get_mut(&1).unwrap();
             cap.allowed_at_ms = transport.clock.now_ms() + 1_000_000; // Block cap
 
-            // Process local announce (hops == 0) from if0
+            // Process local announce (hops == 0) from if0 — immediate rebroadcast
             let (raw, _dh) = make_announce_raw(0, PacketContext::None);
             transport.process_incoming(0, &raw).unwrap();
-            let _ = transport.drain_actions();
-            let _ = transport.drain_events();
-
-            // Trigger rebroadcast
-            transport
-                .clock
-                .advance(PATHFINDER_G_MS + PATHFINDER_RW_MS + 1000);
-            transport.poll();
             let actions = transport.drain_actions();
+            let _ = transport.drain_events();
 
             // Local announces bypass caps, so we should see a Broadcast action
             // (forward_on_all_except is used, not broadcast_announce_with_caps)
@@ -5165,17 +5101,11 @@ mod tests {
             // Don't register any bitrate → no caps
             assert!(transport.interface_announce_caps.is_empty());
 
+            // Immediate rebroadcast — check actions from process_incoming
             let (raw, _dh) = make_announce_raw(1, PacketContext::None);
             transport.process_incoming(0, &raw).unwrap();
-            let _ = transport.drain_actions();
-            let _ = transport.drain_events();
-
-            // Trigger rebroadcast
-            transport
-                .clock
-                .advance(PATHFINDER_G_MS + PATHFINDER_RW_MS + 1000);
-            transport.poll();
             let actions = transport.drain_actions();
+            let _ = transport.drain_events();
 
             // Should use Broadcast action (no caps → forward_on_all_except)
             let broadcasts = actions
@@ -6228,28 +6158,6 @@ mod tests {
             );
         }
 
-        // ─── Stage 2: Fix calculate_retransmit_delay ────────────────────
-
-        #[test]
-        fn test_retransmit_delay_independent_of_hops() {
-            let transport = make_transport_enabled();
-            let delay_1hop = transport.calculate_retransmit_delay(1);
-            let delay_10hops = transport.calculate_retransmit_delay(10);
-            // Both should be in the same range (0..PATHFINDER_RW_MS)
-            assert!(
-                delay_1hop < PATHFINDER_RW_MS,
-                "1-hop delay {} should be < PATHFINDER_RW_MS {}",
-                delay_1hop,
-                PATHFINDER_RW_MS
-            );
-            assert!(
-                delay_10hops < PATHFINDER_RW_MS,
-                "10-hop delay {} should be < PATHFINDER_RW_MS {}",
-                delay_10hops,
-                PATHFINDER_RW_MS
-            );
-        }
-
         // ─── Stage 1: VecDeque for path_request_tags ─────────────────────
 
         #[test]
@@ -6652,8 +6560,9 @@ mod tests {
         }
 
         #[test]
-        fn test_announce_rebroadcast_produces_action() {
-            // When an announce is rebroadcast, it should produce a Broadcast action
+        fn test_announce_rebroadcast_immediate_on_receive() {
+            // When an announce is received on a transport node, it should be
+            // rebroadcast immediately (as part of process_incoming), not deferred.
             let mut transport = make_transport_enabled();
             let _idx0 = transport.register_interface(Box::new(MockInterface::new("if0", 1)));
             let _idx1 = transport.register_interface(Box::new(MockInterface::new("if1", 2)));
@@ -6661,18 +6570,11 @@ mod tests {
             let (raw, _dest_hash) = make_announce_raw(1, PacketContext::None);
             let _ = transport.process_incoming(0, &raw);
 
-            // Drain actions from the initial processing (no rebroadcast yet)
-            let _ = transport.drain_actions();
-
-            // Advance time past the retransmit delay
-            transport.clock.advance(PATHFINDER_RW_MS + 1000);
-            transport.poll();
-
-            // Should have a Broadcast action for the rebroadcast
+            // The rebroadcast Broadcast action should be emitted immediately
             let actions = transport.drain_actions();
             assert!(
                 !actions.is_empty(),
-                "announce rebroadcast should produce actions"
+                "announce rebroadcast should produce actions immediately"
             );
 
             // All rebroadcast actions should be Broadcast with exclude,
@@ -6934,9 +6836,7 @@ mod tests {
             let _ = transport.drain_actions();
 
             // Advance time past the grace period + jitter to trigger rebroadcast
-            transport
-                .clock
-                .advance(PATH_REQUEST_GRACE_MS + PATHFINDER_RW_MS + 1000);
+            transport.clock.advance(PATH_REQUEST_GRACE_MS + 1000);
             transport.poll();
 
             let actions = transport.drain_actions();

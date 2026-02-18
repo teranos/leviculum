@@ -114,9 +114,6 @@ pub const PATHFINDER_EXPIRY_SECS: u64 = 60 * 60 * 24 * 7; // 7 days
 /// Retry grace period for announce rebroadcast (milliseconds)
 pub const PATHFINDER_G_MS: u64 = 5_000;
 
-/// Random jitter window for announce rebroadcast (milliseconds)
-pub const PATHFINDER_RW_MS: u64 = 500;
-
 /// Maximum number of local (neighbor) rebroadcasts before suppressing
 pub const LOCAL_REBROADCASTS_MAX: u8 = 2;
 
