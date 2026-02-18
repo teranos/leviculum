@@ -161,6 +161,15 @@ impl ReticulumNodeBuilder {
         self
     }
 
+    /// Set path expiry duration in seconds.
+    ///
+    /// Paths not refreshed within this duration will be removed.
+    /// Default is 7 days (604800 seconds).
+    pub fn path_expiry_secs(mut self, secs: u64) -> Self {
+        self.core_builder = self.core_builder.path_expiry_secs(secs);
+        self
+    }
+
     /// Build the ReticulumNode synchronously
     ///
     /// Same as `build()` but does not require an async context.

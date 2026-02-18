@@ -200,6 +200,10 @@ impl ReticulumNode {
                     let iface_name = format!("tcp_client_{}", idx);
                     let id = InterfaceId(idx);
 
+                    // NOTE: TCP interfaces don't register a bitrate cap
+                    // (bitrate=0 means unlimited). Future LoRa/serial interfaces
+                    // should call transport.register_interface_bitrate(id, bitrate)
+                    // after registration to enable per-interface announce caps.
                     match spawn_tcp_interface(
                         id,
                         iface_name,

@@ -40,8 +40,9 @@ use alloc::collections::VecDeque;
 use alloc::vec::Vec;
 
 use crate::constants::{
-    ANNOUNCE_RATE_GRACE, ANNOUNCE_RATE_LIMIT_MS, ANNOUNCE_RATE_PENALTY_MS, LINK_TIMEOUT_MS,
-    LOCAL_REBROADCASTS_MAX, MAX_PATH_REQUEST_TAGS, MAX_RANDOM_BLOBS, MS_PER_SECOND, MTU,
+    ANNOUNCE_RATE_GRACE, ANNOUNCE_RATE_LIMIT_MS, ANNOUNCE_RATE_PENALTY_MS,
+    DEFAULT_ANNOUNCE_CAP_PERCENT, LINK_TIMEOUT_MS, LOCAL_REBROADCASTS_MAX, MAX_PATH_REQUEST_TAGS,
+    MAX_QUEUED_ANNOUNCES_PER_INTERFACE, MAX_RANDOM_BLOBS, MS_PER_SECOND, MTU,
     PACKET_CACHE_EXPIRY_MS, PATHFINDER_EXPIRY_SECS, PATHFINDER_G_MS, PATHFINDER_MAX_HOPS,
     PATHFINDER_RETRIES, PATHFINDER_RW_MS, PATH_REQUEST_GRACE_MS, PATH_REQUEST_MIN_INTERVAL_MS,
     REVERSE_TABLE_EXPIRY_MS, TRUNCATED_HASHBYTES,
@@ -260,6 +261,10 @@ pub(crate) struct LinkEntry {
     pub proof_timeout_ms: u64,
     /// Destination hash for path rediscovery on unvalidated link expiry
     pub destination_hash: [u8; TRUNCATED_HASHBYTES],
+    /// Responder's Ed25519 signing key (from announce_cache at link creation).
+    /// Used for LRPROOF signature validation. None if announce not cached.
+    /// Removed when link entry is cleaned up (clean_link_table).
+    pub peer_signing_key: Option<[u8; crate::constants::ED25519_KEY_SIZE]>,
 }
 
 /// Reverse table entry (for routing replies back)
@@ -306,6 +311,34 @@ pub(crate) struct AnnounceRateEntry {
     pub rate_violations: u8,
     /// Announces are blocked until this timestamp (ms)
     pub blocked_until_ms: u64,
+}
+
+/// Per-interface announce bandwidth cap state (Python Interface.py:25-28, Transport.py:1091-1104)
+///
+/// Tracks when the next announce is allowed on this interface and queues
+/// excess announces to be drained as bandwidth permits.
+/// Removed when `unregister_interface_announce_cap()` is called or interface goes down.
+#[derive(Debug, Clone)]
+pub(crate) struct InterfaceAnnounceCap {
+    /// Interface bitrate in bits per second. 0 = unlimited (no cap applied).
+    pub bitrate_bps: u32,
+    /// Announce bandwidth cap as percentage of link capacity (default 2%).
+    pub announce_cap_percent: u32,
+    /// Next announce allowed at this absolute timestamp (ms).
+    pub allowed_at_ms: u64,
+    /// Queued announces waiting for bandwidth (capped at MAX_QUEUED_ANNOUNCES_PER_INTERFACE).
+    pub queue: VecDeque<QueuedAnnounce>,
+}
+
+/// A queued announce waiting for bandwidth on a specific interface
+#[derive(Debug, Clone)]
+pub(crate) struct QueuedAnnounce {
+    /// Raw packet bytes ready for sending
+    pub raw: Vec<u8>,
+    /// Hop count (lower = higher priority for dequeue)
+    pub hops: u8,
+    /// When this announce was queued (ms)
+    pub queued_at_ms: u64,
 }
 
 /// Transport configuration
@@ -559,6 +592,10 @@ pub struct Transport<C: Clock, S: Storage> {
     /// Per-destination announce rate tracking (Python: announce_rate_table)
     announce_rate_table: BTreeMap<[u8; TRUNCATED_HASHBYTES], AnnounceRateEntry>,
 
+    /// Per-interface announce bandwidth caps (Python Interface.py:25-28)
+    /// Keyed by interface index. Only present for interfaces with bitrate > 0.
+    interface_announce_caps: BTreeMap<usize, InterfaceAnnounceCap>,
+
     /// Pending I/O actions for the driver (sans-I/O buffer)
     pending_actions: Vec<Action>,
 
@@ -591,6 +628,7 @@ impl<C: Clock, S: Storage> Transport<C, S> {
             path_requests: BTreeMap::new(),
             announce_cache: BTreeMap::new(),
             announce_rate_table: BTreeMap::new(),
+            interface_announce_caps: BTreeMap::new(),
             pending_actions: Vec::new(),
             #[cfg(test)]
             interfaces: Vec::new(),
@@ -1039,6 +1077,7 @@ impl<C: Clock, S: Storage> Transport<C, S> {
         self.clean_reverse_table(now);
         self.check_receipt_timeouts(now);
         self.check_announce_rebroadcasts(now);
+        self.drain_announce_queues(now);
         self.clean_link_table(now);
         self.clean_path_states();
         self.clean_announce_rate_table();
@@ -1105,6 +1144,13 @@ impl<C: Clock, S: Storage> Transport<C, S> {
                 update(entry.timestamp_ms.saturating_add(LINK_TIMEOUT_MS));
             } else {
                 update(entry.proof_timeout_ms);
+            }
+        }
+
+        // Announce queue drain deadlines
+        for cap in self.interface_announce_caps.values() {
+            if !cap.queue.is_empty() {
+                update(cap.allowed_at_ms);
             }
         }
 
@@ -1397,76 +1443,108 @@ impl<C: Clock, S: Storage> Transport<C, S> {
 
         // If we're a transport node, forward the link request and populate link table
         if self.config.enable_transport {
-            if let Some(path) = self.path_table.get(&dest_hash) {
-                let now = self.clock.now_ms();
-                let link_id = Link::calculate_link_id(raw);
-                let target_iface = path.interface_index;
-
-                // Insert link table entry for bidirectional routing
-                self.link_table.insert(
-                    *link_id.as_bytes(),
-                    LinkEntry {
-                        timestamp_ms: now,
-                        next_hop_interface_index: target_iface,
-                        remaining_hops: path.hops,
-                        received_interface_index: interface_index,
-                        hops: packet.hops,
-                        validated: false,
-                        proof_timeout_ms: now
-                            + ((packet.hops as u64 + path.hops as u64 + 2)
-                                * crate::constants::DEFAULT_PER_HOP_TIMEOUT
-                                * MS_PER_SECOND),
-                        destination_hash: dest_hash,
-                    },
-                );
-
-                // Populate reverse table at forwarding time
-
-                self.reverse_table.insert(
-                    dedup_hash,
-                    ReverseEntry {
-                        timestamp_ms: now,
-                        receiving_interface_index: interface_index,
-                        outbound_interface_index: target_iface,
-                    },
-                );
-
-                // Forward: strip at final hop, keep Type2 otherwise.
-                let mut forwarded = if !path.needs_relay() {
-                    // Final hop: destination is directly connected, strip transport header
-                    Packet {
-                        flags: PacketFlags {
-                            header_type: HeaderType::Type1,
-                            transport_type: TransportType::Broadcast,
-                            ..packet.flags
-                        },
-                        hops: packet.hops,
-                        transport_id: None,
-                        destination_hash: dest_hash,
-                        context: packet.context,
-                        data: packet.data,
-                    }
+            // Read path data into locals (releases immutable borrow)
+            let (target_iface, path_hops, needs_relay, next_hop) =
+                if let Some(path) = self.path_table.get(&dest_hash) {
+                    (
+                        path.interface_index,
+                        path.hops,
+                        path.needs_relay(),
+                        path.next_hop,
+                    )
                 } else {
-                    // Intermediate: Header Type 2 with next-hop transport identity
-                    Packet {
-                        flags: PacketFlags {
-                            header_type: HeaderType::Type2,
-                            transport_type: TransportType::Transport,
-                            ..packet.flags
-                        },
-                        hops: packet.hops,
-                        transport_id: path.next_hop,
-                        destination_hash: dest_hash,
-                        context: packet.context,
-                        data: packet.data,
-                    }
+                    // No path known, drop
+                    self.stats.packets_dropped += 1;
+                    return Ok(());
                 };
 
-                return self.forward_on_interface(target_iface, &mut forwarded);
+            let now = self.clock.now_ms();
+            let link_id = Link::calculate_link_id(raw);
+
+            // Extract responder's Ed25519 signing key from cached announce
+            // (Python Transport.py:2021-2033: peer_identity = Identity.recall(...))
+            let peer_signing_key = self.announce_cache.get(&dest_hash).and_then(|cached_raw| {
+                Packet::unpack(cached_raw).ok().and_then(|p| {
+                    let payload = p.data.as_slice();
+                    if payload.len() >= crate::constants::IDENTITY_KEY_SIZE {
+                        let mut key = [0u8; crate::constants::ED25519_KEY_SIZE];
+                        key.copy_from_slice(
+                            &payload[crate::constants::X25519_KEY_SIZE
+                                ..crate::constants::IDENTITY_KEY_SIZE],
+                        );
+                        Some(key)
+                    } else {
+                        None
+                    }
+                })
+            });
+
+            // Insert link table entry for bidirectional routing
+            self.link_table.insert(
+                *link_id.as_bytes(),
+                LinkEntry {
+                    timestamp_ms: now,
+                    next_hop_interface_index: target_iface,
+                    remaining_hops: path_hops,
+                    received_interface_index: interface_index,
+                    hops: packet.hops,
+                    validated: false,
+                    proof_timeout_ms: now
+                        + ((packet.hops as u64 + path_hops as u64 + 2)
+                            * crate::constants::DEFAULT_PER_HOP_TIMEOUT
+                            * MS_PER_SECOND),
+                    destination_hash: dest_hash,
+                    peer_signing_key,
+                },
+            );
+
+            // Populate reverse table at forwarding time
+            self.reverse_table.insert(
+                dedup_hash,
+                ReverseEntry {
+                    timestamp_ms: now,
+                    receiving_interface_index: interface_index,
+                    outbound_interface_index: target_iface,
+                },
+            );
+
+            // Refresh path expiry on link request forward (Python Transport.py:1504)
+            if let Some(path) = self.path_table.get_mut(&dest_hash) {
+                path.expires_ms = now + (self.config.path_expiry_secs * 1000);
             }
 
-            // No path known, drop
-            self.stats.packets_dropped += 1;
+            // Forward: strip at final hop, keep Type2 otherwise.
+            let mut forwarded = if !needs_relay {
+                // Final hop: destination is directly connected, strip transport header
+                Packet {
+                    flags: PacketFlags {
+                        header_type: HeaderType::Type1,
+                        transport_type: TransportType::Broadcast,
+                        ..packet.flags
+                    },
+                    hops: packet.hops,
+                    transport_id: None,
+                    destination_hash: dest_hash,
+                    context: packet.context,
+                    data: packet.data,
+                }
+            } else {
+                // Intermediate: Header Type 2 with next-hop transport identity
+                Packet {
+                    flags: PacketFlags {
+                        header_type: HeaderType::Type2,
+                        transport_type: TransportType::Transport,
+                        ..packet.flags
+                    },
+                    hops: packet.hops,
+                    transport_id: next_hop,
+                    destination_hash: dest_hash,
+                    context: packet.context,
+                    data: packet.data,
+                }
+            };
+
+            return self.forward_on_interface(target_iface, &mut forwarded);
         }
 
         Ok(())
@@ -1564,8 +1642,13 @@ impl<C: Clock, S: Storage> Transport<C, S> {
                     return Ok(()); // Unknown direction
                 };
 
-                // LRPROOF validation: check proof data size before forwarding
+                // LRPROOF validation: check proof data size and signature before forwarding
+                // (Python Transport.py:2021-2033)
                 if packet.context == PacketContext::Lrproof {
+                    use crate::constants::{
+                        ED25519_KEY_SIZE, ED25519_SIGNATURE_SIZE, X25519_KEY_SIZE,
+                    };
+
                     // Link proof format:
                     //   sig(64) + X25519(32) = 96 bytes (without signalling)
                     //   sig(64) + X25519(32) + signaling(3) = 99 bytes (with signalling)
@@ -1576,6 +1659,59 @@ impl<C: Clock, S: Storage> Transport<C, S> {
                     {
                         self.stats.packets_dropped += 1;
                         return Ok(());
+                    }
+
+                    // Validate Ed25519 signature if we have the peer's signing key
+                    if let Some(peer_ed25519_bytes) = &link_entry.peer_signing_key {
+                        let signature = &proof_data[..ED25519_SIGNATURE_SIZE];
+                        let peer_x25519_pub = &proof_data
+                            [ED25519_SIGNATURE_SIZE..ED25519_SIGNATURE_SIZE + X25519_KEY_SIZE];
+                        let signalling =
+                            if proof_data.len() > ED25519_SIGNATURE_SIZE + X25519_KEY_SIZE {
+                                &proof_data[ED25519_SIGNATURE_SIZE + X25519_KEY_SIZE..]
+                            } else {
+                                &[]
+                            };
+
+                        // signed_data = link_id(16) + X25519_pub(32) + Ed25519_pub(32) + [signalling]
+                        let mut signed = Vec::with_capacity(
+                            TRUNCATED_HASHBYTES
+                                + X25519_KEY_SIZE
+                                + ED25519_KEY_SIZE
+                                + signalling.len(),
+                        );
+                        signed.extend_from_slice(&dest_hash);
+                        signed.extend_from_slice(peer_x25519_pub);
+                        signed.extend_from_slice(peer_ed25519_bytes);
+                        signed.extend_from_slice(signalling);
+
+                        match ed25519_dalek::VerifyingKey::from_bytes(peer_ed25519_bytes) {
+                            Ok(vk) => {
+                                use ed25519_dalek::Verifier;
+                                if let Ok(sig_bytes) =
+                                    <[u8; ED25519_SIGNATURE_SIZE]>::try_from(signature)
+                                {
+                                    let sig = ed25519_dalek::Signature::from_bytes(&sig_bytes);
+                                    if vk.verify(&signed, &sig).is_err() {
+                                        self.stats.packets_dropped += 1;
+                                        return Ok(());
+                                    }
+                                }
+                            }
+                            Err(_) => {
+                                // Malformed key bytes — drop
+                                self.stats.packets_dropped += 1;
+                                return Ok(());
+                            }
+                        }
+                    }
+                    // If peer_signing_key is None, announce was not cached at link creation.
+                    // Forward anyway (cannot validate without key).
+                    if link_entry.peer_signing_key.is_none() {
+                        tracing::warn!(
+                            link_id = ?dest_hash,
+                            "forwarding LRPROOF without signature validation — announce not cached for link"
+                        );
                     }
                 }
 
@@ -1756,40 +1892,45 @@ impl<C: Clock, S: Storage> Transport<C, S> {
         source_interface_index: usize,
         dedup_hash: [u8; TRUNCATED_HASHBYTES],
     ) -> Result<(), TransportError> {
-        // Look up path
-        if let Some(path) = self.path_table.get(&packet.destination_hash) {
-            let target_iface = path.interface_index;
-
-            // Populate reverse table at forwarding time
-            let now = self.clock.now_ms();
-
-            self.reverse_table.insert(
-                dedup_hash,
-                ReverseEntry {
-                    timestamp_ms: now,
-                    receiving_interface_index: source_interface_index,
-                    outbound_interface_index: target_iface,
-                },
-            );
-
-            if path.needs_relay() {
-                // Intermediate relay: keep Type2, replace transport_id with next hop
-                packet.flags.header_type = HeaderType::Type2;
-                packet.flags.transport_type = TransportType::Transport;
-                packet.transport_id = path.next_hop; // guaranteed Some by needs_relay()
+        // Read path data into locals (releases immutable borrow)
+        let (target_iface, needs_relay, next_hop) =
+            if let Some(path) = self.path_table.get(&packet.destination_hash) {
+                (path.interface_index, path.needs_relay(), path.next_hop)
             } else {
-                // Directly connected or no next_hop: strip to Type1
-                packet.flags.header_type = HeaderType::Type1;
-                packet.flags.transport_type = TransportType::Broadcast;
-                packet.transport_id = None;
-            }
+                self.stats.packets_dropped += 1;
+                return Ok(());
+            };
 
-            return self.forward_on_interface(target_iface, &mut packet);
+        let now = self.clock.now_ms();
+
+        // Refresh path expiry on forward (Python Transport.py:990)
+        if let Some(path) = self.path_table.get_mut(&packet.destination_hash) {
+            path.expires_ms = now + (self.config.path_expiry_secs * 1000);
         }
 
-        // No path, drop silently
-        self.stats.packets_dropped += 1;
-        Ok(())
+        // Populate reverse table at forwarding time
+        self.reverse_table.insert(
+            dedup_hash,
+            ReverseEntry {
+                timestamp_ms: now,
+                receiving_interface_index: source_interface_index,
+                outbound_interface_index: target_iface,
+            },
+        );
+
+        if needs_relay {
+            // Intermediate relay: keep Type2, replace transport_id with next hop
+            packet.flags.header_type = HeaderType::Type2;
+            packet.flags.transport_type = TransportType::Transport;
+            packet.transport_id = next_hop; // guaranteed Some by needs_relay()
+        } else {
+            // Directly connected or no next_hop: strip to Type1
+            packet.flags.header_type = HeaderType::Type1;
+            packet.flags.transport_type = TransportType::Broadcast;
+            packet.transport_id = None;
+        }
+
+        self.forward_on_interface(target_iface, &mut packet)
     }
 
     /// Forward a packet through a single interface.
@@ -1861,12 +2002,23 @@ impl<C: Clock, S: Storage> Transport<C, S> {
         }
         self.path_requests.insert(*dest_hash, now);
 
-        // Build path request data: dest_hash(16) + transport_id(16) + tag(16)
-        let transport_id_bytes = *self.identity.hash();
-        let mut data = Vec::with_capacity(48);
-        data.extend_from_slice(dest_hash);
-        data.extend_from_slice(&transport_id_bytes);
-        data.extend_from_slice(tag);
+        // Build path request data:
+        //   Transport node:     dest_hash(16) + transport_id(16) + tag(16) = 48 bytes
+        //   Non-transport node: dest_hash(16) + tag(16)                    = 32 bytes
+        // Python Transport.py:2541-2557
+        let data = if self.config.enable_transport {
+            let transport_id_bytes = *self.identity.hash();
+            let mut d = Vec::with_capacity(48);
+            d.extend_from_slice(dest_hash);
+            d.extend_from_slice(&transport_id_bytes);
+            d.extend_from_slice(tag);
+            d
+        } else {
+            let mut d = Vec::with_capacity(32);
+            d.extend_from_slice(dest_hash);
+            d.extend_from_slice(tag);
+            d
+        };
 
         let packet = Packet {
             flags: PacketFlags {
@@ -1899,6 +2051,45 @@ impl<C: Clock, S: Storage> Transport<C, S> {
     /// Get the well-known path request destination hash
     pub fn path_request_hash(&self) -> &[u8; TRUNCATED_HASHBYTES] {
         &self.path_request_hash
+    }
+
+    // ─── Public: Announce Bandwidth Cap API ─────────────────────────────
+
+    /// Register an interface's bitrate for announce bandwidth capping.
+    ///
+    /// When `bitrate_bps > 0`, announces on this interface are rate-limited
+    /// to `announce_cap_percent`% of the link capacity (default 2%).
+    /// Excess announces are queued and drained as bandwidth permits.
+    ///
+    /// When `bitrate_bps == 0`, the interface has no cap (unlimited bandwidth).
+    /// This is the default for TCP interfaces.
+    ///
+    /// # Arguments
+    /// * `iface_index` - The interface index
+    /// * `bitrate_bps` - The interface bitrate in bits per second (0 = unlimited)
+    pub fn register_interface_bitrate(&mut self, iface_index: usize, bitrate_bps: u32) {
+        if bitrate_bps == 0 {
+            // No cap needed for unlimited interfaces
+            self.interface_announce_caps.remove(&iface_index);
+            return;
+        }
+
+        self.interface_announce_caps.insert(
+            iface_index,
+            InterfaceAnnounceCap {
+                bitrate_bps,
+                announce_cap_percent: DEFAULT_ANNOUNCE_CAP_PERCENT,
+                allowed_at_ms: 0,
+                queue: VecDeque::new(),
+            },
+        );
+    }
+
+    /// Remove announce cap state for an interface.
+    ///
+    /// Called when an interface goes down or is unregistered.
+    pub fn unregister_interface_announce_cap(&mut self, iface_index: usize) {
+        self.interface_announce_caps.remove(&iface_index);
     }
 
     // ─── Internal: Helpers ─────────────────────────────────────────────
@@ -2123,7 +2314,7 @@ impl<C: Clock, S: Storage> Transport<C, S> {
 
         let transport_id = *self.identity.hash();
 
-        for (dest_hash, raw, except_iface, _original_hops, block) in to_rebroadcast {
+        for (dest_hash, raw, except_iface, original_hops, block) in to_rebroadcast {
             // Rebuild packet as Header Type 2 with our transport ID
             if let Ok(mut parsed) = Packet::unpack(&raw) {
                 // Set as Header Type 2 (transport-routed)
@@ -2136,7 +2327,13 @@ impl<C: Clock, S: Storage> Transport<C, S> {
                     parsed.context = PacketContext::PathResponse;
                 }
 
-                self.forward_on_all_except(except_iface, &mut parsed);
+                // Locally-originated announces (hops == 0) bypass caps
+                // (Python Transport.py:1086-1089: `if packet.hops > 0:`)
+                if original_hops == 0 || self.interface_announce_caps.is_empty() {
+                    self.forward_on_all_except(except_iface, &mut parsed);
+                } else {
+                    self.broadcast_announce_with_caps(except_iface, &mut parsed);
+                }
 
                 // If TTL exceeded, remove from announce table
                 if parsed.hops > self.config.max_hops {
@@ -2154,8 +2351,121 @@ impl<C: Clock, S: Storage> Transport<C, S> {
         }
     }
 
-    /// Check if an interface is considered online
+    /// Broadcast an announce on all interfaces except one, respecting per-interface
+    /// bandwidth caps. Increments hops before sending (same as forward_on_all_except).
     ///
+    /// For capped interfaces: if `now >= allowed_at_ms`, send immediately and compute
+    /// next holdoff. Otherwise, queue (capped at MAX_QUEUED_ANNOUNCES_PER_INTERFACE).
+    ///
+    /// Uncapped interfaces receive the announce via Broadcast action (driver dispatches).
+    /// Capped interfaces that already got a SendPacket may also receive the Broadcast;
+    /// the driver should deduplicate if this matters for the link type.
+    fn broadcast_announce_with_caps(&mut self, except_index: usize, packet: &mut Packet) {
+        packet.hops = packet.hops.saturating_add(1);
+        if packet.hops > self.config.max_hops {
+            self.stats.packets_dropped += 1;
+            return;
+        }
+
+        let mut buf = [0u8; MTU];
+        let len = match packet.pack(&mut buf) {
+            Ok(len) => len,
+            Err(_) => return,
+        };
+        let raw = buf[..len].to_vec();
+        let now = self.clock.now_ms();
+
+        // Handle capped interfaces individually
+        let capped_ifaces: Vec<usize> = self.interface_announce_caps.keys().copied().collect();
+
+        for iface_idx in &capped_ifaces {
+            if *iface_idx == except_index {
+                continue;
+            }
+
+            let cap = self
+                .interface_announce_caps
+                .get_mut(iface_idx)
+                .expect("key from collected list");
+
+            if now >= cap.allowed_at_ms {
+                self.pending_actions.push(Action::SendPacket {
+                    iface: InterfaceId(*iface_idx),
+                    data: raw.clone(),
+                });
+                // Compute holdoff: wait_ms = (bytes * 8 * 1000) / (bitrate * cap% / 100)
+                let tx_bits = raw.len() as u64 * 8;
+                let cap_bps = cap.bitrate_bps as u64 * cap.announce_cap_percent as u64 / 100;
+                let wait_ms = if cap_bps > 0 {
+                    (tx_bits * 1000) / cap_bps
+                } else {
+                    0
+                };
+                cap.allowed_at_ms = now + wait_ms;
+            } else if cap.queue.len() < MAX_QUEUED_ANNOUNCES_PER_INTERFACE {
+                cap.queue.push_back(QueuedAnnounce {
+                    raw: raw.clone(),
+                    hops: packet.hops,
+                    queued_at_ms: now,
+                });
+            }
+            // else: queue full, drop silently
+        }
+
+        // Broadcast to all uncapped interfaces via normal Broadcast action.
+        self.send_on_all_interfaces_except(except_index, &raw);
+        self.stats.packets_forwarded += 1;
+    }
+
+    /// Drain announce queues for interfaces whose holdoff has expired.
+    /// Called from `poll()`. Dequeues lowest-hops announce first, then oldest
+    /// within same hops (Python Interface.py:263-266).
+    fn drain_announce_queues(&mut self, now: u64) {
+        let mut sends: Vec<(usize, Vec<u8>)> = Vec::new();
+
+        for (iface_idx, cap) in self.interface_announce_caps.iter_mut() {
+            if cap.queue.is_empty() || now < cap.allowed_at_ms {
+                continue;
+            }
+
+            // Dequeue: lowest hops first, then oldest within same hops
+            let best_idx = cap
+                .queue
+                .iter()
+                .enumerate()
+                .min_by(|(_, a), (_, b)| {
+                    a.hops
+                        .cmp(&b.hops)
+                        .then(a.queued_at_ms.cmp(&b.queued_at_ms))
+                })
+                .map(|(i, _)| i);
+
+            if let Some(idx) = best_idx {
+                let entry = cap.queue.remove(idx).expect("valid index");
+                let raw_len = entry.raw.len();
+
+                sends.push((*iface_idx, entry.raw));
+
+                // Compute holdoff for next announce
+                let tx_bits = raw_len as u64 * 8;
+                let cap_bps = cap.bitrate_bps as u64 * cap.announce_cap_percent as u64 / 100;
+                let wait_ms = if cap_bps > 0 {
+                    (tx_bits * 1000) / cap_bps
+                } else {
+                    0
+                };
+                cap.allowed_at_ms = now + wait_ms;
+            }
+        }
+
+        for (iface_idx, raw) in sends {
+            self.pending_actions.push(Action::SendPacket {
+                iface: InterfaceId(iface_idx),
+                data: raw,
+            });
+        }
+    }
+
     fn clean_link_table(&mut self, now: u64) {
         // Collect expired entries with their data for rediscovery logic
         let expired: Vec<([u8; TRUNCATED_HASHBYTES], LinkEntry)> = self
@@ -2595,6 +2905,267 @@ mod tests {
                 }
                 _ => panic!("Expected PathLost event"),
             }
+        }
+
+        // ─── Path Timestamp Refresh Tests ────────────────────────────────
+
+        #[test]
+        fn test_path_refresh_on_forward() {
+            // Forwarding a data packet should refresh the path's expires_ms.
+            use crate::destination::DestinationType;
+            use crate::packet::{HeaderType, PacketData, PacketFlags, TransportType};
+
+            let mut transport = make_transport_enabled();
+            let _idx0 = transport.register_interface(Box::new(MockInterface::new("if0", 1)));
+            let _idx1 = transport.register_interface(Box::new(MockInterface::new("if1", 2)));
+
+            let dest_hash = [0xAA; TRUNCATED_HASHBYTES];
+            let now = transport.clock.now_ms();
+            let original_expiry = now + 10_000;
+
+            transport.path_table.insert(
+                dest_hash,
+                PathEntry {
+                    hops: 0,
+                    expires_ms: original_expiry,
+                    interface_index: 1,
+                    random_blobs: Vec::new(),
+                    next_hop: None,
+                },
+            );
+
+            // Advance clock so refresh will produce a different expiry
+            transport.clock.advance(5_000);
+
+            // Build a HEADER_2 data packet addressed to dest_hash
+            let packet = Packet {
+                flags: PacketFlags {
+                    ifac_flag: false,
+                    header_type: HeaderType::Type2,
+                    context_flag: false,
+                    transport_type: TransportType::Transport,
+                    dest_type: DestinationType::Single,
+                    packet_type: PacketType::Data,
+                },
+                hops: 1,
+                transport_id: Some(*transport.identity.hash()),
+                destination_hash: dest_hash,
+                context: PacketContext::None,
+                data: PacketData::Owned(b"refresh test".to_vec()),
+            };
+
+            let mut buf = [0u8; crate::constants::MTU];
+            let len = packet.pack(&mut buf).unwrap();
+            transport.process_incoming(0, &buf[..len]).unwrap();
+
+            assert!(
+                transport.stats().packets_forwarded > 0,
+                "Packet should be forwarded"
+            );
+
+            // Path expiry should be refreshed to now + path_expiry_secs * 1000
+            let path = transport.path_table.get(&dest_hash).unwrap();
+            let expected_expiry =
+                transport.clock.now_ms() + (transport.config.path_expiry_secs * 1000);
+            assert_eq!(
+                path.expires_ms, expected_expiry,
+                "Path expiry should be refreshed after forward"
+            );
+            assert!(
+                path.expires_ms > original_expiry,
+                "Refreshed expiry should exceed original"
+            );
+        }
+
+        #[test]
+        fn test_path_refresh_on_link_request_forward() {
+            // Forwarding a link request should refresh the path's expires_ms.
+            use crate::destination::DestinationType;
+            use crate::packet::{HeaderType, PacketData, PacketFlags, TransportType};
+
+            let mut transport = make_transport_enabled();
+            let _idx0 = transport.register_interface(Box::new(MockInterface::new("if0", 1)));
+            let _idx1 = transport.register_interface(Box::new(MockInterface::new("if1", 2)));
+
+            let dest_hash = [0xBB; TRUNCATED_HASHBYTES];
+            let now = transport.clock.now_ms();
+            let original_expiry = now + 10_000;
+
+            transport.path_table.insert(
+                dest_hash,
+                PathEntry {
+                    hops: 0,
+                    expires_ms: original_expiry,
+                    interface_index: 1,
+                    random_blobs: Vec::new(),
+                    next_hop: None,
+                },
+            );
+
+            // Advance clock
+            transport.clock.advance(5_000);
+
+            // Build a link request packet addressed to dest_hash
+            // Link request = HEADER_2 with transport_id pointing to us
+            let packet = Packet {
+                flags: PacketFlags {
+                    ifac_flag: false,
+                    header_type: HeaderType::Type2,
+                    context_flag: false,
+                    transport_type: TransportType::Transport,
+                    dest_type: DestinationType::Link,
+                    packet_type: PacketType::LinkRequest,
+                },
+                hops: 1,
+                transport_id: Some(*transport.identity.hash()),
+                destination_hash: dest_hash,
+                context: PacketContext::None,
+                data: PacketData::Owned(alloc::vec![0u8; 96]), // dummy link request payload
+            };
+
+            let mut buf = [0u8; crate::constants::MTU];
+            let len = packet.pack(&mut buf).unwrap();
+            transport.process_incoming(0, &buf[..len]).unwrap();
+
+            assert!(
+                transport.stats().packets_forwarded > 0,
+                "Link request should be forwarded"
+            );
+
+            // Path expiry should be refreshed
+            let path = transport.path_table.get(&dest_hash).unwrap();
+            let expected_expiry =
+                transport.clock.now_ms() + (transport.config.path_expiry_secs * 1000);
+            assert_eq!(
+                path.expires_ms, expected_expiry,
+                "Path expiry should be refreshed after link request forward"
+            );
+        }
+
+        #[test]
+        fn test_path_not_refreshed_without_forward() {
+            // If no matching path exists, no refresh should happen (no crash).
+            use crate::destination::DestinationType;
+            use crate::packet::{HeaderType, PacketData, PacketFlags, TransportType};
+
+            let mut transport = make_transport_enabled();
+            let _idx0 = transport.register_interface(Box::new(MockInterface::new("if0", 1)));
+
+            let dest_hash = [0xCC; TRUNCATED_HASHBYTES];
+            // No path entry for dest_hash
+
+            let packet = Packet {
+                flags: PacketFlags {
+                    ifac_flag: false,
+                    header_type: HeaderType::Type2,
+                    context_flag: false,
+                    transport_type: TransportType::Transport,
+                    dest_type: DestinationType::Single,
+                    packet_type: PacketType::Data,
+                },
+                hops: 1,
+                transport_id: Some(*transport.identity.hash()),
+                destination_hash: dest_hash,
+                context: PacketContext::None,
+                data: PacketData::Owned(b"no path".to_vec()),
+            };
+
+            let mut buf = [0u8; crate::constants::MTU];
+            let len = packet.pack(&mut buf).unwrap();
+            transport.process_incoming(0, &buf[..len]).unwrap();
+
+            assert_eq!(
+                transport.stats().packets_forwarded,
+                0,
+                "Should not forward without path"
+            );
+            assert!(
+                !transport.path_table.contains_key(&dest_hash),
+                "No path should be created"
+            );
+        }
+
+        #[test]
+        fn test_path_stays_alive_under_continuous_traffic() {
+            // A path with short expiry should stay alive if data is forwarded
+            // before expiry, even past the original expiry time.
+            use crate::destination::DestinationType;
+            use crate::packet::{HeaderType, PacketData, PacketFlags, TransportType};
+
+            let clock = MockClock::new(TEST_TIME_MS);
+            let identity = Identity::generate(&mut OsRng);
+            let transport_hash = *identity.hash();
+            let config = TransportConfig {
+                enable_transport: true,
+                path_expiry_secs: 10, // 10 seconds (short for testing)
+                ..TransportConfig::default()
+            };
+            let mut transport = Transport::new(config, clock, NoStorage, identity);
+            let _idx0 = transport.register_interface(Box::new(MockInterface::new("if0", 1)));
+            let _idx1 = transport.register_interface(Box::new(MockInterface::new("if1", 2)));
+
+            let dest_hash = [0xDD; TRUNCATED_HASHBYTES];
+            let now = transport.clock.now_ms();
+            transport.path_table.insert(
+                dest_hash,
+                PathEntry {
+                    hops: 0,
+                    expires_ms: now + 10_000, // 10 seconds
+                    interface_index: 1,
+                    random_blobs: Vec::new(),
+                    next_hop: None,
+                },
+            );
+
+            // Forward data every 5 seconds, 3 times (past original 10s expiry)
+            for i in 0..3 {
+                transport.clock.advance(5_000);
+                transport.drain_actions(); // clear previous actions
+
+                let packet = Packet {
+                    flags: PacketFlags {
+                        ifac_flag: false,
+                        header_type: HeaderType::Type2,
+                        context_flag: false,
+                        transport_type: TransportType::Transport,
+                        dest_type: DestinationType::Single,
+                        packet_type: PacketType::Data,
+                    },
+                    hops: 1,
+                    transport_id: Some(transport_hash),
+                    destination_hash: dest_hash,
+                    context: PacketContext::None,
+                    data: PacketData::Owned(alloc::vec![i as u8; 10]),
+                };
+
+                let mut buf = [0u8; crate::constants::MTU];
+                let len = packet.pack(&mut buf).unwrap();
+                // Use a unique dedup hash each iteration by varying payload
+                transport.process_incoming(0, &buf[..len]).unwrap();
+                transport.poll();
+
+                assert!(
+                    transport.has_path(&dest_hash),
+                    "Path should still be alive at iteration {i} (time = {}ms)",
+                    transport.clock.now_ms()
+                );
+            }
+
+            // Now total time = 15_000ms. Original expiry was 10_000ms.
+            // Path should still be alive (refreshed to now + 10_000 = 25_000ms)
+            assert!(
+                transport.has_path(&dest_hash),
+                "Path should survive past original expiry"
+            );
+
+            // Advance past the NEW expiry (last refresh at 15_000 + 10_000 = 25_000)
+            transport.clock.advance(11_000); // now at 26_000ms
+            transport.poll();
+
+            assert!(
+                !transport.has_path(&dest_hash),
+                "Path should expire when idle past refreshed expiry"
+            );
         }
 
         #[test]
@@ -3205,6 +3776,7 @@ mod tests {
                     validated: true,
                     proof_timeout_ms: now + 30_000,
                     destination_hash: [0xBB; TRUNCATED_HASHBYTES],
+                    peer_signing_key: None,
                 },
             );
 
@@ -3237,6 +3809,7 @@ mod tests {
                     validated: false,
                     proof_timeout_ms: proof_timeout,
                     destination_hash: [0xBB; TRUNCATED_HASHBYTES],
+                    peer_signing_key: None,
                 },
             );
 
@@ -3267,6 +3840,7 @@ mod tests {
                     validated: true,
                     proof_timeout_ms: now + 30_000,
                     destination_hash: [0xBB; TRUNCATED_HASHBYTES],
+                    peer_signing_key: None,
                 },
             );
 
@@ -3326,6 +3900,200 @@ mod tests {
             transport.request_path(&dest_hash, None, &tag2).unwrap();
             let sent3 = transport.stats().packets_sent;
             assert!(sent3 > sent2, "After cooldown, request should go through");
+        }
+
+        // ─── Path Request Format Tests ────────────────────────────────────
+
+        #[test]
+        fn test_non_transport_sends_32_byte_path_request() {
+            // Non-transport nodes send 32-byte path requests (dest_hash + tag only).
+            let mut transport = test_transport(); // enable_transport = false
+            let _idx0 = transport.register_interface(Box::new(MockInterface::new("if0", 1)));
+
+            let dest_hash = [0x42; TRUNCATED_HASHBYTES];
+            let tag = [0xAB; TRUNCATED_HASHBYTES];
+            transport.request_path(&dest_hash, None, &tag).unwrap();
+
+            let actions = transport.drain_actions();
+            let broadcast = actions
+                .iter()
+                .find_map(|a| match a {
+                    Action::Broadcast { data, .. } => Some(data.as_slice()),
+                    _ => None,
+                })
+                .expect("Should have broadcast action");
+
+            // Unpack the packet to check payload size
+            let pkt = Packet::unpack(broadcast).unwrap();
+            assert_eq!(
+                pkt.data.as_slice().len(),
+                32,
+                "Non-transport path request payload should be 32 bytes (dest_hash + tag)"
+            );
+            // Verify structure: first 16 = dest_hash, last 16 = tag
+            assert_eq!(&pkt.data.as_slice()[..16], &dest_hash);
+            assert_eq!(&pkt.data.as_slice()[16..32], &tag);
+        }
+
+        #[test]
+        fn test_transport_sends_48_byte_path_request() {
+            // Transport nodes send 48-byte path requests (dest_hash + transport_id + tag).
+            let mut transport = make_transport_enabled();
+            let _idx0 = transport.register_interface(Box::new(MockInterface::new("if0", 1)));
+
+            let dest_hash = [0x42; TRUNCATED_HASHBYTES];
+            let tag = [0xAB; TRUNCATED_HASHBYTES];
+            let our_hash = *transport.identity.hash();
+            transport.request_path(&dest_hash, None, &tag).unwrap();
+
+            let actions = transport.drain_actions();
+            let broadcast = actions
+                .iter()
+                .find_map(|a| match a {
+                    Action::Broadcast { data, .. } => Some(data.as_slice()),
+                    _ => None,
+                })
+                .expect("Should have broadcast action");
+
+            let pkt = Packet::unpack(broadcast).unwrap();
+            assert_eq!(
+                pkt.data.as_slice().len(),
+                48,
+                "Transport path request payload should be 48 bytes"
+            );
+            // Verify structure: dest_hash + transport_id + tag
+            assert_eq!(&pkt.data.as_slice()[..16], &dest_hash);
+            assert_eq!(&pkt.data.as_slice()[16..32], &our_hash);
+            assert_eq!(&pkt.data.as_slice()[32..48], &tag);
+        }
+
+        #[test]
+        fn test_handle_32_byte_path_request() {
+            // Transport node should handle 32-byte path requests correctly.
+            let mut transport = make_transport_enabled();
+            let _idx0 = transport.register_interface(Box::new(MockInterface::new("if0", 1)));
+
+            let dest_hash = [0x42; TRUNCATED_HASHBYTES];
+            transport.register_destination(dest_hash);
+
+            let path_req_hash = transport.path_request_hash;
+            let tag = [0xCC; TRUNCATED_HASHBYTES];
+
+            // Build 32-byte path request: dest_hash(16) + tag(16)
+            let mut data = Vec::new();
+            data.extend_from_slice(&dest_hash);
+            data.extend_from_slice(&tag);
+
+            let packet = Packet {
+                flags: PacketFlags {
+                    ifac_flag: false,
+                    header_type: HeaderType::Type1,
+                    context_flag: false,
+                    transport_type: TransportType::Broadcast,
+                    dest_type: crate::destination::DestinationType::Plain,
+                    packet_type: PacketType::Data,
+                },
+                hops: 0,
+                transport_id: None,
+                destination_hash: path_req_hash,
+                context: PacketContext::None,
+                data: PacketData::Owned(data),
+            };
+
+            let mut buf = [0u8; 500];
+            let len = packet.pack(&mut buf).unwrap();
+            transport.process_incoming(0, &buf[..len]).unwrap();
+
+            let events: Vec<_> = transport.drain_events().collect();
+            let found = events.iter().any(|e| matches!(
+                e,
+                TransportEvent::PathRequestReceived { destination_hash } if *destination_hash == dest_hash
+            ));
+            assert!(found, "32-byte path request should be handled");
+        }
+
+        #[test]
+        fn test_handle_48_byte_path_request() {
+            // Transport node should handle 48-byte path requests correctly.
+            let mut transport = make_transport_enabled();
+            let _idx0 = transport.register_interface(Box::new(MockInterface::new("if0", 1)));
+
+            let dest_hash = [0x42; TRUNCATED_HASHBYTES];
+            transport.register_destination(dest_hash);
+
+            let path_req_hash = transport.path_request_hash;
+            let tag = [0xCC; TRUNCATED_HASHBYTES];
+
+            // Build 48-byte path request: dest_hash(16) + transport_id(16) + tag(16)
+            let mut data = Vec::new();
+            data.extend_from_slice(&dest_hash);
+            data.extend_from_slice(&[0xBB; TRUNCATED_HASHBYTES]); // transport_id
+            data.extend_from_slice(&tag);
+
+            let packet = Packet {
+                flags: PacketFlags {
+                    ifac_flag: false,
+                    header_type: HeaderType::Type1,
+                    context_flag: false,
+                    transport_type: TransportType::Broadcast,
+                    dest_type: crate::destination::DestinationType::Plain,
+                    packet_type: PacketType::Data,
+                },
+                hops: 0,
+                transport_id: None,
+                destination_hash: path_req_hash,
+                context: PacketContext::None,
+                data: PacketData::Owned(data),
+            };
+
+            let mut buf = [0u8; 500];
+            let len = packet.pack(&mut buf).unwrap();
+            transport.process_incoming(0, &buf[..len]).unwrap();
+
+            let events: Vec<_> = transport.drain_events().collect();
+            let found = events.iter().any(|e| matches!(
+                e,
+                TransportEvent::PathRequestReceived { destination_hash } if *destination_hash == dest_hash
+            ));
+            assert!(found, "48-byte path request should be handled");
+        }
+
+        #[test]
+        fn test_handle_short_path_request_rejected() {
+            // Path requests shorter than 32 bytes should be silently dropped.
+            let mut transport = make_transport_enabled();
+            let _idx0 = transport.register_interface(Box::new(MockInterface::new("if0", 1)));
+
+            let path_req_hash = transport.path_request_hash;
+
+            // Build too-short path request: only 16 bytes
+            let data = [0x42u8; 16].to_vec();
+
+            let packet = Packet {
+                flags: PacketFlags {
+                    ifac_flag: false,
+                    header_type: HeaderType::Type1,
+                    context_flag: false,
+                    transport_type: TransportType::Broadcast,
+                    dest_type: crate::destination::DestinationType::Plain,
+                    packet_type: PacketType::Data,
+                },
+                hops: 0,
+                transport_id: None,
+                destination_hash: path_req_hash,
+                context: PacketContext::None,
+                data: PacketData::Owned(data),
+            };
+
+            let mut buf = [0u8; 500];
+            let len = packet.pack(&mut buf).unwrap();
+            transport.process_incoming(0, &buf[..len]).unwrap();
+
+            let events: Vec<_> = transport.drain_events().collect();
+            assert!(
+                events.is_empty(),
+                "Short path request should produce no events"
+            );
         }
 
         #[test]
@@ -3634,6 +4402,7 @@ mod tests {
                     validated: false,
                     proof_timeout_ms: now + 30_000,
                     destination_hash: [0xBB; TRUNCATED_HASHBYTES],
+                    peer_signing_key: None,
                 },
             );
 
@@ -3666,6 +4435,745 @@ mod tests {
             assert!(
                 !transport.link_table.get(&link_id).unwrap().validated,
                 "Link should not be validated with bad proof"
+            );
+        }
+
+        // ─── LRPROOF Signature Validation Tests ──────────────────────────
+
+        #[test]
+        fn test_lrproof_valid_signature_forwarded() {
+            // Valid LRPROOF with correct signature should be forwarded.
+            use crate::constants::{ED25519_KEY_SIZE, ED25519_SIGNATURE_SIZE, X25519_KEY_SIZE};
+
+            let mut transport = make_transport_enabled();
+            let _idx0 = transport.register_interface(Box::new(MockInterface::new("if0", 1)));
+            let _idx1 = transport.register_interface(Box::new(MockInterface::new("if1", 2)));
+
+            let link_id = [0xAA; TRUNCATED_HASHBYTES];
+            let now = transport.clock.now_ms();
+
+            // Create a real identity for the peer
+            let peer_identity = Identity::generate(&mut OsRng);
+            let pub_bytes = peer_identity.public_key_bytes();
+            let mut peer_ed25519 = [0u8; ED25519_KEY_SIZE];
+            peer_ed25519.copy_from_slice(&pub_bytes[X25519_KEY_SIZE..]);
+
+            transport.link_table.insert(
+                link_id,
+                LinkEntry {
+                    timestamp_ms: now,
+                    next_hop_interface_index: 1,
+                    remaining_hops: 2,
+                    received_interface_index: 0,
+                    hops: 1,
+                    validated: false,
+                    proof_timeout_ms: now + 30_000,
+                    destination_hash: [0xBB; TRUNCATED_HASHBYTES],
+                    peer_signing_key: Some(peer_ed25519),
+                },
+            );
+
+            // Build valid LRPROOF: sig(64) + X25519_pub(32) = 96 bytes
+            let peer_x25519_pub = [0x11u8; X25519_KEY_SIZE];
+            // signed_data = link_id + X25519_pub + Ed25519_pub
+            let mut signed_data = Vec::new();
+            signed_data.extend_from_slice(&link_id);
+            signed_data.extend_from_slice(&peer_x25519_pub);
+            signed_data.extend_from_slice(&peer_ed25519);
+
+            let signature = peer_identity.sign(&signed_data).unwrap();
+
+            let mut proof_data = Vec::with_capacity(96);
+            proof_data.extend_from_slice(&signature);
+            proof_data.extend_from_slice(&peer_x25519_pub);
+
+            let pkt = Packet {
+                flags: PacketFlags {
+                    ifac_flag: false,
+                    header_type: HeaderType::Type1,
+                    context_flag: false,
+                    transport_type: TransportType::Broadcast,
+                    dest_type: crate::destination::DestinationType::Link,
+                    packet_type: PacketType::Proof,
+                },
+                hops: 2,
+                transport_id: None,
+                destination_hash: link_id,
+                context: PacketContext::Lrproof,
+                data: PacketData::Owned(proof_data),
+            };
+
+            let mut buf = [0u8; 500];
+            let len = pkt.pack(&mut buf).unwrap();
+            transport.process_incoming(1, &buf[..len]).unwrap();
+
+            assert!(
+                transport.stats().packets_forwarded > 0,
+                "Valid LRPROOF should be forwarded"
+            );
+            assert!(
+                transport.link_table.get(&link_id).unwrap().validated,
+                "Link should be validated after valid proof"
+            );
+        }
+
+        #[test]
+        fn test_lrproof_invalid_signature_dropped() {
+            // LRPROOF with invalid signature should be dropped.
+            use crate::constants::{ED25519_KEY_SIZE, ED25519_SIGNATURE_SIZE, X25519_KEY_SIZE};
+
+            let mut transport = make_transport_enabled();
+            let _idx0 = transport.register_interface(Box::new(MockInterface::new("if0", 1)));
+            let _idx1 = transport.register_interface(Box::new(MockInterface::new("if1", 2)));
+
+            let link_id = [0xAA; TRUNCATED_HASHBYTES];
+            let now = transport.clock.now_ms();
+
+            let peer_identity = Identity::generate(&mut OsRng);
+            let pub_bytes = peer_identity.public_key_bytes();
+            let mut peer_ed25519 = [0u8; ED25519_KEY_SIZE];
+            peer_ed25519.copy_from_slice(&pub_bytes[X25519_KEY_SIZE..]);
+
+            transport.link_table.insert(
+                link_id,
+                LinkEntry {
+                    timestamp_ms: now,
+                    next_hop_interface_index: 1,
+                    remaining_hops: 2,
+                    received_interface_index: 0,
+                    hops: 1,
+                    validated: false,
+                    proof_timeout_ms: now + 30_000,
+                    destination_hash: [0xBB; TRUNCATED_HASHBYTES],
+                    peer_signing_key: Some(peer_ed25519),
+                },
+            );
+
+            // Build LRPROOF with corrupted signature: correct size but garbage sig
+            let mut proof_data = Vec::with_capacity(96);
+            proof_data.extend_from_slice(&[0xDE; ED25519_SIGNATURE_SIZE]); // garbage signature
+            proof_data.extend_from_slice(&[0x11; X25519_KEY_SIZE]);
+
+            let pkt = Packet {
+                flags: PacketFlags {
+                    ifac_flag: false,
+                    header_type: HeaderType::Type1,
+                    context_flag: false,
+                    transport_type: TransportType::Broadcast,
+                    dest_type: crate::destination::DestinationType::Link,
+                    packet_type: PacketType::Proof,
+                },
+                hops: 2,
+                transport_id: None,
+                destination_hash: link_id,
+                context: PacketContext::Lrproof,
+                data: PacketData::Owned(proof_data),
+            };
+
+            let mut buf = [0u8; 500];
+            let len = pkt.pack(&mut buf).unwrap();
+            let dropped_before = transport.stats().packets_dropped;
+            transport.process_incoming(1, &buf[..len]).unwrap();
+
+            assert_eq!(
+                transport.stats().packets_forwarded,
+                0,
+                "LRPROOF with invalid signature should not be forwarded"
+            );
+            assert!(
+                transport.stats().packets_dropped > dropped_before,
+                "Dropped count should increment for invalid signature"
+            );
+        }
+
+        #[test]
+        fn test_lrproof_no_signing_key_forwarded() {
+            // LRPROOF without peer_signing_key should be forwarded (cannot validate).
+            use crate::constants::{ED25519_SIGNATURE_SIZE, X25519_KEY_SIZE};
+
+            let mut transport = make_transport_enabled();
+            let _idx0 = transport.register_interface(Box::new(MockInterface::new("if0", 1)));
+            let _idx1 = transport.register_interface(Box::new(MockInterface::new("if1", 2)));
+
+            let link_id = [0xAA; TRUNCATED_HASHBYTES];
+            let now = transport.clock.now_ms();
+
+            transport.link_table.insert(
+                link_id,
+                LinkEntry {
+                    timestamp_ms: now,
+                    next_hop_interface_index: 1,
+                    remaining_hops: 2,
+                    received_interface_index: 0,
+                    hops: 1,
+                    validated: false,
+                    proof_timeout_ms: now + 30_000,
+                    destination_hash: [0xBB; TRUNCATED_HASHBYTES],
+                    peer_signing_key: None, // No key available
+                },
+            );
+
+            // Build LRPROOF with arbitrary data (correct size)
+            let mut proof_data = Vec::with_capacity(96);
+            proof_data.extend_from_slice(&[0xFF; ED25519_SIGNATURE_SIZE]);
+            proof_data.extend_from_slice(&[0x11; X25519_KEY_SIZE]);
+
+            let pkt = Packet {
+                flags: PacketFlags {
+                    ifac_flag: false,
+                    header_type: HeaderType::Type1,
+                    context_flag: false,
+                    transport_type: TransportType::Broadcast,
+                    dest_type: crate::destination::DestinationType::Link,
+                    packet_type: PacketType::Proof,
+                },
+                hops: 2,
+                transport_id: None,
+                destination_hash: link_id,
+                context: PacketContext::Lrproof,
+                data: PacketData::Owned(proof_data),
+            };
+
+            let mut buf = [0u8; 500];
+            let len = pkt.pack(&mut buf).unwrap();
+            transport.process_incoming(1, &buf[..len]).unwrap();
+
+            assert!(
+                transport.stats().packets_forwarded > 0,
+                "LRPROOF without signing key should still be forwarded"
+            );
+        }
+
+        #[test]
+        fn test_link_entry_signing_key_from_announce_cache() {
+            // When a link request is forwarded, the LinkEntry should get the
+            // peer's Ed25519 signing key from the announce cache.
+            use crate::destination::DestinationType;
+            use crate::packet::{HeaderType, PacketData, PacketFlags, TransportType};
+
+            let mut transport = make_transport_enabled();
+            let _idx0 = transport.register_interface(Box::new(MockInterface::new("if0", 1)));
+            let _idx1 = transport.register_interface(Box::new(MockInterface::new("if1", 2)));
+
+            // Process an announce to populate path_table AND announce_cache
+            let (raw, dest_hash) = make_announce_raw(0, PacketContext::None);
+            transport.process_incoming(0, &raw).unwrap();
+            transport.drain_events();
+
+            assert!(transport.has_path(&dest_hash));
+            assert!(transport.announce_cache.contains_key(&dest_hash));
+
+            // Extract expected Ed25519 key from announce payload
+            let cached = transport.announce_cache.get(&dest_hash).unwrap();
+            let announce_packet = Packet::unpack(cached).unwrap();
+            let payload = announce_packet.data.as_slice();
+            let expected_ed25519 =
+                &payload[crate::constants::X25519_KEY_SIZE..crate::constants::IDENTITY_KEY_SIZE];
+
+            // Build a link request addressed to dest_hash via us
+            let packet = Packet {
+                flags: PacketFlags {
+                    ifac_flag: false,
+                    header_type: HeaderType::Type2,
+                    context_flag: false,
+                    transport_type: TransportType::Transport,
+                    dest_type: DestinationType::Link,
+                    packet_type: PacketType::LinkRequest,
+                },
+                hops: 1,
+                transport_id: Some(*transport.identity.hash()),
+                destination_hash: dest_hash,
+                context: PacketContext::None,
+                data: PacketData::Owned(alloc::vec![0u8; 96]),
+            };
+
+            let mut buf = [0u8; crate::constants::MTU];
+            let len = packet.pack(&mut buf).unwrap();
+            transport.process_incoming(0, &buf[..len]).unwrap();
+
+            assert!(
+                transport.stats().packets_forwarded > 0,
+                "Link request should be forwarded"
+            );
+
+            // Find the link entry that was created
+            let link_entry = transport
+                .link_table
+                .values()
+                .next()
+                .expect("Should have a link table entry");
+
+            assert!(
+                link_entry.peer_signing_key.is_some(),
+                "Link entry should have peer_signing_key from announce cache"
+            );
+            assert_eq!(
+                link_entry.peer_signing_key.unwrap().as_slice(),
+                expected_ed25519,
+                "Signing key should match announce payload"
+            );
+        }
+
+        #[test]
+        fn test_lrproof_unknown_link_dropped() {
+            // LRPROOF for a link_id not in link_table should not be forwarded.
+            use crate::constants::{ED25519_SIGNATURE_SIZE, X25519_KEY_SIZE};
+
+            let mut transport = make_transport_enabled();
+            let _idx0 = transport.register_interface(Box::new(MockInterface::new("if0", 1)));
+
+            let link_id = [0xAA; TRUNCATED_HASHBYTES];
+            // No link table entry for this link_id
+
+            let mut proof_data = Vec::with_capacity(96);
+            proof_data.extend_from_slice(&[0xFF; ED25519_SIGNATURE_SIZE]);
+            proof_data.extend_from_slice(&[0x11; X25519_KEY_SIZE]);
+
+            let pkt = Packet {
+                flags: PacketFlags {
+                    ifac_flag: false,
+                    header_type: HeaderType::Type1,
+                    context_flag: false,
+                    transport_type: TransportType::Broadcast,
+                    dest_type: crate::destination::DestinationType::Link,
+                    packet_type: PacketType::Proof,
+                },
+                hops: 1,
+                transport_id: None,
+                destination_hash: link_id,
+                context: PacketContext::Lrproof,
+                data: PacketData::Owned(proof_data),
+            };
+
+            let mut buf = [0u8; 500];
+            let len = pkt.pack(&mut buf).unwrap();
+            transport.process_incoming(0, &buf[..len]).unwrap();
+
+            assert_eq!(
+                transport.stats().packets_forwarded,
+                0,
+                "LRPROOF for unknown link should not be forwarded"
+            );
+        }
+
+        // ─── Gap 3: Per-interface announce bandwidth caps ────────────────
+
+        #[test]
+        fn test_announce_cap_delays_second_announce() {
+            extern crate alloc;
+            // Register a low-bitrate interface, process two announces fast —
+            // the second should be queued (not immediately sent).
+            let mut transport = make_transport_enabled();
+            let _idx0 = transport.register_interface(Box::new(MockInterface::new("if0", 1)));
+            let _idx1 = transport.register_interface(Box::new(MockInterface::new("if1", 2)));
+
+            // Register low bitrate on if1: 1000 bps, 2% cap = 20 bps effective
+            transport.register_interface_bitrate(1, 1000);
+
+            // Process first announce (hops > 0 so caps apply)
+            let (raw1, _dh1) = make_announce_raw(1, PacketContext::None);
+            transport.process_incoming(0, &raw1).unwrap();
+            let _ = transport.drain_actions();
+            let _ = transport.drain_events();
+
+            // Advance past retransmit delay so first rebroadcast fires
+            transport
+                .clock
+                .advance(PATHFINDER_G_MS + PATHFINDER_RW_MS + 1000);
+            transport.poll();
+            let actions1 = transport.drain_actions();
+
+            // Should have a SendPacket on if1 (capped) + a Broadcast (uncapped)
+            let send_count = actions1
+                .iter()
+                .filter(|a| matches!(a, Action::SendPacket { iface, .. } if iface.0 == 1))
+                .count();
+            assert_eq!(
+                send_count, 1,
+                "first announce should be sent on capped interface"
+            );
+
+            // Now process second announce immediately (no time advance)
+            let (raw2, _dh2) = make_announce_raw(1, PacketContext::None);
+            transport.process_incoming(0, &raw2).unwrap();
+            let _ = transport.drain_actions();
+            let _ = transport.drain_events();
+
+            // Rebroadcast second announce
+            transport
+                .clock
+                .advance(PATHFINDER_G_MS + PATHFINDER_RW_MS + 1000);
+            transport.poll();
+            let actions2 = transport.drain_actions();
+
+            // Second should be queued, not immediately sent on capped interface
+            let send_count2 = actions2
+                .iter()
+                .filter(|a| matches!(a, Action::SendPacket { iface, .. } if iface.0 == 1))
+                .count();
+            assert_eq!(
+                send_count2, 0,
+                "second announce should be queued on capped interface"
+            );
+
+            // But uncapped interfaces still get the broadcast
+            let broadcast_count = actions2
+                .iter()
+                .filter(|a| matches!(a, Action::Broadcast { .. }))
+                .count();
+            assert!(
+                broadcast_count > 0,
+                "uncapped interfaces should still receive broadcast"
+            );
+        }
+
+        #[test]
+        fn test_announce_cap_drains_queue_after_holdoff() {
+            extern crate alloc;
+            // Queue an announce, advance past allowed_at_ms, poll → should emit it.
+            let mut transport = make_transport_enabled();
+            let _idx0 = transport.register_interface(Box::new(MockInterface::new("if0", 1)));
+            let _idx1 = transport.register_interface(Box::new(MockInterface::new("if1", 2)));
+
+            // 1000 bps, 2% cap = 20 bps; a ~100 byte packet = 800 bits → 40s holdoff
+            transport.register_interface_bitrate(1, 1000);
+
+            // Manually queue an announce on the capped interface
+            let cap = transport.interface_announce_caps.get_mut(&1).unwrap();
+            cap.allowed_at_ms = transport.clock.now_ms() + 40_000;
+            cap.queue.push_back(QueuedAnnounce {
+                raw: alloc::vec![0xAA; 100],
+                hops: 2,
+                queued_at_ms: transport.clock.now_ms(),
+            });
+
+            // Poll before holdoff expires — nothing should drain
+            transport.poll();
+            let actions_before = transport.drain_actions();
+            let sent_before = actions_before
+                .iter()
+                .filter(|a| matches!(a, Action::SendPacket { iface, .. } if iface.0 == 1))
+                .count();
+            assert_eq!(sent_before, 0, "should not drain before holdoff expires");
+
+            // Advance past holdoff
+            transport.clock.advance(41_000);
+            transport.poll();
+            let actions_after = transport.drain_actions();
+            let sent_after = actions_after
+                .iter()
+                .filter(|a| matches!(a, Action::SendPacket { iface, .. } if iface.0 == 1))
+                .count();
+            assert_eq!(sent_after, 1, "should drain queued announce after holdoff");
+        }
+
+        #[test]
+        fn test_announce_queue_max_size() {
+            extern crate alloc;
+            // Exceed MAX_QUEUED_ANNOUNCES_PER_INTERFACE → oldest dropped.
+            let mut transport = make_transport_enabled();
+            let _idx0 = transport.register_interface(Box::new(MockInterface::new("if0", 1)));
+
+            transport.register_interface_bitrate(0, 1000);
+
+            // Set holdoff far in the future so all announces get queued
+            let cap = transport.interface_announce_caps.get_mut(&0).unwrap();
+            cap.allowed_at_ms = transport.clock.now_ms() + 1_000_000;
+
+            // Fill queue to max
+            for i in 0..MAX_QUEUED_ANNOUNCES_PER_INTERFACE {
+                cap.queue.push_back(QueuedAnnounce {
+                    raw: alloc::vec![i as u8; 50],
+                    hops: 1,
+                    queued_at_ms: transport.clock.now_ms() + i as u64,
+                });
+            }
+            assert_eq!(cap.queue.len(), MAX_QUEUED_ANNOUNCES_PER_INTERFACE);
+
+            // One more should not grow the queue (broadcast_announce_with_caps checks len)
+            // We test the queue boundary directly
+            let cap = transport.interface_announce_caps.get_mut(&0).unwrap();
+            if cap.queue.len() < MAX_QUEUED_ANNOUNCES_PER_INTERFACE {
+                cap.queue.push_back(QueuedAnnounce {
+                    raw: alloc::vec![0xFF; 50],
+                    hops: 1,
+                    queued_at_ms: transport.clock.now_ms(),
+                });
+            }
+            assert_eq!(
+                cap.queue.len(),
+                MAX_QUEUED_ANNOUNCES_PER_INTERFACE,
+                "queue should not grow beyond max"
+            );
+        }
+
+        #[test]
+        fn test_announce_cap_does_not_affect_data() {
+            extern crate alloc;
+            // Data forwarding (non-announce) should be unaffected by caps.
+            use crate::destination::DestinationType;
+            use crate::packet::{HeaderType, PacketData, PacketFlags, TransportType};
+
+            let mut transport = make_transport_enabled();
+            let _idx0 = transport.register_interface(Box::new(MockInterface::new("if0", 1)));
+            let _idx1 = transport.register_interface(Box::new(MockInterface::new("if1", 2)));
+
+            // Register tight cap on if1
+            transport.register_interface_bitrate(1, 100);
+            // Set holdoff far in future
+            let cap = transport.interface_announce_caps.get_mut(&1).unwrap();
+            cap.allowed_at_ms = transport.clock.now_ms() + 1_000_000;
+
+            // Insert a path table entry routing to if1
+            let dest_hash = [0x42; TRUNCATED_HASHBYTES];
+            let now = transport.clock.now_ms();
+            let transport_hash = *transport.identity.hash();
+            transport.path_table.insert(
+                dest_hash,
+                PathEntry {
+                    interface_index: 1,
+                    next_hop: None,
+                    hops: 0,
+                    expires_ms: now + 600_000,
+                    random_blobs: Vec::new(),
+                },
+            );
+
+            // Forward a data packet to that destination (Type2 addressed to us)
+            let pkt = Packet {
+                flags: PacketFlags {
+                    ifac_flag: false,
+                    header_type: HeaderType::Type2,
+                    context_flag: false,
+                    transport_type: TransportType::Transport,
+                    dest_type: DestinationType::Single,
+                    packet_type: PacketType::Data,
+                },
+                hops: 1,
+                transport_id: Some(transport_hash),
+                destination_hash: dest_hash,
+                context: PacketContext::None,
+                data: PacketData::Owned(alloc::vec![0x01; 32]),
+            };
+
+            let mut buf = [0u8; 500];
+            let len = pkt.pack(&mut buf).unwrap();
+            transport.process_incoming(0, &buf[..len]).unwrap();
+
+            let actions = transport.drain_actions();
+            let sent = actions
+                .iter()
+                .filter(|a| matches!(a, Action::SendPacket { iface, .. } if iface.0 == 1))
+                .count();
+            assert_eq!(sent, 1, "data packet should bypass announce caps");
+        }
+
+        #[test]
+        fn test_announce_cap_per_interface_independence() {
+            // Two capped interfaces should track holdoff independently.
+            let mut transport = make_transport_enabled();
+            let _idx0 = transport.register_interface(Box::new(MockInterface::new("if0", 1)));
+            let _idx1 = transport.register_interface(Box::new(MockInterface::new("if1", 2)));
+            let _idx2 = transport.register_interface(Box::new(MockInterface::new("if2", 3)));
+
+            // if1: very slow (100 bps), if2: fast (1_000_000 bps)
+            transport.register_interface_bitrate(1, 100);
+            transport.register_interface_bitrate(2, 1_000_000);
+
+            // Process an announce from if0
+            let (raw, _dh) = make_announce_raw(1, PacketContext::None);
+            transport.process_incoming(0, &raw).unwrap();
+            let _ = transport.drain_actions();
+            let _ = transport.drain_events();
+
+            // Trigger rebroadcast
+            transport
+                .clock
+                .advance(PATHFINDER_G_MS + PATHFINDER_RW_MS + 1000);
+            transport.poll();
+            let actions = transport.drain_actions();
+
+            // Both should get SendPacket (first announce on each)
+            let sent_if1 = actions
+                .iter()
+                .filter(|a| matches!(a, Action::SendPacket { iface, .. } if iface.0 == 1))
+                .count();
+            let sent_if2 = actions
+                .iter()
+                .filter(|a| matches!(a, Action::SendPacket { iface, .. } if iface.0 == 2))
+                .count();
+            assert_eq!(sent_if1, 1, "if1 should get first announce");
+            assert_eq!(sent_if2, 1, "if2 should get first announce");
+
+            // Now check holdoffs are different (slow has much longer holdoff)
+            let cap1 = transport.interface_announce_caps.get(&1).unwrap();
+            let cap2 = transport.interface_announce_caps.get(&2).unwrap();
+            assert!(
+                cap1.allowed_at_ms > cap2.allowed_at_ms,
+                "slow interface should have longer holdoff ({} vs {})",
+                cap1.allowed_at_ms,
+                cap2.allowed_at_ms
+            );
+        }
+
+        #[test]
+        fn test_local_announce_skips_cap() {
+            // Locally-originated announces (hops == 0) should bypass caps entirely
+            // (Python Transport.py:1086-1089).
+            let mut transport = make_transport_enabled();
+            let _idx0 = transport.register_interface(Box::new(MockInterface::new("if0", 1)));
+            let _idx1 = transport.register_interface(Box::new(MockInterface::new("if1", 2)));
+
+            // Tight cap on if1
+            transport.register_interface_bitrate(1, 100);
+            let cap = transport.interface_announce_caps.get_mut(&1).unwrap();
+            cap.allowed_at_ms = transport.clock.now_ms() + 1_000_000; // Block cap
+
+            // Process local announce (hops == 0) from if0
+            let (raw, _dh) = make_announce_raw(0, PacketContext::None);
+            transport.process_incoming(0, &raw).unwrap();
+            let _ = transport.drain_actions();
+            let _ = transport.drain_events();
+
+            // Trigger rebroadcast
+            transport
+                .clock
+                .advance(PATHFINDER_G_MS + PATHFINDER_RW_MS + 1000);
+            transport.poll();
+            let actions = transport.drain_actions();
+
+            // Local announces bypass caps, so we should see a Broadcast action
+            // (forward_on_all_except is used, not broadcast_announce_with_caps)
+            let broadcasts = actions
+                .iter()
+                .filter(|a| matches!(a, Action::Broadcast { .. }))
+                .count();
+            assert!(
+                broadcasts > 0,
+                "local announces should bypass caps and use Broadcast"
+            );
+
+            // And NO queued announces on the capped interface
+            let cap = transport.interface_announce_caps.get(&1).unwrap();
+            assert!(
+                cap.queue.is_empty(),
+                "local announces should not queue on capped interfaces"
+            );
+        }
+
+        #[test]
+        fn test_queue_drain_priority_lowest_hops() {
+            extern crate alloc;
+            // Lower hops should be dequeued first.
+            let mut transport = make_transport_enabled();
+            let _idx0 = transport.register_interface(Box::new(MockInterface::new("if0", 1)));
+
+            transport.register_interface_bitrate(0, 1000);
+
+            let now = transport.clock.now_ms();
+            let cap = transport.interface_announce_caps.get_mut(&0).unwrap();
+            // Two queued items: hops=3 (first), hops=1 (second)
+            cap.queue.push_back(QueuedAnnounce {
+                raw: alloc::vec![0xAA; 50],
+                hops: 3,
+                queued_at_ms: now,
+            });
+            cap.queue.push_back(QueuedAnnounce {
+                raw: alloc::vec![0xBB; 50],
+                hops: 1,
+                queued_at_ms: now + 1,
+            });
+            cap.allowed_at_ms = now; // Allow immediate drain
+
+            transport.poll();
+            let actions = transport.drain_actions();
+
+            // Should dequeue the hops=1 entry first (0xBB)
+            let first_send = actions
+                .iter()
+                .find(|a| matches!(a, Action::SendPacket { iface, .. } if iface.0 == 0));
+            assert!(first_send.is_some(), "should have drained one announce");
+
+            if let Some(Action::SendPacket { data, .. }) = first_send {
+                assert_eq!(
+                    data[0], 0xBB,
+                    "lowest-hops announce (0xBB) should be dequeued first"
+                );
+            }
+
+            // Queue should still have the hops=3 entry
+            let cap = transport.interface_announce_caps.get(&0).unwrap();
+            assert_eq!(cap.queue.len(), 1, "one entry should remain");
+            assert_eq!(cap.queue[0].hops, 3, "hops=3 entry should remain");
+        }
+
+        #[test]
+        fn test_no_cap_unregistered_interface() {
+            // Interfaces without registered bitrate should use normal Broadcast.
+            let mut transport = make_transport_enabled();
+            let _idx0 = transport.register_interface(Box::new(MockInterface::new("if0", 1)));
+            let _idx1 = transport.register_interface(Box::new(MockInterface::new("if1", 2)));
+
+            // Don't register any bitrate → no caps
+            assert!(transport.interface_announce_caps.is_empty());
+
+            let (raw, _dh) = make_announce_raw(1, PacketContext::None);
+            transport.process_incoming(0, &raw).unwrap();
+            let _ = transport.drain_actions();
+            let _ = transport.drain_events();
+
+            // Trigger rebroadcast
+            transport
+                .clock
+                .advance(PATHFINDER_G_MS + PATHFINDER_RW_MS + 1000);
+            transport.poll();
+            let actions = transport.drain_actions();
+
+            // Should use Broadcast action (no caps → forward_on_all_except)
+            let broadcasts = actions
+                .iter()
+                .filter(|a| matches!(a, Action::Broadcast { .. }))
+                .count();
+            assert!(broadcasts > 0, "uncapped transport should use Broadcast");
+
+            // No SendPacket actions for individual interfaces
+            let sends = actions
+                .iter()
+                .filter(|a| matches!(a, Action::SendPacket { .. }))
+                .count();
+            assert_eq!(sends, 0, "no per-interface sends without caps");
+        }
+
+        #[test]
+        fn test_next_deadline_includes_queue_drain() {
+            extern crate alloc;
+            // Non-empty queue should add a deadline at allowed_at_ms.
+            let mut transport = make_transport_enabled();
+            let _idx0 = transport.register_interface(Box::new(MockInterface::new("if0", 1)));
+
+            transport.register_interface_bitrate(0, 1000);
+
+            let now = transport.clock.now_ms();
+            let drain_at = now + 50_000;
+
+            let cap = transport.interface_announce_caps.get_mut(&0).unwrap();
+            cap.allowed_at_ms = drain_at;
+            cap.queue.push_back(QueuedAnnounce {
+                raw: alloc::vec![0xAA; 50],
+                hops: 1,
+                queued_at_ms: now,
+            });
+
+            let deadline = transport.next_deadline();
+            assert!(
+                deadline.is_some(),
+                "should have a deadline with queued announce"
+            );
+            assert!(
+                deadline.unwrap() <= drain_at,
+                "deadline ({}) should be <= drain_at ({})",
+                deadline.unwrap(),
+                drain_at
             );
         }
 
@@ -3745,6 +5253,7 @@ mod tests {
                     validated: true,
                     proof_timeout_ms: now + 30_000,
                     destination_hash: [0xBB; TRUNCATED_HASHBYTES],
+                    peer_signing_key: None,
                 },
             );
 
@@ -4196,6 +5705,7 @@ mod tests {
                     validated: true,
                     proof_timeout_ms: now + 30_000,
                     destination_hash: [0xBB; TRUNCATED_HASHBYTES],
+                    peer_signing_key: None,
                 },
             );
 
@@ -4230,6 +5740,7 @@ mod tests {
                     validated: true,
                     proof_timeout_ms: now + 30_000,
                     destination_hash: [0xBB; TRUNCATED_HASHBYTES],
+                    peer_signing_key: None,
                 },
             );
 
@@ -4280,6 +5791,7 @@ mod tests {
                     validated: true,
                     proof_timeout_ms: now + 30_000,
                     destination_hash: [0xBB; TRUNCATED_HASHBYTES],
+                    peer_signing_key: None,
                 },
             );
 
@@ -5176,6 +6688,7 @@ mod tests {
                     validated: true,
                     proof_timeout_ms: u64::MAX,
                     destination_hash: [0xBB; TRUNCATED_HASHBYTES],
+                    peer_signing_key: None,
                 },
             );
 
@@ -6325,6 +7838,7 @@ mod tests {
                     validated: true,
                     proof_timeout_ms: now + 30_000,
                     destination_hash: [0xBB; TRUNCATED_HASHBYTES],
+                    peer_signing_key: None,
                 },
             );
 
@@ -6375,6 +7889,7 @@ mod tests {
                     validated: true,
                     proof_timeout_ms: now + 30_000,
                     destination_hash: [0xBB; TRUNCATED_HASHBYTES],
+                    peer_signing_key: None,
                 },
             );
 
@@ -6461,6 +7976,7 @@ mod tests {
                     validated: false,
                     proof_timeout_ms: now + 30_000,
                     destination_hash: [0xBB; TRUNCATED_HASHBYTES],
+                    peer_signing_key: None,
                 },
             );
 
@@ -6855,6 +8371,7 @@ mod tests {
                     validated: false,
                     proof_timeout_ms: now + 1000,
                     destination_hash: dest_hash,
+                    peer_signing_key: None,
                 },
             );
 
@@ -6909,6 +8426,7 @@ mod tests {
                     validated: false,
                     proof_timeout_ms: now + 1000,
                     destination_hash: dest_hash,
+                    peer_signing_key: None,
                 },
             );
 
@@ -6956,6 +8474,7 @@ mod tests {
                     validated: false,
                     proof_timeout_ms: now + 1000,
                     destination_hash: dest_hash,
+                    peer_signing_key: None,
                 },
             );
 
@@ -7006,6 +8525,7 @@ mod tests {
                     validated: false,
                     proof_timeout_ms: now + 1000,
                     destination_hash: dest_hash,
+                    peer_signing_key: None,
                 },
             );
 
@@ -7044,6 +8564,7 @@ mod tests {
                     validated: false,
                     proof_timeout_ms: now + 1000,
                     destination_hash: dest_hash,
+                    peer_signing_key: None,
                 },
             );
 
@@ -7092,6 +8613,7 @@ mod tests {
                     validated: true,
                     proof_timeout_ms: now + 1000,
                     destination_hash: dest_hash,
+                    peer_signing_key: None,
                 },
             );
 
@@ -7219,6 +8741,7 @@ mod tests {
                     validated: false,
                     proof_timeout_ms: now + 1000,
                     destination_hash: dest_hash,
+                    peer_signing_key: None,
                 },
             );
 
@@ -7283,6 +8806,7 @@ mod tests {
                     validated: false,
                     proof_timeout_ms: now + 1000,
                     destination_hash: dest_hash,
+                    peer_signing_key: None,
                 },
             );
 

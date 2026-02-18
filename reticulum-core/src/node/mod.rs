@@ -516,6 +516,9 @@ impl<R: CryptoRngCore, C: Clock, S: Storage> NodeCore<R, C, S> {
         self.transport
             .remove_reverse_entries_for_interface(iface_idx);
 
+        // Remove announce cap state for this interface
+        self.transport.unregister_interface_announce_cap(iface_idx);
+
         // Emit the InterfaceDown event
         self.events.push(NodeEvent::InterfaceDown(iface_idx));
 

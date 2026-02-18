@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- **Path timestamp refresh on forward** — active paths no longer expire while traffic flows through them. Both `forward_packet()` and `handle_link_request()` now refresh `path.expires_ms` on every forward, matching Python Transport.py:990 and Transport.py:1504. Configurable via `NodeCoreBuilder::path_expiry_secs()` / `ReticulumNodeBuilder::path_expiry_secs()`.
+- **LRPROOF Ed25519 signature validation** — transport relays now verify the link proof signature before forwarding, matching Python Transport.py:2021-2033. The responder's Ed25519 signing key is extracted from the announce cache at link creation time and stored on `LinkEntry`. Invalid signatures are dropped with `packets_dropped` incremented. Missing signing keys (announce not cached) emit a `tracing::warn!` and forward anyway.
+- **Per-interface announce bandwidth caps** — announce rebroadcasts are now rate-limited per interface based on link bitrate and a configurable cap percentage (default 2%), matching Python Interface.py:25-28 and Transport.py:1091-1104. Excess announces are queued (max 16384 per interface) and drained by priority (lowest hops first, then oldest). Locally-originated announces (hops == 0) bypass caps. TCP interfaces use bitrate=0 (no cap), so the subsystem is dormant until LoRa/serial interfaces are added. API: `Transport::register_interface_bitrate()`, `Transport::unregister_interface_announce_cap()`.
+- **32-byte path requests for non-transport nodes** — non-transport nodes now send 32-byte path requests (dest_hash + tag) instead of always sending 48 bytes (which included an unnecessary transport_id), matching Python Transport.py:2541-2557. The handler accepts both formats by extracting the tag from the last 16 bytes.
+- `handle_interface_down()` now cleans up announce cap state for downed interfaces
+- 23 new unit tests across all 4 path system gaps
+- 6 new interop tests: path refresh keeps route alive, idle path expires, path request through Python relay, unknown destination timeout, announce forwarding through transport, burst announces not lost
+- `doc/path-gaps-verification-report.md` — verification report answering 15+ questions with exact code references
+
 ### Changed
 - **Remove 14 unused re-exports from `reticulum-core` root** — `generate_random_hash`, `IfacConfig`, `IfacError`, `ChannelAction`, `Envelope`, `MessageState`, `SendHandle`, `SendMethod`, `SendResult`, `PacketReceipt`, `ReceiptStatus`, `KnownRatchets`, `Ratchet`, `RatchetError` were publicly re-exported from `lib.rs` but never imported by any external crate. These types remain accessible via their module paths (e.g. `reticulum_core::ifac::IfacConfig`).
 - **Restrict buffer type visibility** — `RawChannelReader`, `RawChannelWriter`, `BufferedChannelWriter` changed from `pub` to `pub(crate)` in `link::channel`. No production code uses them yet (Buffer API not integrated — ROADMAP C10). Removed 2 misplaced unit tests from interop test suite that used these types.

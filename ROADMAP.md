@@ -55,7 +55,7 @@
 | Link-State-Machine (Handshake, Proof, RTT, Data) | ✅ Initiator + Responder | 2.727 |
 | Channel/Buffer (Reliable Messaging, Streams) | ✅ Fertig | 3.790 |
 | Node (High-Level API, Builder, Events, LinkManagement) | ✅ Fertig | 5.671 |
-| Transport Layer (Routing, Pfade, Announces, Relay) | ✅ Fertig | 7.925 |
+| Transport Layer (Routing, Pfade, Announces, Relay) | ✅ Fertig | 9.517 |
 | HDLC-Framing (no_std + alloc) | ✅ Fertig | 583 |
 | Constants, Traits, Utilities | ✅ Fertig | 750 |
 | **reticulum-core Gesamt** | | **~29.000** |
@@ -74,7 +74,7 @@
 | reticulum-ffi | 368 | 97 | C-API |
 | reticulum-cli | 2.800 | — | CLI-Tool (lrns) |
 
-**Test-Abdeckung:** ~960 Tests (619 Core-Unit + 19 Doctests + 49 Core-Integration (Proptest + Test-Vektoren) + 28 Std-Lib + 176 Interop gegen rnsd + 1 FFI + CLI)
+**Test-Abdeckung:** ~990 Tests (652 Core-Unit + 19 Doctests + 49 Core-Integration (Proptest + Test-Vektoren) + 28 Std-Lib + 200 Interop gegen rnsd + 1 FFI + CLI)
 
 **Architektur:** Siehe [doc/ARCHITECTURE.md](doc/ARCHITECTURE.md) — no_std/embedded-freundlich, sans-I/O Core (reine Zustandsmaschine), I/O via Action-Rückgabewerte an den Treiber.
 
@@ -222,12 +222,15 @@ link_manager.close(link_id)?;
 - [x] Announce-Tabellenverwaltung
 - [x] Destination-Pfadtabellen
 - [x] Transport Relay (Announce-Rebroadcast, Link-Routing, Datenweiterleitung)
-- [x] LRPROOF-Validierung
+- [x] LRPROOF-Validierung (Ed25519-Signaturprüfung vor Weiterleitung)
 - [x] Auto-Re-Announce auf PATH_REQUEST
+- [x] Pfad-Timestamp-Refresh bei Paket-Weiterleitung (Python Transport.py:990, 1504)
+- [x] 32-Byte Path Requests für Non-Transport-Nodes (Python Transport.py:2541-2557)
+- [x] Per-Interface Announce-Bandbreitenbegrenzung (Queuing, Priority-Dequeue, Holdoff)
 
 **Multi-Hop Link von Non-Transport Nodes** (v0.5.3): `connect()` nutzt jetzt `PathEntry::needs_relay()` für korrekte HEADER_2-Formatierung mit transport_id, und LRPROOF-Pakete werden an lokale Pending-Links zugestellt (Python Transport.py:2054-2073). Interop-Test bestätigt: Link-Aufbau, Timeout-Recovery (expire_path + request_path), und Wiederherstellung.
 
-Kleinere Lücken (nicht blockierend für v1.0): Announce-Expiry-Timer, mehrere Pfade pro Destination, MTU-Signaling für Link-MDU-Verhandlung, TCP-Reconnection bei Verbindungsabbruch (A2), LRPROOF/Receipt-Disambiguierung ohne Receipt-Tabelle (E16).
+Kleinere Lücken (nicht blockierend für v1.0): Announce-Expiry-Timer, mehrere Pfade pro Destination, MTU-Signaling für Link-MDU-Verhandlung, TCP-Reconnection bei Verbindungsabbruch (A2), LRPROOF/Receipt-Disambiguierung ohne Receipt-Tabelle (E16). Announce-Bandbreitenbegrenzung ist implementiert, aber für TCP-Interfaces inaktiv (bitrate=0); wird für zukünftige LoRa/Serial-Interfaces aktiviert.
 
 **Deliverable:** ✅ Vollständiges Routing für direkte und Multi-Hop-Verbindungen
 
@@ -312,7 +315,7 @@ Production-ready: QA, zusätzliche Interfaces, Dokumentation.
 - [ ] Async interface connect path — `spawn_tcp_interface()` connects synchronously (blocking on tokio thread), which is fine at startup but blocks the event loop for runtime hot-plug. Prerequisite for USB and BLE interface support. The channel-based `InterfaceRegistry` already supports dynamic `register()`, only the connect step needs an async variant.
 
 ### Qualitätssicherung
-- [x] Integration-Tests gegen rnsd-Daemon (176 Tests)
+- [x] Integration-Tests gegen rnsd-Daemon (200 Tests)
 - [ ] Performance-Optimierung
 - [ ] Speicher-Profiling mit Valgrind
 - [ ] Fuzzing der Paket-Parser
@@ -376,7 +379,7 @@ Testumgebung:
 └─────────────┘      └─────────────┘
 ```
 
-Automatisierte Test-Suite (176 Interop-Tests in 26 Modulen gegen rnsd):
+Automatisierte Test-Suite (200 Interop-Tests in 27 Modulen gegen rnsd):
 - ✅ TCP-Verbindung zu rnsd
 - ✅ Pakete empfangen und senden
 - ✅ Announce-Erstellung und -Validierung
@@ -398,6 +401,9 @@ Automatisierte Test-Suite (176 Interop-Tests in 26 Modulen gegen rnsd):
 - ✅ Proof-Strategien
 - ✅ Responder Node (Rust als Connection-Responder mit accept_connection API)
 - ✅ Flood/Loop-Prevention (Triangle, Diamond, redundante Pfade)
+- ✅ Pfad-Refresh (aktive Pfade verfallen nicht bei kontinuierlichem Traffic)
+- ✅ 32-Byte Path Requests (Non-Transport-Nodes über Python-Relay)
+- ✅ Announce-Burst-Propagierung (mehrere Announces in Serie)
 - Resource Transfer
 - Error Recovery
 
@@ -473,7 +479,7 @@ Automatisierte Test-Suite (176 Interop-Tests in 26 Modulen gegen rnsd):
 - [ ] Resource Transfer: Dateien übertragen
 - [ ] TCP Server Interface
 - [ ] `lrnsd` Daemon läuft standalone
-- [x] Integration-Tests gegen Python rnsd bestehen (176 Interop-Tests)
+- [x] Integration-Tests gegen Python rnsd bestehen (200 Interop-Tests)
 - [x] no_std-Kompatibilität für reticulum-core
 - [ ] Forward Secrecy via Ratchets — ⚠️ Krypto fertig, Validierung nicht eingebunden
 - [ ] Interface Access Codes (IFAC) — ⚠️ Modul fertig, nicht in Empfangspfad eingebunden
@@ -1007,6 +1013,6 @@ Für spätere Versionen:
 
 ---
 
-*Stand: 17. Februar 2026*
+*Stand: 18. Februar 2026*
 *Projekt: leviculum*
 *Lizenz: MIT*

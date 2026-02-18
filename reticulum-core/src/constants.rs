@@ -163,6 +163,12 @@ pub const ANNOUNCE_RATE_PENALTY_MS: u64 = 0;
 /// Maximum number of random blobs to retain per destination (matches Python MAX_RANDOM_BLOBS)
 pub const MAX_RANDOM_BLOBS: usize = 64;
 
+/// Maximum number of queued announces per interface (Python Interface.py:260)
+pub const MAX_QUEUED_ANNOUNCES_PER_INTERFACE: usize = 16384;
+
+/// Default announce bandwidth cap as percentage of link capacity (Python Interface.py:25)
+pub const DEFAULT_ANNOUNCE_CAP_PERCENT: u32 = 2;
+
 /// Packet cache expiry time (milliseconds)
 pub const PACKET_CACHE_EXPIRY_MS: u64 = 60_000;
 
