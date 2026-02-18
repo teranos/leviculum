@@ -32,16 +32,6 @@ pub(crate) struct InterfaceInfo {
     pub name: String,
 }
 
-/// Incoming channel capacity for TCP interfaces.
-/// Sized to absorb short bursts without backpressure; at MTU=500 this is 16 KB.
-/// Not yet tuned — chosen empirically during initial development.
-pub(crate) const TCP_INCOMING_CAPACITY: usize = 32;
-
-/// Outgoing channel capacity for TCP interfaces.
-/// Smaller than incoming because the event loop drains it synchronously.
-/// Not yet tuned — chosen empirically during initial development.
-pub(crate) const TCP_OUTGOING_CAPACITY: usize = 16;
-
 /// Event loop's handle to a spawned interface task
 pub(crate) struct InterfaceHandle {
     pub info: InterfaceInfo,

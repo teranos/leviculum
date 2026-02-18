@@ -95,6 +95,14 @@ pub struct InterfaceConfig {
     /// Stop bits
     pub stopbits: Option<u8>,
 
+    // Reconnection / buffer tuning
+    /// Channel buffer size for this interface (default: per interface type)
+    pub buffer_size: Option<usize>,
+    /// Reconnect interval in seconds for client interfaces (default: 5)
+    pub reconnect_interval_secs: Option<u64>,
+    /// Maximum reconnect attempts before giving up (default: None = unlimited)
+    pub max_reconnect_tries: Option<u64>,
+
     // RNode specific
     /// LoRa frequency in Hz
     pub frequency: Option<u64>,

@@ -20,7 +20,12 @@ use reticulum_core::transport::InterfaceId;
 use tokio::io::AsyncWriteExt;
 use tokio::sync::mpsc;
 
-use super::{InterfaceHandle, TCP_INCOMING_CAPACITY, TCP_OUTGOING_CAPACITY};
+use super::InterfaceHandle;
+
+/// Default channel buffer size for TCP interfaces.
+/// Used for both incoming and outgoing channels.
+/// Must be large enough to absorb short bursts during reconnection.
+pub(crate) const TCP_DEFAULT_BUFFER_SIZE: usize = 256;
 
 /// Fast non-cryptographic PRNG (xorshift64). Seeded from OsRng once per task.
 struct Xorshift64(u64);
@@ -72,20 +77,22 @@ const READ_BUFFER_MULTIPLIER: usize = 4;
 /// Create channels, spawn the I/O task for an already-connected TCP stream,
 /// and return the resulting `InterfaceHandle`.
 ///
-/// Shared by both the client (after connect) and the server (after accept).
+/// Used by the TCP server accept loop for each incoming connection.
 pub(crate) fn spawn_tcp_interface_from_stream(
     id: InterfaceId,
     name: String,
     stream: tokio::net::TcpStream,
+    buffer_size: usize,
     corrupt_every: Option<u64>,
 ) -> InterfaceHandle {
-    let (incoming_tx, incoming_rx) = mpsc::channel(TCP_INCOMING_CAPACITY);
-    let (outgoing_tx, outgoing_rx) = mpsc::channel(TCP_OUTGOING_CAPACITY);
+    let (incoming_tx, incoming_rx) = mpsc::channel(buffer_size);
+    let (outgoing_tx, outgoing_rx) = mpsc::channel(buffer_size);
 
     let task_name = name.clone();
 
     tokio::spawn(async move {
-        tcp_interface_task(task_name, stream, incoming_tx, outgoing_rx, corrupt_every).await;
+        let _rx =
+            tcp_interface_task(task_name, stream, incoming_tx, outgoing_rx, corrupt_every).await;
     });
 
     InterfaceHandle {
@@ -95,22 +102,21 @@ pub(crate) fn spawn_tcp_interface_from_stream(
     }
 }
 
-/// Spawn a TCP client interface task
+/// Spawn a TCP client interface task (synchronous connect, no reconnect).
 ///
 /// Connects to the given address synchronously (with timeout), then spawns
 /// a tokio task that handles all I/O through channels. Returns an
 /// `InterfaceHandle` for the event loop to use.
 ///
-/// # Arguments
-/// * `id` - Interface ID assigned by the driver
-/// * `name` - Human-readable name for logging
-/// * `addr` - Socket address to connect to (e.g. "127.0.0.1:4242")
-/// * `connect_timeout` - Timeout for the initial connection
+/// Production code uses `spawn_tcp_client_with_reconnect` instead. This
+/// function is retained for tests that need a one-shot, synchronous connect.
+#[cfg(test)]
 pub(crate) fn spawn_tcp_interface<A: ToSocketAddrs>(
     id: InterfaceId,
     name: String,
     addr: A,
     connect_timeout: Duration,
+    buffer_size: usize,
     corrupt_every: Option<u64>,
 ) -> Result<InterfaceHandle, io::Error> {
     let addr = addr
@@ -127,6 +133,7 @@ pub(crate) fn spawn_tcp_interface<A: ToSocketAddrs>(
         id,
         name,
         stream,
+        buffer_size,
         corrupt_every,
     ))
 }
@@ -143,6 +150,7 @@ pub(crate) fn spawn_tcp_server(
     bind_addr: SocketAddr,
     next_id: Arc<AtomicUsize>,
     new_interface_tx: mpsc::Sender<InterfaceHandle>,
+    buffer_size: usize,
     corrupt_every: Option<u64>,
 ) -> Result<(), io::Error> {
     // Bind synchronously so errors propagate to the caller immediately
@@ -162,7 +170,7 @@ pub(crate) fn spawn_tcp_server(
                             let name = format!("tcp_server/{}", peer_addr);
                             stream.set_nodelay(true).ok();
                             let handle = spawn_tcp_interface_from_stream(
-                                id, name.clone(), stream, corrupt_every,
+                                id, name.clone(), stream, buffer_size, corrupt_every,
                             );
                             tracing::info!("Accepted connection: {} ({})", name, id);
                             if new_interface_tx.send(handle).await.is_err() {
@@ -185,21 +193,126 @@ pub(crate) fn spawn_tcp_server(
     Ok(())
 }
 
+/// Spawn a TCP client interface with automatic reconnection.
+///
+/// Creates the channel pair once and spawns a reconnect task that owns them.
+/// The `InterfaceHandle` is returned immediately — the initial connect happens
+/// asynchronously in the background, so `start()` returns without blocking.
+///
+/// During disconnect, the `incoming_tx` stays alive so the driver never sees
+/// `Disconnected`. Outgoing packets buffer in the channel (up to `buffer_size`);
+/// excess packets are dropped with `BufferFull`. On reconnect, buffered packets
+/// are sent on the new stream.
+pub(crate) fn spawn_tcp_client_with_reconnect(
+    id: InterfaceId,
+    name: String,
+    addr: SocketAddr,
+    buffer_size: usize,
+    corrupt_every: Option<u64>,
+    reconnect_interval: Duration,
+    max_reconnect_tries: Option<u64>,
+) -> InterfaceHandle {
+    let (incoming_tx, incoming_rx) = mpsc::channel(buffer_size);
+    let (outgoing_tx, outgoing_rx) = mpsc::channel(buffer_size);
+
+    let task_name = name.clone();
+
+    tokio::spawn(async move {
+        tcp_client_reconnect_task(
+            addr,
+            task_name,
+            incoming_tx,
+            outgoing_rx,
+            corrupt_every,
+            reconnect_interval,
+            max_reconnect_tries,
+        )
+        .await;
+    });
+
+    InterfaceHandle {
+        info: InterfaceInfo { id, name },
+        incoming: incoming_rx,
+        outgoing: outgoing_tx,
+    }
+}
+
+/// Reconnect wrapper for TCP client connections.
+///
+/// Owns the channel endpoints and keeps them alive across reconnection cycles.
+/// The driver never sees `RecvEvent::Disconnected` — only a gap in incoming
+/// packets during downtime.
+async fn tcp_client_reconnect_task(
+    addr: SocketAddr,
+    name: String,
+    incoming_tx: mpsc::Sender<IncomingPacket>,
+    mut outgoing_rx: mpsc::Receiver<OutgoingPacket>,
+    corrupt_every: Option<u64>,
+    reconnect_interval: Duration,
+    max_reconnect_tries: Option<u64>,
+) {
+    let mut attempt = 0u64;
+    loop {
+        match tokio::net::TcpStream::connect(addr).await {
+            Ok(stream) => {
+                stream.set_nodelay(true).ok();
+                attempt = 0;
+                tracing::info!("{}: connected to {}", name, addr);
+                // Packets queued in outgoing_rx during disconnect will be sent on
+                // the new stream. If the channel overflowed (capacity limited),
+                // excess packets were dropped by the event loop (BufferFull).
+                outgoing_rx = tcp_interface_task(
+                    name.clone(),
+                    stream,
+                    incoming_tx.clone(),
+                    outgoing_rx,
+                    corrupt_every,
+                )
+                .await;
+                tracing::warn!("{}: connection lost, will reconnect", name);
+            }
+            Err(e) => {
+                tracing::warn!("{}: connect to {} failed: {}", name, addr, e);
+            }
+        }
+        attempt += 1;
+        if let Some(max) = max_reconnect_tries {
+            if attempt >= max {
+                tracing::error!("{}: max reconnect attempts ({}) reached", name, max);
+                return; // drops incoming_tx → driver sees Disconnected
+            }
+        }
+        // Check if event loop shut down (incoming receiver dropped)
+        if incoming_tx.is_closed() {
+            tracing::debug!("{}: event loop shut down, stopping reconnect", name);
+            return;
+        }
+        tracing::info!(
+            "{}: reconnecting in {}s (attempt {})",
+            name,
+            reconnect_interval.as_secs(),
+            attempt
+        );
+        tokio::time::sleep(reconnect_interval).await;
+    }
+}
+
 /// Interface task owning the TCP stream
 ///
 /// Handles bidirectional I/O:
 /// - Read path: poll_read_ready → try_read → HDLC deframe → incoming_tx.send()
 /// - Write path: outgoing_rx.recv() → HDLC frame → stream.write_all()
 ///
-/// Returns when the connection is lost or channels are dropped, which
-/// causes the incoming sender to drop and signals the event loop.
+/// Returns the `outgoing_rx` when the connection is lost, enabling the
+/// reconnect wrapper to reuse the channel with a new stream. Packets
+/// queued during disconnect are sent on the new connection.
 async fn tcp_interface_task(
     name: String,
     stream: tokio::net::TcpStream,
     incoming_tx: mpsc::Sender<IncomingPacket>,
     mut outgoing_rx: mpsc::Receiver<OutgoingPacket>,
     corrupt_every: Option<u64>,
-) {
+) -> mpsc::Receiver<OutgoingPacket> {
     let (reader, mut writer) = stream.into_split();
 
     let mut deframer = Deframer::new();
@@ -218,7 +331,7 @@ async fn tcp_interface_task(
                             match reader.try_read(&mut read_buf) {
                                 Ok(0) => {
                                     tracing::debug!("TCP interface {} disconnected (EOF)", name);
-                                    return;
+                                    return outgoing_rx;
                                 }
                                 Ok(n) => {
                                     let results = deframer.process(&read_buf[..n]);
@@ -226,7 +339,7 @@ async fn tcp_interface_task(
                                         if let DeframeResult::Frame(data) = r {
                                             if incoming_tx.send(IncomingPacket { data }).await.is_err() {
                                                 // Event loop dropped its receiver
-                                                return;
+                                                return outgoing_rx;
                                             }
                                         }
                                     }
@@ -237,14 +350,14 @@ async fn tcp_interface_task(
                                 }
                                 Err(e) => {
                                     tracing::debug!("TCP interface {} read error: {}", name, e);
-                                    return;
+                                    return outgoing_rx;
                                 }
                             }
                         }
                     }
                     Err(e) => {
                         tracing::debug!("TCP interface {} readability error: {}", name, e);
-                        return;
+                        return outgoing_rx;
                     }
                 }
             }
@@ -265,13 +378,13 @@ async fn tcp_interface_task(
                         }
                         if let Err(e) = writer.write_all(&frame_buf).await {
                             tracing::debug!("TCP interface {} write error: {}", name, e);
-                            return;
+                            return outgoing_rx;
                         }
                     }
                     None => {
                         // Event loop dropped its sender — shut down
                         tracing::debug!("TCP interface {} outgoing channel closed", name);
-                        return;
+                        return outgoing_rx;
                     }
                 }
             }
@@ -291,6 +404,7 @@ mod tests {
             "test".to_string(),
             "127.0.0.1:19999",
             Duration::from_millis(500),
+            16,
             None,
         );
         assert!(result.is_err());
@@ -307,6 +421,7 @@ mod tests {
             "test_tcp".to_string(),
             addr,
             Duration::from_secs(2),
+            16,
             None,
         )
         .unwrap();
@@ -380,7 +495,7 @@ mod tests {
         let bound_addr = std_listener.local_addr().unwrap();
         drop(std_listener); // free the port for spawn_tcp_server
 
-        spawn_tcp_server(bound_addr, next_id.clone(), tx, None).unwrap();
+        spawn_tcp_server(bound_addr, next_id.clone(), tx, 16, None).unwrap();
 
         // Connect a raw TCP client
         let _client = tokio::net::TcpStream::connect(bound_addr).await.unwrap();
@@ -394,5 +509,101 @@ mod tests {
         assert!(handle.info.name.starts_with("tcp_server/"));
         assert_eq!(handle.info.id, InterfaceId(0));
         assert!(!handle.outgoing.is_closed());
+    }
+
+    #[tokio::test]
+    async fn test_tcp_client_reconnects_after_disconnect() {
+        use reticulum_core::framing::hdlc;
+
+        // 1. Start TCP listener on ephemeral port
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+
+        // 2. Spawn reconnecting client with short interval
+        let mut handle = spawn_tcp_client_with_reconnect(
+            InterfaceId(0),
+            "test_reconnect".to_string(),
+            addr,
+            32,
+            None,
+            Duration::from_millis(200),
+            Some(10),
+        );
+
+        // 3. Accept first connection, send an HDLC-framed packet
+        let (mut conn, _peer) = tokio::time::timeout(Duration::from_secs(2), listener.accept())
+            .await
+            .expect("timeout accepting first connection")
+            .unwrap();
+
+        let payload = b"hello-first";
+        let mut frame_buf = Vec::new();
+        hdlc::frame(payload, &mut frame_buf);
+        tokio::io::AsyncWriteExt::write_all(&mut conn, &frame_buf)
+            .await
+            .unwrap();
+
+        // Verify packet arrives on incoming channel
+        let pkt = tokio::time::timeout(Duration::from_secs(2), handle.incoming.recv())
+            .await
+            .expect("timeout waiting for first packet")
+            .expect("channel closed");
+        assert_eq!(pkt.data, payload);
+
+        // 4. Drop the connection (simulate disconnect)
+        drop(conn);
+
+        // 5. Accept the reconnection
+        let (mut conn2, _peer2) = tokio::time::timeout(Duration::from_secs(3), listener.accept())
+            .await
+            .expect("timeout accepting reconnection")
+            .unwrap();
+
+        // 6. Send another framed packet on the new connection
+        let payload2 = b"hello-second";
+        let mut frame_buf2 = Vec::new();
+        hdlc::frame(payload2, &mut frame_buf2);
+        tokio::io::AsyncWriteExt::write_all(&mut conn2, &frame_buf2)
+            .await
+            .unwrap();
+
+        // Verify second packet arrives
+        let pkt2 = tokio::time::timeout(Duration::from_secs(2), handle.incoming.recv())
+            .await
+            .expect("timeout waiting for second packet")
+            .expect("channel closed");
+        assert_eq!(pkt2.data, payload2);
+
+        // 7. Outgoing channel should still be open
+        assert!(!handle.outgoing.is_closed());
+    }
+
+    #[tokio::test]
+    async fn test_tcp_client_gives_up_after_max_retries() {
+        // Use a port that nothing is listening on (bind and immediately drop)
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        drop(listener); // nobody listening
+
+        let mut handle = spawn_tcp_client_with_reconnect(
+            InterfaceId(0),
+            "test_giveup".to_string(),
+            addr,
+            16,
+            None,
+            Duration::from_millis(100),
+            Some(2),
+        );
+
+        // Wait for the reconnect task to give up (2 attempts * 100ms + overhead)
+        let result = tokio::time::timeout(Duration::from_secs(3), handle.incoming.recv()).await;
+
+        // The incoming channel should close (recv returns None) because
+        // the reconnect task dropped incoming_tx after max retries
+        match result {
+            Ok(None) => {} // expected: channel closed
+            Ok(Some(_)) => panic!("should not receive a packet"),
+            Err(_) => panic!("timeout — reconnect task did not give up in time"),
+        }
     }
 }

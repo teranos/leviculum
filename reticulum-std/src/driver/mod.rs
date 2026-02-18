@@ -54,7 +54,7 @@ pub use builder::ReticulumNodeBuilder;
 pub use sender::PacketSender;
 pub use stream::LinkHandle;
 
-use std::net::SocketAddr;
+use std::net::{SocketAddr, ToSocketAddrs};
 use std::sync::atomic::AtomicUsize;
 use std::sync::{Arc, Mutex};
 use std::task::Poll;
@@ -73,7 +73,9 @@ use reticulum_core::{Destination, DestinationHash};
 use crate::clock::SystemClock;
 use crate::config::InterfaceConfig;
 use crate::error::Error;
-use crate::interfaces::tcp::{spawn_tcp_interface, spawn_tcp_server};
+use crate::interfaces::tcp::{
+    spawn_tcp_client_with_reconnect, spawn_tcp_server, TCP_DEFAULT_BUFFER_SIZE,
+};
 use crate::interfaces::{InterfaceHandle, InterfaceRegistry};
 use crate::storage::Storage;
 
@@ -220,29 +222,35 @@ impl ReticulumNode {
                         Error::Config("TCPClientInterface requires target_port".to_string())
                     })?;
 
-                    let addr = format!("{}:{}", target_host, target_port);
+                    let addr_str = format!("{}:{}", target_host, target_port);
+                    let addr: SocketAddr = addr_str
+                        .as_str()
+                        .to_socket_addrs()
+                        .map_err(|e| Error::Config(format!("cannot resolve {}: {}", addr_str, e)))?
+                        .next()
+                        .ok_or_else(|| Error::Config(format!("no addresses for {}", addr_str)))?;
+
                     let iface_name = format!("tcp_client_{}", idx);
                     let id = InterfaceId(idx);
+                    let buffer_size = config.buffer_size.unwrap_or(TCP_DEFAULT_BUFFER_SIZE);
+                    let reconnect_interval =
+                        Duration::from_secs(config.reconnect_interval_secs.unwrap_or(5));
 
                     // NOTE: TCP interfaces don't register a bitrate cap
                     // (bitrate=0 means unlimited). Future LoRa/serial interfaces
                     // should call transport.register_interface_bitrate(id, bitrate)
                     // after registration to enable per-interface announce caps.
-                    match spawn_tcp_interface(
+                    let handle = spawn_tcp_client_with_reconnect(
                         id,
                         iface_name,
-                        &addr as &str,
-                        Duration::from_secs(10),
+                        addr,
+                        buffer_size,
                         self.corrupt_every,
-                    ) {
-                        Ok(handle) => {
-                            tracing::info!("Connected to TCP interface: {}", addr);
-                            registry.register(handle);
-                        }
-                        Err(e) => {
-                            tracing::warn!("Failed to connect to {}: {:?}", addr, e);
-                        }
-                    }
+                        reconnect_interval,
+                        config.max_reconnect_tries,
+                    );
+                    tracing::info!("TCP client interface for {} (reconnect enabled)", addr);
+                    registry.register(handle);
                 }
                 "TCPServerInterface" => {
                     let listen_ip = config.listen_ip.as_deref().unwrap_or("0.0.0.0");
@@ -254,10 +262,12 @@ impl ReticulumNode {
                         .parse()
                         .map_err(|e| Error::Config(format!("invalid listen address: {}", e)))?;
 
+                    let buffer_size = config.buffer_size.unwrap_or(TCP_DEFAULT_BUFFER_SIZE);
                     spawn_tcp_server(
                         addr,
                         next_id.clone(),
                         new_iface_tx.clone(),
+                        buffer_size,
                         self.corrupt_every,
                     )?;
                 }
