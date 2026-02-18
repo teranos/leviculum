@@ -18,6 +18,7 @@ pub mod driver;
 pub mod error;
 pub mod interfaces;
 pub(crate) mod known_destinations;
+pub(crate) mod packet_hashlist;
 pub mod reticulum;
 pub(crate) mod storage;
 

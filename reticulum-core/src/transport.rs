@@ -1199,6 +1199,25 @@ impl<C: Clock, S: Storage> Transport<C, S> {
         &self.clock
     }
 
+    /// Access the packet dedup cache for persistence (driver use).
+    ///
+    /// Returns (hash, timestamp_ms) pairs. The driver saves these on shutdown
+    /// and loads them on startup to prevent reprocessing packets seen before
+    /// a restart.
+    pub fn packet_cache(&self) -> &BTreeMap<[u8; 32], u64> {
+        &self.packet_cache
+    }
+
+    /// Bulk-insert entries into the packet dedup cache (for loading persisted state).
+    ///
+    /// Entries loaded from disk are inserted with their original timestamps,
+    /// so they'll be cleaned up by `clean_packet_cache()` once they expire.
+    pub fn load_packet_cache(&mut self, entries: impl Iterator<Item = ([u8; 32], u64)>) {
+        for (hash, ts) in entries {
+            self.packet_cache.insert(hash, ts);
+        }
+    }
+
     /// Read-only access to the path table (for sans-I/O deadline computation)
     pub(crate) fn path_table(&self) -> &BTreeMap<[u8; TRUNCATED_HASHBYTES], PathEntry> {
         &self.path_table

@@ -600,6 +600,16 @@ impl<R: CryptoRngCore, C: Clock, S: Storage> NodeCore<R, C, S> {
         self.transport.stats().clone()
     }
 
+    /// Access the packet dedup cache for persistence.
+    pub fn packet_cache(&self) -> &BTreeMap<[u8; 32], u64> {
+        self.transport.packet_cache()
+    }
+
+    /// Bulk-load entries into the packet dedup cache (for loading persisted state).
+    pub fn load_packet_cache(&mut self, entries: impl Iterator<Item = ([u8; 32], u64)>) {
+        self.transport.load_packet_cache(entries);
+    }
+
     /// Get the current time in milliseconds from the transport clock
     pub fn now_ms(&self) -> u64 {
         self.transport.clock().now_ms()

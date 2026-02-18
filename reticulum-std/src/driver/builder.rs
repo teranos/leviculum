@@ -13,6 +13,7 @@ use crate::clock::SystemClock;
 use crate::config::{Config, InterfaceConfig, DEFAULT_BITRATE_BPS};
 use crate::error::Error;
 use crate::known_destinations::KnownDestinationsStore;
+use crate::packet_hashlist;
 use crate::storage::Storage;
 
 use super::ReticulumNode;
@@ -215,15 +216,21 @@ impl ReticulumNodeBuilder {
             self.core_builder
         };
 
-        // Load known destinations from disk
+        // Load persistent state before storage is moved into NodeCore
         let known_dests_store = KnownDestinationsStore::load(&storage);
+        let hashlist = packet_hashlist::load_packet_hashlist(&storage);
 
-        // Build NodeCore directly from the core builder
+        // Build NodeCore (consumes storage)
         let mut node_core = core_builder.build(rand_core::OsRng, clock, storage);
 
         // Populate known identities from the loaded store
         for (dest_hash, identity) in known_dests_store.identities() {
             node_core.remember_identity(dest_hash, identity);
+        }
+
+        // Load packet hashlist for dedup continuity across restarts
+        if !hashlist.is_empty() {
+            node_core.load_packet_cache(hashlist.into_iter());
         }
 
         Ok(ReticulumNode::new(
@@ -280,15 +287,21 @@ impl ReticulumNodeBuilder {
             self.core_builder
         };
 
-        // Load known destinations from disk
+        // Load persistent state before storage is moved into NodeCore
         let known_dests_store = KnownDestinationsStore::load(&storage);
+        let hashlist = packet_hashlist::load_packet_hashlist(&storage);
 
-        // Build NodeCore directly from the core builder
+        // Build NodeCore (consumes storage)
         let mut node_core = core_builder.build(rand_core::OsRng, clock, storage);
 
         // Populate known identities from the loaded store
         for (dest_hash, identity) in known_dests_store.identities() {
             node_core.remember_identity(dest_hash, identity);
+        }
+
+        // Load packet hashlist for dedup continuity across restarts
+        if !hashlist.is_empty() {
+            node_core.load_packet_cache(hashlist.into_iter());
         }
 
         Ok(ReticulumNode::new(

@@ -78,6 +78,7 @@ use crate::interfaces::tcp::{
 };
 use crate::interfaces::{InterfaceHandle, InterfaceRegistry};
 use crate::known_destinations::KnownDestinationsStore;
+use crate::packet_hashlist;
 use crate::storage::Storage;
 
 /// Type alias for the concrete NodeCore used by std platforms
@@ -307,30 +308,45 @@ impl ReticulumNode {
                 .map_err(|e| Error::Config(format!("runner panicked: {}", e)))?;
         }
 
-        // Persist known destinations
-        self.save_known_destinations();
+        // Persist state to disk
+        self.save_persistent_state();
 
         tracing::info!("ReticulumNode stopped");
         Ok(())
     }
 
-    /// Persist known destinations to disk (merge core state into store, then save).
-    fn save_known_destinations(&mut self) {
-        let (Some(store), Some(path)) = (&mut self.known_dests_store, &self.storage_path) else {
+    /// Persist all state to disk on shutdown.
+    fn save_persistent_state(&mut self) {
+        let Some(path) = &self.storage_path else {
             return;
         };
+        let storage = match Storage::new(path) {
+            Ok(s) => s,
+            Err(e) => {
+                tracing::warn!("Failed to open storage for saving: {e}");
+                return;
+            }
+        };
+
+        // Save known destinations
+        if let Some(store) = &mut self.known_dests_store {
+            {
+                let core = self.inner.lock().unwrap();
+                store.merge_from_core(core.known_identity_iter());
+            }
+            if let Err(e) = store.save(&storage) {
+                tracing::warn!("Failed to save known destinations: {e}");
+            }
+        }
+
+        // Save packet hashlist
         {
             let core = self.inner.lock().unwrap();
-            store.merge_from_core(core.known_identity_iter());
-        }
-        match Storage::new(path) {
-            Ok(storage) => {
-                if let Err(e) = store.save(&storage) {
-                    tracing::warn!("Failed to save known destinations: {e}");
+            let cache = core.packet_cache();
+            if !cache.is_empty() {
+                if let Err(e) = packet_hashlist::save_packet_hashlist(&storage, cache) {
+                    tracing::warn!("Failed to save packet hashlist: {e}");
                 }
-            }
-            Err(e) => {
-                tracing::warn!("Failed to open storage for saving known destinations: {e}");
             }
         }
     }
