@@ -8,6 +8,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- **Zero-delay core, interface-side collision avoidance** — new ARCHITECTURE.md section documenting the design principle: core forwards packets instantly with no artificial delay; collision avoidance is the interface's responsibility. Fast interfaces (TCP, UDP) transmit immediately; future shared-medium interfaces (LoRa, serial) will apply send-side jitter.
+- **E10: Interface-specific jitter tracking** — added to `doc/OPEN_ISSUES_TRACKER.md`. Documents the two jitter points needed for shared-medium interfaces (matching Python's `PATHFINDER_RW` values) and the implementation approach (send queue with configurable delay in the interface, not the core).
+
+### Changed
+- **Immediate announce rebroadcast** — `handle_announce()` now emits a `Broadcast` action immediately instead of deferring to `poll()` with 0-500ms random jitter. Removes ~600ms per-hop latency from announce propagation through relay chains. Subsequent retransmits use flat `PATHFINDER_G_MS` (5s) intervals without jitter.
+- **Event loop recomputes timer after packet handling** — `next_poll` is now updated after every `handle_packet()` call based on `output.next_deadline_ms`, preventing the loop from sleeping on stale deadlines.
+- **Event loop timer floor removed** — replaced `delta.clamp(250, 1000)` with `debug_assert!(delta > 0)` + `delta.max(1).min(1000)`. The `debug_assert` catches zero-delta bugs in tests; `.max(1)` prevents spin loops in release.
+- **ROADMAP.md rewritten** — removed all LOC counts, test counts, effort estimates, and speculative v1.1 API designs. IFAC and Ratchet moved from "Deferred" to v1.0 Phase 3 (security fundamentals). Resource Transfer moved to v1.1. v1.1 section condensed from ~500 lines to a bullet list.
+
+### Removed
+- `PATHFINDER_RW_MS` constant (500ms jitter window) — no longer used; core is zero-delay
+- `Transport::jitter_ms()` function — deterministic jitter from hash seed, replaced by immediate dispatch
+- `Transport::calculate_retransmit_delay()` function — random delay for first rebroadcast, replaced by immediate dispatch
+- Path request response jitter — responses now use deterministic `PATH_REQUEST_GRACE_MS` (400ms) without added randomness
+
+### Added
 - **TCP client reconnection** — `spawn_tcp_client_with_reconnect()` wraps TCP client connections with automatic reconnection. The wrapper owns the channel endpoints and keeps them alive across reconnection cycles, so the driver never sees `RecvEvent::Disconnected`. Configurable via `reconnect_interval_secs` (default: 5s) and `max_reconnect_tries` (default: unlimited) on `InterfaceConfig`. Initial connect is async (non-blocking `start()`). Packets queued during disconnect are delivered on the new connection; overflow is dropped with a warning.
 - **Two-address selftest** — `lrns selftest` now accepts 1-2 target addresses for multi-daemon topology testing (`lrns selftest addr1 addr2`). Each client connects to its respective daemon, enabling cross-daemon test topologies (A->daemon1->daemon2<-B).
 - **Configurable interface buffer size** — `InterfaceConfig::buffer_size` controls the channel buffer size per interface (default: 256 for TCP). Replaces the hardcoded `TCP_INCOMING_CAPACITY` (32) and `TCP_OUTGOING_CAPACITY` (16) constants with a single per-interface default.

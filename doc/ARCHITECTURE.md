@@ -139,6 +139,23 @@ channels handle retransmission). This makes `try_send()` the natural API:
 - `Err(BufferFull)` — non-fatal, packet dropped (expected on constrained links)
 - `Err(Disconnected)` — interface dead, driver must call `handle_interface_down()`
 
+### Zero-delay core, interface-side collision avoidance
+
+The core processes and forwards packets with zero artificial delay. All collision
+avoidance and send-timing is the responsibility of the interface implementation.
+Fast interfaces (TCP, UDP) transmit immediately. Slow shared-medium interfaces
+(LoRa, serial) apply configurable send-side jitter to prevent synchronized
+rebroadcast storms. This differs from Python Reticulum which applies universal
+jitter in the core regardless of interface type.
+
+When the core emits a `Broadcast` or `SendPacket` action (e.g., an announce
+rebroadcast), the action is dispatched to interfaces instantly. A TCP interface
+calls `try_send()` and the packet goes on the wire within microseconds. A LoRa
+interface receives the same action at the same speed, but holds the packet in a
+send queue and applies a random delay (0-500ms for first rebroadcast, matching
+Python's `PATHFINDER_RW`) before keying the radio. This keeps the sans-I/O core
+interface-agnostic while preserving collision avoidance where it matters.
+
 ### Why `dispatch_actions()` lives in core
 
 Action routing (which interface to send on, broadcast exclusion) is **protocol
@@ -239,7 +256,8 @@ Every branch produces a `TickOutput`. The driver must always do the same four th
    `NodeEvent` to the application (channel, callback, queue — platform-specific).
 
 4. **Update the timer** — read `output.next_deadline_ms` and schedule the next
-   `handle_timeout()` accordingly. Clamp to a reasonable range (e.g., 250ms..1s).
+   `handle_timeout()` accordingly. Cap at 1s maximum but do not add a floor —
+   the core may request sub-millisecond wakeups for urgent forwarding.
 
 ### 4. Handle the receive path
 

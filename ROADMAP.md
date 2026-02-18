@@ -1,13 +1,12 @@
 # Leviculum Roadmap
 
 **Projektziel:** Vollständige Rust-Implementierung des Reticulum Network Stack
-**Zeitrahmen:** 9 Monate (1 Entwickler Vollzeit)
-**Referenz:** Python-Implementierung (Reticulum, ~40.700 LOC)
+**Referenz:** Python-Implementierung (`vendor/Reticulum/`)
 
-| Version | Zeitraum | Fokus |
-|---------|----------|-------|
-| **1.0** | Monat 1-6 | Core-Protokoll, Basis-Interfaces, Datenübertragung |
-| **1.1** | Monat 7-9 | Hardware-Interfaces, C-API, Debian-Paket, Android |
+| Version | Fokus |
+|---------|-------|
+| **1.0** | Core-Protokoll, Sicherheit (IFAC + Ratchet), Basis-Interfaces, Daemon |
+| **1.1** | Resource Transfer, Hardware-Interfaces, C-API, Paketierung |
 
 ---
 
@@ -22,997 +21,328 @@
 | 0.1.0 | Phase 1: Protokoll-Fundament | ✅ |
 | 0.2.0 | Phase 2: Core API & Full Node | ✅ |
 | **0.5.19** | Aktuelle Version (Refactoring Phasen 0–7 abgeschlossen) | 🔶 Aktuell |
-| 0.6.0 | Phase 3: Datenübertragung & Release-Vorbereitung | ⬜ |
+| 0.6.0 | Phase 3: Sicherheit, Persistenz & Release-Vorbereitung | ⬜ |
 | **1.0.0** | Erstes stabiles Release | ⬜ |
-| 1.1.0 | Phase 5-7: Hardware, C-API, Android | ⬜ |
 
 ---
 
 ## Aktueller Stand
 
-**Aktuelle Version: 0.5.19.** Phase 1 (Protokoll-Fundament) und Phase 2 (Core API & Full Node) sind vollständig abgeschlossen. Meilenstein 2.4 (TCP Server / lrnsd-Daemon) ist fertig: `lrnsd` startet als funktionsfähiger Daemon mit TCP-Server-Interface, Config-gesteuertem Interface-Loading, SIGTERM-Handling und konfigurierbarem Log-Level. Zusätzlich wurde ein umfassendes 7-phasiges Code-Refactoring durchgeführt (63 Issues in `doc/BATTLEPLAN.md`), das die gesamte Codebasis bereinigt hat: Cleanup, Test-Infrastruktur, Bug-Fixes, Renames (Connection→Link), strukturelle Auflösung des LinkManagers, Konsolidierung (Receipt-Tracking, Destination-SSOT), und API-Polish (Naming, Visibility, Single-Packet-Verschlüsselung). Nur ein offenes Issue verbleibt: E9 (persistente Speicherung von `known_identities` und `path_table`).
+**Aktuelle Version: 0.5.19.** Phase 1 (Protokoll-Fundament) und Phase 2 (Core API & Full Node) sind vollständig abgeschlossen, inklusive eines 7-phasigen Code-Refactorings (63 Issues in `doc/BATTLEPLAN.md`). Offene Issues: E9 (persistente Speicherung), E10 (Interface-spezifischer Jitter für Shared-Medium-Interfaces).
 
-**Kernfunktionalität:** `NodeCore` (reticulum-core) und `ReticulumNode` (reticulum-std) bieten eine einheitliche async-kompatible API für Destinations, Links, Channels, Single-Packet-Verschlüsselung und Proof-Delivery. Vollständige Interoperabilität mit Python rnsd ist nachgewiesen (176 Interop-Tests). **CLI-Tool `lrns`** existiert mit Subcommands: `status`, `path`, `identity`, `probe`, `interfaces`, `connect`. `identity` und `connect` sind voll implementiert, die anderen sind Gerüste. **Daemon `lrnsd`** läuft als Drop-in-Ersatz für `rnsd` mit TCP-Server-Support, Config-Loading und sauberem Shutdown.
+**Kernfunktionalität:** `NodeCore` (reticulum-core) und `ReticulumNode` (reticulum-std) bieten eine einheitliche async-kompatible API für Destinations, Links, Channels, Single-Packet-Verschlüsselung und Proof-Delivery. Vollständige Interoperabilität mit Python rnsd ist durch umfangreiche Interop-Tests nachgewiesen.
 
-**Sans-I/O-Architektur:** `reticulum-core` ist ein reiner Zustandsautomat. `NodeCore` nimmt Pakete via `handle_packet()` entgegen und gibt `Action`-Werte (`SendPacket`, `Broadcast`) über `TickOutput` zurück. Der Treiber `ReticulumNode` in `reticulum-std` besitzt die Interfaces, liest Pakete, speist sie in den Core, und dispatcht Actions. Interfaces laufen als eigenständige Tokio-Tasks (Channel-Bridge-Architektur). Die Event-Loop nutzt `tokio::select!` — kein Polling. `reticulum-nrf` ist ein Embassy-basiertes Firmware-Crate für den Heltec Mesh Node T114 (nRF52840 + SX1262).
+**CLI-Tool `lrns`** mit Subcommands: `status`, `path`, `identity`, `probe`, `interfaces`, `connect`, `selftest`. Davon voll implementiert: `identity`, `connect`, `selftest` (Zwei-Adress-Modus für Multi-Daemon-Topologien). Die anderen sind Gerüste.
 
-**Ratchet & IFAC:** Kryptographische Module implementiert und unit-getestet. IFAC ist noch nicht in den Paketempfangspfad eingebunden. Ratchet-Validierung ist bei Announces und Link-Establishment noch nicht aktiv.
+**Daemon `lrnsd`** läuft als Drop-in-Ersatz für `rnsd` mit TCP-Server/Client-Support, TCP-Reconnection, Config-Loading und sauberem Shutdown.
 
-**Transport Layer vollständig (~2.250 LOC Produktion):** Announce-Rebroadcast, PATH_REQUEST/PATH_RESPONSE, Reverse-Path-Routing, Link-Tabellenverwaltung, Hop-Count-Validation, LRPROOF-Validierung, Path Recovery, Announce Rate Limiting. Multi-Hop-Relay funktioniert vollständig, inklusive gemischter Rust+Python-Ketten.
+**Sans-I/O-Architektur:** `reticulum-core` ist ein reiner Zustandsautomat — keine I/O, kein Jitter, keine künstlichen Verzögerungen. Der Core verarbeitet und leitet Pakete sofort weiter. Kollisionsvermeidung und Send-Timing liegen in der Verantwortung der Interface-Implementierung (siehe `doc/ARCHITECTURE.md`, Abschnitt "Zero-delay core"). `reticulum-nrf` ist ein Embassy-basiertes Firmware-Crate für den Heltec Mesh Node T114 (nRF52840 + SX1262).
 
-**Single-Packet-Verschlüsselung (E8):** `send_single_packet()` verschlüsselt automatisch mit der Remote-Identity aus `known_identities` (gelernt aus Announces). Empfangsseitig wird mit der lokalen Destination entschlüsselt. Proof-Delivery-Chain vollständig (PROVE_ALL, PROVE_APP, PROVE_NONE).
+**Transport Layer vollständig:** Announce-Rebroadcast (sofort, ohne Jitter), PATH_REQUEST/PATH_RESPONSE, Reverse-Path-Routing, Link-Tabellenverwaltung, Hop-Count-Validation, LRPROOF-Validierung, Path Recovery, Announce Rate Limiting, Per-Interface Announce-Bandbreitenbegrenzung. Multi-Hop-Relay funktioniert vollständig, inklusive gemischter Rust+Python-Ketten.
 
-| Komponente | Status | LOC (gesamt) |
-|------------|--------|-----|
-| Kryptographie (AES, SHA, HMAC, HKDF, Token) | ✅ Fertig | 1.465 |
-| Identity-Management (Schlüsselpaare, Signaturen, Encrypt/Decrypt) | ✅ Fertig | 1.239 |
-| Packet-Strukturen (alle Typen, Header 1/2) | ✅ Fertig | 619 |
-| Announce (Erstellung, Validierung, Signaturprüfung) | ✅ Fertig | 777 |
-| Destination (Hashing, Typen, Ratchets, Encrypt/Decrypt) | ✅ Fertig | 1.536 |
-| Receipt (Delivery-Tracking, Proof-Validierung) | ✅ Fertig | 373 |
-| Ratchet (Forward Secrecy) | ⚠️ Krypto fertig, Validierung nicht eingebunden | 651 |
-| IFAC (Interface Access Codes) | ⚠️ Modul fertig, nicht in Empfangspfad eingebunden | 484 |
-| Link-State-Machine (Handshake, Proof, RTT, Data) | ✅ Initiator + Responder | 2.727 |
-| Channel/Buffer (Reliable Messaging, Streams) | ✅ Fertig | 3.790 |
-| Node (High-Level API, Builder, Events, LinkManagement) | ✅ Fertig | 5.671 |
-| Transport Layer (Routing, Pfade, Announces, Relay) | ✅ Fertig | 9.517 |
-| HDLC-Framing (no_std + alloc) | ✅ Fertig | 583 |
-| Constants, Traits, Utilities | ✅ Fertig | 750 |
-| **reticulum-core Gesamt** | | **~29.000** |
-| reticulum-std (Driver, TCP, Storage) | ✅ Fertig | 2.450 |
-| reticulum-ffi (C-API) | ✅ Grundfunktionen | 368 |
-| reticulum-cli (lrns) | 🔶 Teilweise | 2.800 |
-| Tests (alle Crates) | | ~38.500 |
-| **Gesamt** | | **~73.000** |
+**Single-Packet-Verschlüsselung:** `send_single_packet()` verschlüsselt automatisch mit der Remote-Identity aus `known_identities`. Proof-Delivery-Chain vollständig (PROVE_ALL, PROVE_APP, PROVE_NONE).
 
-**Crate-Aufteilung:**
-| Crate | src LOC | test LOC | Beschreibung |
-|-------|---------|----------|-------------|
-| reticulum-core | 28.993 | 1.536 | Protokoll-Logik (no_std), inkl. ~16K inline tests |
-| reticulum-std | 2.450 | 19.366 | Plattform-Glue (tokio, TCP), inkl. 176 Interop-Tests |
-| reticulum-nrf | ~400 | — | Embedded-Firmware (Embassy, nRF52840, USB CDC-ACM) |
-| reticulum-ffi | 368 | 97 | C-API |
-| reticulum-cli | 2.800 | — | CLI-Tool (lrns) |
-
-**Test-Abdeckung:** ~990 Tests (652 Core-Unit + 19 Doctests + 49 Core-Integration (Proptest + Test-Vektoren) + 28 Std-Lib + 200 Interop gegen rnsd + 1 FFI + CLI)
+| Komponente | Status |
+|------------|--------|
+| Kryptographie (AES, SHA, HMAC, HKDF, Token) | ✅ Fertig |
+| Identity-Management (Schlüsselpaare, Signaturen, Encrypt/Decrypt) | ✅ Fertig |
+| Packet-Strukturen (alle Typen, Header 1/2) | ✅ Fertig |
+| Announce (Erstellung, Validierung, Signaturprüfung) | ✅ Fertig |
+| Destination (Hashing, Typen, Ratchets, Encrypt/Decrypt) | ✅ Fertig |
+| Receipt (Delivery-Tracking, Proof-Validierung) | ✅ Fertig |
+| Ratchet (Forward Secrecy) | ⚠️ Krypto fertig, Validierung nicht eingebunden |
+| IFAC (Interface Access Codes) | ⚠️ Modul fertig, nicht in Empfangspfad eingebunden |
+| Link-State-Machine (Handshake, Proof, RTT, Data) | ✅ Initiator + Responder |
+| Channel/Buffer (Reliable Messaging, Streams) | ✅ Fertig |
+| Node (High-Level API, Builder, Events, LinkManagement) | ✅ Fertig |
+| Transport Layer (Routing, Pfade, Announces, Relay) | ✅ Fertig |
+| HDLC-Framing (no_std + alloc) | ✅ Fertig |
+| reticulum-std (Driver, TCP, Storage) | ✅ Fertig |
+| reticulum-ffi (C-API) | ✅ Grundfunktionen |
+| reticulum-cli (lrns, lrnsd) | 🔶 Teilweise |
 
 **Architektur:** Siehe [doc/ARCHITECTURE.md](doc/ARCHITECTURE.md) — no_std/embedded-freundlich, sans-I/O Core (reine Zustandsmaschine), I/O via Action-Rückgabewerte an den Treiber.
 
 ---
 
-## Phase 1: Protokoll-Fundament (Monat 1-2)
+## Phase 1: Protokoll-Fundament ✅
 
 ### Ziel
 Vollständige Interoperabilität auf Paket-Ebene mit der Python-Referenzimplementierung.
 
-### Meilenstein 1.1: Krypto-Validierung (Woche 1-2) ✅
-- [x] Vollständige Test-Vektoren aus Python generieren (826 LOC)
+### Meilenstein 1.1: Krypto-Validierung ✅
+- [x] Vollständige Test-Vektoren aus Python generieren
 - [x] Identity-Verschlüsselung mit ephemeren Schlüsseln
 - [x] Ratchet-Schlüsselverwaltung für Forward Secrecy
 - [x] Cross-Implementation-Tests: Rust verschlüsselt ↔ Python entschlüsselt
-- [x] Property-Based Testing mit proptest (307 LOC)
+- [x] Property-Based Testing mit proptest
 
-**Deliverable:** ✅ Kryptographie vollständig kompatibel mit Python Reticulum
-
-### Meilenstein 1.2: Paket-Serialisierung (Woche 3-4) ✅
+### Meilenstein 1.2: Paket-Serialisierung ✅
 - [x] Packet pack/unpack für alle Pakettypen (DATA, ANNOUNCE, LINKREQUEST, PROOF)
 - [x] Alle Kontexttypen (RESOURCE, RESOURCE_ADV, CACHE_REQUEST, etc.)
 - [x] Header-Formate (HEADER_1, HEADER_2 für Transport)
 - [x] Paket-Hash-Berechnung
 
-**Deliverable:** ✅ Rust kann Pakete von Python parsen und umgekehrt
-
-### Meilenstein 1.3: Identity & Destination (Woche 5-6) ✅
+### Meilenstein 1.3: Identity & Destination ✅
 - [x] Identity-Serialisierung (Speichern/Laden)
 - [x] Destination-Hash-Berechnung
 - [x] Destination-Typen (SINGLE, GROUP, PLAIN, LINK)
 - [x] Announce-Pakete erstellen und validieren
 - [x] Proof-Strategien (PROVE_NONE, PROVE_APP, PROVE_ALL)
 
-**Deliverable:** ✅ Announcements funktionieren bidirektional
-
-### Meilenstein 1.4: Link-Establishment (Woche 7-8)
-- [x] 3-Paket-Handshake implementieren (Initiator-Seite):
-  - Link Request (ephemere X25519-Pubkey)
-  - Link Proof Verifikation (signierte Challenge)
-  - RTT-Paket (finalisiert Link auf Gegenseite)
+### Meilenstein 1.4: Link-Establishment ✅
+- [x] 3-Paket-Handshake (Initiator + Responder)
 - [x] ECDH-Schlüsselaustausch für Link-Keys
 - [x] Link-Verschlüsselung/Entschlüsselung (AES-256-CBC + Fernet-kompatibel)
-- [x] Link-State-Machine (Initiator): Pending → Handshake → Active
+- [x] Link-State-Machine: Pending → Handshake → Active
 - [x] Bidirektionale verschlüsselte Datenkommunikation mit Python rnsd
-- [x] Link-Responder-Seite (eingehende Links akzeptieren)
-- [x] Keepalive-Mechanismus
-- [x] Link-Teardown (ordnungsgemäßes Schließen)
-
-**Deliverable:** ✅ Rust kann Link zu Python rnsd aufbauen und verschlüsselt kommunizieren
+- [x] Keepalive-Mechanismus und Link-Teardown
 
 ---
 
-## Phase 2: Core API & Full Node (Monat 3-4)
+## Phase 2: Core API & Full Node ✅
 
 ### Ziel
 Vollständige API für Destinations und Links. Leviculum kann sowohl Client als auch Server sein.
 
-### Meilenstein 2.1: Destination API (Woche 9) ✅
-
-- [x] `generate_random_hash()` in announce.rs (5 random + 5 timestamp bytes)
+### Meilenstein 2.1: Destination API ✅
 - [x] `Destination::announce()` → erstellt signiertes Announce-Paket
-- [x] `Destination::announce_with_app_data(data)` → mit Application Data
-- [x] Hash-Berechnungsmethoden öffentlich machen (für Debugging/Tests)
-- [x] `ReceivedAnnounce` und Test-`ParsedAnnounce` unifizieren
+- [x] `generate_random_hash()` (5 random + 5 timestamp bytes)
+- [x] Hash-Berechnungsmethoden öffentlich
 
-```rust
-// Implementierte API:
-let dest = Destination::new(identity, Direction::In, DestinationType::Single, "app", &["echo"]);
-let announce_packet = dest.announce(Some(b"app-data"), &mut rng, now_ms)?;
-transport.send_announce(announce_packet)?;
-```
-
-**Deliverable:** ✅ Announces können über die Library erstellt werden
-
-### Meilenstein 2.2: Link-Responder (Woche 10-11) ✅
-
-- [x] `Destination::set_link_established_callback(fn)` (via LinkManager Events)
-- [x] Link-Request-Verarbeitung in Transport (`handle_link_request()`)
+### Meilenstein 2.2: Link-Responder ✅
+- [x] Link-Request-Verarbeitung in Transport
 - [x] Proof-Generierung (signierte Challenge)
-- [x] Link-Aktivierung nach RTT-Empfang
-- [x] Incoming Link → Event an Destination (via `drain_events()`)
+- [x] Incoming Link → Event an Destination
 
-```rust
-// Implementierte API (via LinkManager):
-link_manager.register_destination(dest_hash, &identity);
-// Bei eingehendem Link-Request:
-let events = link_manager.drain_events();
-// LinkEvent::LinkEstablished { link_id, ... }
-```
+### Meilenstein 2.3: High-Level Link API ✅
+- [x] `initiate()` / `send()` / `close()` API
+- [x] Keepalive (Initiator 0xFF, Responder Echo 0xFE, RTT-basiert)
+- [x] Link-Stale-Erkennung und automatisches Schließen
 
-**Deliverable:** ✅ Leviculum kann eingehende Links akzeptieren
+### Meilenstein 2.4: TCP Server & Daemon ✅
+- [x] TCP Server Interface (`spawn_tcp_server()`)
+- [x] TCP Client Reconnection (`spawn_tcp_client_with_reconnect()`)
+- [x] `lrnsd` Daemon (Config-Loading, Interfaces, Graceful Shutdown, Log-Levels)
+- [x] Transport-Tracing (`tracing::trace!` in Hot-Path-Funktionen)
 
-### Meilenstein 2.3: High-Level Link API (Woche 12) ✅
-
-- [x] `LinkManager::initiate()` / `initiate_with_path()` für Link-Aufbau
-- [x] Automatisches Warten auf Announce (mit Timeout via `poll()`)
-- [x] Automatisches Proof-Handling und RTT
-- [x] Link-State-Callbacks via Events (`drain_events()`)
-- [x] Keepalive-Mechanismus (Initiator 0xFF, Responder Echo 0xFE, RTT-basiertes Intervall)
-- [x] Link-Stale-Erkennung und automatisches Schließen nach Timeout
-- [x] Link-Teardown (ordnungsgemäßes Schließen via `close()` mit LINKCLOSE-Paket)
-
-Alle bekannten Bugs behoben: Link-adressierte Pakete (C8), Channel-ACKs (C9), Close-API (D12), Stale→Active Recovery, Channel-Proof-Generierung. Proof-Strategy und Signing-Key auf dem Link-Objekt konsolidiert.
-
-```rust
-// Implementierte API (via LinkManager):
-let link_id = link_manager.initiate(dest_hash, &identity)?;
-link_manager.send(link_id, b"Hello")?;
-let events = link_manager.drain_events();
-// LinkEvent::DataReceived { link_id, data }
-link_manager.close(link_id)?;
-```
-
-**Deliverable:** ✅ High-Level Link-API vollständig (inkl. Keepalive und Stale-Erkennung)
-
-### Bugfix: Keepalive-Echo von Python funktioniert nicht ✅
-
-- [x] Python-Daemon echoed keine Keepalive-Pakete von Rust-Initiator
-- [x] Ursache: Keepalive-Pakete werden in Python NICHT verschlüsselt, Rust hat sie aber verschlüsselt
-- [x] Test `test_rust_initiator_sends_keepalive_python_echoes` besteht
-- [x] `#[ignore]` Attribut entfernt
-
-### Meilenstein 2.4: TCP Server & Daemon-Grundlage (Woche 13-14) ✅
-
-- [x] TCP Server Interface (accept incoming connections) — `spawn_tcp_server()` mit Channel-basierter dynamischer Interface-Registrierung
-- [x] `lrnsd` Grundgerüst (Config laden, Interfaces starten, Event-Loop) — Config-gesteuertes Interface-Loading (TCPClientInterface + TCPServerInterface)
-- [x] Graceful Shutdown — SIGINT + SIGTERM via `tokio::signal::unix`
-- [x] Logging-Integration (tracing) — `tracing` in reticulum-core (no_std), RUST_LOG/env-filter in CLI (v0.5.8), `-v`/`-q` Count-basierte Level-Steuerung
-- [x] Transport-Tracing — `tracing::trace!` in 6 Hot-Path-Funktionen (process_incoming, handle_announce, handle_link_request, handle_proof, handle_data, forward_packet)
-
-**Deliverable:** ✅ Minimaler funktionierender Daemon (`lrnsd` als Drop-in für `rnsd`)
-
-### Meilenstein 2.5: Transport Layer Vervollständigung (Woche 15-16) ✅
-
-3.676 LOC — vollständige Transport-Implementierung:
-
-- [x] Pfad-Tabellenverwaltung (BTreeMap in core Transport)
-- [x] Announce-Verarbeitung und Rebroadcast
+### Meilenstein 2.5: Transport Layer ✅
+- [x] Announce-Rebroadcast (sofort, ohne Jitter — Core ist zero-delay)
 - [x] PATH_REQUEST/PATH_RESPONSE Handling
-- [x] Paket-Weiterleitung (forward_packet)
-- [x] Duplikaterkennung (packet_cache mit Expiry)
-- [x] Reverse-Path-Tracking (proof routing via reverse table, hop validation, announce replay protection)
-- [x] Rate Limiting (Announce-Rate-Limiting)
-- [x] Link-Tabellenverwaltung
-- [x] Announce-Tabellenverwaltung
-- [x] Destination-Pfadtabellen
-- [x] Transport Relay (Announce-Rebroadcast, Link-Routing, Datenweiterleitung)
-- [x] LRPROOF-Validierung (Ed25519-Signaturprüfung vor Weiterleitung)
-- [x] Auto-Re-Announce auf PATH_REQUEST
-- [x] Pfad-Timestamp-Refresh bei Paket-Weiterleitung (Python Transport.py:990, 1504)
-- [x] 32-Byte Path Requests für Non-Transport-Nodes (Python Transport.py:2541-2557)
-- [x] Per-Interface Announce-Bandbreitenbegrenzung (Queuing, Priority-Dequeue, Holdoff)
+- [x] Paket-Weiterleitung mit Duplikaterkennung
+- [x] Reverse-Path-Tracking (Proof-Routing)
+- [x] Rate Limiting und Per-Interface Announce-Bandbreitenbegrenzung
+- [x] LRPROOF-Validierung (Ed25519-Signaturprüfung)
+- [x] 32-Byte Path Requests für Non-Transport-Nodes
+- [x] Multi-Hop Link von Non-Transport Nodes
 
-**Multi-Hop Link von Non-Transport Nodes** (v0.5.3): `connect()` nutzt jetzt `PathEntry::needs_relay()` für korrekte HEADER_2-Formatierung mit transport_id, und LRPROOF-Pakete werden an lokale Pending-Links zugestellt (Python Transport.py:2054-2073). Interop-Test bestätigt: Link-Aufbau, Timeout-Recovery (expire_path + request_path), und Wiederherstellung.
+Kleinere Lücken (nicht blockierend für v1.0): Announce-Expiry-Timer, mehrere Pfade pro Destination, MTU-Signaling für Link-MDU-Verhandlung. Announce-Bandbreitenbegrenzung ist implementiert, aber für TCP-Interfaces inaktiv (bitrate=0); wird für zukünftige LoRa/Serial-Interfaces aktiviert (siehe E10 in `doc/OPEN_ISSUES_TRACKER.md`).
 
-Kleinere Lücken (nicht blockierend für v1.0): Announce-Expiry-Timer, mehrere Pfade pro Destination, MTU-Signaling für Link-MDU-Verhandlung, LRPROOF/Receipt-Disambiguierung ohne Receipt-Tabelle (E16). Announce-Bandbreitenbegrenzung ist implementiert, aber für TCP-Interfaces inaktiv (bitrate=0); wird für zukünftige LoRa/Serial-Interfaces aktiviert.
+### Bekannte Bugs und Lücken
 
-**Deliverable:** ✅ Vollständiges Routing für direkte und Multi-Hop-Verbindungen
-
-### Bekannte Bugs und Lücken (Gap-Analyse Feb 2026)
-
-Die folgende Liste wurde durch eine systematische 5-Runden-Lückenanalyse (Startup → Announce → Link → Data → Lifecycle) identifiziert.
-
-#### Bugs
-
-| ID | Schwere | Beschreibung | Betroffene Datei |
-|----|---------|-------------|------------------|
-| C8 | ✅ Behoben (v0.5.5) | `Transport::handle_data()` verwirft Link-adressierte Data-Pakete auf Non-Transport-Nodes still — behoben durch Link-adressierte Paket-Zustellung + Proof-Routing-Erweiterung. | `transport.rs` |
-| C9 | ✅ Behoben (v0.5.5) | `Channel::mark_delivered()` wird in Produktion nie aufgerufen — behoben durch vollständige Proof-Delivery-Chain (Receiver-Proof-Generierung, Sender-Receipt-Registrierung, mark_delivered-Aufruf). | `link/manager.rs`, `node/mod.rs` |
-| D11 | ✅ Behoben | `handle_interface_down()` räumt jetzt Pfade, Link-Tabelle und Reverse-Tabelle auf. Links auf toten Interfaces werden per Keepalive-Timeout geschlossen. LinkManager aufgelöst (Phase 5). | `node/mod.rs` |
-| D13 | ✅ Behoben | `close_link()` entfernt Links aus der BTreeMap. Stale- und Timeout-Links werden ebenfalls korrekt entfernt. | `node/link_management.rs` |
-
-#### Fehlende Integrationen
+#### Bugs (alle behoben)
 
 | ID | Beschreibung | Status |
 |----|-------------|--------|
-| B3 | IFAC-Modul existiert, ist aber nicht in den Paketempfangspfad eingebunden | ⚠️ Modul fertig |
-| B4 | Ratchet-Krypto funktioniert, aber Validierung bei Announces/Links nicht aktiv | ⚠️ Krypto fertig |
-| C10 | Buffer/Stream-System existiert, ist aber nicht in LinkHandle integriert | ⚠️ Code fertig |
-| D12 | `NodeCore::close_link()` über `ReticulumNode` exponiert | ✅ Behoben |
+| C8 | Link-adressierte Data-Pakete auf Non-Transport-Nodes verworfen | ✅ Behoben (v0.5.5) |
+| C9 | `Channel::mark_delivered()` nie aufgerufen in Produktion | ✅ Behoben (v0.5.5) |
+| D11 | `handle_interface_down()` räumt jetzt Pfade, Links und Reverse-Tabelle auf | ✅ Behoben |
+| D13 | `close_link()` entfernt Links korrekt aus der BTreeMap | ✅ Behoben |
+
+#### Fehlende Integrationen (v1.0-Blocker)
+
+| ID | Beschreibung | Status |
+|----|-------------|--------|
+| B3 | IFAC-Modul existiert, nicht in Paketempfangspfad eingebunden | ⚠️ Modul fertig |
+| B4 | Ratchet-Krypto funktioniert, Validierung bei Announces/Links nicht aktiv | ⚠️ Krypto fertig |
+| C10 | Buffer/Stream-System existiert, nicht in LinkHandle integriert | ⚠️ Code fertig |
 
 #### Fehlende Features
 
-| ID | Beschreibung |
-|----|-------------|
-| A2 | ✅ Behoben — TCP-Client-Reconnection mit konfigurierbarem Buffer, Intervall und Max-Retries |
-| E9 | Persistente Speicherung für known_identities und path_table (siehe `doc/OPEN_ISSUES_TRACKER.md`) |
+| ID | Beschreibung | Status |
+|----|-------------|--------|
+| A2 | TCP-Client-Reconnection | ✅ Behoben |
+| E9 | Persistente Speicherung für known_identities und path_table | ⬜ Offen |
+| E10 | Interface-spezifischer Send-Side-Jitter für Shared-Medium-Interfaces | ⬜ Offen (v1.1, für LoRa/Serial) |
 
 ---
 
-## Phase 3: Datenübertragung & Release-Vorbereitung (Monat 5-6)
+## Phase 3: Sicherheit, Persistenz & Release-Vorbereitung
 
 ### Ziel
-Zuverlässiger Dateitransfer zwischen Rust und Python. Release-Qualität erreichen.
+Sicherheitsfeatures verdrahten, Daemon-Zustand persistieren, Release-Qualität erreichen.
 
-### Meilenstein 3.1: Resource Transfer (Woche 17-19)
-- [ ] Resource-Segmentierung
-- [ ] Advertisement-Protokoll
-- [ ] Sliding-Window-Management (2-75 Pakete)
-- [ ] Bandbreitenanpassung
-- [ ] Kompression (bz2)
-- [ ] Hashmap-Berechnung
-- [ ] Fortschritts-Callbacks
-- [ ] Request/Response-Pattern (benötigt für Resource Advertisement)
+### Meilenstein 3.1: Persistente Speicherung (E9)
+- [ ] `known_identities` über Storage-Trait persistieren (laden bei Start, speichern bei Insert)
+- [ ] `path_table` persistieren (laden bei Start, speichern bei Update)
+- [ ] Interop-Test: Rust-Node neustarten, zuvor bekannte Destinations ohne Re-Announce erreichbar
 
-**Deliverable:** Dateitransfer zwischen Rust und Python
+### Meilenstein 3.2: IFAC-Integration (B3)
+- [ ] IFAC in den Paketempfangspfad einbinden (Validierung eingehender Pakete)
+- [ ] IFAC in den Sendevorgang einbinden (Tags an ausgehende Pakete)
+- [ ] Config-Option für IFAC pro Interface
+- [ ] Interop-Test: IFAC-gesicherte Kommunikation zwischen Rust und Python
 
-### Meilenstein 3.2: Channels & Buffer (Woche 20) ⚠️
-- [x] Channel-Abstraktion für zuverlässige Streams
-- [x] Message Envelopes
-- [x] StreamDataMessage (0xff00) für binäre Stream-Übertragung
-- [x] Buffer-System (RawChannelReader, RawChannelWriter, BufferedChannelWriter)
-- [x] BZ2-Kompression für Stream-Daten
+### Meilenstein 3.3: Ratchet-Validierung (B4)
+- [ ] Ratchet-Validierung bei Announce-Empfang aktivieren
+- [ ] Ratchet-Austausch bei Link-Establishment aktivieren
+- [ ] Forward-Secrecy-Rotation im laufenden Betrieb
+- [ ] Interop-Test: Ratchet-geschützte Announces zwischen Rust und Python
 
-**Deliverable:** ⚠️ Channel-Envelope funktioniert inkl. mark_delivered(), Retransmission, AIMD-Congestion-Control und Smoothed-RTT (RFC 6298). Buffer/Stream-Layer nicht in LinkHandle integriert
+### Meilenstein 3.4: UDP Interface
+- [ ] UDP-Interface implementieren (reticulum-std)
+- [ ] Config-Option für UDP-Interfaces in `lrnsd`
+- [ ] Interop-Test: Rust ↔ Python über UDP
 
----
-
-## Phase 3b: Release-Vorbereitung
-
-### Ziel
-Production-ready: QA, zusätzliche Interfaces, Dokumentation.
+### Meilenstein 3.5: Buffer/Stream-Integration (C10)
+- [ ] Buffer/Stream-Layer in LinkHandle integrieren
+- [ ] Kompression (BZ2) über Links nutzbar
+- [ ] Interop-Test: Stream-Daten zwischen Rust und Python
 
 ### `lrns` CLI
-- [ ] `lrns status` - Status-Anzeige
-- [ ] `lrns path` - Pfad-Lookup
-- [ ] `lrns probe` - Konnektivitätstest
-- [x] `lrns identity` - Identity-Management
-- [x] `lrns connect` - Interaktive Session (Announce-Discovery, Link-Aufbau/-Akzeptanz, bidirektionaler Datenaustausch, Single-Packet-Targeting via `/target`/`/untarget`)
-- [x] `lrns selftest` - Zwei-Adress-Modus für Multi-Daemon-Topologien (`lrns selftest addr1 addr2`)
-- [ ] `lrns interfaces` - Interface-Übersicht
-- [ ] `lrns cp` - Dateitransfer (benötigt Resource Transfer aus Phase 3)
-- [x] `lrnsd` - Daemon (TCP Server, Config-Loading, SIGTERM, Log-Levels) ✅
-
-### Zusätzliche Interfaces
-- [ ] UDP Interface
-- [ ] LocalInterface (IPC)
-- [ ] Serial Interface
-- [x] Async interface connect path — TCP-Client-Interfaces verbinden jetzt asynchron via `spawn_tcp_client_with_reconnect()`. Die initiale Verbindung blockiert nicht mehr den Event-Loop. Voraussetzung für USB- und BLE-Interface-Support ist damit erfüllt.
+- [ ] `lrns status` — Status-Anzeige
+- [ ] `lrns path` — Pfad-Lookup
+- [ ] `lrns probe` — Konnektivitätstest
+- [x] `lrns identity` — Identity-Management ✅
+- [x] `lrns connect` — Interaktive Session ✅
+- [x] `lrns selftest` — Zwei-Adress-Modus für Multi-Daemon-Topologien ✅
+- [ ] `lrns interfaces` — Interface-Übersicht
+- [x] `lrnsd` — Daemon ✅
 
 ### Qualitätssicherung
-- [x] Integration-Tests gegen rnsd-Daemon (200 Tests)
-- [ ] Performance-Optimierung
-- [ ] Speicher-Profiling mit Valgrind
+- [x] Interop-Tests gegen rnsd-Daemon ✅
 - [ ] Fuzzing der Paket-Parser
 - [ ] Dokumentation vervollständigen
-- [x] CI/CD-Pipeline mit no_std-Checks
-- [x] `LinkId` Newtype (Typ-Sicherheit statt `[u8; 16]` Alias)
-- [x] `DestinationHash` Newtype (analog zu `LinkId`, verhindert Verwechslung von Link-IDs und Destination-Hashes)
-- [x] `LinkId::Deref` entfernen (nach `DestinationHash`-Migration, für vollständige Typ-Sicherheit)
-- [x] Magic Numbers in `link/manager.rs` durch benannte Konstanten ersetzen (`MTU`, `MODE_AES256_CBC`)
+- [x] CI/CD-Pipeline mit no_std-Checks ✅
 
-**Deliverable:** Version 1.0 Release
+### Kritischer Pfad bis v1.0
 
----
+```
+┌─────────────────────┐
+│ 3.1 Persistenz (E9) │ ⬜ — Daemon-Neustart ohne State-Verlust
+└─────────┬───────────┘
+          ▼
+┌─────────────────────┐
+│ 3.2 IFAC (B3)       │ ⬜ — Interface-Authentifizierung
+│ 3.3 Ratchet (B4)    │ ⬜ — Forward Secrecy
+└─────────┬───────────┘
+          ▼
+┌─────────────────────┐
+│ 3.4 UDP Interface    │ ⬜ — Wichtigstes fehlendes Interface
+│ 3.5 Buffer (C10)     │ ⬜ — Stream-API vervollständigen
+└─────────┬───────────┘
+          ▼
+┌─────────────────────┐
+│ Release QA           │ ⬜ — Fuzzing, Docs, CLI-Subcommands
+│ Version 1.0          │
+└─────────────────────┘
+```
 
-## Deferred (Version 1.1+)
+### Definition of Done für Version 1.0
 
-Diese Features sind nice-to-have, aber nicht MVP-kritisch:
+**Must-Have:**
+- [x] `Destination::announce()` API funktioniert
+- [x] Link-Responder: eingehende Links akzeptieren
+- [x] High-Level Link API: `initiate()`, `send()`, `close()`
+- [x] Transport Layer: Routing, Announce-Relay, Multi-Hop
+- [x] Channel-System: Reliable Messaging
+- [x] TCP Server + Client Interface (mit Reconnection)
+- [x] `lrnsd` Daemon läuft standalone
+- [x] Interop-Tests gegen Python rnsd bestehen
+- [x] no_std-Kompatibilität für reticulum-core
+- [ ] Forward Secrecy via Ratchets (B4)
+- [ ] Interface Access Codes / IFAC (B3)
+- [ ] Persistente Speicherung (E9)
+- [ ] UDP Interface
 
-- [ ] Interface Access Control (IFAC) — ⚠️ Modul implementiert, nicht in Empfangspfad eingebunden
-- [ ] Ratchet-Schlüsselverwaltung für Forward Secrecy — ⚠️ Krypto implementiert, Validierung nicht eingebunden
-- [ ] AutoInterface (lokale Netzwerk-Autodiscovery)
-- [ ] KISS Interface (TNC-Protokoll)
-- [ ] Pipe Interface
-- [ ] Erreichbarkeitstracking
-- [ ] Roaming-Modus
-- [x] ~~Proof-Strategien (PROVE_NONE, PROVE_APP, PROVE_ALL)~~ ✅ Implementiert (Transport + Link-Level)
+**Should-Have:**
+- [ ] `lrns` CLI: status, path, probe, interfaces
+- [ ] Buffer/Stream-Integration in LinkHandle (C10)
+- [ ] Fuzzing der Paket-Parser
+- [ ] Dokumentation vollständig
 
 ---
 
 ## Test-Strategie
 
 ### Unit Tests
-- Jedes Modul mit Abdeckung > 80%
+- Jedes Modul mit hoher Abdeckung
 - Alle Edge Cases und Fehlerbedingungen
 - Property-Based Testing mit proptest
 
 ### Interoperabilitäts-Tests
-| Test-Kategorie | Methode | Status |
-|----------------|---------|--------|
-| Kryptographie | Test-Vektoren aus Python | ✅ |
-| Paket-Format | Roundtrip-Tests | ✅ |
-| HDLC-Framing | Byte-genaue Verifikation | ✅ |
-| Announce-Validierung | Signaturprüfung gegen rnsd | ✅ |
-| Announce-Propagation | Multi-Client-Test gegen rnsd | ✅ |
-| Link-Establishment | Live-Tests gegen rnsd | ✅ |
-| Transport-Integration | TCP + Transport + Events | ✅ |
-| Transport Relay | Announce-Rebroadcast, Link-Routing | ✅ |
-| Multi-Hop | Multi-Hop-Topologie und Routing | ✅ |
-| Channel/Buffer | Stream + gepuffertes I/O | ✅ |
-| Eingehende Link-Daten | Empfangspfad für Link-Data-Pakete | ✅ (C8 behoben v0.5.5) |
-| Full Link Lifecycle | Bidirektionale Daten, Channel-ACKs, Graceful Close durch Relay | ✅ (v0.5.5 Fixes verifiziert) |
-| Responder Node | Rust als Connection-Responder via High-Level API, bidirektionaler Datenaustausch | ✅ (v0.5.6) |
-| Resource Transfer | Dateitransfer-Verifikation | - |
 
-### Integration-Tests
+| Test-Kategorie | Status |
+|----------------|--------|
+| Kryptographie (Test-Vektoren aus Python) | ✅ |
+| Paket-Format (Roundtrip-Tests) | ✅ |
+| HDLC-Framing (Byte-genaue Verifikation) | ✅ |
+| Announce-Validierung (Signaturprüfung gegen rnsd) | ✅ |
+| Announce-Propagation (Multi-Client) | ✅ |
+| Link-Establishment (Live-Tests gegen rnsd) | ✅ |
+| Transport-Integration (TCP + Transport + Events) | ✅ |
+| Transport Relay (Announce-Rebroadcast, Link-Routing) | ✅ |
+| Multi-Hop (Multi-Hop-Topologie und Routing) | ✅ |
+| Channel/Buffer (Stream + gepuffertes I/O) | ✅ |
+| Full Link Lifecycle (Bidirektionale Daten, ACKs, Close durch Relay) | ✅ |
+| Responder Node (Rust als Connection-Responder) | ✅ |
+| Flood/Loop-Prevention (Triangle, Diamond, redundante Pfade) | ✅ |
+| Resource Transfer | ⬜ (v1.1) |
+
+### Testumgebung
 ```
-Testumgebung:
 ┌─────────────┐      ┌─────────────┐
 │   Python    │ TCP  │    Rust     │
 │    rnsd     │◄────►│  leviculum│
 └─────────────┘      └─────────────┘
 ```
 
-Automatisierte Test-Suite (200 Interop-Tests in 27 Modulen gegen rnsd):
-- ✅ TCP-Verbindung zu rnsd
-- ✅ Pakete empfangen und senden
-- ✅ Announce-Erstellung und -Validierung
-- ✅ Announce-Signaturprüfung (inkl. ungültige Signaturen)
-- ✅ Announce-Propagation zwischen Clients
-- ✅ Identity/Destination-Hash-Berechnung
-- ✅ Link-Establishment (mit Python-Destination)
-- ✅ Bidirektionale verschlüsselte Datenpakete
-- ✅ Transport + TcpClientInterface End-to-End
-- ✅ Ratchet-Verschlüsselung und -Rotation
-- ✅ Multi-Hop-Topologie und Routing
-- ✅ Link-Manager mit Responder-Modus
-- ✅ Edge-Cases und Stress-Tests
-- ✅ Transport Relay (Rust-Node leitet Announces, Links und Daten zwischen zwei Python-Daemons)
-- ✅ Gemischte Relay-Ketten (Rust + Python Relays, Link-Establishment über volle Kette)
-- ✅ Relay-Failover und Pfad-Recovery (Diamond-Topologie mit Relay-Austausch)
-- ✅ Path Recovery via Link-Timeout (LRPROOF-Drop, expire_path + request_path)
-- ✅ Link Keepalive und Close
-- ✅ Proof-Strategien
-- ✅ Responder Node (Rust als Connection-Responder mit accept_connection API)
-- ✅ Flood/Loop-Prevention (Triangle, Diamond, redundante Pfade)
-- ✅ Pfad-Refresh (aktive Pfade verfallen nicht bei kontinuierlichem Traffic)
-- ✅ 32-Byte Path Requests (Non-Transport-Nodes über Python-Relay)
-- ✅ Announce-Burst-Propagierung (mehrere Announces in Serie)
-- Resource Transfer
-- Error Recovery
+---
+
+# Version 1.1 — Datenübertragung & Plattform-Integration
 
 ---
 
-## Aufwandsschätzung
-
-| Phase | Status |
-|-------|--------|
-| Phase 1: Protokoll-Fundament | ✅ Fertig |
-| Phase 2: Core API & Full Node | ✅ Fertig |
-| Refactoring Phasen 0–7 (63 Issues) | ✅ Fertig |
-| Phase 3: Datenübertragung & Release | ⬜ Offen |
-
----
-
-## Risiken und Mitigationsstrategien (Version 1.0)
-
-| Risiko | Wahrscheinlichkeit | Mitigation |
-|--------|-------------------|------------|
-| Transport Layer komplexer als erwartet | ✅ Gelöst | 3.676 LOC, vollständig implementiert |
-| Interop-Probleme mit Python | Mittel | Frühe und kontinuierliche Tests (176 Interop-Tests) |
-| Performance-Probleme bei async | Niedrig | Profiling ab Phase 2 |
-| no_std-Kompatibilitätsprobleme | ✅ Gelöst | Context-Trait entfernt, direkte RNG/time-Parameter |
-| Resource Transfer Komplexität | Mittel | Sliding-Window, Hashmap, Compression — frühzeitig planen |
-
----
-
-## Meilenstein-Übersicht
-
-```
-┌──────────────────┐┌─────────────────────────┐┌────────────────────────────────┐
-│ Phase 1          ││ Phase 2                 ││ Phase 3                        │
-│ Protokoll-       ││ Core API & Full Node    ││ Datenübertragung &             │
-│ Fundament ✅     ││ ✅                      ││ Release-Vorbereitung ⬜        │
-└──────────────────┘└─────────────────────────┘└────────────────────────────────┘
-        │                      │                           │
-        ▼                      ▼                           ▼
-   Link zu Python ✅    Transport Relay ✅           Resource Transfer
-   Verschlüsselung ✅   High-Level Link API ✅       Version 1.0 Release
-   Proofs ✅             TCP Server + lrnsd ✅
-```
-
-### Kritischer Pfad bis v1.0
-
-```
-┌─────────────────────┐
-│ 2.4 TCP Server      │ ✅ Fertig
-│     lrnsd Basis     │
-└─────────┬───────────┘
-          ▼
-┌─────────────────────┐
-│ 3.1 Resource        │ ⬜ Offen — Dateitransfer + Request/Response
-│     Transfer        │
-└─────────┬───────────┘
-          ▼
-┌─────────────────────┐
-│ 3b Release QA       │ ⬜ Offen — Fuzzing, Docs, IFAC, Ratchet
-│    Version 1.0      │
-└─────────────────────┘
-```
-
----
-
-## Definition of Done für Version 1.0
-
-**Must-Have (MVP):**
-- [x] `Destination::announce()` API funktioniert
-- [x] Link-Responder: eingehende Links akzeptieren
-- [x] High-Level Link API: `LinkManager` mit `initiate()`, `send()`, `close()`
-- [x] Transport Layer: Routing, Announce-Relay, Multi-Hop
-- [x] Channel-System: Streams und gepuffertes I/O
-- [ ] Resource Transfer: Dateien übertragen
-- [x] TCP Server Interface
-- [x] `lrnsd` Daemon läuft standalone
-- [x] Integration-Tests gegen Python rnsd bestehen (200 Interop-Tests)
-- [x] no_std-Kompatibilität für reticulum-core
-- [ ] Forward Secrecy via Ratchets — ⚠️ Krypto fertig, Validierung nicht eingebunden
-- [ ] Interface Access Codes (IFAC) — ⚠️ Modul fertig, nicht in Empfangspfad eingebunden
-
-**Should-Have:**
-- [ ] `lrns` CLI: status, path, ~~identity~~, probe, interfaces, ~~connect~~ (`identity` und `connect` fertig)
-- [ ] `lrns cp` - Dateitransfer (benötigt Resource Transfer)
-- [ ] UDP Interface
-- [ ] Unit-Test-Abdeckung > 80%
-- [ ] Dokumentation vollständig
-- [ ] Keine bekannten Speicherlecks (Valgrind-geprüft)
-
-**Nice-to-Have (→ Version 1.1):**
-- [ ] LocalInterface, Serial, KISS, AutoInterface
-- [ ] Roaming
-- [ ] Performance-Optimierung
-
----
----
-
-# Version 1.1 — Plattform-Integration
-
-**Zeitraum:** Monat 7-9
-**Ziel:** Hardware-Interfaces, produktionsreife C-API, Debian-Paket, Android-Integration
-
----
-
-## Phase 5: Hardware-Interfaces (Monat 7)
-
-### Ziel
-Unterstützung für LoRa-Hardware und anonyme Netzwerke.
-
-### Meilenstein 5.1: RNode/LoRa Interface (Woche 27-29)
-
-Das RNode-Interface ermöglicht Kommunikation über LoRa-Funk mit RNode-Hardware.
-
-- [ ] KISS-Protokoll-Implementierung für RNode
-  - Frame-Encoding/Decoding
-  - Escape-Sequenzen (FEND, FESC, TFEND, TFESC)
-- [ ] LoRa-Parameter-Konfiguration
-  - Frequenz, Bandbreite, Spreading Factor
-  - TX-Power, Coding Rate
-- [ ] Hardware-Erkennung und -Initialisierung
-  - Plattform-Erkennung (ESP32, nRF52, AVR)
-  - Firmware-Version-Abfrage
-- [ ] Radio-State-Management
-  - On/Off/ASK States
-  - Airtime-Limiting (ST_ALOCK, LT_ALOCK)
-- [ ] Statistik-Abfragen (RSSI, SNR, Temperatur, Batterie)
-- [ ] Multi-Interface-Unterstützung (RNodeMultiInterface)
-  - Mehrere Frequenzen/Kanäle gleichzeitig
-
-**Komplexität:** Hoch (~1.500 LOC)
-**Deliverable:** LoRa-Kommunikation mit RNode-Hardware funktioniert
-
-### Meilenstein 5.2: I2P Interface (Woche 30-31)
-
-Integration mit dem I2P-Anonymitätsnetzwerk über das SAM-Protokoll.
-
-- [ ] SAM v3-Protokoll-Client
-  - Session-Management
-  - Stream-Verbindungen
-- [ ] I2P-Destination-Handling
-  - Base64-Adressen
-  - Destination-Generierung
-- [ ] Tunnel-Management
-  - Inbound/Outbound-Tunnel
-  - Tunnel-Länge-Konfiguration
-- [ ] Verbindungs-Timeouts und Retry-Logik
-- [ ] Integration mit I2P-Router (i2pd oder Java I2P)
-
-**Komplexität:** Mittel (~600 LOC)
-**Deliverable:** Anonyme Kommunikation über I2P möglich
-
-### Meilenstein 5.3: AX.25 KISS Interface (Woche 31-32)
-
-Amateurfunk-Integration über AX.25-Protokoll.
-
-- [ ] AX.25-Frame-Format
-  - Adressfelder (Source, Destination, Digipeater)
-  - Control- und PID-Felder
-- [ ] KISS-TNC-Integration
-  - Aufbauend auf bestehendem KISS-Interface
-- [ ] Callsign-Handling
-- [ ] SSID-Unterstützung
-
-**Komplexität:** Niedrig (~250 LOC)
-**Deliverable:** Kommunikation über Amateurfunk-TNCs
-
----
-
-## Phase 6: C-API & Linux-Distribution (Monat 8)
-
-### Ziel
-Produktionsreife C-Bibliothek für Linux-Entwickler mit Debian-Paketierung.
-
-### Meilenstein 6.1: C-API Vervollständigung (Woche 33-34)
-
-Erweiterung von `leviculum-ffi` zur vollständigen C-API.
-
-**Bestehende API (erweitern):**
-```c
-// Bereits implementiert
-lrns_init(), lrns_version()
-lrns_identity_new(), lrns_identity_free()
-lrns_identity_sign(), lrns_identity_verify()
-```
-
-**Neue API-Bereiche:**
-
-- [ ] **Reticulum-Instanz**
-  ```c
-  LrnsReticulum* lrns_reticulum_new(const char* config_path);
-  int lrns_reticulum_start(LrnsReticulum* rns);
-  int lrns_reticulum_stop(LrnsReticulum* rns);
-  void lrns_reticulum_free(LrnsReticulum* rns);
-  ```
-
-- [ ] **Destination-Management**
-  ```c
-  LrnsDestination* lrns_destination_new(LrnsIdentity* id,
-                                         LrnsDestType type,
-                                         const char* app_name,
-                                         const char** aspects);
-  int lrns_destination_announce(LrnsDestination* dest);
-  int lrns_destination_set_proof_strategy(LrnsDestination* dest, int strategy);
-  ```
-
-- [ ] **Link-Establishment**
-  ```c
-  LrnsLink* lrns_link_new(LrnsDestination* dest);
-  int lrns_link_establish(LrnsLink* link, LrnsLinkCallback callback);
-  int lrns_link_send(LrnsLink* link, const uint8_t* data, size_t len);
-  int lrns_link_close(LrnsLink* link);
-  ```
-
-- [ ] **Packet-Handling**
-  ```c
-  int lrns_packet_send(LrnsDestination* dest,
-                       const uint8_t* data, size_t len);
-  int lrns_destination_set_packet_callback(LrnsDestination* dest,
-                                           LrnsPacketCallback callback);
-  ```
-
-- [ ] **Resource Transfer**
-  ```c
-  LrnsResource* lrns_resource_new(LrnsLink* link,
-                                   const uint8_t* data, size_t len);
-  int lrns_resource_start(LrnsResource* res, LrnsResourceCallback callback);
-  float lrns_resource_progress(LrnsResource* res);
-  ```
-
-- [ ] **Path Discovery**
-  ```c
-  int lrns_request_path(LrnsReticulum* rns, const uint8_t* dest_hash);
-  int lrns_has_path(LrnsReticulum* rns, const uint8_t* dest_hash);
-  ```
-
-**Deliverable:** Vollständige C-API für alle Kernfunktionen
-
-### Meilenstein 6.2: Entwickler-Infrastruktur (Woche 35)
-
-- [ ] **pkg-config Integration**
-  ```
-  # leviculum.pc
-  prefix=/usr
-  libdir=${prefix}/lib
-  includedir=${prefix}/include
-
-  Name: leviculum
-  Description: Rust implementation of the Reticulum network stack
-  Version: 1.1.0
-  Libs: -L${libdir} -lreticulum
-  Cflags: -I${includedir}/leviculum
-  ```
-
-- [ ] **Header-Generierung mit cbindgen**
-  - Automatische `leviculum.h` Generierung
-  - Dokumentationskommentare in Header
-
-- [ ] **Man-Pages**
-  - `lrns_identity(3)` - Identity-Funktionen
-  - `lrns_link(3)` - Link-Funktionen
-  - `lrns_reticulum(3)` - Hauptinstanz
-
-- [ ] **Beispiel-C-Programm**
-  ```c
-  // examples/c/announce.c
-  #include <leviculum.h>
-
-  int main() {
-      lrns_init();
-      LrnsReticulum* rns = lrns_reticulum_new("/etc/leviculum");
-      LrnsIdentity* id = lrns_identity_new();
-      // ... vollständiges Beispiel
-  }
-  ```
-
-- [ ] **CMake Find-Modul**
-  ```cmake
-  # FindLeviculum.cmake
-  find_package(PkgConfig REQUIRED)
-  pkg_check_modules(LEVICULUM REQUIRED leviculum)
-  ```
-
-**Deliverable:** Nahtlose Integration in C/C++-Build-Systeme
-
-### Meilenstein 6.3: Debian-Paketierung (Woche 36)
-
-- [ ] **Paket-Struktur**
-  ```
-  debian/
-  ├── control          # Paket-Metadaten
-  ├── rules            # Build-Regeln
-  ├── changelog        # Versionshistorie
-  ├── copyright        # Lizenzinformationen
-  ├── leviculum0.install
-  ├── leviculum-dev.install
-  └── leviculum-tools.install
-  ```
-
-- [ ] **Paket: leviculum0** (Runtime)
-  - `/usr/lib/x86_64-linux-gnu/leviculum.so.1.1.0`
-  - `/usr/lib/x86_64-linux-gnu/leviculum.so.1` (Symlink)
-  - Shared-Library mit SONAME
-
-- [ ] **Paket: leviculum-dev** (Development)
-  - `/usr/include/leviculum/leviculum.h`
-  - `/usr/lib/x86_64-linux-gnu/leviculum.a` (Statische Lib)
-  - `/usr/lib/x86_64-linux-gnu/pkgconfig/leviculum.pc`
-  - Man-Pages
-
-- [ ] **Paket: leviculum-tools** (CLI)
-  - `/usr/bin/lrns` (Subcommands: status, path, identity, probe, interfaces, cp)
-  - `/usr/bin/lrnsd`
-  - Systemd-Unit-File für lrnsd
-
-- [ ] **Lintian-Konformität**
-  - Keine Lintian-Fehler oder -Warnungen
-  - Debian-Policy-konform
-
-- [ ] **Einreichung bei Debian**
-  - ITP (Intent to Package) Bug erstellen
-  - Sponsor für Upload finden
-  - Mentors-Upload vorbereiten
-
-**Deliverable:** Installation via `apt install leviculum-dev leviculum-tools`
-
----
-
-## Phase 7: Android-Integration (Monat 9)
-
-### Ziel
-Minimale Hürden für Android-Entwickler durch native Kotlin-API und AAR-Paket.
-
-### Meilenstein 7.1: JNI-Grundlagen (Woche 37)
-
-- [ ] **JNI-Binding-Schicht**
-  ```rust
-  // leviculum-android/src/lib.rs
-  #[no_mangle]
-  pub extern "system" fn Java_net_leviculum_Identity_nativeNew(
-      env: JNIEnv,
-      _class: JClass,
-  ) -> jlong {
-      let identity = Identity::new();
-      Box::into_raw(Box::new(identity)) as jlong
-  }
-  ```
-
-- [ ] **Cargo-Konfiguration für Android**
-  ```toml
-  # .cargo/config.toml
-  [target.aarch64-linux-android]
-  linker = "aarch64-linux-android21-clang"
-
-  [target.armv7-linux-androideabi]
-  linker = "armv7a-linux-androideabi21-clang"
-  ```
-
-- [ ] **Cross-Compilation Setup**
-  - NDK-Integration
-  - Target-Architekturen: arm64-v8a, armeabi-v7a, x86_64
-
-**Deliverable:** Native Libraries für alle Android-Architekturen
-
-### Meilenstein 7.2: UniFFI-Integration (Woche 38)
-
-[UniFFI](https://mozilla.github.io/uniffi-rs/) generiert automatisch Kotlin-Bindings aus Rust.
-
-- [ ] **UniFFI-Definition**
-  ```
-  // leviculum.udl
-  namespace leviculum {
-    string version();
-  };
-
-  interface Identity {
-    constructor();
-    [Throws=ReticulumError]
-    constructor(sequence<u8> private_key);
-
-    sequence<u8> hash();
-    sequence<u8> public_key();
-
-    [Throws=ReticulumError]
-    sequence<u8> sign(sequence<u8> message);
-
-    [Throws=ReticulumError]
-    boolean verify(sequence<u8> message, sequence<u8> signature);
-  };
-
-  interface Destination {
-    constructor(Identity identity, DestinationType dtype,
-                string app_name, sequence<string> aspects);
-    [Throws=ReticulumError]
-    void announce();
-  };
-
-  interface Link {
-    constructor(Destination destination);
-    [Throws=ReticulumError]
-    void establish();
-    [Throws=ReticulumError]
-    void send(sequence<u8> data);
-    void close();
-  };
-
-  [Error]
-  enum ReticulumError {
-    "Crypto",
-    "Network",
-    "InvalidState",
-    "Timeout",
-  };
-
-  enum DestinationType {
-    "Single",
-    "Group",
-    "Plain",
-    "Link",
-  };
-  ```
-
-- [ ] **Generierte Kotlin-API**
-  ```kotlin
-  // Automatisch generiert - saubere Kotlin-API
-  val identity = Identity()
-  val destination = Destination(
-      identity,
-      DestinationType.SINGLE,
-      "myapp",
-      listOf("service")
-  )
-  destination.announce()
-
-  val link = Link(destination)
-  link.establish()
-  link.send("Hello".toByteArray())
-  ```
-
-**Deliverable:** Idiomatische Kotlin-API ohne manuelle JNI-Arbeit
-
-### Meilenstein 7.3: AAR-Paket & Gradle (Woche 39-40)
-
-- [ ] **AAR-Struktur**
-  ```
-  leviculum.aar
-  ├── AndroidManifest.xml
-  ├── classes.jar          # Kotlin-Bindings
-  ├── jni/
-  │   ├── arm64-v8a/
-  │   │   └── libuniffi_leviculum.so
-  │   ├── armeabi-v7a/
-  │   │   └── libuniffi_leviculum.so
-  │   └── x86_64/
-  │       └── libuniffi_leviculum.so
-  └── R.txt
-  ```
-
-- [ ] **Gradle-Plugin / Maven-Publikation**
-  ```kotlin
-  // build.gradle.kts (Nutzer-App)
-  dependencies {
-      implementation("net.leviculum:leviculum-android:1.1.0")
-  }
-  ```
-
-- [ ] **Maven Central Publikation**
-  - GPG-Signierung
-  - Sonatype OSSRH Account
-  - POM-Metadaten
-
-- [ ] **Beispiel-Android-App**
-  ```kotlin
-  class MainActivity : AppCompatActivity() {
-      override fun onCreate(savedInstanceState: Bundle?) {
-          super.onCreate(savedInstanceState)
-
-          // Leviculum initialisieren
-          val configPath = filesDir.resolve("reticulum").absolutePath
-          val reticulum = Reticulum(configPath)
-
-          // Identity erstellen
-          val identity = Identity()
-          Log.d("Reticulum", "Identity hash: ${identity.hash().toHex()}")
-
-          // Destination und Announce
-          val dest = Destination(identity, DestinationType.SINGLE,
-                                 "example", listOf("echo"))
-          dest.announce()
-      }
-  }
-  ```
-
-- [ ] **ProGuard-Regeln**
-  ```
-  # proguard-rules.pro (automatisch im AAR)
-  -keep class net.leviculum.** { *; }
-  -keepclassmembers class net.leviculum.** { *; }
-  ```
-
-**Deliverable:** `implementation("net.leviculum:leviculum-android:1.1.0")` funktioniert
-
-### Meilenstein 7.4: Dokumentation & Release (Woche 40)
-
-- [ ] **Android-Dokumentation**
-  - Getting Started Guide
-  - API-Referenz (KDoc)
-  - Beispiel-Projekte auf GitHub
-
-- [ ] **C-API-Dokumentation**
-  - Tutorial für C-Entwickler
-  - API-Referenz (Doxygen-kompatibel)
-
-- [ ] **Release-Vorbereitung**
-  - Changelog
-  - Migration Guide von 1.0 zu 1.1
-  - Ankündigung
-
-**Deliverable:** Version 1.1 Release
-
----
-
-## Aufwandsschätzung Version 1.1
-
-| Phase | Geschätzte LOC | Komplexität |
-|-------|---------------|-------------|
-| Phase 5: Hardware-Interfaces | ~2.350 | Hoch |
-| Phase 6: C-API & Debian | ~1.500 | Mittel |
-| Phase 7: Android-Integration | ~1.000 | Mittel |
-| **Gesamt Version 1.1** | **~4.850** | |
-
----
-
-## Technologie-Stack Version 1.1
-
-### Hardware-Interfaces
-- `serialport` Crate für Serial/RNode
-- `tokio-serial` für async Serial I/O
-
-### C-API
-- `cbindgen` für Header-Generierung
-- Statische + dynamische Library
-
-### Android
-- **UniFFI** (Mozilla) - Automatische Kotlin-Bindings
-- **cargo-ndk** - Android-Cross-Compilation
-- **gradle-cargo-plugin** - Build-Integration
-
----
-
-## Risiken und Mitigationsstrategien (Version 1.1)
-
-| Risiko | Wahrscheinlichkeit | Mitigation |
-|--------|-------------------|------------|
-| RNode-Hardware nicht verfügbar | Niedrig | Emulator/Mock für Tests |
-| I2P-Router-Kompatibilität | Mittel | Tests mit i2pd und Java I2P |
-| Debian-Sponsorship dauert lange | Mittel | Parallel eigenes APT-Repo |
-| UniFFI-Limitierungen | Niedrig | Fallback auf manuelle JNI |
-| Android-NDK-Änderungen | Niedrig | CI mit mehreren NDK-Versionen |
-
----
-
-## Meilenstein-Übersicht (Gesamt)
-
-```
-┌────────────┐┌────────────┐┌───────────────────────┐  ┌────────────┐┌────────────┐┌────────────┐
-│  Phase 1   ││  Phase 2   ││ Phase 3               │  │  Phase 5   ││  Phase 6   ││  Phase 7   │
-│  Protokoll ││  Netzwerk  ││ Datenübertragung &    │  │  Hardware  ││  C-API &   ││  Android   │
-│   ✅       ││  ✅ (inkl. ││ Release ⬜            │  │  Interfaces││  Debian    ││            │
-│            ││  lrnsd)    ││                       │  │            ││            ││            │
-└────────────┘└────────────┘└───────────────────────┘  └────────────┘└────────────┘└────────────┘
-      │              │                  │                    │              │              │
-      ▼              ▼                  ▼                    ▼              ▼              ▼
-   Link zu       Transport         Resource Transfer     RNode/LoRa     Debian-       Version 1.1
-   Python ✅     Relay ✅          Version 1.0 Release   I2P, AX.25     Paket         Release
-
-├─────────────────────────────────────────────────┤  ├────────────────────────────────────────┤
-                    VERSION 1.0                                      VERSION 1.1
-```
-
----
-
-## Definition of Done für Version 1.1
-
-- [ ] RNode/LoRa Interface funktioniert mit echter Hardware
-- [ ] I2P Interface verbindet über SAM-Protokoll
-- [ ] AX.25 KISS Interface für Amateurfunk
-- [ ] Vollständige C-API für alle Kernfunktionen
-- [ ] pkg-config und CMake-Integration
-- [ ] Man-Pages für C-API
-- [ ] Debian-Pakete (leviculum0, -dev, -tools) lintian-konform
-- [ ] ITP bei Debian eingereicht
-- [ ] Android AAR auf Maven Central
-- [ ] Kotlin-API via UniFFI
-- [ ] Beispiel-Android-App
-- [ ] Dokumentation für C und Android
-
----
-
-## Nicht im Scope von 1.1
-
-Für spätere Versionen:
-
-- `rnodeconf` - RNode-Konfigurationstool (~4.500 LOC)
-- `rnx` - Remote Command Execution
+## Resource Transfer
+- Resource-Segmentierung und Advertisement-Protokoll
+- Sliding-Window-Management
+- Bandbreitenanpassung und Kompression (bz2)
+- Hashmap-Berechnung und Fortschritts-Callbacks
+- Request/Response-Pattern
+- `lrns cp` — Dateitransfer über CLI
+- Interop-Tests: Dateitransfer zwischen Rust und Python
+
+## Hardware-Interfaces
+- RNode/LoRa Interface (KISS-Protokoll, LoRa-Parameter, Radio-State, Airtime-Limiting)
+- Interface-spezifischer Send-Side-Jitter für Shared-Medium-Interfaces (E10)
+- Serial Interface
+- KISS Interface (TNC-Protokoll)
+- AutoInterface (lokale Netzwerk-Autodiscovery)
+- LocalInterface (IPC)
+
+## C-API & Paketierung
+- `leviculum-ffi` erweitern (Reticulum-Instanz, Destinations, Links, Packets, Resources, Path Discovery)
+- pkg-config Integration und Header-Generierung (cbindgen)
+- Debian-Pakete (leviculum0, -dev, -tools) mit systemd-Unit für lrnsd
+
+## Android-Integration
+- UniFFI-basierte Kotlin-Bindings
+- AAR-Paket mit Cross-Compilation (arm64-v8a, armeabi-v7a, x86_64)
+- Maven Central Publikation
+
+## Weitere Features (v1.1+)
+- I2P Interface (SAM v3-Protokoll)
+- AX.25 KISS Interface (Amateurfunk)
+- Roaming-Modus und Erreichbarkeitstracking
+- Pipe Interface
+- Performance-Optimierung und Speicher-Profiling
+
+## Nicht im Scope
+- `rnodeconf` — RNode-Konfigurationstool
+- `rnx` — Remote Command Execution
 - iOS/Swift-Integration
 - WebAssembly-Build
-- Tunneling
-- Remote Management
+- Tunneling und Remote Management
 
 ---
 
