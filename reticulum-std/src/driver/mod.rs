@@ -145,7 +145,7 @@ impl ReticulumNode {
     /// The node will process incoming packets and emit events until `stop()` is called.
     pub async fn start(&mut self) -> Result<(), Error> {
         if self.runner_handle.is_some() {
-            return Err(Error::Transport("Node already running".to_string()));
+            return Err(Error::Config("node already running".to_string()));
         }
 
         // Initialize interfaces — the driver owns them, NOT NodeCore
@@ -245,7 +245,7 @@ impl ReticulumNode {
         if let Some(handle) = self.runner_handle.take() {
             handle
                 .await
-                .map_err(|e| Error::Transport(format!("Runner panicked: {}", e)))?;
+                .map_err(|e| Error::Config(format!("runner panicked: {}", e)))?;
         }
 
         tracing::info!("ReticulumNode stopped");
@@ -268,9 +268,13 @@ impl ReticulumNode {
 
     /// Connect to a remote destination
     ///
-    /// Establishes a Link to the destination and returns a LinkHandle
-    /// for async read/write operations. The link request packet is queued
-    /// internally and dispatched by the event loop.
+    /// Sends a link request to the destination and returns a `LinkHandle`
+    /// for async read/write operations. The returned handle is usable
+    /// immediately, but the link is not yet established — watch for
+    /// `NodeEvent::LinkEstablished` on the event channel before sending data.
+    ///
+    /// Returns `Err` only if the event loop is down (the request could not
+    /// be dispatched). Link-level failures arrive as `NodeEvent::LinkClosed`.
     ///
     /// # Arguments
     /// * `dest_hash` - The destination hash to connect to
@@ -289,7 +293,7 @@ impl ReticulumNode {
         self.action_dispatch_tx
             .send(output)
             .await
-            .map_err(|_| Error::Transport("event loop shut down".to_string()))?;
+            .map_err(|_| Error::NotRunning)?;
 
         Ok(LinkHandle::new(
             link_id,
@@ -309,15 +313,13 @@ impl ReticulumNode {
     pub async fn accept_link(&self, link_id: &LinkId) -> Result<LinkHandle, Error> {
         let output = {
             let mut inner = self.inner.lock().unwrap();
-            inner
-                .accept_link(link_id)
-                .map_err(|e| Error::Transport(e.to_string()))?
+            inner.accept_link(link_id)?
         };
 
         self.action_dispatch_tx
             .send(output)
             .await
-            .map_err(|_| Error::Transport("event loop shut down".to_string()))?;
+            .map_err(|_| Error::NotRunning)?;
 
         Ok(LinkHandle::new(
             *link_id,
@@ -350,8 +352,8 @@ impl ReticulumNode {
 
     /// Register a known identity for a destination
     ///
-    /// Identities are normally learned automatically from received announces.
-    /// Use this for out-of-band identity registration or testing.
+    /// Identities learned from received announces are cached automatically —
+    /// call this only for out-of-band identity registration or testing.
     pub fn remember_identity(
         &self,
         dest_hash: DestinationHash,
@@ -406,7 +408,7 @@ impl ReticulumNode {
     /// # Arguments
     /// * `dest_hash` - Hash of the registered destination to announce
     /// * `app_data` - Optional application data to include in the announce
-    pub fn announce_destination(
+    pub async fn announce_destination(
         &self,
         dest_hash: &reticulum_core::DestinationHash,
         app_data: Option<&[u8]>,
@@ -415,14 +417,12 @@ impl ReticulumNode {
             .inner
             .lock()
             .unwrap()
-            .announce_destination(dest_hash, app_data)
-            .map_err(|e| Error::Transport(e.to_string()))?;
-        // Send output to event loop for dispatch.
-        // try_send fails only if the channel is full (event loop stalled)
-        // or closed (event loop shut down). Either way, the caller must know.
+            .announce_destination(dest_hash, app_data)?;
+        // Send output to event loop for dispatch (backpressure — waits if full)
         self.action_dispatch_tx
-            .try_send(output)
-            .map_err(|_| Error::Transport("action dispatch channel full or closed".to_string()))?;
+            .send(output)
+            .await
+            .map_err(|_| Error::NotRunning)?;
         Ok(())
     }
 
@@ -440,7 +440,7 @@ impl ReticulumNode {
         self.action_dispatch_tx
             .send(output)
             .await
-            .map_err(|_| Error::Transport("event loop shut down".to_string()))?;
+            .map_err(|_| Error::NotRunning)?;
         Ok(())
     }
 
@@ -462,14 +462,12 @@ impl ReticulumNode {
     ) -> Result<[u8; TRUNCATED_HASHBYTES], Error> {
         let (packet_hash, output) = {
             let mut inner = self.inner.lock().unwrap();
-            inner
-                .send_single_packet(dest_hash, data)
-                .map_err(|e| Error::Transport(e.to_string()))?
+            inner.send_single_packet(dest_hash, data)?
         };
         self.action_dispatch_tx
             .send(output)
             .await
-            .map_err(|_| Error::Transport("event loop shut down".to_string()))?;
+            .map_err(|_| Error::NotRunning)?;
         Ok(packet_hash)
     }
 

@@ -151,7 +151,10 @@ async fn test_full_link_lifecycle_through_relay() {
         loop {
             match stream.try_send(msg.as_bytes()).await {
                 Ok(()) => break,
-                Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {
+                Err(reticulum_std::Error::Send(
+                    reticulum_core::SendError::WindowFull
+                    | reticulum_core::SendError::PacingDelay { .. },
+                )) => {
                     tokio::time::sleep(Duration::from_millis(500)).await;
                 }
                 Err(e) => panic!("Failed to send message {}: {}", i, e),

@@ -139,6 +139,7 @@ async fn setup_rust_dest_for_receiving(
     // Announce via ReticulumNode (dispatches through action channel to the event loop)
     rust_node
         .announce_destination(&dest_hash, Some(app_data))
+        .await
         .expect("Announce should succeed");
 
     // Wait for Python daemon to learn the path

@@ -74,13 +74,12 @@ impl PacketSender {
     pub async fn send(&self, data: &[u8]) -> Result<[u8; TRUNCATED_HASHBYTES], Error> {
         let (packet_hash, output) = {
             let mut core = self.inner.lock().unwrap();
-            core.send_single_packet(&self.dest_hash, data)
-                .map_err(|e| Error::Transport(e.to_string()))?
+            core.send_single_packet(&self.dest_hash, data)?
         };
         self.action_dispatch_tx
             .send(output)
             .await
-            .map_err(|_| Error::Transport("event loop shut down".to_string()))?;
+            .map_err(|_| Error::NotRunning)?;
         Ok(packet_hash)
     }
 }

@@ -263,8 +263,8 @@ impl<R: CryptoRngCore, C: Clock, S: Storage> NodeCore<R, C, S> {
 
     /// Register a remote identity for single-packet encryption.
     ///
-    /// Identities are normally learned automatically from received announces.
-    /// Use this for out-of-band identity registration or testing.
+    /// Identities learned from received announces are cached automatically —
+    /// call this only for out-of-band identity registration or testing.
     pub fn remember_identity(&mut self, dest_hash: DestinationHash, identity: Identity) {
         self.known_identities.insert(dest_hash, identity);
     }

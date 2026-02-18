@@ -2,6 +2,8 @@
 
 use thiserror::Error;
 
+use reticulum_core::{AnnounceError, LinkError, SendError};
+
 /// Main error type for reticulum operations
 #[derive(Error, Debug)]
 pub enum Error {
@@ -10,32 +12,50 @@ pub enum Error {
     Io(#[from] std::io::Error),
 
     /// Configuration error
-    #[error("Configuration error: {0}")]
+    #[error("configuration error: {0}")]
     Config(String),
 
-    /// Interface error
-    #[error("Interface error: {0}")]
-    Interface(String),
-
     /// Storage error
-    #[error("Storage error: {0}")]
+    #[error("storage error: {0}")]
     Storage(String),
 
     /// Serialization error
-    #[error("Serialization error: {0}")]
+    #[error("serialization error: {0}")]
     Serialization(String),
 
-    /// Transport error
-    #[error("Transport error: {0}")]
-    Transport(String),
+    /// Event loop is not running (channel closed or node stopped)
+    #[error("node event loop is not running")]
+    NotRunning,
 
-    /// Link error
-    #[error("Link error: {0}")]
-    Link(String),
+    /// Announce failed
+    #[error("announce error: {0}")]
+    Announce(AnnounceError),
 
-    /// Identity error
-    #[error("Identity error: {0}")]
-    Identity(String),
+    /// Send failed
+    #[error("send error: {0}")]
+    Send(SendError),
+
+    /// Link operation failed
+    #[error("link error: {0}")]
+    Link(LinkError),
+}
+
+impl From<AnnounceError> for Error {
+    fn from(e: AnnounceError) -> Self {
+        Error::Announce(e)
+    }
+}
+
+impl From<SendError> for Error {
+    fn from(e: SendError) -> Self {
+        Error::Send(e)
+    }
+}
+
+impl From<LinkError> for Error {
+    fn from(e: LinkError) -> Self {
+        Error::Link(e)
+    }
 }
 
 /// Result type alias

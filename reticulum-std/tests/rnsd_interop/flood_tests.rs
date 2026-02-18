@@ -70,6 +70,7 @@ async fn test_announce_destination_smoke() {
     // Announce the destination
     rust_node
         .announce_destination(&dest_hash, Some(b"smoke-test"))
+        .await
         .expect("announce_destination should succeed");
 
     // Wait for Python daemon to learn the path
@@ -157,6 +158,7 @@ async fn test_triangle_echo_prevention() {
     // Announce the destination — broadcasts on both interfaces
     rust_node
         .announce_destination(&dest_hash, Some(b"triangle-test"))
+        .await
         .expect("announce_destination should succeed");
 
     // Wait for propagation: both Python daemons should learn the path
@@ -293,6 +295,7 @@ async fn test_diamond_originator_echo() {
     // Announce the destination
     rust_node
         .announce_destination(&dest_hash, Some(b"diamond-test"))
+        .await
         .expect("announce_destination should succeed");
 
     // Wait for Entry and Exit to learn the path (direct from Rust-Node)

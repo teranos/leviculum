@@ -95,6 +95,7 @@ async fn test_rust_node_as_responder() {
     rust_node.register_destination(dest);
     rust_node
         .announce_destination(&dest_hash, Some(b"rust-responder"))
+        .await
         .expect("Failed to announce destination");
 
     // Wait for the announce to propagate through relay to initiator

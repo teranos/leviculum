@@ -16,6 +16,7 @@ use crate::link::{LinkCloseReason, LinkId, PeerKeys};
 /// This combines events from transport, link management, and channels into a
 /// single stream that applications can handle uniformly.
 #[derive(Debug)]
+#[non_exhaustive]
 pub enum NodeEvent {
     // ─── Path Discovery Events ─────────────────────────────────────────────────
     /// A new announce was received and validated
@@ -96,7 +97,10 @@ pub enum NodeEvent {
         is_initiator: bool,
     },
 
-    /// Message received on a link (via Channel)
+    /// Message received on a link via the Channel multiplexer
+    ///
+    /// Emitted when the peer sends a channel message (with `PacketContext::Channel`).
+    /// Most link-based applications use this variant for structured message exchange.
     MessageReceived {
         /// The link ID
         link_id: LinkId,
@@ -108,7 +112,11 @@ pub enum NodeEvent {
         data: Vec<u8>,
     },
 
-    /// Raw data received on a link (without Channel framing)
+    /// Raw data received on a link without Channel framing
+    ///
+    /// Emitted when the peer sends a plain link data packet (not via Channel).
+    /// This is the lower-level variant — use [`MessageReceived`](NodeEvent::MessageReceived)
+    /// for channel-multiplexed messaging.
     LinkDataReceived {
         /// The link ID
         link_id: LinkId,
@@ -194,6 +202,7 @@ pub enum NodeEvent {
 
 /// Reason why a delivery failed
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum DeliveryError {
     /// Delivery timed out without proof
     Timeout,

@@ -21,10 +21,20 @@ pub mod reticulum;
 pub(crate) mod storage;
 
 // Re-export commonly used core types for the high-level API
-pub use reticulum_core::node::NodeEvent;
+pub use reticulum_core::node::{DeliveryError, LinkStats, NodeEvent};
 pub use reticulum_core::{
-    Destination, DestinationHash, DestinationType, Direction, Identity, ProofStrategy,
+    AnnounceError, Destination, DestinationHash, DestinationType, Direction, Identity,
+    LinkCloseReason, LinkError, LinkId, PeerKeys, ProofStrategy, ReceivedAnnounce, SendError,
+    TransportStats,
 };
+
+/// Generate a new random identity using the system RNG.
+///
+/// Convenience wrapper around `Identity::generate(&mut OsRng)` for std apps.
+/// Embedded code should use `Identity::generate()` with a platform-specific RNG.
+pub fn generate_identity() -> Identity {
+    Identity::generate(&mut rand_core::OsRng)
+}
 
 pub use config::Config;
 pub use driver::{LinkHandle, PacketSender, ReticulumNode, ReticulumNodeBuilder};

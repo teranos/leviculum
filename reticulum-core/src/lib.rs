@@ -90,7 +90,7 @@ pub use destination::{
 pub use identity::Identity;
 pub use link::{LinkCloseReason, LinkError, LinkId, PeerKeys};
 pub use node::{DeliveryError, LinkStats, NodeCore, NodeCoreBuilder, NodeEvent, SendError};
-pub use transport::{Action, InterfaceId, TickOutput};
+pub use transport::{Action, InterfaceId, TickOutput, TransportStats};
 
 // Re-export traits
 pub use traits::{

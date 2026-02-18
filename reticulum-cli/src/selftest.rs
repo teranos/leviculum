@@ -14,10 +14,10 @@ use std::time::Instant;
 use sha2::{Digest, Sha256};
 use tokio::sync::Notify;
 
-use reticulum_core::link::LinkId;
-use reticulum_core::node::NodeEvent;
-use reticulum_core::{Destination, DestinationHash, DestinationType, Direction, Identity};
 use reticulum_std::driver::{LinkHandle, PacketSender, ReticulumNodeBuilder};
+use reticulum_std::{
+    Destination, DestinationHash, DestinationType, Direction, Identity, LinkId, NodeEvent,
+};
 
 // ─── Message Format ──────────────────────────────────────────────────────────
 
@@ -621,9 +621,11 @@ pub async fn run_selftest(
     // Announce both
     node_a
         .announce_destination(&dest_hash_a, Some(b"selftest-a"))
+        .await
         .map_err(|e| format!("announce A: {e}"))?;
     node_b
         .announce_destination(&dest_hash_b, Some(b"selftest-b"))
+        .await
         .map_err(|e| format!("announce B: {e}"))?;
 
     // Spawn event tasks (run for entire test duration)

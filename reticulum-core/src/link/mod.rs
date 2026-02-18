@@ -173,6 +173,7 @@ impl core::fmt::Display for LinkError {
 
 /// Reason why a link was closed
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum LinkCloseReason {
     /// Normal close requested
     Normal,

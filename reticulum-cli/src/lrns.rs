@@ -16,10 +16,10 @@ use tokio::io::AsyncBufReadExt;
 
 mod selftest;
 
-use reticulum_core::link::LinkId;
-use reticulum_core::node::NodeEvent;
-use reticulum_core::{Destination, DestinationHash, DestinationType, Direction, Identity};
 use reticulum_std::driver::{LinkHandle, PacketSender, ReticulumNodeBuilder};
+use reticulum_std::{
+    Destination, DestinationHash, DestinationType, Direction, Identity, LinkId, NodeEvent,
+};
 
 fn hex_encode(bytes: &[u8]) -> String {
     use std::fmt::Write;
@@ -521,7 +521,10 @@ async fn run_connect(
     node.register_destination(dest);
 
     // Announce ourselves
-    if let Err(e) = node.announce_destination(&dest_hash, Some(b"lrns-cli")) {
+    if let Err(e) = node
+        .announce_destination(&dest_hash, Some(b"lrns-cli"))
+        .await
+    {
         eprintln!("announce failed: {e}");
     }
 
@@ -797,7 +800,10 @@ async fn run_connect(
                     println!("[untarget] single-packet target cleared");
                 }
 
-                "/announce" => match node.announce_destination(&dest_hash, Some(b"lrns-cli")) {
+                "/announce" => match node
+                    .announce_destination(&dest_hash, Some(b"lrns-cli"))
+                    .await
+                {
                     Ok(()) => println!("[announced] {dest_hash_hex}"),
                     Err(e) => eprintln!("announce failed: {e}"),
                 },

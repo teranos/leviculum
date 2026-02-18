@@ -5,7 +5,6 @@
 //! `send()` returns the real result from `send_on_link()` — including
 //! `WindowFull` — instead of silently buffering through an mpsc channel.
 
-use std::io;
 use std::sync::{Arc, Mutex};
 
 use tokio::sync::mpsc;
@@ -15,6 +14,7 @@ use reticulum_core::transport::TickOutput;
 use reticulum_core::SendError;
 
 use super::StdNodeCore;
+use crate::error::Error;
 
 /// Async handle for a Link (send-only)
 ///
@@ -81,32 +81,22 @@ impl LinkHandle {
     /// Try to send data on this link (non-blocking)
     ///
     /// Locks the core, calls `send_on_link()`, and dispatches the
-    /// resulting actions. Returns `WouldBlock` if the channel window is full
-    /// or pacing delay is active.
-    pub async fn try_send(&self, data: &[u8]) -> io::Result<()> {
+    /// resulting actions. Returns `SendError::WindowFull` or
+    /// `SendError::PacingDelay` if the channel cannot accept data right now.
+    pub async fn try_send(&self, data: &[u8]) -> Result<(), Error> {
         if self.closed {
-            return Err(io::Error::new(io::ErrorKind::BrokenPipe, "stream closed"));
+            return Err(Error::NotRunning);
         }
 
         let output = {
             let mut core = self.inner.lock().unwrap();
-            core.send_on_link(&self.link_id, data)
-                .map_err(|e| match e {
-                    SendError::WindowFull => {
-                        io::Error::new(io::ErrorKind::WouldBlock, "channel window full")
-                    }
-                    SendError::PacingDelay { .. } => {
-                        io::Error::new(io::ErrorKind::WouldBlock, "channel pacing delay")
-                    }
-                    SendError::NoLink => io::Error::new(io::ErrorKind::NotConnected, "no link"),
-                    other => io::Error::other(other.to_string()),
-                })?
+            core.send_on_link(&self.link_id, data)?
         };
 
         self.action_dispatch_tx
             .send(output)
             .await
-            .map_err(|_| io::Error::new(io::ErrorKind::BrokenPipe, "event loop shut down"))?;
+            .map_err(|_| Error::NotRunning)?;
         Ok(())
     }
 
@@ -115,10 +105,10 @@ impl LinkHandle {
     /// Unlike `try_send()`, this method retries automatically when the channel
     /// reports a pacing delay or window-full condition, sleeping until ready.
     /// Only returns an error on fatal conditions (link lost, handle closed).
-    pub async fn send(&self, data: &[u8]) -> io::Result<()> {
+    pub async fn send(&self, data: &[u8]) -> Result<(), Error> {
         loop {
             if self.closed {
-                return Err(io::Error::new(io::ErrorKind::BrokenPipe, "stream closed"));
+                return Err(Error::NotRunning);
             }
 
             let result = {
@@ -128,9 +118,10 @@ impl LinkHandle {
 
             match result {
                 Ok(output) => {
-                    self.action_dispatch_tx.send(output).await.map_err(|_| {
-                        io::Error::new(io::ErrorKind::BrokenPipe, "event loop shut down")
-                    })?;
+                    self.action_dispatch_tx
+                        .send(output)
+                        .await
+                        .map_err(|_| Error::NotRunning)?;
                     return Ok(());
                 }
                 Err(SendError::PacingDelay { ready_at_ms }) => {
@@ -143,18 +134,15 @@ impl LinkHandle {
                 Err(SendError::WindowFull) => {
                     tokio::time::sleep(std::time::Duration::from_millis(50)).await;
                 }
-                Err(SendError::NoLink) => {
-                    return Err(io::Error::new(io::ErrorKind::NotConnected, "no link"));
-                }
                 Err(other) => {
-                    return Err(io::Error::other(other.to_string()));
+                    return Err(Error::Send(other));
                 }
             }
         }
     }
 
     /// Close the link gracefully, sending LINKCLOSE to the peer
-    pub async fn close(&mut self) -> io::Result<()> {
+    pub async fn close(&mut self) -> Result<(), Error> {
         if self.closed {
             return Ok(());
         }
@@ -168,7 +156,7 @@ impl LinkHandle {
         self.action_dispatch_tx
             .send(output)
             .await
-            .map_err(|_| io::Error::new(io::ErrorKind::BrokenPipe, "event loop shut down"))?;
+            .map_err(|_| Error::NotRunning)?;
         Ok(())
     }
 }
@@ -199,10 +187,14 @@ mod tests {
 
         let handle = LinkHandle::new(link_id, inner, tx);
 
-        // Sending on a non-existent link should return NotConnected
+        // Sending on a non-existent link should return Send(NoLink)
         let result = handle.try_send(b"hello").await;
         assert!(result.is_err());
-        assert_eq!(result.unwrap_err().kind(), io::ErrorKind::NotConnected);
+        assert!(
+            matches!(result, Err(Error::Send(SendError::NoLink))),
+            "expected Send(NoLink), got {:?}",
+            result
+        );
     }
 
     #[tokio::test]
@@ -220,7 +212,7 @@ mod tests {
         // Send should fail after close
         let result = handle.try_send(b"test").await;
         assert!(result.is_err());
-        assert_eq!(result.unwrap_err().kind(), io::ErrorKind::BrokenPipe);
+        assert!(matches!(result, Err(Error::NotRunning)));
     }
 
     #[tokio::test]
@@ -248,7 +240,7 @@ mod tests {
         let handle = LinkHandle::new(link_id, inner, tx);
 
         // Send fails because there's no link, so dispatch channel
-        // closure is not reached — but NotConnected is returned first
+        // closure is not reached — but Send(NoLink) is returned first
         let result = handle.try_send(b"hello").await;
         assert!(result.is_err());
     }
