@@ -149,6 +149,10 @@ impl KnownIdentities {
         self.map.get(dest_hash)
     }
 
+    fn iter(&self) -> impl Iterator<Item = (&DestinationHash, &Identity)> {
+        self.map.iter()
+    }
+
     #[cfg(test)]
     fn len(&self) -> usize {
         self.map.len()
@@ -267,6 +271,13 @@ impl<R: CryptoRngCore, C: Clock, S: Storage> NodeCore<R, C, S> {
     /// call this only for out-of-band identity registration or testing.
     pub fn remember_identity(&mut self, dest_hash: DestinationHash, identity: Identity) {
         self.known_identities.insert(dest_hash, identity);
+    }
+
+    /// Iterate over all known remote identities.
+    ///
+    /// Used by the driver to persist known identities on shutdown.
+    pub fn known_identity_iter(&self) -> impl Iterator<Item = (&DestinationHash, &Identity)> {
+        self.known_identities.iter()
     }
 
     /// Announce a registered destination on all interfaces

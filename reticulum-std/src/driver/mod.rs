@@ -77,6 +77,7 @@ use crate::interfaces::tcp::{
     spawn_tcp_client_with_reconnect, spawn_tcp_server, TCP_DEFAULT_BUFFER_SIZE,
 };
 use crate::interfaces::{InterfaceHandle, InterfaceRegistry};
+use crate::known_destinations::KnownDestinationsStore;
 use crate::storage::Storage;
 
 /// Type alias for the concrete NodeCore used by std platforms
@@ -118,6 +119,11 @@ pub struct ReticulumNode {
     action_dispatch_tx: mpsc::Sender<TickOutput>,
     /// Fault injection: corrupt ~1 byte per N bytes on TCP write
     corrupt_every: Option<u64>,
+    /// Known destinations persistence store (None if persistence disabled).
+    /// Removed: entries are saved to disk on shutdown and periodically.
+    known_dests_store: Option<KnownDestinationsStore>,
+    /// Storage path for persistence (used to create Storage instances for saving)
+    storage_path: Option<std::path::PathBuf>,
 }
 
 impl ReticulumNode {
@@ -126,6 +132,8 @@ impl ReticulumNode {
         core: StdNodeCore,
         interfaces: Vec<InterfaceConfig>,
         corrupt_every: Option<u64>,
+        known_dests_store: Option<KnownDestinationsStore>,
+        storage_path: Option<std::path::PathBuf>,
     ) -> Self {
         let (event_tx, event_rx) = mpsc::channel(EVENT_CHANNEL_CAPACITY);
         // Create dummy channel; real one is created in start()
@@ -140,6 +148,8 @@ impl ReticulumNode {
             runner_handle: None,
             action_dispatch_tx,
             corrupt_every,
+            known_dests_store,
+            storage_path,
         }
     }
 
@@ -282,7 +292,8 @@ impl ReticulumNode {
 
     /// Stop the node
     ///
-    /// This signals the event loop to stop and waits for it to complete.
+    /// This signals the event loop to stop, waits for completion, and persists
+    /// known destinations to disk.
     pub async fn stop(&mut self) -> Result<(), Error> {
         // Signal shutdown
         if let Some(tx) = self.shutdown_tx.take() {
@@ -296,8 +307,32 @@ impl ReticulumNode {
                 .map_err(|e| Error::Config(format!("runner panicked: {}", e)))?;
         }
 
+        // Persist known destinations
+        self.save_known_destinations();
+
         tracing::info!("ReticulumNode stopped");
         Ok(())
+    }
+
+    /// Persist known destinations to disk (merge core state into store, then save).
+    fn save_known_destinations(&mut self) {
+        let (Some(store), Some(path)) = (&mut self.known_dests_store, &self.storage_path) else {
+            return;
+        };
+        {
+            let core = self.inner.lock().unwrap();
+            store.merge_from_core(core.known_identity_iter());
+        }
+        match Storage::new(path) {
+            Ok(storage) => {
+                if let Err(e) = store.save(&storage) {
+                    tracing::warn!("Failed to save known destinations: {e}");
+                }
+            }
+            Err(e) => {
+                tracing::warn!("Failed to open storage for saving known destinations: {e}");
+            }
+        }
     }
 
     /// Check if the node is running
