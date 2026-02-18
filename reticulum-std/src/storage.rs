@@ -35,6 +35,24 @@ impl Storage {
         Ok(path)
     }
 
+    /// Read raw bytes from the storage root (no category subdirectory)
+    pub(crate) fn read_root(&self, name: &str) -> Result<Vec<u8>> {
+        let path = self.base_path.join(name);
+        std::fs::read(&path)
+            .map_err(|e| Error::Storage(format!("Failed to read {}: {e}", path.display())))
+    }
+
+    /// Write raw bytes to the storage root (atomic via .tmp + rename)
+    pub(crate) fn write_root(&self, name: &str, data: &[u8]) -> Result<()> {
+        let path = self.base_path.join(name);
+        let temp_path = path.with_extension("tmp");
+        std::fs::write(&temp_path, data)
+            .map_err(|e| Error::Storage(format!("Failed to write temp file: {e}")))?;
+        std::fs::rename(&temp_path, &path)
+            .map_err(|e| Error::Storage(format!("Failed to rename temp file: {e}")))?;
+        Ok(())
+    }
+
     /// Read raw bytes from storage
     pub(crate) fn read_raw(&self, category: &str, name: &str) -> Result<Vec<u8>> {
         let path = self.category_path(category).join(name);
@@ -220,6 +238,29 @@ mod tests {
 
         // Cleanup
         storage.delete("test", "exists.bin").unwrap();
+    }
+
+    #[test]
+    fn test_root_storage() {
+        let storage = temp_storage();
+
+        storage.write_root("root_data.bin", b"root_hello").unwrap();
+        let data = storage.read_root("root_data.bin").unwrap();
+        assert_eq!(data, b"root_hello");
+
+        // Verify file is directly in base path, not in a subdirectory
+        let expected_path = storage.base_path.join("root_data.bin");
+        assert!(expected_path.exists());
+
+        // Cleanup
+        std::fs::remove_file(expected_path).unwrap();
+    }
+
+    #[test]
+    fn test_read_root_missing_file() {
+        let storage = temp_storage();
+        let result = storage.read_root("nonexistent");
+        assert!(result.is_err());
     }
 
     #[test]

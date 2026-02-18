@@ -206,8 +206,16 @@ impl ReticulumNodeBuilder {
         let mut interfaces = config.interfaces.into_values().collect::<Vec<_>>();
         interfaces.extend(self.interfaces);
 
+        // Load or generate transport identity (unless explicitly set)
+        let core_builder = if self.core_builder.identity_ref().is_none() {
+            let identity = load_or_generate_transport_identity(&storage)?;
+            self.core_builder.identity(identity)
+        } else {
+            self.core_builder
+        };
+
         // Build NodeCore directly from the core builder
-        let node_core = self.core_builder.build(rand_core::OsRng, clock, storage);
+        let node_core = core_builder.build(rand_core::OsRng, clock, storage);
 
         Ok(ReticulumNode::new(
             node_core,
@@ -253,8 +261,16 @@ impl ReticulumNodeBuilder {
         let mut interfaces = config.interfaces.into_values().collect::<Vec<_>>();
         interfaces.extend(self.interfaces);
 
+        // Load or generate transport identity (unless explicitly set)
+        let core_builder = if self.core_builder.identity_ref().is_none() {
+            let identity = load_or_generate_transport_identity(&storage)?;
+            self.core_builder.identity(identity)
+        } else {
+            self.core_builder
+        };
+
         // Build NodeCore directly from the core builder
-        let node_core = self.core_builder.build(rand_core::OsRng, clock, storage);
+        let node_core = core_builder.build(rand_core::OsRng, clock, storage);
 
         Ok(ReticulumNode::new(
             node_core,
@@ -262,6 +278,48 @@ impl ReticulumNodeBuilder {
             self.corrupt_every,
         ))
     }
+}
+
+const IDENTITY_FILE: &str = "transport_identity";
+
+/// Load an existing transport identity from storage, or generate and persist a new one.
+///
+/// The identity is stored as 64 raw bytes (32 X25519 private + 32 Ed25519 private)
+/// in the storage root, matching the Python Reticulum format exactly.
+fn load_or_generate_transport_identity(storage: &Storage) -> Result<Identity, Error> {
+    match storage.read_root(IDENTITY_FILE) {
+        Ok(bytes) if bytes.len() == 64 => {
+            let id = Identity::from_private_key_bytes(&bytes)
+                .map_err(|e| Error::Storage(format!("invalid transport_identity: {e}")))?;
+            tracing::info!("Loaded transport identity: {}", hex_short(id.hash()),);
+            Ok(id)
+        }
+        Ok(bytes) => Err(Error::Storage(format!(
+            "transport_identity has wrong size: {} (expected 64)",
+            bytes.len()
+        ))),
+        Err(_) => {
+            let id = Identity::generate(&mut rand_core::OsRng);
+            let bytes = id
+                .private_key_bytes()
+                .map_err(|e| Error::Storage(format!("failed to serialize identity: {e}")))?;
+            storage.write_root(IDENTITY_FILE, &bytes)?;
+            tracing::info!("Generated new transport identity: {}", hex_short(id.hash()),);
+            Ok(id)
+        }
+    }
+}
+
+/// Format the first 8 bytes of a hash as hex for logging
+fn hex_short(hash: &[u8]) -> String {
+    use std::fmt::Write;
+    let n = hash.len().min(8);
+    hash[..n]
+        .iter()
+        .fold(String::with_capacity(n * 2), |mut s, b| {
+            let _ = write!(s, "{b:02x}");
+            s
+        })
 }
 
 #[cfg(test)]
@@ -309,5 +367,155 @@ mod tests {
             core.transport_config().enable_transport,
             "enable_transport should be wired through to NodeCore's TransportConfig"
         );
+    }
+
+    fn temp_storage_path() -> PathBuf {
+        std::env::temp_dir().join(format!("reticulum_test_builder_{}", std::process::id()))
+    }
+
+    #[test]
+    fn test_identity_round_trip() {
+        let path = temp_storage_path().join("rt");
+        let _ = std::fs::remove_dir_all(&path);
+        let storage = Storage::new(&path).unwrap();
+
+        let id = Identity::generate(&mut rand_core::OsRng);
+        let bytes = id.private_key_bytes().unwrap();
+        storage.write_root(IDENTITY_FILE, &bytes).unwrap();
+
+        let loaded_bytes = storage.read_root(IDENTITY_FILE).unwrap();
+        let loaded = Identity::from_private_key_bytes(&loaded_bytes).unwrap();
+        assert_eq!(id.hash(), loaded.hash());
+
+        let _ = std::fs::remove_dir_all(&path);
+    }
+
+    #[test]
+    fn test_first_run_creates_identity_file() {
+        let path = temp_storage_path().join("first_run");
+        let _ = std::fs::remove_dir_all(&path);
+        let storage = Storage::new(&path).unwrap();
+
+        let id = load_or_generate_transport_identity(&storage).unwrap();
+        assert!(id.has_private_keys());
+
+        let file_path = path.join(IDENTITY_FILE);
+        assert!(file_path.exists(), "identity file should be created");
+        let bytes = std::fs::read(&file_path).unwrap();
+        assert_eq!(bytes.len(), 64);
+
+        let _ = std::fs::remove_dir_all(&path);
+    }
+
+    #[test]
+    fn test_second_run_loads_same_identity() {
+        let path = temp_storage_path().join("second_run");
+        let _ = std::fs::remove_dir_all(&path);
+        let storage = Storage::new(&path).unwrap();
+
+        let id1 = load_or_generate_transport_identity(&storage).unwrap();
+        let id2 = load_or_generate_transport_identity(&storage).unwrap();
+        assert_eq!(id1.hash(), id2.hash());
+
+        let _ = std::fs::remove_dir_all(&path);
+    }
+
+    #[test]
+    fn test_explicit_identity_overrides_persistence() {
+        let path = temp_storage_path().join("explicit_id");
+        let _ = std::fs::remove_dir_all(&path);
+
+        let explicit_id = Identity::generate(&mut rand_core::OsRng);
+        let explicit_hash = *explicit_id.hash();
+
+        let node = ReticulumNodeBuilder::new()
+            .identity(explicit_id)
+            .storage_path(path.clone())
+            .build_sync()
+            .expect("build_sync failed");
+
+        assert_eq!(node.identity_hash(), explicit_hash);
+
+        // No transport_identity file should exist (explicit identity bypasses persistence)
+        assert!(
+            !path.join(IDENTITY_FILE).exists(),
+            "explicit identity should not create a persistence file"
+        );
+
+        let _ = std::fs::remove_dir_all(&path);
+    }
+
+    #[test]
+    fn test_build_sync_persists_identity() {
+        let path = temp_storage_path().join("build_persist");
+        let _ = std::fs::remove_dir_all(&path);
+
+        let node1 = ReticulumNodeBuilder::new()
+            .storage_path(path.clone())
+            .build_sync()
+            .expect("first build_sync failed");
+        let hash1 = node1.identity_hash();
+
+        let node2 = ReticulumNodeBuilder::new()
+            .storage_path(path.clone())
+            .build_sync()
+            .expect("second build_sync failed");
+        let hash2 = node2.identity_hash();
+
+        assert_eq!(hash1, hash2, "identity should persist across builds");
+
+        let _ = std::fs::remove_dir_all(&path);
+    }
+
+    #[test]
+    fn test_wrong_size_identity_file_errors() {
+        let path = temp_storage_path().join("wrong_size");
+        let _ = std::fs::remove_dir_all(&path);
+        let storage = Storage::new(&path).unwrap();
+
+        storage.write_root(IDENTITY_FILE, b"too_short").unwrap();
+        let result = load_or_generate_transport_identity(&storage);
+        assert!(result.is_err());
+        let err_msg = format!("{}", result.err().expect("should be an error"));
+        assert!(
+            err_msg.contains("wrong size"),
+            "error should mention wrong size: {err_msg}"
+        );
+
+        let _ = std::fs::remove_dir_all(&path);
+    }
+
+    #[test]
+    fn test_python_transport_identity_compat() {
+        // Read the actual Python rnsd transport_identity file if present
+        let python_path = dirs::home_dir().map(|h| h.join(".reticulum/storage/transport_identity"));
+        let Some(path) = python_path else { return };
+        if !path.exists() {
+            return; // Skip if Python rnsd hasn't been run on this machine
+        }
+
+        let bytes = std::fs::read(&path).unwrap();
+        assert_eq!(
+            bytes.len(),
+            64,
+            "Python transport_identity should be 64 bytes"
+        );
+
+        let id = Identity::from_private_key_bytes(&bytes).unwrap();
+        assert!(id.has_private_keys());
+        // Verify the identity produces a valid hash (16 bytes)
+        assert_eq!(id.hash().len(), 16);
+        // Verify it can sign and verify
+        let msg = b"test message";
+        let sig = id.sign(msg).unwrap();
+        assert!(id.verify(msg, &sig).unwrap());
+    }
+
+    // Reuse the dirs module from config.rs for home dir lookup in tests
+    mod dirs {
+        use std::path::PathBuf;
+        pub(super) fn home_dir() -> Option<PathBuf> {
+            std::env::var_os("HOME").map(PathBuf::from)
+        }
     }
 }

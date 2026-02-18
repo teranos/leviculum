@@ -122,6 +122,11 @@ impl NodeCoreBuilder {
         self.transport_config.enable_transport
     }
 
+    /// Access the identity set on this builder (if any)
+    pub fn identity_ref(&self) -> Option<&Identity> {
+        self.identity.as_ref()
+    }
+
     /// Build the NodeCore instance
     ///
     /// If no identity was provided, a new one will be generated using the RNG.
