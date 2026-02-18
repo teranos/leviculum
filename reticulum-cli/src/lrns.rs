@@ -381,10 +381,11 @@ enum Commands {
     /// Show interface information
     Interfaces,
 
-    /// Run integration self-test through a relay node
+    /// Run integration self-test through relay node(s)
     Selftest {
-        /// Address of relay node (host:port)
-        addr: String,
+        /// Address(es) of relay node(s) (host:port). One or two addresses.
+        #[arg(num_args = 1..=2)]
+        targets: Vec<String>,
         /// Test duration in seconds
         #[arg(long, default_value = "180")]
         duration: u64,
@@ -1140,12 +1141,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
 
         Commands::Selftest {
-            addr,
+            targets,
             duration,
             rate,
             mode,
         } => {
-            selftest::run_selftest(addr, duration, rate, &mode, args.corrupt_every).await?;
+            selftest::run_selftest(targets, duration, rate, &mode, args.corrupt_every).await?;
         }
 
         Commands::Connect { addr, identity } => {

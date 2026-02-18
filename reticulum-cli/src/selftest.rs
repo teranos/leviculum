@@ -520,7 +520,7 @@ async fn send_single_msg(
 // ─── Main Entry Point ────────────────────────────────────────────────────────
 
 pub async fn run_selftest(
-    addr: String,
+    targets: Vec<String>,
     duration: u64,
     rate: f64,
     mode: &str,
@@ -533,10 +533,32 @@ pub async fn run_selftest(
         return Err(format!("invalid --mode '{mode}': expected all, link, or packet").into());
     }
 
-    let socket_addr: SocketAddr = addr.parse().map_err(|e| format!("invalid address: {e}"))?;
+    if targets.is_empty() {
+        return Err("at least one target address required".into());
+    }
+
+    let addr_a: SocketAddr = targets[0]
+        .parse()
+        .map_err(|e| format!("invalid address '{}': {e}", targets[0]))?;
+    let addr_b: SocketAddr = if targets.len() > 1 {
+        targets[1]
+            .parse()
+            .map_err(|e| format!("invalid address '{}': {e}", targets[1]))?
+    } else {
+        addr_a
+    };
+
+    let dual = addr_a != addr_b;
 
     // ── Phase 1: Setup ──────────────────────────────────────────────────
-    println!("[selftest] Connecting to {socket_addr} (mode: {mode})");
+    if dual {
+        println!(
+            "[selftest] Client A -> {} / Client B -> {} (mode: {mode})",
+            addr_a, addr_b
+        );
+    } else {
+        println!("[selftest] Both clients -> {addr_a} (mode: {mode})");
+    }
     if let Some(n) = corrupt_every {
         println!("[selftest] Fault injection: --corrupt-every {n}");
     }
@@ -544,11 +566,21 @@ pub async fn run_selftest(
     // TCP pre-check
     tokio::time::timeout(
         std::time::Duration::from_secs(10),
-        tokio::net::TcpStream::connect(socket_addr),
+        tokio::net::TcpStream::connect(addr_a),
     )
     .await
-    .map_err(|_| "TCP connect timeout (10s)")?
-    .map_err(|e| format!("cannot connect to {socket_addr}: {e}"))?;
+    .map_err(|_| format!("TCP connect timeout (10s) to {addr_a}"))?
+    .map_err(|e| format!("cannot connect to {addr_a}: {e}"))?;
+
+    if dual {
+        tokio::time::timeout(
+            std::time::Duration::from_secs(10),
+            tokio::net::TcpStream::connect(addr_b),
+        )
+        .await
+        .map_err(|_| format!("TCP connect timeout (10s) to {addr_b}"))?
+        .map_err(|e| format!("cannot connect to {addr_b}: {e}"))?;
+    }
 
     // Two ephemeral identities — need two instances each (Identity is not Clone)
     use rand_core::OsRng;
@@ -564,7 +596,7 @@ pub async fn run_selftest(
     let mut node_a = ReticulumNodeBuilder::new()
         .identity(id_a)
         .enable_transport(false)
-        .add_tcp_client(socket_addr)
+        .add_tcp_client(addr_a)
         .corrupt_every(corrupt_every)
         .build()
         .await?;
@@ -573,7 +605,7 @@ pub async fn run_selftest(
     let mut node_b = ReticulumNodeBuilder::new()
         .identity(id_b)
         .enable_transport(false)
-        .add_tcp_client(socket_addr)
+        .add_tcp_client(addr_b)
         .corrupt_every(corrupt_every)
         .build()
         .await?;
