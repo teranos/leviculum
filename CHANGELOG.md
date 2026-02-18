@@ -8,6 +8,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- **TCP Server Interface** — `spawn_tcp_server()` binds synchronously and spawns an async accept loop. Each accepted connection becomes an `InterfaceHandle` sent to the event loop via an `mpsc` channel. Interface IDs use a shared `AtomicUsize` counter (monotonically increasing, initialized at `interfaces.len()`). The listener is NOT registered in `InterfaceRegistry` — it spawns interfaces, matching Python's architecture.
+- **Dynamic interface registration in event loop** — new 5th `select!` branch in `run_event_loop()` receives `InterfaceHandle` values from TCP server accept loops and registers them at runtime. `recv_any()` sees new interfaces on the next iteration (verified: `poll_fn` re-reads `registry.handles_mut()` on each poll).
+- **Config-driven interface loading** — `Reticulum::with_config()` now iterates `config.interfaces` and wires `TCPClientInterface` and `TCPServerInterface` entries to the builder. Missing required fields produce `Error::Config` with the interface name. Unknown types emit a warning and are skipped.
+- **`lrnsd` functional daemon** — added `rns.start().await?` (was missing), SIGTERM handler via `tokio::signal::unix` alongside SIGINT, `-v`/`-q` count-based log level control (TRACE/DEBUG/INFO/WARN/ERROR), compact tracing format with timestamps. Removed dead `--foreground` flag.
+- **Transport hot path tracing** — `tracing::trace!` with structured fields at entry of 6 functions: `process_incoming()` (packet type, dest, interface, hops), `handle_announce()` (dest, interface, hops, path_response), `handle_link_request()` (dest, interface, local), `handle_proof()` (dest, interface, proof_len), `handle_data()` (dest, interface, hops, data_len), `forward_packet()` (dest, src/dst interface, hops). Uses `HexFmt` for grep-friendly destination hash formatting.
+- `spawn_tcp_interface_from_stream()` — extracted common channel+task setup shared by TCP client and server paths, reusing `tcp_interface_task()` unchanged
+- 1 new test: `test_tcp_server_accepts_connection` verifying server bind, client connect, and `InterfaceHandle` delivery via channel
 - **Path timestamp refresh on forward** — active paths no longer expire while traffic flows through them. Both `forward_packet()` and `handle_link_request()` now refresh `path.expires_ms` on every forward, matching Python Transport.py:990 and Transport.py:1504. Configurable via `NodeCoreBuilder::path_expiry_secs()` / `ReticulumNodeBuilder::path_expiry_secs()`.
 - **LRPROOF Ed25519 signature validation** — transport relays now verify the link proof signature before forwarding, matching Python Transport.py:2021-2033. The responder's Ed25519 signing key is extracted from the announce cache at link creation time and stored on `LinkEntry`. Invalid signatures are dropped with `packets_dropped` incremented. Missing signing keys (announce not cached) emit a `tracing::warn!` and forward anyway.
 - **Per-interface announce bandwidth caps** — announce rebroadcasts are now rate-limited per interface based on link bitrate and a configurable cap percentage (default 2%), matching Python Interface.py:25-28 and Transport.py:1091-1104. Excess announces are queued (max 16384 per interface) and drained by priority (lowest hops first, then oldest). Locally-originated announces (hops == 0) bypass caps. TCP interfaces use bitrate=0 (no cap), so the subsystem is dormant until LoRa/serial interfaces are added. API: `Transport::register_interface_bitrate()`, `Transport::unregister_interface_announce_cap()`.
@@ -18,8 +25,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `doc/path-gaps-verification-report.md` — verification report answering 15+ questions with exact code references
 
 ### Changed
+- **`spawn_tcp_interface()` refactored** — sync connect + nodelay + nonblocking, then delegates to `spawn_tcp_interface_from_stream()` (no behavioral change, reduces duplication)
+- **`initialize_interfaces()` takes `next_id` and `new_iface_tx` params** — TCPServerInterface config now calls `spawn_tcp_server()` instead of returning an error
+- **`lrnsd` logging** — replaced `--verbose` bool + `FmtSubscriber` with `-v`/`-q` `ArgAction::Count` + `tracing_subscriber::fmt().compact()`
 - **Remove 14 unused re-exports from `reticulum-core` root** — `generate_random_hash`, `IfacConfig`, `IfacError`, `ChannelAction`, `Envelope`, `MessageState`, `SendHandle`, `SendMethod`, `SendResult`, `PacketReceipt`, `ReceiptStatus`, `KnownRatchets`, `Ratchet`, `RatchetError` were publicly re-exported from `lib.rs` but never imported by any external crate. These types remain accessible via their module paths (e.g. `reticulum_core::ifac::IfacConfig`).
 - **Restrict buffer type visibility** — `RawChannelReader`, `RawChannelWriter`, `BufferedChannelWriter` changed from `pub` to `pub(crate)` in `link::channel`. No production code uses them yet (Buffer API not integrated — ROADMAP C10). Removed 2 misplaced unit tests from interop test suite that used these types.
+
+### Removed
+- `--foreground` flag from `lrnsd` (dead code — daemon always runs in foreground)
 
 ### Added
 - **Architecture review documentation** — 3-part architecture audit (`doc/ARCHITECTURE_REVIEW.md`, `ARCHITECTURE_REVIEW2.md`, `ARCHITECTURE_REVIEW3.md`) covering ownership graphs, hot path call chains, split-brain risks, LinkManager dissolution feasibility, core/std layering purity, and API surface quality (16 issues identified)

@@ -1,13 +1,15 @@
-//! TCP client interface
+//! TCP interfaces (client and server)
 //!
-//! Connects to a Reticulum TCP server (e.g. rnsd TCPServerInterface)
-//! and runs as a spawned tokio task communicating through channels.
+//! Client: connects to a Reticulum TCP server (e.g. rnsd TCPServerInterface).
+//! Server: listens for incoming connections and spawns an interface per client.
 //!
-//! Uses HDLC framing to delimit packets on the TCP stream,
-//! matching Python Reticulum's `TCPClientInterface`.
+//! Both use HDLC framing to delimit packets on the TCP stream,
+//! matching Python Reticulum's `TCPClientInterface` / `TCPServerInterface`.
 
 use std::io;
-use std::net::ToSocketAddrs;
+use std::net::{SocketAddr, ToSocketAddrs};
+use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::Arc;
 use std::time::Duration;
 
 use super::{IncomingPacket, InterfaceInfo, OutgoingPacket};
@@ -67,6 +69,32 @@ const FRAME_BUFFER_MULTIPLIER: usize = 2;
 /// Read buffer multiplier (handles multiple packets per read)
 const READ_BUFFER_MULTIPLIER: usize = 4;
 
+/// Create channels, spawn the I/O task for an already-connected TCP stream,
+/// and return the resulting `InterfaceHandle`.
+///
+/// Shared by both the client (after connect) and the server (after accept).
+pub(crate) fn spawn_tcp_interface_from_stream(
+    id: InterfaceId,
+    name: String,
+    stream: tokio::net::TcpStream,
+    corrupt_every: Option<u64>,
+) -> InterfaceHandle {
+    let (incoming_tx, incoming_rx) = mpsc::channel(TCP_INCOMING_CAPACITY);
+    let (outgoing_tx, outgoing_rx) = mpsc::channel(TCP_OUTGOING_CAPACITY);
+
+    let task_name = name.clone();
+
+    tokio::spawn(async move {
+        tcp_interface_task(task_name, stream, incoming_tx, outgoing_rx, corrupt_every).await;
+    });
+
+    InterfaceHandle {
+        info: InterfaceInfo { id, name },
+        incoming: incoming_rx,
+        outgoing: outgoing_tx,
+    }
+}
+
 /// Spawn a TCP client interface task
 ///
 /// Connects to the given address synchronously (with timeout), then spawns
@@ -85,7 +113,6 @@ pub(crate) fn spawn_tcp_interface<A: ToSocketAddrs>(
     connect_timeout: Duration,
     corrupt_every: Option<u64>,
 ) -> Result<InterfaceHandle, io::Error> {
-    // Resolve and connect synchronously (same as old TcpClientInterface::connect)
     let addr = addr
         .to_socket_addrs()?
         .next()
@@ -96,22 +123,66 @@ pub(crate) fn spawn_tcp_interface<A: ToSocketAddrs>(
     std_stream.set_nodelay(true)?;
     let stream = tokio::net::TcpStream::from_std(std_stream)?;
 
-    // Create channels
-    let (incoming_tx, incoming_rx) = mpsc::channel(TCP_INCOMING_CAPACITY);
-    let (outgoing_tx, outgoing_rx) = mpsc::channel(TCP_OUTGOING_CAPACITY);
+    Ok(spawn_tcp_interface_from_stream(
+        id,
+        name,
+        stream,
+        corrupt_every,
+    ))
+}
 
-    let task_name = name.clone();
+/// Start a TCP server that listens for incoming connections.
+///
+/// Binds synchronously (so errors propagate to the caller), then spawns
+/// an async accept loop. Each accepted connection becomes an
+/// `InterfaceHandle` sent to the event loop via `new_interface_tx`.
+///
+/// The accept loop exits when the event loop drops `new_interface_rx`
+/// (detected via `Sender::closed()`).
+pub(crate) fn spawn_tcp_server(
+    bind_addr: SocketAddr,
+    next_id: Arc<AtomicUsize>,
+    new_interface_tx: mpsc::Sender<InterfaceHandle>,
+    corrupt_every: Option<u64>,
+) -> Result<(), io::Error> {
+    // Bind synchronously so errors propagate to the caller immediately
+    let std_listener = std::net::TcpListener::bind(bind_addr)?;
+    std_listener.set_nonblocking(true)?;
+    let listener = tokio::net::TcpListener::from_std(std_listener)?;
 
-    // Spawn the I/O task
+    tracing::info!("TCP server listening on {}", bind_addr);
+
     tokio::spawn(async move {
-        tcp_interface_task(task_name, stream, incoming_tx, outgoing_rx, corrupt_every).await;
+        loop {
+            tokio::select! {
+                result = listener.accept() => {
+                    match result {
+                        Ok((stream, peer_addr)) => {
+                            let id = InterfaceId(next_id.fetch_add(1, Ordering::Relaxed));
+                            let name = format!("tcp_server/{}", peer_addr);
+                            stream.set_nodelay(true).ok();
+                            let handle = spawn_tcp_interface_from_stream(
+                                id, name.clone(), stream, corrupt_every,
+                            );
+                            tracing::info!("Accepted connection: {} ({})", name, id);
+                            if new_interface_tx.send(handle).await.is_err() {
+                                break; // event loop shut down
+                            }
+                        }
+                        Err(e) => {
+                            tracing::warn!("TCP accept error: {}", e);
+                        }
+                    }
+                }
+                _ = new_interface_tx.closed() => {
+                    tracing::debug!("TCP server shutting down (event loop exited)");
+                    break;
+                }
+            }
+        }
     });
 
-    Ok(InterfaceHandle {
-        info: InterfaceInfo { id, name },
-        incoming: incoming_rx,
-        outgoing: outgoing_tx,
-    })
+    Ok(())
 }
 
 /// Interface task owning the TCP stream
@@ -296,5 +367,32 @@ mod tests {
         let mut rng = Xorshift64::from_entropy();
         let count = maybe_corrupt(&mut buf, 1, &mut rng);
         assert_eq!(count, 0);
+    }
+
+    #[tokio::test]
+    async fn test_tcp_server_accepts_connection() {
+        let next_id = Arc::new(AtomicUsize::new(0));
+        let (tx, mut rx) = mpsc::channel::<InterfaceHandle>(4);
+
+        // Bind on ephemeral port
+        let addr: SocketAddr = "127.0.0.1:0".parse().unwrap();
+        let std_listener = std::net::TcpListener::bind(addr).unwrap();
+        let bound_addr = std_listener.local_addr().unwrap();
+        drop(std_listener); // free the port for spawn_tcp_server
+
+        spawn_tcp_server(bound_addr, next_id.clone(), tx, None).unwrap();
+
+        // Connect a raw TCP client
+        let _client = tokio::net::TcpStream::connect(bound_addr).await.unwrap();
+
+        // Verify an InterfaceHandle arrives on the channel
+        let handle = tokio::time::timeout(Duration::from_secs(2), rx.recv())
+            .await
+            .expect("timeout waiting for handle")
+            .expect("channel closed");
+
+        assert!(handle.info.name.starts_with("tcp_server/"));
+        assert_eq!(handle.info.id, InterfaceId(0));
+        assert!(!handle.outgoing.is_closed());
     }
 }

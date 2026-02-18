@@ -5,9 +5,8 @@
 
 use std::path::PathBuf;
 
-use clap::Parser;
-use tracing::{info, Level};
-use tracing_subscriber::FmtSubscriber;
+use clap::{ArgAction, Parser};
+use tracing::info;
 
 use reticulum_std::config::Config;
 use reticulum_std::Reticulum;
@@ -24,27 +23,31 @@ struct Args {
     #[arg(short, long)]
     storage: Option<PathBuf>,
 
-    /// Enable verbose logging
-    #[arg(short, long)]
-    verbose: bool,
+    /// Increase log verbosity (repeat for more: -v debug, -vv trace)
+    #[arg(short, long, action = ArgAction::Count)]
+    verbose: u8,
 
-    /// Run in foreground (don't daemonize)
-    #[arg(short, long)]
-    foreground: bool,
+    /// Decrease log verbosity (repeat for less: -q warn, -qq error)
+    #[arg(short, long, action = ArgAction::Count)]
+    quiet: u8,
 }
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let args = Args::parse();
 
-    // Initialize logging
-    let log_level = if args.verbose {
-        Level::DEBUG
-    } else {
-        Level::INFO
+    // Level: INFO at baseline, shifted by verbose/quiet
+    let level = match (args.verbose as i8) - (args.quiet as i8) {
+        2.. => tracing::Level::TRACE,
+        1 => tracing::Level::DEBUG,
+        0 => tracing::Level::INFO,
+        -1 => tracing::Level::WARN,
+        _ => tracing::Level::ERROR,
     };
-    let subscriber = FmtSubscriber::builder().with_max_level(log_level).finish();
-    tracing::subscriber::set_global_default(subscriber)?;
+    tracing_subscriber::fmt()
+        .compact()
+        .with_max_level(level)
+        .init();
 
     info!("Starting lrnsd v{}", env!("CARGO_PKG_VERSION"));
 
@@ -66,11 +69,19 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     config.reticulum.storage_path = Some(storage_path);
 
     let mut rns = Reticulum::with_config(config)?;
+    rns.start().await?;
 
     info!("Reticulum daemon running");
 
-    // Wait for shutdown signal
-    tokio::signal::ctrl_c().await?;
+    // Wait for shutdown signal (SIGINT or SIGTERM)
+    {
+        use tokio::signal::unix::{signal, SignalKind};
+        let mut sigterm = signal(SignalKind::terminate())?;
+        tokio::select! {
+            _ = tokio::signal::ctrl_c() => { info!("Received SIGINT"); }
+            _ = sigterm.recv() => { info!("Received SIGTERM"); }
+        }
+    }
 
     info!("Shutting down...");
     rns.stop().await?;

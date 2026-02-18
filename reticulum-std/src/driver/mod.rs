@@ -54,6 +54,8 @@ pub use builder::ReticulumNodeBuilder;
 pub use sender::PacketSender;
 pub use stream::LinkHandle;
 
+use std::net::SocketAddr;
+use std::sync::atomic::AtomicUsize;
 use std::sync::{Arc, Mutex};
 use std::task::Poll;
 use std::time::Duration;
@@ -71,8 +73,8 @@ use reticulum_core::{Destination, DestinationHash};
 use crate::clock::SystemClock;
 use crate::config::InterfaceConfig;
 use crate::error::Error;
-use crate::interfaces::tcp::spawn_tcp_interface;
-use crate::interfaces::InterfaceRegistry;
+use crate::interfaces::tcp::{spawn_tcp_interface, spawn_tcp_server};
+use crate::interfaces::{InterfaceHandle, InterfaceRegistry};
 use crate::storage::Storage;
 
 /// Type alias for the concrete NodeCore used by std platforms
@@ -148,8 +150,15 @@ impl ReticulumNode {
             return Err(Error::Config("node already running".to_string()));
         }
 
+        // Shared monotonic counter for interface IDs.
+        // Initialized at interfaces.len() so static and dynamic IDs never collide.
+        let next_id = Arc::new(AtomicUsize::new(self.interfaces.len()));
+
+        // Channel for dynamically registering interfaces (e.g. from TCP server accept loop)
+        let (new_iface_tx, new_iface_rx) = mpsc::channel::<InterfaceHandle>(32);
+
         // Initialize interfaces — the driver owns them, NOT NodeCore
-        let registry = self.initialize_interfaces()?;
+        let registry = self.initialize_interfaces(&next_id, &new_iface_tx)?;
 
         let (shutdown_tx, shutdown_rx) = watch::channel(false);
         self.shutdown_tx = Some(shutdown_tx);
@@ -170,7 +179,15 @@ impl ReticulumNode {
 
         // Spawn the runner
         let runner_handle = tokio::spawn(async move {
-            run_event_loop(inner, registry, event_tx, action_dispatch_rx, shutdown_rx).await;
+            run_event_loop(
+                inner,
+                registry,
+                event_tx,
+                action_dispatch_rx,
+                new_iface_rx,
+                shutdown_rx,
+            )
+            .await;
         });
 
         self.runner_handle = Some(runner_handle);
@@ -179,7 +196,14 @@ impl ReticulumNode {
     }
 
     /// Initialize interfaces from configuration
-    fn initialize_interfaces(&self) -> Result<InterfaceRegistry, Error> {
+    ///
+    /// Static interfaces (TCP clients) are connected and registered directly.
+    /// Server listeners spawn accept loops that send new handles via `new_iface_tx`.
+    fn initialize_interfaces(
+        &self,
+        next_id: &Arc<AtomicUsize>,
+        new_iface_tx: &mpsc::Sender<InterfaceHandle>,
+    ) -> Result<InterfaceRegistry, Error> {
         let mut registry = InterfaceRegistry::new();
 
         for (idx, config) in self.interfaces.iter().enumerate() {
@@ -221,11 +245,21 @@ impl ReticulumNode {
                     }
                 }
                 "TCPServerInterface" => {
-                    // TCP server interfaces are not yet implemented (ROADMAP 2.4)
-                    return Err(Error::Config(
-                        "TCPServerInterface is not yet supported (see ROADMAP Milestone 2.4)"
-                            .to_string(),
-                    ));
+                    let listen_ip = config.listen_ip.as_deref().unwrap_or("0.0.0.0");
+                    let listen_port = config.listen_port.ok_or_else(|| {
+                        Error::Config("TCPServerInterface requires listen_port".to_string())
+                    })?;
+
+                    let addr: SocketAddr = format!("{}:{}", listen_ip, listen_port)
+                        .parse()
+                        .map_err(|e| Error::Config(format!("invalid listen address: {}", e)))?;
+
+                    spawn_tcp_server(
+                        addr,
+                        next_id.clone(),
+                        new_iface_tx.clone(),
+                        self.corrupt_every,
+                    )?;
                 }
                 other => {
                     tracing::warn!("Unknown interface type: {}", other);
@@ -546,6 +580,7 @@ async fn run_event_loop(
     mut registry: InterfaceRegistry,
     event_tx: mpsc::Sender<NodeEvent>,
     mut action_dispatch_rx: mpsc::Receiver<TickOutput>,
+    mut new_interface_rx: mpsc::Receiver<InterfaceHandle>,
     mut shutdown: watch::Receiver<bool>,
 ) {
     let mut next_poll = tokio::time::Instant::now();
@@ -624,6 +659,12 @@ async fn run_event_loop(
                     tracing::info!("Node shutdown requested");
                     break;
                 }
+            }
+
+            // Branch 5: Dynamic interface registration (TCP server accept loop)
+            Some(handle) = new_interface_rx.recv() => {
+                tracing::info!("New connection: {} ({})", handle.info.name, handle.info.id);
+                registry.register(handle);
             }
         }
     }

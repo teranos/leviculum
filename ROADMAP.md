@@ -20,7 +20,7 @@
 | Version | Phase | Status |
 |---------|-------|--------|
 | 0.1.0 | Phase 1: Protokoll-Fundament | ✅ |
-| 0.2.0 | Phase 2: Core API & Full Node | ✅ (bis auf TCP Server) |
+| 0.2.0 | Phase 2: Core API & Full Node | ✅ |
 | **0.5.19** | Aktuelle Version (Refactoring Phasen 0–7 abgeschlossen) | 🔶 Aktuell |
 | 0.6.0 | Phase 3: Datenübertragung & Release-Vorbereitung | ⬜ |
 | **1.0.0** | Erstes stabiles Release | ⬜ |
@@ -30,9 +30,9 @@
 
 ## Aktueller Stand
 
-**Aktuelle Version: 0.5.19.** Phase 1 (Protokoll-Fundament) und Phase 2 (Core API & Full Node) sind vollständig abgeschlossen bis auf Meilenstein 2.4 (TCP Server / lrnsd-Daemon). Zusätzlich wurde ein umfassendes 7-phasiges Code-Refactoring durchgeführt (63 Issues in `doc/BATTLEPLAN.md`), das die gesamte Codebasis bereinigt hat: Cleanup, Test-Infrastruktur, Bug-Fixes, Renames (Connection→Link), strukturelle Auflösung des LinkManagers, Konsolidierung (Receipt-Tracking, Destination-SSOT), und API-Polish (Naming, Visibility, Single-Packet-Verschlüsselung). Nur ein offenes Issue verbleibt: E9 (persistente Speicherung von `known_identities` und `path_table`).
+**Aktuelle Version: 0.5.19.** Phase 1 (Protokoll-Fundament) und Phase 2 (Core API & Full Node) sind vollständig abgeschlossen. Meilenstein 2.4 (TCP Server / lrnsd-Daemon) ist fertig: `lrnsd` startet als funktionsfähiger Daemon mit TCP-Server-Interface, Config-gesteuertem Interface-Loading, SIGTERM-Handling und konfigurierbarem Log-Level. Zusätzlich wurde ein umfassendes 7-phasiges Code-Refactoring durchgeführt (63 Issues in `doc/BATTLEPLAN.md`), das die gesamte Codebasis bereinigt hat: Cleanup, Test-Infrastruktur, Bug-Fixes, Renames (Connection→Link), strukturelle Auflösung des LinkManagers, Konsolidierung (Receipt-Tracking, Destination-SSOT), und API-Polish (Naming, Visibility, Single-Packet-Verschlüsselung). Nur ein offenes Issue verbleibt: E9 (persistente Speicherung von `known_identities` und `path_table`).
 
-**Kernfunktionalität:** `NodeCore` (reticulum-core) und `ReticulumNode` (reticulum-std) bieten eine einheitliche async-kompatible API für Destinations, Links, Channels, Single-Packet-Verschlüsselung und Proof-Delivery. Vollständige Interoperabilität mit Python rnsd ist nachgewiesen (176 Interop-Tests). **CLI-Tool `lrns`** existiert mit Subcommands: `status`, `path`, `identity`, `probe`, `interfaces`, `connect`. `identity` und `connect` sind voll implementiert, die anderen sind Gerüste.
+**Kernfunktionalität:** `NodeCore` (reticulum-core) und `ReticulumNode` (reticulum-std) bieten eine einheitliche async-kompatible API für Destinations, Links, Channels, Single-Packet-Verschlüsselung und Proof-Delivery. Vollständige Interoperabilität mit Python rnsd ist nachgewiesen (176 Interop-Tests). **CLI-Tool `lrns`** existiert mit Subcommands: `status`, `path`, `identity`, `probe`, `interfaces`, `connect`. `identity` und `connect` sind voll implementiert, die anderen sind Gerüste. **Daemon `lrnsd`** läuft als Drop-in-Ersatz für `rnsd` mit TCP-Server-Support, Config-Loading und sauberem Shutdown.
 
 **Sans-I/O-Architektur:** `reticulum-core` ist ein reiner Zustandsautomat. `NodeCore` nimmt Pakete via `handle_packet()` entgegen und gibt `Action`-Werte (`SendPacket`, `Broadcast`) über `TickOutput` zurück. Der Treiber `ReticulumNode` in `reticulum-std` besitzt die Interfaces, liest Pakete, speist sie in den Core, und dispatcht Actions. Interfaces laufen als eigenständige Tokio-Tasks (Channel-Bridge-Architektur). Die Event-Loop nutzt `tokio::select!` — kein Polling. `reticulum-nrf` ist ein Embassy-basiertes Firmware-Crate für den Heltec Mesh Node T114 (nRF52840 + SX1262).
 
@@ -198,14 +198,15 @@ link_manager.close(link_id)?;
 - [x] Test `test_rust_initiator_sends_keepalive_python_echoes` besteht
 - [x] `#[ignore]` Attribut entfernt
 
-### Meilenstein 2.4: TCP Server & Daemon-Grundlage (Woche 13-14) ⬜
+### Meilenstein 2.4: TCP Server & Daemon-Grundlage (Woche 13-14) ✅
 
-- [ ] TCP Server Interface (accept incoming connections)
-- [ ] `lrnsd` Grundgerüst (Config laden, Interfaces starten, Event-Loop)
-- [ ] Graceful Shutdown
-- [x] Logging-Integration (tracing) — `tracing` in reticulum-core (no_std), RUST_LOG/env-filter in CLI (v0.5.8)
+- [x] TCP Server Interface (accept incoming connections) — `spawn_tcp_server()` mit Channel-basierter dynamischer Interface-Registrierung
+- [x] `lrnsd` Grundgerüst (Config laden, Interfaces starten, Event-Loop) — Config-gesteuertes Interface-Loading (TCPClientInterface + TCPServerInterface)
+- [x] Graceful Shutdown — SIGINT + SIGTERM via `tokio::signal::unix`
+- [x] Logging-Integration (tracing) — `tracing` in reticulum-core (no_std), RUST_LOG/env-filter in CLI (v0.5.8), `-v`/`-q` Count-basierte Level-Steuerung
+- [x] Transport-Tracing — `tracing::trace!` in 6 Hot-Path-Funktionen (process_incoming, handle_announce, handle_link_request, handle_proof, handle_data, forward_packet)
 
-**Deliverable:** Minimaler funktionierender Daemon
+**Deliverable:** ✅ Minimaler funktionierender Daemon (`lrnsd` als Drop-in für `rnsd`)
 
 ### Meilenstein 2.5: Transport Layer Vervollständigung (Woche 15-16) ✅
 
@@ -306,7 +307,7 @@ Production-ready: QA, zusätzliche Interfaces, Dokumentation.
 - [x] `lrns connect` - Interaktive Session (Announce-Discovery, Link-Aufbau/-Akzeptanz, bidirektionaler Datenaustausch, Single-Packet-Targeting via `/target`/`/untarget`)
 - [ ] `lrns interfaces` - Interface-Übersicht
 - [ ] `lrns cp` - Dateitransfer (benötigt Resource Transfer aus Phase 3)
-- [ ] `lrnsd` - Daemon (aufbauend auf Meilenstein 2.4)
+- [x] `lrnsd` - Daemon (TCP Server, Config-Loading, SIGTERM, Log-Levels) ✅
 
 ### Zusätzliche Interfaces
 - [ ] UDP Interface
@@ -414,7 +415,7 @@ Automatisierte Test-Suite (200 Interop-Tests in 27 Modulen gegen rnsd):
 | Phase | Status |
 |-------|--------|
 | Phase 1: Protokoll-Fundament | ✅ Fertig |
-| Phase 2: Core API & Full Node | ✅ Fertig (bis auf TCP Server) |
+| Phase 2: Core API & Full Node | ✅ Fertig |
 | Refactoring Phasen 0–7 (63 Issues) | ✅ Fertig |
 | Phase 3: Datenübertragung & Release | ⬜ Offen |
 
@@ -438,20 +439,20 @@ Automatisierte Test-Suite (200 Interop-Tests in 27 Modulen gegen rnsd):
 ┌──────────────────┐┌─────────────────────────┐┌────────────────────────────────┐
 │ Phase 1          ││ Phase 2                 ││ Phase 3                        │
 │ Protokoll-       ││ Core API & Full Node    ││ Datenübertragung &             │
-│ Fundament ✅     ││ ✅ (bis auf TCP Server) ││ Release-Vorbereitung ⬜        │
+│ Fundament ✅     ││ ✅                      ││ Release-Vorbereitung ⬜        │
 └──────────────────┘└─────────────────────────┘└────────────────────────────────┘
         │                      │                           │
         ▼                      ▼                           ▼
    Link zu Python ✅    Transport Relay ✅           Resource Transfer
-   Verschlüsselung ✅   High-Level Link API ✅       TCP Server → lrnsd
-   Proofs ✅             Refactoring ✅ (63 Issues)   Version 1.0 Release
+   Verschlüsselung ✅   High-Level Link API ✅       Version 1.0 Release
+   Proofs ✅             TCP Server + lrnsd ✅
 ```
 
 ### Kritischer Pfad bis v1.0
 
 ```
 ┌─────────────────────┐
-│ 2.4 TCP Server      │ ⬜ Offen
+│ 2.4 TCP Server      │ ✅ Fertig
 │     lrnsd Basis     │
 └─────────┬───────────┘
           ▼
@@ -477,8 +478,8 @@ Automatisierte Test-Suite (200 Interop-Tests in 27 Modulen gegen rnsd):
 - [x] Transport Layer: Routing, Announce-Relay, Multi-Hop
 - [x] Channel-System: Streams und gepuffertes I/O
 - [ ] Resource Transfer: Dateien übertragen
-- [ ] TCP Server Interface
-- [ ] `lrnsd` Daemon läuft standalone
+- [x] TCP Server Interface
+- [x] `lrnsd` Daemon läuft standalone
 - [x] Integration-Tests gegen Python rnsd bestehen (200 Interop-Tests)
 - [x] no_std-Kompatibilität für reticulum-core
 - [ ] Forward Secrecy via Ratchets — ⚠️ Krypto fertig, Validierung nicht eingebunden
@@ -970,7 +971,8 @@ Minimale Hürden für Android-Entwickler durch native Kotlin-API und AAR-Paket.
 ┌────────────┐┌────────────┐┌───────────────────────┐  ┌────────────┐┌────────────┐┌────────────┐
 │  Phase 1   ││  Phase 2   ││ Phase 3               │  │  Phase 5   ││  Phase 6   ││  Phase 7   │
 │  Protokoll ││  Netzwerk  ││ Datenübertragung &    │  │  Hardware  ││  C-API &   ││  Android   │
-│   ✅       ││  ✅        ││ Release ⬜            │  │  Interfaces││  Debian    ││            │
+│   ✅       ││  ✅ (inkl. ││ Release ⬜            │  │  Interfaces││  Debian    ││            │
+│            ││  lrnsd)    ││                       │  │            ││            ││            │
 └────────────┘└────────────┘└───────────────────────┘  └────────────┘└────────────┘└────────────┘
       │              │                  │                    │              │              │
       ▼              ▼                  ▼                    ▼              ▼              ▼

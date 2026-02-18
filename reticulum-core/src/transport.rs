@@ -51,6 +51,7 @@ use crate::constants::{
 use crate::announce::{emission_from_random_hash, max_emission_from_blobs, ReceivedAnnounce};
 use crate::crypto::truncated_hash;
 use crate::destination::{Destination, DestinationHash, DestinationType};
+use crate::hex_fmt::HexFmt;
 use crate::identity::Identity;
 use crate::link::Link;
 use crate::packet::{
@@ -914,6 +915,14 @@ impl<C: Clock, S: Storage> Transport<C, S> {
 
         let packet = Packet::unpack(raw)?;
 
+        tracing::trace!(
+            ptype = ?packet.flags.packet_type,
+            dest = %HexFmt(&packet.destination_hash),
+            iface = interface_index,
+            hops = packet.hops,
+            "incoming packet"
+        );
+
         // Filter HEADER_2 packets not addressed to this transport instance
         // (Python Transport.py:1193-1196). Announces are exempt.
         if packet.transport_id.is_some()
@@ -1251,6 +1260,14 @@ impl<C: Clock, S: Storage> Transport<C, S> {
         announce.validate().map_err(TransportError::AnnounceError)?;
 
         let dest_hash = announce.destination_hash().into_bytes();
+
+        tracing::trace!(
+            dest = %HexFmt(&dest_hash),
+            iface = interface_index,
+            hops = packet.hops,
+            path_response = is_path_response,
+            "handling announce"
+        );
         let random_hash = *announce.random_hash();
 
         // Random blob replay protection: reject if we've seen this exact random_hash
@@ -1429,9 +1446,17 @@ impl<C: Clock, S: Storage> Transport<C, S> {
         dedup_hash: [u8; TRUNCATED_HASHBYTES],
     ) -> Result<(), TransportError> {
         let dest_hash = packet.destination_hash;
+        let is_local = self.local_destinations.contains(&dest_hash);
+
+        tracing::trace!(
+            dest = %HexFmt(&dest_hash),
+            iface = interface_index,
+            local = is_local,
+            "handling link request"
+        );
 
         // Check if we have this destination registered (NodeCore gates accepts_links)
-        if self.local_destinations.contains(&dest_hash) {
+        if is_local {
             self.events.push(TransportEvent::PacketReceived {
                 destination_hash: dest_hash,
                 packet: Box::new(packet),
@@ -1558,6 +1583,13 @@ impl<C: Clock, S: Storage> Transport<C, S> {
     ) -> Result<(), TransportError> {
         let dest_hash = packet.destination_hash;
         let proof_data = packet.data.as_slice();
+
+        tracing::trace!(
+            dest = %HexFmt(&dest_hash),
+            iface = interface_index,
+            proof_len = proof_data.len(),
+            "handling proof"
+        );
 
         // Check if this is a proof for a receipt we're tracking.
         // Two proof formats (Python defaults to implicit):
@@ -1789,6 +1821,14 @@ impl<C: Clock, S: Storage> Transport<C, S> {
     ) -> Result<(), TransportError> {
         let dest_hash = packet.destination_hash;
 
+        tracing::trace!(
+            dest = %HexFmt(&dest_hash),
+            iface = interface_index,
+            hops = packet.hops,
+            data_len = packet.data.len(),
+            "handling data packet"
+        );
+
         // Intercept path requests (before normal destination routing)
         if dest_hash == self.path_request_hash {
             return self.handle_path_request(packet, interface_index);
@@ -1900,6 +1940,14 @@ impl<C: Clock, S: Storage> Transport<C, S> {
                 self.stats.packets_dropped += 1;
                 return Ok(());
             };
+
+        tracing::trace!(
+            dest = %HexFmt(&packet.destination_hash),
+            src_iface = source_interface_index,
+            dst_iface = target_iface,
+            hops = packet.hops,
+            "forwarding packet"
+        );
 
         let now = self.clock.now_ms();
 
