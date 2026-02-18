@@ -8,6 +8,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- **TCP client reconnection** — `spawn_tcp_client_with_reconnect()` wraps TCP client connections with automatic reconnection. The wrapper owns the channel endpoints and keeps them alive across reconnection cycles, so the driver never sees `RecvEvent::Disconnected`. Configurable via `reconnect_interval_secs` (default: 5s) and `max_reconnect_tries` (default: unlimited) on `InterfaceConfig`. Initial connect is async (non-blocking `start()`). Packets queued during disconnect are delivered on the new connection; overflow is dropped with a warning.
+- **Two-address selftest** — `lrns selftest` now accepts 1-2 target addresses for multi-daemon topology testing (`lrns selftest addr1 addr2`). Each client connects to its respective daemon, enabling cross-daemon test topologies (A->daemon1->daemon2<-B).
+- **Configurable interface buffer size** — `InterfaceConfig::buffer_size` controls the channel buffer size per interface (default: 256 for TCP). Replaces the hardcoded `TCP_INCOMING_CAPACITY` (32) and `TCP_OUTGOING_CAPACITY` (16) constants with a single per-interface default.
+- `InterfaceConfig` fields: `reconnect_interval_secs`, `max_reconnect_tries`, `buffer_size`
+- 2 new tests: `test_tcp_client_reconnects_after_disconnect` (happy path reconnection with packet delivery), `test_tcp_client_gives_up_after_max_retries` (incoming channel closes after max retries exhausted)
+
+### Changed
+- **`tcp_interface_task` returns `mpsc::Receiver<OutgoingPacket>`** — enables channel reuse across reconnection cycles. The reconnect wrapper passes the returned receiver to the next connection attempt, preserving buffered packets. Backwards-compatible: server path ignores the return value.
+- **`spawn_tcp_interface()` gated to `#[cfg(test)]`** — production code uses `spawn_tcp_client_with_reconnect()` for clients and `spawn_tcp_server()` for servers. Test-only function retained for existing TCP unit tests.
+- **TCPClientInterface uses async reconnect wrapper** — `initialize_interfaces()` now calls `spawn_tcp_client_with_reconnect()` instead of the synchronous `spawn_tcp_interface()`. DNS resolution via `std::net::ToSocketAddrs` (sync, startup-only).
+- `selftest` CLI: `addr: String` replaced with `targets: Vec<String>` (`#[arg(num_args = 1..=2)]`)
+
+### Removed
+- `TCP_INCOMING_CAPACITY` and `TCP_OUTGOING_CAPACITY` constants from `interfaces/mod.rs` — replaced by per-interface `TCP_DEFAULT_BUFFER_SIZE` (256) in `interfaces/tcp.rs`
+
+### Added
 - **TCP Server Interface** — `spawn_tcp_server()` binds synchronously and spawns an async accept loop. Each accepted connection becomes an `InterfaceHandle` sent to the event loop via an `mpsc` channel. Interface IDs use a shared `AtomicUsize` counter (monotonically increasing, initialized at `interfaces.len()`). The listener is NOT registered in `InterfaceRegistry` — it spawns interfaces, matching Python's architecture.
 - **Dynamic interface registration in event loop** — new 5th `select!` branch in `run_event_loop()` receives `InterfaceHandle` values from TCP server accept loops and registers them at runtime. `recv_any()` sees new interfaces on the next iteration (verified: `poll_fn` re-reads `registry.handles_mut()` on each poll).
 - **Config-driven interface loading** — `Reticulum::with_config()` now iterates `config.interfaces` and wires `TCPClientInterface` and `TCPServerInterface` entries to the builder. Missing required fields produce `Error::Config` with the interface name. Unknown types emit a warning and are skipped.

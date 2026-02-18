@@ -231,7 +231,7 @@ link_manager.close(link_id)?;
 
 **Multi-Hop Link von Non-Transport Nodes** (v0.5.3): `connect()` nutzt jetzt `PathEntry::needs_relay()` für korrekte HEADER_2-Formatierung mit transport_id, und LRPROOF-Pakete werden an lokale Pending-Links zugestellt (Python Transport.py:2054-2073). Interop-Test bestätigt: Link-Aufbau, Timeout-Recovery (expire_path + request_path), und Wiederherstellung.
 
-Kleinere Lücken (nicht blockierend für v1.0): Announce-Expiry-Timer, mehrere Pfade pro Destination, MTU-Signaling für Link-MDU-Verhandlung, TCP-Reconnection bei Verbindungsabbruch (A2), LRPROOF/Receipt-Disambiguierung ohne Receipt-Tabelle (E16). Announce-Bandbreitenbegrenzung ist implementiert, aber für TCP-Interfaces inaktiv (bitrate=0); wird für zukünftige LoRa/Serial-Interfaces aktiviert.
+Kleinere Lücken (nicht blockierend für v1.0): Announce-Expiry-Timer, mehrere Pfade pro Destination, MTU-Signaling für Link-MDU-Verhandlung, LRPROOF/Receipt-Disambiguierung ohne Receipt-Tabelle (E16). Announce-Bandbreitenbegrenzung ist implementiert, aber für TCP-Interfaces inaktiv (bitrate=0); wird für zukünftige LoRa/Serial-Interfaces aktiviert.
 
 **Deliverable:** ✅ Vollständiges Routing für direkte und Multi-Hop-Verbindungen
 
@@ -261,7 +261,7 @@ Die folgende Liste wurde durch eine systematische 5-Runden-Lückenanalyse (Start
 
 | ID | Beschreibung |
 |----|-------------|
-| A2 | Keine TCP-Reconnection-Logik — Interface geht bei Verbindungsabbruch permanent verloren |
+| A2 | ✅ Behoben — TCP-Client-Reconnection mit konfigurierbarem Buffer, Intervall und Max-Retries |
 | E9 | Persistente Speicherung für known_identities und path_table (siehe `doc/OPEN_ISSUES_TRACKER.md`) |
 
 ---
@@ -305,6 +305,7 @@ Production-ready: QA, zusätzliche Interfaces, Dokumentation.
 - [ ] `lrns probe` - Konnektivitätstest
 - [x] `lrns identity` - Identity-Management
 - [x] `lrns connect` - Interaktive Session (Announce-Discovery, Link-Aufbau/-Akzeptanz, bidirektionaler Datenaustausch, Single-Packet-Targeting via `/target`/`/untarget`)
+- [x] `lrns selftest` - Zwei-Adress-Modus für Multi-Daemon-Topologien (`lrns selftest addr1 addr2`)
 - [ ] `lrns interfaces` - Interface-Übersicht
 - [ ] `lrns cp` - Dateitransfer (benötigt Resource Transfer aus Phase 3)
 - [x] `lrnsd` - Daemon (TCP Server, Config-Loading, SIGTERM, Log-Levels) ✅
@@ -313,7 +314,7 @@ Production-ready: QA, zusätzliche Interfaces, Dokumentation.
 - [ ] UDP Interface
 - [ ] LocalInterface (IPC)
 - [ ] Serial Interface
-- [ ] Async interface connect path — `spawn_tcp_interface()` connects synchronously (blocking on tokio thread), which is fine at startup but blocks the event loop for runtime hot-plug. Prerequisite for USB and BLE interface support. The channel-based `InterfaceRegistry` already supports dynamic `register()`, only the connect step needs an async variant.
+- [x] Async interface connect path — TCP-Client-Interfaces verbinden jetzt asynchron via `spawn_tcp_client_with_reconnect()`. Die initiale Verbindung blockiert nicht mehr den Event-Loop. Voraussetzung für USB- und BLE-Interface-Support ist damit erfüllt.
 
 ### Qualitätssicherung
 - [x] Integration-Tests gegen rnsd-Daemon (200 Tests)
