@@ -55,8 +55,8 @@ use crate::hex_fmt::HexFmt;
 use crate::identity::Identity;
 use crate::link::Link;
 use crate::packet::{
-    build_proof_packet, packet_hash, truncated_packet_hash, HeaderType, Packet, PacketContext,
-    PacketData, PacketError, PacketFlags, PacketType, TransportType,
+    build_proof_packet, packet_hash, HeaderType, Packet, PacketContext, PacketData, PacketError,
+    PacketFlags, PacketType, TransportType,
 };
 use crate::receipt::{PacketReceipt, ReceiptStatus};
 use crate::traits::{Clock, Storage};
@@ -566,8 +566,9 @@ pub struct Transport<C: Clock, S: Storage> {
     /// Registered destinations we accept packets for
     local_destinations: BTreeSet<[u8; TRUNCATED_HASHBYTES]>,
 
-    /// Packet deduplication cache: packet_hash -> timestamp_ms
-    packet_cache: BTreeMap<[u8; TRUNCATED_HASHBYTES], u64>,
+    /// Packet deduplication cache: full 32-byte SHA-256 hash -> timestamp_ms
+    /// (matches Python Transport.py:1227 which checks full packet_hash)
+    packet_cache: BTreeMap<[u8; 32], u64>,
 
     /// Receipts for sent packets awaiting proof: truncated_hash -> receipt
     receipts: BTreeMap<[u8; TRUNCATED_HASHBYTES], PacketReceipt>,
@@ -952,13 +953,16 @@ impl<C: Clock, S: Storage> Transport<C, S> {
             }
         }
 
-        // Compute full packet hash (for proofs) and truncated hash (for deduplication)
+        // Compute full packet hash (for deduplication and proofs) and truncated hash
+        // (for reverse_table routing). Dedup uses full 32-byte SHA-256, matching
+        // Python Transport.py:1227 which checks `packet.packet_hash` (full hash).
         let full_packet_hash = packet_hash(raw);
-        let dedup_hash = truncated_packet_hash(raw);
+        let mut truncated_hash = [0u8; TRUNCATED_HASHBYTES];
+        truncated_hash.copy_from_slice(&full_packet_hash[..TRUNCATED_HASHBYTES]);
         let now = self.clock.now_ms();
 
-        // Check duplicate
-        if self.packet_cache.contains_key(&dedup_hash) {
+        // Check duplicate (full 32-byte hash)
+        if self.packet_cache.contains_key(&full_packet_hash) {
             self.stats.packets_dropped += 1;
             return Ok(());
         }
@@ -974,7 +978,7 @@ impl<C: Clock, S: Storage> Transport<C, S> {
                 && packet.context == PacketContext::Lrproof);
 
         if !defer_cache_insert {
-            self.packet_cache.insert(dedup_hash, now);
+            self.packet_cache.insert(full_packet_hash, now);
         }
 
         // Route to handler based on packet type
@@ -984,11 +988,11 @@ impl<C: Clock, S: Storage> Transport<C, S> {
         match packet.flags.packet_type {
             PacketType::Announce => self.handle_announce(packet, interface_index, raw),
             PacketType::LinkRequest => {
-                self.handle_link_request(packet, interface_index, raw, dedup_hash)
+                self.handle_link_request(packet, interface_index, raw, truncated_hash)
             }
-            PacketType::Proof => self.handle_proof(packet, interface_index, dedup_hash),
+            PacketType::Proof => self.handle_proof(packet, interface_index, full_packet_hash),
             PacketType::Data => {
-                self.handle_data(packet, interface_index, full_packet_hash, dedup_hash)
+                self.handle_data(packet, interface_index, full_packet_hash, truncated_hash)
             }
         }
     }
@@ -1010,11 +1014,11 @@ impl<C: Clock, S: Storage> Transport<C, S> {
     /// Send raw data on all online interfaces (emits Broadcast action)
     pub fn send_on_all_interfaces(&mut self, data: &[u8]) {
         // Cache outbound packet hash so echoes returning via redundant paths
-        // are dropped by the dedup check in process_incoming() (line 688).
+        // are dropped by the dedup check in process_incoming().
         // This matches Python Reticulum's Transport.py:1168-1169.
-        let dedup_hash = truncated_packet_hash(data);
+        let cache_hash = packet_hash(data);
         let now = self.clock.now_ms();
-        self.packet_cache.insert(dedup_hash, now);
+        self.packet_cache.insert(cache_hash, now);
 
         self.stats.packets_sent += 1;
         self.pending_actions.push(Action::Broadcast {
@@ -1460,7 +1464,7 @@ impl<C: Clock, S: Storage> Transport<C, S> {
         packet: Packet,
         interface_index: usize,
         raw: &[u8],
-        dedup_hash: [u8; TRUNCATED_HASHBYTES],
+        truncated_hash: [u8; TRUNCATED_HASHBYTES],
     ) -> Result<(), TransportError> {
         let dest_hash = packet.destination_hash;
         let is_local = self.local_destinations.contains(&dest_hash);
@@ -1542,7 +1546,7 @@ impl<C: Clock, S: Storage> Transport<C, S> {
 
             // Populate reverse table at forwarding time
             self.reverse_table.insert(
-                dedup_hash,
+                truncated_hash,
                 ReverseEntry {
                     timestamp_ms: now,
                     receiving_interface_index: interface_index,
@@ -1596,7 +1600,7 @@ impl<C: Clock, S: Storage> Transport<C, S> {
         &mut self,
         packet: Packet,
         interface_index: usize,
-        dedup_hash: [u8; TRUNCATED_HASHBYTES],
+        cache_hash: [u8; 32],
     ) -> Result<(), TransportError> {
         let dest_hash = packet.destination_hash;
         let proof_data = packet.data.as_slice();
@@ -1659,7 +1663,7 @@ impl<C: Clock, S: Storage> Transport<C, S> {
             // Deferred cache insert for LRPROOF local delivery
             // (Python Transport.py:2072). Non-LRPROOF proofs for registered
             // destinations were already cached in process_incoming().
-            self.packet_cache.insert(dedup_hash, self.clock.now_ms());
+            self.packet_cache.insert(cache_hash, self.clock.now_ms());
             self.events.push(TransportEvent::PacketReceived {
                 destination_hash: dest_hash,
                 packet: Box::new(packet),
@@ -1776,7 +1780,7 @@ impl<C: Clock, S: Storage> Transport<C, S> {
                 // LRPROOF hashes are intentionally NOT cached during link-table
                 // forwarding (Python Transport.py:2016-2039).
                 if packet.context != PacketContext::Lrproof {
-                    self.packet_cache.insert(dedup_hash, self.clock.now_ms());
+                    self.packet_cache.insert(cache_hash, self.clock.now_ms());
                 }
 
                 // Forward proof via link table
@@ -1816,7 +1820,7 @@ impl<C: Clock, S: Storage> Transport<C, S> {
         // which distinguishes LRPROOF (link establishment) from data proofs
         // (PROOF_DATA_SIZE + context=None) and validates each cryptographically.
         if packet.flags.dest_type == DestinationType::Link {
-            self.packet_cache.insert(dedup_hash, self.clock.now_ms());
+            self.packet_cache.insert(cache_hash, self.clock.now_ms());
             self.events.push(TransportEvent::PacketReceived {
                 destination_hash: dest_hash,
                 packet: Box::new(packet),
@@ -1834,7 +1838,7 @@ impl<C: Clock, S: Storage> Transport<C, S> {
         packet: Packet,
         interface_index: usize,
         full_packet_hash: [u8; 32],
-        dedup_hash: [u8; TRUNCATED_HASHBYTES],
+        truncated_hash: [u8; TRUNCATED_HASHBYTES],
     ) -> Result<(), TransportError> {
         let dest_hash = packet.destination_hash;
 
@@ -1894,7 +1898,7 @@ impl<C: Clock, S: Storage> Transport<C, S> {
                     // Populate reverse table for link-routed data packets
                     let now = self.clock.now_ms();
                     self.reverse_table.insert(
-                        dedup_hash,
+                        truncated_hash,
                         ReverseEntry {
                             timestamp_ms: now,
                             receiving_interface_index: interface_index,
@@ -1905,7 +1909,7 @@ impl<C: Clock, S: Storage> Transport<C, S> {
                     // Deferred cache insert: hash was skipped in process_incoming()
                     // because dest_hash is in link_table. Insert now that we've
                     // validated direction and will forward (Python Transport.py:1543).
-                    self.packet_cache.insert(dedup_hash, now);
+                    self.packet_cache.insert(full_packet_hash, now);
 
                     // Forward data via link table
                     let mut forwarded = packet;
@@ -1918,7 +1922,7 @@ impl<C: Clock, S: Storage> Transport<C, S> {
             // links (link_ids never appear in path_table) — fall through to
             // the delivery code below.
             if packet.flags.dest_type != DestinationType::Link {
-                self.forward_packet(packet, interface_index, dedup_hash)?;
+                self.forward_packet(packet, interface_index, truncated_hash)?;
                 return Ok(());
             }
         }
@@ -1928,7 +1932,8 @@ impl<C: Clock, S: Storage> Transport<C, S> {
         // On transport nodes, relayed links are handled via link_table above;
         // only packets for our own local links reach this point.
         if packet.flags.dest_type == DestinationType::Link {
-            self.packet_cache.insert(dedup_hash, self.clock.now_ms());
+            self.packet_cache
+                .insert(full_packet_hash, self.clock.now_ms());
             self.events.push(TransportEvent::PacketReceived {
                 destination_hash: dest_hash,
                 packet: Box::new(packet),
@@ -1947,7 +1952,7 @@ impl<C: Clock, S: Storage> Transport<C, S> {
         &mut self,
         mut packet: Packet,
         source_interface_index: usize,
-        dedup_hash: [u8; TRUNCATED_HASHBYTES],
+        truncated_hash: [u8; TRUNCATED_HASHBYTES],
     ) -> Result<(), TransportError> {
         // Read path data into locals (releases immutable borrow)
         let (target_iface, needs_relay, next_hop) =
@@ -1975,7 +1980,7 @@ impl<C: Clock, S: Storage> Transport<C, S> {
 
         // Populate reverse table at forwarding time
         self.reverse_table.insert(
-            dedup_hash,
+            truncated_hash,
             ReverseEntry {
                 timestamp_ms: now,
                 receiving_interface_index: source_interface_index,
@@ -2293,7 +2298,7 @@ impl<C: Clock, S: Storage> Transport<C, S> {
 
     fn clean_packet_cache(&mut self, now: u64) {
         let expiry = self.config.packet_cache_expiry_ms;
-        let expired: Vec<[u8; TRUNCATED_HASHBYTES]> = self
+        let expired: Vec<[u8; 32]> = self
             .packet_cache
             .iter()
             .filter(|(_, &ts)| now.saturating_sub(ts) > expiry)
@@ -3434,6 +3439,63 @@ mod tests {
             // Now the packet should be accepted again (PacketReceived + ProofRequested)
             transport.process_incoming(0, &buf[..len]).unwrap();
             assert_eq!(transport.pending_events(), 2);
+        }
+
+        #[test]
+        fn test_dedup_uses_full_hash() {
+            // Verify that packet_cache uses full 32-byte SHA-256 hashes for
+            // deduplication, matching Python Transport.py:1227 which checks
+            // `packet.packet_hash` (the full hash, not truncated).
+            use crate::packet::packet_hash;
+
+            let mut transport = test_transport();
+            transport.register_interface(Box::new(MockInterface::new("test", 1)));
+
+            let hash = [0x42; TRUNCATED_HASHBYTES];
+            transport.register_destination(hash);
+
+            use crate::destination::DestinationType;
+            use crate::packet::{
+                HeaderType, PacketContext, PacketData, PacketFlags, TransportType,
+            };
+
+            let packet = Packet {
+                flags: PacketFlags {
+                    ifac_flag: false,
+                    header_type: HeaderType::Type1,
+                    context_flag: false,
+                    transport_type: TransportType::Broadcast,
+                    dest_type: DestinationType::Single,
+                    packet_type: PacketType::Data,
+                },
+                hops: 0,
+                transport_id: None,
+                destination_hash: hash,
+                context: PacketContext::None,
+                data: PacketData::Owned(b"hello".to_vec()),
+            };
+
+            let mut buf = [0u8; 500];
+            let len = packet.pack(&mut buf).unwrap();
+
+            // Process the packet
+            transport.process_incoming(0, &buf[..len]).unwrap();
+
+            // Verify packet_cache keys are full 32-byte hashes
+            assert_eq!(transport.packet_cache.len(), 1);
+            let cached_key = transport.packet_cache.keys().next().unwrap();
+            assert_eq!(
+                cached_key.len(),
+                32,
+                "packet_cache keys must be full 32-byte SHA-256 hashes"
+            );
+
+            // Verify the cached key matches packet_hash() output
+            let expected_hash = packet_hash(&buf[..len]);
+            assert_eq!(
+                cached_key, &expected_hash,
+                "packet_cache key must match packet_hash() (full SHA-256)"
+            );
         }
 
         #[test]
