@@ -436,8 +436,7 @@ pub struct Transport<C: Clock, S: Storage> {
 
     // path_table: migrated to Storage trait
     // path_states: migrated to Storage trait
-    /// Announce table: destination_hash -> announce rate tracking
-    announce_table: BTreeMap<[u8; TRUNCATED_HASHBYTES], AnnounceEntry>,
+    // announce_table: migrated to Storage trait
 
     // link_table: migrated to Storage trait
     /// Reverse table: packet_hash -> sender info (for routing replies)
@@ -485,7 +484,7 @@ impl<C: Clock, S: Storage> Transport<C, S> {
             identity,
             // path_table: migrated to Storage
             // path_states: migrated to Storage
-            announce_table: BTreeMap::new(),
+            // announce_table: migrated to Storage
             // link_table: migrated to Storage
             // reverse_table: migrated to Storage
             local_destinations: BTreeSet::new(),
@@ -1019,9 +1018,11 @@ impl<C: Clock, S: Storage> Transport<C, S> {
 
         // Announce rebroadcast deadlines
         if self.config.enable_transport {
-            for entry in self.announce_table.values() {
-                if let Some(retransmit_at) = entry.retransmit_at_ms {
-                    update(retransmit_at);
+            for key in self.storage.announce_keys() {
+                if let Some(entry) = self.storage.get_announce(&key) {
+                    if let Some(retransmit_at) = entry.retransmit_at_ms {
+                        update(retransmit_at);
+                    }
                 }
             }
         }
@@ -1142,7 +1143,7 @@ impl<C: Clock, S: Storage> Transport<C, S> {
 
         // Rate limiting: check if we've seen this destination recently
         // Also detect local rebroadcasts from neighbors
-        if let Some(existing) = self.announce_table.get_mut(&dest_hash) {
+        if let Some(existing) = self.storage.get_announce_mut(&dest_hash) {
             let elapsed = now.saturating_sub(existing.timestamp_ms);
             if elapsed < self.config.announce_rate_limit_ms {
                 // Local rebroadcast detection: neighbor sent same announce at same or +1 hop
@@ -1264,7 +1265,7 @@ impl<C: Clock, S: Storage> Transport<C, S> {
 
             // Update announce table (skipped when rate-blocked to prevent rebroadcast)
             if !rate_blocked {
-                self.announce_table.insert(
+                self.storage.set_announce(
                     dest_hash,
                     AnnounceEntry {
                         timestamp_ms: now,
@@ -2088,7 +2089,7 @@ impl<C: Clock, S: Storage> Transport<C, S> {
             if let Some(cached_raw) = self.storage.get_announce_cache(&requested_hash).cloned() {
                 let now = self.clock.now_ms();
                 if let Ok(cached_packet) = Packet::unpack(&cached_raw) {
-                    self.announce_table.insert(
+                    self.storage.set_announce(
                         requested_hash,
                         AnnounceEntry {
                             timestamp_ms: now,
@@ -2112,7 +2113,7 @@ impl<C: Clock, S: Storage> Transport<C, S> {
                 let now = self.clock.now_ms();
                 // Parse cached announce to get hop count
                 if let Ok(cached_packet) = Packet::unpack(&cached_raw) {
-                    self.announce_table.insert(
+                    self.storage.set_announce(
                         requested_hash,
                         AnnounceEntry {
                             timestamp_ms: now,
@@ -2171,31 +2172,34 @@ impl<C: Clock, S: Storage> Transport<C, S> {
         let mut to_remove = Vec::new();
         let mut to_rebroadcast = Vec::new();
 
-        for (dest_hash, entry) in self.announce_table.iter() {
-            // Remove entries that have exceeded retries or local rebroadcast limit
-            if entry.retries > PATHFINDER_RETRIES
-                || entry.local_rebroadcasts >= LOCAL_REBROADCASTS_MAX
-            {
-                to_remove.push(*dest_hash);
-                continue;
-            }
+        let keys = self.storage.announce_keys();
+        for dest_hash in keys {
+            if let Some(entry) = self.storage.get_announce(&dest_hash) {
+                // Remove entries that have exceeded retries or local rebroadcast limit
+                if entry.retries > PATHFINDER_RETRIES
+                    || entry.local_rebroadcasts >= LOCAL_REBROADCASTS_MAX
+                {
+                    to_remove.push(dest_hash);
+                    continue;
+                }
 
-            // Check if retransmit is due
-            if let Some(retransmit_at) = entry.retransmit_at_ms {
-                if retransmit_at <= now && !entry.raw_packet.is_empty() {
-                    to_rebroadcast.push((
-                        *dest_hash,
-                        entry.raw_packet.clone(),
-                        entry.receiving_interface_index,
-                        entry.hops,
-                        entry.block_rebroadcasts,
-                    ));
+                // Check if retransmit is due
+                if let Some(retransmit_at) = entry.retransmit_at_ms {
+                    if retransmit_at <= now && !entry.raw_packet.is_empty() {
+                        to_rebroadcast.push((
+                            dest_hash,
+                            entry.raw_packet.clone(),
+                            entry.receiving_interface_index,
+                            entry.hops,
+                            entry.block_rebroadcasts,
+                        ));
+                    }
                 }
             }
         }
 
         for hash in to_remove {
-            self.announce_table.remove(&hash);
+            self.storage.remove_announce(&hash);
         }
 
         let transport_id = *self.identity.hash();
@@ -2223,13 +2227,13 @@ impl<C: Clock, S: Storage> Transport<C, S> {
 
                 // If TTL exceeded, remove from announce table
                 if parsed.hops > self.config.max_hops {
-                    self.announce_table.remove(&dest_hash);
+                    self.storage.remove_announce(&dest_hash);
                     continue;
                 }
             }
 
             // Update announce table entry — schedule next retransmit
-            if let Some(entry) = self.announce_table.get_mut(&dest_hash) {
+            if let Some(entry) = self.storage.get_announce_mut(&dest_hash) {
                 entry.retransmit_at_ms = Some(now + PATHFINDER_G_MS);
                 entry.retries += 1;
             }
@@ -3467,7 +3471,7 @@ mod tests {
 
             // First rebroadcast was immediate — retries starts at 1,
             // next retransmit scheduled at now + PATHFINDER_G_MS
-            let entry = transport.announce_table.get(&dest_hash).unwrap();
+            let entry = transport.storage().get_announce(&dest_hash).unwrap();
             assert!(entry.retransmit_at_ms.is_some());
             assert_eq!(entry.retries, 1);
 
@@ -3476,7 +3480,7 @@ mod tests {
             transport.poll();
 
             // Retries should be incremented to 2
-            if let Some(entry) = transport.announce_table.get(&dest_hash) {
+            if let Some(entry) = transport.storage().get_announce(&dest_hash) {
                 assert_eq!(entry.retries, 2);
             }
         }
@@ -3507,7 +3511,7 @@ mod tests {
             transport.drain_events();
 
             // Should have no retransmit scheduled
-            let entry = transport.announce_table.get(&dest_hash).unwrap();
+            let entry = transport.storage().get_announce(&dest_hash).unwrap();
             assert!(entry.retransmit_at_ms.is_none());
 
             // Advance and poll - should not forward anything
@@ -3527,7 +3531,7 @@ mod tests {
             transport.drain_events();
 
             // Immediate first rebroadcast already happened — retries=1
-            let entry = transport.announce_table.get(&dest_hash).unwrap();
+            let entry = transport.storage().get_announce(&dest_hash).unwrap();
             assert_eq!(entry.retries, 1);
 
             // Second retransmit via poll: retries goes 1 -> 2
@@ -3539,7 +3543,7 @@ mod tests {
             transport.poll();
 
             assert!(
-                !transport.announce_table.contains_key(&dest_hash),
+                transport.storage().get_announce(&dest_hash).is_none(),
                 "Entry should be removed after exceeding PATHFINDER_RETRIES"
             );
         }
@@ -3585,7 +3589,7 @@ mod tests {
             transport.drain_events();
 
             // Should have no retransmit scheduled for PATH_RESPONSE context
-            let entry = transport.announce_table.get(&dest_hash).unwrap();
+            let entry = transport.storage().get_announce(&dest_hash).unwrap();
             assert!(entry.retransmit_at_ms.is_none());
             assert!(entry.block_rebroadcasts);
         }
@@ -3602,13 +3606,13 @@ mod tests {
             transport.drain_events();
 
             // Verify retransmit is scheduled
-            let entry = transport.announce_table.get(&dest_hash).unwrap();
+            let entry = transport.storage().get_announce(&dest_hash).unwrap();
             assert!(entry.retransmit_at_ms.is_some());
 
             // Now create a "same announce from neighbor" at hops=2 (hops+1)
             // We can't use the same dest hash with a different packet easily,
             // so we manually simulate by adjusting the announce table
-            if let Some(entry) = transport.announce_table.get_mut(&dest_hash) {
+            if let Some(entry) = transport.storage_mut().get_announce_mut(&dest_hash) {
                 entry.local_rebroadcasts = LOCAL_REBROADCASTS_MAX;
             }
 
@@ -3616,7 +3620,7 @@ mod tests {
             transport.clock.advance(10_000);
             transport.poll();
 
-            assert!(!transport.announce_table.contains_key(&dest_hash));
+            assert!(transport.storage().get_announce(&dest_hash).is_none());
         }
 
         #[test]
@@ -4033,7 +4037,9 @@ mod tests {
             transport.drain_events();
 
             // Clear announce table to simulate fresh state (but keep cache)
-            transport.announce_table.clear();
+            for key in transport.storage().announce_keys() {
+                transport.storage_mut().remove_announce(&key);
+            }
 
             // Now receive a path request for that destination
             let path_req_hash = transport.path_request_hash;
@@ -4062,8 +4068,8 @@ mod tests {
             let len = packet.pack(&mut buf).unwrap();
             transport.process_incoming(1, &buf[..len]).unwrap();
 
-            // Should have inserted a PATH_RESPONSE announce in the announce_table
-            let entry = transport.announce_table.get(&dest_hash);
+            // Should have inserted a PATH_RESPONSE announce in the announce table
+            let entry = transport.storage().get_announce(&dest_hash);
             assert!(
                 entry.is_some(),
                 "Should have announce table entry for path response"
@@ -5057,7 +5063,7 @@ mod tests {
 
             // AND should schedule a rebroadcast from the cache
             assert!(
-                transport.announce_table.contains_key(&dest_hash),
+                transport.storage().get_announce(&dest_hash).is_some(),
                 "Should schedule announce rebroadcast from cache"
             );
         }
@@ -8705,7 +8711,7 @@ mod tests {
             let now1 = transport.clock.now_ms();
             let raw1 = make_announce_raw_for_dest(&dest, 1, now1);
             transport.process_incoming(0, &raw1).unwrap();
-            assert!(transport.announce_table.contains_key(&dest_hash));
+            assert!(transport.storage().get_announce(&dest_hash).is_some());
             assert_eq!(transport.storage().announce_rate_count(), 1);
 
             // Advance past both the simple rate limit and the rate target
@@ -8719,7 +8725,7 @@ mod tests {
 
             // Should be accepted into announce_table
             assert!(
-                transport.announce_table.contains_key(&dest_hash),
+                transport.storage().get_announce(&dest_hash).is_some(),
                 "Announce within rate limit should be accepted"
             );
         }
@@ -8746,7 +8752,7 @@ mod tests {
             let now1 = transport.clock.now_ms();
             let raw1 = make_announce_raw_for_dest(&dest, 1, now1);
             transport.process_incoming(0, &raw1).unwrap();
-            assert!(transport.announce_table.contains_key(&dest_hash));
+            assert!(transport.storage().get_announce(&dest_hash).is_some());
             assert!(transport.has_path(&dest_hash));
 
             // Advance past simple rate limit but LESS than rate target (10s)
@@ -8765,8 +8771,8 @@ mod tests {
             );
 
             // Announce table entry should NOT be updated (rebroadcast blocked)
-            // The announce_table still has the first entry's timestamp
-            let entry = transport.announce_table.get(&dest_hash).unwrap();
+            // The announce table still has the first entry's timestamp
+            let entry = transport.storage().get_announce(&dest_hash).unwrap();
             assert_eq!(
                 entry.timestamp_ms, now1,
                 "Announce table should not be updated when rate-blocked"
@@ -8813,7 +8819,7 @@ mod tests {
             let now3 = transport.clock.now_ms();
             let raw3 = make_announce_raw_for_dest(&dest, 1, now3);
             transport.process_incoming(0, &raw3).unwrap();
-            let entry = transport.announce_table.get(&dest_hash).unwrap();
+            let entry = transport.storage().get_announce(&dest_hash).unwrap();
             assert_eq!(
                 entry.timestamp_ms, t0,
                 "Should still be blocked at t0 + 14_999"
@@ -8825,7 +8831,7 @@ mod tests {
             let now4 = transport.clock.now_ms();
             let raw4 = make_announce_raw_for_dest(&dest, 1, now4);
             transport.process_incoming(0, &raw4).unwrap();
-            let entry = transport.announce_table.get(&dest_hash).unwrap();
+            let entry = transport.storage().get_announce(&dest_hash).unwrap();
             assert_eq!(
                 entry.timestamp_ms, now4,
                 "Should be accepted after block expires"
@@ -8872,8 +8878,8 @@ mod tests {
             let raw_a2 = make_announce_raw_for_dest(&dest_a, 1, now2);
             transport.process_incoming(0, &raw_a2).unwrap();
 
-            // dest_a should be rate-blocked (announce_table timestamp unchanged)
-            let entry_a = transport.announce_table.get(&hash_a).unwrap();
+            // dest_a should be rate-blocked (announce table timestamp unchanged)
+            let entry_a = transport.storage().get_announce(&hash_a).unwrap();
             assert_eq!(entry_a.timestamp_ms, now1, "dest_a should be rate-blocked");
 
             // dest_b should still be able to accept announces
@@ -8892,7 +8898,7 @@ mod tests {
             let raw_b3 = make_announce_raw_for_dest(&dest_b, 1, now3);
             transport.process_incoming(0, &raw_b3).unwrap();
 
-            let entry_b = transport.announce_table.get(&hash_b).unwrap();
+            let entry_b = transport.storage().get_announce(&hash_b).unwrap();
             assert_eq!(
                 entry_b.timestamp_ms, now3,
                 "dest_b should be accepted (not blocked by dest_a's violation)"
@@ -8974,7 +8980,7 @@ mod tests {
 
             // Announce should be accepted (not blocked)
             assert!(
-                transport.announce_table.contains_key(&dest_hash),
+                transport.storage().get_announce(&dest_hash).is_some(),
                 "Announce should be accepted when violations are within grace"
             );
         }
@@ -9020,7 +9026,7 @@ mod tests {
 
             // current_rate = now_after - t0 = 10_001 > 10_000 target → good rate
             // violations decrement from 1 to 0, not blocked
-            let entry = transport.announce_table.get(&dest_hash).unwrap();
+            let entry = transport.storage().get_announce(&dest_hash).unwrap();
             assert_eq!(
                 entry.timestamp_ms, now_after,
                 "Announce should be accepted after block expires"
@@ -9047,7 +9053,7 @@ mod tests {
             let now1 = transport.clock.now_ms();
             let raw1 = make_announce_raw_for_dest(&dest, 1, now1);
             transport.process_incoming(0, &raw1).unwrap();
-            assert!(transport.announce_table.contains_key(&dest_hash));
+            assert!(transport.storage().get_announce(&dest_hash).is_some());
 
             transport.clock.advance(ANNOUNCE_RATE_LIMIT_MS + 1);
             transport.storage_mut().clear_packet_hashes();
@@ -9056,7 +9062,7 @@ mod tests {
             transport.process_incoming(0, &raw2).unwrap();
 
             // Should be accepted (rate limiting is disabled)
-            let entry = transport.announce_table.get(&dest_hash).unwrap();
+            let entry = transport.storage().get_announce(&dest_hash).unwrap();
             assert_eq!(
                 entry.timestamp_ms, now2,
                 "Announce should be accepted when rate limiting is disabled"
@@ -9086,10 +9092,10 @@ mod tests {
                 "PATH_RESPONSE announces should not be rate-tracked"
             );
 
-            // Should be in announce_table
+            // Should be in announce table
             assert!(
-                transport.announce_table.contains_key(&dest_hash),
-                "PATH_RESPONSE announce should be in announce_table"
+                transport.storage().get_announce(&dest_hash).is_some(),
+                "PATH_RESPONSE announce should be in announce table"
             );
         }
 

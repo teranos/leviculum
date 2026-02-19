@@ -1102,9 +1102,11 @@ mod tests {
         use crate::transport::{Action, InterfaceId};
 
         let clock = MockClock::new(TEST_TIME_MS);
-        let mut node = NodeCoreBuilder::new()
-            .enable_transport(true)
-            .build(OsRng, clock, NoStorage);
+        let mut node = NodeCoreBuilder::new().enable_transport(true).build(
+            OsRng,
+            clock,
+            MemoryStorage::with_defaults(),
+        );
 
         // Create a valid announce from a remote destination
         let identity = Identity::generate(&mut OsRng);
