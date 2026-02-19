@@ -47,6 +47,10 @@ pub(crate) struct Storage {
     /// Loaded from disk at construction, merged with runtime identities
     /// and saved to disk by flush().
     known_dest_entries: BTreeMap<[u8; TRUNCATED_HASHBYTES], KnownDestEntry>,
+    /// True when add_packet_hash() has been called since last flush.
+    packet_hashes_dirty: bool,
+    /// True when set_identity() has been called since last flush.
+    identities_dirty: bool,
 }
 
 impl Storage {
@@ -110,6 +114,8 @@ impl Storage {
             base_path,
             inner,
             known_dest_entries,
+            packet_hashes_dirty: false,
+            identities_dirty: false,
         })
     }
 
@@ -135,13 +141,7 @@ impl Storage {
 
     /// Write raw bytes to the storage root (atomic via .tmp + rename)
     pub(crate) fn write_root(&self, name: &str, data: &[u8]) -> Result<()> {
-        let path = self.base_path.join(name);
-        let temp_path = path.with_extension("tmp");
-        std::fs::write(&temp_path, data)
-            .map_err(|e| Error::Storage(format!("Failed to write temp file: {e}")))?;
-        std::fs::rename(&temp_path, &path)
-            .map_err(|e| Error::Storage(format!("Failed to rename temp file: {e}")))?;
-        Ok(())
+        atomic_write(&self.base_path.join(name), data)
     }
 
     /// Read raw bytes from storage
@@ -151,19 +151,10 @@ impl Storage {
             .map_err(|e| Error::Storage(format!("Failed to read {}: {e}", path.display())))
     }
 
-    /// Write raw bytes to storage
+    /// Write raw bytes to storage (atomic via .tmp + rename)
     pub(crate) fn write_raw(&self, category: &str, name: &str, data: &[u8]) -> Result<()> {
         let category_path = self.ensure_category(category)?;
-        let path = category_path.join(name);
-
-        // Write to temp file first, then rename (atomic on most systems)
-        let temp_path = path.with_extension("tmp");
-        std::fs::write(&temp_path, data)
-            .map_err(|e| Error::Storage(format!("Failed to write temp file: {e}")))?;
-        std::fs::rename(&temp_path, &path)
-            .map_err(|e| Error::Storage(format!("Failed to rename temp file: {e}")))?;
-
-        Ok(())
+        atomic_write(&category_path.join(name), data)
     }
 
     /// Read msgpack-serialized data
@@ -229,6 +220,24 @@ impl Storage {
     }
 }
 
+/// Atomic write: write to .tmp then rename into place.
+fn atomic_write(path: &Path, data: &[u8]) -> Result<()> {
+    let temp_path = path.with_extension("tmp");
+    std::fs::write(&temp_path, data)
+        .map_err(|e| Error::Storage(format!("Failed to write temp file: {e}")))?;
+    std::fs::rename(&temp_path, path)
+        .map_err(|e| Error::Storage(format!("Failed to rename temp file: {e}")))?;
+    Ok(())
+}
+
+/// Current Unix timestamp in seconds (f64), matching Python `time.time()`.
+fn unix_timestamp_secs() -> f64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_secs_f64())
+        .unwrap_or(0.0)
+}
+
 fn hex_encode(bytes: &[u8]) -> String {
     use std::fmt::Write;
     bytes
@@ -261,7 +270,8 @@ impl reticulum_core::traits::Storage for Storage {
         self.inner.has_packet_hash(hash)
     }
     fn add_packet_hash(&mut self, hash: [u8; 32]) {
-        self.inner.add_packet_hash(hash)
+        self.inner.add_packet_hash(hash);
+        self.packet_hashes_dirty = true;
     }
 
     // ─── Path Table ──────────────────────────────────────────────────────
@@ -454,7 +464,8 @@ impl reticulum_core::traits::Storage for Storage {
         dest_hash: [u8; TRUNCATED_HASHBYTES],
         identity: reticulum_core::Identity,
     ) {
-        self.inner.set_identity(dest_hash, identity)
+        self.inner.set_identity(dest_hash, identity);
+        self.identities_dirty = true;
     }
 
     // ─── Cleanup ─────────────────────────────────────────────────────────
@@ -507,68 +518,76 @@ impl reticulum_core::traits::Storage for Storage {
     // ─── Flush (persist to disk) ─────────────────────────────────────────
 
     fn flush(&mut self) {
-        let timestamp = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .map(|d| d.as_secs_f64())
-            .unwrap_or(0.0);
-
-        // 1. Merge runtime identities into known_dest_entries.
-        //    New identities get a minimal entry; existing entries get their
-        //    timestamp and public_key refreshed (the runtime version was just
-        //    validated from a live announce, so it takes precedence over the
-        //    disk version). app_data and packet_hash are preserved — they
-        //    come from the original announce and are not available here.
-        for (hash, identity) in self.inner.known_identity_iter() {
-            self.known_dest_entries
-                .entry(*hash)
-                .and_modify(|e| {
-                    e.timestamp = timestamp;
-                    e.public_key = identity.public_key_bytes();
-                })
-                .or_insert_with(|| KnownDestEntry {
-                    timestamp,
-                    packet_hash: vec![0u8; PACKET_HASH_LEN],
-                    public_key: identity.public_key_bytes(),
-                    app_data: None,
-                });
+        if !self.identities_dirty && !self.packet_hashes_dirty {
+            tracing::debug!("Flush skipped — nothing dirty");
+            return;
         }
 
-        // 2. Merge with on-disk entries (preserving entries added by other
-        //    processes, matching Python behavior).
-        let mut merged = self.known_dest_entries.clone();
-        if let Ok(bytes) = std::fs::read(self.base_path.join(KNOWN_DESTINATIONS_FILE)) {
-            if let Ok(disk_entries) = decode_known_destinations(&bytes) {
-                for (hash, entry) in disk_entries {
-                    merged.entry(hash).or_insert(entry);
+        // 1. Write known_destinations (only if identities changed)
+        if self.identities_dirty {
+            let timestamp = unix_timestamp_secs();
+
+            // Merge runtime identities into known_dest_entries.
+            // New identities get a minimal entry; existing entries get their
+            // timestamp and public_key refreshed (the runtime version was just
+            // validated from a live announce, so it takes precedence over the
+            // disk version). app_data and packet_hash are preserved — they
+            // come from the original announce and are not available here.
+            for (hash, identity) in self.inner.known_identity_iter() {
+                self.known_dest_entries
+                    .entry(*hash)
+                    .and_modify(|e| {
+                        e.timestamp = timestamp;
+                        e.public_key = identity.public_key_bytes();
+                    })
+                    .or_insert_with(|| KnownDestEntry {
+                        timestamp,
+                        packet_hash: vec![0u8; PACKET_HASH_LEN],
+                        public_key: identity.public_key_bytes(),
+                        app_data: None,
+                    });
+            }
+
+            // Merge with on-disk entries (preserving entries added by other
+            // processes, matching Python behavior).
+            let mut merged = self.known_dest_entries.clone();
+            if let Ok(bytes) = std::fs::read(self.base_path.join(KNOWN_DESTINATIONS_FILE)) {
+                if let Ok(disk_entries) = decode_known_destinations(&bytes) {
+                    for (hash, entry) in disk_entries {
+                        merged.entry(hash).or_insert(entry);
+                    }
+                }
+            }
+
+            match encode_known_destinations(&merged) {
+                Ok(encoded) => {
+                    if let Err(e) = self.write_root(KNOWN_DESTINATIONS_FILE, &encoded) {
+                        tracing::error!("Failed to save known_destinations: {e}");
+                    } else {
+                        self.identities_dirty = false;
+                        tracing::debug!("Saved {} known destinations to storage", merged.len());
+                    }
+                }
+                Err(e) => {
+                    tracing::warn!("Failed to encode known_destinations: {e}");
                 }
             }
         }
 
-        // 3. Write known_destinations
-        match encode_known_destinations(&merged) {
-            Ok(encoded) => {
-                if let Err(e) = self.write_root(KNOWN_DESTINATIONS_FILE, &encoded) {
-                    tracing::warn!("Failed to save known_destinations: {e}");
-                } else {
-                    tracing::debug!("Saved {} known destinations to storage", merged.len());
+        // 2. Write packet_hashlist (only if hashes changed)
+        if self.packet_hashes_dirty {
+            match encode_packet_hashlist(self.inner.packet_hash_iter()) {
+                Ok((encoded, count)) => {
+                    if let Err(e) = self.write_root(PACKET_HASHLIST_FILE, &encoded) {
+                        tracing::error!("Failed to save packet_hashlist: {e}");
+                    } else {
+                        self.packet_hashes_dirty = false;
+                        tracing::debug!("Saved {count} packet hashes to storage");
+                    }
                 }
-            }
-            Err(e) => {
-                tracing::warn!("Failed to encode known_destinations: {e}");
-            }
-        }
-
-        // 4. Write packet_hashlist
-        match encode_packet_hashlist(self.inner.packet_hash_iter()) {
-            Ok((encoded, count)) => {
-                if let Err(e) = self.write_root(PACKET_HASHLIST_FILE, &encoded) {
-                    tracing::warn!("Failed to save packet_hashlist: {e}");
-                } else {
-                    tracing::debug!("Saved {count} packet hashes to storage");
+                Err(e) => {
+                    tracing::warn!("Failed to encode packet_hashlist: {e}");
                 }
-            }
-            Err(e) => {
-                tracing::warn!("Failed to encode packet_hashlist: {e}");
             }
         }
     }

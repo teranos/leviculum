@@ -19,6 +19,15 @@ use crate::storage_types::{
 };
 use crate::traits::{Storage, StorageError};
 
+/// Default identity capacity for desktop/Linux (generous).
+const DEFAULT_IDENTITY_CAP: usize = 5_000_000;
+
+/// Compact packet hash capacity for constrained devices.
+const COMPACT_PACKET_HASH_CAP: usize = 10_000;
+
+/// Compact identity capacity for constrained devices.
+const COMPACT_IDENTITY_CAP: usize = 1_000;
+
 /// In-memory storage with configurable per-collection capacity limits.
 ///
 /// Uses BTreeMap/BTreeSet for all collections. Not persistent — all data is
@@ -56,6 +65,7 @@ pub struct MemoryStorage {
     // ─── Path requests ──────────────────────────────────────────────────
     path_requests: BTreeMap<[u8; TRUNCATED_HASHBYTES], u64>,
     path_request_tags: VecDeque<[u8; 32]>,
+    path_request_tag_set: BTreeSet<[u8; 32]>,
 
     // ─── Known identities ───────────────────────────────────────────────
     known_identities: BTreeMap<[u8; TRUNCATED_HASHBYTES], Identity>,
@@ -69,7 +79,7 @@ impl MemoryStorage {
     pub fn with_defaults() -> Self {
         Self {
             packet_hash_cap: HASHLIST_MAXSIZE,
-            identity_cap: 5_000_000,
+            identity_cap: DEFAULT_IDENTITY_CAP,
             packet_cache: BTreeSet::new(),
             packet_cache_prev: BTreeSet::new(),
             path_table: BTreeMap::new(),
@@ -82,6 +92,7 @@ impl MemoryStorage {
             receipts: BTreeMap::new(),
             path_requests: BTreeMap::new(),
             path_request_tags: VecDeque::new(),
+            path_request_tag_set: BTreeSet::new(),
             known_identities: BTreeMap::new(),
             generic: BTreeMap::new(),
         }
@@ -90,8 +101,8 @@ impl MemoryStorage {
     /// Create MemoryStorage with small caps (suitable for constrained devices)
     pub fn compact() -> Self {
         Self {
-            packet_hash_cap: 10_000,
-            identity_cap: 1_000,
+            packet_hash_cap: COMPACT_PACKET_HASH_CAP,
+            identity_cap: COMPACT_IDENTITY_CAP,
             ..Self::with_defaults()
         }
     }
@@ -138,6 +149,7 @@ impl MemoryStorage {
         self.receipts.clear();
         self.path_requests.clear();
         self.path_request_tags.clear();
+        self.path_request_tag_set.clear();
         self.known_identities.clear();
         self.generic.clear();
     }
@@ -340,12 +352,15 @@ impl Storage for MemoryStorage {
     }
 
     fn check_path_request_tag(&mut self, tag: &[u8; 32]) -> bool {
-        if self.path_request_tags.contains(tag) {
+        if self.path_request_tag_set.contains(tag) {
             return true;
         }
         self.path_request_tags.push_back(*tag);
+        self.path_request_tag_set.insert(*tag);
         while self.path_request_tags.len() > MAX_PATH_REQUEST_TAGS {
-            self.path_request_tags.pop_front();
+            if let Some(evicted) = self.path_request_tags.pop_front() {
+                self.path_request_tag_set.remove(&evicted);
+            }
         }
         false
     }
@@ -741,5 +756,247 @@ mod tests {
         assert!(s.get_path_state(&h1).is_some());
         assert!(s.get_path_state(&h2).is_none());
         assert!(s.get_announce_rate(&h2).is_none());
+    }
+
+    // ─── D1: Announce table operations ────────────────────────────────
+
+    #[test]
+    fn test_announce_table_operations() {
+        let mut s = MemoryStorage::with_defaults();
+        let h1 = [0x01u8; TRUNCATED_HASHBYTES];
+        let h2 = [0x02u8; TRUNCATED_HASHBYTES];
+
+        // Initially empty
+        assert!(s.get_announce(&h1).is_none());
+        assert!(s.announce_keys().is_empty());
+
+        // Set and get
+        s.set_announce(
+            h1,
+            AnnounceEntry {
+                timestamp_ms: 1000,
+                hops: 2,
+                retries: 0,
+                retransmit_at_ms: Some(2000),
+                raw_packet: [0xAA; 10].to_vec(),
+                receiving_interface_index: 0,
+                local_rebroadcasts: 0,
+                block_rebroadcasts: false,
+            },
+        );
+        assert_eq!(s.get_announce(&h1).unwrap().hops, 2);
+
+        // Mutable access
+        s.get_announce_mut(&h1).unwrap().retries = 3;
+        assert_eq!(s.get_announce(&h1).unwrap().retries, 3);
+
+        // Second entry and keys
+        s.set_announce(
+            h2,
+            AnnounceEntry {
+                timestamp_ms: 2000,
+                hops: 1,
+                retries: 0,
+                retransmit_at_ms: None,
+                raw_packet: [0xBB; 5].to_vec(),
+                receiving_interface_index: 1,
+                local_rebroadcasts: 0,
+                block_rebroadcasts: true,
+            },
+        );
+        let keys = s.announce_keys();
+        assert_eq!(keys.len(), 2);
+        assert!(keys.contains(&h1));
+        assert!(keys.contains(&h2));
+
+        // Remove
+        let removed = s.remove_announce(&h1);
+        assert!(removed.is_some());
+        assert_eq!(removed.unwrap().hops, 2);
+        assert!(s.get_announce(&h1).is_none());
+        assert_eq!(s.announce_keys().len(), 1);
+
+        // Announce cache
+        assert!(s.get_announce_cache(&h2).is_none());
+        s.set_announce_cache(h2, [0xCC; 20].to_vec());
+        assert_eq!(s.get_announce_cache(&h2).unwrap().len(), 20);
+
+        // Announce rate
+        assert!(s.get_announce_rate(&h2).is_none());
+        s.set_announce_rate(
+            h2,
+            AnnounceRateEntry {
+                last_ms: 500,
+                rate_violations: 2,
+                blocked_until_ms: 3000,
+            },
+        );
+        let rate = s.get_announce_rate(&h2).unwrap();
+        assert_eq!(rate.rate_violations, 2);
+        assert_eq!(rate.blocked_until_ms, 3000);
+    }
+
+    // ─── D2: earliest_link_deadline ───────────────────────────────────
+
+    #[test]
+    fn test_earliest_link_deadline() {
+        let mut s = MemoryStorage::with_defaults();
+
+        // Empty → None
+        assert_eq!(s.earliest_link_deadline(5000), None);
+
+        // Validated entry: deadline = timestamp_ms + link_timeout_ms
+        let h1 = [0x01u8; TRUNCATED_HASHBYTES];
+        s.set_link_entry(
+            h1,
+            LinkEntry {
+                timestamp_ms: 1000,
+                next_hop_interface_index: 0,
+                remaining_hops: 1,
+                received_interface_index: 1,
+                hops: 1,
+                validated: true,
+                proof_timeout_ms: 0,
+                destination_hash: [0u8; TRUNCATED_HASHBYTES],
+                peer_signing_key: None,
+            },
+        );
+        assert_eq!(s.earliest_link_deadline(5000), Some(6000));
+
+        // Unvalidated entry with earlier deadline: uses proof_timeout_ms directly
+        let h2 = [0x02u8; TRUNCATED_HASHBYTES];
+        s.set_link_entry(
+            h2,
+            LinkEntry {
+                timestamp_ms: 2000,
+                next_hop_interface_index: 0,
+                remaining_hops: 1,
+                received_interface_index: 1,
+                hops: 1,
+                validated: false,
+                proof_timeout_ms: 3000,
+                destination_hash: [0u8; TRUNCATED_HASHBYTES],
+                peer_signing_key: None,
+            },
+        );
+        // min(6000, 3000) = 3000
+        assert_eq!(s.earliest_link_deadline(5000), Some(3000));
+    }
+
+    // ─── D3: Unvalidated link entry expiry ────────────────────────────
+
+    #[test]
+    fn test_link_entry_expire_unvalidated() {
+        let mut s = MemoryStorage::with_defaults();
+        let h1 = [0x01u8; TRUNCATED_HASHBYTES];
+
+        s.set_link_entry(
+            h1,
+            LinkEntry {
+                timestamp_ms: 1000,
+                next_hop_interface_index: 0,
+                remaining_hops: 1,
+                received_interface_index: 1,
+                hops: 1,
+                validated: false,
+                proof_timeout_ms: 5000,
+                destination_hash: [0u8; TRUNCATED_HASHBYTES],
+                peer_signing_key: None,
+            },
+        );
+
+        // now_ms=4000 < proof_timeout_ms=5000 → not expired
+        let expired = s.expire_link_entries(4000, 999_999);
+        assert!(expired.is_empty());
+
+        // now_ms=6000 > proof_timeout_ms=5000 → expired
+        let expired = s.expire_link_entries(6000, 999_999);
+        assert_eq!(expired.len(), 1);
+        assert_eq!(expired[0].0, h1);
+    }
+
+    // ─── D4: remove_link_entries_for_interface ────────────────────────
+
+    #[test]
+    fn test_remove_link_entries_for_interface() {
+        let mut s = MemoryStorage::with_defaults();
+        let h1 = [0x01u8; TRUNCATED_HASHBYTES];
+        let h2 = [0x02u8; TRUNCATED_HASHBYTES];
+        let h3 = [0x03u8; TRUNCATED_HASHBYTES];
+
+        let make_entry = |recv: usize, next: usize| LinkEntry {
+            timestamp_ms: 1000,
+            next_hop_interface_index: next,
+            remaining_hops: 1,
+            received_interface_index: recv,
+            hops: 1,
+            validated: true,
+            proof_timeout_ms: 0,
+            destination_hash: [0u8; TRUNCATED_HASHBYTES],
+            peer_signing_key: None,
+        };
+
+        // h1: received on iface 0, forwarded on iface 1
+        s.set_link_entry(h1, make_entry(0, 1));
+        // h2: received on iface 1, forwarded on iface 2
+        s.set_link_entry(h2, make_entry(1, 2));
+        // h3: received on iface 2, forwarded on iface 3
+        s.set_link_entry(h3, make_entry(2, 3));
+
+        // Remove all entries involving iface 1 (h1 forwards on 1, h2 received on 1)
+        let removed = s.remove_link_entries_for_interface(1);
+        assert_eq!(removed.len(), 2);
+        assert!(s.get_link_entry(&h1).is_none());
+        assert!(s.get_link_entry(&h2).is_none());
+        assert!(s.get_link_entry(&h3).is_some());
+    }
+
+    // ─── D5: remove_paths_for_interface ───────────────────────────────
+
+    #[test]
+    fn test_remove_paths_for_interface() {
+        let mut s = MemoryStorage::with_defaults();
+        let h1 = [0x01u8; TRUNCATED_HASHBYTES];
+        let h2 = [0x02u8; TRUNCATED_HASHBYTES];
+        let h3 = [0x03u8; TRUNCATED_HASHBYTES];
+
+        let make_path = |iface: usize| PathEntry {
+            hops: 1,
+            expires_ms: u64::MAX,
+            interface_index: iface,
+            random_blobs: Vec::new(),
+            next_hop: None,
+        };
+
+        s.set_path(h1, make_path(0));
+        s.set_path(h2, make_path(1));
+        s.set_path(h3, make_path(1));
+
+        let removed = s.remove_paths_for_interface(1);
+        assert_eq!(removed.len(), 2);
+        assert!(removed.contains(&h2));
+        assert!(removed.contains(&h3));
+        assert!(s.get_path(&h1).is_some());
+        assert!(s.get_path(&h2).is_none());
+        assert!(s.get_path(&h3).is_none());
+    }
+
+    // ─── D6: path_request_time get/set ────────────────────────────────
+
+    #[test]
+    fn test_path_request_time() {
+        let mut s = MemoryStorage::with_defaults();
+        let h1 = [0x01u8; TRUNCATED_HASHBYTES];
+
+        // Initially none
+        assert_eq!(s.get_path_request_time(&h1), None);
+
+        // Set and get
+        s.set_path_request_time(h1, 42000);
+        assert_eq!(s.get_path_request_time(&h1), Some(42000));
+
+        // Overwrite
+        s.set_path_request_time(h1, 99000);
+        assert_eq!(s.get_path_request_time(&h1), Some(99000));
     }
 }

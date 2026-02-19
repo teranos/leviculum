@@ -12,6 +12,9 @@ use crate::error::{Error, Result};
 
 pub(crate) const PACKET_HASHLIST_FILE: &str = "packet_hashlist";
 
+/// SHA-256 hash size in bytes.
+const PACKET_HASH_SIZE: usize = 32;
+
 /// Decode a packet_hashlist msgpack blob.
 pub(crate) fn decode_packet_hashlist(data: &[u8]) -> Result<BTreeSet<[u8; 32]>> {
     let value: rmpv::Value = rmpv::decode::read_value(&mut &data[..])
@@ -24,7 +27,7 @@ pub(crate) fn decode_packet_hashlist(data: &[u8]) -> Result<BTreeSet<[u8; 32]>> 
     let mut entries = BTreeSet::new();
     for item in arr {
         if let Some(bytes) = item.as_slice() {
-            if bytes.len() == 32 {
+            if bytes.len() == PACKET_HASH_SIZE {
                 let mut hash = [0u8; 32];
                 hash.copy_from_slice(bytes);
                 entries.insert(hash);

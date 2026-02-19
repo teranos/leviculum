@@ -89,10 +89,10 @@ pub(crate) type StdNodeCore = NodeCore<rand_core::OsRng, SystemClock, Storage>;
 const EVENT_CHANNEL_CAPACITY: usize = 256;
 
 /// Interval between periodic storage flushes (seconds).
-/// Limits data loss to at most this many seconds of identity discoveries
-/// if the process is killed without a clean shutdown.
+/// Crash protection only — normal shutdown calls flush() via signal handler.
+/// Lost data from a crash is recovered via fresh announces.
 /// Hardcoded — see E12 for making this configurable.
-const FLUSH_INTERVAL_SECS: u64 = 60;
+const FLUSH_INTERVAL_SECS: u64 = 3600;
 
 /// Event received from any interface
 enum RecvEvent {

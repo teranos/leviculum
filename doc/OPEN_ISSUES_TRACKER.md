@@ -24,10 +24,11 @@ Phase numbering follows `doc/BATTLEPLAN.md`. Phases 0–7 are complete.
 |----|---|-------|--------|----------|---------|
 | E10 | M | post-7 | open | Feature | Interface-specific send-side jitter for shared-medium interfaces |
 | E11 | L | post-7 | open | Refactor | Migrate ratchet.rs to new Storage trait methods |
-| E12 | L | post-7 | open | Feature | Periodic flush interval should be configurable (currently hardcoded 60s) |
+| E12 | L | post-7 | open | Feature | Periodic flush interval should be configurable (currently hardcoded 3600s) |
 | E13 | L | post-7 | open | Design | Storage trait returns references — blocks disk-backed implementations |
 | E14 | L | post-7 | open | Design | FileStorage wraps MemoryStorage — cannot use IndexMap for insertion-order eviction |
 | E15 | L | post-7 | open | Docs | Git history has 11 commits where FileStorage was no-op — avoid git bisect in that range |
+| E16 | L | post-7 | open | Perf | FileStorage writes complete files on every flush — consider delta-based persistence |
 
 ---
 
@@ -66,7 +67,7 @@ Phase numbering follows `doc/BATTLEPLAN.md`. Phases 0–7 are complete.
 - **Priority:** L
 - **Phase:** post-7
 - **Category:** Feature
-- **Detail:** The periodic storage flush interval is hardcoded to 60 seconds in `reticulum-std/src/driver/mod.rs` (`FLUSH_INTERVAL_SECS`). This should be configurable via `ReticulumNodeBuilder` or the config file for deployments where a different trade-off between disk I/O and data loss window is desired.
+- **Detail:** The periodic storage flush interval is hardcoded to 3600 seconds (1 hour) in `reticulum-std/src/driver/mod.rs` (`FLUSH_INTERVAL_SECS`). The periodic flush is crash protection only — normal shutdown calls `flush()` via the signal handler. This should be configurable via `ReticulumNodeBuilder` or the config file for deployments where a different trade-off between disk I/O and data loss window is desired.
 - **Fix:** Add a `flush_interval_secs` field to `ReticulumNodeBuilder` and pass it through to the event loop.
 - **Test:** Unit test: verify builder accepts custom flush interval.
 
@@ -96,3 +97,13 @@ Phase numbering follows `doc/BATTLEPLAN.md`. Phases 0–7 are complete.
 - **Detail:** During the Storage trait refactoring (E9), commits 0a–11 (between the initial Storage trait introduction and the final FileStorage-wraps-MemoryStorage design) had a FileStorage that was partially or fully no-op for runtime collections. `git bisect` in that range may produce misleading results because storage operations silently did nothing. The affected range is roughly from "Migrate path_table to Storage trait" through "FileStorage wraps MemoryStorage for runtime collections".
 - **Fix:** No code change needed. If bisecting a storage-related bug, skip this commit range.
 - **Test:** N/A — informational only.
+
+### E16: FileStorage writes complete files on every flush — consider delta-based persistence
+- **Status:** open
+- **Priority:** L
+- **Phase:** post-7
+- **Category:** Perf
+- **Blocked-by:** Python msgpack format compatibility
+- **Detail:** FileStorage rewrites the entire `known_destinations` and `packet_hashlist` files on every flush. On high-traffic nodes these files can reach 14 MB+. Dirty-flag tracking (added Feb 2026) avoids writes when idle, but when dirty the full file is still rewritten. On SD-card-based devices (Raspberry Pi), frequent full rewrites accelerate wear. An append-only or delta-based format would reduce write amplification, but the Python-compatible msgpack format encodes total element count in the file header, making appending impossible without breaking compatibility.
+- **Fix:** Requires a new on-disk format (e.g., log-structured or one-value-per-record) with a migration path from the current msgpack format. Python compatibility would need a conversion tool or dual-format support.
+- **Test:** Benchmark write amplification before and after format change.
