@@ -28,7 +28,7 @@
 
 ## Aktueller Stand
 
-**Aktuelle Version: 0.5.19.** Phase 1 (Protokoll-Fundament) und Phase 2 (Core API & Full Node) sind vollständig abgeschlossen, inklusive eines 7-phasigen Code-Refactorings (63 Issues in `doc/BATTLEPLAN.md`). Offene Issues: E9 (persistente Speicherung), E10 (Interface-spezifischer Jitter für Shared-Medium-Interfaces).
+**Aktuelle Version: 0.5.19.** Phase 1 (Protokoll-Fundament) und Phase 2 (Core API & Full Node) sind vollständig abgeschlossen, inklusive eines 7-phasigen Code-Refactorings (63 Issues in `doc/BATTLEPLAN.md`). Storage-Trait-Refactoring abgeschlossen: alle 11 Transport/NodeCore-Sammlungen auf typsicheren Storage-Trait migriert, FileStorage umschließt MemoryStorage mit Python-kompatibler Persistenz. Offene Issues: E10 (Interface-spezifischer Jitter für Shared-Medium-Interfaces).
 
 **Kernfunktionalität:** `NodeCore` (reticulum-core) und `ReticulumNode` (reticulum-std) bieten eine einheitliche async-kompatible API für Destinations, Links, Channels, Single-Packet-Verschlüsselung und Proof-Delivery. Vollständige Interoperabilität mit Python rnsd ist durch umfangreiche Interop-Tests nachgewiesen.
 
@@ -57,6 +57,7 @@
 | Node (High-Level API, Builder, Events, LinkManagement) | ✅ Fertig |
 | Transport Layer (Routing, Pfade, Announces, Relay) | ✅ Fertig |
 | HDLC-Framing (no_std + alloc) | ✅ Fertig |
+| Storage-Trait (typsicher, ~44 Methoden, 3 Implementierungen) | ✅ Fertig |
 | reticulum-std (Driver, TCP, Storage) | ✅ Fertig |
 | reticulum-ffi (C-API) | ✅ Grundfunktionen |
 | reticulum-cli (lrns, lrnsd) | 🔶 Teilweise |
@@ -162,7 +163,7 @@ Kleinere Lücken (nicht blockierend für v1.0): Announce-Expiry-Timer, mehrere P
 | ID | Beschreibung | Status |
 |----|-------------|--------|
 | A2 | TCP-Client-Reconnection | ✅ Behoben |
-| E9 | Persistente Speicherung für known_identities und path_table | ⬜ Offen |
+| E9 | Persistente Speicherung für known_identities und path_table | ✅ Behoben |
 | E10 | Interface-spezifischer Send-Side-Jitter für Shared-Medium-Interfaces | ⬜ Offen (v1.1, für LoRa/Serial) |
 
 ---
@@ -172,9 +173,11 @@ Kleinere Lücken (nicht blockierend für v1.0): Announce-Expiry-Timer, mehrere P
 ### Ziel
 Sicherheitsfeatures verdrahten, Daemon-Zustand persistieren, Release-Qualität erreichen.
 
-### Meilenstein 3.1: Persistente Speicherung (E9)
-- [ ] `known_identities` über Storage-Trait persistieren (laden bei Start, speichern bei Insert)
-- [ ] `path_table` persistieren (laden bei Start, speichern bei Update)
+### Meilenstein 3.1: Persistente Speicherung (E9) ✅
+- [x] `known_identities` über Storage-Trait persistieren (laden bei Start, speichern bei flush)
+- [x] `packet_hashlist` über Storage-Trait persistieren (laden bei Start, speichern bei flush)
+- [x] Alle 11 Transport/NodeCore-Sammlungen auf typsicheren Storage-Trait migriert
+- [x] FileStorage umschließt MemoryStorage + Python-kompatible Persistenz
 - [ ] Interop-Test: Rust-Node neustarten, zuvor bekannte Destinations ohne Re-Announce erreichbar
 
 ### Meilenstein 3.2: IFAC-Integration (B3)
@@ -219,7 +222,7 @@ Sicherheitsfeatures verdrahten, Daemon-Zustand persistieren, Release-Qualität e
 
 ```
 ┌─────────────────────┐
-│ 3.1 Persistenz (E9) │ ⬜ — Daemon-Neustart ohne State-Verlust
+│ 3.1 Persistenz (E9) │ ✅ — Storage-Trait-Refactoring abgeschlossen
 └─────────┬───────────┘
           ▼
 ┌─────────────────────┐
@@ -252,7 +255,7 @@ Sicherheitsfeatures verdrahten, Daemon-Zustand persistieren, Release-Qualität e
 - [x] no_std-Kompatibilität für reticulum-core
 - [ ] Forward Secrecy via Ratchets (B4)
 - [ ] Interface Access Codes / IFAC (B3)
-- [ ] Persistente Speicherung (E9)
+- [x] Persistente Speicherung (E9)
 - [ ] UDP Interface
 
 **Should-Have:**
@@ -350,6 +353,6 @@ Sicherheitsfeatures verdrahten, Daemon-Zustand persistieren, Release-Qualität e
 
 ---
 
-*Stand: 18. Februar 2026*
+*Stand: 19. Februar 2026*
 *Projekt: leviculum*
 *Lizenz: MIT*

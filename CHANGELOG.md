@@ -8,8 +8,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- **Storage trait refactoring (E9)** — all 11 long-lived Transport/NodeCore collections migrated to a type-safe Storage trait (~44 methods). Core is now a pure protocol engine with zero state management — Storage is the single source of truth for routing tables, link entries, announce state, packet dedup, receipts, path requests, known identities, and ratchets.
+- **`storage_types` module** (`reticulum-core`) — pure data structs shared between Storage and Transport: `PathEntry`, `PathState`, `ReverseEntry`, `LinkEntry`, `AnnounceEntry`, `AnnounceRateEntry`, `PacketReceipt`, `ReceiptStatus`. All `pub` with `pub` fields (data transfer objects at the Storage API boundary).
+- **`MemoryStorage`** (`reticulum-core`, `pub`) — BTreeMap/BTreeSet-backed Storage implementation with configurable per-collection caps. Not `#[cfg(test)]` — this is the production implementation for embedded targets and the test storage for core tests. Two presets: `with_defaults()` (generous for Linux) and `compact()` (small caps for constrained devices).
+- **`NoStorage`** (`reticulum-core`) — zero-sized no-op Storage implementation. All lookups return None/false/0, all writes are no-ops. For stubs, FFI, and smoke tests.
+- **FileStorage wraps MemoryStorage** (`reticulum-std`) — FileStorage now delegates all ~44 Storage trait methods to an internal MemoryStorage instance. Previously all non-persistent collections had no-op implementations, silently discarding runtime data. Now all collections have real BTreeMap-backed storage.
+- **FileStorage persistence** — `Storage::new()` loads known_destinations and packet_hashlist from disk automatically. `flush()` merges runtime identities with on-disk entries (preserving entries from other processes) and writes both files. Python-compatible msgpack formats.
+- **`packet_hash_iter()` and `known_identity_iter()`** on MemoryStorage — iterator methods for FileStorage's `flush()` to write persistent data to disk.
 - **Zero-delay core, interface-side collision avoidance** — new ARCHITECTURE.md section documenting the design principle: core forwards packets instantly with no artificial delay; collision avoidance is the interface's responsibility. Fast interfaces (TCP, UDP) transmit immediately; future shared-medium interfaces (LoRa, serial) will apply send-side jitter.
 - **E10: Interface-specific jitter tracking** — added to `doc/OPEN_ISSUES_TRACKER.md`. Documents the two jitter points needed for shared-medium interfaces (matching Python's `PATHFINDER_RW` values) and the implementation approach (send queue with configurable delay in the interface, not the core).
+- **E11: Ratchet migration tracking** — added to `doc/OPEN_ISSUES_TRACKER.md`. Tracks migration of ratchet.rs from legacy generic Storage API to new type-safe methods (B4 scope).
+
+### Changed
+- **Transport state fully delegated to Storage** — Transport no longer owns any BTreeMap/BTreeSet fields for long-lived data. All 11 collections (packet_cache, path_table, path_states, reverse_table, link_table, announce_table, announce_cache, announce_rate_table, receipts, path_requests, path_request_tags) accessed via `self.storage.*()` methods.
+- **NodeCore state delegated to Storage** — `KnownIdentities` struct removed from NodeCore. Identity lookup via `self.storage().get_identity()`, storage via `self.storage_mut().set_identity()`.
+- **Driver simplified** — removed `known_dests_store` and `storage_path` fields from `ReticulumNode`. `save_persistent_state()` now just calls `storage.flush()`. Builder no longer performs separate load-then-feed steps.
+- **`KnownDestinationsStore` moved to test-only** — production persistence handled by FileStorage directly.
+- **Cleanup methods return evicted entries** — `expire_paths()`, `expire_receipts()`, `expire_link_entries()` return removed entries so Transport can emit corresponding protocol events (PathLost, ReceiptTimeout, path rediscovery).
+- **`doc/ARCHITECTURE.md` updated** — new Storage Trait section documenting the trait design, three implementations, and collection inventory.
 
 ### Changed
 - **Immediate announce rebroadcast** — `handle_announce()` now emits a `Broadcast` action immediately instead of deferring to `poll()` with 0-500ms random jitter. Removes ~600ms per-hop latency from announce propagation through relay chains. Subsequent retransmits use flat `PATHFINDER_G_MS` (5s) intervals without jitter.

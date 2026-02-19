@@ -15,7 +15,9 @@ leviculum/
 │   ├── src/
 │   │   ├── lib.rs
 │   │   ├── constants.rs     # Protocol constants
-│   │   ├── traits.rs        # Platform traits: Clock, Storage, Interface
+│   │   ├── traits.rs        # Platform traits: Clock, Storage, Interface; NoStorage
+│   │   ├── storage_types.rs # Data types shared by Storage and Transport
+│   │   ├── memory_storage.rs # MemoryStorage (pub, BTreeMap-backed, configurable caps)
 │   │   ├── crypto/          # Cryptographic primitives
 │   │   ├── framing/         # HDLC framing, KISS encoding
 │   │   ├── identity.rs      # Identity (X25519 + Ed25519 keypairs)
@@ -303,11 +305,58 @@ Core uses three platform abstractions, injected as generic parameters:
 | Trait | Purpose | std impl | Embedded impl |
 |-------|---------|----------|---------------|
 | `Clock` | Monotonic timestamps | `SystemClock` | Hardware timer |
-| `Storage` | Key-value persistence | `FileStorage` | Flash storage / `NoStorage` |
+| `Storage` | Type-safe collection storage | `FileStorage` | `MemoryStorage` / `NoStorage` |
 | `CryptoRngCore` | Randomness (from `rand_core`) | `OsRng` | Hardware RNG |
 
 The `Interface` trait is defined in core and used by `dispatch_actions()` to route packets.
 The driver implements it on whatever holds the outbound channel.
+
+### Storage Trait
+
+The `Storage` trait (`traits.rs`) is the single source of truth for all long-lived
+protocol collections. Core is a pure protocol engine with zero state management —
+it asks Storage questions ("have you seen this hash?", "what's the path to this
+destination?"), tells Storage to remember things, and Storage decides capacity,
+eviction, and persistence strategy.
+
+**~44 type-safe methods** organized by collection:
+
+| Collection | Methods | Purpose |
+|------------|---------|---------|
+| Packet dedup | `has_packet_hash`, `add_packet_hash` | Duplicate packet detection |
+| Path table | `get_path`, `set_path`, `remove_path`, `path_count`, `expire_paths`, `earliest_path_expiry` | Routing table |
+| Path state | `get_path_state`, `set_path_state` | Path quality tracking (responsive/unresponsive) |
+| Reverse table | `get_reverse`, `set_reverse`, `remove_reverse` | Proof return routing |
+| Link table | `get_link_entry`, `set_link_entry`, `remove_link_entry` | Active link tracking |
+| Announce table | `get_announce`, `set_announce`, `remove_announce`, `announce_keys` | Pending rebroadcasts |
+| Announce cache | `get_announce_cache`, `set_announce_cache` | Raw announce packet storage |
+| Announce rate | `get_announce_rate`, `set_announce_rate` | Per-destination rate limiting |
+| Receipts | `get_receipt`, `set_receipt`, `remove_receipt` | Delivery tracking |
+| Path requests | `get_path_request_time`, `set_path_request_time`, `check_path_request_tag` | Dedup and timing |
+| Known identities | `get_identity`, `set_identity` | Identity-to-destination mapping |
+| Ratchets | `load_ratchet`, `store_ratchet`, `list_ratchet_keys` | Forward secrecy keys |
+| Cleanup | `expire_reverses`, `expire_receipts`, `expire_link_entries`, etc. | Time-based eviction |
+| Deadlines | `earliest_receipt_deadline`, `earliest_link_deadline` | Timer scheduling |
+| Lifecycle | `flush` | Persist dirty state to disk |
+
+Data types shared between Storage and Transport live in `storage_types.rs` (Layer 0):
+`PathEntry`, `PathState`, `ReverseEntry`, `LinkEntry`, `AnnounceEntry`,
+`AnnounceRateEntry`, `PacketReceipt`, `ReceiptStatus`.
+
+**Three implementations:**
+
+| Type | Crate | Backing | Use case |
+|------|-------|---------|----------|
+| `NoStorage` | core | Zero-sized no-op | Stubs, FFI, smoke tests |
+| `MemoryStorage` | core | `BTreeMap`/`BTreeSet`, configurable caps | Embedded, core tests |
+| `FileStorage` | std | Wraps `MemoryStorage` + disk persistence | Desktop/server |
+
+`MemoryStorage` is `pub` (not `#[cfg(test)]`) — it is the production implementation
+for embedded targets. `FileStorage` wraps `MemoryStorage` internally for all
+runtime collections (no no-ops) and adds Python-compatible disk persistence for
+`known_destinations` (msgpack map) and `packet_hashlist` (msgpack array of 32-byte
+hashes). Non-persistent collections (paths, reverses, links, announces, receipts)
+are RAM-only and lost on restart.
 
 ## Key Types
 
@@ -319,9 +368,13 @@ The driver implements it on whatever holds the outbound channel.
 | `TickOutput` | core | Return type: actions + events from any core method |
 | `NodeEvent` | core | Application-visible protocol events |
 | `Interface` | core (trait) | Send-only interface contract for `dispatch_actions()` |
+| `Storage` | core (trait) | Type-safe collection storage (~44 methods) |
+| `MemoryStorage` | core | BTreeMap-backed storage with configurable caps |
+| `NoStorage` | core | Zero-sized no-op storage for stubs and tests |
 | `dispatch_actions()` | core | Routes Actions to interfaces (protocol logic) |
 | `ReticulumNode` | std | Async driver that owns interfaces and drives NodeCore |
 | `InterfaceHandle` | std | Implements `Interface` via tokio channel sender |
+| `FileStorage` | std | Wraps MemoryStorage + Python-compat disk persistence |
 
 ## Packet Flow
 

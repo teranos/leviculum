@@ -22,22 +22,12 @@ Phase numbering follows `doc/BATTLEPLAN.md`. Phases 0–7 are complete.
 
 | ID | P | Phase | Status | Category | Summary |
 |----|---|-------|--------|----------|---------|
-| E9 | M | post-7 | open | Feature | Persistent storage for known_identities and path_table |
 | E10 | M | post-7 | open | Feature | Interface-specific send-side jitter for shared-medium interfaces |
+| E11 | L | post-7 | open | Refactor | Migrate ratchet.rs to new Storage trait methods |
 
 ---
 
 ## Issues
-
-### E9: Persistent storage for known_identities and path_table
-- **Status:** open
-- **Priority:** M
-- **Phase:** post-7
-- **Category:** Feature
-- **Blocked-by:** —
-- **Detail:** Use the existing Storage trait to persist known_identities, path_table, and other node state across restarts. Match Python's save_known_destinations() / save_path_table(). Currently in-memory only — state is lost on restart, requiring fresh announces before single-packet communication is possible.
-- **Fix:** Implement Storage-backed persistence for NodeCore.known_identities and Transport.path_table. Load on startup, save on insert/update.
-- **Test:** Interop test: restart Rust node, verify previously-known destinations are still reachable without re-announce.
 
 ### E10: Interface-specific send-side jitter for shared-medium interfaces
 - **Status:** open
@@ -56,3 +46,13 @@ Phase numbering follows `doc/BATTLEPLAN.md`. Phases 0–7 are complete.
   - Rate limiting
 - **Fix:** Implement a send queue with configurable jitter delay in shared-medium interface implementations. The core emits actions instantly; the interface holds and delays before transmitting on the wire.
 - **Test:** Unit test: verify shared-medium interface applies jitter delay between action receipt and wire transmission. Integration test: two LoRa interfaces receiving the same announce do not transmit at the same instant.
+
+### E11: Migrate ratchet.rs to new Storage trait methods
+- **Status:** open
+- **Priority:** L
+- **Phase:** post-7
+- **Category:** Refactor
+- **Blocked-by:** B4 (ratchet validation integration)
+- **Detail:** The Storage trait includes `load_ratchet/store_ratchet/list_ratchet_keys` methods that currently delegate to the old generic `load/store/delete/list_keys` API. When ratchet validation is integrated (B4), migrate ratchet.rs to use the new type-safe Storage trait methods directly and remove the legacy generic API from the Storage trait.
+- **Fix:** Update ratchet.rs to call `storage.load_ratchet()`, `storage.store_ratchet()`, `storage.list_ratchet_keys()` instead of the generic `load/store/delete/list_keys`. Remove the legacy methods from the Storage trait once no code uses them.
+- **Test:** Existing ratchet unit tests should pass unchanged after migration.
