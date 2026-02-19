@@ -312,13 +312,17 @@ Sicherheitsfeatures verdrahten, Daemon-Zustand persistieren, Release-Qualität e
 - `lrns cp` — Dateitransfer über CLI
 - Interop-Tests: Dateitransfer zwischen Rust und Python
 
+## IPC (Shared Instance)
+- LocalInterface: Unix-Domain-Socket-basierte IPC-Kommunikation zwischen `lrnsd` und Client-Programmen (wie Python's `LocalClientInterface` / `LocalServerInterface`)
+- Mehrere Programme teilen sich eine Reticulum-Instanz über den laufenden Daemon
+- `is_connected_to_shared_instance`-Semantik (Python-Äquivalent) für lokale Transport-Entscheidungen
+
 ## Hardware-Interfaces
 - RNode/LoRa Interface (KISS-Protokoll, LoRa-Parameter, Radio-State, Airtime-Limiting)
 - Interface-spezifischer Send-Side-Jitter für Shared-Medium-Interfaces (E10)
 - Serial Interface
 - KISS Interface (TNC-Protokoll)
 - AutoInterface (lokale Netzwerk-Autodiscovery)
-- LocalInterface (IPC)
 
 ## C-API & Paketierung
 - `leviculum-ffi` erweitern (Reticulum-Instanz, Destinations, Links, Packets, Resources, Path Discovery)
