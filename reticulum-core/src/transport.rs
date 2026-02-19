@@ -58,7 +58,11 @@ use crate::packet::{
     build_proof_packet, packet_hash, HeaderType, Packet, PacketContext, PacketData, PacketError,
     PacketFlags, PacketType, TransportType,
 };
-use crate::receipt::{PacketReceipt, ReceiptStatus};
+pub use crate::storage_types::PathEntry;
+use crate::storage_types::{
+    AnnounceEntry, AnnounceRateEntry, LinkEntry, PacketReceipt, PathState, ReceiptStatus,
+    ReverseEntry,
+};
 use crate::traits::{Clock, Storage};
 
 // ─── Sans-I/O Types ─────────────────────────────────────────────────────────
@@ -197,122 +201,9 @@ pub fn dispatch_actions(
     errors
 }
 
-// ─── Data Structures (always available) ─────────────────────────────────────
-
-/// Path quality state (for path recovery)
-///
-/// Tracks whether a path is known to be working, unresponsive, or unknown.
-/// Used to allow accepting same-emission worse-hop announces when the
-/// current path has been marked unresponsive (Python Transport.py:1672-1681).
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum PathState {
-    /// Default state — no knowledge about path quality
-    Unknown,
-    /// Communication attempt failed (unvalidated link expired)
-    Unresponsive,
-    /// Communication succeeded (defined for API completeness; not used internally)
-    Responsive,
-}
-
-/// Path table entry
-#[derive(Debug, Clone)]
-pub(crate) struct PathEntry {
-    /// Number of hops to destination
-    pub hops: u8,
-    /// When this path expires (ms since clock epoch)
-    pub expires_ms: u64,
-    /// Interface index where we learned this path
-    pub interface_index: usize,
-    /// Random blobs seen for this destination (for replay detection)
-    pub random_blobs: Vec<[u8; crate::constants::RANDOM_HASHBYTES]>,
-    /// Identity hash of the next relay hop (from announce transport_id)
-    pub next_hop: Option<[u8; TRUNCATED_HASHBYTES]>,
-}
-
-impl PathEntry {
-    /// Destination is directly connected (no relay needed).
-    /// Rust stores raw wire hops: 0 = direct neighbor.
-    /// Python equivalent: hops == 1 (Python increments on receipt).
-    pub(crate) fn is_direct(&self) -> bool {
-        self.hops == 0
-    }
-
-    /// Destination requires relay forwarding AND we know the next hop.
-    pub(crate) fn needs_relay(&self) -> bool {
-        self.hops > 0 && self.next_hop.is_some()
-    }
-}
-
-/// Link table entry (for active links routed through this transport node)
-#[derive(Debug, Clone)]
-pub(crate) struct LinkEntry {
-    /// When this link was created (ms)
-    pub timestamp_ms: u64,
-    /// Interface index toward the destination (outbound)
-    pub next_hop_interface_index: usize,
-    /// Remaining hops to destination
-    pub remaining_hops: u8,
-    /// Interface index where we received the link request (inbound, toward initiator)
-    pub received_interface_index: usize,
-    /// Total hops from initiator
-    pub hops: u8,
-    /// Whether the link has been validated by a proof
-    pub validated: bool,
-    /// Deadline for receiving a proof (ms), after which the entry is removed
-    pub proof_timeout_ms: u64,
-    /// Destination hash for path rediscovery on unvalidated link expiry
-    pub destination_hash: [u8; TRUNCATED_HASHBYTES],
-    /// Responder's Ed25519 signing key (from announce_cache at link creation).
-    /// Used for LRPROOF signature validation. None if announce not cached.
-    /// Removed when link entry is cleaned up (clean_link_table).
-    pub peer_signing_key: Option<[u8; crate::constants::ED25519_KEY_SIZE]>,
-}
-
-/// Reverse table entry (for routing replies back)
-#[derive(Debug, Clone)]
-pub(crate) struct ReverseEntry {
-    /// When this was learned (ms)
-    pub timestamp_ms: u64,
-    /// Interface index where the original packet was received
-    pub receiving_interface_index: usize,
-    /// Interface index where the packet was forwarded to
-    pub outbound_interface_index: usize,
-}
-
-/// Announce table entry (for rate limiting and rebroadcast tracking)
-#[derive(Debug, Clone)]
-pub(crate) struct AnnounceEntry {
-    /// When we received this announce (ms)
-    pub timestamp_ms: u64,
-    /// Number of hops when received
-    pub hops: u8,
-    /// Number of retransmit attempts
-    pub retries: u8,
-    /// When to retransmit (ms, None = don't)
-    pub retransmit_at_ms: Option<u64>,
-    /// Raw packet bytes stored for rebroadcast
-    pub raw_packet: Vec<u8>,
-    /// Interface index this announce arrived on
-    pub receiving_interface_index: usize,
-    /// Number of times neighbors echoed this announce
-    pub local_rebroadcasts: u8,
-    /// If true, do not re-rebroadcast (PATH_RESPONSE context)
-    pub block_rebroadcasts: bool,
-}
-
-/// Per-destination announce rate tracking entry (Python: announce_rate_table)
-///
-/// Tracks violations when a destination announces too frequently and blocks
-/// rebroadcast (but not path table updates) when violations exceed grace.
-#[derive(Debug, Clone)]
-pub(crate) struct AnnounceRateEntry {
-    /// Timestamp of last accepted (non-violating) announce (ms)
-    pub last_ms: u64,
-    /// Number of rate violations (incremented on too-fast, decremented on good-rate)
-    pub rate_violations: u8,
-    /// Announces are blocked until this timestamp (ms)
-    pub blocked_until_ms: u64,
-}
+// ─── Data Structures ────────────────────────────────────────────────────────
+// PathEntry, PathState, ReverseEntry, LinkEntry, AnnounceEntry,
+// AnnounceRateEntry live in crate::storage_types and are imported above.
 
 /// Per-interface announce bandwidth cap state (Python Interface.py:25-28, Transport.py:1091-1104)
 ///
