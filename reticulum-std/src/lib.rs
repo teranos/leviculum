@@ -16,6 +16,7 @@ pub(crate) mod clock;
 pub mod config;
 pub mod driver;
 pub mod error;
+pub(crate) mod ini_config;
 pub mod interfaces;
 pub(crate) mod known_destinations;
 pub(crate) mod packet_hashlist;

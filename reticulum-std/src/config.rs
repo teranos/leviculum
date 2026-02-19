@@ -125,12 +125,35 @@ fn default_bitrate() -> u64 {
 
 impl Config {
     /// Load configuration from a file
+    ///
+    /// Supports both TOML (native) and INI (Python Reticulum's ConfigObj format).
+    /// Detection heuristic:
+    /// - Explicit `.toml` extension → TOML
+    /// - Contains `[[` (ConfigObj subsections) → INI
+    /// - Default: try TOML, fall back to INI
     pub fn load<P: AsRef<Path>>(path: P) -> Result<Self> {
-        let content = std::fs::read_to_string(path.as_ref())
+        let path = path.as_ref();
+        let content = std::fs::read_to_string(path)
             .map_err(|e| Error::Config(format!("Failed to read config: {e}")))?;
 
-        // Try TOML format
-        toml::from_str(&content).map_err(|e| Error::Config(format!("Failed to parse config: {e}")))
+        // Explicit .toml extension → TOML only
+        if path.extension().is_some_and(|e| e == "toml") {
+            return toml::from_str(&content)
+                .map_err(|e| Error::Config(format!("Failed to parse TOML config: {e}")));
+        }
+
+        // Python INI configs use [[ for interface subsections.
+        // TOML uses [[ for array-of-tables, which our configs never use.
+        if content.contains("[[") {
+            return crate::ini_config::parse_ini(&content)
+                .map_err(|e| Error::Config(format!("Failed to parse INI config: {e}")));
+        }
+
+        // Default: try TOML first, fall back to INI
+        toml::from_str(&content).or_else(|_| {
+            crate::ini_config::parse_ini(&content)
+                .map_err(|e| Error::Config(format!("Failed to parse config: {e}")))
+        })
     }
 
     /// Save configuration to a file
