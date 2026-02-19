@@ -60,8 +60,7 @@ use crate::packet::{
 };
 pub use crate::storage_types::PathEntry;
 use crate::storage_types::{
-    AnnounceEntry, AnnounceRateEntry, LinkEntry, PacketReceipt, PathState, ReceiptStatus,
-    ReverseEntry,
+    AnnounceEntry, AnnounceRateEntry, LinkEntry, PacketReceipt, PathState, ReverseEntry,
 };
 use crate::traits::{Clock, Storage};
 
@@ -455,7 +454,7 @@ pub struct Transport<C: Clock, S: Storage> {
     local_destinations: BTreeSet<[u8; TRUNCATED_HASHBYTES]>,
 
     /// Receipts for sent packets awaiting proof: truncated_hash -> receipt
-    receipts: BTreeMap<[u8; TRUNCATED_HASHBYTES], PacketReceipt>,
+    // receipts: migrated to Storage trait
 
     /// Pending events for the application
     events: Vec<TransportEvent>,
@@ -497,7 +496,7 @@ impl<C: Clock, S: Storage> Transport<C, S> {
             link_table: BTreeMap::new(),
             // reverse_table: migrated to Storage
             local_destinations: BTreeSet::new(),
-            receipts: BTreeMap::new(),
+            // receipts: migrated to Storage
             events: Vec::new(),
             stats: TransportStats::default(),
             path_request_hash,
@@ -704,7 +703,7 @@ impl<C: Clock, S: Storage> Transport<C, S> {
         let now = self.clock.now_ms();
         let receipt = PacketReceipt::new(hash, DestinationHash::new(destination_hash), now);
         let truncated = receipt.truncated_hash;
-        self.receipts.insert(truncated, receipt);
+        self.storage.set_receipt(truncated, receipt);
         truncated
     }
 
@@ -724,7 +723,7 @@ impl<C: Clock, S: Storage> Transport<C, S> {
             timeout_ms,
         );
         let truncated = receipt.truncated_hash;
-        self.receipts.insert(truncated, receipt);
+        self.storage.set_receipt(truncated, receipt);
         truncated
     }
 
@@ -733,7 +732,7 @@ impl<C: Clock, S: Storage> Transport<C, S> {
         &self,
         truncated_hash: &[u8; TRUNCATED_HASHBYTES],
     ) -> Option<&PacketReceipt> {
-        self.receipts.get(truncated_hash)
+        self.storage.get_receipt(truncated_hash)
     }
 
     /// Mark a receipt as delivered after NodeCore verified the proof
@@ -741,8 +740,10 @@ impl<C: Clock, S: Storage> Transport<C, S> {
     /// Called by NodeCore when it successfully validates a single-packet proof
     /// using the destination's identity.
     pub fn mark_receipt_delivered(&mut self, truncated_hash: &[u8; TRUNCATED_HASHBYTES]) {
-        if let Some(receipt) = self.receipts.get_mut(truncated_hash) {
+        if let Some(receipt) = self.storage.get_receipt(truncated_hash) {
+            let mut receipt = receipt.clone();
             receipt.set_delivered();
+            self.storage.set_receipt(*truncated_hash, receipt);
         }
     }
 
@@ -1018,10 +1019,8 @@ impl<C: Clock, S: Storage> Transport<C, S> {
         }
 
         // Receipt timeout deadlines
-        for receipt in self.receipts.values() {
-            if receipt.status == ReceiptStatus::Sent {
-                update(receipt.sent_at_ms.saturating_add(receipt.timeout_ms));
-            }
+        if let Some(deadline) = self.storage.earliest_receipt_deadline() {
+            update(deadline);
         }
 
         // Announce rebroadcast deadlines
@@ -1499,7 +1498,7 @@ impl<C: Clock, S: Storage> Transport<C, S> {
             let mut truncated = [0u8; TRUNCATED_HASHBYTES];
             truncated.copy_from_slice(&proof_packet_hash[..TRUNCATED_HASHBYTES]);
 
-            if let Some(receipt) = self.receipts.get(&truncated) {
+            if let Some(receipt) = self.storage.get_receipt(&truncated) {
                 let receipt_dest = *receipt.destination_hash.as_bytes();
                 let expected = receipt.packet_hash;
                 self.events.push(TransportEvent::ProofReceived {
@@ -1515,7 +1514,7 @@ impl<C: Clock, S: Storage> Transport<C, S> {
             // truncated packet hash (see Python ProofDestination class).
             // Look up receipt by that hash, then reconstruct explicit format
             // so NodeCore can verify uniformly.
-            if let Some(receipt) = self.receipts.get(&dest_hash) {
+            if let Some(receipt) = self.storage.get_receipt(&dest_hash) {
                 let receipt_dest = *receipt.destination_hash.as_bytes();
                 let expected = receipt.packet_hash;
                 // Normalize to explicit format: packet_hash + signature
@@ -2168,19 +2167,11 @@ impl<C: Clock, S: Storage> Transport<C, S> {
     }
 
     fn check_receipt_timeouts(&mut self, now: u64) {
-        // Collect timed out receipts
-        let timed_out: Vec<[u8; TRUNCATED_HASHBYTES]> = self
-            .receipts
-            .iter()
-            .filter(|(_, r)| r.status == ReceiptStatus::Sent && r.is_expired(now))
-            .map(|(k, _)| *k)
-            .collect();
-
-        // Emit timeout events and remove expired receipts
-        for hash in timed_out {
-            self.receipts.remove(&hash);
-            self.events
-                .push(TransportEvent::ReceiptTimeout { packet_hash: hash });
+        let expired = self.storage.expire_receipts(now);
+        for receipt in expired {
+            self.events.push(TransportEvent::ReceiptTimeout {
+                packet_hash: receipt.truncated_hash,
+            });
         }
     }
 

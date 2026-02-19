@@ -810,6 +810,7 @@ mod tests {
     use super::*;
     use crate::destination::{DestinationType, Direction};
     use crate::link::{LinkCloseReason, LinkState};
+    use crate::memory_storage::MemoryStorage;
     use crate::test_utils::{MockClock, MockInterface, TEST_TIME_MS};
     use crate::traits::NoStorage;
     use rand_core::OsRng;
@@ -3204,10 +3205,10 @@ mod tests {
             .transport
             .register_interface(alloc::boxed::Box::new(MockInterface::new("recv_if", 2)));
 
-        // 2. Create sender — register destination on sender too so NodeCore
-        //    can look up the identity for proof verification
+        // 2. Create sender — MemoryStorage needed for receipt persistence
         let send_clock = MockClock::new(TEST_TIME_MS);
-        let mut sender = NodeCoreBuilder::new().build(OsRng, send_clock, NoStorage);
+        let mut sender =
+            NodeCoreBuilder::new().build(OsRng, send_clock, MemoryStorage::with_defaults());
 
         // 3. Set up paths: sender → receiver (interface 0)
         let sender_iface = sender
@@ -3335,7 +3336,8 @@ mod tests {
             .register_interface(alloc::boxed::Box::new(MockInterface::new("recv_if", 2)));
 
         let send_clock = MockClock::new(TEST_TIME_MS);
-        let mut sender = NodeCoreBuilder::new().build(OsRng, send_clock, NoStorage);
+        let mut sender =
+            NodeCoreBuilder::new().build(OsRng, send_clock, MemoryStorage::with_defaults());
 
         let sender_iface = sender
             .transport
@@ -3530,9 +3532,10 @@ mod tests {
             .transport
             .register_interface(alloc::boxed::Box::new(MockInterface::new("recv_if", 1)));
 
-        // Create a sender to produce a valid data packet
+        // Create a sender — MemoryStorage needed for receipt persistence
         let send_clock = MockClock::new(TEST_TIME_MS);
-        let mut sender = NodeCoreBuilder::new().build(OsRng, send_clock, NoStorage);
+        let mut sender =
+            NodeCoreBuilder::new().build(OsRng, send_clock, MemoryStorage::with_defaults());
         let sender_iface = sender
             .transport
             .register_interface(alloc::boxed::Box::new(MockInterface::new("send_if", 2)));
