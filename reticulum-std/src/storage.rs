@@ -349,6 +349,7 @@ impl reticulum_core::traits::Storage for Storage {
     fn expire_reverses(&mut self, _now_ms: u64, _timeout_ms: u64) -> usize {
         0
     }
+    fn remove_reverse_entries_for_interface(&mut self, _iface_index: usize) {}
     fn expire_receipts(
         &mut self,
         _now_ms: u64,

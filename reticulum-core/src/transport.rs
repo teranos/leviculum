@@ -449,7 +449,7 @@ pub struct Transport<C: Clock, S: Storage> {
     link_table: BTreeMap<[u8; TRUNCATED_HASHBYTES], LinkEntry>,
 
     /// Reverse table: packet_hash -> sender info (for routing replies)
-    reverse_table: BTreeMap<[u8; TRUNCATED_HASHBYTES], ReverseEntry>,
+    // reverse_table: migrated to Storage trait
 
     /// Registered destinations we accept packets for
     local_destinations: BTreeSet<[u8; TRUNCATED_HASHBYTES]>,
@@ -495,7 +495,7 @@ impl<C: Clock, S: Storage> Transport<C, S> {
             path_states: BTreeMap::new(),
             announce_table: BTreeMap::new(),
             link_table: BTreeMap::new(),
-            reverse_table: BTreeMap::new(),
+            // reverse_table: migrated to Storage
             local_destinations: BTreeSet::new(),
             receipts: BTreeMap::new(),
             events: Vec::new(),
@@ -1051,7 +1051,9 @@ impl<C: Clock, S: Storage> Transport<C, S> {
 
         // Packet cache rotation and reverse table cleanup are background —
         // use a fixed interval rather than scanning every entry
-        if !self.reverse_table.is_empty() {
+        if self.config.enable_transport {
+            // Reverse table cleanup — only needed when transport is enabled
+            // (only transport nodes populate the reverse table)
             let cleanup_interval = 60_000; // Check every 60s
             update(now.saturating_add(cleanup_interval));
         }
@@ -1114,17 +1116,7 @@ impl<C: Clock, S: Storage> Transport<C, S> {
 
     /// Remove reverse table entries referencing a specific interface
     pub(crate) fn remove_reverse_entries_for_interface(&mut self, iface_idx: usize) {
-        let to_remove: Vec<_> = self
-            .reverse_table
-            .iter()
-            .filter(|(_, e)| {
-                e.receiving_interface_index == iface_idx || e.outbound_interface_index == iface_idx
-            })
-            .map(|(k, _)| *k)
-            .collect();
-        for hash in to_remove {
-            self.reverse_table.remove(&hash);
-        }
+        self.storage.remove_reverse_entries_for_interface(iface_idx);
     }
 
     // ─── Internal: Packet Handlers ──────────────────────────────────────
@@ -1427,7 +1419,7 @@ impl<C: Clock, S: Storage> Transport<C, S> {
             );
 
             // Populate reverse table at forwarding time
-            self.reverse_table.insert(
+            self.storage.set_reverse(
                 truncated_hash,
                 ReverseEntry {
                     timestamp_ms: now,
@@ -1671,7 +1663,7 @@ impl<C: Clock, S: Storage> Transport<C, S> {
             }
 
             // Check reverse table for regular proof routing
-            if let Some(reverse_entry) = self.reverse_table.remove(&dest_hash) {
+            if let Some(reverse_entry) = self.storage.remove_reverse(&dest_hash) {
                 // The proof should arrive on the outbound interface (where the
                 // original packet was forwarded to) and be routed back to the
                 // receiving interface (where the original packet came from).
@@ -1779,7 +1771,7 @@ impl<C: Clock, S: Storage> Transport<C, S> {
 
                     // Populate reverse table for link-routed data packets
                     let now = self.clock.now_ms();
-                    self.reverse_table.insert(
+                    self.storage.set_reverse(
                         truncated_hash,
                         ReverseEntry {
                             timestamp_ms: now,
@@ -1860,7 +1852,7 @@ impl<C: Clock, S: Storage> Transport<C, S> {
         }
 
         // Populate reverse table at forwarding time
-        self.reverse_table.insert(
+        self.storage.set_reverse(
             truncated_hash,
             ReverseEntry {
                 timestamp_ms: now,
@@ -2172,16 +2164,7 @@ impl<C: Clock, S: Storage> Transport<C, S> {
     }
 
     fn clean_reverse_table(&mut self, now: u64) {
-        let expired: Vec<[u8; TRUNCATED_HASHBYTES]> = self
-            .reverse_table
-            .iter()
-            .filter(|(_, e)| now.saturating_sub(e.timestamp_ms) > REVERSE_TABLE_EXPIRY_MS)
-            .map(|(k, _)| *k)
-            .collect();
-
-        for hash in expired {
-            self.reverse_table.remove(&hash);
-        }
+        self.storage.expire_reverses(now, REVERSE_TABLE_EXPIRY_MS);
     }
 
     fn check_receipt_timeouts(&mut self, now: u64) {
@@ -5153,7 +5136,7 @@ mod tests {
 
             let hash = [0xAA; TRUNCATED_HASHBYTES];
             let now = transport.clock.now_ms();
-            transport.reverse_table.insert(
+            transport.storage_mut().set_reverse(
                 hash,
                 ReverseEntry {
                     timestamp_ms: now,
@@ -5166,7 +5149,7 @@ mod tests {
             transport.remove_reverse_entries_for_interface(1);
 
             assert!(
-                !transport.reverse_table.contains_key(&hash),
+                !transport.storage().has_reverse(&hash),
                 "Reverse entry should be removed when interface goes down"
             );
         }
@@ -5711,7 +5694,7 @@ mod tests {
             // creating a reverse table entry keyed by truncated_packet_hash
             let packet_hash = [0xAA; TRUNCATED_HASHBYTES];
             let now = transport.clock.now_ms();
-            transport.reverse_table.insert(
+            transport.storage_mut().set_reverse(
                 packet_hash,
                 ReverseEntry {
                     timestamp_ms: now,
@@ -5749,7 +5732,7 @@ mod tests {
             );
             // Reverse table entry should be consumed (removed)
             assert!(
-                !transport.reverse_table.contains_key(&packet_hash),
+                !transport.storage().has_reverse(&packet_hash),
                 "Reverse table entry should be consumed after proof routing"
             );
 

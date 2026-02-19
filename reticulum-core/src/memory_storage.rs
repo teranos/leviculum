@@ -354,6 +354,12 @@ impl Storage for MemoryStorage {
         before - self.reverse_table.len()
     }
 
+    fn remove_reverse_entries_for_interface(&mut self, iface_index: usize) {
+        self.reverse_table.retain(|_, e| {
+            e.receiving_interface_index != iface_index && e.outbound_interface_index != iface_index
+        });
+    }
+
     fn expire_receipts(&mut self, now_ms: u64) -> Vec<PacketReceipt> {
         let mut expired = Vec::new();
         self.receipts.retain(|_, receipt| {

@@ -319,6 +319,9 @@ pub trait Storage {
     /// Remove expired reverse table entries. Returns count removed.
     fn expire_reverses(&mut self, now_ms: u64, timeout_ms: u64) -> usize;
 
+    /// Remove reverse table entries referencing a specific interface (for interface-down cleanup)
+    fn remove_reverse_entries_for_interface(&mut self, iface_index: usize);
+
     /// Remove expired receipts (status == Sent and timed out).
     /// Returns the removed receipts for event emission.
     fn expire_receipts(&mut self, now_ms: u64) -> Vec<PacketReceipt>;
@@ -533,6 +536,7 @@ impl Storage for NoStorage {
     fn expire_reverses(&mut self, _now_ms: u64, _timeout_ms: u64) -> usize {
         0
     }
+    fn remove_reverse_entries_for_interface(&mut self, _iface_index: usize) {}
     fn expire_receipts(&mut self, _now_ms: u64) -> Vec<PacketReceipt> {
         Vec::new()
     }

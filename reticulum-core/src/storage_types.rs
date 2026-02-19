@@ -85,7 +85,7 @@ pub struct LinkEntry {
 // ─── Reverse Types ──────────────────────────────────────────────────────────
 
 /// Reverse table entry (for routing replies back)
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Copy)]
 pub struct ReverseEntry {
     /// When this was learned (ms)
     pub timestamp_ms: u64,
