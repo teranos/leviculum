@@ -28,16 +28,13 @@
 //! ```
 
 // PacketReceipt and ReceiptStatus live in crate::storage_types.
-// ReceiptStatus re-exported here for backward compatibility within the crate.
-pub(crate) use crate::storage_types::ReceiptStatus;
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use crate::constants::{RECEIPT_TIMEOUT_DEFAULT_MS, TRUNCATED_HASHBYTES};
     use crate::destination::DestinationHash;
     use crate::identity::Identity;
-    use crate::storage_types::PacketReceipt;
+    use crate::storage_types::{PacketReceipt, ReceiptStatus};
     use rand_core::OsRng;
 
     fn new_identity() -> Identity {

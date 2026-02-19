@@ -132,6 +132,11 @@ impl MemoryStorage {
         self.generic.clear();
     }
 
+    /// Number of entries in the announce rate table (test/stats convenience)
+    pub fn announce_rate_count(&self) -> usize {
+        self.announce_rate_table.len()
+    }
+
     /// Rotate packet cache: current becomes prev, fresh empty set takes its place
     fn rotate_packet_cache(&mut self) {
         core::mem::swap(&mut self.packet_cache, &mut self.packet_cache_prev);

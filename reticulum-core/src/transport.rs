@@ -469,9 +469,7 @@ pub struct Transport<C: Clock, S: Storage> {
     /// Cached raw announce bytes for path responses: dest_hash -> raw bytes
     announce_cache: BTreeMap<[u8; TRUNCATED_HASHBYTES], Vec<u8>>,
 
-    /// Per-destination announce rate tracking (Python: announce_rate_table)
-    announce_rate_table: BTreeMap<[u8; TRUNCATED_HASHBYTES], AnnounceRateEntry>,
-
+    // announce_rate_table: migrated to Storage trait
     /// Per-interface announce bandwidth caps (Python Interface.py:25-28)
     /// Keyed by interface index. Only present for interfaces with bitrate > 0.
     interface_announce_caps: BTreeMap<usize, InterfaceAnnounceCap>,
@@ -504,7 +502,7 @@ impl<C: Clock, S: Storage> Transport<C, S> {
             stats: TransportStats::default(),
             path_request_hash,
             announce_cache: BTreeMap::new(),
-            announce_rate_table: BTreeMap::new(),
+            // announce_rate_table: migrated to Storage
             interface_announce_caps: BTreeMap::new(),
             pending_actions: Vec::new(),
             #[cfg(test)]
@@ -977,7 +975,7 @@ impl<C: Clock, S: Storage> Transport<C, S> {
         self.drain_announce_queues(now);
         self.clean_link_table(now);
         self.clean_path_states();
-        self.clean_announce_rate_table();
+        // announce_rate cleanup deferred to clean_stale_path_metadata() (Commit 7)
     }
 
     // ─── Events ─────────────────────────────────────────────────────────
@@ -2490,12 +2488,6 @@ impl<C: Clock, S: Storage> Transport<C, S> {
         }
     }
 
-    /// Remove announce_rate_table entries for destinations no longer in path_table.
-    fn clean_announce_rate_table(&mut self) {
-        self.announce_rate_table
-            .retain(|h, _| self.path_table.contains_key(h));
-    }
-
     /// Check announce rate for a destination, returning true if rebroadcast should be blocked.
     ///
     /// Matches Python Transport.py:1692-1719. Only blocks rebroadcast (announce_table insertion),
@@ -2506,13 +2498,14 @@ impl<C: Clock, S: Storage> Transport<C, S> {
             None => return false, // Disabled
         };
 
-        if let Some(entry) = self.announce_rate_table.get_mut(dest_hash) {
+        if let Some(entry) = self.storage.get_announce_rate(dest_hash) {
             // Currently blocked?
             if now <= entry.blocked_until_ms {
                 return true;
             }
 
-            // Check rate
+            // Check rate — clone the entry to modify it
+            let mut entry = *entry;
             let current_rate = now.saturating_sub(entry.last_ms);
             if current_rate < rate_target {
                 entry.rate_violations = entry.rate_violations.saturating_add(1);
@@ -2523,15 +2516,17 @@ impl<C: Clock, S: Storage> Transport<C, S> {
             if entry.rate_violations > self.config.announce_rate_grace {
                 entry.blocked_until_ms =
                     entry.last_ms + rate_target + self.config.announce_rate_penalty_ms;
+                self.storage.set_announce_rate(*dest_hash, entry);
                 return true;
             }
 
             // Good — update last timestamp
             entry.last_ms = now;
+            self.storage.set_announce_rate(*dest_hash, entry);
             false
         } else {
             // First time seeing this destination — create entry, not blocked
-            self.announce_rate_table.insert(
+            self.storage.set_announce_rate(
                 *dest_hash,
                 AnnounceRateEntry {
                     last_ms: now,
@@ -2541,11 +2536,6 @@ impl<C: Clock, S: Storage> Transport<C, S> {
             );
             false
         }
-    }
-
-    /// Get the number of entries in the announce rate table (for testing/stats)
-    pub fn announce_rate_table_count(&self) -> usize {
-        self.announce_rate_table.len()
     }
 }
 
@@ -8768,7 +8758,7 @@ mod tests {
             let raw1 = make_announce_raw_for_dest(&dest, 1, now1);
             transport.process_incoming(0, &raw1).unwrap();
             assert!(transport.announce_table.contains_key(&dest_hash));
-            assert_eq!(transport.announce_rate_table_count(), 1);
+            assert_eq!(transport.storage().announce_rate_count(), 1);
 
             // Advance past both the simple rate limit and the rate target
             transport.clock.advance(ANNOUNCE_RATE_LIMIT_MS + 5_001);
@@ -8866,7 +8856,7 @@ mod tests {
             transport.process_incoming(0, &raw2).unwrap();
 
             // blocked_until should be t0 + 10_000 + 5_000 = t0 + 15_000
-            let rate_entry = transport.announce_rate_table.get(&dest_hash).unwrap();
+            let rate_entry = transport.storage().get_announce_rate(&dest_hash).unwrap();
             assert_eq!(rate_entry.blocked_until_ms, t0 + 10_000 + 5_000);
 
             // At t0 + 14_999 — still blocked
@@ -8997,7 +8987,7 @@ mod tests {
             let raw2 = make_announce_raw_for_dest(&dest, 1, transport.clock.now_ms());
             transport.process_incoming(0, &raw2).unwrap();
 
-            let rate_entry = transport.announce_rate_table.get(&dest_hash).unwrap();
+            let rate_entry = transport.storage().get_announce_rate(&dest_hash).unwrap();
             assert_eq!(rate_entry.rate_violations, 1, "Should have 1 violation");
 
             // Violation 2: too fast again
@@ -9006,7 +8996,7 @@ mod tests {
             let raw3 = make_announce_raw_for_dest(&dest, 1, transport.clock.now_ms());
             transport.process_incoming(0, &raw3).unwrap();
 
-            let rate_entry = transport.announce_rate_table.get(&dest_hash).unwrap();
+            let rate_entry = transport.storage().get_announce_rate(&dest_hash).unwrap();
             assert_eq!(rate_entry.rate_violations, 2, "Should have 2 violations");
 
             // Good rate: advance well past target (10s > 5s)
@@ -9016,7 +9006,7 @@ mod tests {
             let raw4 = make_announce_raw_for_dest(&dest, 1, now_good);
             transport.process_incoming(0, &raw4).unwrap();
 
-            let rate_entry = transport.announce_rate_table.get(&dest_hash).unwrap();
+            let rate_entry = transport.storage().get_announce_rate(&dest_hash).unwrap();
             assert_eq!(
                 rate_entry.rate_violations, 1,
                 "Violations should decrement on good rate"
@@ -9028,7 +9018,7 @@ mod tests {
             let raw5 = make_announce_raw_for_dest(&dest, 1, transport.clock.now_ms());
             transport.process_incoming(0, &raw5).unwrap();
 
-            let rate_entry = transport.announce_rate_table.get(&dest_hash).unwrap();
+            let rate_entry = transport.storage().get_announce_rate(&dest_hash).unwrap();
             assert_eq!(
                 rate_entry.rate_violations, 0,
                 "Violations should be back to 0 after enough good-rate announces"
@@ -9070,7 +9060,7 @@ mod tests {
             transport.process_incoming(0, &raw2).unwrap();
 
             // Verify blocked
-            let rate_entry = transport.announce_rate_table.get(&dest_hash).unwrap();
+            let rate_entry = transport.storage().get_announce_rate(&dest_hash).unwrap();
             assert!(rate_entry.blocked_until_ms > 0, "Should be blocked");
 
             // Advance past blocked_until (t0 + 10_000)
@@ -9126,7 +9116,7 @@ mod tests {
 
             // No rate table entries should exist
             assert_eq!(
-                transport.announce_rate_table_count(),
+                transport.storage().announce_rate_count(),
                 0,
                 "Rate table should be empty when rate limiting is disabled"
             );
@@ -9143,7 +9133,7 @@ mod tests {
 
             // PATH_RESPONSE should not create a rate entry
             assert_eq!(
-                transport.announce_rate_table_count(),
+                transport.storage().announce_rate_count(),
                 0,
                 "PATH_RESPONSE announces should not be rate-tracked"
             );
@@ -9156,7 +9146,7 @@ mod tests {
         }
 
         #[test]
-        fn test_announce_rate_table_cleanup() {
+        fn test_announce_rate_entry_created_on_announce() {
             use crate::destination::{Destination, DestinationType, Direction};
 
             let mut transport = make_transport_rate_limited(10_000, 0, 0);
@@ -9176,20 +9166,15 @@ mod tests {
             let now = transport.clock.now_ms();
             let raw = make_announce_raw_for_dest(&dest, 1, now);
             transport.process_incoming(0, &raw).unwrap();
-            assert_eq!(transport.announce_rate_table_count(), 1);
+            assert_eq!(transport.storage().announce_rate_count(), 1);
             assert!(transport.has_path(&dest_hash));
 
-            // Remove from path_table
-            transport.path_table.remove(&dest_hash);
-
-            // Run poll to trigger cleanup
-            transport.poll();
-
-            assert_eq!(
-                transport.announce_rate_table_count(),
-                0,
-                "Rate table entry should be cleaned up when path is removed"
-            );
+            // Verify rate entry was created
+            let rate_entry = transport.storage().get_announce_rate(&dest_hash).unwrap();
+            assert_eq!(rate_entry.last_ms, now);
+            assert_eq!(rate_entry.rate_violations, 0);
+            // Note: announce_rate cleanup via clean_stale_path_metadata()
+            // will be restored in Commit 7 when path_table migrates to Storage
         }
 
         #[test]
@@ -9215,7 +9200,7 @@ mod tests {
             let raw1 = make_announce_raw_for_dest(&dest, 1, t0);
             transport.process_incoming(0, &raw1).unwrap();
 
-            let rate_entry = transport.announce_rate_table.get(&dest_hash).unwrap();
+            let rate_entry = transport.storage().get_announce_rate(&dest_hash).unwrap();
             assert_eq!(rate_entry.last_ms, t0);
 
             // Violation: too fast (3s < 10s target) — triggers blocking (grace=0)
@@ -9226,7 +9211,7 @@ mod tests {
             transport.process_incoming(0, &raw2).unwrap();
 
             // last_ms should NOT be updated — blocking was triggered
-            let rate_entry = transport.announce_rate_table.get(&dest_hash).unwrap();
+            let rate_entry = transport.storage().get_announce_rate(&dest_hash).unwrap();
             assert_eq!(
                 rate_entry.last_ms, t0,
                 "last_ms should not be updated when violation triggers blocking"
@@ -9244,7 +9229,7 @@ mod tests {
             let raw3 = make_announce_raw_for_dest(&dest, 1, now3);
             transport.process_incoming(0, &raw3).unwrap();
 
-            let rate_entry = transport.announce_rate_table.get(&dest_hash).unwrap();
+            let rate_entry = transport.storage().get_announce_rate(&dest_hash).unwrap();
             assert_eq!(
                 rate_entry.last_ms, t0,
                 "last_ms should still be anchored to original accepted announce"

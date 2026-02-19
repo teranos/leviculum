@@ -122,7 +122,7 @@ pub struct AnnounceEntry {
 ///
 /// Tracks violations when a destination announces too frequently and blocks
 /// rebroadcast (but not path table updates) when violations exceed grace.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Copy)]
 pub struct AnnounceRateEntry {
     /// Timestamp of last accepted (non-violating) announce (ms)
     pub last_ms: u64,

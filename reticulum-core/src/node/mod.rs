@@ -3302,7 +3302,7 @@ mod tests {
         let receipt = sender.transport.get_receipt(&receipt_hash).unwrap();
         assert_eq!(
             receipt.status,
-            crate::receipt::ReceiptStatus::Delivered,
+            crate::storage_types::ReceiptStatus::Delivered,
             "receipt should be marked Delivered"
         );
     }
@@ -3412,7 +3412,7 @@ mod tests {
         let receipt = sender.transport.get_receipt(&receipt_hash).unwrap();
         assert_ne!(
             receipt.status,
-            crate::receipt::ReceiptStatus::Delivered,
+            crate::storage_types::ReceiptStatus::Delivered,
             "receipt should NOT be marked Delivered with bad proof"
         );
     }
@@ -3641,7 +3641,7 @@ mod tests {
         let receipt = sender.transport.get_receipt(&receipt_hash).unwrap();
         assert_eq!(
             receipt.status,
-            crate::receipt::ReceiptStatus::Delivered,
+            crate::storage_types::ReceiptStatus::Delivered,
             "receipt should be marked Delivered"
         );
     }
