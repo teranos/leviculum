@@ -339,17 +339,8 @@ impl ReticulumNode {
             }
         }
 
-        // Save packet hashlist
-        {
-            let core = self.inner.lock().unwrap();
-            if core.packet_cache_len() > 0 {
-                if let Err(e) =
-                    packet_hashlist::save_packet_hashlist(&storage, core.packet_cache_iter())
-                {
-                    tracing::warn!("Failed to save packet hashlist: {e}");
-                }
-            }
-        }
+        // Packet hashlist persistence is now handled by Storage::flush()
+        // (will be implemented when FileStorage absorbs packet_hashlist.rs)
     }
 
     /// Check if the node is running

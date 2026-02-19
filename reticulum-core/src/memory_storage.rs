@@ -98,6 +98,11 @@ impl MemoryStorage {
 
     // ─── Test convenience methods ───────────────────────────────────────
 
+    /// Number of packet hashes in both generations
+    pub fn packet_hash_count(&self) -> usize {
+        self.packet_cache.len() + self.packet_cache_prev.len()
+    }
+
     /// Clear all packet hashes (test convenience)
     pub fn clear_packet_hashes(&mut self) {
         self.packet_cache.clear();

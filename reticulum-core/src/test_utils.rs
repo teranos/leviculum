@@ -9,7 +9,8 @@ use alloc::vec::Vec;
 use rand_core::OsRng;
 
 use crate::identity::Identity;
-use crate::traits::{Clock, Interface, InterfaceError, NoStorage};
+use crate::memory_storage::MemoryStorage;
+use crate::traits::{Clock, Interface, InterfaceError};
 use crate::transport::{InterfaceId, Transport, TransportConfig};
 
 /// Standard initial time for deterministic tests (1 second in ms).
@@ -78,9 +79,14 @@ impl Interface for MockInterface {
     }
 }
 
-/// Bare Transport with MockClock at TEST_TIME_MS, no interfaces.
-pub(crate) fn test_transport() -> Transport<MockClock, NoStorage> {
+/// Bare Transport with MockClock at TEST_TIME_MS, MemoryStorage, no interfaces.
+pub(crate) fn test_transport() -> Transport<MockClock, MemoryStorage> {
     let clock = MockClock::new(TEST_TIME_MS);
     let identity = Identity::generate(&mut OsRng);
-    Transport::new(TransportConfig::default(), clock, NoStorage, identity)
+    Transport::new(
+        TransportConfig::default(),
+        clock,
+        MemoryStorage::with_defaults(),
+        identity,
+    )
 }

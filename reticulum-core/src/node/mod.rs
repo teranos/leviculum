@@ -596,21 +596,6 @@ impl<R: CryptoRngCore, C: Clock, S: Storage> NodeCore<R, C, S> {
         self.transport.stats().clone()
     }
 
-    /// Iterate over all hashes in the packet dedup cache (both sets) for persistence.
-    pub fn packet_cache_iter(&self) -> impl Iterator<Item = &[u8; 32]> {
-        self.transport.packet_cache_iter()
-    }
-
-    /// Number of hashes in the packet dedup cache (both sets).
-    pub fn packet_cache_len(&self) -> usize {
-        self.transport.packet_cache_len()
-    }
-
-    /// Bulk-load entries into the packet dedup cache (for loading persisted state).
-    pub fn load_packet_cache(&mut self, entries: impl Iterator<Item = [u8; 32]>) {
-        self.transport.load_packet_cache(entries);
-    }
-
     /// Get the current time in milliseconds from the transport clock
     pub fn now_ms(&self) -> u64 {
         self.transport.clock().now_ms()

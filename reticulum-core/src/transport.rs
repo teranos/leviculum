@@ -41,9 +41,9 @@ use alloc::vec::Vec;
 
 use crate::constants::{
     ANNOUNCE_RATE_GRACE, ANNOUNCE_RATE_LIMIT_MS, ANNOUNCE_RATE_PENALTY_MS,
-    DEFAULT_ANNOUNCE_CAP_PERCENT, HASHLIST_MAXSIZE, LINK_TIMEOUT_MS, LOCAL_REBROADCASTS_MAX,
-    MAX_PATH_REQUEST_TAGS, MAX_QUEUED_ANNOUNCES_PER_INTERFACE, MAX_RANDOM_BLOBS, MS_PER_SECOND,
-    MTU, PATHFINDER_EXPIRY_SECS, PATHFINDER_G_MS, PATHFINDER_MAX_HOPS, PATHFINDER_RETRIES,
+    DEFAULT_ANNOUNCE_CAP_PERCENT, LINK_TIMEOUT_MS, LOCAL_REBROADCASTS_MAX, MAX_PATH_REQUEST_TAGS,
+    MAX_QUEUED_ANNOUNCES_PER_INTERFACE, MAX_RANDOM_BLOBS, MS_PER_SECOND, MTU,
+    PATHFINDER_EXPIRY_SECS, PATHFINDER_G_MS, PATHFINDER_MAX_HOPS, PATHFINDER_RETRIES,
     PATH_REQUEST_GRACE_MS, PATH_REQUEST_MIN_INTERVAL_MS, REVERSE_TABLE_EXPIRY_MS,
     TRUNCATED_HASHBYTES,
 };
@@ -454,16 +454,6 @@ pub struct Transport<C: Clock, S: Storage> {
     /// Registered destinations we accept packets for
     local_destinations: BTreeSet<[u8; TRUNCATED_HASHBYTES]>,
 
-    /// Packet deduplication cache — current generation (Python Transport.packet_hashlist)
-    ///
-    /// Uses a two-set rotation strategy matching Python Transport.py:582-585.
-    /// When the current set exceeds `HASHLIST_MAXSIZE / 2`, it rotates into
-    /// `packet_cache_prev` and a fresh empty set takes its place. Dedup checks
-    /// both sets. Removal: entries are forgotten when their generation rotates out.
-    packet_cache: BTreeSet<[u8; 32]>,
-    /// Packet deduplication cache — previous generation (Python Transport.packet_hashlist_prev)
-    packet_cache_prev: BTreeSet<[u8; 32]>,
-
     /// Receipts for sent packets awaiting proof: truncated_hash -> receipt
     receipts: BTreeMap<[u8; TRUNCATED_HASHBYTES], PacketReceipt>,
 
@@ -515,8 +505,6 @@ impl<C: Clock, S: Storage> Transport<C, S> {
             link_table: BTreeMap::new(),
             reverse_table: BTreeMap::new(),
             local_destinations: BTreeSet::new(),
-            packet_cache: BTreeSet::new(),
-            packet_cache_prev: BTreeSet::new(),
             receipts: BTreeMap::new(),
             events: Vec::new(),
             stats: TransportStats::default(),
@@ -867,10 +855,8 @@ impl<C: Clock, S: Storage> Transport<C, S> {
         let mut truncated_hash = [0u8; TRUNCATED_HASHBYTES];
         truncated_hash.copy_from_slice(&full_packet_hash[..TRUNCATED_HASHBYTES]);
 
-        // Check duplicate (full 32-byte hash, checks both current and prev sets)
-        if self.packet_cache.contains(&full_packet_hash)
-            || self.packet_cache_prev.contains(&full_packet_hash)
-        {
+        // Check duplicate (full 32-byte hash)
+        if self.storage.has_packet_hash(&full_packet_hash) {
             self.stats.packets_dropped += 1;
             return Ok(());
         }
@@ -886,7 +872,7 @@ impl<C: Clock, S: Storage> Transport<C, S> {
                 && packet.context == PacketContext::Lrproof);
 
         if !defer_cache_insert {
-            self.packet_cache.insert(full_packet_hash);
+            self.storage.add_packet_hash(full_packet_hash);
         }
 
         // Route to handler based on packet type
@@ -925,7 +911,7 @@ impl<C: Clock, S: Storage> Transport<C, S> {
         // are dropped by the dedup check in process_incoming().
         // This matches Python Reticulum's Transport.py:1168-1169.
         let cache_hash = packet_hash(data);
-        self.packet_cache.insert(cache_hash);
+        self.storage.add_packet_hash(cache_hash);
 
         self.stats.packets_sent += 1;
         self.pending_actions.push(Action::Broadcast {
@@ -993,7 +979,6 @@ impl<C: Clock, S: Storage> Transport<C, S> {
     pub fn poll(&mut self) {
         let now = self.clock.now_ms();
         self.expire_paths(now);
-        self.rotate_packet_cache();
         self.clean_reverse_table(now);
         self.check_receipt_timeouts(now);
         self.check_announce_rebroadcasts(now);
@@ -1076,7 +1061,7 @@ impl<C: Clock, S: Storage> Transport<C, S> {
 
         // Packet cache rotation and reverse table cleanup are background —
         // use a fixed interval rather than scanning every entry
-        if !self.packet_cache.is_empty() || !self.reverse_table.is_empty() {
+        if !self.reverse_table.is_empty() {
             let cleanup_interval = 60_000; // Check every 60s
             update(now.saturating_add(cleanup_interval));
         }
@@ -1104,30 +1089,6 @@ impl<C: Clock, S: Storage> Transport<C, S> {
     /// Access the clock
     pub fn clock(&self) -> &C {
         &self.clock
-    }
-
-    /// Iterate over all packet hashes in the dedup cache (both sets) for persistence.
-    ///
-    /// The driver saves these on shutdown and loads them on startup to prevent
-    /// reprocessing packets seen before a restart.
-    pub fn packet_cache_iter(&self) -> impl Iterator<Item = &[u8; 32]> {
-        self.packet_cache
-            .iter()
-            .chain(self.packet_cache_prev.iter())
-    }
-
-    /// Number of hashes in the dedup cache (both sets).
-    pub fn packet_cache_len(&self) -> usize {
-        self.packet_cache.len() + self.packet_cache_prev.len()
-    }
-
-    /// Bulk-insert entries into the packet dedup cache (for loading persisted state).
-    ///
-    /// Entries are inserted into the current set.
-    pub fn load_packet_cache(&mut self, entries: impl Iterator<Item = [u8; 32]>) {
-        for hash in entries {
-            self.packet_cache.insert(hash);
-        }
     }
 
     /// Read-only access to the path table (for sans-I/O deadline computation)
@@ -1594,7 +1555,7 @@ impl<C: Clock, S: Storage> Transport<C, S> {
             // Deferred cache insert for LRPROOF local delivery
             // (Python Transport.py:2072). Non-LRPROOF proofs for registered
             // destinations were already cached in process_incoming().
-            self.packet_cache.insert(cache_hash);
+            self.storage.add_packet_hash(cache_hash);
             self.events.push(TransportEvent::PacketReceived {
                 destination_hash: dest_hash,
                 packet: Box::new(packet),
@@ -1711,7 +1672,7 @@ impl<C: Clock, S: Storage> Transport<C, S> {
                 // LRPROOF hashes are intentionally NOT cached during link-table
                 // forwarding (Python Transport.py:2016-2039).
                 if packet.context != PacketContext::Lrproof {
-                    self.packet_cache.insert(cache_hash);
+                    self.storage.add_packet_hash(cache_hash);
                 }
 
                 // Forward proof via link table
@@ -1751,7 +1712,7 @@ impl<C: Clock, S: Storage> Transport<C, S> {
         // which distinguishes LRPROOF (link establishment) from data proofs
         // (PROOF_DATA_SIZE + context=None) and validates each cryptographically.
         if packet.flags.dest_type == DestinationType::Link {
-            self.packet_cache.insert(cache_hash);
+            self.storage.add_packet_hash(cache_hash);
             self.events.push(TransportEvent::PacketReceived {
                 destination_hash: dest_hash,
                 packet: Box::new(packet),
@@ -1840,7 +1801,7 @@ impl<C: Clock, S: Storage> Transport<C, S> {
                     // Deferred cache insert: hash was skipped in process_incoming()
                     // because dest_hash is in link_table. Insert now that we've
                     // validated direction and will forward (Python Transport.py:1543).
-                    self.packet_cache.insert(full_packet_hash);
+                    self.storage.add_packet_hash(full_packet_hash);
 
                     // Forward data via link table
                     let mut forwarded = packet;
@@ -1863,7 +1824,7 @@ impl<C: Clock, S: Storage> Transport<C, S> {
         // On transport nodes, relayed links are handled via link_table above;
         // only packets for our own local links reach this point.
         if packet.flags.dest_type == DestinationType::Link {
-            self.packet_cache.insert(full_packet_hash);
+            self.storage.add_packet_hash(full_packet_hash);
             self.events.push(TransportEvent::PacketReceived {
                 destination_hash: dest_hash,
                 packet: Box::new(packet),
@@ -2223,17 +2184,6 @@ impl<C: Clock, S: Storage> Transport<C, S> {
             self.events.push(TransportEvent::PathLost {
                 destination_hash: hash,
             });
-        }
-    }
-
-    /// Rotate the packet dedup cache when the current set exceeds half capacity.
-    ///
-    /// Matches Python Transport.py:582-585: when the current set exceeds
-    /// HASHLIST_MAXSIZE / 2, the current set rotates into prev and a new
-    /// empty set takes its place.
-    fn rotate_packet_cache(&mut self) {
-        if self.packet_cache.len() > HASHLIST_MAXSIZE / 2 {
-            self.packet_cache_prev = core::mem::take(&mut self.packet_cache);
         }
     }
 
@@ -2771,8 +2721,8 @@ mod tests {
 
     mod transport_tests {
         use super::*;
+        use crate::memory_storage::MemoryStorage;
         use crate::test_utils::{test_transport, MockClock, MockInterface, TEST_TIME_MS};
-        use crate::traits::NoStorage;
         use rand_core::OsRng;
 
         extern crate std;
@@ -3083,7 +3033,8 @@ mod tests {
                 path_expiry_secs: 10, // 10 seconds (short for testing)
                 ..TransportConfig::default()
             };
-            let mut transport = Transport::new(config, clock, NoStorage, identity);
+            let mut transport =
+                Transport::new(config, clock, MemoryStorage::with_defaults(), identity);
             let _idx0 = transport.register_interface(Box::new(MockInterface::new("if0", 1)));
             let _idx1 = transport.register_interface(Box::new(MockInterface::new("if1", 2)));
 
@@ -3317,14 +3268,8 @@ mod tests {
         }
 
         #[test]
-        fn test_packet_cache_rotation() {
-            // Verify the two-set rotation strategy (Python Transport.py:582-585):
-            // - Hash in current set → deduplicated
-            // - After rotation: hash moves to prev → still deduplicated
-            // - After second rotation: hash is gone → packet accepted
-            //
-            // We test the rotation mechanism directly (calling rotate_packet_cache)
-            // rather than filling 500K entries, which would be too slow for a unit test.
+        fn test_packet_cache_dedup() {
+            // Verify that duplicate packets are dropped by the packet hash cache.
             let mut transport = test_transport();
             transport.register_interface(Box::new(MockInterface::new("test", 1)));
 
@@ -3360,75 +3305,20 @@ mod tests {
             assert_eq!(transport.pending_events(), 2);
             transport.drain_events();
 
-            // Second: deduplicated (in current set)
+            // Second: deduplicated
             transport.process_incoming(0, &buf[..len]).unwrap();
             assert_eq!(transport.pending_events(), 0);
 
-            // Simulate rotation: move current → prev, empty current
-            transport.packet_cache_prev = core::mem::take(&mut transport.packet_cache);
-
-            // After first rotation, hash is in prev set → still deduplicated
-            transport.process_incoming(0, &buf[..len]).unwrap();
-            assert_eq!(transport.pending_events(), 0);
-
-            // Simulate second rotation: prev is replaced by current (empty)
-            transport.packet_cache_prev = core::mem::take(&mut transport.packet_cache);
-
-            // After second rotation, hash is gone → packet accepted
+            // After clearing cache, packet is accepted again
+            transport.storage_mut().clear_packet_hashes();
             transport.process_incoming(0, &buf[..len]).unwrap();
             assert_eq!(transport.pending_events(), 2);
         }
 
         #[test]
-        fn test_packet_cache_rotation_threshold() {
-            // Verify the rotation mechanism at a smaller scale.
-            // The actual threshold is HASHLIST_MAXSIZE/2 (500K), but we test
-            // the two-set swap logic with a few entries.
-            let mut transport = test_transport();
-
-            // Insert 3 hashes
-            transport.packet_cache.insert([0xAA; 32]);
-            transport.packet_cache.insert([0xBB; 32]);
-            transport.packet_cache.insert([0xCC; 32]);
-            assert_eq!(transport.packet_cache.len(), 3);
-            assert!(transport.packet_cache_prev.is_empty());
-
-            // Simulate rotation (normally triggered by size threshold)
-            transport.packet_cache_prev = core::mem::take(&mut transport.packet_cache);
-            assert!(transport.packet_cache.is_empty());
-            assert_eq!(transport.packet_cache_prev.len(), 3);
-
-            // Both sets are checked during dedup
-            assert!(transport.packet_cache_prev.contains(&[0xAA; 32]));
-
-            // After second rotation, prev entries are gone
-            transport.packet_cache.insert([0xDD; 32]);
-            transport.packet_cache_prev = core::mem::take(&mut transport.packet_cache);
-            assert!(!transport.packet_cache_prev.contains(&[0xAA; 32]));
-            assert!(transport.packet_cache_prev.contains(&[0xDD; 32]));
-        }
-
-        #[test]
-        fn test_rotate_packet_cache_fires_at_threshold() {
-            // Verify rotate_packet_cache only fires when len > HASHLIST_MAXSIZE/2
-            let mut transport = test_transport();
-
-            // Below threshold: no rotation
-            transport.packet_cache.insert([0xAA; 32]);
-            transport.rotate_packet_cache();
-            assert_eq!(
-                transport.packet_cache.len(),
-                1,
-                "should not rotate below threshold"
-            );
-            assert!(transport.packet_cache_prev.is_empty());
-        }
-
-        #[test]
         fn test_dedup_uses_full_hash() {
-            // Verify that packet_cache uses full 32-byte SHA-256 hashes for
-            // deduplication, matching Python Transport.py:1227 which checks
-            // `packet.packet_hash` (the full hash, not truncated).
+            // Verify that Storage sees the full 32-byte SHA-256 hash,
+            // matching Python Transport.py:1227.
             use crate::packet::packet_hash;
 
             let mut transport = test_transport();
@@ -3464,14 +3354,11 @@ mod tests {
             // Process the packet
             transport.process_incoming(0, &buf[..len]).unwrap();
 
-            // Verify packet_cache contains the full 32-byte hash
-            assert_eq!(transport.packet_cache.len(), 1);
-
-            // Verify the cached hash matches packet_hash() output
+            // Verify the full hash is in Storage
             let expected_hash = packet_hash(&buf[..len]);
             assert!(
-                transport.packet_cache.contains(&expected_hash),
-                "packet_cache must contain the full SHA-256 hash from packet_hash()"
+                transport.storage().has_packet_hash(&expected_hash),
+                "Storage must contain the full SHA-256 hash from packet_hash()"
             );
         }
 
@@ -3627,14 +3514,14 @@ mod tests {
             (buf[..len].to_vec(), dest.hash().into_bytes())
         }
 
-        fn make_transport_enabled() -> Transport<MockClock, NoStorage> {
+        fn make_transport_enabled() -> Transport<MockClock, MemoryStorage> {
             let clock = MockClock::new(TEST_TIME_MS);
             let identity = Identity::generate(&mut OsRng);
             let config = TransportConfig {
                 enable_transport: true,
                 ..TransportConfig::default()
             };
-            Transport::new(config, clock, NoStorage, identity)
+            Transport::new(config, clock, MemoryStorage::with_defaults(), identity)
         }
 
         /// Check if actions contain a path request broadcast for the given destination.
@@ -3934,7 +3821,7 @@ mod tests {
 
         #[test]
         fn test_compute_path_request_hash() {
-            let hash = Transport::<MockClock, NoStorage>::compute_path_request_hash();
+            let hash = Transport::<MockClock, MemoryStorage>::compute_path_request_hash();
             // Should be full_hash(name_hash)[:16], matching Python Reticulum
             let name_hash = crate::destination::Destination::compute_name_hash(
                 "rnstransport",
@@ -4315,7 +4202,7 @@ mod tests {
             assert_eq!(transport.path_request_tags.len(), 1);
 
             // Clear packet cache to allow second processing
-            transport.packet_cache.clear();
+            transport.storage_mut().clear_packet_hashes();
 
             // Second request with same tag - should be deduped
             transport.process_incoming(0, &buf[..len]).unwrap();
@@ -4404,7 +4291,7 @@ mod tests {
             assert_eq!(transport.stats().announces_processed, 1);
 
             // Bypass packet cache and rate limit
-            transport.packet_cache.clear();
+            transport.storage_mut().clear_packet_hashes();
             transport.clock.advance(ANNOUNCE_RATE_LIMIT_MS + 1);
 
             // Replay exact same announce (same random_hash)
@@ -4430,7 +4317,7 @@ mod tests {
             let (raw2, _dest_hash2) = make_announce_raw(2, PacketContext::None);
 
             // Bypass packet cache and rate limit
-            transport.packet_cache.clear();
+            transport.storage_mut().clear_packet_hashes();
             transport.clock.advance(ANNOUNCE_RATE_LIMIT_MS + 1);
 
             // This is a different destination, so it should be processed
@@ -5514,7 +5401,7 @@ mod tests {
 
             // Clear previous actions and packet cache
             transport.drain_actions();
-            transport.packet_cache.clear(); // allow processing
+            transport.storage_mut().clear_packet_hashes(); // allow processing
 
             // Build a Type2 link request with transport_id = our own identity hash
             // (in the real protocol, transport_id identifies the next relay node)
@@ -5588,7 +5475,7 @@ mod tests {
             // ── Part C: Type2 arriving, multi-hop (hops=3), stays Type2 ──
 
             transport.drain_actions();
-            transport.packet_cache.clear();
+            transport.storage_mut().clear_packet_hashes();
 
             // Update path to multi-hop with a next-hop relay identity
             let next_hop_relay = [0xEE; TRUNCATED_HASHBYTES];
@@ -6238,7 +6125,7 @@ mod tests {
                 let len = packet.pack(&mut buf).unwrap();
 
                 // Clear packet cache so each iteration is processed
-                transport.packet_cache.clear();
+                transport.storage_mut().clear_packet_hashes();
                 transport.process_incoming(0, &buf[..len]).unwrap();
             }
 
@@ -7392,7 +7279,7 @@ mod tests {
             );
             // Must NOT pollute dedup cache (dropped before cache insert)
             assert!(
-                transport.packet_cache.is_empty(),
+                transport.storage().packet_hash_count() == 0,
                 "Dedup cache should not be polluted by foreign transport_id packet"
             );
         }
@@ -7569,7 +7456,7 @@ mod tests {
             );
             // Must NOT pollute dedup cache (dropped before cache insert)
             assert!(
-                transport.packet_cache.is_empty(),
+                transport.storage().packet_hash_count() == 0,
                 "Dedup cache should not be polluted by dropped PLAIN packet"
             );
         }
@@ -7702,7 +7589,7 @@ mod tests {
                 "PLAIN announce should always be dropped"
             );
             assert!(
-                transport.packet_cache.is_empty(),
+                transport.storage().packet_hash_count() == 0,
                 "Dedup cache should not be polluted by invalid PLAIN announce"
             );
         }
@@ -7751,7 +7638,7 @@ mod tests {
                 "No actions should be emitted for dropped GROUP packet"
             );
             assert!(
-                transport.packet_cache.is_empty(),
+                transport.storage().packet_hash_count() == 0,
                 "Dedup cache should not be polluted by dropped GROUP packet"
             );
         }
@@ -7796,7 +7683,7 @@ mod tests {
                 "GROUP announce should always be dropped"
             );
             assert!(
-                transport.packet_cache.is_empty(),
+                transport.storage().packet_hash_count() == 0,
                 "Dedup cache should not be polluted by invalid GROUP announce"
             );
         }
@@ -7838,7 +7725,7 @@ mod tests {
             transport.process_incoming(1, &buf[..len]).unwrap();
             assert_eq!(transport.stats().packets_forwarded, 0);
             assert!(
-                transport.packet_cache.is_empty(),
+                transport.storage().packet_hash_count() == 0,
                 "Hash must NOT be cached when link-table hop check fails"
             );
 
@@ -7850,7 +7737,7 @@ mod tests {
                 "Retry on correct interface should succeed"
             );
             assert!(
-                !transport.packet_cache.is_empty(),
+                transport.storage().packet_hash_count() > 0,
                 "Hash should be cached after successful forwarding"
             );
         }
@@ -7888,7 +7775,7 @@ mod tests {
             transport.process_incoming(0, &buf[..len]).unwrap();
             assert_eq!(transport.stats().packets_forwarded, 1);
             assert!(
-                !transport.packet_cache.is_empty(),
+                transport.storage().packet_hash_count() > 0,
                 "Hash should be cached after successful forwarding"
             );
 
@@ -7994,7 +7881,7 @@ mod tests {
                 "LRPROOF should be forwarded"
             );
             assert!(
-                transport.packet_cache.is_empty(),
+                transport.storage().packet_hash_count() == 0,
                 "LRPROOF hash must NOT be cached during link-table forwarding"
             );
         }
@@ -8041,7 +7928,7 @@ mod tests {
 
             // Hash should be cached
             assert!(
-                !transport.packet_cache.is_empty(),
+                transport.storage().packet_hash_count() > 0,
                 "LRPROOF hash should be cached after local delivery"
             );
         }
@@ -8278,7 +8165,7 @@ mod tests {
             assert!(transport.mark_path_unresponsive(&dest_hash));
 
             // Clear packet cache so announce B can be re-processed
-            transport.packet_cache.clear();
+            transport.storage_mut().clear_packet_hashes();
             transport.clock.advance(ANNOUNCE_RATE_LIMIT_MS + 1);
 
             // Re-process announce B — should be ACCEPTED now
@@ -8681,7 +8568,7 @@ mod tests {
             assert!(!transport.has_path(&dest_hash));
 
             // Clear packet cache
-            transport.packet_cache.clear();
+            transport.storage_mut().clear_packet_hashes();
             transport.clock.advance(ANNOUNCE_RATE_LIMIT_MS + 1);
 
             // Process announce B (hops=5) — should be accepted (no existing path)
@@ -8816,7 +8703,7 @@ mod tests {
             );
 
             // Step 5: Clear packet cache and advance past rate limit
-            transport.packet_cache.clear();
+            transport.storage_mut().clear_packet_hashes();
             transport.clock.advance(ANNOUNCE_RATE_LIMIT_MS + 1);
 
             // Step 6: Process announce B (hops=3, same emission, different random)
@@ -8837,7 +8724,7 @@ mod tests {
             );
 
             // Step 8: Clear caches and process newer announce C
-            transport.packet_cache.clear();
+            transport.storage_mut().clear_packet_hashes();
             transport.clock.advance(ANNOUNCE_RATE_LIMIT_MS + 1);
 
             let rh_c = make_random_hash([0x10, 0x11, 0x12, 0x13, 0x14], emission + 1000);
@@ -8859,7 +8746,7 @@ mod tests {
             target_ms: u64,
             grace: u8,
             penalty_ms: u64,
-        ) -> Transport<MockClock, NoStorage> {
+        ) -> Transport<MockClock, MemoryStorage> {
             let clock = MockClock::new(TEST_TIME_MS);
             let identity = Identity::generate(&mut OsRng);
             let config = TransportConfig {
@@ -8869,7 +8756,7 @@ mod tests {
                 announce_rate_penalty_ms: penalty_ms,
                 ..TransportConfig::default()
             };
-            Transport::new(config, clock, NoStorage, identity)
+            Transport::new(config, clock, MemoryStorage::with_defaults(), identity)
         }
 
         #[test]
@@ -8898,7 +8785,7 @@ mod tests {
 
             // Advance past both the simple rate limit and the rate target
             transport.clock.advance(ANNOUNCE_RATE_LIMIT_MS + 5_001);
-            transport.packet_cache.clear();
+            transport.storage_mut().clear_packet_hashes();
 
             // Second announce — spaced well beyond target
             let now2 = transport.clock.now_ms();
@@ -8939,7 +8826,7 @@ mod tests {
 
             // Advance past simple rate limit but LESS than rate target (10s)
             transport.clock.advance(ANNOUNCE_RATE_LIMIT_MS + 1);
-            transport.packet_cache.clear();
+            transport.storage_mut().clear_packet_hashes();
 
             // Second announce — too fast (2s < 10s target)
             let now2 = transport.clock.now_ms();
@@ -8986,7 +8873,7 @@ mod tests {
 
             // Trigger violation: advance 3s (< 10s target)
             transport.clock.advance(3_000);
-            transport.packet_cache.clear();
+            transport.storage_mut().clear_packet_hashes();
             let now2 = transport.clock.now_ms();
             let raw2 = make_announce_raw_for_dest(&dest, 1, now2);
             transport.process_incoming(0, &raw2).unwrap();
@@ -8997,7 +8884,7 @@ mod tests {
 
             // At t0 + 14_999 — still blocked
             transport.clock.set(t0 + 14_999);
-            transport.packet_cache.clear();
+            transport.storage_mut().clear_packet_hashes();
             let now3 = transport.clock.now_ms();
             let raw3 = make_announce_raw_for_dest(&dest, 1, now3);
             transport.process_incoming(0, &raw3).unwrap();
@@ -9009,7 +8896,7 @@ mod tests {
 
             // At t0 + 15_001 — block expired
             transport.clock.set(t0 + 15_001);
-            transport.packet_cache.clear();
+            transport.storage_mut().clear_packet_hashes();
             let now4 = transport.clock.now_ms();
             let raw4 = make_announce_raw_for_dest(&dest, 1, now4);
             transport.process_incoming(0, &raw4).unwrap();
@@ -9055,7 +8942,7 @@ mod tests {
 
             // Trigger violation for dest_a only (too fast)
             transport.clock.advance(ANNOUNCE_RATE_LIMIT_MS + 1);
-            transport.packet_cache.clear();
+            transport.storage_mut().clear_packet_hashes();
             let now2 = transport.clock.now_ms();
             let raw_a2 = make_announce_raw_for_dest(&dest_a, 1, now2);
             transport.process_incoming(0, &raw_a2).unwrap();
@@ -9075,7 +8962,7 @@ mod tests {
             // So dest_b will ALSO be rate-blocked. Let's verify independence differently:
             // advance enough for dest_b to be within target
             transport.clock.advance(10_000);
-            transport.packet_cache.clear();
+            transport.storage_mut().clear_packet_hashes();
             let now3 = transport.clock.now_ms();
             let raw_b3 = make_announce_raw_for_dest(&dest_b, 1, now3);
             transport.process_incoming(0, &raw_b3).unwrap();
@@ -9119,7 +9006,7 @@ mod tests {
 
             // Violation 1: too fast (2s < 5s)
             transport.clock.advance(ANNOUNCE_RATE_LIMIT_MS + 1);
-            transport.packet_cache.clear();
+            transport.storage_mut().clear_packet_hashes();
             let raw2 = make_announce_raw_for_dest(&dest, 1, transport.clock.now_ms());
             transport.process_incoming(0, &raw2).unwrap();
 
@@ -9128,7 +9015,7 @@ mod tests {
 
             // Violation 2: too fast again
             transport.clock.advance(ANNOUNCE_RATE_LIMIT_MS + 1);
-            transport.packet_cache.clear();
+            transport.storage_mut().clear_packet_hashes();
             let raw3 = make_announce_raw_for_dest(&dest, 1, transport.clock.now_ms());
             transport.process_incoming(0, &raw3).unwrap();
 
@@ -9137,7 +9024,7 @@ mod tests {
 
             // Good rate: advance well past target (10s > 5s)
             transport.clock.advance(10_000);
-            transport.packet_cache.clear();
+            transport.storage_mut().clear_packet_hashes();
             let now_good = transport.clock.now_ms();
             let raw4 = make_announce_raw_for_dest(&dest, 1, now_good);
             transport.process_incoming(0, &raw4).unwrap();
@@ -9150,7 +9037,7 @@ mod tests {
 
             // Another good rate
             transport.clock.advance(10_000);
-            transport.packet_cache.clear();
+            transport.storage_mut().clear_packet_hashes();
             let raw5 = make_announce_raw_for_dest(&dest, 1, transport.clock.now_ms());
             transport.process_incoming(0, &raw5).unwrap();
 
@@ -9191,7 +9078,7 @@ mod tests {
 
             // Trigger blocking (too fast)
             transport.clock.advance(ANNOUNCE_RATE_LIMIT_MS + 1);
-            transport.packet_cache.clear();
+            transport.storage_mut().clear_packet_hashes();
             let raw2 = make_announce_raw_for_dest(&dest, 1, transport.clock.now_ms());
             transport.process_incoming(0, &raw2).unwrap();
 
@@ -9201,7 +9088,7 @@ mod tests {
 
             // Advance past blocked_until (t0 + 10_000)
             transport.clock.set(t0 + 10_001);
-            transport.packet_cache.clear();
+            transport.storage_mut().clear_packet_hashes();
             let now_after = transport.clock.now_ms();
             let raw3 = make_announce_raw_for_dest(&dest, 1, now_after);
             transport.process_incoming(0, &raw3).unwrap();
@@ -9238,7 +9125,7 @@ mod tests {
             assert!(transport.announce_table.contains_key(&dest_hash));
 
             transport.clock.advance(ANNOUNCE_RATE_LIMIT_MS + 1);
-            transport.packet_cache.clear();
+            transport.storage_mut().clear_packet_hashes();
             let now2 = transport.clock.now_ms();
             let raw2 = make_announce_raw_for_dest(&dest, 1, now2);
             transport.process_incoming(0, &raw2).unwrap();
@@ -9346,7 +9233,7 @@ mod tests {
 
             // Violation: too fast (3s < 10s target) — triggers blocking (grace=0)
             transport.clock.advance(3_000);
-            transport.packet_cache.clear();
+            transport.storage_mut().clear_packet_hashes();
             let now2 = transport.clock.now_ms();
             let raw2 = make_announce_raw_for_dest(&dest, 1, now2);
             transport.process_incoming(0, &raw2).unwrap();
@@ -9365,7 +9252,7 @@ mod tests {
 
             // Another too-fast announce while blocked — last_ms still anchored
             transport.clock.advance(3_000);
-            transport.packet_cache.clear();
+            transport.storage_mut().clear_packet_hashes();
             let now3 = transport.clock.now_ms();
             let raw3 = make_announce_raw_for_dest(&dest, 1, now3);
             transport.process_incoming(0, &raw3).unwrap();

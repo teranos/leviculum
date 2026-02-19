@@ -7,6 +7,7 @@ use std::path::PathBuf;
 
 use reticulum_core::identity::Identity;
 use reticulum_core::node::NodeCoreBuilder;
+use reticulum_core::traits::Storage as _;
 use reticulum_core::ProofStrategy;
 
 use crate::clock::SystemClock;
@@ -257,8 +258,8 @@ impl ReticulumNodeBuilder {
         }
 
         // Load packet hashlist for dedup continuity across restarts
-        if !hashlist.is_empty() {
-            node_core.load_packet_cache(hashlist.iter().copied());
+        for hash in &hashlist {
+            node_core.storage_mut().add_packet_hash(*hash);
         }
 
         Ok(ReticulumNode::new(
