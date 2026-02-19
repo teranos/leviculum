@@ -41,7 +41,7 @@ use alloc::vec::Vec;
 
 use crate::constants::{
     ANNOUNCE_RATE_GRACE, ANNOUNCE_RATE_LIMIT_MS, ANNOUNCE_RATE_PENALTY_MS,
-    DEFAULT_ANNOUNCE_CAP_PERCENT, LINK_TIMEOUT_MS, LOCAL_REBROADCASTS_MAX, MAX_PATH_REQUEST_TAGS,
+    DEFAULT_ANNOUNCE_CAP_PERCENT, LINK_TIMEOUT_MS, LOCAL_REBROADCASTS_MAX,
     MAX_QUEUED_ANNOUNCES_PER_INTERFACE, MAX_RANDOM_BLOBS, MS_PER_SECOND, MTU,
     PATHFINDER_EXPIRY_SECS, PATHFINDER_G_MS, PATHFINDER_MAX_HOPS, PATHFINDER_RETRIES,
     PATH_REQUEST_GRACE_MS, PATH_REQUEST_MIN_INTERVAL_MS, REVERSE_TABLE_EXPIRY_MS,
@@ -466,12 +466,6 @@ pub struct Transport<C: Clock, S: Storage> {
     /// Well-known hash for path request destination (rnstransport.path.request)
     path_request_hash: [u8; TRUNCATED_HASHBYTES],
 
-    /// Dedup tags for path requests (dest_hash + random tag)
-    path_request_tags: VecDeque<[u8; 32]>,
-
-    /// Rate limiting for path requests: dest_hash -> last request timestamp (ms)
-    path_requests: BTreeMap<[u8; TRUNCATED_HASHBYTES], u64>,
-
     /// Cached raw announce bytes for path responses: dest_hash -> raw bytes
     announce_cache: BTreeMap<[u8; TRUNCATED_HASHBYTES], Vec<u8>>,
 
@@ -509,8 +503,6 @@ impl<C: Clock, S: Storage> Transport<C, S> {
             events: Vec::new(),
             stats: TransportStats::default(),
             path_request_hash,
-            path_request_tags: VecDeque::new(),
-            path_requests: BTreeMap::new(),
             announce_cache: BTreeMap::new(),
             announce_rate_table: BTreeMap::new(),
             interface_announce_caps: BTreeMap::new(),
@@ -1956,12 +1948,12 @@ impl<C: Clock, S: Storage> Transport<C, S> {
         let now = self.clock.now_ms();
 
         // Rate limiting
-        if let Some(&last_request) = self.path_requests.get(dest_hash) {
+        if let Some(last_request) = self.storage.get_path_request_time(dest_hash) {
             if now.saturating_sub(last_request) < PATH_REQUEST_MIN_INTERVAL_MS {
                 return Ok(());
             }
         }
-        self.path_requests.insert(*dest_hash, now);
+        self.storage.set_path_request_time(*dest_hash, now);
 
         // Build path request data:
         //   Transport node:     dest_hash(16) + transport_id(16) + tag(16) = 48 bytes
@@ -2100,14 +2092,8 @@ impl<C: Clock, S: Storage> Transport<C, S> {
         dedup_key[..TRUNCATED_HASHBYTES].copy_from_slice(&requested_hash);
         dedup_key[TRUNCATED_HASHBYTES..].copy_from_slice(&tag);
 
-        if self.path_request_tags.contains(&dedup_key) {
+        if self.storage.check_path_request_tag(&dedup_key) {
             return Ok(());
-        }
-
-        self.path_request_tags.push_back(dedup_key);
-        // Trim if too many tags
-        if self.path_request_tags.len() > MAX_PATH_REQUEST_TAGS {
-            self.path_request_tags.pop_front();
         }
 
         // 1. Check if it's a local destination
@@ -2433,12 +2419,12 @@ impl<C: Clock, S: Storage> Transport<C, S> {
             let dest_hash = entry.destination_hash;
 
             // Check path request rate limiting
-            let path_request_throttled = if let Some(&last_req) = self.path_requests.get(&dest_hash)
-            {
-                now.saturating_sub(last_req) < PATH_REQUEST_MIN_INTERVAL_MS
-            } else {
-                false
-            };
+            let path_request_throttled =
+                if let Some(last_req) = self.storage.get_path_request_time(&dest_hash) {
+                    now.saturating_sub(last_req) < PATH_REQUEST_MIN_INTERVAL_MS
+                } else {
+                    false
+                };
 
             let mut should_request_path = false;
 
@@ -2568,6 +2554,7 @@ impl<C: Clock, S: Storage> Transport<C, S> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::constants::MAX_PATH_REQUEST_TAGS;
 
     #[test]
     fn test_default_config() {
@@ -4199,7 +4186,7 @@ mod tests {
 
             // First request - should be processed
             transport.process_incoming(0, &buf[..len]).unwrap();
-            assert_eq!(transport.path_request_tags.len(), 1);
+            assert_eq!(transport.storage().path_request_tag_count(), 1);
 
             // Clear packet cache to allow second processing
             transport.storage_mut().clear_packet_hashes();
@@ -4207,7 +4194,7 @@ mod tests {
             // Second request with same tag - should be deduped
             transport.process_incoming(0, &buf[..len]).unwrap();
             // Tag count should still be 1 (dedup worked)
-            assert_eq!(transport.path_request_tags.len(), 1);
+            assert_eq!(transport.storage().path_request_tag_count(), 1);
         }
 
         #[test]
@@ -4265,7 +4252,7 @@ mod tests {
             // Should not panic, just forward
             transport.process_incoming(0, &buf[..len]).unwrap();
             // Tag should be stored
-            assert_eq!(transport.path_request_tags.len(), 1);
+            assert_eq!(transport.storage().path_request_tag_count(), 1);
         }
 
         #[test]
@@ -6131,7 +6118,7 @@ mod tests {
 
             // Should be capped at MAX_PATH_REQUEST_TAGS
             assert_eq!(
-                transport.path_request_tags.len(),
+                transport.storage().path_request_tag_count(),
                 MAX_PATH_REQUEST_TAGS,
                 "path_request_tags should be capped at MAX_PATH_REQUEST_TAGS"
             );

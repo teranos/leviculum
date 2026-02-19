@@ -78,7 +78,6 @@ use crate::interfaces::tcp::{
 };
 use crate::interfaces::{InterfaceHandle, InterfaceRegistry};
 use crate::known_destinations::KnownDestinationsStore;
-use crate::packet_hashlist;
 use crate::storage::Storage;
 
 /// Type alias for the concrete NodeCore used by std platforms

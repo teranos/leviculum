@@ -103,6 +103,11 @@ impl MemoryStorage {
         self.packet_cache.len() + self.packet_cache_prev.len()
     }
 
+    /// Number of path request tags stored
+    pub fn path_request_tag_count(&self) -> usize {
+        self.path_request_tags.len()
+    }
+
     /// Clear all packet hashes (test convenience)
     pub fn clear_packet_hashes(&mut self) {
         self.packet_cache.clear();
