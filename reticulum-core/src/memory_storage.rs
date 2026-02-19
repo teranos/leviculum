@@ -108,6 +108,16 @@ impl MemoryStorage {
         self.path_request_tags.len()
     }
 
+    /// Number of link table entries
+    pub fn link_entry_count(&self) -> usize {
+        self.link_table.len()
+    }
+
+    /// Iterate over all link table entry values
+    pub fn link_entry_values(&self) -> impl Iterator<Item = &LinkEntry> {
+        self.link_table.values()
+    }
+
     /// Clear all packet hashes (test convenience)
     pub fn clear_packet_hashes(&mut self) {
         self.packet_cache.clear();

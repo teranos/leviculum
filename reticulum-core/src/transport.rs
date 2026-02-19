@@ -439,9 +439,7 @@ pub struct Transport<C: Clock, S: Storage> {
     /// Announce table: destination_hash -> announce rate tracking
     announce_table: BTreeMap<[u8; TRUNCATED_HASHBYTES], AnnounceEntry>,
 
-    /// Link table: link_id -> link routing info
-    link_table: BTreeMap<[u8; TRUNCATED_HASHBYTES], LinkEntry>,
-
+    // link_table: migrated to Storage trait
     /// Reverse table: packet_hash -> sender info (for routing replies)
     // reverse_table: migrated to Storage trait
 
@@ -488,7 +486,7 @@ impl<C: Clock, S: Storage> Transport<C, S> {
             // path_table: migrated to Storage
             // path_states: migrated to Storage
             announce_table: BTreeMap::new(),
-            link_table: BTreeMap::new(),
+            // link_table: migrated to Storage
             // reverse_table: migrated to Storage
             local_destinations: BTreeSet::new(),
             // receipts: migrated to Storage
@@ -855,7 +853,7 @@ impl<C: Clock, S: Storage> Transport<C, S> {
         // Inserting early would block the correct copy. The handler inserts
         // the hash on successful processing; failed packets stay uncached
         // so the correct copy can still pass dedup.
-        let defer_cache_insert = self.link_table.contains_key(&packet.destination_hash)
+        let defer_cache_insert = self.storage.has_link_entry(&packet.destination_hash)
             || (packet.flags.packet_type == PacketType::Proof
                 && packet.context == PacketContext::Lrproof);
 
@@ -1029,12 +1027,8 @@ impl<C: Clock, S: Storage> Transport<C, S> {
         }
 
         // Link table expiry deadlines
-        for entry in self.link_table.values() {
-            if entry.validated {
-                update(entry.timestamp_ms.saturating_add(LINK_TIMEOUT_MS));
-            } else {
-                update(entry.proof_timeout_ms);
-            }
+        if let Some(deadline) = self.storage.earliest_link_deadline(LINK_TIMEOUT_MS) {
+            update(deadline);
         }
 
         // Announce queue drain deadlines
@@ -1101,17 +1095,7 @@ impl<C: Clock, S: Storage> Transport<C, S> {
 
     /// Remove link table entries referencing a specific interface
     pub(crate) fn remove_link_entries_for_interface(&mut self, iface_idx: usize) {
-        let to_remove: Vec<_> = self
-            .link_table
-            .iter()
-            .filter(|(_, e)| {
-                e.next_hop_interface_index == iface_idx || e.received_interface_index == iface_idx
-            })
-            .map(|(k, _)| *k)
-            .collect();
-        for hash in to_remove {
-            self.link_table.remove(&hash);
-        }
+        let _removed = self.storage.remove_link_entries_for_interface(iface_idx);
     }
 
     /// Remove reverse table entries referencing a specific interface
@@ -1405,7 +1389,7 @@ impl<C: Clock, S: Storage> Transport<C, S> {
                     });
 
             // Insert link table entry for bidirectional routing
-            self.link_table.insert(
+            self.storage.set_link_entry(
                 *link_id.as_bytes(),
                 LinkEntry {
                     timestamp_ms: now,
@@ -1556,7 +1540,7 @@ impl<C: Clock, S: Storage> Transport<C, S> {
 
         // If we're a transport node, check link table for bidirectional routing
         if self.config.enable_transport {
-            if let Some(link_entry) = self.link_table.get(&dest_hash).cloned() {
+            if let Some(link_entry) = self.storage.get_link_entry(&dest_hash).cloned() {
                 // Determine direction with hop count validation
                 let target_iface = if interface_index == link_entry.next_hop_interface_index {
                     // From destination side: check remaining_hops
@@ -1651,7 +1635,7 @@ impl<C: Clock, S: Storage> Transport<C, S> {
 
                 // Mark link as validated on first proof
                 if !link_entry.validated {
-                    if let Some(entry) = self.link_table.get_mut(&dest_hash) {
+                    if let Some(entry) = self.storage.get_link_entry_mut(&dest_hash) {
                         entry.validated = true;
                         entry.timestamp_ms = self.clock.now_ms();
                     }
@@ -1758,7 +1742,7 @@ impl<C: Clock, S: Storage> Transport<C, S> {
         // If we're a transport node, try link table first, then path table
         if self.config.enable_transport {
             // Check link table for validated links
-            if let Some(link_entry) = self.link_table.get(&dest_hash).cloned() {
+            if let Some(link_entry) = self.storage.get_link_entry(&dest_hash).cloned() {
                 if link_entry.validated {
                     let target_iface = if interface_index == link_entry.next_hop_interface_index {
                         // From destination side: check remaining_hops
@@ -2368,23 +2352,9 @@ impl<C: Clock, S: Storage> Transport<C, S> {
     }
 
     fn clean_link_table(&mut self, now: u64) {
-        // Collect expired entries with their data for rediscovery logic
-        let expired: Vec<([u8; TRUNCATED_HASHBYTES], LinkEntry)> = self
-            .link_table
-            .iter()
-            .filter(|(_, e)| {
-                if e.validated {
-                    now.saturating_sub(e.timestamp_ms) > LINK_TIMEOUT_MS
-                } else {
-                    now > e.proof_timeout_ms
-                }
-            })
-            .map(|(k, e)| (*k, e.clone()))
-            .collect();
+        let expired = self.storage.expire_link_entries(now, LINK_TIMEOUT_MS);
 
-        for (link_hash, entry) in expired {
-            self.link_table.remove(&link_hash);
-
+        for (_link_hash, entry) in expired {
             // Path rediscovery only for unvalidated links (proof never arrived).
             // Matches Python Transport.py:629-699.
             if entry.validated {
@@ -3676,7 +3646,7 @@ mod tests {
             let now = transport.clock.now_ms();
 
             let link_id = [0xAA; TRUNCATED_HASHBYTES];
-            transport.link_table.insert(
+            transport.storage_mut().set_link_entry(
                 link_id,
                 LinkEntry {
                     timestamp_ms: now,
@@ -3691,13 +3661,13 @@ mod tests {
                 },
             );
 
-            assert!(transport.link_table.contains_key(&link_id));
+            assert!(transport.storage().has_link_entry(&link_id));
 
             // Advance past LINK_TIMEOUT_MS (15 min)
             transport.clock.advance(LINK_TIMEOUT_MS + 1000);
             transport.poll();
 
-            assert!(!transport.link_table.contains_key(&link_id));
+            assert!(!transport.storage().has_link_entry(&link_id));
         }
 
         #[test]
@@ -3709,7 +3679,7 @@ mod tests {
 
             let link_id = [0xAA; TRUNCATED_HASHBYTES];
             let proof_timeout = now + 10_000;
-            transport.link_table.insert(
+            transport.storage_mut().set_link_entry(
                 link_id,
                 LinkEntry {
                     timestamp_ms: now,
@@ -3729,7 +3699,7 @@ mod tests {
             transport.poll();
 
             // Unvalidated entry should be expired
-            assert!(!transport.link_table.contains_key(&link_id));
+            assert!(!transport.storage().has_link_entry(&link_id));
         }
 
         #[test]
@@ -3740,7 +3710,7 @@ mod tests {
             let now = transport.clock.now_ms();
 
             let link_id = [0xAA; TRUNCATED_HASHBYTES];
-            transport.link_table.insert(
+            transport.storage_mut().set_link_entry(
                 link_id,
                 LinkEntry {
                     timestamp_ms: now,
@@ -3760,7 +3730,7 @@ mod tests {
             transport.poll();
 
             // Should still be present
-            assert!(transport.link_table.contains_key(&link_id));
+            assert!(transport.storage().has_link_entry(&link_id));
         }
 
         // ─── Stage 3: Path Request Tests ─────────────────────────────────
@@ -4286,7 +4256,7 @@ mod tests {
             let link_id = [0xAA; TRUNCATED_HASHBYTES];
             let now = transport.clock.now_ms();
 
-            transport.link_table.insert(
+            transport.storage_mut().set_link_entry(
                 link_id,
                 LinkEntry {
                     timestamp_ms: now,
@@ -4328,7 +4298,11 @@ mod tests {
                 "LRPROOF with invalid length should not be forwarded"
             );
             assert!(
-                !transport.link_table.get(&link_id).unwrap().validated,
+                !transport
+                    .storage()
+                    .get_link_entry(&link_id)
+                    .unwrap()
+                    .validated,
                 "Link should not be validated with bad proof"
             );
         }
@@ -4353,7 +4327,7 @@ mod tests {
             let mut peer_ed25519 = [0u8; ED25519_KEY_SIZE];
             peer_ed25519.copy_from_slice(&pub_bytes[X25519_KEY_SIZE..]);
 
-            transport.link_table.insert(
+            transport.storage_mut().set_link_entry(
                 link_id,
                 LinkEntry {
                     timestamp_ms: now,
@@ -4407,7 +4381,11 @@ mod tests {
                 "Valid LRPROOF should be forwarded"
             );
             assert!(
-                transport.link_table.get(&link_id).unwrap().validated,
+                transport
+                    .storage()
+                    .get_link_entry(&link_id)
+                    .unwrap()
+                    .validated,
                 "Link should be validated after valid proof"
             );
         }
@@ -4429,7 +4407,7 @@ mod tests {
             let mut peer_ed25519 = [0u8; ED25519_KEY_SIZE];
             peer_ed25519.copy_from_slice(&pub_bytes[X25519_KEY_SIZE..]);
 
-            transport.link_table.insert(
+            transport.storage_mut().set_link_entry(
                 link_id,
                 LinkEntry {
                     timestamp_ms: now,
@@ -4493,7 +4471,7 @@ mod tests {
             let link_id = [0xAA; TRUNCATED_HASHBYTES];
             let now = transport.clock.now_ms();
 
-            transport.link_table.insert(
+            transport.storage_mut().set_link_entry(
                 link_id,
                 LinkEntry {
                     timestamp_ms: now,
@@ -4593,8 +4571,8 @@ mod tests {
 
             // Find the link entry that was created
             let link_entry = transport
-                .link_table
-                .values()
+                .storage()
+                .link_entry_values()
                 .next()
                 .expect("Should have a link table entry");
 
@@ -5092,7 +5070,7 @@ mod tests {
 
             let link_id = [0xAA; TRUNCATED_HASHBYTES];
             let now = transport.clock.now_ms();
-            transport.link_table.insert(
+            transport.storage_mut().set_link_entry(
                 link_id,
                 LinkEntry {
                     timestamp_ms: now,
@@ -5111,7 +5089,7 @@ mod tests {
             transport.remove_link_entries_for_interface(1);
 
             assert!(
-                !transport.link_table.contains_key(&link_id),
+                !transport.storage().has_link_entry(&link_id),
                 "Link entry should be removed when interface goes down"
             );
         }
@@ -5497,13 +5475,13 @@ mod tests {
             // ── Part D: Verify link table was populated for all forwarded requests ──
 
             assert!(
-                transport.link_table.len() >= 3,
+                transport.storage().link_entry_count() >= 3,
                 "Link table should have entries for all forwarded link requests, got {}",
-                transport.link_table.len()
+                transport.storage().link_entry_count()
             );
 
             // All link table entries should point to interface 1 as next hop
-            for entry in transport.link_table.values() {
+            for entry in transport.storage().link_entry_values() {
                 assert_eq!(
                     entry.next_hop_interface_index, 1,
                     "Link entry should route toward if1"
@@ -5544,7 +5522,7 @@ mod tests {
 
             let link_id = [0xAA; TRUNCATED_HASHBYTES];
             let now = transport.clock.now_ms();
-            transport.link_table.insert(
+            transport.storage_mut().set_link_entry(
                 link_id,
                 LinkEntry {
                     timestamp_ms: now,
@@ -5579,7 +5557,7 @@ mod tests {
 
             let link_id = [0xAA; TRUNCATED_HASHBYTES];
             let now = transport.clock.now_ms();
-            transport.link_table.insert(
+            transport.storage_mut().set_link_entry(
                 link_id,
                 LinkEntry {
                     timestamp_ms: now,
@@ -5630,7 +5608,7 @@ mod tests {
 
             let link_id = [0xAA; TRUNCATED_HASHBYTES];
             let now = transport.clock.now_ms();
-            transport.link_table.insert(
+            transport.storage_mut().set_link_entry(
                 link_id,
                 LinkEntry {
                     timestamp_ms: now,
@@ -6499,10 +6477,11 @@ mod tests {
 
             // Insert a validated link_table entry: link_hash routes from if0 → if1
             let link_hash = [0xAA; TRUNCATED_HASHBYTES];
-            transport.link_table.insert(
+            let now = transport.clock.now_ms();
+            transport.storage_mut().set_link_entry(
                 link_hash,
                 LinkEntry {
-                    timestamp_ms: transport.clock.now_ms(),
+                    timestamp_ms: now,
                     next_hop_interface_index: 1, // toward destination
                     remaining_hops: 1,
                     received_interface_index: 0, // toward initiator
@@ -7647,7 +7626,7 @@ mod tests {
 
             let link_id = [0xAA; TRUNCATED_HASHBYTES];
             let now = transport.clock.now_ms();
-            transport.link_table.insert(
+            transport.storage_mut().set_link_entry(
                 link_id,
                 LinkEntry {
                     timestamp_ms: now,
@@ -7698,7 +7677,7 @@ mod tests {
 
             let link_id = [0xAA; TRUNCATED_HASHBYTES];
             let now = transport.clock.now_ms();
-            transport.link_table.insert(
+            transport.storage_mut().set_link_entry(
                 link_id,
                 LinkEntry {
                     timestamp_ms: now,
@@ -7785,7 +7764,7 @@ mod tests {
 
             let link_id = [0xAA; TRUNCATED_HASHBYTES];
             let now = transport.clock.now_ms();
-            transport.link_table.insert(
+            transport.storage_mut().set_link_entry(
                 link_id,
                 LinkEntry {
                     timestamp_ms: now,
@@ -8180,7 +8159,7 @@ mod tests {
             // Insert unvalidated link entry: hops=2 (initiator 2 hops away),
             // dest is directly connected → sub-case 2 (dest is_direct)
             let link_id = [0xAA; TRUNCATED_HASHBYTES];
-            transport.link_table.insert(
+            transport.storage_mut().set_link_entry(
                 link_id,
                 LinkEntry {
                     timestamp_ms: now,
@@ -8208,7 +8187,7 @@ mod tests {
             );
 
             // Link should be removed
-            assert!(!transport.link_table.contains_key(&link_id));
+            assert!(!transport.storage().has_link_entry(&link_id));
         }
 
         #[test]
@@ -8235,7 +8214,7 @@ mod tests {
             // Insert unvalidated link: hops=0 (initiator directly connected).
             // Rust stores raw wire hops; 0 = direct neighbor.
             let link_id = [0xAA; TRUNCATED_HASHBYTES];
-            transport.link_table.insert(
+            transport.storage_mut().set_link_entry(
                 link_id,
                 LinkEntry {
                     timestamp_ms: now,
@@ -8283,7 +8262,7 @@ mod tests {
 
             // Unvalidated link: hops=2 (initiator 2 hops, not 1)
             let link_id = [0xAA; TRUNCATED_HASHBYTES];
-            transport.link_table.insert(
+            transport.storage_mut().set_link_entry(
                 link_id,
                 LinkEntry {
                     timestamp_ms: now,
@@ -8308,7 +8287,7 @@ mod tests {
             );
 
             // Link should still be removed
-            assert!(!transport.link_table.contains_key(&link_id));
+            assert!(!transport.storage().has_link_entry(&link_id));
         }
 
         #[test]
@@ -8334,7 +8313,7 @@ mod tests {
 
             // hops=2 (not 0, so sub-case 3 doesn't trigger before sub-case 2)
             let link_id = [0xAA; TRUNCATED_HASHBYTES];
-            transport.link_table.insert(
+            transport.storage_mut().set_link_entry(
                 link_id,
                 LinkEntry {
                     timestamp_ms: now,
@@ -8373,7 +8352,7 @@ mod tests {
 
             // NO path entry — sub-case 1
             let link_id = [0xAA; TRUNCATED_HASHBYTES];
-            transport.link_table.insert(
+            transport.storage_mut().set_link_entry(
                 link_id,
                 LinkEntry {
                     timestamp_ms: now,
@@ -8422,7 +8401,7 @@ mod tests {
 
             // Validated link
             let link_id = [0xAA; TRUNCATED_HASHBYTES];
-            transport.link_table.insert(
+            transport.storage_mut().set_link_entry(
                 link_id,
                 LinkEntry {
                     timestamp_ms: now,
@@ -8445,7 +8424,7 @@ mod tests {
             transport.poll();
 
             // Link removed, but NO path request
-            assert!(!transport.link_table.contains_key(&link_id));
+            assert!(!transport.storage().has_link_entry(&link_id));
 
             let actions = transport.drain_actions();
             assert!(
@@ -8550,7 +8529,7 @@ mod tests {
 
             // Insert unvalidated link
             let link_id = [0xAA; TRUNCATED_HASHBYTES];
-            transport.link_table.insert(
+            transport.storage_mut().set_link_entry(
                 link_id,
                 LinkEntry {
                     timestamp_ms: now,
@@ -8615,7 +8594,7 @@ mod tests {
             // over sub-case 2 (dest is_direct)
             let link_id = [0xCC; TRUNCATED_HASHBYTES];
             let now = transport.clock.now_ms();
-            transport.link_table.insert(
+            transport.storage_mut().set_link_entry(
                 link_id,
                 LinkEntry {
                     timestamp_ms: now,
