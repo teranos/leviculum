@@ -11,6 +11,7 @@
 
 pub mod hdlc;
 pub(crate) mod tcp;
+pub(crate) mod udp;
 
 use reticulum_core::traits::{InterfaceError, InterfaceMode};
 use reticulum_core::transport::InterfaceId;
