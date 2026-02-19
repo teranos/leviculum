@@ -54,7 +54,8 @@ pub use builder::ReticulumNodeBuilder;
 pub use sender::PacketSender;
 pub use stream::LinkHandle;
 
-use std::net::{SocketAddr, ToSocketAddrs};
+use std::net::SocketAddr;
+use std::net::ToSocketAddrs;
 use std::sync::atomic::AtomicUsize;
 use std::sync::{Arc, Mutex};
 use std::task::Poll;
@@ -77,7 +78,6 @@ use crate::interfaces::tcp::{
     spawn_tcp_client_with_reconnect, spawn_tcp_server, TCP_DEFAULT_BUFFER_SIZE,
 };
 use crate::interfaces::{InterfaceHandle, InterfaceRegistry};
-use crate::known_destinations::KnownDestinationsStore;
 use crate::storage::Storage;
 
 /// Type alias for the concrete NodeCore used by std platforms
@@ -119,11 +119,6 @@ pub struct ReticulumNode {
     action_dispatch_tx: mpsc::Sender<TickOutput>,
     /// Fault injection: corrupt ~1 byte per N bytes on TCP write
     corrupt_every: Option<u64>,
-    /// Known destinations persistence store (None if persistence disabled).
-    /// Removed: entries are saved to disk on shutdown and periodically.
-    known_dests_store: Option<KnownDestinationsStore>,
-    /// Storage path for persistence (used to create Storage instances for saving)
-    storage_path: Option<std::path::PathBuf>,
 }
 
 impl ReticulumNode {
@@ -132,8 +127,6 @@ impl ReticulumNode {
         core: StdNodeCore,
         interfaces: Vec<InterfaceConfig>,
         corrupt_every: Option<u64>,
-        known_dests_store: Option<KnownDestinationsStore>,
-        storage_path: Option<std::path::PathBuf>,
     ) -> Self {
         let (event_tx, event_rx) = mpsc::channel(EVENT_CHANNEL_CAPACITY);
         // Create dummy channel; real one is created in start()
@@ -148,8 +141,6 @@ impl ReticulumNode {
             runner_handle: None,
             action_dispatch_tx,
             corrupt_every,
-            known_dests_store,
-            storage_path,
         }
     }
 
@@ -315,31 +306,13 @@ impl ReticulumNode {
     }
 
     /// Persist all state to disk on shutdown.
-    fn save_persistent_state(&mut self) {
-        let Some(path) = &self.storage_path else {
-            return;
-        };
-        let storage = match Storage::new(path) {
-            Ok(s) => s,
-            Err(e) => {
-                tracing::warn!("Failed to open storage for saving: {e}");
-                return;
-            }
-        };
-
-        // Save known destinations
-        if let Some(store) = &mut self.known_dests_store {
-            {
-                let core = self.inner.lock().unwrap();
-                store.merge_from_storage(core.storage().known_identity_entries());
-            }
-            if let Err(e) = store.save(&storage) {
-                tracing::warn!("Failed to save known destinations: {e}");
-            }
-        }
-
-        // Packet hashlist persistence is now handled by Storage::flush()
-        // (will be implemented when FileStorage absorbs packet_hashlist.rs)
+    ///
+    /// Delegates to `Storage::flush()` which saves known_destinations
+    /// and packet_hashlist in Python-compatible formats.
+    fn save_persistent_state(&self) {
+        use reticulum_core::traits::Storage as _;
+        let mut core = self.inner.lock().unwrap();
+        core.storage_mut().flush();
     }
 
     /// Check if the node is running
@@ -458,6 +431,7 @@ impl ReticulumNode {
     /// Get a handle to the inner NodeCore
     ///
     /// Use this for direct access to the core API.
+    #[cfg(test)]
     pub(crate) fn inner(&self) -> Arc<Mutex<StdNodeCore>> {
         Arc::clone(&self.inner)
     }
@@ -711,7 +685,7 @@ async fn run_event_loop(
                     Some(deadline_ms) => {
                         let delta = deadline_ms.saturating_sub(now_ms);
                         debug_assert!(delta > 0, "next_deadline() returned zero — would cause spin loop");
-                        Duration::from_millis(delta.max(1).min(1000))
+                        Duration::from_millis(delta.clamp(1, 1000))
                     }
                     None => Duration::from_secs(1),
                 };

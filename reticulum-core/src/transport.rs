@@ -1073,12 +1073,14 @@ impl<C: Clock, S: Storage> Transport<C, S> {
         &self.clock
     }
 
-    /// Insert a path entry (thin wrapper around storage)
+    /// Insert a path entry (thin wrapper around storage, test helper)
+    #[cfg(test)]
     pub(crate) fn insert_path(&mut self, hash: [u8; TRUNCATED_HASHBYTES], entry: PathEntry) {
         self.storage.set_path(hash, entry);
     }
 
-    /// Remove a path entry by destination hash (thin wrapper around storage)
+    /// Remove a path entry by destination hash (thin wrapper around storage, test helper)
+    #[cfg(test)]
     pub(crate) fn remove_path(&mut self, hash: &[u8; TRUNCATED_HASHBYTES]) {
         self.storage.remove_path(hash);
     }
@@ -4318,7 +4320,7 @@ mod tests {
         #[test]
         fn test_lrproof_valid_signature_forwarded() {
             // Valid LRPROOF with correct signature should be forwarded.
-            use crate::constants::{ED25519_KEY_SIZE, ED25519_SIGNATURE_SIZE, X25519_KEY_SIZE};
+            use crate::constants::{ED25519_KEY_SIZE, X25519_KEY_SIZE};
 
             let mut transport = make_transport_enabled();
             let _idx0 = transport.register_interface(Box::new(MockInterface::new("if0", 1)));

@@ -147,6 +147,20 @@ impl MemoryStorage {
         self.announce_rate_table.len()
     }
 
+    /// Iterate all packet hashes across both generations (for persistence on flush)
+    pub fn packet_hash_iter(&self) -> impl Iterator<Item = &[u8; 32]> {
+        self.packet_cache
+            .iter()
+            .chain(self.packet_cache_prev.iter())
+    }
+
+    /// Iterate all known identities (for persistence on flush)
+    pub fn known_identity_iter(
+        &self,
+    ) -> impl Iterator<Item = (&[u8; TRUNCATED_HASHBYTES], &Identity)> {
+        self.known_identities.iter()
+    }
+
     /// Rotate packet cache: current becomes prev, fresh empty set takes its place
     fn rotate_packet_cache(&mut self) {
         core::mem::swap(&mut self.packet_cache, &mut self.packet_cache_prev);

@@ -7,168 +7,36 @@
 //! Identity.py:220-236 (load)
 
 use std::collections::BTreeMap;
-use std::time::{SystemTime, UNIX_EPOCH};
-
-use reticulum_core::DestinationHash;
-use reticulum_core::Identity;
 
 use crate::error::{Error, Result};
-use crate::storage::Storage;
 
-const KNOWN_DESTINATIONS_FILE: &str = "known_destinations";
+pub(crate) const KNOWN_DESTINATIONS_FILE: &str = "known_destinations";
 const DEST_HASH_LEN: usize = 16;
-const PUBLIC_KEY_LEN: usize = 64;
-const PACKET_HASH_LEN: usize = 32;
+pub(crate) const PUBLIC_KEY_LEN: usize = 64;
+pub(crate) const PACKET_HASH_LEN: usize = 32;
 
-/// A single entry in the known_destinations store.
+/// A single entry in the known_destinations persistence format.
 ///
 /// Mirrors Python: `[timestamp, packet_hash, public_key, app_data]`
-struct KnownDestEntry {
+#[derive(Clone)]
+pub(crate) struct KnownDestEntry {
     /// Seconds since epoch (Python `time.time()`)
-    timestamp: f64,
+    pub(crate) timestamp: f64,
     /// Original announce packet hash (32 bytes)
-    packet_hash: Vec<u8>,
+    pub(crate) packet_hash: Vec<u8>,
     /// Combined public key: X25519(32) | Ed25519(32) = 64 bytes
-    public_key: [u8; PUBLIC_KEY_LEN],
+    pub(crate) public_key: [u8; PUBLIC_KEY_LEN],
     /// Optional application data from the announce
-    app_data: Option<Vec<u8>>,
-}
-
-/// Python-compatible known_destinations persistence store.
-///
-/// Maintains the full Python format in memory so round-tripping the file
-/// preserves all fields (timestamp, packet_hash, app_data) even though
-/// NodeCore only needs the Identity (public_key) part.
-pub(crate) struct KnownDestinationsStore {
-    entries: BTreeMap<[u8; DEST_HASH_LEN], KnownDestEntry>,
-}
-
-impl KnownDestinationsStore {
-    /// Load known_destinations from storage, or return an empty store on error.
-    pub(crate) fn load(storage: &Storage) -> Self {
-        let entries = match storage.read_root(KNOWN_DESTINATIONS_FILE) {
-            Ok(bytes) => match decode_known_destinations(&bytes) {
-                Ok(entries) => {
-                    tracing::info!("Loaded {} known destinations from storage", entries.len());
-                    entries
-                }
-                Err(e) => {
-                    tracing::warn!("Failed to decode known_destinations: {e}");
-                    BTreeMap::new()
-                }
-            },
-            Err(_) => {
-                tracing::debug!("No known_destinations file found, starting empty");
-                BTreeMap::new()
-            }
-        };
-        Self { entries }
-    }
-
-    /// Save to storage (atomic write). Merges with on-disk data first
-    /// (preserving entries added by other processes, matching Python behavior).
-    pub(crate) fn save(&self, storage: &Storage) -> Result<()> {
-        // Merge: load existing file, add any entries not in our in-memory store
-        let mut merged = self.entries.clone();
-        if let Ok(bytes) = storage.read_root(KNOWN_DESTINATIONS_FILE) {
-            if let Ok(disk_entries) = decode_known_destinations(&bytes) {
-                for (hash, entry) in disk_entries {
-                    merged.entry(hash).or_insert(entry);
-                }
-            }
-        }
-
-        let encoded = encode_known_destinations(&merged)?;
-        storage.write_root(KNOWN_DESTINATIONS_FILE, &encoded)?;
-        tracing::debug!("Saved {} known destinations to storage", merged.len());
-        Ok(())
-    }
-
-    /// Iterate identities extracted from the store.
-    ///
-    /// Yields `(DestinationHash, Identity)` for each entry whose public key
-    /// is valid. Invalid entries are silently skipped.
-    pub(crate) fn identities(&self) -> impl Iterator<Item = (DestinationHash, Identity)> + '_ {
-        self.entries.iter().filter_map(|(hash, entry)| {
-            let identity = Identity::from_public_key_bytes(&entry.public_key).ok()?;
-            Some((DestinationHash::new(*hash), identity))
-        })
-    }
-
-    /// Number of entries in the store.
-    pub(crate) fn len(&self) -> usize {
-        self.entries.len()
-    }
-
-    /// Update or insert an entry from an announce.
-    pub(crate) fn update_from_announce(
-        &mut self,
-        dest_hash: &[u8; DEST_HASH_LEN],
-        public_key: &[u8; PUBLIC_KEY_LEN],
-        app_data: &[u8],
-    ) {
-        let timestamp = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .map(|d| d.as_secs_f64())
-            .unwrap_or(0.0);
-        self.entries.insert(
-            *dest_hash,
-            KnownDestEntry {
-                timestamp,
-                // We don't have the original packet hash in the event path;
-                // store zeros (Python only uses this for display/debugging)
-                packet_hash: vec![0u8; PACKET_HASH_LEN],
-                public_key: *public_key,
-                app_data: if app_data.is_empty() {
-                    None
-                } else {
-                    Some(app_data.to_vec())
-                },
-            },
-        );
-    }
-
-    /// Merge identities from storage into the store.
-    ///
-    /// Adds entries for identities that aren't already tracked. This captures
-    /// identities learned at runtime that weren't loaded from disk.
-    pub(crate) fn merge_from_storage<'a>(
-        &mut self,
-        iter: impl Iterator<Item = (&'a [u8; DEST_HASH_LEN], &'a Identity)>,
-    ) {
-        let timestamp = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .map(|d| d.as_secs_f64())
-            .unwrap_or(0.0);
-        for (dest_hash, identity) in iter {
-            self.entries
-                .entry(*dest_hash)
-                .or_insert_with(|| KnownDestEntry {
-                    timestamp,
-                    packet_hash: vec![0u8; PACKET_HASH_LEN],
-                    public_key: identity.public_key_bytes(),
-                    app_data: None,
-                });
-        }
-    }
-}
-
-impl Clone for KnownDestEntry {
-    fn clone(&self) -> Self {
-        Self {
-            timestamp: self.timestamp,
-            packet_hash: self.packet_hash.clone(),
-            public_key: self.public_key,
-            app_data: self.app_data.clone(),
-        }
-    }
+    pub(crate) app_data: Option<Vec<u8>>,
 }
 
 /// Decode a known_destinations msgpack blob into entries.
 ///
 /// Python format: msgpack map where keys are 16-byte binary (dest hashes)
 /// and values are arrays: [f64, bin32, bin64, bin_or_nil].
-fn decode_known_destinations(data: &[u8]) -> Result<BTreeMap<[u8; DEST_HASH_LEN], KnownDestEntry>> {
+pub(crate) fn decode_known_destinations(
+    data: &[u8],
+) -> Result<BTreeMap<[u8; DEST_HASH_LEN], KnownDestEntry>> {
     let value: rmpv::Value = rmpv::decode::read_value(&mut &data[..])
         .map_err(|e| Error::Serialization(format!("msgpack decode error: {e}")))?;
 
@@ -246,7 +114,7 @@ fn decode_known_destinations(data: &[u8]) -> Result<BTreeMap<[u8; DEST_HASH_LEN]
 }
 
 /// Encode entries into Python-compatible msgpack format.
-fn encode_known_destinations(
+pub(crate) fn encode_known_destinations(
     entries: &BTreeMap<[u8; DEST_HASH_LEN], KnownDestEntry>,
 ) -> Result<Vec<u8>> {
     use rmpv::Value;
@@ -279,6 +147,98 @@ fn encode_known_destinations(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    use reticulum_core::DestinationHash;
+    use reticulum_core::Identity;
+
+    use crate::storage::Storage;
+
+    /// Test-only helper matching the old KnownDestinationsStore.
+    struct KnownDestinationsStore {
+        entries: BTreeMap<[u8; DEST_HASH_LEN], KnownDestEntry>,
+    }
+
+    impl KnownDestinationsStore {
+        fn load(storage: &Storage) -> Self {
+            let entries = match storage.read_root(KNOWN_DESTINATIONS_FILE) {
+                Ok(bytes) => decode_known_destinations(&bytes).unwrap_or_default(),
+                Err(_) => BTreeMap::new(),
+            };
+            Self { entries }
+        }
+
+        fn save(&self, storage: &Storage) -> Result<()> {
+            let mut merged = self.entries.clone();
+            if let Ok(bytes) = storage.read_root(KNOWN_DESTINATIONS_FILE) {
+                if let Ok(disk_entries) = decode_known_destinations(&bytes) {
+                    for (hash, entry) in disk_entries {
+                        merged.entry(hash).or_insert(entry);
+                    }
+                }
+            }
+            let encoded = encode_known_destinations(&merged)?;
+            storage.write_root(KNOWN_DESTINATIONS_FILE, &encoded)?;
+            Ok(())
+        }
+
+        fn identities(&self) -> impl Iterator<Item = (DestinationHash, Identity)> + '_ {
+            self.entries.iter().filter_map(|(hash, entry)| {
+                let identity = Identity::from_public_key_bytes(&entry.public_key).ok()?;
+                Some((DestinationHash::new(*hash), identity))
+            })
+        }
+
+        fn len(&self) -> usize {
+            self.entries.len()
+        }
+
+        fn update_from_announce(
+            &mut self,
+            dest_hash: &[u8; DEST_HASH_LEN],
+            public_key: &[u8; PUBLIC_KEY_LEN],
+            app_data: &[u8],
+        ) {
+            let timestamp = SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .map(|d| d.as_secs_f64())
+                .unwrap_or(0.0);
+            self.entries.insert(
+                *dest_hash,
+                KnownDestEntry {
+                    timestamp,
+                    packet_hash: vec![0u8; PACKET_HASH_LEN],
+                    public_key: *public_key,
+                    app_data: if app_data.is_empty() {
+                        None
+                    } else {
+                        Some(app_data.to_vec())
+                    },
+                },
+            );
+        }
+
+        fn merge_from_storage<'a>(
+            &mut self,
+            iter: impl Iterator<Item = (&'a [u8; DEST_HASH_LEN], &'a Identity)>,
+        ) {
+            let timestamp = SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .map(|d| d.as_secs_f64())
+                .unwrap_or(0.0);
+            for (dest_hash, identity) in iter {
+                self.entries
+                    .entry(*dest_hash)
+                    .or_insert_with(|| KnownDestEntry {
+                        timestamp,
+                        packet_hash: vec![0u8; PACKET_HASH_LEN],
+                        public_key: identity.public_key_bytes(),
+                        app_data: None,
+                    });
+            }
+        }
+    }
 
     #[test]
     fn test_empty_store() {
@@ -452,7 +412,7 @@ mod tests {
             assert!(entry.timestamp > 0.0);
         }
 
-        // Verify we can extract at least some valid identities
+        // Verify we can extract valid identities
         let store = KnownDestinationsStore { entries };
         let identities: Vec<_> = store.identities().collect();
         assert!(

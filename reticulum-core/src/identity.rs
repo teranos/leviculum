@@ -282,11 +282,6 @@ impl Identity {
         truncated_hash(&combined)
     }
 
-    /// Get the X25519 public key
-    pub(crate) fn x25519_public(&self) -> &x25519_dalek::PublicKey {
-        &self.x25519_public
-    }
-
     /// Get the Ed25519 verifying key
     pub fn ed25519_verifying(&self) -> &ed25519_dalek::VerifyingKey {
         &self.ed25519_verifying

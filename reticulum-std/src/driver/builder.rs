@@ -7,14 +7,11 @@ use std::path::PathBuf;
 
 use reticulum_core::identity::Identity;
 use reticulum_core::node::NodeCoreBuilder;
-use reticulum_core::traits::Storage as _;
 use reticulum_core::ProofStrategy;
 
 use crate::clock::SystemClock;
 use crate::config::{Config, InterfaceConfig, DEFAULT_BITRATE_BPS};
 use crate::error::Error;
-use crate::known_destinations::KnownDestinationsStore;
-use crate::packet_hashlist;
 use crate::storage::Storage;
 
 use super::ReticulumNode;
@@ -228,7 +225,8 @@ impl ReticulumNodeBuilder {
             .or_else(|| config.reticulum.storage_path.clone())
             .unwrap_or_else(|| Config::default_config_dir().join("storage"));
 
-        // Initialize storage
+        // Storage::new() loads persistent data (known_destinations, packet_hashlist)
+        // into its inner MemoryStorage automatically.
         let storage = Storage::new(&storage_path)?;
         let clock = SystemClock::new();
 
@@ -245,29 +243,13 @@ impl ReticulumNodeBuilder {
         };
         let core_builder = core_builder.enable_transport(enable_transport);
 
-        // Load persistent state before storage is moved into NodeCore
-        let known_dests_store = KnownDestinationsStore::load(&storage);
-        let hashlist = packet_hashlist::load_packet_hashlist(&storage);
-
-        // Build NodeCore (consumes storage)
-        let mut node_core = core_builder.build(rand_core::OsRng, clock, storage);
-
-        // Populate known identities from the loaded store
-        for (dest_hash, identity) in known_dests_store.identities() {
-            node_core.remember_identity(dest_hash, identity);
-        }
-
-        // Load packet hashlist for dedup continuity across restarts
-        for hash in &hashlist {
-            node_core.storage_mut().add_packet_hash(*hash);
-        }
+        // Build NodeCore (consumes storage — persistent data already loaded)
+        let node_core = core_builder.build(rand_core::OsRng, clock, storage);
 
         Ok(ReticulumNode::new(
             node_core,
             interfaces,
             self.corrupt_every,
-            Some(known_dests_store),
-            Some(storage_path),
         ))
     }
 

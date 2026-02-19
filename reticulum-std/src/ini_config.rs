@@ -93,9 +93,8 @@ pub(crate) fn parse_ini(content: &str) -> Result<Config, String> {
                 }
             } else {
                 // Inside a top-level section
-                match current_section.as_str() {
-                    "reticulum" => apply_reticulum_key(&mut reticulum, key, value),
-                    _ => {} // Ignore [logging], etc.
+                if current_section.as_str() == "reticulum" {
+                    apply_reticulum_key(&mut reticulum, key, value);
                 }
             }
         }

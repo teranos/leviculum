@@ -9,49 +9,11 @@
 use std::collections::BTreeSet;
 
 use crate::error::{Error, Result};
-use crate::storage::Storage;
 
-const PACKET_HASHLIST_FILE: &str = "packet_hashlist";
-
-/// Load packet_hashlist from storage.
-///
-/// Returns a set of 32-byte packet hashes for deduplication.
-pub(crate) fn load_packet_hashlist(storage: &Storage) -> BTreeSet<[u8; 32]> {
-    let bytes = match storage.read_root(PACKET_HASHLIST_FILE) {
-        Ok(b) => b,
-        Err(_) => {
-            tracing::debug!("No packet_hashlist file found");
-            return BTreeSet::new();
-        }
-    };
-
-    match decode_packet_hashlist(&bytes) {
-        Ok(entries) => {
-            tracing::info!("Loaded {} packet hashes from storage", entries.len());
-            entries
-        }
-        Err(e) => {
-            tracing::warn!("Failed to decode packet_hashlist: {e}");
-            BTreeSet::new()
-        }
-    }
-}
-
-/// Save packet_hashlist to storage.
-///
-/// Writes the 32-byte hashes as a msgpack array, matching the Python format.
-pub(crate) fn save_packet_hashlist<'a>(
-    storage: &Storage,
-    hashes: impl Iterator<Item = &'a [u8; 32]>,
-) -> Result<()> {
-    let (encoded, count) = encode_packet_hashlist(hashes)?;
-    storage.write_root(PACKET_HASHLIST_FILE, &encoded)?;
-    tracing::debug!("Saved {count} packet hashes to storage");
-    Ok(())
-}
+pub(crate) const PACKET_HASHLIST_FILE: &str = "packet_hashlist";
 
 /// Decode a packet_hashlist msgpack blob.
-fn decode_packet_hashlist(data: &[u8]) -> Result<BTreeSet<[u8; 32]>> {
+pub(crate) fn decode_packet_hashlist(data: &[u8]) -> Result<BTreeSet<[u8; 32]>> {
     let value: rmpv::Value = rmpv::decode::read_value(&mut &data[..])
         .map_err(|e| Error::Serialization(format!("msgpack decode error: {e}")))?;
 
@@ -74,7 +36,7 @@ fn decode_packet_hashlist(data: &[u8]) -> Result<BTreeSet<[u8; 32]>> {
 }
 
 /// Encode packet hashes as msgpack array of 32-byte binary values.
-fn encode_packet_hashlist<'a>(
+pub(crate) fn encode_packet_hashlist<'a>(
     hashes: impl Iterator<Item = &'a [u8; 32]>,
 ) -> Result<(Vec<u8>, usize)> {
     use rmpv::Value;
@@ -91,6 +53,26 @@ fn encode_packet_hashlist<'a>(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::storage::Storage;
+
+    /// Load packet_hashlist from storage (test helper).
+    fn load_packet_hashlist(storage: &Storage) -> BTreeSet<[u8; 32]> {
+        let bytes = match storage.read_root(PACKET_HASHLIST_FILE) {
+            Ok(b) => b,
+            Err(_) => return BTreeSet::new(),
+        };
+        decode_packet_hashlist(&bytes).unwrap_or_default()
+    }
+
+    /// Save packet_hashlist to storage (test helper).
+    fn save_packet_hashlist<'a>(
+        storage: &Storage,
+        hashes: impl Iterator<Item = &'a [u8; 32]>,
+    ) -> Result<()> {
+        let (encoded, _count) = encode_packet_hashlist(hashes)?;
+        storage.write_root(PACKET_HASHLIST_FILE, &encoded)?;
+        Ok(())
+    }
 
     #[test]
     fn test_encode_decode_round_trip() {
