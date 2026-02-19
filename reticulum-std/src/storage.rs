@@ -1,8 +1,10 @@
 //! File-based storage for persistent data
 
+use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
 use reticulum_core::constants::TRUNCATED_HASHBYTES;
+use reticulum_core::Identity;
 
 use crate::error::{Error, Result};
 
@@ -10,6 +12,11 @@ use crate::error::{Error, Result};
 pub(crate) struct Storage {
     /// Base directory for all storage
     base_path: PathBuf,
+    /// In-memory cache of known remote identities (keyed by destination hash).
+    /// Loaded from known_destinations at startup, updated at runtime.
+    /// Persisted by KnownDestinationsStore on shutdown.
+    /// Removal: entries are never removed (matching Python behavior).
+    known_identities: BTreeMap<[u8; TRUNCATED_HASHBYTES], Identity>,
 }
 
 impl Storage {
@@ -21,7 +28,10 @@ impl Storage {
         std::fs::create_dir_all(&base_path)
             .map_err(|e| Error::Storage(format!("Failed to create storage dir: {e}")))?;
 
-        Ok(Self { base_path })
+        Ok(Self {
+            base_path,
+            known_identities: BTreeMap::new(),
+        })
     }
 
     /// Get path for a specific storage category
@@ -134,6 +144,16 @@ impl Storage {
         }
 
         Ok(names)
+    }
+
+    /// Iterate over all known remote identities in this storage.
+    ///
+    /// Used by the driver to merge runtime-acquired identities into the
+    /// Python-compatible `KnownDestinationsStore` for persistence on shutdown.
+    pub(crate) fn known_identity_entries(
+        &self,
+    ) -> impl Iterator<Item = (&[u8; TRUNCATED_HASHBYTES], &Identity)> {
+        self.known_identities.iter()
     }
 }
 
@@ -331,18 +351,20 @@ impl reticulum_core::traits::Storage for Storage {
         false
     }
 
-    // ─── Known Identities (no-op until commit 10) ───────────────────────
+    // ─── Known Identities ─────────────────────────────────────────────────
     fn get_identity(
         &self,
-        _dest_hash: &[u8; TRUNCATED_HASHBYTES],
+        dest_hash: &[u8; TRUNCATED_HASHBYTES],
     ) -> Option<&reticulum_core::Identity> {
-        None
+        self.known_identities.get(dest_hash)
     }
     fn set_identity(
         &mut self,
-        _dest_hash: [u8; TRUNCATED_HASHBYTES],
-        _identity: reticulum_core::Identity,
+        dest_hash: [u8; TRUNCATED_HASHBYTES],
+        identity: reticulum_core::Identity,
     ) {
+        // Unbounded — matches Python Identity.py behavior
+        self.known_identities.insert(dest_hash, identity);
     }
 
     // ─── Cleanup (no-op until respective commits) ───────────────────────

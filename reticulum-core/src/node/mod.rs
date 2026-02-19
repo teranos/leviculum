@@ -110,40 +110,6 @@ impl LinkStats {
     }
 }
 
-/// Unbounded identity cache for remote identities learned from announces.
-///
-/// Keyed by destination hash. No eviction — matches Python Identity.py
-/// which keeps all known_destinations in RAM with no size limit.
-/// Removal: entries are never removed (matching Python behavior).
-struct KnownIdentities {
-    map: BTreeMap<DestinationHash, Identity>,
-}
-
-impl KnownIdentities {
-    fn new() -> Self {
-        Self {
-            map: BTreeMap::new(),
-        }
-    }
-
-    fn insert(&mut self, dest_hash: DestinationHash, identity: Identity) {
-        self.map.insert(dest_hash, identity);
-    }
-
-    fn get(&self, dest_hash: &DestinationHash) -> Option<&Identity> {
-        self.map.get(dest_hash)
-    }
-
-    fn iter(&self) -> impl Iterator<Item = (&DestinationHash, &Identity)> {
-        self.map.iter()
-    }
-
-    #[cfg(test)]
-    fn len(&self) -> usize {
-        self.map.len()
-    }
-}
-
 /// The unified Reticulum node — owns all protocol state
 ///
 /// NodeCore is generic over RNG, Clock, and Storage traits, allowing it to run
@@ -169,8 +135,6 @@ pub struct NodeCore<R: CryptoRngCore, C: Clock, S: Storage> {
     rx_ring_full_last_log_ms: u64,
     /// Registered destinations
     destinations: BTreeMap<DestinationHash, Destination>,
-    /// Remote identities learned from announces (for single-packet encryption)
-    known_identities: KnownIdentities,
     /// Default proof strategy for new destinations
     default_proof_strategy: ProofStrategy,
     /// Pending events
@@ -210,7 +174,6 @@ impl<R: CryptoRngCore, C: Clock, S: Storage> NodeCore<R, C, S> {
             rx_ring_full_count: 0,
             rx_ring_full_last_log_ms: 0,
             destinations: BTreeMap::new(),
-            known_identities: KnownIdentities::new(),
             default_proof_strategy: proof_strategy,
             events: Vec::new(),
         }
@@ -254,14 +217,8 @@ impl<R: CryptoRngCore, C: Clock, S: Storage> NodeCore<R, C, S> {
     /// Identities learned from received announces are cached automatically —
     /// call this only for out-of-band identity registration or testing.
     pub fn remember_identity(&mut self, dest_hash: DestinationHash, identity: Identity) {
-        self.known_identities.insert(dest_hash, identity);
-    }
-
-    /// Iterate over all known remote identities.
-    ///
-    /// Used by the driver to persist known identities on shutdown.
-    pub fn known_identity_iter(&self) -> impl Iterator<Item = (&DestinationHash, &Identity)> {
-        self.known_identities.iter()
+        self.storage_mut()
+            .set_identity(dest_hash.into_bytes(), identity);
     }
 
     // ─── Storage Accessors ──────────────────────────────────────────────
@@ -346,14 +303,16 @@ impl<R: CryptoRngCore, C: Clock, S: Storage> NodeCore<R, C, S> {
             HeaderType, PacketContext, PacketData, PacketFlags, PacketType, TransportType,
         };
 
-        // Encrypt payload using remote identity from known_identities
-        let payload = if let Some(identity) = self.known_identities.get(dest_hash) {
-            identity
-                .encrypt_for_destination(data, None, &mut self.rng)
-                .map_err(|_| send::SendError::EncryptionFailed)?
-        } else {
-            return Err(send::SendError::EncryptionFailed);
-        };
+        // Encrypt payload using remote identity from storage.
+        // Access transport.storage() directly to allow disjoint borrow of self.rng.
+        let payload =
+            if let Some(identity) = self.transport.storage().get_identity(dest_hash.as_bytes()) {
+                identity
+                    .encrypt_for_destination(data, None, &mut self.rng)
+                    .map_err(|_| send::SendError::EncryptionFailed)?
+            } else {
+                return Err(send::SendError::EncryptionFailed);
+            };
 
         let packet = crate::packet::Packet {
             flags: PacketFlags {
@@ -628,8 +587,8 @@ impl<R: CryptoRngCore, C: Clock, S: Storage> NodeCore<R, C, S> {
             } => {
                 // Remember remote identity for single-packet encryption
                 if let Ok(identity) = announce.to_identity() {
-                    let dest_hash = *announce.destination_hash();
-                    self.known_identities.insert(dest_hash, identity);
+                    let dest_hash = announce.destination_hash().into_bytes();
+                    self.storage_mut().set_identity(dest_hash, identity);
                 }
                 self.events.push(NodeEvent::AnnounceReceived {
                     announce,
@@ -3652,41 +3611,50 @@ mod tests {
         );
     }
 
-    // ─── KnownIdentities tests ────────────────────────────────────────────
+    // ─── Identity storage tests (via Storage trait) ───────────────────────
 
     #[test]
-    fn test_known_identities_insert_and_get() {
-        let mut ki = super::KnownIdentities::new();
-        let id = Identity::generate(&mut OsRng);
-        let hash = DestinationHash::new([0x01; 16]);
-        ki.insert(hash, id);
+    fn test_remember_identity_and_lookup() {
+        let clock = MockClock::new(TEST_TIME_MS);
+        let mut node = NodeCoreBuilder::new().build(OsRng, clock, MemoryStorage::with_defaults());
 
-        assert_eq!(ki.len(), 1);
-        assert!(ki.get(&hash).is_some());
-        assert!(ki.get(&DestinationHash::new([0x02; 16])).is_none());
+        let id = Identity::generate(&mut OsRng);
+        let id_hash = *id.hash();
+        let pub_bytes = id.public_key_bytes();
+        let pub_id = Identity::from_public_key_bytes(&pub_bytes).unwrap();
+        let hash = DestinationHash::new([0x01; 16]);
+        node.remember_identity(hash, pub_id);
+
+        assert!(node.storage().get_identity(hash.as_bytes()).is_some());
+        assert_eq!(
+            node.storage().get_identity(hash.as_bytes()).unwrap().hash(),
+            &id_hash
+        );
+        assert!(node.storage().get_identity(&[0x02; 16]).is_none());
     }
 
     #[test]
-    fn test_known_identities_no_eviction() {
-        // Python has no limit — verify all entries are kept
-        let mut ki = super::KnownIdentities::new();
+    fn test_remember_identity_multiple() {
+        let clock = MockClock::new(TEST_TIME_MS);
+        let mut node = NodeCoreBuilder::new().build(OsRng, clock, MemoryStorage::with_defaults());
 
         let h1 = DestinationHash::new([0x01; 16]);
         let h2 = DestinationHash::new([0x02; 16]);
         let h3 = DestinationHash::new([0x03; 16]);
 
-        ki.insert(h1, Identity::generate(&mut OsRng));
-        ki.insert(h2, Identity::generate(&mut OsRng));
-        ki.insert(h3, Identity::generate(&mut OsRng));
-        assert_eq!(ki.len(), 3);
-        assert!(ki.get(&h1).is_some());
-        assert!(ki.get(&h2).is_some());
-        assert!(ki.get(&h3).is_some());
+        node.remember_identity(h1, Identity::generate(&mut OsRng));
+        node.remember_identity(h2, Identity::generate(&mut OsRng));
+        node.remember_identity(h3, Identity::generate(&mut OsRng));
+
+        assert!(node.storage().get_identity(h1.as_bytes()).is_some());
+        assert!(node.storage().get_identity(h2.as_bytes()).is_some());
+        assert!(node.storage().get_identity(h3.as_bytes()).is_some());
     }
 
     #[test]
-    fn test_known_identities_update_replaces() {
-        let mut ki = super::KnownIdentities::new();
+    fn test_remember_identity_update_replaces() {
+        let clock = MockClock::new(TEST_TIME_MS);
+        let mut node = NodeCoreBuilder::new().build(OsRng, clock, MemoryStorage::with_defaults());
 
         let h1 = DestinationHash::new([0x01; 16]);
 
@@ -3694,10 +3662,16 @@ mod tests {
         let id2 = Identity::generate(&mut OsRng);
         let id2_hash = *id2.hash();
 
-        ki.insert(h1, id1);
-        ki.insert(h1, id2);
-        assert_eq!(ki.len(), 1);
-        assert_eq!(ki.get(&h1).unwrap().hash(), &id2_hash);
+        let pub1 = Identity::from_public_key_bytes(&id1.public_key_bytes()).unwrap();
+        let pub2 = Identity::from_public_key_bytes(&id2.public_key_bytes()).unwrap();
+
+        node.remember_identity(h1, pub1);
+        node.remember_identity(h1, pub2);
+
+        assert_eq!(
+            node.storage().get_identity(h1.as_bytes()).unwrap().hash(),
+            &id2_hash
+        );
     }
 
     #[test]
@@ -3784,13 +3758,15 @@ mod tests {
 
     #[test]
     fn test_announce_populates_known_identities() {
-        // When a node receives an announce, it should populate known_identities
+        // When a node receives an announce, it should populate storage identities
         use crate::transport::InterfaceId;
 
         let clock = MockClock::new(TEST_TIME_MS);
-        let mut node = NodeCoreBuilder::new()
-            .enable_transport(true)
-            .build(OsRng, clock, NoStorage);
+        let mut node = NodeCoreBuilder::new().enable_transport(true).build(
+            OsRng,
+            clock,
+            MemoryStorage::with_defaults(),
+        );
 
         // Register an interface for the announce to arrive on
         node.transport
@@ -3825,10 +3801,12 @@ mod tests {
             .any(|e| matches!(e, NodeEvent::AnnounceReceived { .. }));
         assert!(has_announce, "should emit AnnounceReceived event");
 
-        // known_identities should now contain the remote identity
+        // Storage should now contain the remote identity
         assert!(
-            node.known_identities.get(&remote_dest_hash).is_some(),
-            "announce should populate known_identities"
+            node.storage()
+                .get_identity(remote_dest_hash.as_bytes())
+                .is_some(),
+            "announce should populate storage identities"
         );
     }
 
@@ -3994,10 +3972,10 @@ mod tests {
     }
 
     #[test]
-    fn test_known_identities_unbounded_growth() {
-        // Python has no limit on known_destinations — verify we can store many
+    fn test_known_identities_many_entries() {
+        // Verify we can store many identities through the Storage trait
         let clock = MockClock::new(TEST_TIME_MS);
-        let mut node = NodeCoreBuilder::new().build(OsRng, clock, NoStorage);
+        let mut node = NodeCoreBuilder::new().build(OsRng, clock, MemoryStorage::with_defaults());
 
         let mut hashes = Vec::new();
         for i in 0..100u8 {
@@ -4017,14 +3995,13 @@ mod tests {
             hashes.push(h);
         }
 
-        // All entries should be present — no eviction
+        // All entries should be retrievable
         for h in &hashes {
             assert!(
-                node.known_identities.get(h).is_some(),
-                "all identities should be retained (no eviction)"
+                node.storage().get_identity(h.as_bytes()).is_some(),
+                "all identities should be retrievable from storage"
             );
         }
-        assert_eq!(node.known_identities.len(), 100);
     }
 
     #[test]

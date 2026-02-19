@@ -331,7 +331,7 @@ impl ReticulumNode {
         if let Some(store) = &mut self.known_dests_store {
             {
                 let core = self.inner.lock().unwrap();
-                store.merge_from_core(core.known_identity_iter());
+                store.merge_from_storage(core.storage().known_identity_entries());
             }
             if let Err(e) = store.save(&storage) {
                 tracing::warn!("Failed to save known destinations: {e}");

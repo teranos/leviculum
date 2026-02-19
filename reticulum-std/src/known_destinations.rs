@@ -128,26 +128,27 @@ impl KnownDestinationsStore {
         );
     }
 
-    /// Merge identities from NodeCore's in-memory cache into the store.
+    /// Merge identities from storage into the store.
     ///
     /// Adds entries for identities that aren't already tracked. This captures
     /// identities learned at runtime that weren't loaded from disk.
-    pub(crate) fn merge_from_core<'a>(
+    pub(crate) fn merge_from_storage<'a>(
         &mut self,
-        iter: impl Iterator<Item = (&'a DestinationHash, &'a Identity)>,
+        iter: impl Iterator<Item = (&'a [u8; DEST_HASH_LEN], &'a Identity)>,
     ) {
         let timestamp = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .map(|d| d.as_secs_f64())
             .unwrap_or(0.0);
         for (dest_hash, identity) in iter {
-            let key = dest_hash.into_bytes();
-            self.entries.entry(key).or_insert_with(|| KnownDestEntry {
-                timestamp,
-                packet_hash: vec![0u8; PACKET_HASH_LEN],
-                public_key: identity.public_key_bytes(),
-                app_data: None,
-            });
+            self.entries
+                .entry(*dest_hash)
+                .or_insert_with(|| KnownDestEntry {
+                    timestamp,
+                    packet_hash: vec![0u8; PACKET_HASH_LEN],
+                    public_key: identity.public_key_bytes(),
+                    app_data: None,
+                });
         }
     }
 }
@@ -382,7 +383,7 @@ mod tests {
     }
 
     #[test]
-    fn test_merge_from_core() {
+    fn test_merge_from_storage() {
         let mut store = KnownDestinationsStore {
             entries: BTreeMap::new(),
         };
@@ -392,19 +393,19 @@ mod tests {
         let existing_hash = [0x01; DEST_HASH_LEN];
         store.update_from_announce(&existing_hash, &existing_id.public_key_bytes(), b"");
 
-        // New identity from core
+        // New identity from storage
         let new_id = Identity::generate(&mut rand_core::OsRng);
-        let new_hash = DestinationHash::new([0x02; DEST_HASH_LEN]);
-        let core_identities: Vec<(DestinationHash, Identity)> = vec![(new_hash, new_id)];
-        let refs: Vec<(&DestinationHash, &Identity)> =
-            core_identities.iter().map(|(h, i)| (h, i)).collect();
+        let new_hash = [0x02; DEST_HASH_LEN];
+        let storage_identities: Vec<([u8; DEST_HASH_LEN], Identity)> = vec![(new_hash, new_id)];
+        let refs: Vec<(&[u8; DEST_HASH_LEN], &Identity)> =
+            storage_identities.iter().map(|(h, i)| (h, i)).collect();
 
-        store.merge_from_core(refs.into_iter());
+        store.merge_from_storage(refs.into_iter());
         assert_eq!(store.len(), 2);
     }
 
     #[test]
-    fn test_merge_from_core_no_overwrite() {
+    fn test_merge_from_storage_no_overwrite() {
         let mut store = KnownDestinationsStore {
             entries: BTreeMap::new(),
         };
@@ -413,13 +414,12 @@ mod tests {
         let hash = [0x01; DEST_HASH_LEN];
         store.update_from_announce(&hash, &id.public_key_bytes(), b"original_app");
 
-        // Merge with the same hash from core — should NOT overwrite
-        let dest_hash = DestinationHash::new(hash);
-        let core_entries = vec![(dest_hash, id)];
-        let refs: Vec<(&DestinationHash, &Identity)> =
-            core_entries.iter().map(|(h, i)| (h, i)).collect();
+        // Merge with the same hash from storage — should NOT overwrite
+        let storage_entries: Vec<([u8; DEST_HASH_LEN], Identity)> = vec![(hash, id)];
+        let refs: Vec<(&[u8; DEST_HASH_LEN], &Identity)> =
+            storage_entries.iter().map(|(h, i)| (h, i)).collect();
 
-        store.merge_from_core(refs.into_iter());
+        store.merge_from_storage(refs.into_iter());
         assert_eq!(store.len(), 1);
         assert_eq!(
             store.entries[&hash].app_data,
