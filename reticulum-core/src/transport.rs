@@ -434,13 +434,8 @@ pub struct Transport<C: Clock, S: Storage> {
     storage: S,
     identity: Identity,
 
-    /// Path table: destination_hash -> path info
-    path_table: BTreeMap<[u8; TRUNCATED_HASHBYTES], PathEntry>,
-
-    /// Path state tracking: destination_hash -> quality state
-    /// Used for path recovery (accepting worse-hop announces for unresponsive paths)
-    path_states: BTreeMap<[u8; TRUNCATED_HASHBYTES], PathState>,
-
+    // path_table: migrated to Storage trait
+    // path_states: migrated to Storage trait
     /// Announce table: destination_hash -> announce rate tracking
     announce_table: BTreeMap<[u8; TRUNCATED_HASHBYTES], AnnounceEntry>,
 
@@ -490,8 +485,8 @@ impl<C: Clock, S: Storage> Transport<C, S> {
             clock,
             storage,
             identity,
-            path_table: BTreeMap::new(),
-            path_states: BTreeMap::new(),
+            // path_table: migrated to Storage
+            // path_states: migrated to Storage
             announce_table: BTreeMap::new(),
             link_table: BTreeMap::new(),
             // reverse_table: migrated to Storage
@@ -600,22 +595,22 @@ impl<C: Clock, S: Storage> Transport<C, S> {
 
     /// Check if we have a path to a destination
     pub fn has_path(&self, dest_hash: &[u8; TRUNCATED_HASHBYTES]) -> bool {
-        self.path_table.contains_key(dest_hash)
+        self.storage.has_path(dest_hash)
     }
 
     /// Get the hop count to a destination
     pub fn hops_to(&self, dest_hash: &[u8; TRUNCATED_HASHBYTES]) -> Option<u8> {
-        self.path_table.get(dest_hash).map(|p| p.hops)
+        self.storage.get_path(dest_hash).map(|p| p.hops)
     }
 
     /// Get a path entry
     pub(crate) fn path(&self, dest_hash: &[u8; TRUNCATED_HASHBYTES]) -> Option<&PathEntry> {
-        self.path_table.get(dest_hash)
+        self.storage.get_path(dest_hash)
     }
 
     /// Get the number of known paths
     pub fn path_count(&self) -> usize {
-        self.path_table.len()
+        self.storage.path_count()
     }
 
     // ─── Path State Management ──────────────────────────────────────────
@@ -625,8 +620,9 @@ impl<C: Clock, S: Storage> Transport<C, S> {
     /// Only succeeds if the destination exists in the path table.
     /// Called when an unvalidated link expires for a 1-hop destination/initiator.
     pub fn mark_path_unresponsive(&mut self, dest_hash: &[u8; TRUNCATED_HASHBYTES]) -> bool {
-        if self.path_table.contains_key(dest_hash) {
-            self.path_states.insert(*dest_hash, PathState::Unresponsive);
+        if self.storage.has_path(dest_hash) {
+            self.storage
+                .set_path_state(*dest_hash, PathState::Unresponsive);
             true
         } else {
             false
@@ -638,8 +634,9 @@ impl<C: Clock, S: Storage> Transport<C, S> {
     /// Only succeeds if the destination exists in the path table.
     /// Defined for API completeness (not called internally, matching Python).
     pub fn mark_path_responsive(&mut self, dest_hash: &[u8; TRUNCATED_HASHBYTES]) -> bool {
-        if self.path_table.contains_key(dest_hash) {
-            self.path_states.insert(*dest_hash, PathState::Responsive);
+        if self.storage.has_path(dest_hash) {
+            self.storage
+                .set_path_state(*dest_hash, PathState::Responsive);
             true
         } else {
             false
@@ -654,8 +651,8 @@ impl<C: Clock, S: Storage> Transport<C, S> {
         &mut self,
         dest_hash: &[u8; TRUNCATED_HASHBYTES],
     ) -> bool {
-        if self.path_table.contains_key(dest_hash) {
-            self.path_states.insert(*dest_hash, PathState::Unknown);
+        if self.storage.has_path(dest_hash) {
+            self.storage.set_path_state(*dest_hash, PathState::Unknown);
             true
         } else {
             false
@@ -664,7 +661,7 @@ impl<C: Clock, S: Storage> Transport<C, S> {
 
     /// Check if a path is marked as unresponsive
     pub fn path_is_unresponsive(&self, dest_hash: &[u8; TRUNCATED_HASHBYTES]) -> bool {
-        self.path_states.get(dest_hash) == Some(&PathState::Unresponsive)
+        self.storage.get_path_state(dest_hash) == Some(PathState::Unresponsive)
     }
 
     /// Force-expire a path entry
@@ -672,7 +669,7 @@ impl<C: Clock, S: Storage> Transport<C, S> {
     /// Removes the path table entry and emits `PathLost`. Returns true if
     /// the path existed and was removed.
     pub fn expire_path(&mut self, dest_hash: &[u8; TRUNCATED_HASHBYTES]) -> bool {
-        if self.path_table.remove(dest_hash).is_some() {
+        if self.storage.remove_path(dest_hash).is_some() {
             self.events.push(TransportEvent::PathLost {
                 destination_hash: *dest_hash,
             });
@@ -778,8 +775,8 @@ impl<C: Clock, S: Storage> Transport<C, S> {
         let interface_index = match receiving_interface {
             Some(iface) => iface,
             None => self
-                .path_table
-                .get(destination_hash)
+                .storage
+                .get_path(destination_hash)
                 .map(|p| p.interface_index)
                 .ok_or(TransportError::NoPath)?,
         };
@@ -918,8 +915,8 @@ impl<C: Clock, S: Storage> Transport<C, S> {
         data: &[u8],
     ) -> Result<(), TransportError> {
         let path = self
-            .path_table
-            .get(dest_hash)
+            .storage
+            .get_path(dest_hash)
             .ok_or(TransportError::NoPath)?;
 
         let interface_index = path.interface_index;
@@ -976,7 +973,6 @@ impl<C: Clock, S: Storage> Transport<C, S> {
         self.drain_announce_queues(now);
         self.clean_link_table(now);
         self.clean_path_states();
-        // announce_rate cleanup deferred to clean_stale_path_metadata() (Commit 7)
     }
 
     // ─── Events ─────────────────────────────────────────────────────────
@@ -1014,8 +1010,8 @@ impl<C: Clock, S: Storage> Transport<C, S> {
         };
 
         // Path expiry deadlines
-        for entry in self.path_table.values() {
-            update(entry.expires_ms);
+        if let Some(deadline) = self.storage.earliest_path_expiry() {
+            update(deadline);
         }
 
         // Receipt timeout deadlines
@@ -1082,20 +1078,25 @@ impl<C: Clock, S: Storage> Transport<C, S> {
         &self.clock
     }
 
-    /// Read-only access to the path table (for sans-I/O deadline computation)
-    pub(crate) fn path_table(&self) -> &BTreeMap<[u8; TRUNCATED_HASHBYTES], PathEntry> {
-        &self.path_table
-    }
-
-    /// Insert a path entry (test-only, for setting up direct routing)
-    #[cfg(test)]
+    /// Insert a path entry (thin wrapper around storage)
     pub(crate) fn insert_path(&mut self, hash: [u8; TRUNCATED_HASHBYTES], entry: PathEntry) {
-        self.path_table.insert(hash, entry);
+        self.storage.set_path(hash, entry);
     }
 
-    /// Remove a path entry by destination hash
+    /// Remove a path entry by destination hash (thin wrapper around storage)
     pub(crate) fn remove_path(&mut self, hash: &[u8; TRUNCATED_HASHBYTES]) {
-        self.path_table.remove(hash);
+        self.storage.remove_path(hash);
+    }
+
+    /// Remove all path entries referencing a specific interface.
+    /// Returns the destination hashes of removed paths.
+    ///
+    /// Used by NodeCore::handle_interface_down() for interface-down cleanup.
+    pub(crate) fn remove_paths_for_interface(
+        &mut self,
+        iface_idx: usize,
+    ) -> Vec<[u8; TRUNCATED_HASHBYTES]> {
+        self.storage.remove_paths_for_interface(iface_idx)
     }
 
     /// Remove link table entries referencing a specific interface
@@ -1148,7 +1149,7 @@ impl<C: Clock, S: Storage> Transport<C, S> {
         let random_hash = *announce.random_hash();
 
         // Random blob replay protection: reject if we've seen this exact random_hash
-        if let Some(path) = self.path_table.get(&dest_hash) {
+        if let Some(path) = self.storage.get_path(&dest_hash) {
             if path.random_blobs.contains(&random_hash) {
                 self.stats.packets_dropped += 1;
                 return Ok(());
@@ -1187,7 +1188,7 @@ impl<C: Clock, S: Storage> Transport<C, S> {
         // - Equal or fewer hops: accept if emission timestamp is newer
         // - More hops: accept only if path is expired, emission is newer,
         //   or path is unresponsive with same emission (path recovery)
-        let should_update = if let Some(existing) = self.path_table.get(&dest_hash) {
+        let should_update = if let Some(existing) = self.storage.get_path(&dest_hash) {
             let announce_emitted = emission_from_random_hash(&random_hash);
             let path_timebase = max_emission_from_blobs(&existing.random_blobs);
             if packet.hops <= existing.hops {
@@ -1226,8 +1227,8 @@ impl<C: Clock, S: Storage> Transport<C, S> {
         if should_update {
             // Preserve existing random_blobs and add the new one
             let mut random_blobs = self
-                .path_table
-                .get(&dest_hash)
+                .storage
+                .get_path(&dest_hash)
                 .map(|p| p.random_blobs.clone())
                 .unwrap_or_default();
             random_blobs.push(random_hash);
@@ -1238,7 +1239,7 @@ impl<C: Clock, S: Storage> Transport<C, S> {
                 random_blobs.drain(..excess);
             }
 
-            self.path_table.insert(
+            self.storage.set_path(
                 dest_hash,
                 PathEntry {
                     hops: packet.hops,
@@ -1320,12 +1321,14 @@ impl<C: Clock, S: Storage> Transport<C, S> {
             });
         } else {
             // Path not updated, but still record the random_blob for replay detection
-            if let Some(existing) = self.path_table.get_mut(&dest_hash) {
-                existing.random_blobs.push(random_hash);
-                if existing.random_blobs.len() > MAX_RANDOM_BLOBS {
-                    let excess = existing.random_blobs.len() - MAX_RANDOM_BLOBS;
-                    existing.random_blobs.drain(..excess);
+            if let Some(existing) = self.storage.get_path(&dest_hash) {
+                let mut path = existing.clone();
+                path.random_blobs.push(random_hash);
+                if path.random_blobs.len() > MAX_RANDOM_BLOBS {
+                    let excess = path.random_blobs.len() - MAX_RANDOM_BLOBS;
+                    path.random_blobs.drain(..excess);
                 }
+                self.storage.set_path(dest_hash, path);
             }
         }
 
@@ -1364,7 +1367,7 @@ impl<C: Clock, S: Storage> Transport<C, S> {
         if self.config.enable_transport {
             // Read path data into locals (releases immutable borrow)
             let (target_iface, path_hops, needs_relay, next_hop) =
-                if let Some(path) = self.path_table.get(&dest_hash) {
+                if let Some(path) = self.storage.get_path(&dest_hash) {
                     (
                         path.interface_index,
                         path.hops,
@@ -1431,8 +1434,10 @@ impl<C: Clock, S: Storage> Transport<C, S> {
             );
 
             // Refresh path expiry on link request forward (Python Transport.py:1504)
-            if let Some(path) = self.path_table.get_mut(&dest_hash) {
+            if let Some(path) = self.storage.get_path(&dest_hash) {
+                let mut path = path.clone();
                 path.expires_ms = now + (self.config.path_expiry_secs * 1000);
+                self.storage.set_path(dest_hash, path);
             }
 
             // Forward: strip at final hop, keep Type2 otherwise.
@@ -1831,7 +1836,7 @@ impl<C: Clock, S: Storage> Transport<C, S> {
     ) -> Result<(), TransportError> {
         // Read path data into locals (releases immutable borrow)
         let (target_iface, needs_relay, next_hop) =
-            if let Some(path) = self.path_table.get(&packet.destination_hash) {
+            if let Some(path) = self.storage.get_path(&packet.destination_hash) {
                 (path.interface_index, path.needs_relay(), path.next_hop)
             } else {
                 self.stats.packets_dropped += 1;
@@ -1849,8 +1854,10 @@ impl<C: Clock, S: Storage> Transport<C, S> {
         let now = self.clock.now_ms();
 
         // Refresh path expiry on forward (Python Transport.py:990)
-        if let Some(path) = self.path_table.get_mut(&packet.destination_hash) {
+        if let Some(path) = self.storage.get_path(&packet.destination_hash) {
+            let mut path = path.clone();
             path.expires_ms = now + (self.config.path_expiry_secs * 1000);
+            self.storage.set_path(packet.destination_hash, path);
         }
 
         // Populate reverse table at forwarding time
@@ -2150,15 +2157,8 @@ impl<C: Clock, S: Storage> Transport<C, S> {
     // ─── Internal: Periodic Tasks ───────────────────────────────────────
 
     fn expire_paths(&mut self, now: u64) {
-        let expired: Vec<[u8; TRUNCATED_HASHBYTES]> = self
-            .path_table
-            .iter()
-            .filter(|(_, p)| p.expires_ms < now)
-            .map(|(k, _)| *k)
-            .collect();
-
+        let expired = self.storage.expire_paths(now);
         for hash in expired {
-            self.path_table.remove(&hash);
             self.events.push(TransportEvent::PathLost {
                 destination_hash: hash,
             });
@@ -2403,14 +2403,14 @@ impl<C: Clock, S: Storage> Transport<C, S> {
 
             let mut should_request_path = false;
 
-            if !self.path_table.contains_key(&dest_hash) {
+            if !self.storage.has_path(&dest_hash) {
                 // Sub-case 1: Path missing — unconditionally try to rediscover
                 // (no throttle check). Python Transport.py:644.
                 should_request_path = true;
             } else if !path_request_throttled
                 && self
-                    .path_table
-                    .get(&dest_hash)
+                    .storage
+                    .get_path(&dest_hash)
                     .is_some_and(|p| p.is_direct())
             {
                 // Sub-case 2: Destination directly connected — may have roamed.
@@ -2451,18 +2451,10 @@ impl<C: Clock, S: Storage> Transport<C, S> {
         }
     }
 
-    /// Remove path_states entries for destinations no longer in path_table.
+    /// Remove path_states and announce_rate entries for destinations no longer in path_table.
     /// Matches Python Transport.py:601-604, 813-814.
     fn clean_path_states(&mut self) {
-        let stale: Vec<[u8; TRUNCATED_HASHBYTES]> = self
-            .path_states
-            .keys()
-            .filter(|h| !self.path_table.contains_key(*h))
-            .copied()
-            .collect();
-        for hash in stale {
-            self.path_states.remove(&hash);
-        }
+        self.storage.clean_stale_path_metadata();
     }
 
     /// Check announce rate for a destination, returning true if rebroadcast should be blocked.
@@ -2742,7 +2734,7 @@ mod tests {
 
             // Manually insert a path for testing
             let now = transport.clock.now_ms();
-            transport.path_table.insert(
+            transport.insert_path(
                 hash,
                 PathEntry {
                     hops: 3,
@@ -2764,7 +2756,7 @@ mod tests {
             let hash = [0x42; TRUNCATED_HASHBYTES];
 
             let now = transport.clock.now_ms();
-            transport.path_table.insert(
+            transport.insert_path(
                 hash,
                 PathEntry {
                     hops: 1,
@@ -2810,7 +2802,7 @@ mod tests {
             let now = transport.clock.now_ms();
             let original_expiry = now + 10_000;
 
-            transport.path_table.insert(
+            transport.insert_path(
                 dest_hash,
                 PathEntry {
                     hops: 0,
@@ -2851,7 +2843,7 @@ mod tests {
             );
 
             // Path expiry should be refreshed to now + path_expiry_secs * 1000
-            let path = transport.path_table.get(&dest_hash).unwrap();
+            let path = transport.storage().get_path(&dest_hash).unwrap();
             let expected_expiry =
                 transport.clock.now_ms() + (transport.config.path_expiry_secs * 1000);
             assert_eq!(
@@ -2878,7 +2870,7 @@ mod tests {
             let now = transport.clock.now_ms();
             let original_expiry = now + 10_000;
 
-            transport.path_table.insert(
+            transport.insert_path(
                 dest_hash,
                 PathEntry {
                     hops: 0,
@@ -2920,7 +2912,7 @@ mod tests {
             );
 
             // Path expiry should be refreshed
-            let path = transport.path_table.get(&dest_hash).unwrap();
+            let path = transport.storage().get_path(&dest_hash).unwrap();
             let expected_expiry =
                 transport.clock.now_ms() + (transport.config.path_expiry_secs * 1000);
             assert_eq!(
@@ -2966,10 +2958,7 @@ mod tests {
                 0,
                 "Should not forward without path"
             );
-            assert!(
-                !transport.path_table.contains_key(&dest_hash),
-                "No path should be created"
-            );
+            assert!(!transport.has_path(&dest_hash), "No path should be created");
         }
 
         #[test]
@@ -2994,7 +2983,7 @@ mod tests {
 
             let dest_hash = [0xDD; TRUNCATED_HASHBYTES];
             let now = transport.clock.now_ms();
-            transport.path_table.insert(
+            transport.insert_path(
                 dest_hash,
                 PathEntry {
                     hops: 0,
@@ -4809,7 +4798,7 @@ mod tests {
             let dest_hash = [0x42; TRUNCATED_HASHBYTES];
             let now = transport.clock.now_ms();
             let transport_hash = *transport.identity.hash();
-            transport.path_table.insert(
+            transport.insert_path(
                 dest_hash,
                 PathEntry {
                     interface_index: 1,
@@ -5162,7 +5151,7 @@ mod tests {
             // Path with hops=1 (destination directly connected to if1)
             let dest_hash = [0xBB; TRUNCATED_HASHBYTES];
             let now = transport.clock.now_ms();
-            transport.path_table.insert(
+            transport.insert_path(
                 dest_hash,
                 PathEntry {
                     hops: 1,
@@ -5214,7 +5203,7 @@ mod tests {
             let dest_hash = [0xBB; TRUNCATED_HASHBYTES];
             let next_hop_hash = [0xCC; TRUNCATED_HASHBYTES];
             let now = transport.clock.now_ms();
-            transport.path_table.insert(
+            transport.insert_path(
                 dest_hash,
                 PathEntry {
                     hops: 3,
@@ -5275,7 +5264,7 @@ mod tests {
             // to if1), meaning the relay is the final hop.
             let dest_hash = [0xDD; TRUNCATED_HASHBYTES];
             let now = transport.clock.now_ms();
-            transport.path_table.insert(
+            transport.insert_path(
                 dest_hash,
                 PathEntry {
                     hops: 0,
@@ -5436,7 +5425,7 @@ mod tests {
 
             // Update path to multi-hop with a next-hop relay identity
             let next_hop_relay = [0xEE; TRUNCATED_HASHBYTES];
-            transport.path_table.insert(
+            transport.insert_path(
                 dest_hash,
                 PathEntry {
                     hops: 3,
@@ -5774,7 +5763,7 @@ mod tests {
             let now = transport.clock.now_ms();
 
             // Path entry with hops=2 (multi-hop: not the final relay)
-            transport.path_table.insert(
+            transport.insert_path(
                 dest_hash,
                 PathEntry {
                     hops: 2,
@@ -5869,7 +5858,7 @@ mod tests {
             let now = transport.clock.now_ms();
 
             // Path entry with hops=0 (destination is directly connected to us)
-            transport.path_table.insert(
+            transport.insert_path(
                 dest_hash,
                 PathEntry {
                     hops: 0,
@@ -6226,7 +6215,7 @@ mod tests {
 
             // Manually insert a path
             let dest_hash = [0x42; TRUNCATED_HASHBYTES];
-            transport.path_table.insert(
+            transport.insert_path(
                 dest_hash,
                 PathEntry {
                     hops: 1,
@@ -6260,7 +6249,7 @@ mod tests {
 
             let dest_hash = [0x42; TRUNCATED_HASHBYTES];
             let next_hop = [0xAA; TRUNCATED_HASHBYTES];
-            transport.path_table.insert(
+            transport.insert_path(
                 dest_hash,
                 PathEntry {
                     hops: 1,
@@ -6323,7 +6312,7 @@ mod tests {
 
             let dest_hash = [0x42; TRUNCATED_HASHBYTES];
             let next_hop = [0xAA; TRUNCATED_HASHBYTES];
-            transport.path_table.insert(
+            transport.insert_path(
                 dest_hash,
                 PathEntry {
                     hops: 1,
@@ -6618,7 +6607,7 @@ mod tests {
 
             // Insert a path so send_proof can route
             let dest_hash = [0x42; TRUNCATED_HASHBYTES];
-            transport.path_table.insert(
+            transport.insert_path(
                 dest_hash,
                 PathEntry {
                     hops: 1,
@@ -7186,7 +7175,7 @@ mod tests {
             let now = transport.clock.now_ms();
 
             // Insert a path table entry so the packet WOULD be forwarded without the filter
-            transport.path_table.insert(
+            transport.insert_path(
                 dest_hash,
                 PathEntry {
                     hops: 2,
@@ -7255,7 +7244,7 @@ mod tests {
             let next_hop_hash = [0xDD; TRUNCATED_HASHBYTES];
             let now = transport.clock.now_ms();
 
-            transport.path_table.insert(
+            transport.insert_path(
                 dest_hash,
                 PathEntry {
                     hops: 2,
@@ -7984,7 +7973,7 @@ mod tests {
 
             // Insert a path entry manually
             let now = transport.clock.now_ms();
-            transport.path_table.insert(
+            transport.insert_path(
                 dest_hash,
                 PathEntry {
                     hops: 1,
@@ -8021,7 +8010,7 @@ mod tests {
 
             // Insert path and mark unresponsive
             let now = transport.clock.now_ms();
-            transport.path_table.insert(
+            transport.insert_path(
                 dest_hash,
                 PathEntry {
                     hops: 1,
@@ -8040,7 +8029,7 @@ mod tests {
             transport.poll();
 
             // Re-insert path — state should be gone (not unresponsive)
-            transport.path_table.insert(
+            transport.insert_path(
                 dest_hash,
                 PathEntry {
                     hops: 1,
@@ -8177,7 +8166,7 @@ mod tests {
 
             // Insert path entry with hops=0 (directly connected).
             // Rust stores raw wire hops; 0 = direct neighbor.
-            transport.path_table.insert(
+            transport.insert_path(
                 dest_hash,
                 PathEntry {
                     hops: 0,
@@ -8232,7 +8221,7 @@ mod tests {
             let now = transport.clock.now_ms();
 
             // Insert path entry with hops=3 (destination is far away)
-            transport.path_table.insert(
+            transport.insert_path(
                 dest_hash,
                 PathEntry {
                     hops: 3,
@@ -8281,7 +8270,7 @@ mod tests {
             let now = transport.clock.now_ms();
 
             // Path with hops=3 (not 1-hop)
-            transport.path_table.insert(
+            transport.insert_path(
                 dest_hash,
                 PathEntry {
                     hops: 3,
@@ -8332,7 +8321,7 @@ mod tests {
             let now = transport.clock.now_ms();
 
             // Path with hops=0 (directly connected — sub-case 2)
-            transport.path_table.insert(
+            transport.insert_path(
                 dest_hash,
                 PathEntry {
                     hops: 0,
@@ -8420,7 +8409,7 @@ mod tests {
             let dest_hash = [0xDD; TRUNCATED_HASHBYTES];
             let now = transport.clock.now_ms();
 
-            transport.path_table.insert(
+            transport.insert_path(
                 dest_hash,
                 PathEntry {
                     hops: 1,
@@ -8474,7 +8463,7 @@ mod tests {
             let dest_hash = [0x42; TRUNCATED_HASHBYTES];
 
             let now = transport.clock.now_ms();
-            transport.path_table.insert(
+            transport.insert_path(
                 dest_hash,
                 PathEntry {
                     hops: 1,
@@ -8548,7 +8537,7 @@ mod tests {
             let now = transport.clock.now_ms();
 
             // Insert path entry
-            transport.path_table.insert(
+            transport.insert_path(
                 dest_hash,
                 PathEntry {
                     hops: 2,
@@ -9153,8 +9142,8 @@ mod tests {
             let rate_entry = transport.storage().get_announce_rate(&dest_hash).unwrap();
             assert_eq!(rate_entry.last_ms, now);
             assert_eq!(rate_entry.rate_violations, 0);
-            // Note: announce_rate cleanup via clean_stale_path_metadata()
-            // will be restored in Commit 7 when path_table migrates to Storage
+            // Note: announce_rate cleanup is handled by clean_stale_path_metadata()
+            // which cleans both path_states and announce_rate for stale destinations
         }
 
         #[test]
@@ -9227,7 +9216,7 @@ mod tests {
 
             let dest_hash = [0x42; TRUNCATED_HASHBYTES];
             let now = transport.clock.now_ms();
-            transport.path_table.insert(
+            transport.insert_path(
                 dest_hash,
                 PathEntry {
                     hops: 1,

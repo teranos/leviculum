@@ -420,6 +420,19 @@ impl Storage for MemoryStorage {
         removed
     }
 
+    fn remove_paths_for_interface(&mut self, iface_index: usize) -> Vec<[u8; TRUNCATED_HASHBYTES]> {
+        let mut removed = Vec::new();
+        self.path_table.retain(|hash, entry| {
+            if entry.interface_index == iface_index {
+                removed.push(*hash);
+                false
+            } else {
+                true
+            }
+        });
+        removed
+    }
+
     // ─── Deadlines ──────────────────────────────────────────────────────
 
     fn earliest_receipt_deadline(&self) -> Option<u64> {

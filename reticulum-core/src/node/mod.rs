@@ -501,16 +501,9 @@ impl<R: CryptoRngCore, C: Clock, S: Storage> NodeCore<R, C, S> {
         let iface_idx = iface.0;
 
         // Remove path entries referencing this interface
-        let lost_paths: Vec<_> = self
-            .transport
-            .path_table()
-            .iter()
-            .filter(|(_, entry)| entry.interface_index == iface_idx)
-            .map(|(hash, _)| *hash)
-            .collect();
+        let lost_paths = self.transport.remove_paths_for_interface(iface_idx);
 
         for hash in &lost_paths {
-            self.transport.remove_path(hash);
             self.events.push(NodeEvent::PathLost {
                 destination_hash: crate::destination::DestinationHash::new(*hash),
             });
@@ -999,9 +992,11 @@ mod tests {
         use crate::transport::InterfaceId;
 
         let clock = MockClock::new(TEST_TIME_MS);
-        let mut node = NodeCoreBuilder::new()
-            .enable_transport(true)
-            .build(OsRng, clock, NoStorage);
+        let mut node = NodeCoreBuilder::new().enable_transport(true).build(
+            OsRng,
+            clock,
+            MemoryStorage::with_defaults(),
+        );
 
         // Inject an announce on interface 0 to create a path
         let identity = Identity::generate(&mut OsRng);
@@ -1157,9 +1152,11 @@ mod tests {
         use crate::transport::{Action, InterfaceId};
 
         let clock = MockClock::new(TEST_TIME_MS);
-        let mut node = NodeCoreBuilder::new()
-            .enable_transport(true)
-            .build(OsRng, clock, NoStorage);
+        let mut node = NodeCoreBuilder::new().enable_transport(true).build(
+            OsRng,
+            clock,
+            MemoryStorage::with_defaults(),
+        );
 
         // Create a remote identity and announce to establish a path
         let remote_identity = Identity::generate(&mut OsRng);
@@ -1244,7 +1241,7 @@ mod tests {
         use crate::transport::{Action, InterfaceId};
 
         let clock = MockClock::new(TEST_TIME_MS);
-        let mut node = NodeCoreBuilder::new().build(OsRng, clock, NoStorage);
+        let mut node = NodeCoreBuilder::new().build(OsRng, clock, MemoryStorage::with_defaults());
 
         // Create remote destination and announce to establish a path
         let remote_identity = Identity::generate(&mut OsRng);
@@ -1291,7 +1288,7 @@ mod tests {
     fn setup_pending_link(
         enable_transport: bool,
     ) -> (
-        NodeCore<OsRng, MockClock, NoStorage>,
+        NodeCore<OsRng, MockClock, MemoryStorage>,
         DestinationHash,
         LinkId,
     ) {
@@ -1300,7 +1297,7 @@ mod tests {
         let clock = MockClock::new(TEST_TIME_MS);
         let mut node = NodeCoreBuilder::new()
             .enable_transport(enable_transport)
-            .build(OsRng, clock, NoStorage);
+            .build(OsRng, clock, MemoryStorage::with_defaults());
 
         // Create remote identity and announce to establish a path
         let remote_identity = Identity::generate(&mut OsRng);
@@ -1945,9 +1942,11 @@ mod tests {
         use crate::transport::InterfaceId;
 
         let clock = MockClock::new(TEST_TIME_MS);
-        let mut node = NodeCoreBuilder::new()
-            .enable_transport(true)
-            .build(OsRng, clock, NoStorage);
+        let mut node = NodeCoreBuilder::new().enable_transport(true).build(
+            OsRng,
+            clock,
+            MemoryStorage::with_defaults(),
+        );
 
         // Inject an announce on interface 0 to create a path
         let identity = Identity::generate(&mut OsRng);
@@ -3448,7 +3447,8 @@ mod tests {
 
         // Create a sender to produce a valid data packet
         let send_clock = MockClock::new(TEST_TIME_MS);
-        let mut sender = NodeCoreBuilder::new().build(OsRng, send_clock, NoStorage);
+        let mut sender =
+            NodeCoreBuilder::new().build(OsRng, send_clock, MemoryStorage::with_defaults());
         let sender_iface = sender
             .transport
             .register_interface(alloc::boxed::Box::new(MockInterface::new("send_if", 2)));
@@ -3513,7 +3513,8 @@ mod tests {
 
         let recv_identity = Identity::generate(&mut OsRng);
         let recv_clock = MockClock::new(TEST_TIME_MS);
-        let mut receiver = NodeCoreBuilder::new().build(OsRng, recv_clock, NoStorage);
+        let mut receiver =
+            NodeCoreBuilder::new().build(OsRng, recv_clock, MemoryStorage::with_defaults());
 
         let mut dest = Destination::new(
             Some(recv_identity),
@@ -3737,7 +3738,8 @@ mod tests {
             .register_interface(alloc::boxed::Box::new(MockInterface::new("recv_if", 1)));
 
         let send_clock = MockClock::new(TEST_TIME_MS);
-        let mut sender = NodeCoreBuilder::new().build(OsRng, send_clock, NoStorage);
+        let mut sender =
+            NodeCoreBuilder::new().build(OsRng, send_clock, MemoryStorage::with_defaults());
         let sender_iface = sender
             .transport
             .register_interface(alloc::boxed::Box::new(MockInterface::new("send_if", 2)));
@@ -3850,7 +3852,7 @@ mod tests {
         let dest_hash = *dest.hash();
 
         let clock = MockClock::new(TEST_TIME_MS);
-        let mut sender = NodeCoreBuilder::new().build(OsRng, clock, NoStorage);
+        let mut sender = NodeCoreBuilder::new().build(OsRng, clock, MemoryStorage::with_defaults());
         let iface = sender
             .transport
             .register_interface(alloc::boxed::Box::new(MockInterface::new("if0", 1)));
@@ -3899,7 +3901,7 @@ mod tests {
         let dest_hash = *dest.hash();
 
         let clock = MockClock::new(TEST_TIME_MS);
-        let mut sender = NodeCoreBuilder::new().build(OsRng, clock, NoStorage);
+        let mut sender = NodeCoreBuilder::new().build(OsRng, clock, MemoryStorage::with_defaults());
         let iface = sender
             .transport
             .register_interface(alloc::boxed::Box::new(MockInterface::new("if0", 1)));

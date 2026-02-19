@@ -343,6 +343,10 @@ pub trait Storage {
         iface_index: usize,
     ) -> Vec<([u8; TRUNCATED_HASHBYTES], LinkEntry)>;
 
+    /// Remove path entries that reference a specific interface (for interface-down cleanup).
+    /// Returns destination hashes of removed paths.
+    fn remove_paths_for_interface(&mut self, iface_index: usize) -> Vec<[u8; TRUNCATED_HASHBYTES]>;
+
     // ─── Deadlines ──────────────────────────────────────────────────────────
 
     /// Earliest receipt deadline (sent_at + timeout), or None if no pending receipts
@@ -552,6 +556,12 @@ impl Storage for NoStorage {
         &mut self,
         _iface_index: usize,
     ) -> Vec<([u8; TRUNCATED_HASHBYTES], LinkEntry)> {
+        Vec::new()
+    }
+    fn remove_paths_for_interface(
+        &mut self,
+        _iface_index: usize,
+    ) -> Vec<[u8; TRUNCATED_HASHBYTES]> {
         Vec::new()
     }
 

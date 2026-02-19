@@ -377,6 +377,13 @@ impl reticulum_core::traits::Storage for Storage {
         Vec::new()
     }
 
+    fn remove_paths_for_interface(
+        &mut self,
+        _iface_index: usize,
+    ) -> Vec<[u8; TRUNCATED_HASHBYTES]> {
+        Vec::new()
+    }
+
     // ─── Deadlines (no-op until respective commits) ─────────────────────
     fn earliest_receipt_deadline(&self) -> Option<u64> {
         None
