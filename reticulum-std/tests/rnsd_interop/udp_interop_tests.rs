@@ -1,0 +1,146 @@
+//! Interop tests for UDPInterface with Python Reticulum.
+//!
+//! Verifies that Rust and Python can exchange announces and discover
+//! paths over a point-to-point UDP link.
+
+use std::time::Duration;
+
+use reticulum_std::driver::ReticulumNodeBuilder;
+use reticulum_std::{Destination, DestinationType, Direction, Identity, NodeEvent};
+use tokio::time::timeout;
+
+use crate::harness::TestDaemon;
+
+/// Test: Rust receives an announce from Python over a UDP link.
+///
+/// Setup:
+/// - Python daemon has TCP (for control) + UDP (listen_port=A, forward_port=B)
+/// - Rust node has UDP (listen_port=B, forward_port=A)
+/// - Python registers a destination and announces it
+/// - Rust should receive the AnnounceReceived event
+#[tokio::test]
+async fn test_rust_receives_announce_from_python_over_udp() {
+    let daemon = TestDaemon::start_with_udp()
+        .await
+        .expect("Failed to start daemon with UDP");
+
+    let py_listen = daemon
+        .udp_listen_addr()
+        .expect("daemon should have UDP listen addr");
+    let rust_listen = daemon
+        .udp_forward_addr()
+        .expect("daemon should have UDP forward addr");
+
+    // Rust listens where Python forwards, and forwards where Python listens
+    let mut node = ReticulumNodeBuilder::new()
+        .add_udp_interface(rust_listen, py_listen)
+        .build()
+        .await
+        .expect("Failed to build node");
+
+    node.start().await.expect("Failed to start node");
+
+    let mut events = node
+        .take_event_receiver()
+        .expect("Failed to get event receiver");
+
+    // Wait for UDP interface to settle
+    tokio::time::sleep(Duration::from_millis(500)).await;
+
+    // Register and announce a destination on the Python side
+    let dest = daemon
+        .register_destination("test", &["udp_announce"])
+        .await
+        .expect("Failed to register destination");
+
+    daemon
+        .announce_destination(&dest.hash, b"udp-test-data")
+        .await
+        .expect("Failed to announce");
+
+    // Wait for AnnounceReceived event on Rust side
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
+    let mut found = false;
+    while tokio::time::Instant::now() < deadline {
+        let remaining = deadline - tokio::time::Instant::now();
+        match timeout(remaining, events.recv()).await {
+            Ok(Some(NodeEvent::AnnounceReceived { announce, .. })) => {
+                let received_hash = hex::encode(announce.destination_hash());
+                if received_hash == dest.hash {
+                    found = true;
+                    break;
+                }
+            }
+            Ok(Some(_)) => continue,
+            Ok(None) => break,
+            Err(_) => break,
+        }
+    }
+    assert!(found, "Rust should receive announce from Python over UDP");
+
+    node.stop().await.expect("Failed to stop node");
+}
+
+/// Test: Python receives an announce from Rust over a UDP link.
+///
+/// Setup is the same, but the Rust node announces and Python verifies.
+#[tokio::test]
+async fn test_python_receives_announce_from_rust_over_udp() {
+    let daemon = TestDaemon::start_with_udp()
+        .await
+        .expect("Failed to start daemon with UDP");
+
+    let py_listen = daemon
+        .udp_listen_addr()
+        .expect("daemon should have UDP listen addr");
+    let rust_listen = daemon
+        .udp_forward_addr()
+        .expect("daemon should have UDP forward addr");
+
+    let mut node = ReticulumNodeBuilder::new()
+        .add_udp_interface(rust_listen, py_listen)
+        .build()
+        .await
+        .expect("Failed to build node");
+
+    node.start().await.expect("Failed to start node");
+
+    // Wait for UDP interface to settle
+    tokio::time::sleep(Duration::from_millis(500)).await;
+
+    // Register and announce a destination on the Rust side
+    let identity = Identity::generate(&mut rand_core::OsRng);
+    let dest = Destination::new(
+        Some(identity),
+        Direction::In,
+        DestinationType::Single,
+        "test",
+        &["udp_rust_announce"],
+    )
+    .expect("Failed to create destination");
+
+    let dest_hash = *dest.hash();
+    node.register_destination(dest);
+
+    node.announce_destination(&dest_hash, Some(b"rust-udp-data"))
+        .await
+        .expect("Failed to announce");
+
+    // Wait for Python to process the announce and register the path
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
+    let mut found = false;
+    while tokio::time::Instant::now() < deadline {
+        if daemon.has_path(dest_hash.as_bytes()).await {
+            found = true;
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(200)).await;
+    }
+    assert!(
+        found,
+        "Python should have path to Rust destination announced over UDP (hash: {})",
+        hex::encode(dest_hash.as_bytes())
+    );
+
+    node.stop().await.expect("Failed to stop node");
+}

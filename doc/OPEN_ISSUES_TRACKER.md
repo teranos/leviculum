@@ -29,6 +29,9 @@ Phase numbering follows `doc/BATTLEPLAN.md`. Phases 0–7 are complete.
 | E14 | L | post-7 | open | Design | FileStorage wraps MemoryStorage — cannot use IndexMap for insertion-order eviction |
 | E15 | L | post-7 | open | Docs | Git history has 11 commits where FileStorage was no-op — avoid git bisect in that range |
 | E16 | L | post-7 | open | Perf | FileStorage writes complete files on every flush — consider delta-based persistence |
+| E17 | M | post-7 | open | Feature | AutoInterface — multicast discovery + dynamic peer management over UDP |
+| E18 | L | post-7 | open | Feature | UDPInterface `device` parameter (bind to specific NIC) not yet supported |
+| E19 | L | post-7 | open | Feature | UDPInterface multiple forward addresses (multipoint) not yet supported |
 
 ---
 
@@ -107,3 +110,31 @@ Phase numbering follows `doc/BATTLEPLAN.md`. Phases 0–7 are complete.
 - **Detail:** FileStorage rewrites the entire `known_destinations` and `packet_hashlist` files on every flush. On high-traffic nodes these files can reach 14 MB+. Dirty-flag tracking (added Feb 2026) avoids writes when idle, but when dirty the full file is still rewritten. On SD-card-based devices (Raspberry Pi), frequent full rewrites accelerate wear. An append-only or delta-based format would reduce write amplification, but the Python-compatible msgpack format encodes total element count in the file header, making appending impossible without breaking compatibility.
 - **Fix:** Requires a new on-disk format (e.g., log-structured or one-value-per-record) with a migration path from the current msgpack format. Python compatibility would need a conversion tool or dual-format support.
 - **Test:** Benchmark write amplification before and after format change.
+
+### E17: AutoInterface — multicast discovery + dynamic peer management over UDP
+- **Status:** open
+- **Priority:** M
+- **Phase:** post-7
+- **Category:** Feature
+- **Blocked-by:** UDPInterface (now complete)
+- **Detail:** Python's AutoInterface uses multicast discovery (group `ff02::1` or `224.0.0.1`) to automatically find peers on the local network and create dynamic UDP peerings. This builds on top of the static UDPInterface. Requires: multicast group join, peer timeout/expiry, group HMAC for authentication, and dynamic interface creation per discovered peer.
+- **Fix:** Implement AutoInterface in `reticulum-std/src/interfaces/auto.rs` with multicast listener + per-peer UDP sockets.
+- **Test:** Integration test with two Rust nodes on localhost discovering each other via multicast.
+
+### E18: UDPInterface `device` parameter not yet supported
+- **Status:** open
+- **Priority:** L
+- **Phase:** post-7
+- **Category:** Feature
+- **Detail:** Python's UDPInterface supports a `device` parameter that binds to a specific network interface (e.g., `eth0`). When set, it uses `get_address_for_if()` and `get_broadcast_for_if()` to resolve the interface's IP and broadcast addresses. The Rust implementation currently only accepts explicit IP addresses.
+- **Fix:** Add `device` config parameter, resolve to IP via `getifaddrs` or equivalent.
+- **Test:** Manual test on multi-NIC system; unit test for config parsing.
+
+### E19: UDPInterface multiple forward addresses (multipoint) not yet supported
+- **Status:** open
+- **Priority:** L
+- **Phase:** post-7
+- **Category:** Feature
+- **Detail:** The current Rust UDPInterface supports a single `forward_ip`/`forward_port` pair. Some configurations may benefit from sending to multiple forward addresses (e.g., multiple subnets). Python's UDPInterface also only supports one forward address, so this is a Rust-only enhancement.
+- **Fix:** Accept a list of forward addresses and send each outgoing packet to all of them.
+- **Test:** Unit test: verify packet is sent to all configured forward addresses.

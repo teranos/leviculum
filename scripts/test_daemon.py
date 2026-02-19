@@ -99,9 +99,12 @@ class RawBytesMessage(RNS.Channel.MessageBase):
 
 
 class TestDaemon:
-    def __init__(self, rns_port: int, cmd_port: int, verbose: bool = False):
+    def __init__(self, rns_port: int, cmd_port: int, verbose: bool = False,
+                 udp_listen_port: int = None, udp_forward_port: int = None):
         self.rns_port = rns_port
         self.cmd_port = cmd_port
+        self.udp_listen_port = udp_listen_port
+        self.udp_forward_port = udp_forward_port
         self.verbose = verbose
         self.running = True
         self.destinations = {}  # hash -> (identity, destination)
@@ -119,6 +122,9 @@ class TestDaemon:
             print(f"Config dir: {self.config_dir}")
             print(f"RNS port: {self.rns_port}")
             print(f"CMD port: {self.cmd_port}")
+            if self.udp_listen_port:
+                print(f"UDP listen port: {self.udp_listen_port}")
+                print(f"UDP forward port: {self.udp_forward_port}")
 
         # Initialize Reticulum in standalone mode
         loglevel = RNS.LOG_DEBUG if self.verbose else RNS.LOG_WARNING
@@ -148,6 +154,17 @@ class TestDaemon:
     listen_port = {self.rns_port}
     mode = gateway
 """
+        if self.udp_listen_port and self.udp_forward_port:
+            config += f"""
+  [[Test UDP Interface]]
+    type = UDPInterface
+    enabled = yes
+    listen_ip = 127.0.0.1
+    listen_port = {self.udp_listen_port}
+    forward_ip = 127.0.0.1
+    forward_port = {self.udp_forward_port}
+"""
+
         config_path = os.path.join(self.config_dir, "config")
         with open(config_path, 'w') as f:
             f.write(config)
@@ -1138,6 +1155,10 @@ def main():
                         help="Port for Reticulum TCP interface")
     parser.add_argument("--cmd-port", type=int, required=True,
                         help="Port for JSON-RPC command interface")
+    parser.add_argument("--udp-listen-port", type=int, default=None,
+                        help="Port for UDP interface (listen)")
+    parser.add_argument("--udp-forward-port", type=int, default=None,
+                        help="Port for UDP interface (forward)")
     parser.add_argument("-v", "--verbose", action="store_true",
                         help="Enable verbose output")
 
@@ -1146,7 +1167,9 @@ def main():
     daemon = TestDaemon(
         rns_port=args.rns_port,
         cmd_port=args.cmd_port,
-        verbose=args.verbose
+        verbose=args.verbose,
+        udp_listen_port=args.udp_listen_port,
+        udp_forward_port=args.udp_forward_port,
     )
     daemon.run()
 

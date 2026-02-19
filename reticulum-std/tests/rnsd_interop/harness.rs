@@ -127,6 +127,10 @@ pub struct TestDaemon {
     process: Child,
     rns_port: u16,
     cmd_port: u16,
+    /// UDP listen port (None if daemon has no UDP interface)
+    udp_listen_port: Option<u16>,
+    /// UDP forward port (None if daemon has no UDP interface)
+    udp_forward_port: Option<u16>,
 }
 
 impl TestDaemon {
@@ -233,6 +237,8 @@ impl TestDaemon {
             process,
             rns_port,
             cmd_port,
+            udp_listen_port: None,
+            udp_forward_port: None,
         };
 
         // Ping to verify daemon is responsive
@@ -240,6 +246,102 @@ impl TestDaemon {
             Ok(_) => Ok(daemon),
             Err(e) => {
                 // Daemon didn't respond, clean up
+                drop(daemon);
+                Err(e)
+            }
+        }
+    }
+
+    /// Start a daemon with a UDP interface in addition to TCP.
+    ///
+    /// The daemon binds its UDP interface on `udp_listen_port` and forwards
+    /// outgoing UDP packets to `udp_forward_port`. The Rust test should bind
+    /// its UDP interface on `udp_forward_port` and forward to `udp_listen_port`.
+    pub async fn start_with_udp() -> Result<Self, HarnessError> {
+        ensure_reticulum_submodule()?;
+
+        let mut last_error = HarnessError::StartupTimeout;
+
+        for attempt in 0..Self::MAX_STARTUP_RETRIES {
+            let (rns_port, cmd_port, udp_listen_port, udp_forward_port) =
+                find_four_available_ports()?;
+
+            match Self::start_with_udp_ports(rns_port, cmd_port, udp_listen_port, udp_forward_port)
+                .await
+            {
+                Ok(daemon) => return Ok(daemon),
+                Err(HarnessError::StartupTimeout) => {
+                    if attempt + 1 < Self::MAX_STARTUP_RETRIES {
+                        tokio::time::sleep(Duration::from_millis(100)).await;
+                    }
+                    last_error = HarnessError::StartupTimeout;
+                }
+                Err(e) => return Err(e),
+            }
+        }
+
+        Err(last_error)
+    }
+
+    /// Start a daemon with specific TCP and UDP ports.
+    async fn start_with_udp_ports(
+        rns_port: u16,
+        cmd_port: u16,
+        udp_listen_port: u16,
+        udp_forward_port: u16,
+    ) -> Result<Self, HarnessError> {
+        let mut process = Command::new("python3")
+            .args([
+                Self::DAEMON_SCRIPT,
+                "--rns-port",
+                &rns_port.to_string(),
+                "--cmd-port",
+                &cmd_port.to_string(),
+                "--udp-listen-port",
+                &udp_listen_port.to_string(),
+                "--udp-forward-port",
+                &udp_forward_port.to_string(),
+            ])
+            .stdout(Stdio::piped())
+            .stderr(Stdio::inherit())
+            .spawn()
+            .map_err(HarnessError::SpawnFailed)?;
+
+        let stdout = process.stdout.take().expect("stdout should be captured");
+        let reader = BufReader::new(stdout);
+
+        let ready_result = tokio::task::spawn_blocking(move || {
+            for line in reader.lines() {
+                match line {
+                    Ok(line) if line.starts_with("READY ") => {
+                        return Ok(line);
+                    }
+                    Ok(_) => continue,
+                    Err(e) => return Err(HarnessError::ParseError(e.to_string())),
+                }
+            }
+            Err(HarnessError::StartupTimeout)
+        });
+
+        let _ready_line = timeout(Self::STARTUP_TIMEOUT, ready_result)
+            .await
+            .map_err(|_| HarnessError::StartupTimeout)?
+            .map_err(|_| HarnessError::StartupTimeout)??;
+
+        // Wait briefly for interfaces to fully initialize
+        tokio::time::sleep(Duration::from_millis(200)).await;
+
+        let daemon = Self {
+            process,
+            rns_port,
+            cmd_port,
+            udp_listen_port: Some(udp_listen_port),
+            udp_forward_port: Some(udp_forward_port),
+        };
+
+        match daemon.ping().await {
+            Ok(_) => Ok(daemon),
+            Err(e) => {
                 drop(daemon);
                 Err(e)
             }
@@ -288,6 +390,19 @@ impl TestDaemon {
     /// Get the address for the JSON-RPC command interface.
     pub fn cmd_addr(&self) -> SocketAddr {
         SocketAddr::from(([127, 0, 0, 1], self.cmd_port))
+    }
+
+    /// Get the daemon's UDP listen address (where it receives datagrams).
+    pub fn udp_listen_addr(&self) -> Option<SocketAddr> {
+        self.udp_listen_port
+            .map(|p| SocketAddr::from(([127, 0, 0, 1], p)))
+    }
+
+    /// Get the daemon's UDP forward address (where it sends datagrams).
+    /// This is where the Rust side should listen.
+    pub fn udp_forward_addr(&self) -> Option<SocketAddr> {
+        self.udp_forward_port
+            .map(|p| SocketAddr::from(([127, 0, 0, 1], p)))
     }
 
     /// Get the RNS port number.
@@ -1122,6 +1237,36 @@ fn find_two_available_ports() -> Result<(u16, u16), HarnessError> {
     drop(listener2);
 
     Ok((port1, port2))
+}
+
+/// Find four distinct available ports (TCP rns, TCP cmd, UDP listen, UDP forward).
+///
+/// UDP ports are allocated via UDP bind to avoid collisions with TCP-only allocation.
+fn find_four_available_ports() -> Result<(u16, u16, u16, u16), HarnessError> {
+    let listener1 = TcpListener::bind("127.0.0.1:0").map_err(HarnessError::SpawnFailed)?;
+    let port1 = listener1
+        .local_addr()
+        .map_err(HarnessError::SpawnFailed)?
+        .port();
+
+    let listener2 = TcpListener::bind("127.0.0.1:0").map_err(HarnessError::SpawnFailed)?;
+    let port2 = listener2
+        .local_addr()
+        .map_err(HarnessError::SpawnFailed)?
+        .port();
+
+    let udp3 = std::net::UdpSocket::bind("127.0.0.1:0").map_err(HarnessError::SpawnFailed)?;
+    let port3 = udp3.local_addr().map_err(HarnessError::SpawnFailed)?.port();
+
+    let udp4 = std::net::UdpSocket::bind("127.0.0.1:0").map_err(HarnessError::SpawnFailed)?;
+    let port4 = udp4.local_addr().map_err(HarnessError::SpawnFailed)?.port();
+
+    drop(listener1);
+    drop(listener2);
+    drop(udp3);
+    drop(udp4);
+
+    Ok((port1, port2, port3, port4))
 }
 
 // =========================================================================
