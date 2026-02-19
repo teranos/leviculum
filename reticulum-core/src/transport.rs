@@ -41,11 +41,11 @@ use alloc::vec::Vec;
 
 use crate::constants::{
     ANNOUNCE_RATE_GRACE, ANNOUNCE_RATE_LIMIT_MS, ANNOUNCE_RATE_PENALTY_MS,
-    DEFAULT_ANNOUNCE_CAP_PERCENT, LINK_TIMEOUT_MS, LOCAL_REBROADCASTS_MAX, MAX_PATH_REQUEST_TAGS,
-    MAX_QUEUED_ANNOUNCES_PER_INTERFACE, MAX_RANDOM_BLOBS, MS_PER_SECOND, MTU,
-    PACKET_CACHE_EXPIRY_MS, PATHFINDER_EXPIRY_SECS, PATHFINDER_G_MS, PATHFINDER_MAX_HOPS,
-    PATHFINDER_RETRIES, PATH_REQUEST_GRACE_MS, PATH_REQUEST_MIN_INTERVAL_MS,
-    REVERSE_TABLE_EXPIRY_MS, TRUNCATED_HASHBYTES,
+    DEFAULT_ANNOUNCE_CAP_PERCENT, HASHLIST_MAXSIZE, LINK_TIMEOUT_MS, LOCAL_REBROADCASTS_MAX,
+    MAX_PATH_REQUEST_TAGS, MAX_QUEUED_ANNOUNCES_PER_INTERFACE, MAX_RANDOM_BLOBS, MS_PER_SECOND,
+    MTU, PATHFINDER_EXPIRY_SECS, PATHFINDER_G_MS, PATHFINDER_MAX_HOPS, PATHFINDER_RETRIES,
+    PATH_REQUEST_GRACE_MS, PATH_REQUEST_MIN_INTERVAL_MS, REVERSE_TABLE_EXPIRY_MS,
+    TRUNCATED_HASHBYTES,
 };
 
 use crate::announce::{emission_from_random_hash, max_emission_from_blobs, ReceivedAnnounce};
@@ -360,8 +360,6 @@ pub struct TransportConfig {
     pub announce_rate_grace: u8,
     /// Additional blocking penalty (ms) added to the blocking window. Default 0.
     pub announce_rate_penalty_ms: u64,
-    /// Packet cache expiry (ms) - for deduplication
-    pub packet_cache_expiry_ms: u64,
 }
 
 impl Default for TransportConfig {
@@ -374,7 +372,6 @@ impl Default for TransportConfig {
             announce_rate_target_ms: None,
             announce_rate_grace: ANNOUNCE_RATE_GRACE,
             announce_rate_penalty_ms: ANNOUNCE_RATE_PENALTY_MS,
-            packet_cache_expiry_ms: PACKET_CACHE_EXPIRY_MS,
         }
     }
 }
@@ -566,9 +563,15 @@ pub struct Transport<C: Clock, S: Storage> {
     /// Registered destinations we accept packets for
     local_destinations: BTreeSet<[u8; TRUNCATED_HASHBYTES]>,
 
-    /// Packet deduplication cache: full 32-byte SHA-256 hash -> timestamp_ms
-    /// (matches Python Transport.py:1227 which checks full packet_hash)
-    packet_cache: BTreeMap<[u8; 32], u64>,
+    /// Packet deduplication cache — current generation (Python Transport.packet_hashlist)
+    ///
+    /// Uses a two-set rotation strategy matching Python Transport.py:582-585.
+    /// When the current set exceeds `HASHLIST_MAXSIZE / 2`, it rotates into
+    /// `packet_cache_prev` and a fresh empty set takes its place. Dedup checks
+    /// both sets. Removal: entries are forgotten when their generation rotates out.
+    packet_cache: BTreeSet<[u8; 32]>,
+    /// Packet deduplication cache — previous generation (Python Transport.packet_hashlist_prev)
+    packet_cache_prev: BTreeSet<[u8; 32]>,
 
     /// Receipts for sent packets awaiting proof: truncated_hash -> receipt
     receipts: BTreeMap<[u8; TRUNCATED_HASHBYTES], PacketReceipt>,
@@ -621,7 +624,8 @@ impl<C: Clock, S: Storage> Transport<C, S> {
             link_table: BTreeMap::new(),
             reverse_table: BTreeMap::new(),
             local_destinations: BTreeSet::new(),
-            packet_cache: BTreeMap::new(),
+            packet_cache: BTreeSet::new(),
+            packet_cache_prev: BTreeSet::new(),
             receipts: BTreeMap::new(),
             events: Vec::new(),
             stats: TransportStats::default(),
@@ -959,10 +963,11 @@ impl<C: Clock, S: Storage> Transport<C, S> {
         let full_packet_hash = packet_hash(raw);
         let mut truncated_hash = [0u8; TRUNCATED_HASHBYTES];
         truncated_hash.copy_from_slice(&full_packet_hash[..TRUNCATED_HASHBYTES]);
-        let now = self.clock.now_ms();
 
-        // Check duplicate (full 32-byte hash)
-        if self.packet_cache.contains_key(&full_packet_hash) {
+        // Check duplicate (full 32-byte hash, checks both current and prev sets)
+        if self.packet_cache.contains(&full_packet_hash)
+            || self.packet_cache_prev.contains(&full_packet_hash)
+        {
             self.stats.packets_dropped += 1;
             return Ok(());
         }
@@ -978,7 +983,7 @@ impl<C: Clock, S: Storage> Transport<C, S> {
                 && packet.context == PacketContext::Lrproof);
 
         if !defer_cache_insert {
-            self.packet_cache.insert(full_packet_hash, now);
+            self.packet_cache.insert(full_packet_hash);
         }
 
         // Route to handler based on packet type
@@ -1017,8 +1022,7 @@ impl<C: Clock, S: Storage> Transport<C, S> {
         // are dropped by the dedup check in process_incoming().
         // This matches Python Reticulum's Transport.py:1168-1169.
         let cache_hash = packet_hash(data);
-        let now = self.clock.now_ms();
-        self.packet_cache.insert(cache_hash, now);
+        self.packet_cache.insert(cache_hash);
 
         self.stats.packets_sent += 1;
         self.pending_actions.push(Action::Broadcast {
@@ -1086,7 +1090,7 @@ impl<C: Clock, S: Storage> Transport<C, S> {
     pub fn poll(&mut self) {
         let now = self.clock.now_ms();
         self.expire_paths(now);
-        self.clean_packet_cache(now);
+        self.rotate_packet_cache();
         self.clean_reverse_table(now);
         self.check_receipt_timeouts(now);
         self.check_announce_rebroadcasts(now);
@@ -1167,7 +1171,7 @@ impl<C: Clock, S: Storage> Transport<C, S> {
             }
         }
 
-        // Packet cache cleanup and reverse table cleanup are background —
+        // Packet cache rotation and reverse table cleanup are background —
         // use a fixed interval rather than scanning every entry
         if !self.packet_cache.is_empty() || !self.reverse_table.is_empty() {
             let cleanup_interval = 60_000; // Check every 60s
@@ -1199,22 +1203,27 @@ impl<C: Clock, S: Storage> Transport<C, S> {
         &self.clock
     }
 
-    /// Access the packet dedup cache for persistence (driver use).
+    /// Iterate over all packet hashes in the dedup cache (both sets) for persistence.
     ///
-    /// Returns (hash, timestamp_ms) pairs. The driver saves these on shutdown
-    /// and loads them on startup to prevent reprocessing packets seen before
-    /// a restart.
-    pub fn packet_cache(&self) -> &BTreeMap<[u8; 32], u64> {
-        &self.packet_cache
+    /// The driver saves these on shutdown and loads them on startup to prevent
+    /// reprocessing packets seen before a restart.
+    pub fn packet_cache_iter(&self) -> impl Iterator<Item = &[u8; 32]> {
+        self.packet_cache
+            .iter()
+            .chain(self.packet_cache_prev.iter())
+    }
+
+    /// Number of hashes in the dedup cache (both sets).
+    pub fn packet_cache_len(&self) -> usize {
+        self.packet_cache.len() + self.packet_cache_prev.len()
     }
 
     /// Bulk-insert entries into the packet dedup cache (for loading persisted state).
     ///
-    /// Entries loaded from disk are inserted with their original timestamps,
-    /// so they'll be cleaned up by `clean_packet_cache()` once they expire.
-    pub fn load_packet_cache(&mut self, entries: impl Iterator<Item = ([u8; 32], u64)>) {
-        for (hash, ts) in entries {
-            self.packet_cache.insert(hash, ts);
+    /// Entries are inserted into the current set.
+    pub fn load_packet_cache(&mut self, entries: impl Iterator<Item = [u8; 32]>) {
+        for hash in entries {
+            self.packet_cache.insert(hash);
         }
     }
 
@@ -1682,7 +1691,7 @@ impl<C: Clock, S: Storage> Transport<C, S> {
             // Deferred cache insert for LRPROOF local delivery
             // (Python Transport.py:2072). Non-LRPROOF proofs for registered
             // destinations were already cached in process_incoming().
-            self.packet_cache.insert(cache_hash, self.clock.now_ms());
+            self.packet_cache.insert(cache_hash);
             self.events.push(TransportEvent::PacketReceived {
                 destination_hash: dest_hash,
                 packet: Box::new(packet),
@@ -1799,7 +1808,7 @@ impl<C: Clock, S: Storage> Transport<C, S> {
                 // LRPROOF hashes are intentionally NOT cached during link-table
                 // forwarding (Python Transport.py:2016-2039).
                 if packet.context != PacketContext::Lrproof {
-                    self.packet_cache.insert(cache_hash, self.clock.now_ms());
+                    self.packet_cache.insert(cache_hash);
                 }
 
                 // Forward proof via link table
@@ -1839,7 +1848,7 @@ impl<C: Clock, S: Storage> Transport<C, S> {
         // which distinguishes LRPROOF (link establishment) from data proofs
         // (PROOF_DATA_SIZE + context=None) and validates each cryptographically.
         if packet.flags.dest_type == DestinationType::Link {
-            self.packet_cache.insert(cache_hash, self.clock.now_ms());
+            self.packet_cache.insert(cache_hash);
             self.events.push(TransportEvent::PacketReceived {
                 destination_hash: dest_hash,
                 packet: Box::new(packet),
@@ -1928,7 +1937,7 @@ impl<C: Clock, S: Storage> Transport<C, S> {
                     // Deferred cache insert: hash was skipped in process_incoming()
                     // because dest_hash is in link_table. Insert now that we've
                     // validated direction and will forward (Python Transport.py:1543).
-                    self.packet_cache.insert(full_packet_hash, now);
+                    self.packet_cache.insert(full_packet_hash);
 
                     // Forward data via link table
                     let mut forwarded = packet;
@@ -1951,8 +1960,7 @@ impl<C: Clock, S: Storage> Transport<C, S> {
         // On transport nodes, relayed links are handled via link_table above;
         // only packets for our own local links reach this point.
         if packet.flags.dest_type == DestinationType::Link {
-            self.packet_cache
-                .insert(full_packet_hash, self.clock.now_ms());
+            self.packet_cache.insert(full_packet_hash);
             self.events.push(TransportEvent::PacketReceived {
                 destination_hash: dest_hash,
                 packet: Box::new(packet),
@@ -2315,17 +2323,14 @@ impl<C: Clock, S: Storage> Transport<C, S> {
         }
     }
 
-    fn clean_packet_cache(&mut self, now: u64) {
-        let expiry = self.config.packet_cache_expiry_ms;
-        let expired: Vec<[u8; 32]> = self
-            .packet_cache
-            .iter()
-            .filter(|(_, &ts)| now.saturating_sub(ts) > expiry)
-            .map(|(k, _)| *k)
-            .collect();
-
-        for hash in expired {
-            self.packet_cache.remove(&hash);
+    /// Rotate the packet dedup cache when the current set exceeds half capacity.
+    ///
+    /// Matches Python Transport.py:582-585: when the current set exceeds
+    /// HASHLIST_MAXSIZE / 2, the current set rotates into prev and a new
+    /// empty set takes its place.
+    fn rotate_packet_cache(&mut self) {
+        if self.packet_cache.len() > HASHLIST_MAXSIZE / 2 {
+            self.packet_cache_prev = core::mem::take(&mut self.packet_cache);
         }
     }
 
@@ -3409,7 +3414,14 @@ mod tests {
         }
 
         #[test]
-        fn test_packet_cache_expiry() {
+        fn test_packet_cache_rotation() {
+            // Verify the two-set rotation strategy (Python Transport.py:582-585):
+            // - Hash in current set → deduplicated
+            // - After rotation: hash moves to prev → still deduplicated
+            // - After second rotation: hash is gone → packet accepted
+            //
+            // We test the rotation mechanism directly (calling rotate_packet_cache)
+            // rather than filling 500K entries, which would be too slow for a unit test.
             let mut transport = test_transport();
             transport.register_interface(Box::new(MockInterface::new("test", 1)));
 
@@ -3445,19 +3457,68 @@ mod tests {
             assert_eq!(transport.pending_events(), 2);
             transport.drain_events();
 
-            // Second: deduplicated
+            // Second: deduplicated (in current set)
             transport.process_incoming(0, &buf[..len]).unwrap();
             assert_eq!(transport.pending_events(), 0);
 
-            // Advance past cache expiry and poll
-            transport
-                .clock
-                .advance(transport.config.packet_cache_expiry_ms + 1);
-            transport.poll();
+            // Simulate rotation: move current → prev, empty current
+            transport.packet_cache_prev = core::mem::take(&mut transport.packet_cache);
 
-            // Now the packet should be accepted again (PacketReceived + ProofRequested)
+            // After first rotation, hash is in prev set → still deduplicated
+            transport.process_incoming(0, &buf[..len]).unwrap();
+            assert_eq!(transport.pending_events(), 0);
+
+            // Simulate second rotation: prev is replaced by current (empty)
+            transport.packet_cache_prev = core::mem::take(&mut transport.packet_cache);
+
+            // After second rotation, hash is gone → packet accepted
             transport.process_incoming(0, &buf[..len]).unwrap();
             assert_eq!(transport.pending_events(), 2);
+        }
+
+        #[test]
+        fn test_packet_cache_rotation_threshold() {
+            // Verify the rotation mechanism at a smaller scale.
+            // The actual threshold is HASHLIST_MAXSIZE/2 (500K), but we test
+            // the two-set swap logic with a few entries.
+            let mut transport = test_transport();
+
+            // Insert 3 hashes
+            transport.packet_cache.insert([0xAA; 32]);
+            transport.packet_cache.insert([0xBB; 32]);
+            transport.packet_cache.insert([0xCC; 32]);
+            assert_eq!(transport.packet_cache.len(), 3);
+            assert!(transport.packet_cache_prev.is_empty());
+
+            // Simulate rotation (normally triggered by size threshold)
+            transport.packet_cache_prev = core::mem::take(&mut transport.packet_cache);
+            assert!(transport.packet_cache.is_empty());
+            assert_eq!(transport.packet_cache_prev.len(), 3);
+
+            // Both sets are checked during dedup
+            assert!(transport.packet_cache_prev.contains(&[0xAA; 32]));
+
+            // After second rotation, prev entries are gone
+            transport.packet_cache.insert([0xDD; 32]);
+            transport.packet_cache_prev = core::mem::take(&mut transport.packet_cache);
+            assert!(!transport.packet_cache_prev.contains(&[0xAA; 32]));
+            assert!(transport.packet_cache_prev.contains(&[0xDD; 32]));
+        }
+
+        #[test]
+        fn test_rotate_packet_cache_fires_at_threshold() {
+            // Verify rotate_packet_cache only fires when len > HASHLIST_MAXSIZE/2
+            let mut transport = test_transport();
+
+            // Below threshold: no rotation
+            transport.packet_cache.insert([0xAA; 32]);
+            transport.rotate_packet_cache();
+            assert_eq!(
+                transport.packet_cache.len(),
+                1,
+                "should not rotate below threshold"
+            );
+            assert!(transport.packet_cache_prev.is_empty());
         }
 
         #[test]
@@ -3500,20 +3561,14 @@ mod tests {
             // Process the packet
             transport.process_incoming(0, &buf[..len]).unwrap();
 
-            // Verify packet_cache keys are full 32-byte hashes
+            // Verify packet_cache contains the full 32-byte hash
             assert_eq!(transport.packet_cache.len(), 1);
-            let cached_key = transport.packet_cache.keys().next().unwrap();
-            assert_eq!(
-                cached_key.len(),
-                32,
-                "packet_cache keys must be full 32-byte SHA-256 hashes"
-            );
 
-            // Verify the cached key matches packet_hash() output
+            // Verify the cached hash matches packet_hash() output
             let expected_hash = packet_hash(&buf[..len]);
-            assert_eq!(
-                cached_key, &expected_hash,
-                "packet_cache key must match packet_hash() (full SHA-256)"
+            assert!(
+                transport.packet_cache.contains(&expected_hash),
+                "packet_cache must contain the full SHA-256 hash from packet_hash()"
             );
         }
 

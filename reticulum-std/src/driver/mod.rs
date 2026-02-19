@@ -342,9 +342,10 @@ impl ReticulumNode {
         // Save packet hashlist
         {
             let core = self.inner.lock().unwrap();
-            let cache = core.packet_cache();
-            if !cache.is_empty() {
-                if let Err(e) = packet_hashlist::save_packet_hashlist(&storage, cache) {
+            if core.packet_cache_len() > 0 {
+                if let Err(e) =
+                    packet_hashlist::save_packet_hashlist(&storage, core.packet_cache_iter())
+                {
                     tracing::warn!("Failed to save packet hashlist: {e}");
                 }
             }

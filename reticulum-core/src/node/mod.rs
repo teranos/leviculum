@@ -50,7 +50,7 @@ pub use builder::NodeCoreBuilder;
 pub use event::{DeliveryError, NodeEvent};
 pub use send::SendError;
 
-use alloc::collections::{BTreeMap, VecDeque};
+use alloc::collections::BTreeMap;
 use alloc::vec::Vec;
 
 use crate::announce::AnnounceError;
@@ -110,39 +110,24 @@ impl LinkStats {
     }
 }
 
-/// Bounded identity cache for remote identities learned from announces.
+/// Unbounded identity cache for remote identities learned from announces.
 ///
-/// Keyed by destination hash. FIFO eviction when capacity is exceeded.
-/// Removal: entries are evicted oldest-first when capacity is exceeded.
+/// Keyed by destination hash. No eviction — matches Python Identity.py
+/// which keeps all known_destinations in RAM with no size limit.
+/// Removal: entries are never removed (matching Python behavior).
 struct KnownIdentities {
     map: BTreeMap<DestinationHash, Identity>,
-    order: VecDeque<DestinationHash>,
-    capacity: usize,
 }
 
 impl KnownIdentities {
-    fn new(capacity: usize) -> Self {
+    fn new() -> Self {
         Self {
             map: BTreeMap::new(),
-            order: VecDeque::new(),
-            capacity,
         }
     }
 
     fn insert(&mut self, dest_hash: DestinationHash, identity: Identity) {
-        if let Some(existing) = self.map.get_mut(&dest_hash) {
-            // Update existing — leave FIFO order unchanged
-            *existing = identity;
-            return;
-        }
-        // Evict oldest if at capacity
-        if self.map.len() >= self.capacity {
-            if let Some(oldest) = self.order.pop_front() {
-                self.map.remove(&oldest);
-            }
-        }
         self.map.insert(dest_hash, identity);
-        self.order.push_back(dest_hash);
     }
 
     fn get(&self, dest_hash: &DestinationHash) -> Option<&Identity> {
@@ -206,7 +191,6 @@ impl<R: CryptoRngCore, C: Clock, S: Storage> NodeCore<R, C, S> {
         identity: Identity,
         config: TransportConfig,
         proof_strategy: ProofStrategy,
-        max_known_identities: usize,
         rng: R,
         clock: C,
         storage: S,
@@ -226,7 +210,7 @@ impl<R: CryptoRngCore, C: Clock, S: Storage> NodeCore<R, C, S> {
             rx_ring_full_count: 0,
             rx_ring_full_last_log_ms: 0,
             destinations: BTreeMap::new(),
-            known_identities: KnownIdentities::new(max_known_identities),
+            known_identities: KnownIdentities::new(),
             default_proof_strategy: proof_strategy,
             events: Vec::new(),
         }
@@ -600,13 +584,18 @@ impl<R: CryptoRngCore, C: Clock, S: Storage> NodeCore<R, C, S> {
         self.transport.stats().clone()
     }
 
-    /// Access the packet dedup cache for persistence.
-    pub fn packet_cache(&self) -> &BTreeMap<[u8; 32], u64> {
-        self.transport.packet_cache()
+    /// Iterate over all hashes in the packet dedup cache (both sets) for persistence.
+    pub fn packet_cache_iter(&self) -> impl Iterator<Item = &[u8; 32]> {
+        self.transport.packet_cache_iter()
+    }
+
+    /// Number of hashes in the packet dedup cache (both sets).
+    pub fn packet_cache_len(&self) -> usize {
+        self.transport.packet_cache_len()
     }
 
     /// Bulk-load entries into the packet dedup cache (for loading persisted state).
-    pub fn load_packet_cache(&mut self, entries: impl Iterator<Item = ([u8; 32], u64)>) {
+    pub fn load_packet_cache(&mut self, entries: impl Iterator<Item = [u8; 32]>) {
         self.transport.load_packet_cache(entries);
     }
 
@@ -3664,7 +3653,7 @@ mod tests {
 
     #[test]
     fn test_known_identities_insert_and_get() {
-        let mut ki = super::KnownIdentities::new(4);
+        let mut ki = super::KnownIdentities::new();
         let id = Identity::generate(&mut OsRng);
         let hash = DestinationHash::new([0x01; 16]);
         ki.insert(hash, id);
@@ -3675,8 +3664,9 @@ mod tests {
     }
 
     #[test]
-    fn test_known_identities_eviction() {
-        let mut ki = super::KnownIdentities::new(2);
+    fn test_known_identities_no_eviction() {
+        // Python has no limit — verify all entries are kept
+        let mut ki = super::KnownIdentities::new();
 
         let h1 = DestinationHash::new([0x01; 16]);
         let h2 = DestinationHash::new([0x02; 16]);
@@ -3684,36 +3674,27 @@ mod tests {
 
         ki.insert(h1, Identity::generate(&mut OsRng));
         ki.insert(h2, Identity::generate(&mut OsRng));
-        assert_eq!(ki.len(), 2);
-
-        // Inserting a third evicts the oldest (h1)
         ki.insert(h3, Identity::generate(&mut OsRng));
-        assert_eq!(ki.len(), 2);
-        assert!(ki.get(&h1).is_none(), "h1 should have been evicted");
+        assert_eq!(ki.len(), 3);
+        assert!(ki.get(&h1).is_some());
         assert!(ki.get(&h2).is_some());
         assert!(ki.get(&h3).is_some());
     }
 
     #[test]
-    fn test_known_identities_update_preserves_order() {
-        let mut ki = super::KnownIdentities::new(2);
+    fn test_known_identities_update_replaces() {
+        let mut ki = super::KnownIdentities::new();
 
         let h1 = DestinationHash::new([0x01; 16]);
-        let h2 = DestinationHash::new([0x02; 16]);
-        let h3 = DestinationHash::new([0x03; 16]);
 
-        ki.insert(h1, Identity::generate(&mut OsRng));
-        ki.insert(h2, Identity::generate(&mut OsRng));
+        let id1 = Identity::generate(&mut OsRng);
+        let id2 = Identity::generate(&mut OsRng);
+        let id2_hash = *id2.hash();
 
-        // Updating h1 should NOT change eviction order
-        ki.insert(h1, Identity::generate(&mut OsRng));
-        assert_eq!(ki.len(), 2);
-
-        // Inserting h3 should evict h1 (still oldest in FIFO order)
-        ki.insert(h3, Identity::generate(&mut OsRng));
-        assert!(ki.get(&h1).is_none(), "h1 should have been evicted");
-        assert!(ki.get(&h2).is_some());
-        assert!(ki.get(&h3).is_some());
+        ki.insert(h1, id1);
+        ki.insert(h1, id2);
+        assert_eq!(ki.len(), 1);
+        assert_eq!(ki.get(&h1).unwrap().hash(), &id2_hash);
     }
 
     #[test]
@@ -4009,15 +3990,13 @@ mod tests {
     }
 
     #[test]
-    fn test_known_identities_eviction_fifo_via_node() {
-        // Build node with small capacity, verify send fails after eviction
+    fn test_known_identities_unbounded_growth() {
+        // Python has no limit on known_destinations — verify we can store many
         let clock = MockClock::new(TEST_TIME_MS);
-        let mut node = NodeCoreBuilder::new()
-            .max_known_identities(4)
-            .build(OsRng, clock, NoStorage);
+        let mut node = NodeCoreBuilder::new().build(OsRng, clock, NoStorage);
 
         let mut hashes = Vec::new();
-        for i in 0..5u8 {
+        for i in 0..100u8 {
             let id = Identity::generate(&mut OsRng);
             let pub_bytes = id.public_key_bytes();
             let dest = Destination::new(
@@ -4025,7 +4004,7 @@ mod tests {
                 Direction::In,
                 DestinationType::Single,
                 "testapp",
-                &[&alloc::format!("evict{}", i)],
+                &[&alloc::format!("dest{}", i)],
             )
             .unwrap();
             let h = *dest.hash();
@@ -4034,20 +4013,14 @@ mod tests {
             hashes.push(h);
         }
 
-        // Oldest (index 0) should be evicted
-        assert!(
-            node.known_identities.get(&hashes[0]).is_none(),
-            "first identity should be evicted after exceeding capacity"
-        );
-        // Newest (index 4) should still be present
-        assert!(
-            node.known_identities.get(&hashes[4]).is_some(),
-            "newest identity should still be present"
-        );
-
-        // send to evicted hash fails
-        let result = node.send_single_packet(&hashes[0], b"to evicted");
-        assert_eq!(result.unwrap_err(), send::SendError::EncryptionFailed);
+        // All entries should be present — no eviction
+        for h in &hashes {
+            assert!(
+                node.known_identities.get(h).is_some(),
+                "all identities should be retained (no eviction)"
+            );
+        }
+        assert_eq!(node.known_identities.len(), 100);
     }
 
     #[test]

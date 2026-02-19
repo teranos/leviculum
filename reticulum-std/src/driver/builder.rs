@@ -35,10 +35,14 @@ use super::ReticulumNode;
 /// ```
 pub struct ReticulumNodeBuilder {
     core_builder: NodeCoreBuilder,
+    /// Pre-loaded config (takes priority over config_path)
+    loaded_config: Option<Config>,
     config_path: Option<PathBuf>,
     storage_path: Option<PathBuf>,
     interfaces: Vec<InterfaceConfig>,
     corrupt_every: Option<u64>,
+    /// Explicit enable_transport override (takes priority over config value)
+    enable_transport_explicit: Option<bool>,
 }
 
 impl Default for ReticulumNodeBuilder {
@@ -52,10 +56,12 @@ impl ReticulumNodeBuilder {
     pub fn new() -> Self {
         Self {
             core_builder: NodeCoreBuilder::new(),
+            loaded_config: None,
             config_path: None,
             storage_path: None,
             interfaces: Vec::new(),
             corrupt_every: None,
+            enable_transport_explicit: None,
         }
     }
 
@@ -73,11 +79,21 @@ impl ReticulumNodeBuilder {
         self
     }
 
+    /// Use a pre-loaded configuration
+    ///
+    /// The builder will use this config for storage path, interface
+    /// configurations, and transport settings. Takes priority over
+    /// `config_file()`.
+    pub fn config(mut self, config: Config) -> Self {
+        self.loaded_config = Some(config);
+        self
+    }
+
     /// Load configuration from a file
     ///
     /// If set, the builder will attempt to load configuration from this path.
     /// Interface configurations from the file will be merged with any
-    /// manually added interfaces.
+    /// manually added interfaces. Ignored if `config()` was called.
     pub fn config_file(mut self, path: PathBuf) -> Self {
         self.config_path = Some(path);
         self
@@ -161,11 +177,12 @@ impl ReticulumNodeBuilder {
         self
     }
 
-    /// Enable transport mode
+    /// Enable or disable transport mode
     ///
     /// When enabled, this node will forward packets between interfaces.
+    /// If not called, the value from the loaded config is used (default: true).
     pub fn enable_transport(mut self, enabled: bool) -> Self {
-        self.core_builder = self.core_builder.enable_transport(enabled);
+        self.enable_transport_explicit = Some(enabled);
         self
     }
 
@@ -178,21 +195,31 @@ impl ReticulumNodeBuilder {
         self
     }
 
+    /// Resolve config: pre-loaded > loaded from path > default
+    fn resolve_config(&self) -> Result<Config, Error> {
+        if let Some(ref config) = self.loaded_config {
+            return Ok(config.clone());
+        }
+        if let Some(ref path) = self.config_path {
+            if path.exists() {
+                return Config::load(path);
+            }
+        }
+        Ok(Config::default())
+    }
+
     /// Build the ReticulumNode synchronously
     ///
     /// Same as `build()` but does not require an async context.
     /// Useful when constructing a node outside of an async runtime.
     pub fn build_sync(self) -> Result<ReticulumNode, Error> {
-        // Load config if specified
-        let config = if let Some(ref path) = self.config_path {
-            if path.exists() {
-                Config::load(path)?
-            } else {
-                Config::default()
-            }
-        } else {
-            Config::default()
-        };
+        // Resolve config: pre-loaded > loaded from path > default
+        let config = self.resolve_config()?;
+
+        // Apply enable_transport: explicit override > config value
+        let enable_transport = self
+            .enable_transport_explicit
+            .unwrap_or(config.reticulum.enable_transport);
 
         // Determine storage path
         let storage_path = self
@@ -215,6 +242,7 @@ impl ReticulumNodeBuilder {
         } else {
             self.core_builder
         };
+        let core_builder = core_builder.enable_transport(enable_transport);
 
         // Load persistent state before storage is moved into NodeCore
         let known_dests_store = KnownDestinationsStore::load(&storage);
@@ -230,7 +258,7 @@ impl ReticulumNodeBuilder {
 
         // Load packet hashlist for dedup continuity across restarts
         if !hashlist.is_empty() {
-            node_core.load_packet_cache(hashlist.into_iter());
+            node_core.load_packet_cache(hashlist.iter().copied());
         }
 
         Ok(ReticulumNode::new(
@@ -254,63 +282,8 @@ impl ReticulumNodeBuilder {
     /// - Storage initialization fails
     /// - Identity generation fails
     pub async fn build(self) -> Result<ReticulumNode, Error> {
-        // Load config if specified
-        let config = if let Some(ref path) = self.config_path {
-            if path.exists() {
-                Config::load(path)?
-            } else {
-                Config::default()
-            }
-        } else {
-            Config::default()
-        };
-
-        // Determine storage path
-        let storage_path = self
-            .storage_path
-            .or_else(|| config.reticulum.storage_path.clone())
-            .unwrap_or_else(|| Config::default_config_dir().join("storage"));
-
-        // Initialize storage
-        let storage = Storage::new(&storage_path)?;
-        let clock = SystemClock::new();
-
-        // Merge interface configs from file
-        let mut interfaces = config.interfaces.into_values().collect::<Vec<_>>();
-        interfaces.extend(self.interfaces);
-
-        // Load or generate transport identity (unless explicitly set)
-        let core_builder = if self.core_builder.identity_ref().is_none() {
-            let identity = load_or_generate_transport_identity(&storage)?;
-            self.core_builder.identity(identity)
-        } else {
-            self.core_builder
-        };
-
-        // Load persistent state before storage is moved into NodeCore
-        let known_dests_store = KnownDestinationsStore::load(&storage);
-        let hashlist = packet_hashlist::load_packet_hashlist(&storage);
-
-        // Build NodeCore (consumes storage)
-        let mut node_core = core_builder.build(rand_core::OsRng, clock, storage);
-
-        // Populate known identities from the loaded store
-        for (dest_hash, identity) in known_dests_store.identities() {
-            node_core.remember_identity(dest_hash, identity);
-        }
-
-        // Load packet hashlist for dedup continuity across restarts
-        if !hashlist.is_empty() {
-            node_core.load_packet_cache(hashlist.into_iter());
-        }
-
-        Ok(ReticulumNode::new(
-            node_core,
-            interfaces,
-            self.corrupt_every,
-            Some(known_dests_store),
-            Some(storage_path),
-        ))
+        // Async version delegates to build_sync (no async operations needed here)
+        self.build_sync()
     }
 }
 
@@ -383,23 +356,61 @@ mod tests {
     }
 
     #[test]
-    fn test_builder_enable_transport() {
-        let builder = ReticulumNodeBuilder::new().enable_transport(true);
-        assert!(builder.core_builder.is_transport_enabled());
+    fn test_builder_enable_transport_explicit_override() {
+        let builder = ReticulumNodeBuilder::new().enable_transport(false);
+        assert_eq!(builder.enable_transport_explicit, Some(false));
     }
 
-    #[tokio::test]
-    async fn test_builder_enable_transport_wired_to_nodecore() {
+    #[test]
+    fn test_builder_defaults_transport_enabled_from_config() {
+        // No explicit enable_transport call — should use config default (true)
         let node = ReticulumNodeBuilder::new()
-            .enable_transport(true)
-            .build()
-            .await
-            .expect("Failed to build node");
-        let inner = node.inner();
-        let core = inner.lock().unwrap();
+            .build_sync()
+            .expect("build_sync failed");
         assert!(
-            core.transport_config().enable_transport,
-            "enable_transport should be wired through to NodeCore's TransportConfig"
+            node.is_transport_enabled(),
+            "default config should enable transport"
+        );
+    }
+
+    #[test]
+    fn test_builder_explicit_false_overrides_config() {
+        let node = ReticulumNodeBuilder::new()
+            .enable_transport(false)
+            .build_sync()
+            .expect("build_sync failed");
+        assert!(
+            !node.is_transport_enabled(),
+            "explicit false should override config default"
+        );
+    }
+
+    #[test]
+    fn test_builder_config_false_respected() {
+        let mut config = Config::default();
+        config.reticulum.enable_transport = false;
+        let node = ReticulumNodeBuilder::new()
+            .config(config)
+            .build_sync()
+            .expect("build_sync failed");
+        assert!(
+            !node.is_transport_enabled(),
+            "config with enable_transport=false should be respected"
+        );
+    }
+
+    #[test]
+    fn test_builder_explicit_true_overrides_config_false() {
+        let mut config = Config::default();
+        config.reticulum.enable_transport = false;
+        let node = ReticulumNodeBuilder::new()
+            .config(config)
+            .enable_transport(true)
+            .build_sync()
+            .expect("build_sync failed");
+        assert!(
+            node.is_transport_enabled(),
+            "explicit true should override config false"
         );
     }
 

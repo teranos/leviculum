@@ -21,7 +21,10 @@ pub struct Config {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ReticulumConfig {
     /// Enable transport mode (routing for others)
-    #[serde(default)]
+    ///
+    /// Defaults to `true` — daemon use enables transport.
+    /// Python Reticulum defaults to `false` (library use), but lrnsd is a daemon.
+    #[serde(default = "default_true")]
     pub enable_transport: bool,
     /// Use implicit proof for link identification
     #[serde(default = "default_true")]
@@ -44,7 +47,7 @@ fn default_true() -> bool {
 impl Default for ReticulumConfig {
     fn default() -> Self {
         Self {
-            enable_transport: false,
+            enable_transport: true,
             use_implicit_proof: true,
             shared_instance: false,
             remote_management_enabled: false,
@@ -194,8 +197,28 @@ mod tests {
     #[test]
     fn test_default_config() {
         let config = Config::default();
-        assert!(!config.reticulum.enable_transport);
+        assert!(config.reticulum.enable_transport);
         assert!(config.reticulum.use_implicit_proof);
+    }
+
+    #[test]
+    fn test_enable_transport_defaults_true_when_missing_from_toml() {
+        let toml_str = "[reticulum]\nuse_implicit_proof = true\n";
+        let config: Config = toml::from_str(toml_str).unwrap();
+        assert!(
+            config.reticulum.enable_transport,
+            "missing enable_transport should default to true"
+        );
+    }
+
+    #[test]
+    fn test_enable_transport_false_when_explicit_in_toml() {
+        let toml_str = "[reticulum]\nenable_transport = false\n";
+        let config: Config = toml::from_str(toml_str).unwrap();
+        assert!(
+            !config.reticulum.enable_transport,
+            "explicit false should be respected"
+        );
     }
 
     #[test]

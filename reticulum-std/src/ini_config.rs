@@ -348,7 +348,10 @@ mod tests {
     #[test]
     fn test_empty_config() {
         let config = parse_ini("").unwrap();
-        assert!(!config.reticulum.enable_transport);
+        assert!(
+            config.reticulum.enable_transport,
+            "empty config should default enable_transport to true"
+        );
         assert!(config.interfaces.is_empty());
     }
 

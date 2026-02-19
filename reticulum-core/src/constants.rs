@@ -166,8 +166,11 @@ pub const MAX_QUEUED_ANNOUNCES_PER_INTERFACE: usize = 16384;
 /// Default announce bandwidth cap as percentage of link capacity (Python Interface.py:25)
 pub const DEFAULT_ANNOUNCE_CAP_PERCENT: u32 = 2;
 
-/// Packet cache expiry time (milliseconds)
-pub const PACKET_CACHE_EXPIRY_MS: u64 = 60_000;
+/// Maximum packet hashlist size (matches Python Transport.hashlist_maxsize)
+///
+/// When the current dedup set exceeds half this size, it rotates into the
+/// "previous" set and a fresh empty set takes its place. Dedup checks both.
+pub const HASHLIST_MAXSIZE: usize = 1_000_000;
 
 /// Reverse table entry expiry time (milliseconds, 8 minutes per Python reference)
 pub const REVERSE_TABLE_EXPIRY_MS: u64 = 480_000;

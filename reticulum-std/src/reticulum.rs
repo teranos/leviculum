@@ -35,69 +35,12 @@ impl Reticulum {
     }
 
     /// Create a new Reticulum instance with custom configuration
+    ///
+    /// The builder reads enable_transport and interface configurations
+    /// from the provided config automatically.
     pub fn with_config(config: Config) -> Result<Self> {
-        let mut builder = ReticulumNodeBuilder::new();
+        let builder = ReticulumNodeBuilder::new().config(config.clone());
 
-        if config.reticulum.enable_transport {
-            builder = builder.enable_transport(true);
-        }
-
-        // Wire config interfaces to the builder
-        for (name, iface) in &config.interfaces {
-            if !iface.enabled {
-                continue;
-            }
-            match iface.interface_type.as_str() {
-                "TCPClientInterface" => {
-                    let target_host = iface.target_host.as_ref().ok_or_else(|| {
-                        crate::error::Error::Config(format!(
-                            "interface '{}': TCPClientInterface requires target_host",
-                            name
-                        ))
-                    })?;
-                    let target_port = iface.target_port.ok_or_else(|| {
-                        crate::error::Error::Config(format!(
-                            "interface '{}': TCPClientInterface requires target_port",
-                            name
-                        ))
-                    })?;
-                    let addr: std::net::SocketAddr = format!("{}:{}", target_host, target_port)
-                        .parse()
-                        .map_err(|e| {
-                            crate::error::Error::Config(format!(
-                                "interface '{}': invalid address: {}",
-                                name, e
-                            ))
-                        })?;
-                    builder = builder.add_tcp_client(addr);
-                }
-                "TCPServerInterface" => {
-                    let listen_ip = iface.listen_ip.as_deref().unwrap_or("0.0.0.0");
-                    let listen_port = iface.listen_port.ok_or_else(|| {
-                        crate::error::Error::Config(format!(
-                            "interface '{}': TCPServerInterface requires listen_port",
-                            name
-                        ))
-                    })?;
-                    let addr: std::net::SocketAddr = format!("{}:{}", listen_ip, listen_port)
-                        .parse()
-                        .map_err(|e| {
-                            crate::error::Error::Config(format!(
-                                "interface '{}': invalid listen address: {}",
-                                name, e
-                            ))
-                        })?;
-                    builder = builder.add_tcp_server(addr);
-                }
-                other => {
-                    tracing::warn!(name, r#type = other, "unknown interface type, skipping");
-                }
-            }
-        }
-
-        // Two-phase pattern: sync construction here, async start() later.
-        // This allows callers to configure the node synchronously before
-        // entering an async runtime.
         Ok(Self {
             config,
             node: builder.build_sync()?,
@@ -129,7 +72,7 @@ impl Reticulum {
 
     /// Check if transport mode is enabled
     pub fn is_transport_enabled(&self) -> bool {
-        self.config.reticulum.enable_transport
+        self.node.is_transport_enabled()
     }
 
     /// Take the event receiver (can only be called once)
@@ -150,7 +93,7 @@ mod tests {
         // Start the node
         rns.start().await.unwrap();
         assert!(rns.is_running());
-        assert!(!rns.is_transport_enabled());
+        assert!(rns.is_transport_enabled());
 
         // Can take event receiver
         let rx = rns.take_event_receiver();
@@ -159,5 +102,13 @@ mod tests {
 
         rns.stop().await.unwrap();
         assert!(!rns.is_running());
+    }
+
+    #[tokio::test]
+    async fn test_transport_disabled_via_config() {
+        let mut config = Config::default();
+        config.reticulum.enable_transport = false;
+        let rns = Reticulum::with_config(config).unwrap();
+        assert!(!rns.is_transport_enabled());
     }
 }
