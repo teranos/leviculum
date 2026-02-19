@@ -466,7 +466,7 @@ pub struct Transport<C: Clock, S: Storage> {
     path_request_hash: [u8; TRUNCATED_HASHBYTES],
 
     /// Cached raw announce bytes for path responses: dest_hash -> raw bytes
-    announce_cache: BTreeMap<[u8; TRUNCATED_HASHBYTES], Vec<u8>>,
+    // announce_cache: migrated to Storage trait
 
     // announce_rate_table: migrated to Storage trait
     /// Per-interface announce bandwidth caps (Python Interface.py:25-28)
@@ -500,7 +500,7 @@ impl<C: Clock, S: Storage> Transport<C, S> {
             events: Vec::new(),
             stats: TransportStats::default(),
             path_request_hash,
-            announce_cache: BTreeMap::new(),
+            // announce_cache: migrated to Storage
             // announce_rate_table: migrated to Storage
             interface_announce_caps: BTreeMap::new(),
             pending_actions: Vec::new(),
@@ -1301,7 +1301,7 @@ impl<C: Clock, S: Storage> Transport<C, S> {
 
             // Cache raw announce for path responses (when transport is enabled)
             if self.config.enable_transport {
-                self.announce_cache.insert(dest_hash, raw.to_vec());
+                self.storage.set_announce_cache(dest_hash, raw.to_vec());
             }
 
             self.stats.announces_processed += 1;
@@ -1382,21 +1382,24 @@ impl<C: Clock, S: Storage> Transport<C, S> {
 
             // Extract responder's Ed25519 signing key from cached announce
             // (Python Transport.py:2021-2033: peer_identity = Identity.recall(...))
-            let peer_signing_key = self.announce_cache.get(&dest_hash).and_then(|cached_raw| {
-                Packet::unpack(cached_raw).ok().and_then(|p| {
-                    let payload = p.data.as_slice();
-                    if payload.len() >= crate::constants::IDENTITY_KEY_SIZE {
-                        let mut key = [0u8; crate::constants::ED25519_KEY_SIZE];
-                        key.copy_from_slice(
-                            &payload[crate::constants::X25519_KEY_SIZE
-                                ..crate::constants::IDENTITY_KEY_SIZE],
-                        );
-                        Some(key)
-                    } else {
-                        None
-                    }
-                })
-            });
+            let peer_signing_key =
+                self.storage
+                    .get_announce_cache(&dest_hash)
+                    .and_then(|cached_raw| {
+                        Packet::unpack(cached_raw).ok().and_then(|p| {
+                            let payload = p.data.as_slice();
+                            if payload.len() >= crate::constants::IDENTITY_KEY_SIZE {
+                                let mut key = [0u8; crate::constants::ED25519_KEY_SIZE];
+                                key.copy_from_slice(
+                                    &payload[crate::constants::X25519_KEY_SIZE
+                                        ..crate::constants::IDENTITY_KEY_SIZE],
+                                );
+                                Some(key)
+                            } else {
+                                None
+                            }
+                        })
+                    });
 
             // Insert link table entry for bidirectional routing
             self.link_table.insert(
@@ -2091,7 +2094,7 @@ impl<C: Clock, S: Storage> Transport<C, S> {
                 destination_hash: requested_hash,
             });
             // Also respond from cache if available
-            if let Some(cached_raw) = self.announce_cache.get(&requested_hash).cloned() {
+            if let Some(cached_raw) = self.storage.get_announce_cache(&requested_hash).cloned() {
                 let now = self.clock.now_ms();
                 if let Ok(cached_packet) = Packet::unpack(&cached_raw) {
                     self.announce_table.insert(
@@ -2114,7 +2117,7 @@ impl<C: Clock, S: Storage> Transport<C, S> {
 
         // 2. Check if we have a cached announce for this destination
         if self.config.enable_transport {
-            if let Some(cached_raw) = self.announce_cache.get(&requested_hash).cloned() {
+            if let Some(cached_raw) = self.storage.get_announce_cache(&requested_hash).cloned() {
                 let now = self.clock.now_ms();
                 // Parse cached announce to get hop count
                 if let Ok(cached_packet) = Packet::unpack(&cached_raw) {
@@ -3667,8 +3670,11 @@ mod tests {
             transport.drain_events();
 
             // Announce cache should have the raw bytes
-            assert!(transport.announce_cache.contains_key(&dest_hash));
-            assert_eq!(transport.announce_cache.get(&dest_hash).unwrap(), &raw);
+            assert!(transport.storage().get_announce_cache(&dest_hash).is_some());
+            assert_eq!(
+                transport.storage().get_announce_cache(&dest_hash).unwrap(),
+                &raw
+            );
         }
 
         // ─── Stage 2: Link Table Tests ───────────────────────────────────
@@ -4561,10 +4567,10 @@ mod tests {
             transport.drain_events();
 
             assert!(transport.has_path(&dest_hash));
-            assert!(transport.announce_cache.contains_key(&dest_hash));
+            assert!(transport.storage().get_announce_cache(&dest_hash).is_some());
 
             // Extract expected Ed25519 key from announce payload
-            let cached = transport.announce_cache.get(&dest_hash).unwrap();
+            let cached = transport.storage().get_announce_cache(&dest_hash).unwrap();
             let announce_packet = Packet::unpack(cached).unwrap();
             let payload = announce_packet.data.as_slice();
             let expected_ed25519 =
@@ -5044,7 +5050,7 @@ mod tests {
 
             // Populate announce cache for this destination (simulate prior announce)
             let (raw, _) = make_announce_raw(0, PacketContext::None);
-            transport.announce_cache.insert(dest_hash, raw);
+            transport.storage_mut().set_announce_cache(dest_hash, raw);
 
             // Send path request
             let path_req_hash = transport.path_request_hash;
