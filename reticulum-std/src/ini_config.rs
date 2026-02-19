@@ -109,7 +109,7 @@ pub(crate) fn parse_ini(content: &str) -> Result<Config, String> {
     let supported: HashMap<String, InterfaceConfig> = interfaces
         .into_iter()
         .filter(|(name, iface)| match iface.interface_type.as_str() {
-            "TCPServerInterface" | "TCPClientInterface" => true,
+            "TCPServerInterface" | "TCPClientInterface" | "UDPInterface" => true,
             other => {
                 tracing::info!(
                     "Skipping unsupported interface type '{}' for '{}'",
@@ -271,6 +271,31 @@ mod tests {
         // AutoInterface and RNodeInterface should be skipped
         assert_eq!(config.interfaces.len(), 1);
         assert!(config.interfaces.contains_key("TCP Server"));
+    }
+
+    #[test]
+    fn test_parse_udp_interface() {
+        let config = parse_ini(
+            r#"
+[interfaces]
+  [[UDP Interface]]
+    type = UDPInterface
+    enabled = yes
+    listen_ip = 0.0.0.0
+    listen_port = 4242
+    forward_ip = 192.168.1.255
+    forward_port = 4242
+"#,
+        )
+        .unwrap();
+
+        let udp = config.interfaces.get("UDP Interface").expect("udp");
+        assert_eq!(udp.interface_type, "UDPInterface");
+        assert!(udp.enabled);
+        assert_eq!(udp.listen_ip, Some("0.0.0.0".to_string()));
+        assert_eq!(udp.listen_port, Some(4242));
+        assert_eq!(udp.forward_ip, Some("192.168.1.255".to_string()));
+        assert_eq!(udp.forward_port, Some(4242));
     }
 
     #[test]

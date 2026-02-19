@@ -169,6 +169,39 @@ impl ReticulumNodeBuilder {
         self
     }
 
+    /// Add a UDP interface
+    ///
+    /// Binds to `listen_addr` for incoming datagrams and sends outgoing
+    /// datagrams to `forward_addr`. No framing — each datagram is one packet.
+    pub fn add_udp_interface(mut self, listen_addr: SocketAddr, forward_addr: SocketAddr) -> Self {
+        self.interfaces.push(InterfaceConfig {
+            interface_type: "UDPInterface".to_string(),
+            enabled: true,
+            outgoing: true,
+            bitrate: DEFAULT_BITRATE_BPS,
+            listen_ip: Some(listen_addr.ip().to_string()),
+            listen_port: Some(listen_addr.port()),
+            forward_ip: Some(forward_addr.ip().to_string()),
+            forward_port: Some(forward_addr.port()),
+            target_host: None,
+            target_port: None,
+            port: None,
+            speed: None,
+            databits: None,
+            parity: None,
+            stopbits: None,
+            buffer_size: None,
+            reconnect_interval_secs: None,
+            max_reconnect_tries: None,
+            frequency: None,
+            bandwidth: None,
+            spreading_factor: None,
+            coding_rate: None,
+            tx_power: None,
+        });
+        self
+    }
+
     /// Enable fault injection: corrupt ~1 byte per N bytes on TCP write
     pub fn corrupt_every(mut self, n: Option<u64>) -> Self {
         self.corrupt_every = n;
@@ -336,6 +369,22 @@ mod tests {
         let builder = ReticulumNodeBuilder::new().add_tcp_client(addr);
         assert_eq!(builder.interfaces.len(), 1);
         assert_eq!(builder.interfaces[0].interface_type, "TCPClientInterface");
+    }
+
+    #[test]
+    fn test_builder_add_udp_interface() {
+        let listen: SocketAddr = "0.0.0.0:4242".parse().unwrap();
+        let forward: SocketAddr = "192.168.1.255:4242".parse().unwrap();
+        let builder = ReticulumNodeBuilder::new().add_udp_interface(listen, forward);
+        assert_eq!(builder.interfaces.len(), 1);
+        assert_eq!(builder.interfaces[0].interface_type, "UDPInterface");
+        assert_eq!(builder.interfaces[0].listen_ip, Some("0.0.0.0".to_string()));
+        assert_eq!(builder.interfaces[0].listen_port, Some(4242));
+        assert_eq!(
+            builder.interfaces[0].forward_ip,
+            Some("192.168.1.255".to_string())
+        );
+        assert_eq!(builder.interfaces[0].forward_port, Some(4242));
     }
 
     #[test]

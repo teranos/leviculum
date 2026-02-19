@@ -77,6 +77,7 @@ use crate::error::Error;
 use crate::interfaces::tcp::{
     spawn_tcp_client_with_reconnect, spawn_tcp_server, TCP_DEFAULT_BUFFER_SIZE,
 };
+use crate::interfaces::udp::spawn_udp_interface;
 use crate::interfaces::{InterfaceHandle, InterfaceRegistry};
 use crate::storage::Storage;
 
@@ -277,6 +278,39 @@ impl ReticulumNode {
                         buffer_size,
                         self.corrupt_every,
                     )?;
+                }
+                "UDPInterface" => {
+                    let listen_ip = config.listen_ip.as_deref().unwrap_or("0.0.0.0");
+                    let listen_port = config.listen_port.ok_or_else(|| {
+                        Error::Config("UDPInterface requires listen_port".to_string())
+                    })?;
+                    let forward_ip = config.forward_ip.as_ref().ok_or_else(|| {
+                        Error::Config("UDPInterface requires forward_ip".to_string())
+                    })?;
+                    let forward_port = config.forward_port.ok_or_else(|| {
+                        Error::Config("UDPInterface requires forward_port".to_string())
+                    })?;
+
+                    let listen_addr: SocketAddr = format!("{}:{}", listen_ip, listen_port)
+                        .parse()
+                        .map_err(|e| {
+                            Error::Config(format!("UDPInterface invalid listen address: {}", e))
+                        })?;
+                    let forward_addr: SocketAddr = format!("{}:{}", forward_ip, forward_port)
+                        .parse()
+                        .map_err(|e| {
+                            Error::Config(format!("UDPInterface invalid forward address: {}", e))
+                        })?;
+
+                    let iface_name = format!("udp_{}", idx);
+                    let id = InterfaceId(idx);
+                    let handle = spawn_udp_interface(id, iface_name, listen_addr, forward_addr)?;
+                    tracing::info!(
+                        "UDP interface listening on {}, forwarding to {}",
+                        listen_addr,
+                        forward_addr
+                    );
+                    registry.register(handle);
                 }
                 other => {
                     tracing::warn!("Unknown interface type: {}", other);
