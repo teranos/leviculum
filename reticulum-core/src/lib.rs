@@ -72,6 +72,7 @@ mod hex_fmt;
 pub mod identity;
 pub mod ifac;
 pub mod link;
+pub mod memory_storage;
 pub mod node;
 pub mod packet;
 pub(crate) mod ratchet;
@@ -94,6 +95,7 @@ pub use node::{DeliveryError, LinkStats, NodeCore, NodeCoreBuilder, NodeEvent, S
 pub use transport::{Action, InterfaceId, TickOutput, TransportStats};
 
 // Re-export traits
+pub use memory_storage::MemoryStorage;
 pub use traits::{
     Clock, Interface, InterfaceError, InterfaceMode, NoStorage, Storage, StorageError,
 };

@@ -264,6 +264,18 @@ impl<R: CryptoRngCore, C: Clock, S: Storage> NodeCore<R, C, S> {
         self.known_identities.iter()
     }
 
+    // ─── Storage Accessors ──────────────────────────────────────────────
+
+    /// Borrow the storage implementation (delegates through Transport)
+    pub fn storage(&self) -> &S {
+        self.transport.storage()
+    }
+
+    /// Mutably borrow the storage implementation (delegates through Transport)
+    pub fn storage_mut(&mut self) -> &mut S {
+        self.transport.storage_mut()
+    }
+
     /// Announce a registered destination on all interfaces
     ///
     /// Builds the announce packet and broadcasts it. The announce is queued

@@ -37,6 +37,11 @@ extern crate alloc;
 
 use alloc::vec::Vec;
 
+use crate::constants::TRUNCATED_HASHBYTES;
+use crate::identity::Identity;
+use crate::storage_types::{
+    AnnounceEntry, AnnounceRateEntry, LinkEntry, PacketReceipt, PathEntry, PathState, ReverseEntry,
+};
 use crate::transport::InterfaceId;
 
 /// Error type for interface send operations
@@ -142,33 +147,249 @@ pub trait Clock {
     }
 }
 
-/// Persistent storage for identities, paths, destinations
+/// Type-safe storage for all Transport and NodeCore state
+///
+/// Storage is the source of truth for all long-lived collections that were
+/// previously held as BTreeMap/BTreeSet fields on Transport and NodeCore.
+/// Core asks questions ("have you seen this hash?"), tells Storage to
+/// remember things, and Storage decides capacity, eviction, and persistence.
 ///
 /// Implementations:
-/// - `std`: `FileStorage` using filesystem
-/// - `embedded`: `FlashStorage` using NOR flash
-/// - `none`: `NoStorage` for stateless operation
+/// - `NoStorage`: zero-sized no-op (stubs, FFI, smoke tests)
+/// - `MemoryStorage` (in `memory_storage` module): BTreeMap-backed with
+///   configurable caps. Production implementation for embedded AND test
+///   storage for core tests.
+/// - `FileStorage` (in `reticulum-std`): wraps MemoryStorage + disk
+///   persistence with Python-compatible file formats.
 ///
-/// Storage is optional - transport works without it but won't persist
-/// identities or learned paths across restarts.
+/// # Legacy API
+///
+/// The generic `load/store/delete/list_keys` methods are kept for ratchet
+/// compatibility (`ratchet.rs`). Ratchet migration is deferred (B4 scope).
 pub trait Storage {
-    /// Load data by key from a category
-    ///
-    /// Categories: "identities", "destinations", "paths", "ratchets"
-    fn load(&self, category: &str, key: &[u8]) -> Option<Vec<u8>>;
+    // ─── Packet Dedup ───────────────────────────────────────────────────────
 
-    /// Store data by key in a category
-    fn store(&mut self, category: &str, key: &[u8], value: &[u8]) -> Result<(), StorageError>;
+    /// Check if a packet hash has been seen before
+    fn has_packet_hash(&self, hash: &[u8; 32]) -> bool;
 
-    /// Delete data by key from a category
-    fn delete(&mut self, category: &str, key: &[u8]) -> Result<(), StorageError>;
+    /// Record a packet hash as seen. Implementations handle capacity/eviction.
+    fn add_packet_hash(&mut self, hash: [u8; 32]);
 
-    /// List all keys in a category
-    fn list_keys(&self, category: &str) -> Vec<Vec<u8>>;
+    // ─── Path Table ─────────────────────────────────────────────────────────
 
-    /// Check if a key exists
-    fn exists(&self, category: &str, key: &[u8]) -> bool {
-        self.load(category, key).is_some()
+    /// Look up a path by destination hash
+    fn get_path(&self, dest_hash: &[u8; TRUNCATED_HASHBYTES]) -> Option<&PathEntry>;
+
+    /// Insert or update a path
+    fn set_path(&mut self, dest_hash: [u8; TRUNCATED_HASHBYTES], entry: PathEntry);
+
+    /// Remove a path entry
+    fn remove_path(&mut self, dest_hash: &[u8; TRUNCATED_HASHBYTES]) -> Option<PathEntry>;
+
+    /// Number of entries in the path table
+    fn path_count(&self) -> usize;
+
+    /// Remove all paths that have expired. Returns destination hashes of removed paths.
+    fn expire_paths(&mut self, now_ms: u64) -> Vec<[u8; TRUNCATED_HASHBYTES]>;
+
+    /// Earliest path expiry timestamp, or None if table is empty
+    fn earliest_path_expiry(&self) -> Option<u64>;
+
+    /// Check if a path exists
+    fn has_path(&self, dest_hash: &[u8; TRUNCATED_HASHBYTES]) -> bool {
+        self.get_path(dest_hash).is_some()
+    }
+
+    // ─── Path State ─────────────────────────────────────────────────────────
+
+    /// Get path quality state for a destination
+    fn get_path_state(&self, dest_hash: &[u8; TRUNCATED_HASHBYTES]) -> Option<PathState>;
+
+    /// Set path quality state
+    fn set_path_state(&mut self, dest_hash: [u8; TRUNCATED_HASHBYTES], state: PathState);
+
+    // ─── Reverse Table ──────────────────────────────────────────────────────
+
+    /// Look up a reverse entry by packet hash
+    fn get_reverse(&self, hash: &[u8; TRUNCATED_HASHBYTES]) -> Option<&ReverseEntry>;
+
+    /// Insert a reverse entry
+    fn set_reverse(&mut self, hash: [u8; TRUNCATED_HASHBYTES], entry: ReverseEntry);
+
+    /// Remove a reverse entry
+    fn remove_reverse(&mut self, hash: &[u8; TRUNCATED_HASHBYTES]) -> Option<ReverseEntry>;
+
+    /// Check if a reverse entry exists
+    fn has_reverse(&self, hash: &[u8; TRUNCATED_HASHBYTES]) -> bool {
+        self.get_reverse(hash).is_some()
+    }
+
+    // ─── Link Table ─────────────────────────────────────────────────────────
+
+    /// Look up a link table entry
+    fn get_link_entry(&self, link_id: &[u8; TRUNCATED_HASHBYTES]) -> Option<&LinkEntry>;
+
+    /// Look up a mutable link table entry
+    fn get_link_entry_mut(&mut self, link_id: &[u8; TRUNCATED_HASHBYTES])
+        -> Option<&mut LinkEntry>;
+
+    /// Insert or update a link table entry
+    fn set_link_entry(&mut self, link_id: [u8; TRUNCATED_HASHBYTES], entry: LinkEntry);
+
+    /// Remove a link table entry
+    fn remove_link_entry(&mut self, link_id: &[u8; TRUNCATED_HASHBYTES]) -> Option<LinkEntry>;
+
+    /// Check if a link table entry exists
+    fn has_link_entry(&self, link_id: &[u8; TRUNCATED_HASHBYTES]) -> bool {
+        self.get_link_entry(link_id).is_some()
+    }
+
+    // ─── Announce Table ─────────────────────────────────────────────────────
+
+    /// Look up an announce entry
+    fn get_announce(&self, dest_hash: &[u8; TRUNCATED_HASHBYTES]) -> Option<&AnnounceEntry>;
+
+    /// Look up a mutable announce entry
+    fn get_announce_mut(
+        &mut self,
+        dest_hash: &[u8; TRUNCATED_HASHBYTES],
+    ) -> Option<&mut AnnounceEntry>;
+
+    /// Insert or update an announce entry
+    fn set_announce(&mut self, dest_hash: [u8; TRUNCATED_HASHBYTES], entry: AnnounceEntry);
+
+    /// Remove an announce entry
+    fn remove_announce(&mut self, dest_hash: &[u8; TRUNCATED_HASHBYTES]) -> Option<AnnounceEntry>;
+
+    /// Return all destination hashes in the announce table
+    fn announce_keys(&self) -> Vec<[u8; TRUNCATED_HASHBYTES]>;
+
+    // ─── Announce Cache ─────────────────────────────────────────────────────
+
+    /// Get cached raw announce bytes for a destination
+    fn get_announce_cache(&self, dest_hash: &[u8; TRUNCATED_HASHBYTES]) -> Option<&Vec<u8>>;
+
+    /// Cache raw announce bytes for a destination
+    fn set_announce_cache(&mut self, dest_hash: [u8; TRUNCATED_HASHBYTES], raw: Vec<u8>);
+
+    // ─── Announce Rate ──────────────────────────────────────────────────────
+
+    /// Get announce rate tracking for a destination
+    fn get_announce_rate(
+        &self,
+        dest_hash: &[u8; TRUNCATED_HASHBYTES],
+    ) -> Option<&AnnounceRateEntry>;
+
+    /// Set announce rate tracking for a destination
+    fn set_announce_rate(&mut self, dest_hash: [u8; TRUNCATED_HASHBYTES], entry: AnnounceRateEntry);
+
+    // ─── Receipts ───────────────────────────────────────────────────────────
+
+    /// Look up a receipt by truncated hash
+    fn get_receipt(&self, hash: &[u8; TRUNCATED_HASHBYTES]) -> Option<&PacketReceipt>;
+
+    /// Insert or update a receipt
+    fn set_receipt(&mut self, hash: [u8; TRUNCATED_HASHBYTES], receipt: PacketReceipt);
+
+    /// Remove a receipt
+    fn remove_receipt(&mut self, hash: &[u8; TRUNCATED_HASHBYTES]) -> Option<PacketReceipt>;
+
+    // ─── Path Requests ──────────────────────────────────────────────────────
+
+    /// Get the last path request timestamp for a destination
+    fn get_path_request_time(&self, dest_hash: &[u8; TRUNCATED_HASHBYTES]) -> Option<u64>;
+
+    /// Set the last path request timestamp for a destination
+    fn set_path_request_time(&mut self, dest_hash: [u8; TRUNCATED_HASHBYTES], time_ms: u64);
+
+    /// Check if a path request tag is a duplicate. If new, records it and returns false.
+    /// If already seen, returns true.
+    fn check_path_request_tag(&mut self, tag: &[u8; 32]) -> bool;
+
+    // ─── Known Identities ───────────────────────────────────────────────────
+
+    /// Look up a known remote identity by destination hash
+    fn get_identity(&self, dest_hash: &[u8; TRUNCATED_HASHBYTES]) -> Option<&Identity>;
+
+    /// Store a known remote identity
+    fn set_identity(&mut self, dest_hash: [u8; TRUNCATED_HASHBYTES], identity: Identity);
+
+    // ─── Cleanup ────────────────────────────────────────────────────────────
+
+    /// Remove expired reverse table entries. Returns count removed.
+    fn expire_reverses(&mut self, now_ms: u64, timeout_ms: u64) -> usize;
+
+    /// Remove expired receipts (status == Sent and timed out).
+    /// Returns the removed receipts for event emission.
+    fn expire_receipts(&mut self, now_ms: u64) -> Vec<PacketReceipt>;
+
+    /// Remove expired link table entries (validated past timeout, unvalidated past proof_timeout).
+    /// Returns the removed entries for protocol logic (path rediscovery etc.).
+    fn expire_link_entries(
+        &mut self,
+        now_ms: u64,
+        link_timeout_ms: u64,
+    ) -> Vec<([u8; TRUNCATED_HASHBYTES], LinkEntry)>;
+
+    /// Remove path_states and announce_rate entries for destinations no longer in path_table
+    fn clean_stale_path_metadata(&mut self);
+
+    /// Remove link table entries that reference a specific interface (for interface-down cleanup)
+    fn remove_link_entries_for_interface(
+        &mut self,
+        iface_index: usize,
+    ) -> Vec<([u8; TRUNCATED_HASHBYTES], LinkEntry)>;
+
+    // ─── Deadlines ──────────────────────────────────────────────────────────
+
+    /// Earliest receipt deadline (sent_at + timeout), or None if no pending receipts
+    fn earliest_receipt_deadline(&self) -> Option<u64>;
+
+    /// Earliest link entry deadline, or None if table is empty
+    fn earliest_link_deadline(&self, link_timeout_ms: u64) -> Option<u64>;
+
+    // ─── Flush ──────────────────────────────────────────────────────────────
+
+    /// Persist all dirty state to underlying storage (no-op for in-memory implementations)
+    fn flush(&mut self) {}
+
+    // ─── Ratchets (delegate to legacy API) ──────────────────────────────────
+
+    /// Load a ratchet by destination hash key
+    fn load_ratchet(&self, key: &[u8]) -> Option<Vec<u8>> {
+        self.load("ratchets", key)
+    }
+
+    /// Store a ratchet by destination hash key
+    fn store_ratchet(&mut self, key: &[u8], value: &[u8]) -> Result<(), StorageError> {
+        self.store("ratchets", key, value)
+    }
+
+    /// List all ratchet keys
+    fn list_ratchet_keys(&self) -> Vec<Vec<u8>> {
+        self.list_keys("ratchets")
+    }
+
+    // ─── Legacy Generic API (kept for ratchet compatibility) ────────────────
+
+    /// Load data by key from a category (legacy — used by ratchet.rs)
+    fn load(&self, _category: &str, _key: &[u8]) -> Option<Vec<u8>> {
+        None
+    }
+
+    /// Store data by key in a category (legacy — used by ratchet.rs)
+    fn store(&mut self, _category: &str, _key: &[u8], _value: &[u8]) -> Result<(), StorageError> {
+        Ok(())
+    }
+
+    /// Delete data by key from a category (legacy — used by ratchet.rs)
+    fn delete(&mut self, _category: &str, _key: &[u8]) -> Result<(), StorageError> {
+        Ok(())
+    }
+
+    /// List all keys in a category (legacy — used by ratchet.rs)
+    fn list_keys(&self, _category: &str) -> Vec<Vec<u8>> {
+        Vec::new()
     }
 }
 
@@ -198,26 +419,143 @@ impl core::fmt::Display for StorageError {
 
 /// No-op storage for devices without persistence
 ///
-/// All operations succeed but nothing is actually stored.
-/// Use this for stateless embedded devices or testing.
+/// All lookups return None/false/0, all writes are no-ops.
+/// Use this for stateless embedded devices or smoke tests.
 #[derive(Debug, Clone, Copy, Default)]
 pub struct NoStorage;
 
 impl Storage for NoStorage {
-    fn load(&self, _category: &str, _key: &[u8]) -> Option<Vec<u8>> {
+    fn has_packet_hash(&self, _hash: &[u8; 32]) -> bool {
+        false
+    }
+    fn add_packet_hash(&mut self, _hash: [u8; 32]) {}
+
+    fn get_path(&self, _dest_hash: &[u8; TRUNCATED_HASHBYTES]) -> Option<&PathEntry> {
+        None
+    }
+    fn set_path(&mut self, _dest_hash: [u8; TRUNCATED_HASHBYTES], _entry: PathEntry) {}
+    fn remove_path(&mut self, _dest_hash: &[u8; TRUNCATED_HASHBYTES]) -> Option<PathEntry> {
+        None
+    }
+    fn path_count(&self) -> usize {
+        0
+    }
+    fn expire_paths(&mut self, _now_ms: u64) -> Vec<[u8; TRUNCATED_HASHBYTES]> {
+        Vec::new()
+    }
+    fn earliest_path_expiry(&self) -> Option<u64> {
         None
     }
 
-    fn store(&mut self, _category: &str, _key: &[u8], _value: &[u8]) -> Result<(), StorageError> {
-        Ok(())
+    fn get_path_state(&self, _dest_hash: &[u8; TRUNCATED_HASHBYTES]) -> Option<PathState> {
+        None
+    }
+    fn set_path_state(&mut self, _dest_hash: [u8; TRUNCATED_HASHBYTES], _state: PathState) {}
+
+    fn get_reverse(&self, _hash: &[u8; TRUNCATED_HASHBYTES]) -> Option<&ReverseEntry> {
+        None
+    }
+    fn set_reverse(&mut self, _hash: [u8; TRUNCATED_HASHBYTES], _entry: ReverseEntry) {}
+    fn remove_reverse(&mut self, _hash: &[u8; TRUNCATED_HASHBYTES]) -> Option<ReverseEntry> {
+        None
     }
 
-    fn delete(&mut self, _category: &str, _key: &[u8]) -> Result<(), StorageError> {
-        Ok(())
+    fn get_link_entry(&self, _link_id: &[u8; TRUNCATED_HASHBYTES]) -> Option<&LinkEntry> {
+        None
+    }
+    fn get_link_entry_mut(
+        &mut self,
+        _link_id: &[u8; TRUNCATED_HASHBYTES],
+    ) -> Option<&mut LinkEntry> {
+        None
+    }
+    fn set_link_entry(&mut self, _link_id: [u8; TRUNCATED_HASHBYTES], _entry: LinkEntry) {}
+    fn remove_link_entry(&mut self, _link_id: &[u8; TRUNCATED_HASHBYTES]) -> Option<LinkEntry> {
+        None
     }
 
-    fn list_keys(&self, _category: &str) -> Vec<Vec<u8>> {
+    fn get_announce(&self, _dest_hash: &[u8; TRUNCATED_HASHBYTES]) -> Option<&AnnounceEntry> {
+        None
+    }
+    fn get_announce_mut(
+        &mut self,
+        _dest_hash: &[u8; TRUNCATED_HASHBYTES],
+    ) -> Option<&mut AnnounceEntry> {
+        None
+    }
+    fn set_announce(&mut self, _dest_hash: [u8; TRUNCATED_HASHBYTES], _entry: AnnounceEntry) {}
+    fn remove_announce(&mut self, _dest_hash: &[u8; TRUNCATED_HASHBYTES]) -> Option<AnnounceEntry> {
+        None
+    }
+    fn announce_keys(&self) -> Vec<[u8; TRUNCATED_HASHBYTES]> {
         Vec::new()
+    }
+
+    fn get_announce_cache(&self, _dest_hash: &[u8; TRUNCATED_HASHBYTES]) -> Option<&Vec<u8>> {
+        None
+    }
+    fn set_announce_cache(&mut self, _dest_hash: [u8; TRUNCATED_HASHBYTES], _raw: Vec<u8>) {}
+
+    fn get_announce_rate(
+        &self,
+        _dest_hash: &[u8; TRUNCATED_HASHBYTES],
+    ) -> Option<&AnnounceRateEntry> {
+        None
+    }
+    fn set_announce_rate(
+        &mut self,
+        _dest_hash: [u8; TRUNCATED_HASHBYTES],
+        _entry: AnnounceRateEntry,
+    ) {
+    }
+
+    fn get_receipt(&self, _hash: &[u8; TRUNCATED_HASHBYTES]) -> Option<&PacketReceipt> {
+        None
+    }
+    fn set_receipt(&mut self, _hash: [u8; TRUNCATED_HASHBYTES], _receipt: PacketReceipt) {}
+    fn remove_receipt(&mut self, _hash: &[u8; TRUNCATED_HASHBYTES]) -> Option<PacketReceipt> {
+        None
+    }
+
+    fn get_path_request_time(&self, _dest_hash: &[u8; TRUNCATED_HASHBYTES]) -> Option<u64> {
+        None
+    }
+    fn set_path_request_time(&mut self, _dest_hash: [u8; TRUNCATED_HASHBYTES], _time_ms: u64) {}
+    fn check_path_request_tag(&mut self, _tag: &[u8; 32]) -> bool {
+        false
+    }
+
+    fn get_identity(&self, _dest_hash: &[u8; TRUNCATED_HASHBYTES]) -> Option<&Identity> {
+        None
+    }
+    fn set_identity(&mut self, _dest_hash: [u8; TRUNCATED_HASHBYTES], _identity: Identity) {}
+
+    fn expire_reverses(&mut self, _now_ms: u64, _timeout_ms: u64) -> usize {
+        0
+    }
+    fn expire_receipts(&mut self, _now_ms: u64) -> Vec<PacketReceipt> {
+        Vec::new()
+    }
+    fn expire_link_entries(
+        &mut self,
+        _now_ms: u64,
+        _link_timeout_ms: u64,
+    ) -> Vec<([u8; TRUNCATED_HASHBYTES], LinkEntry)> {
+        Vec::new()
+    }
+    fn clean_stale_path_metadata(&mut self) {}
+    fn remove_link_entries_for_interface(
+        &mut self,
+        _iface_index: usize,
+    ) -> Vec<([u8; TRUNCATED_HASHBYTES], LinkEntry)> {
+        Vec::new()
+    }
+
+    fn earliest_receipt_deadline(&self) -> Option<u64> {
+        None
+    }
+    fn earliest_link_deadline(&self, _link_timeout_ms: u64) -> Option<u64> {
+        None
     }
 }
 
@@ -227,19 +565,39 @@ mod tests {
     use crate::test_utils::MockClock;
 
     #[test]
-    fn test_no_storage() {
+    fn test_no_storage_packet_hash() {
         let mut storage = NoStorage;
+        assert!(!storage.has_packet_hash(&[0u8; 32]));
+        storage.add_packet_hash([0u8; 32]);
+        assert!(!storage.has_packet_hash(&[0u8; 32]));
+    }
 
-        // Store succeeds but doesn't persist
-        assert!(storage.store("test", b"key", b"value").is_ok());
+    #[test]
+    fn test_no_storage_path() {
+        let mut storage = NoStorage;
+        let hash = [0u8; TRUNCATED_HASHBYTES];
+        assert!(storage.get_path(&hash).is_none());
+        assert!(!storage.has_path(&hash));
+        assert_eq!(storage.path_count(), 0);
+        storage.set_path(
+            hash,
+            PathEntry {
+                hops: 0,
+                expires_ms: 0,
+                interface_index: 0,
+                random_blobs: Vec::new(),
+                next_hop: None,
+            },
+        );
+        assert!(storage.get_path(&hash).is_none());
+    }
 
-        // Load returns None
+    #[test]
+    fn test_no_storage_legacy() {
+        let mut storage = NoStorage;
         assert!(storage.load("test", b"key").is_none());
-
-        // Delete succeeds
+        assert!(storage.store("test", b"key", b"value").is_ok());
         assert!(storage.delete("test", b"key").is_ok());
-
-        // List is empty
         assert!(storage.list_keys("test").is_empty());
     }
 

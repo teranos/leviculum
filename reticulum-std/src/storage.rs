@@ -2,6 +2,8 @@
 
 use std::path::{Path, PathBuf};
 
+use reticulum_core::constants::TRUNCATED_HASHBYTES;
+
 use crate::error::{Error, Result};
 
 /// Storage manager for persistent data
@@ -156,6 +158,233 @@ fn hex_decode(s: &str) -> Option<Vec<u8>> {
 }
 
 impl reticulum_core::traits::Storage for Storage {
+    // ─── Packet Dedup (no-op until commit 1) ────────────────────────────
+    fn has_packet_hash(&self, _hash: &[u8; 32]) -> bool {
+        false
+    }
+    fn add_packet_hash(&mut self, _hash: [u8; 32]) {}
+
+    // ─── Path Table (no-op until commit 7) ──────────────────────────────
+    fn get_path(
+        &self,
+        _dest_hash: &[u8; TRUNCATED_HASHBYTES],
+    ) -> Option<&reticulum_core::storage_types::PathEntry> {
+        None
+    }
+    fn set_path(
+        &mut self,
+        _dest_hash: [u8; TRUNCATED_HASHBYTES],
+        _entry: reticulum_core::storage_types::PathEntry,
+    ) {
+    }
+    fn remove_path(
+        &mut self,
+        _dest_hash: &[u8; TRUNCATED_HASHBYTES],
+    ) -> Option<reticulum_core::storage_types::PathEntry> {
+        None
+    }
+    fn path_count(&self) -> usize {
+        0
+    }
+    fn expire_paths(&mut self, _now_ms: u64) -> Vec<[u8; TRUNCATED_HASHBYTES]> {
+        Vec::new()
+    }
+    fn earliest_path_expiry(&self) -> Option<u64> {
+        None
+    }
+
+    // ─── Path State (no-op until commit 7) ──────────────────────────────
+    fn get_path_state(
+        &self,
+        _dest_hash: &[u8; TRUNCATED_HASHBYTES],
+    ) -> Option<reticulum_core::storage_types::PathState> {
+        None
+    }
+    fn set_path_state(
+        &mut self,
+        _dest_hash: [u8; TRUNCATED_HASHBYTES],
+        _state: reticulum_core::storage_types::PathState,
+    ) {
+    }
+
+    // ─── Reverse Table (no-op until commit 4) ───────────────────────────
+    fn get_reverse(
+        &self,
+        _hash: &[u8; TRUNCATED_HASHBYTES],
+    ) -> Option<&reticulum_core::storage_types::ReverseEntry> {
+        None
+    }
+    fn set_reverse(
+        &mut self,
+        _hash: [u8; TRUNCATED_HASHBYTES],
+        _entry: reticulum_core::storage_types::ReverseEntry,
+    ) {
+    }
+    fn remove_reverse(
+        &mut self,
+        _hash: &[u8; TRUNCATED_HASHBYTES],
+    ) -> Option<reticulum_core::storage_types::ReverseEntry> {
+        None
+    }
+
+    // ─── Link Table (no-op until commit 8) ──────────────────────────────
+    fn get_link_entry(
+        &self,
+        _link_id: &[u8; TRUNCATED_HASHBYTES],
+    ) -> Option<&reticulum_core::storage_types::LinkEntry> {
+        None
+    }
+    fn get_link_entry_mut(
+        &mut self,
+        _link_id: &[u8; TRUNCATED_HASHBYTES],
+    ) -> Option<&mut reticulum_core::storage_types::LinkEntry> {
+        None
+    }
+    fn set_link_entry(
+        &mut self,
+        _link_id: [u8; TRUNCATED_HASHBYTES],
+        _entry: reticulum_core::storage_types::LinkEntry,
+    ) {
+    }
+    fn remove_link_entry(
+        &mut self,
+        _link_id: &[u8; TRUNCATED_HASHBYTES],
+    ) -> Option<reticulum_core::storage_types::LinkEntry> {
+        None
+    }
+
+    // ─── Announce Table (no-op until commit 9) ──────────────────────────
+    fn get_announce(
+        &self,
+        _dest_hash: &[u8; TRUNCATED_HASHBYTES],
+    ) -> Option<&reticulum_core::storage_types::AnnounceEntry> {
+        None
+    }
+    fn get_announce_mut(
+        &mut self,
+        _dest_hash: &[u8; TRUNCATED_HASHBYTES],
+    ) -> Option<&mut reticulum_core::storage_types::AnnounceEntry> {
+        None
+    }
+    fn set_announce(
+        &mut self,
+        _dest_hash: [u8; TRUNCATED_HASHBYTES],
+        _entry: reticulum_core::storage_types::AnnounceEntry,
+    ) {
+    }
+    fn remove_announce(
+        &mut self,
+        _dest_hash: &[u8; TRUNCATED_HASHBYTES],
+    ) -> Option<reticulum_core::storage_types::AnnounceEntry> {
+        None
+    }
+    fn announce_keys(&self) -> Vec<[u8; TRUNCATED_HASHBYTES]> {
+        Vec::new()
+    }
+
+    // ─── Announce Cache (no-op until commit 6) ──────────────────────────
+    fn get_announce_cache(&self, _dest_hash: &[u8; TRUNCATED_HASHBYTES]) -> Option<&Vec<u8>> {
+        None
+    }
+    fn set_announce_cache(&mut self, _dest_hash: [u8; TRUNCATED_HASHBYTES], _raw: Vec<u8>) {}
+
+    // ─── Announce Rate (no-op until commit 3) ───────────────────────────
+    fn get_announce_rate(
+        &self,
+        _dest_hash: &[u8; TRUNCATED_HASHBYTES],
+    ) -> Option<&reticulum_core::storage_types::AnnounceRateEntry> {
+        None
+    }
+    fn set_announce_rate(
+        &mut self,
+        _dest_hash: [u8; TRUNCATED_HASHBYTES],
+        _entry: reticulum_core::storage_types::AnnounceRateEntry,
+    ) {
+    }
+
+    // ─── Receipts (no-op until commit 5) ────────────────────────────────
+    fn get_receipt(
+        &self,
+        _hash: &[u8; TRUNCATED_HASHBYTES],
+    ) -> Option<&reticulum_core::storage_types::PacketReceipt> {
+        None
+    }
+    fn set_receipt(
+        &mut self,
+        _hash: [u8; TRUNCATED_HASHBYTES],
+        _receipt: reticulum_core::storage_types::PacketReceipt,
+    ) {
+    }
+    fn remove_receipt(
+        &mut self,
+        _hash: &[u8; TRUNCATED_HASHBYTES],
+    ) -> Option<reticulum_core::storage_types::PacketReceipt> {
+        None
+    }
+
+    // ─── Path Requests (no-op until commit 2) ───────────────────────────
+    fn get_path_request_time(&self, _dest_hash: &[u8; TRUNCATED_HASHBYTES]) -> Option<u64> {
+        None
+    }
+    fn set_path_request_time(&mut self, _dest_hash: [u8; TRUNCATED_HASHBYTES], _time_ms: u64) {}
+    fn check_path_request_tag(&mut self, _tag: &[u8; 32]) -> bool {
+        false
+    }
+
+    // ─── Known Identities (no-op until commit 10) ───────────────────────
+    fn get_identity(
+        &self,
+        _dest_hash: &[u8; TRUNCATED_HASHBYTES],
+    ) -> Option<&reticulum_core::Identity> {
+        None
+    }
+    fn set_identity(
+        &mut self,
+        _dest_hash: [u8; TRUNCATED_HASHBYTES],
+        _identity: reticulum_core::Identity,
+    ) {
+    }
+
+    // ─── Cleanup (no-op until respective commits) ───────────────────────
+    fn expire_reverses(&mut self, _now_ms: u64, _timeout_ms: u64) -> usize {
+        0
+    }
+    fn expire_receipts(
+        &mut self,
+        _now_ms: u64,
+    ) -> Vec<reticulum_core::storage_types::PacketReceipt> {
+        Vec::new()
+    }
+    fn expire_link_entries(
+        &mut self,
+        _now_ms: u64,
+        _link_timeout_ms: u64,
+    ) -> Vec<(
+        [u8; TRUNCATED_HASHBYTES],
+        reticulum_core::storage_types::LinkEntry,
+    )> {
+        Vec::new()
+    }
+    fn clean_stale_path_metadata(&mut self) {}
+    fn remove_link_entries_for_interface(
+        &mut self,
+        _iface_index: usize,
+    ) -> Vec<(
+        [u8; TRUNCATED_HASHBYTES],
+        reticulum_core::storage_types::LinkEntry,
+    )> {
+        Vec::new()
+    }
+
+    // ─── Deadlines (no-op until respective commits) ─────────────────────
+    fn earliest_receipt_deadline(&self) -> Option<u64> {
+        None
+    }
+    fn earliest_link_deadline(&self, _link_timeout_ms: u64) -> Option<u64> {
+        None
+    }
+
+    // ─── Legacy Generic API (for ratchets — always active) ──────────────
     fn load(&self, category: &str, key: &[u8]) -> Option<Vec<u8>> {
         let name = hex_encode(key);
         self.read_raw(category, &name).ok()
@@ -264,29 +493,26 @@ mod tests {
     }
 
     #[test]
-    fn test_core_storage_trait() {
+    fn test_core_storage_legacy_trait() {
         use reticulum_core::traits::Storage as CoreStorage;
 
         let mut storage = temp_storage();
         let key = [0x01, 0x02, 0x03];
 
-        // Store via trait
+        // Store via legacy trait
         CoreStorage::store(&mut storage, "core_test", &key, b"trait_value").unwrap();
 
-        // Load via trait
+        // Load via legacy trait
         let data = CoreStorage::load(&storage, "core_test", &key);
         assert_eq!(data, Some(b"trait_value".to_vec()));
 
-        // Exists via trait
-        assert!(CoreStorage::exists(&storage, "core_test", &key));
-
-        // List keys via trait
+        // List keys via legacy trait
         let keys = CoreStorage::list_keys(&storage, "core_test");
         assert_eq!(keys.len(), 1);
         assert_eq!(keys[0], key.to_vec());
 
-        // Delete via trait
+        // Delete via legacy trait
         CoreStorage::delete(&mut storage, "core_test", &key).unwrap();
-        assert!(!CoreStorage::exists(&storage, "core_test", &key));
+        assert!(CoreStorage::load(&storage, "core_test", &key).is_none());
     }
 }

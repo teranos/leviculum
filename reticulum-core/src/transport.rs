@@ -432,7 +432,7 @@ impl From<PacketError> for TransportError {
 pub struct Transport<C: Clock, S: Storage> {
     config: TransportConfig,
     clock: C,
-    _storage: S,
+    storage: S,
     identity: Identity,
 
     /// Path table: destination_hash -> path info
@@ -507,7 +507,7 @@ impl<C: Clock, S: Storage> Transport<C, S> {
         Self {
             config,
             clock,
-            _storage: storage,
+            storage,
             identity,
             path_table: BTreeMap::new(),
             path_states: BTreeMap::new(),
@@ -530,6 +530,18 @@ impl<C: Clock, S: Storage> Transport<C, S> {
             #[cfg(test)]
             interfaces: Vec::new(),
         }
+    }
+
+    // ─── Storage Accessors ─────────────────────────────────────────────
+
+    /// Borrow the storage implementation
+    pub fn storage(&self) -> &S {
+        &self.storage
+    }
+
+    /// Mutably borrow the storage implementation
+    pub fn storage_mut(&mut self) -> &mut S {
+        &mut self.storage
     }
 
     // ─── Test-only Interface Management ───────────────────────────────

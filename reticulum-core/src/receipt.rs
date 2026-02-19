@@ -28,8 +28,8 @@
 //! ```
 
 // PacketReceipt and ReceiptStatus live in crate::storage_types.
-// Re-exported here for backward compatibility.
-pub use crate::storage_types::{PacketReceipt, ReceiptStatus};
+// Re-exported here for backward compatibility within the crate.
+pub(crate) use crate::storage_types::{PacketReceipt, ReceiptStatus};
 
 #[cfg(test)]
 mod tests {
