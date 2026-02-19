@@ -24,6 +24,10 @@ Phase numbering follows `doc/BATTLEPLAN.md`. Phases 0–7 are complete.
 |----|---|-------|--------|----------|---------|
 | E10 | M | post-7 | open | Feature | Interface-specific send-side jitter for shared-medium interfaces |
 | E11 | L | post-7 | open | Refactor | Migrate ratchet.rs to new Storage trait methods |
+| E12 | L | post-7 | open | Feature | Periodic flush interval should be configurable (currently hardcoded 60s) |
+| E13 | L | post-7 | open | Design | Storage trait returns references — blocks disk-backed implementations |
+| E14 | L | post-7 | open | Design | FileStorage wraps MemoryStorage — cannot use IndexMap for insertion-order eviction |
+| E15 | L | post-7 | open | Docs | Git history has 11 commits where FileStorage was no-op — avoid git bisect in that range |
 
 ---
 
@@ -56,3 +60,39 @@ Phase numbering follows `doc/BATTLEPLAN.md`. Phases 0–7 are complete.
 - **Detail:** The Storage trait includes `load_ratchet/store_ratchet/list_ratchet_keys` methods that currently delegate to the old generic `load/store/delete/list_keys` API. When ratchet validation is integrated (B4), migrate ratchet.rs to use the new type-safe Storage trait methods directly and remove the legacy generic API from the Storage trait.
 - **Fix:** Update ratchet.rs to call `storage.load_ratchet()`, `storage.store_ratchet()`, `storage.list_ratchet_keys()` instead of the generic `load/store/delete/list_keys`. Remove the legacy methods from the Storage trait once no code uses them.
 - **Test:** Existing ratchet unit tests should pass unchanged after migration.
+
+### E12: Periodic flush interval should be configurable
+- **Status:** open
+- **Priority:** L
+- **Phase:** post-7
+- **Category:** Feature
+- **Detail:** The periodic storage flush interval is hardcoded to 60 seconds in `reticulum-std/src/driver/mod.rs` (`FLUSH_INTERVAL_SECS`). This should be configurable via `ReticulumNodeBuilder` or the config file for deployments where a different trade-off between disk I/O and data loss window is desired.
+- **Fix:** Add a `flush_interval_secs` field to `ReticulumNodeBuilder` and pass it through to the event loop.
+- **Test:** Unit test: verify builder accepts custom flush interval.
+
+### E13: Storage trait returns references — blocks disk-backed implementations
+- **Status:** open
+- **Priority:** L
+- **Phase:** post-7
+- **Category:** Design
+- **Detail:** Several `Storage` trait methods return `Option<&T>` (e.g., `get_path`, `get_identity`, `get_link_entry`). This requires the storage implementation to hold all data in memory so it can hand out references. A purely disk-backed storage (without an in-memory cache) cannot implement these methods because it would need to return references to temporary values. The current `FileStorage`-wraps-`MemoryStorage` design works around this, but it prevents future pure-disk implementations.
+- **Fix:** Change affected trait methods to return owned values (`Option<T>`) or use a cow pattern. This is a breaking API change that touches all `Storage` implementors.
+- **Test:** All existing Storage tests should pass after migration.
+
+### E14: FileStorage wraps MemoryStorage — cannot use IndexMap for insertion-order eviction
+- **Status:** open
+- **Priority:** L
+- **Phase:** post-7
+- **Category:** Design
+- **Detail:** `FileStorage` delegates all runtime collections to `MemoryStorage` (from `reticulum-core`). Because `MemoryStorage` is `no_std`-compatible, it uses `BTreeMap` for all collections. If insertion-order eviction (LRU-style) is ever needed (e.g., for capping the packet hashlist or known_destinations), `BTreeMap` cannot provide it. An `IndexMap` or linked-list-backed map would be needed, but that requires either changing `MemoryStorage` or having `FileStorage` manage those collections directly.
+- **Fix:** When eviction is needed, either add an `IndexMap` dependency to the `std` storage or implement a custom ordered map in core.
+- **Test:** N/A — design issue, no immediate code change.
+
+### E15: Git history has no-op FileStorage commits — avoid git bisect in that range
+- **Status:** open
+- **Priority:** L
+- **Phase:** post-7
+- **Category:** Docs
+- **Detail:** During the Storage trait refactoring (E9), commits 0a–11 (between the initial Storage trait introduction and the final FileStorage-wraps-MemoryStorage design) had a FileStorage that was partially or fully no-op for runtime collections. `git bisect` in that range may produce misleading results because storage operations silently did nothing. The affected range is roughly from "Migrate path_table to Storage trait" through "FileStorage wraps MemoryStorage for runtime collections".
+- **Fix:** No code change needed. If bisecting a storage-related bug, skip this commit range.
+- **Test:** N/A — informational only.

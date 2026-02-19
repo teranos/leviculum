@@ -88,6 +88,12 @@ pub(crate) type StdNodeCore = NodeCore<rand_core::OsRng, SystemClock, Storage>;
 /// Not yet tuned — chosen empirically during initial development.
 const EVENT_CHANNEL_CAPACITY: usize = 256;
 
+/// Interval between periodic storage flushes (seconds).
+/// Limits data loss to at most this many seconds of identity discoveries
+/// if the process is killed without a clean shutdown.
+/// Hardcoded — see E12 for making this configurable.
+const FLUSH_INTERVAL_SECS: u64 = 60;
+
 /// Event received from any interface
 enum RecvEvent {
     /// A complete packet from an interface
@@ -610,6 +616,7 @@ async fn run_event_loop(
     mut shutdown: watch::Receiver<bool>,
 ) {
     let mut next_poll = tokio::time::Instant::now();
+    let mut next_flush = tokio::time::Instant::now() + Duration::from_secs(FLUSH_INTERVAL_SECS);
 
     loop {
         tokio::select! {
@@ -704,6 +711,16 @@ async fn run_event_loop(
             Some(handle) = new_interface_rx.recv() => {
                 tracing::info!("New connection: {} ({})", handle.info.name, handle.info.id);
                 registry.register(handle);
+            }
+
+            // Branch 6: Periodic storage flush (persist identities + packet hashes)
+            _ = tokio::time::sleep_until(next_flush) => {
+                {
+                    use reticulum_core::traits::Storage as _;
+                    let mut core = inner.lock().unwrap();
+                    core.storage_mut().flush();
+                }
+                next_flush = tokio::time::Instant::now() + Duration::from_secs(FLUSH_INTERVAL_SECS);
             }
         }
     }

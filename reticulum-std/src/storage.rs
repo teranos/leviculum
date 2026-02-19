@@ -513,10 +513,18 @@ impl reticulum_core::traits::Storage for Storage {
             .unwrap_or(0.0);
 
         // 1. Merge runtime identities into known_dest_entries.
-        //    New identities (not already loaded from disk) get a minimal entry.
+        //    New identities get a minimal entry; existing entries get their
+        //    timestamp and public_key refreshed (the runtime version was just
+        //    validated from a live announce, so it takes precedence over the
+        //    disk version). app_data and packet_hash are preserved — they
+        //    come from the original announce and are not available here.
         for (hash, identity) in self.inner.known_identity_iter() {
             self.known_dest_entries
                 .entry(*hash)
+                .and_modify(|e| {
+                    e.timestamp = timestamp;
+                    e.public_key = identity.public_key_bytes();
+                })
                 .or_insert_with(|| KnownDestEntry {
                     timestamp,
                     packet_hash: vec![0u8; PACKET_HASH_LEN],
@@ -865,6 +873,72 @@ mod tests {
             CoreStorage::has_packet_hash(&storage, &hash),
             "should auto-load packet hash from packet_hashlist"
         );
+
+        let _ = std::fs::remove_dir_all(&path);
+    }
+
+    #[test]
+    fn test_flush_updates_timestamp_on_existing_entry() {
+        use reticulum_core::traits::Storage as CoreStorage;
+
+        let path = temp_dir().join(format!("reticulum_test_flush_ts_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&path);
+
+        let dest_hash = [0xEE; TRUNCATED_HASHBYTES];
+        let id = Identity::generate(&mut rand_core::OsRng);
+        let app_data = Some(b"test_app_data".to_vec());
+
+        // Create storage, seed a known_dest_entry with old timestamp and app_data,
+        // add the identity to runtime, flush
+        {
+            let mut storage = Storage::new(&path).unwrap();
+
+            // Manually insert an old entry with app_data (simulates a previous flush
+            // or disk load)
+            storage.known_dest_entries.insert(
+                dest_hash,
+                KnownDestEntry {
+                    timestamp: 1000.0,
+                    packet_hash: vec![0xAB; PACKET_HASH_LEN],
+                    public_key: id.public_key_bytes(),
+                    app_data: app_data.clone(),
+                },
+            );
+
+            // Add the same identity to runtime storage (simulates a fresh announce)
+            CoreStorage::set_identity(&mut storage, dest_hash, id);
+
+            // Flush — should update timestamp but preserve app_data and packet_hash
+            CoreStorage::flush(&mut storage);
+        }
+
+        // Re-open and verify the timestamp was updated
+        {
+            let storage = Storage::new(&path).unwrap();
+            let entry = storage.known_dest_entries.get(&dest_hash);
+            assert!(entry.is_some(), "entry should exist after flush");
+            let entry = entry.unwrap();
+
+            // Timestamp should be much larger than the old value of 1000.0
+            assert!(
+                entry.timestamp > 1_000_000.0,
+                "timestamp should be updated to current time, got {}",
+                entry.timestamp
+            );
+
+            // app_data should be preserved (not overwritten with None)
+            assert_eq!(
+                entry.app_data, app_data,
+                "app_data should be preserved across flush"
+            );
+
+            // packet_hash should be preserved (not overwritten with zeros)
+            assert_eq!(
+                entry.packet_hash,
+                vec![0xAB; PACKET_HASH_LEN],
+                "packet_hash should be preserved across flush"
+            );
+        }
 
         let _ = std::fs::remove_dir_all(&path);
     }
