@@ -1143,6 +1143,72 @@ pub async fn wait_for_link_on_daemon(
     false
 }
 
+// =========================================================================
+// MTU test constants and helpers
+// =========================================================================
+
+/// TCP interface hardware MTU — the class-level maximum (TCPInterface.HW_MTU).
+/// Used when configuring Rust node interfaces via `set_interface_hw_mtu()`.
+pub const TCP_HW_MTU: u32 = 262144;
+
+/// UDP interface hardware MTU (matches Python UDPInterface.HW_MTU)
+pub const UDP_HW_MTU: u32 = 1064;
+
+/// Negotiated MTU when connecting through a Python daemon over TCP.
+///
+/// Python's `optimise_mtu()` sets HW_MTU based on measured bitrate. With the
+/// default `BITRATE_GUESS = 10_000_000` (10 Mbps), the check `> 10_000_000`
+/// is strictly-greater, so it falls through to `> 5_000_000 → HW_MTU = 8192`.
+/// The daemon's Reticulum.__init__ calls `optimise_mtu()` on the server interface,
+/// and spawned client interfaces inherit the server's HW_MTU.
+pub const DAEMON_TCP_NEGOTIATED_MTU: u32 = 8192;
+
+/// Encrypted link MDU for daemon TCP: floor((8192 - 1 - 19 - 48) / 16) * 16 - 1 = 8111
+pub const DAEMON_TCP_LINK_MDU: usize = 8111;
+
+/// Channel overhead (message header): 6 bytes
+pub const CHANNEL_OVERHEAD: usize = 6;
+
+/// Maximum channel payload over a daemon TCP link: 8111 - 6 = 8105
+pub const DAEMON_TCP_MAX_CHANNEL_PAYLOAD: usize = DAEMON_TCP_LINK_MDU - CHANNEL_OVERHEAD;
+
+/// Encrypted link MDU for UDP: floor((1064 - 1 - 19 - 48) / 16) * 16 - 1 = 991
+pub const UDP_LINK_MDU: usize = 991;
+
+/// Maximum channel payload over UDP link: 991 - 6 = 985
+pub const UDP_MAX_CHANNEL_PAYLOAD: usize = UDP_LINK_MDU - CHANNEL_OVERHEAD;
+
+/// Generate a deterministic test payload of the given size.
+///
+/// Uses a SHA-256 chain: block[0] = sha256(seed), block[n] = sha256(block[n-1]).
+/// The first 32 bytes are the first hash; subsequent 32-byte blocks are chained.
+/// The payload is truncated to the exact requested size.
+pub fn generate_test_payload(size: usize) -> Vec<u8> {
+    use reticulum_core::crypto::sha256;
+
+    let mut result = Vec::with_capacity(size);
+    let mut block = sha256(b"mtu_test_payload_seed");
+
+    while result.len() < size {
+        let remaining = size - result.len();
+        let to_copy = remaining.min(32);
+        result.extend_from_slice(&block[..to_copy]);
+        if result.len() < size {
+            block = sha256(&block);
+        }
+    }
+
+    result
+}
+
+/// Verify a test payload matches the deterministic SHA-256 chain.
+///
+/// Returns true if the data matches `generate_test_payload(data.len())`.
+pub fn verify_test_payload(data: &[u8]) -> bool {
+    let expected = generate_test_payload(data.len());
+    data == expected.as_slice()
+}
+
 /// Create a Transport for testing (sans-I/O, no interfaces registered).
 /// Returns `(transport, interface_index)`.
 pub fn create_test_transport() -> (

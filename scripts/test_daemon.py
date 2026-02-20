@@ -831,6 +831,8 @@ class TestDaemon:
                     "established_at": getattr(link, 'activated_at', None),
                     "last_inbound": getattr(link, 'last_inbound', None),
                     "last_outbound": getattr(link, 'last_outbound', None),
+                    "mtu": link.get_mtu() if hasattr(link, 'get_mtu') else None,
+                    "mdu": link.get_mdu() if hasattr(link, 'get_mdu') else None,
                 }
             }
 

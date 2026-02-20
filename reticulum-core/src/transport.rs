@@ -1534,6 +1534,16 @@ impl<C: Clock, S: Storage> Transport<C, S> {
                 self.storage.set_path(dest_hash, path);
             }
 
+            // Clamp MTU signaling bytes to next-hop interface capacity
+            // (Python Transport.py:1453-1480)
+            let data = Self::clamp_link_request_mtu(
+                &packet.data,
+                interface_index,
+                target_iface,
+                &self.interface_hw_mtus,
+            )
+            .unwrap_or(packet.data);
+
             // Forward: strip at final hop, keep Type2 otherwise.
             let mut forwarded = if !needs_relay {
                 // Final hop: destination is directly connected, strip transport header
@@ -1547,7 +1557,7 @@ impl<C: Clock, S: Storage> Transport<C, S> {
                     transport_id: None,
                     destination_hash: dest_hash,
                     context: packet.context,
-                    data: packet.data,
+                    data,
                 }
             } else {
                 // Intermediate: Header Type 2 with next-hop transport identity
@@ -1561,7 +1571,7 @@ impl<C: Clock, S: Storage> Transport<C, S> {
                     transport_id: next_hop,
                     destination_hash: dest_hash,
                     context: packet.context,
-                    data: packet.data,
+                    data,
                 }
             };
 
@@ -2068,6 +2078,65 @@ impl<C: Clock, S: Storage> Transport<C, S> {
         }
 
         self.forward_on_interface(target_iface, &mut packet)
+    }
+
+    /// Clamp MTU signaling bytes in a link request payload.
+    ///
+    /// If the payload contains signaling bytes (67 bytes), decode the MTU,
+    /// clamp to min(path_mtu, prev_hop_hw_mtu, next_hop_hw_mtu), re-encode.
+    /// If no signaling bytes (64-byte request) or no HW_MTU known for
+    /// next-hop, return the data unchanged.
+    /// (Python Transport.py:1453-1480)
+    fn clamp_link_request_mtu(
+        data: &PacketData,
+        prev_hop_iface: usize,
+        next_hop_iface: usize,
+        hw_mtus: &BTreeMap<usize, u32>,
+    ) -> Option<PacketData> {
+        use crate::link::{
+            decode_signaling_bytes, encode_signaling_bytes, LINK_REQUEST_BASE_SIZE, SIGNALING_SIZE,
+        };
+
+        let payload = data.as_slice();
+        let signaling_size = LINK_REQUEST_BASE_SIZE + SIGNALING_SIZE; // 67
+
+        if payload.len() != signaling_size {
+            return None; // No signaling bytes — nothing to clamp
+        }
+
+        let sig_bytes: [u8; 3] = match payload[LINK_REQUEST_BASE_SIZE..signaling_size].try_into() {
+            Ok(b) => b,
+            Err(_) => return None,
+        };
+        let (path_mtu, mode) = decode_signaling_bytes(&sig_bytes);
+
+        // Three-way min: MTU can only go down, never up.
+        let ph_mtu = hw_mtus.get(&prev_hop_iface).copied().unwrap_or(u32::MAX);
+        let nh_mtu = match hw_mtus.get(&next_hop_iface).copied() {
+            Some(mtu) => mtu,
+            None => return None, // Unknown next-hop MTU — pass through
+        };
+
+        let clamped = path_mtu.min(nh_mtu).min(ph_mtu);
+
+        if clamped >= path_mtu {
+            return None; // No clamping needed
+        }
+
+        // Re-encode with clamped MTU
+        let new_sig = encode_signaling_bytes(clamped, mode);
+        let mut new_data = payload.to_vec();
+        new_data[LINK_REQUEST_BASE_SIZE..signaling_size].copy_from_slice(&new_sig);
+
+        tracing::debug!(
+            "Clamped link request MTU from {} to {} (prev-hop HW_MTU={}, next-hop HW_MTU={})",
+            path_mtu,
+            clamped,
+            ph_mtu,
+            nh_mtu
+        );
+
+        Some(PacketData::Owned(new_data))
     }
 
     /// Forward a packet through a single interface.
@@ -9601,6 +9670,194 @@ mod tests {
                 receipt.destination_hash,
                 crate::destination::DestinationHash::new(dest_hash),
                 "Receipt should contain correct destination hash"
+            );
+        }
+    }
+
+    mod relay_mtu_clamping {
+        use super::*;
+        extern crate alloc;
+        use crate::link::{
+            decode_signaling_bytes, encode_signaling_bytes, LINK_REQUEST_BASE_SIZE, SIGNALING_SIZE,
+        };
+        use crate::test_utils::MockClock;
+        use crate::traits::NoStorage;
+
+        /// Build a fake link request payload with signaling bytes.
+        fn make_lr_payload(mtu: u32, mode: u8) -> PacketData {
+            let mut data = alloc::vec![0u8; LINK_REQUEST_BASE_SIZE + SIGNALING_SIZE];
+            let sig = encode_signaling_bytes(mtu, mode);
+            data[LINK_REQUEST_BASE_SIZE..].copy_from_slice(&sig);
+            PacketData::Owned(data)
+        }
+
+        /// Build a fake link request payload WITHOUT signaling bytes (64 bytes).
+        fn make_lr_payload_no_signaling() -> PacketData {
+            PacketData::Owned(alloc::vec![0u8; LINK_REQUEST_BASE_SIZE])
+        }
+
+        #[test]
+        fn test_clamp_tcp_to_udp() {
+            // TCP (HW_MTU=262144) → relay → UDP (HW_MTU=1064)
+            let mut hw_mtus = BTreeMap::new();
+            hw_mtus.insert(0, 262144); // TCP prev-hop
+            hw_mtus.insert(1, 1064); // UDP next-hop
+
+            let data = make_lr_payload(262144, 1);
+            let result =
+                Transport::<MockClock, NoStorage>::clamp_link_request_mtu(&data, 0, 1, &hw_mtus);
+
+            let clamped = result.expect("Should have clamped");
+            let payload = clamped.as_slice();
+            assert_eq!(payload.len(), LINK_REQUEST_BASE_SIZE + SIGNALING_SIZE);
+
+            let sig: [u8; 3] = payload[LINK_REQUEST_BASE_SIZE..].try_into().unwrap();
+            let (clamped_mtu, mode) = decode_signaling_bytes(&sig);
+            assert_eq!(clamped_mtu, 1064, "Should clamp to UDP HW_MTU");
+            assert_eq!(mode, 1, "Mode should be preserved");
+        }
+
+        #[test]
+        fn test_no_clamp_same_mtu() {
+            // Both interfaces same MTU — no clamping needed
+            let mut hw_mtus = BTreeMap::new();
+            hw_mtus.insert(0, 1064);
+            hw_mtus.insert(1, 1064);
+
+            let data = make_lr_payload(1064, 1);
+            let result =
+                Transport::<MockClock, NoStorage>::clamp_link_request_mtu(&data, 0, 1, &hw_mtus);
+
+            assert!(result.is_none(), "No clamping needed when MTUs match");
+        }
+
+        #[test]
+        fn test_no_clamp_next_hop_larger() {
+            // Next-hop MTU is larger than signaled — no clamping
+            let mut hw_mtus = BTreeMap::new();
+            hw_mtus.insert(0, 1064);
+            hw_mtus.insert(1, 262144);
+
+            let data = make_lr_payload(1064, 1);
+            let result =
+                Transport::<MockClock, NoStorage>::clamp_link_request_mtu(&data, 0, 1, &hw_mtus);
+
+            assert!(
+                result.is_none(),
+                "No clamping when next-hop is larger than signaled"
+            );
+        }
+
+        #[test]
+        fn test_no_signaling_bytes_passthrough() {
+            // 64-byte request (no signaling) — should pass through unchanged
+            let mut hw_mtus = BTreeMap::new();
+            hw_mtus.insert(0, 262144);
+            hw_mtus.insert(1, 1064);
+
+            let data = make_lr_payload_no_signaling();
+            let result =
+                Transport::<MockClock, NoStorage>::clamp_link_request_mtu(&data, 0, 1, &hw_mtus);
+
+            assert!(result.is_none(), "No signaling bytes — pass through");
+        }
+
+        #[test]
+        fn test_no_next_hop_mtu_passthrough() {
+            // Next-hop HW_MTU not registered — should pass through
+            let mut hw_mtus = BTreeMap::new();
+            hw_mtus.insert(0, 262144);
+            // iface 1 not registered
+
+            let data = make_lr_payload(262144, 1);
+            let result =
+                Transport::<MockClock, NoStorage>::clamp_link_request_mtu(&data, 0, 1, &hw_mtus);
+
+            assert!(result.is_none(), "Unknown next-hop MTU — pass through");
+        }
+
+        #[test]
+        fn test_clamp_to_prev_hop_when_smaller() {
+            // Signaled MTU higher than both interfaces, prev-hop is bottleneck
+            let mut hw_mtus = BTreeMap::new();
+            hw_mtus.insert(0, 500); // prev-hop bottleneck
+            hw_mtus.insert(1, 1064); // next-hop
+
+            let data = make_lr_payload(262144, 1);
+            let result =
+                Transport::<MockClock, NoStorage>::clamp_link_request_mtu(&data, 0, 1, &hw_mtus);
+
+            let clamped = result.expect("Should have clamped");
+            let sig: [u8; 3] = clamped.as_slice()[LINK_REQUEST_BASE_SIZE..]
+                .try_into()
+                .unwrap();
+            let (clamped_mtu, _) = decode_signaling_bytes(&sig);
+            assert_eq!(clamped_mtu, 500, "Should clamp to prev-hop HW_MTU");
+        }
+
+        #[test]
+        fn test_clamp_preserves_mode() {
+            // Verify mode byte is preserved through clamping
+            let mut hw_mtus = BTreeMap::new();
+            hw_mtus.insert(0, 262144);
+            hw_mtus.insert(1, 1064);
+
+            for mode in [0u8, 1, 3, 7] {
+                let data = make_lr_payload(262144, mode);
+                let result = Transport::<MockClock, NoStorage>::clamp_link_request_mtu(
+                    &data, 0, 1, &hw_mtus,
+                );
+
+                let clamped = result.expect("Should have clamped");
+                let sig: [u8; 3] = clamped.as_slice()[LINK_REQUEST_BASE_SIZE..]
+                    .try_into()
+                    .unwrap();
+                let (_, decoded_mode) = decode_signaling_bytes(&sig);
+                assert_eq!(decoded_mode, mode, "Mode should be preserved");
+            }
+        }
+
+        #[test]
+        fn test_clamp_unknown_prev_hop_only_uses_next_hop() {
+            // prev-hop HW_MTU not registered — defaults to MAX, only next-hop matters
+            let mut hw_mtus = BTreeMap::new();
+            // iface 0 not registered
+            hw_mtus.insert(1, 1064);
+
+            let data = make_lr_payload(262144, 1);
+            let result =
+                Transport::<MockClock, NoStorage>::clamp_link_request_mtu(&data, 0, 1, &hw_mtus);
+
+            let clamped = result.expect("Should have clamped");
+            let sig: [u8; 3] = clamped.as_slice()[LINK_REQUEST_BASE_SIZE..]
+                .try_into()
+                .unwrap();
+            let (clamped_mtu, _) = decode_signaling_bytes(&sig);
+            assert_eq!(clamped_mtu, 1064, "Should clamp to next-hop only");
+        }
+
+        #[test]
+        fn test_clamp_preserves_base_payload() {
+            // Verify base 64 bytes are not modified by clamping
+            let mut hw_mtus = BTreeMap::new();
+            hw_mtus.insert(0, 262144);
+            hw_mtus.insert(1, 1064);
+
+            let mut base = [0xABu8; LINK_REQUEST_BASE_SIZE];
+            base[0] = 0x42;
+            base[63] = 0xFF;
+            let mut payload = base.to_vec();
+            payload.extend_from_slice(&encode_signaling_bytes(262144, 1));
+
+            let data = PacketData::Owned(payload);
+            let result =
+                Transport::<MockClock, NoStorage>::clamp_link_request_mtu(&data, 0, 1, &hw_mtus);
+
+            let clamped = result.expect("Should have clamped");
+            assert_eq!(
+                &clamped.as_slice()[..LINK_REQUEST_BASE_SIZE],
+                &base,
+                "Base payload should be preserved"
             );
         }
     }

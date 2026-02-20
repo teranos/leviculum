@@ -237,6 +237,9 @@ fn test_destination_hash_known_vector() {
 /// Verify link request packet byte layout.
 ///
 /// This test verifies the exact byte-level layout of a link request packet.
+///
+/// Link requests always include 3-byte MTU signaling bytes (since MTU negotiation),
+/// making the payload 67 bytes (64 base + 3 signaling) and total 86 bytes.
 #[test]
 fn test_link_request_packet_byte_layout() {
     let dest_hash = [0x42u8; TRUNCATED_HASHBYTES];
@@ -244,8 +247,12 @@ fn test_link_request_packet_byte_layout() {
 
     let raw = link.build_link_request_packet(None);
 
-    // Expected: [flags(1)] [hops(1)] [dest_hash(16)] [context(1)] [payload(64)]
-    assert_eq!(raw.len(), 83, "Link request should be 83 bytes total");
+    // Expected: [flags(1)] [hops(1)] [dest_hash(16)] [context(1)] [payload(64+3 signaling)]
+    assert_eq!(
+        raw.len(),
+        86,
+        "Link request should be 86 bytes (83 base + 3 signaling)"
+    );
 
     // Byte 0: flags = LinkRequest(0x02), H1, broadcast, single
     assert_eq!(raw[0], 0x02, "Flags should be 0x02 (LinkRequest)");
@@ -275,11 +282,17 @@ fn test_link_request_packet_byte_layout() {
         "Ed25519 verifying key mismatch"
     );
 
+    // Bytes 83..86: MTU signaling bytes (3 bytes)
+    // With hw_mtu=None, defaults to base MTU (500)
+    let signaling = &raw[83..86];
+    assert_eq!(signaling.len(), 3, "Signaling bytes should be 3 bytes");
+
     println!("Link request byte layout verified:");
-    println!("  [0]:     0x{:02x} (flags)", raw[0]);
-    println!("  [1]:     0x{:02x} (hops)", raw[1]);
-    println!("  [2..18]: dest_hash {:02x?}...", &raw[2..6]);
-    println!("  [18]:    0x{:02x} (context)", raw[18]);
+    println!("  [0]:      0x{:02x} (flags)", raw[0]);
+    println!("  [1]:      0x{:02x} (hops)", raw[1]);
+    println!("  [2..18]:  dest_hash {:02x?}...", &raw[2..6]);
+    println!("  [18]:     0x{:02x} (context)", raw[18]);
     println!("  [19..51]: ephemeral_pub {:02x?}...", &raw[19..23]);
     println!("  [51..83]: verifying_key {:02x?}...", &raw[51..55]);
+    println!("  [83..86]: signaling {:02x?}", signaling);
 }

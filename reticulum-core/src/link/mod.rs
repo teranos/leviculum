@@ -55,7 +55,7 @@ use rand_core::CryptoRngCore;
 
 // Link request/proof size constants
 /// Size of link request payload without signaling (X25519 pub + Ed25519 pub)
-const LINK_REQUEST_BASE_SIZE: usize = 64;
+pub(crate) const LINK_REQUEST_BASE_SIZE: usize = 64;
 /// Size of link request payload with MTU signaling
 const LINK_REQUEST_SIGNALING_SIZE: usize = 67;
 /// Size of signed data in proof (link_id + X25519 pub + Ed25519 pub + signaling)
@@ -63,13 +63,13 @@ const PROOF_SIGNED_DATA_SIZE: usize = 83; // 16 + 32 + 32 + 3
 /// Size of link establishment proof data (signature + X25519 pub + signaling)
 const LINK_PROOF_SIZE: usize = 99; // 64 + 32 + 3
 /// Size of signaling bytes (21-bit MTU + 3-bit mode)
-const SIGNALING_SIZE: usize = 3;
+pub(crate) const SIGNALING_SIZE: usize = 3;
 
 /// Encode MTU and mode into 3-byte signaling format
 ///
 /// Format: 21-bit MTU (bits 0-20) + 3-bit mode (bits 21-23)
 /// Returns the lower 3 bytes of the big-endian representation.
-fn encode_signaling_bytes(mtu: u32, mode: u8) -> [u8; SIGNALING_SIZE] {
+pub(crate) fn encode_signaling_bytes(mtu: u32, mode: u8) -> [u8; SIGNALING_SIZE] {
     let signaling =
         (mtu & SIGNALING_MTU_MASK) | ((mode as u32 & SIGNALING_MODE_MASK) << SIGNALING_MODE_SHIFT);
     let bytes = signaling.to_be_bytes();
@@ -80,7 +80,7 @@ fn encode_signaling_bytes(mtu: u32, mode: u8) -> [u8; SIGNALING_SIZE] {
 ///
 /// Inverse of `encode_signaling_bytes()`. Extracts the 21-bit MTU and
 /// 3-bit mode from the packed big-endian representation.
-fn decode_signaling_bytes(bytes: &[u8; SIGNALING_SIZE]) -> (u32, u8) {
+pub(crate) fn decode_signaling_bytes(bytes: &[u8; SIGNALING_SIZE]) -> (u32, u8) {
     let raw = (bytes[0] as u32) << 16 | (bytes[1] as u32) << 8 | bytes[2] as u32;
     let mtu = raw & SIGNALING_MTU_MASK;
     let mode = ((raw >> SIGNALING_MODE_SHIFT) & SIGNALING_MODE_MASK) as u8;

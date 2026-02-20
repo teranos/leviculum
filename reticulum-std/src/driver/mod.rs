@@ -477,6 +477,24 @@ impl ReticulumNode {
         *self.inner.lock().unwrap().identity().hash()
     }
 
+    /// Get the negotiated MTU for a link
+    ///
+    /// Returns `None` if the link does not exist.
+    pub fn link_negotiated_mtu(&self, link_id: &LinkId) -> Option<u32> {
+        self.inner
+            .lock()
+            .unwrap()
+            .link(link_id)
+            .map(|l| l.negotiated_mtu())
+    }
+
+    /// Get the encrypted link MDU (maximum data unit) for a link
+    ///
+    /// Returns `None` if the link does not exist.
+    pub fn link_mdu(&self, link_id: &LinkId) -> Option<usize> {
+        self.inner.lock().unwrap().link(link_id).map(|l| l.mdu())
+    }
+
     /// Register a known identity for a destination
     ///
     /// Identities learned from received announces are cached automatically —

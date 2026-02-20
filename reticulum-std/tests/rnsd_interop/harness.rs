@@ -939,11 +939,15 @@ impl TestDaemon {
             .get("state")
             .and_then(|v| v.as_str())
             .map(|s| s.to_string());
+        let mtu = result.get("mtu").and_then(|v| v.as_u64()).map(|v| v as u32);
+        let mdu = result.get("mdu").and_then(|v| v.as_u64()).map(|v| v as u32);
 
         Ok(LinkStatusInfo {
             status,
             link_hash: link_hash_result,
             state,
+            mtu,
+            mdu,
         })
     }
 
@@ -1194,6 +1198,8 @@ pub struct LinkStatusInfo {
     pub status: String,
     pub link_hash: String,
     pub state: Option<String>,
+    pub mtu: Option<u32>,
+    pub mdu: Option<u32>,
 }
 
 /// Result from waiting for a link state.

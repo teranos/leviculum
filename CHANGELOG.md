@@ -9,6 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 - **Link MTU discovery compatibility** — transport relay no longer rejects packets larger than the base 500-byte MTU. Python Reticulum 1.1.3 negotiates higher link MTUs over TCP (up to 262 KB), causing resource transfers (e.g. `rncp`) through lrnsd to fail with "packet too long". Removed the hard MTU check from `Packet::unpack()` and `Packet::pack()`, and switched forwarding buffers from fixed `[0u8; 500]` to dynamically-sized `Vec<u8>`.
+- **Relay MTU clamping for mixed-interface paths** — Rust transport relays now clamp link request signaling bytes to `min(path_mtu, prev_hop_hw_mtu, next_hop_hw_mtu)` when forwarding, matching Python `Transport.py:1453-1480`. Without this, a link request entering via TCP (HW_MTU=262144) and leaving via UDP (HW_MTU=1064) would negotiate 262144, causing the sender to emit packets that UDP silently drops.
 
 ### Added
 - **Link MTU negotiation** — Rust-originated links now negotiate larger MTUs on capable interfaces, matching Python Reticulum 1.1.3. Link requests always include 3-byte signaling bytes encoding the outbound interface's hardware MTU (TCP=262144, UDP=1064). The responder echoes the negotiated MTU in the proof. `Link::mdu()` computes the encrypted link MDU from the negotiated MTU using Python's formula (AES block-aligned). With default MTU=500 the link MDU is 431; with TCP's 262144 it is 262063. Interface HW_MTU is tracked per-interface in Transport and cleaned up on interface-down.
