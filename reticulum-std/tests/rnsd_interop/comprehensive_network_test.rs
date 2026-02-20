@@ -561,6 +561,7 @@ async fn phase2_link_establishment(network: &mut MultiNodeTestNetwork) {
             link_id,
             network.rust_b.dest_hash,
             &mut OsRng,
+            None,
         )
         .expect("Failed to create incoming link");
 
@@ -687,6 +688,7 @@ async fn phase2_link_establishment(network: &mut MultiNodeTestNetwork) {
             link_id,
             network.rust_d.dest_hash,
             &mut OsRng,
+            None,
         )
         .expect("Failed to create incoming link");
 

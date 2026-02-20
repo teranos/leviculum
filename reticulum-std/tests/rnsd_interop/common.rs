@@ -1178,6 +1178,21 @@ pub const UDP_LINK_MDU: usize = 991;
 /// Maximum channel payload over UDP link: 991 - 6 = 985
 pub const UDP_MAX_CHANNEL_PAYLOAD: usize = UDP_LINK_MDU - CHANNEL_OVERHEAD;
 
+/// Negotiated MTU when connecting through a Python daemon over UDP.
+///
+/// Python's UDPInterface has `AUTOCONFIGURE_MTU=False` and `FIXED_MTU=False`,
+/// so `Transport.next_hop_interface_hw_mtu()` returns None and
+/// `Transport.inbound()` clamps the link MTU to `RNS.Reticulum.MTU = 500`.
+/// Even though UDPInterface.HW_MTU = 1064, the link-level negotiation
+/// always settles on the base protocol MTU for UDP interop with Python.
+pub const DAEMON_UDP_NEGOTIATED_MTU: u32 = 500;
+
+/// Encrypted link MDU for daemon UDP: floor((500 - 1 - 19 - 48) / 16) * 16 - 1 = 431
+pub const DAEMON_UDP_LINK_MDU: usize = 431;
+
+/// Maximum channel payload over a daemon UDP link: 431 - 6 = 425
+pub const DAEMON_UDP_MAX_CHANNEL_PAYLOAD: usize = DAEMON_UDP_LINK_MDU - CHANNEL_OVERHEAD;
+
 /// Direct Rust-to-Rust TCP link MDU (no daemon clamping):
 /// floor((262144 - 1 - 19 - 48) / 16) * 16 - 1 = 262063
 pub const DIRECT_TCP_LINK_MDU: usize = 262063;

@@ -28,7 +28,7 @@
 
 ## Aktueller Stand
 
-**Aktuelle Version: 0.5.19.** Phase 1 (Protokoll-Fundament) und Phase 2 (Core API & Full Node) sind vollständig abgeschlossen, inklusive eines 7-phasigen Code-Refactorings (63 Issues in `doc/BATTLEPLAN.md`). Storage-Trait-Refactoring abgeschlossen: alle 11 Transport/NodeCore-Sammlungen auf typsicheren Storage-Trait migriert, FileStorage umschließt MemoryStorage mit Python-kompatibler Persistenz. UDP-Interface implementiert (Socket, I/O-Task, Config-Parsing, Interop-Tests). Logging-Qualität verbessert: 68 neue tracing-Aufrufe in Transport, Link-Management und Node-Layer — `lrnsd -v` zeigt Routing-Entscheidungen und Link-Lifecycle, `lrnsd -vv` zeigt Paketfluss und Drop-Gründe. Offene Issues: E10 (Interface-spezifischer Jitter für Shared-Medium-Interfaces).
+**Aktuelle Version: 0.5.19.** Phase 1 (Protokoll-Fundament) und Phase 2 (Core API & Full Node) sind vollständig abgeschlossen, inklusive eines 7-phasigen Code-Refactorings (63 Issues in `doc/BATTLEPLAN.md`). Storage-Trait-Refactoring abgeschlossen: alle 11 Transport/NodeCore-Sammlungen auf typsicheren Storage-Trait migriert, FileStorage umschließt MemoryStorage mit Python-kompatibler Persistenz. UDP-Interface implementiert (Socket, I/O-Task, Config-Parsing, Interop-Tests). Link-MTU-Verhandlung vollständig: Initiator-seitig, Responder-seitig mit Interface-HW_MTU-Clamping, Relay-Clamping bei gemischten Interfaces, 14 Interop-Tests (inkl. Python-zu-Python-Baseline). Logging-Qualität verbessert: 68 neue tracing-Aufrufe in Transport, Link-Management und Node-Layer — `lrnsd -v` zeigt Routing-Entscheidungen und Link-Lifecycle, `lrnsd -vv` zeigt Paketfluss und Drop-Gründe. Offene Issues: E10 (Interface-spezifischer Jitter für Shared-Medium-Interfaces).
 
 **Kernfunktionalität:** `NodeCore` (reticulum-core) und `ReticulumNode` (reticulum-std) bieten eine einheitliche async-kompatible API für Destinations, Links, Channels, Single-Packet-Verschlüsselung und Proof-Delivery. Vollständige Interoperabilität mit Python rnsd ist durch umfangreiche Interop-Tests nachgewiesen.
 
@@ -137,7 +137,7 @@ Vollständige API für Destinations und Links. Leviculum kann sowohl Client als 
 - [x] 32-Byte Path Requests für Non-Transport-Nodes
 - [x] Multi-Hop Link von Non-Transport Nodes
 
-Kleinere Lücken (nicht blockierend für v1.0): Announce-Expiry-Timer, mehrere Pfade pro Destination. MTU-Signaling für Link-MDU-Verhandlung ist implementiert (Link-Requests enthalten immer 3 Signaling-Bytes; Responder echot die MTU zurück; `Link::mdu()` berechnet den verschlüsselten MDU aus der verhandelten MTU). Announce-Bandbreitenbegrenzung ist implementiert, aber für TCP-Interfaces inaktiv (bitrate=0); wird für zukünftige LoRa/Serial-Interfaces aktiviert (siehe E10 in `doc/OPEN_ISSUES_TRACKER.md`).
+Kleinere Lücken (nicht blockierend für v1.0): Announce-Expiry-Timer, mehrere Pfade pro Destination. MTU-Signaling für Link-MDU-Verhandlung ist implementiert (Link-Requests enthalten immer 3 Signaling-Bytes; Responder echot die MTU zurück; `Link::mdu()` berechnet den verschlüsselten MDU aus der verhandelten MTU; Responder-seitiges Clamping auf Interface-HW_MTU). Announce-Bandbreitenbegrenzung ist implementiert, aber für TCP-Interfaces inaktiv (bitrate=0); wird für zukünftige LoRa/Serial-Interfaces aktiviert (siehe E10 in `doc/OPEN_ISSUES_TRACKER.md`).
 
 ### Bekannte Bugs und Lücken
 
@@ -291,6 +291,8 @@ Sicherheitsfeatures verdrahten, Daemon-Zustand persistieren, Release-Qualität e
 | Full Link Lifecycle (Bidirektionale Daten, ACKs, Close durch Relay) | ✅ |
 | Responder Node (Rust als Connection-Responder) | ✅ |
 | Flood/Loop-Prevention (Triangle, Diamond, redundante Pfade) | ✅ |
+| UDP Interop (Announce, Link, Daten, MTU-Verhandlung, Python-Baseline) | ✅ |
+| MTU Negotiation (TCP, UDP, Relay-Clamping, Boundary, Bidirektional) | ✅ |
 | Resource Transfer | ⬜ (v1.1) |
 
 ### Testumgebung

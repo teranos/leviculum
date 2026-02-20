@@ -284,7 +284,7 @@ impl TestDaemon {
     }
 
     /// Start a daemon with specific TCP and UDP ports.
-    async fn start_with_udp_ports(
+    pub async fn start_with_udp_ports(
         rns_port: u16,
         cmd_port: u16,
         udp_listen_port: u16,
@@ -1273,6 +1273,38 @@ fn find_four_available_ports() -> Result<(u16, u16, u16, u16), HarnessError> {
     drop(udp4);
 
     Ok((port1, port2, port3, port4))
+}
+
+/// Find N distinct available ports: first 2 via TCP, rest via UDP.
+///
+/// All sockets are held simultaneously to ensure uniqueness, then released.
+pub fn find_available_ports<const N: usize>() -> Result<[u16; N], HarnessError> {
+    assert!(N >= 2, "need at least 2 ports");
+    let mut ports = [0u16; N];
+    let mut tcp_listeners = Vec::with_capacity(2);
+    let mut udp_sockets = Vec::with_capacity(N.saturating_sub(2));
+
+    // First 2 ports via TCP (for rns + cmd)
+    for port in ports.iter_mut().take(2) {
+        let listener = TcpListener::bind("127.0.0.1:0").map_err(HarnessError::SpawnFailed)?;
+        *port = listener
+            .local_addr()
+            .map_err(HarnessError::SpawnFailed)?
+            .port();
+        tcp_listeners.push(listener);
+    }
+
+    // Remaining ports via UDP
+    for port in ports.iter_mut().skip(2) {
+        let sock = std::net::UdpSocket::bind("127.0.0.1:0").map_err(HarnessError::SpawnFailed)?;
+        *port = sock.local_addr().map_err(HarnessError::SpawnFailed)?.port();
+        udp_sockets.push(sock);
+    }
+
+    drop(tcp_listeners);
+    drop(udp_sockets);
+
+    Ok(ports)
 }
 
 // =========================================================================

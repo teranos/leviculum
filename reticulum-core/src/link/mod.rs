@@ -464,6 +464,7 @@ impl Link {
         link_id: LinkId,
         destination_hash: DestinationHash,
         rng: &mut impl CryptoRngCore,
+        hw_mtu: Option<u32>,
     ) -> Result<Self, LinkError> {
         // LINK_REQUEST payload: [peer_x25519_pub (32)] [peer_ed25519_pub (32)] [signaling (0-3)]
         if request_data.len() < LINK_REQUEST_BASE_SIZE {
@@ -486,10 +487,11 @@ impl Link {
                 .map_err(|_| LinkError::InvalidRequest)?;
             let (mtu, mode) = decode_signaling_bytes(&sig_bytes);
             validate_mode(mode)?;
-            if mtu >= MTU as u32 {
-                mtu
-            } else {
-                MTU as u32
+            let path_mtu = if mtu >= MTU as u32 { mtu } else { MTU as u32 };
+            // Clamp to receiving interface's HW_MTU (matches Python Transport.inbound)
+            match hw_mtu {
+                Some(iface_mtu) => path_mtu.min(iface_mtu),
+                None => path_mtu,
             }
         } else {
             MTU as u32
@@ -2126,7 +2128,8 @@ mod tests {
         let link_id = Link::calculate_link_id(&raw_packet);
 
         // Create responder's link
-        let responder = Link::new_incoming(&request_data, link_id, dest_hash, &mut OsRng).unwrap();
+        let responder =
+            Link::new_incoming(&request_data, link_id, dest_hash, &mut OsRng, None).unwrap();
 
         assert_eq!(responder.state(), LinkState::Pending);
         assert!(!responder.is_initiator());
@@ -2144,7 +2147,7 @@ mod tests {
 
         // Too short request data
         let short_data = [0u8; 63];
-        let result = Link::new_incoming(&short_data, link_id, dest_hash, &mut OsRng);
+        let result = Link::new_incoming(&short_data, link_id, dest_hash, &mut OsRng, None);
         assert!(matches!(result, Err(LinkError::InvalidRequest)));
     }
 
@@ -2172,7 +2175,7 @@ mod tests {
 
         // Create responder's link
         let mut responder =
-            Link::new_incoming(&request_data, link_id, dest_hash, &mut OsRng).unwrap();
+            Link::new_incoming(&request_data, link_id, dest_hash, &mut OsRng, None).unwrap();
 
         // Build proof packet
         let proof_packet = responder
@@ -2207,7 +2210,7 @@ mod tests {
         let link_id = LinkId::new([0xAB; TRUNCATED_HASHBYTES]);
 
         let mut responder =
-            Link::new_incoming(&request_data, link_id, dest_hash, &mut OsRng).unwrap();
+            Link::new_incoming(&request_data, link_id, dest_hash, &mut OsRng, None).unwrap();
 
         // Build proof once (transitions to Handshake)
         responder
@@ -2258,7 +2261,7 @@ mod tests {
 
         // --- Responder side ---
         let mut responder =
-            Link::new_incoming(&request_data, link_id, dest_hash, &mut OsRng).unwrap();
+            Link::new_incoming(&request_data, link_id, dest_hash, &mut OsRng, None).unwrap();
 
         // Build proof packet
         let proof_packet = responder
@@ -2303,7 +2306,7 @@ mod tests {
         initiator.set_link_id(link_id);
 
         let mut responder =
-            Link::new_incoming(&request_data, link_id, dest_hash, &mut OsRng).unwrap();
+            Link::new_incoming(&request_data, link_id, dest_hash, &mut OsRng, None).unwrap();
 
         // Build and process proof
         let proof_packet = responder
@@ -2339,7 +2342,7 @@ mod tests {
         let request_data = initiator.create_link_request();
 
         let mut responder =
-            Link::new_incoming(&request_data, link_id, dest_hash, &mut OsRng).unwrap();
+            Link::new_incoming(&request_data, link_id, dest_hash, &mut OsRng, None).unwrap();
 
         // Responder is still in Pending state (no proof built yet)
         let fake_data = [0u8; 64];
@@ -2584,7 +2587,7 @@ mod tests {
 
         // Responder should never proactively send keepalives
         let mut responder =
-            Link::new_incoming(&request_data, link_id, dest_hash, &mut OsRng).unwrap();
+            Link::new_incoming(&request_data, link_id, dest_hash, &mut OsRng, None).unwrap();
         responder.set_state(LinkState::Active);
         responder.mark_established(1000);
         responder.set_timing_for_test(10, responder.stale_time_secs(), 1000);
@@ -2637,7 +2640,7 @@ mod tests {
         initiator.set_link_id(link_id);
 
         let mut responder =
-            Link::new_incoming(&request_data, link_id, dest_hash, &mut OsRng).unwrap();
+            Link::new_incoming(&request_data, link_id, dest_hash, &mut OsRng, None).unwrap();
 
         let proof_packet = responder
             .build_proof_packet(&dest_identity, MTU as u32, 1)
@@ -2915,7 +2918,8 @@ mod tests {
         let request_data = outgoing.create_link_request_with_mtu(262_144, 1);
         assert_eq!(request_data.len(), LINK_REQUEST_SIGNALING_SIZE);
 
-        let incoming = Link::new_incoming(&request_data, link_id, dest_hash, &mut OsRng).unwrap();
+        let incoming =
+            Link::new_incoming(&request_data, link_id, dest_hash, &mut OsRng, None).unwrap();
         assert_eq!(incoming.negotiated_mtu(), 262_144);
         assert_eq!(incoming.mdu(), 262_063);
     }
@@ -2930,7 +2934,8 @@ mod tests {
         let request_data = outgoing.create_link_request();
         assert_eq!(request_data.len(), LINK_REQUEST_BASE_SIZE);
 
-        let incoming = Link::new_incoming(&request_data, link_id, dest_hash, &mut OsRng).unwrap();
+        let incoming =
+            Link::new_incoming(&request_data, link_id, dest_hash, &mut OsRng, None).unwrap();
         // No signaling → defaults to base MTU
         assert_eq!(incoming.negotiated_mtu(), MTU as u32);
         assert_eq!(incoming.mdu(), 431);
@@ -2945,8 +2950,51 @@ mod tests {
         let outgoing = Link::new_outgoing(dest_hash, &mut OsRng);
         let request_data = outgoing.create_link_request_with_mtu(100, 1);
 
-        let incoming = Link::new_incoming(&request_data, link_id, dest_hash, &mut OsRng).unwrap();
+        let incoming =
+            Link::new_incoming(&request_data, link_id, dest_hash, &mut OsRng, None).unwrap();
         assert_eq!(incoming.negotiated_mtu(), MTU as u32);
+    }
+
+    #[test]
+    fn test_new_incoming_clamp_to_hw_mtu() {
+        let dest_hash = DestinationHash::new([0x42; TRUNCATED_HASHBYTES]);
+        let link_id = LinkId::new([0x01; TRUNCATED_HASHBYTES]);
+
+        // Signaled MTU=262144, but interface HW_MTU=1064 → clamp to 1064
+        let outgoing = Link::new_outgoing(dest_hash, &mut OsRng);
+        let request_data = outgoing.create_link_request_with_mtu(262_144, 1);
+
+        let incoming =
+            Link::new_incoming(&request_data, link_id, dest_hash, &mut OsRng, Some(1064)).unwrap();
+        assert_eq!(incoming.negotiated_mtu(), 1064);
+    }
+
+    #[test]
+    fn test_new_incoming_no_clamp_without_hw_mtu() {
+        let dest_hash = DestinationHash::new([0x42; TRUNCATED_HASHBYTES]);
+        let link_id = LinkId::new([0x01; TRUNCATED_HASHBYTES]);
+
+        // Signaled MTU=262144, no interface HW_MTU → keep 262144
+        let outgoing = Link::new_outgoing(dest_hash, &mut OsRng);
+        let request_data = outgoing.create_link_request_with_mtu(262_144, 1);
+
+        let incoming =
+            Link::new_incoming(&request_data, link_id, dest_hash, &mut OsRng, None).unwrap();
+        assert_eq!(incoming.negotiated_mtu(), 262_144);
+    }
+
+    #[test]
+    fn test_new_incoming_no_upscale_from_hw_mtu() {
+        let dest_hash = DestinationHash::new([0x42; TRUNCATED_HASHBYTES]);
+        let link_id = LinkId::new([0x01; TRUNCATED_HASHBYTES]);
+
+        // Signaled MTU=500, interface HW_MTU=8192 → keep 500 (no upscale)
+        let outgoing = Link::new_outgoing(dest_hash, &mut OsRng);
+        let request_data = outgoing.create_link_request_with_mtu(500, 1);
+
+        let incoming =
+            Link::new_incoming(&request_data, link_id, dest_hash, &mut OsRng, Some(8192)).unwrap();
+        assert_eq!(incoming.negotiated_mtu(), 500);
     }
 
     #[test]
@@ -3011,7 +3059,7 @@ mod tests {
         let outgoing = Link::new_outgoing(dest_hash, &mut OsRng);
         let request_data = outgoing.create_link_request_with_mtu(500, 0x00);
 
-        let result = Link::new_incoming(&request_data, link_id, dest_hash, &mut OsRng);
+        let result = Link::new_incoming(&request_data, link_id, dest_hash, &mut OsRng, None);
         assert!(
             matches!(result, Err(LinkError::UnsupportedMode)),
             "expected UnsupportedMode, got {:?}",

@@ -2345,6 +2345,11 @@ impl<C: Clock, S: Storage> Transport<C, S> {
         self.interface_hw_mtus.remove(&id);
     }
 
+    /// Get the registered HW_MTU for a specific interface index.
+    pub(crate) fn interface_hw_mtu(&self, id: usize) -> Option<u32> {
+        self.interface_hw_mtus.get(&id).copied()
+    }
+
     /// Get the HW_MTU for the next-hop interface toward a destination.
     ///
     /// Looks up the path entry for the destination, then returns the registered

@@ -484,8 +484,14 @@ impl<R: CryptoRngCore, C: Clock, S: Storage> NodeCore<R, C, S> {
         let request_data = packet.data.as_slice();
 
         // Create the incoming link
-        let Ok(mut link) = Link::new_incoming(request_data, link_id, dest_hash, &mut self.rng)
-        else {
+        let iface_hw_mtu = self.transport.interface_hw_mtu(interface_index);
+        let Ok(mut link) = Link::new_incoming(
+            request_data,
+            link_id,
+            dest_hash,
+            &mut self.rng,
+            iface_hw_mtu,
+        ) else {
             tracing::warn!(
                 link = %HexShort(link_id.as_bytes()),
                 "Dropped malformed link request, failed to parse"

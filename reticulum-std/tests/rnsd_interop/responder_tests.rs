@@ -142,7 +142,7 @@ async fn test_responder_basic_handshake() {
     let request_data = &raw_packet[19..];
 
     // Create incoming link
-    let mut link = Link::new_incoming(request_data, link_id, dest_hash, &mut OsRng)
+    let mut link = Link::new_incoming(request_data, link_id, dest_hash, &mut OsRng, None)
         .expect("Failed to create incoming link");
 
     assert_eq!(link.state(), LinkState::Pending);
@@ -260,7 +260,8 @@ async fn test_responder_bidirectional_data() {
     .expect("Should receive LINK_REQUEST");
     let link_id = LinkId::new(link_id_bytes);
 
-    let mut link = Link::new_incoming(&raw_packet[19..], link_id, dest_hash, &mut OsRng).unwrap();
+    let mut link =
+        Link::new_incoming(&raw_packet[19..], link_id, dest_hash, &mut OsRng, None).unwrap();
 
     // Send proof
     let proof_packet = link.build_proof_packet(identity, 500, 1).unwrap();
@@ -402,7 +403,7 @@ async fn test_responder_key_derivation_match() {
     .await
     .unwrap();
     let link_id = LinkId::new(link_id_bytes);
-    let mut link = Link::new_incoming(&raw[19..], link_id, dest_hash, &mut OsRng).unwrap();
+    let mut link = Link::new_incoming(&raw[19..], link_id, dest_hash, &mut OsRng, None).unwrap();
 
     let proof = link.build_proof_packet(identity, 500, 1).unwrap();
     send_framed(&mut stream, &proof).await;
@@ -509,7 +510,7 @@ async fn test_responder_multiple_packets() {
     .await
     .unwrap();
     let link_id = LinkId::new(link_id_bytes);
-    let mut link = Link::new_incoming(&raw[19..], link_id, dest_hash, &mut OsRng).unwrap();
+    let mut link = Link::new_incoming(&raw[19..], link_id, dest_hash, &mut OsRng, None).unwrap();
 
     let proof = link.build_proof_packet(identity, 500, 1).unwrap();
     send_framed(&mut stream, &proof).await;

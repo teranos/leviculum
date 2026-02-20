@@ -6,7 +6,7 @@
 //! ## Test Groups
 //!
 //! - **A: TCP** — negotiated MTU over TCP links through a Python daemon
-//! - **B: UDP** — negotiated MTU over UDP links (direct Rust-to-Rust)
+//! - **B: UDP** — negotiated MTU over UDP links (Python-to-Python baseline, Rust-to-Rust, Rust-to-Python, Python-to-Rust)
 //! - **C: Boundary** — exact MDU, one-byte, and over-MDU payloads
 //! - **D: Multi-hop** — MTU clamping through mixed-interface relays
 //!
@@ -16,6 +16,11 @@
 //! With the default `BITRATE_GUESS = 10_000_000` (10 Mbps) and the strictly-greater
 //! check `> 10_000_000`, the bitrate falls through to `> 5_000_000 → HW_MTU = 8192`.
 //! All daemon TCP tests therefore negotiate MTU=8192, not the class-level 262144.
+//!
+//! For UDP, Python's UDPInterface has `AUTOCONFIGURE_MTU=False` and `FIXED_MTU=False`,
+//! so `Transport.next_hop_interface_hw_mtu()` returns None and the Transport layer
+//! clamps link MTU to the base protocol MTU (500). Rust-to-Rust UDP links (B1)
+//! negotiate the full UDP HW_MTU (1064), but Python interop tests (B2, B3) negotiate 500.
 //!
 //! ## Running These Tests
 //!
@@ -810,6 +815,99 @@ async fn test_mtu_a0_direct_tcp_full_mtu() {
 // Group B: UDP MTU negotiation
 // =========================================================================
 
+/// B0: Python-to-Python UDP baseline — verify two Python daemons negotiate MTU=500.
+///
+/// Two Python daemons connected via UDP. Daemon A initiates a link to a
+/// destination on daemon B. Both sides should report MTU=500 (base protocol MTU),
+/// confirming that Python's UDPInterface does NOT set FIXED_MTU or AUTOCONFIGURE_MTU.
+///
+/// This baseline validates our code-reading conclusion independently and catches
+/// any future Python changes to UDPInterface MTU flags.
+#[tokio::test]
+async fn test_mtu_b0_python_to_python_udp_baseline() {
+    use crate::common::DAEMON_UDP_NEGOTIATED_MTU;
+    use crate::harness::find_available_ports;
+
+    // Allocate 6 ports: [rns_a, cmd_a, udp_a, rns_b, cmd_b, udp_b]
+    let ports: [u16; 6] = find_available_ports().expect("Failed to find 6 available ports");
+    let [rns_a, cmd_a, udp_a, rns_b, cmd_b, udp_b] = ports;
+
+    // Start daemon A: listens on udp_a, forwards to udp_b
+    let daemon_a = TestDaemon::start_with_udp_ports(rns_a, cmd_a, udp_a, udp_b)
+        .await
+        .expect("Failed to start daemon A");
+
+    // Start daemon B: listens on udp_b, forwards to udp_a
+    let daemon_b = TestDaemon::start_with_udp_ports(rns_b, cmd_b, udp_b, udp_a)
+        .await
+        .expect("Failed to start daemon B");
+
+    // Register destination on daemon B (accepts links)
+    let dest_info = daemon_b
+        .register_destination("mtu_b0", &["test"])
+        .await
+        .expect("Failed to register destination on daemon B");
+
+    // Announce from B so A learns the path
+    daemon_b
+        .announce_destination(&dest_info.hash, b"python-udp-b0")
+        .await
+        .expect("Failed to announce on daemon B");
+
+    // Wait for daemon A to learn the path
+    let dest_hash_bytes = hex::decode(&dest_info.hash).expect("Invalid dest hash hex");
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
+    let mut path_found = false;
+    while tokio::time::Instant::now() < deadline {
+        if daemon_a.has_path(&dest_hash_bytes).await {
+            path_found = true;
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(200)).await;
+    }
+    assert!(path_found, "Daemon A should learn path to daemon B");
+
+    // Daemon A creates a link to B
+    let link_hash = daemon_a
+        .create_link(&dest_info.hash, &dest_info.public_key, 15)
+        .await
+        .expect("Daemon A create_link failed");
+
+    // Wait briefly for link to stabilize
+    tokio::time::sleep(Duration::from_millis(500)).await;
+
+    // Verify MTU on daemon A (initiator)
+    let status_a = daemon_a
+        .get_link_status(&link_hash)
+        .await
+        .expect("Should get link status from daemon A");
+    assert_eq!(status_a.status, "found", "Daemon A link should be found");
+    if let Some(mtu_a) = status_a.mtu {
+        assert_eq!(
+            mtu_a, DAEMON_UDP_NEGOTIATED_MTU,
+            "Daemon A (initiator) should negotiate MTU={DAEMON_UDP_NEGOTIATED_MTU} over UDP"
+        );
+    }
+
+    // Verify MTU on daemon B (responder)
+    let status_b = daemon_b
+        .get_link_status(&link_hash)
+        .await
+        .expect("Should get link status from daemon B");
+    assert_eq!(status_b.status, "found", "Daemon B link should be found");
+    if let Some(mtu_b) = status_b.mtu {
+        assert_eq!(
+            mtu_b, DAEMON_UDP_NEGOTIATED_MTU,
+            "Daemon B (responder) should negotiate MTU={DAEMON_UDP_NEGOTIATED_MTU} over UDP"
+        );
+    }
+
+    println!(
+        "SUCCESS: B0 - Python-to-Python UDP baseline: A mtu={:?}, B mtu={:?} (expected {})",
+        status_a.mtu, status_b.mtu, DAEMON_UDP_NEGOTIATED_MTU
+    );
+}
+
 /// B1: Rust-to-Rust over UDP — verify negotiated MTU=1064 and data transfer.
 ///
 /// Uses ReticulumNodeBuilder with UDP interfaces.
@@ -958,15 +1056,330 @@ async fn test_mtu_b1_rust_to_rust_udp_mtu() {
     node_b.stop().await.ok();
 }
 
-/// B2: Rust-to-Python over UDP — test daemon only supports TCP.
+/// B2: Rust-to-Python over UDP — verify both sides agree on base MTU=500.
+///
+/// Rust (initiator, UDP) → Python daemon (responder, UDP)
+///
+/// Python's UDPInterface has AUTOCONFIGURE_MTU=False and FIXED_MTU=False,
+/// so Transport.inbound() clamps the link MTU to RNS.Reticulum.MTU=500
+/// even though UDPInterface.HW_MTU=1064. Both sides negotiate 500.
 #[tokio::test]
-#[ignore = "test daemon lacks UDP support"]
-async fn test_mtu_b2_rust_to_python_udp() {}
+async fn test_mtu_b2_rust_to_python_udp() {
+    use crate::common::{
+        extract_signing_key, parse_dest_hash, wait_for_link_established, wait_for_path_on_node,
+        DAEMON_UDP_LINK_MDU, DAEMON_UDP_MAX_CHANNEL_PAYLOAD, DAEMON_UDP_NEGOTIATED_MTU,
+    };
+    use reticulum_std::driver::ReticulumNodeBuilder;
 
-/// B3: Python-to-Rust over UDP — test daemon only supports TCP.
+    let daemon = TestDaemon::start_with_udp()
+        .await
+        .expect("Failed to start daemon with UDP");
+
+    let py_listen = daemon
+        .udp_listen_addr()
+        .expect("daemon should have UDP listen addr");
+    let rust_listen = daemon
+        .udp_forward_addr()
+        .expect("daemon should have UDP forward addr");
+
+    let mut node = ReticulumNodeBuilder::new()
+        .add_udp_interface(rust_listen, py_listen)
+        .build()
+        .await
+        .expect("Failed to build node");
+
+    node.start().await.expect("Failed to start node");
+
+    let mut events = node
+        .take_event_receiver()
+        .expect("Failed to get event receiver");
+
+    // Wait for UDP interface to settle
+    tokio::time::sleep(Duration::from_millis(500)).await;
+
+    // Register and announce a destination on the Python side
+    let dest_info = daemon
+        .register_destination("mtu_b2", &["test"])
+        .await
+        .expect("Failed to register destination");
+
+    daemon
+        .announce_destination(&dest_info.hash, b"python-udp-responder")
+        .await
+        .expect("Failed to announce");
+
+    // Wait for Rust to learn the path
+    let dest_hash = parse_dest_hash(&dest_info.hash);
+    assert!(
+        wait_for_path_on_node(&node, &dest_hash, Duration::from_secs(5)).await,
+        "Rust should learn path to Python destination over UDP"
+    );
+
+    // Initiate link
+    let signing_key = extract_signing_key(&dest_info.public_key);
+    let link_handle = node
+        .connect(&dest_hash, &signing_key)
+        .await
+        .expect("Failed to connect");
+    let link_id = *link_handle.link_id();
+
+    // Wait for link to be established
+    assert!(
+        wait_for_link_established(&mut events, &link_id, Duration::from_secs(10)).await,
+        "Link should be established over UDP"
+    );
+
+    // Verify negotiated MTU on Rust side — clamped to base MTU by Python
+    let mtu = node.link_negotiated_mtu(&link_id);
+    assert_eq!(
+        mtu,
+        Some(DAEMON_UDP_NEGOTIATED_MTU),
+        "Rust should negotiate daemon UDP MTU (base protocol MTU)"
+    );
+
+    let mdu = node.link_mdu(&link_id);
+    assert_eq!(
+        mdu,
+        Some(DAEMON_UDP_LINK_MDU),
+        "Rust MDU should be {}",
+        DAEMON_UDP_LINK_MDU
+    );
+
+    // Wait for daemon to finalize link table
+    tokio::time::sleep(Duration::from_millis(500)).await;
+
+    // Verify Python-side MTU
+    let link_hash = hex::encode(link_id.as_bytes());
+    let status = daemon
+        .get_link_status(&link_hash)
+        .await
+        .expect("Should get link status");
+
+    assert_eq!(status.status, "found");
+    if let Some(py_mtu) = status.mtu {
+        assert_eq!(
+            py_mtu, DAEMON_UDP_NEGOTIATED_MTU,
+            "Python should report base protocol MTU for UDP"
+        );
+    }
+
+    // Send max channel payload and verify receipt
+    let payload = generate_test_payload(DAEMON_UDP_MAX_CHANNEL_PAYLOAD);
+    link_handle.send(&payload).await.expect("Send failed");
+
+    tokio::time::sleep(Duration::from_secs(1)).await;
+    let packets = daemon.get_received_packets().await.unwrap_or_default();
+    assert!(
+        !packets.is_empty(),
+        "Python should receive data over UDP link"
+    );
+    assert!(
+        verify_test_payload(&packets[0].data),
+        "Payload integrity check failed"
+    );
+
+    println!(
+        "SUCCESS: B2 - Rust-to-Python UDP MTU={}, MDU={}, payload {} bytes verified",
+        DAEMON_UDP_NEGOTIATED_MTU, DAEMON_UDP_LINK_MDU, DAEMON_UDP_MAX_CHANNEL_PAYLOAD
+    );
+
+    node.stop().await.ok();
+}
+
+/// B3: Python-to-Rust over UDP — verify responder side MTU=500 (base protocol MTU).
+///
+/// Python daemon (initiator, UDP) → Rust (responder, UDP)
+///
+/// Python's `Transport.next_hop_interface_hw_mtu()` returns None for UDPInterface
+/// (AUTOCONFIGURE_MTU=False, FIXED_MTU=False), so Python initiates with MTU=500.
+/// Rust responder reads this from the link request and accepts with MTU=500.
+///
+/// `create_link` blocks until the link is fully established, so we must
+/// spawn it as a background task while the main thread handles the
+/// handshake (receive link request, accept, wait for established).
 #[tokio::test]
-#[ignore = "test daemon lacks UDP support"]
-async fn test_mtu_b3_python_to_rust_udp() {}
+async fn test_mtu_b3_python_to_rust_udp() {
+    use crate::common::{
+        wait_for_link_established, wait_for_link_request_event, DAEMON_UDP_LINK_MDU,
+        DAEMON_UDP_MAX_CHANNEL_PAYLOAD, DAEMON_UDP_NEGOTIATED_MTU,
+    };
+    use reticulum_core::identity::Identity;
+    use reticulum_std::driver::ReticulumNodeBuilder;
+
+    let daemon = TestDaemon::start_with_udp()
+        .await
+        .expect("Failed to start daemon with UDP");
+
+    let py_listen = daemon
+        .udp_listen_addr()
+        .expect("daemon should have UDP listen addr");
+    let rust_listen = daemon
+        .udp_forward_addr()
+        .expect("daemon should have UDP forward addr");
+
+    // Create identity for Rust (responder) before building node
+    let identity = Identity::generate(&mut OsRng);
+    let public_key_hex = hex::encode(identity.public_key_bytes());
+
+    let mut dest = reticulum_core::Destination::new(
+        Some(identity),
+        Direction::In,
+        DestinationType::Single,
+        "mtu_b3",
+        &["test"],
+    )
+    .expect("Failed to create destination");
+    let dest_hash = *dest.hash();
+    dest.set_accepts_links(true);
+
+    let mut node = ReticulumNodeBuilder::new()
+        .add_udp_interface(rust_listen, py_listen)
+        .build()
+        .await
+        .expect("Failed to build node");
+
+    node.start().await.expect("Failed to start node");
+    node.register_destination(dest);
+
+    let mut events = node
+        .take_event_receiver()
+        .expect("Failed to get event receiver");
+
+    // Wait for UDP interface to settle
+    tokio::time::sleep(Duration::from_millis(500)).await;
+
+    // Rust announces so Python learns the path
+    node.announce_destination(&dest_hash, Some(b"rust-udp-responder"))
+        .await
+        .expect("Announce failed");
+
+    // Wait for Python daemon to learn the path
+    let dest_hash_hex = hex::encode(dest_hash.as_bytes());
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
+    let mut path_found = false;
+    while tokio::time::Instant::now() < deadline {
+        if daemon.has_path(dest_hash.as_bytes()).await {
+            path_found = true;
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(200)).await;
+    }
+    assert!(path_found, "Python should learn path to Rust destination");
+
+    // Spawn create_link in background — it blocks until link is ACTIVE
+    let daemon_create_link = {
+        let dest_hash_hex = dest_hash_hex.clone();
+        let public_key_hex = public_key_hex.clone();
+        let daemon_cmd_addr = daemon.cmd_addr();
+        tokio::spawn(async move {
+            use tokio::io::{AsyncReadExt, AsyncWriteExt};
+            use tokio::net::TcpStream;
+
+            tokio::time::sleep(Duration::from_millis(100)).await;
+            let mut cmd_stream = TcpStream::connect(daemon_cmd_addr)
+                .await
+                .expect("Failed to connect to daemon cmd");
+            let cmd = serde_json::json!({
+                "method": "create_link",
+                "params": {
+                    "dest_hash": dest_hash_hex,
+                    "dest_key": public_key_hex,
+                    "timeout": 15
+                }
+            });
+            cmd_stream
+                .write_all(cmd.to_string().as_bytes())
+                .await
+                .expect("write failed");
+            cmd_stream.shutdown().await.expect("shutdown failed");
+            let mut response = Vec::new();
+            cmd_stream
+                .read_to_end(&mut response)
+                .await
+                .expect("read failed");
+            serde_json::from_slice::<serde_json::Value>(&response).expect("parse response failed")
+        })
+    };
+
+    // Wait for link request on Rust side
+    let (link_id, _dest) = wait_for_link_request_event(&mut events, Duration::from_secs(10))
+        .await
+        .expect("Rust should receive link request from Python");
+
+    // Accept the link
+    node.accept_link(&link_id)
+        .await
+        .expect("Failed to accept link");
+
+    // Wait for link to be established on Rust side
+    assert!(
+        wait_for_link_established(&mut events, &link_id, Duration::from_secs(10)).await,
+        "Rust link should be established"
+    );
+
+    // Wait for the background create_link to complete
+    let link_result = daemon_create_link.await.expect("create_link task panicked");
+    if let Some(error) = link_result.get("error") {
+        panic!("Python create_link failed: {}", error);
+    }
+
+    // Verify Rust-side MTU — base protocol MTU from Python's signaling
+    let mtu = node.link_negotiated_mtu(&link_id);
+    assert_eq!(
+        mtu,
+        Some(DAEMON_UDP_NEGOTIATED_MTU),
+        "Rust responder should negotiate daemon UDP MTU (base protocol MTU)"
+    );
+
+    let mdu = node.link_mdu(&link_id);
+    assert_eq!(
+        mdu,
+        Some(DAEMON_UDP_LINK_MDU),
+        "Rust MDU should be {}",
+        DAEMON_UDP_LINK_MDU
+    );
+
+    // Verify Python-side MTU
+    tokio::time::sleep(Duration::from_millis(500)).await;
+    let link_hash = hex::encode(link_id.as_bytes());
+    let status = daemon
+        .get_link_status(&link_hash)
+        .await
+        .expect("Should get link status");
+
+    if let Some(py_mtu) = status.mtu {
+        assert_eq!(
+            py_mtu, DAEMON_UDP_NEGOTIATED_MTU,
+            "Python should report base protocol MTU for UDP"
+        );
+    }
+
+    // Python sends data to Rust over the established link
+    let link_hash_str = link_result["result"]["link_hash"]
+        .as_str()
+        .expect("create_link should return link_hash");
+    let payload = generate_test_payload(DAEMON_UDP_MAX_CHANNEL_PAYLOAD);
+    daemon
+        .send_on_link(link_hash_str, &payload)
+        .await
+        .expect("Python send_on_link failed");
+
+    let received = wait_for_data_event(&mut events, &link_id, Duration::from_secs(10))
+        .await
+        .expect("Rust should receive data from Python over UDP");
+    assert_eq!(received.len(), DAEMON_UDP_MAX_CHANNEL_PAYLOAD);
+    assert!(
+        verify_test_payload(&received),
+        "B3 payload integrity check failed"
+    );
+
+    println!(
+        "SUCCESS: B3 - Python-to-Rust UDP MTU={}, MDU={}, payload {} bytes, Python mtu={:?}",
+        DAEMON_UDP_NEGOTIATED_MTU, DAEMON_UDP_LINK_MDU, DAEMON_UDP_MAX_CHANNEL_PAYLOAD, status.mtu
+    );
+
+    node.stop().await.ok();
+}
 
 // =========================================================================
 // Group C: Boundary tests
