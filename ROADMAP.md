@@ -28,7 +28,7 @@
 
 ## Aktueller Stand
 
-**Aktuelle Version: 0.5.19.** Phase 1 (Protokoll-Fundament) und Phase 2 (Core API & Full Node) sind vollständig abgeschlossen, inklusive eines 7-phasigen Code-Refactorings (63 Issues in `doc/BATTLEPLAN.md`). Storage-Trait-Refactoring abgeschlossen: alle 11 Transport/NodeCore-Sammlungen auf typsicheren Storage-Trait migriert, FileStorage umschließt MemoryStorage mit Python-kompatibler Persistenz. Offene Issues: E10 (Interface-spezifischer Jitter für Shared-Medium-Interfaces).
+**Aktuelle Version: 0.5.19.** Phase 1 (Protokoll-Fundament) und Phase 2 (Core API & Full Node) sind vollständig abgeschlossen, inklusive eines 7-phasigen Code-Refactorings (63 Issues in `doc/BATTLEPLAN.md`). Storage-Trait-Refactoring abgeschlossen: alle 11 Transport/NodeCore-Sammlungen auf typsicheren Storage-Trait migriert, FileStorage umschließt MemoryStorage mit Python-kompatibler Persistenz. UDP-Interface implementiert (Socket, I/O-Task, Config-Parsing, Interop-Tests). Logging-Qualität verbessert: 68 neue tracing-Aufrufe in Transport, Link-Management und Node-Layer — `lrnsd -v` zeigt Routing-Entscheidungen und Link-Lifecycle, `lrnsd -vv` zeigt Paketfluss und Drop-Gründe. Offene Issues: E10 (Interface-spezifischer Jitter für Shared-Medium-Interfaces).
 
 **Kernfunktionalität:** `NodeCore` (reticulum-core) und `ReticulumNode` (reticulum-std) bieten eine einheitliche async-kompatible API für Destinations, Links, Channels, Single-Packet-Verschlüsselung und Proof-Delivery. Vollständige Interoperabilität mit Python rnsd ist durch umfangreiche Interop-Tests nachgewiesen.
 
@@ -192,10 +192,10 @@ Sicherheitsfeatures verdrahten, Daemon-Zustand persistieren, Release-Qualität e
 - [ ] Forward-Secrecy-Rotation im laufenden Betrieb
 - [ ] Interop-Test: Ratchet-geschützte Announces zwischen Rust und Python
 
-### Meilenstein 3.4: UDP Interface
-- [ ] UDP-Interface implementieren (reticulum-std)
-- [ ] Config-Option für UDP-Interfaces in `lrnsd`
-- [ ] Interop-Test: Rust ↔ Python über UDP
+### Meilenstein 3.4: UDP Interface ✅
+- [x] UDP-Interface implementieren (reticulum-std)
+- [x] Config-Option für UDP-Interfaces in `lrnsd`
+- [x] Interop-Test: Rust ↔ Python über UDP
 
 ### Meilenstein 3.5: Buffer/Stream-Integration (C10)
 - [ ] Buffer/Stream-Layer in LinkHandle integrieren
@@ -217,6 +217,7 @@ Sicherheitsfeatures verdrahten, Daemon-Zustand persistieren, Release-Qualität e
 - [ ] Fuzzing der Paket-Parser
 - [ ] Dokumentation vervollständigen
 - [x] CI/CD-Pipeline mit no_std-Checks ✅
+- [x] Logging-Qualität: 156 tracing-Aufrufe, alle unhappy paths geloggt ✅
 
 ### Kritischer Pfad bis v1.0
 
@@ -231,7 +232,7 @@ Sicherheitsfeatures verdrahten, Daemon-Zustand persistieren, Release-Qualität e
 └─────────┬───────────┘
           ▼
 ┌─────────────────────┐
-│ 3.4 UDP Interface    │ ⬜ — Wichtigstes fehlendes Interface
+│ 3.4 UDP Interface    │ ✅ — Implementiert mit Interop-Tests
 │ 3.5 Buffer (C10)     │ ⬜ — Stream-API vervollständigen
 └─────────┬───────────┘
           ▼
@@ -256,7 +257,7 @@ Sicherheitsfeatures verdrahten, Daemon-Zustand persistieren, Release-Qualität e
 - [ ] Forward Secrecy via Ratchets (B4)
 - [ ] Interface Access Codes / IFAC (B3)
 - [x] Persistente Speicherung (E9)
-- [ ] UDP Interface
+- [x] UDP Interface
 
 **Should-Have:**
 - [ ] `lrns` CLI: status, path, probe, interfaces
@@ -353,6 +354,6 @@ Sicherheitsfeatures verdrahten, Daemon-Zustand persistieren, Release-Qualität e
 
 ---
 
-*Stand: 19. Februar 2026*
+*Stand: 20. Februar 2026*
 *Projekt: leviculum*
 *Lizenz: MIT*

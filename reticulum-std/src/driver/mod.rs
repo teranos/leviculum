@@ -170,6 +170,21 @@ impl ReticulumNode {
         // Initialize interfaces — the driver owns them, NOT NodeCore
         let registry = self.initialize_interfaces(&next_id, &new_iface_tx)?;
 
+        {
+            let core = self.inner.lock().unwrap();
+            let transport_enabled = core.transport_config().enable_transport;
+            let iface_count = self.interfaces.iter().filter(|c| c.enabled).count();
+            tracing::info!(
+                "Node started with {} interface(s), transport {}",
+                iface_count,
+                if transport_enabled {
+                    "enabled"
+                } else {
+                    "disabled"
+                }
+            );
+        }
+
         let (shutdown_tx, shutdown_rx) = watch::channel(false);
         self.shutdown_tx = Some(shutdown_tx);
 

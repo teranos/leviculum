@@ -63,7 +63,7 @@ use crate::traits::{Clock, Storage};
 use crate::transport::{Transport, TransportConfig, TransportEvent, TransportStats};
 use rand_core::CryptoRngCore;
 
-use crate::hex_fmt::HexFmt;
+use crate::hex_fmt::{HexFmt, HexShort};
 
 /// Link statistics for observability
 #[derive(Debug, Clone)]
@@ -398,7 +398,13 @@ impl<R: CryptoRngCore, C: Clock, S: Storage> NodeCore<R, C, S> {
         data: &[u8],
     ) -> crate::transport::TickOutput {
         // Process through transport layer
-        let _ = self.transport.process_incoming(iface.0, data);
+        if let Err(e) = self.transport.process_incoming(iface.0, data) {
+            tracing::trace!(
+                iface = iface.0,
+                error = %e,
+                "Failed to process incoming packet"
+            );
+        }
 
         // Run the full event pipeline (same as tick() but without polling interfaces)
         self.process_events_and_actions()
@@ -461,6 +467,12 @@ impl<R: CryptoRngCore, C: Clock, S: Storage> NodeCore<R, C, S> {
 
         // Remove path entries referencing this interface
         let lost_paths = self.transport.remove_paths_for_interface(iface_idx);
+
+        tracing::debug!(
+            "Interface {} went down, removed {} paths",
+            iface_idx,
+            lost_paths.len()
+        );
 
         for hash in &lost_paths {
             self.events.push(NodeEvent::PathLost {
@@ -653,14 +665,23 @@ impl<R: CryptoRngCore, C: Clock, S: Storage> NodeCore<R, C, S> {
                         if dest.dest_type() == crate::destination::DestinationType::Single {
                             match dest.decrypt(packet.data.as_slice()) {
                                 Ok(data) => data,
-                                Err(_) => return, // Drop silently (matches Python)
+                                Err(_) => {
+                                    tracing::trace!(
+                                        dest = %HexShort(destination_hash.as_ref()),
+                                        "Dropped packet, decryption failed"
+                                    );
+                                    return;
+                                }
                             }
                         } else {
                             // Plain destination — pass through
                             packet.data.as_slice().to_vec()
                         }
                     } else {
-                        // No destination registered — drop
+                        tracing::trace!(
+                            dest = %HexShort(destination_hash.as_ref()),
+                            "Dropped packet, no destination registered"
+                        );
                         return;
                     };
 

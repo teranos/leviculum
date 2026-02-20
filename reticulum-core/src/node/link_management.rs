@@ -11,7 +11,7 @@ use crate::constants::{
     PROOF_DATA_SIZE, TRUNCATED_HASHBYTES,
 };
 use crate::destination::{DestinationHash, ProofStrategy};
-use crate::hex_fmt::HexFmt;
+use crate::hex_fmt::{HexFmt, HexShort};
 use crate::link::channel::{ChannelAction, ChannelError, Message};
 use crate::link::{Link, LinkCloseReason, LinkError, LinkId, LinkPhase, LinkState, PeerKeys};
 use crate::packet::{packet_hash, Packet, PacketContext, PacketType};
@@ -455,6 +455,10 @@ impl<R: CryptoRngCore, C: Clock, S: Storage> NodeCore<R, C, S> {
             .map(|d| d.accepts_links())
             .unwrap_or(false);
         if !accepts {
+            tracing::trace!(
+                dest = %HexShort(dest_hash.as_bytes()),
+                "Link request ignored, destination does not accept links"
+            );
             return;
         }
 
@@ -463,6 +467,10 @@ impl<R: CryptoRngCore, C: Clock, S: Storage> NodeCore<R, C, S> {
 
         // Check if we already have this link
         if self.links.contains_key(&link_id) {
+            tracing::trace!(
+                link = %HexShort(link_id.as_bytes()),
+                "Link request ignored, link already exists"
+            );
             return;
         }
 
@@ -472,6 +480,10 @@ impl<R: CryptoRngCore, C: Clock, S: Storage> NodeCore<R, C, S> {
         // Create the incoming link
         let Ok(mut link) = Link::new_incoming(request_data, link_id, dest_hash, &mut self.rng)
         else {
+            tracing::warn!(
+                link = %HexShort(link_id.as_bytes()),
+                "Dropped malformed link request, failed to parse"
+            );
             return;
         };
 
@@ -486,6 +498,13 @@ impl<R: CryptoRngCore, C: Clock, S: Storage> NodeCore<R, C, S> {
 
         // Store the link
         self.links.insert(link_id, link);
+
+        tracing::debug!(
+            "Incoming link request <{}> for <{}> accepted on iface {}",
+            HexShort(link_id.as_bytes()),
+            HexShort(dest_hash.as_bytes()),
+            interface_index
+        );
 
         // Emit event directly as NodeEvent
         self.events.push(NodeEvent::LinkRequest {
@@ -507,11 +526,19 @@ impl<R: CryptoRngCore, C: Clock, S: Storage> NodeCore<R, C, S> {
         }
 
         let Some(link) = self.links.get_mut(&link_id) else {
+            tracing::trace!(
+                link = %HexShort(link_id.as_bytes()),
+                "Link proof for unknown link, ignoring"
+            );
             return;
         };
 
         // Must be a pending outgoing link
         if !matches!(link.phase(), LinkPhase::PendingOutgoing { .. }) {
+            tracing::trace!(
+                link = %HexShort(link_id.as_bytes()),
+                "Link proof for non-pending link, ignoring"
+            );
             return;
         }
         if link.state() != LinkState::Pending || !link.is_initiator() {
@@ -523,6 +550,10 @@ impl<R: CryptoRngCore, C: Clock, S: Storage> NodeCore<R, C, S> {
 
         // Process the proof
         if link.process_proof(proof_data).is_err() {
+            tracing::debug!(
+                "Link proof for <{}> is invalid, closing link",
+                HexShort(link_id.as_bytes())
+            );
             let is_initiator = link.is_initiator();
             let destination_hash = *link.destination_hash();
             self.links.remove(&link_id);
@@ -546,6 +577,12 @@ impl<R: CryptoRngCore, C: Clock, S: Storage> NodeCore<R, C, S> {
 
         link.update_keepalive_from_rtt(rtt_seconds);
         link.mark_established(now_secs);
+
+        tracing::debug!(
+            "Link <{}> established with RTT {}ms",
+            HexShort(link_id.as_bytes()),
+            rtt_ms
+        );
 
         // Build RTT packet and route via attached interface
         if let Ok(rtt_packet) = link.build_rtt_packet(rtt_seconds, &mut self.rng) {
@@ -646,6 +683,10 @@ impl<R: CryptoRngCore, C: Clock, S: Storage> NodeCore<R, C, S> {
         self.try_recover_stale(&link_id, now_secs);
 
         if !self.links.contains_key(&link_id) {
+            tracing::trace!(
+                link = %HexShort(link_id.as_bytes()),
+                "Link data packet for unknown link, ignoring"
+            );
             return;
         }
 
@@ -673,6 +714,11 @@ impl<R: CryptoRngCore, C: Clock, S: Storage> NodeCore<R, C, S> {
             link.update_keepalive_from_rtt(rtt_secs);
             link.mark_established(now_secs);
             link.set_phase(LinkPhase::Established);
+            tracing::debug!(
+                "Link <{}> established (responder), RTT {:.3}s",
+                HexShort(link_id.as_bytes()),
+                rtt_secs
+            );
             self.events.push(NodeEvent::LinkEstablished {
                 link_id,
                 is_initiator: false,
@@ -703,6 +749,7 @@ impl<R: CryptoRngCore, C: Clock, S: Storage> NodeCore<R, C, S> {
         };
         let encrypted_data = packet.data.as_slice();
         if link.process_close(encrypted_data).is_ok() {
+            tracing::debug!("Link <{}> closed by peer", HexShort(link_id.as_bytes()));
             let is_initiator = link.is_initiator();
             let destination_hash = *link.destination_hash();
             self.links.remove(&link_id);
@@ -725,9 +772,17 @@ impl<R: CryptoRngCore, C: Clock, S: Storage> NodeCore<R, C, S> {
         now_secs: u64,
     ) {
         let Some(link) = self.links.get_mut(&link_id) else {
+            tracing::trace!(
+                link = %HexShort(link_id.as_bytes()),
+                "Channel packet for unknown link, ignoring"
+            );
             return;
         };
         if link.state() != LinkState::Active {
+            tracing::trace!(
+                link = %HexShort(link_id.as_bytes()),
+                "Channel packet for non-active link, ignoring"
+            );
             return;
         }
 
@@ -739,7 +794,13 @@ impl<R: CryptoRngCore, C: Clock, S: Storage> NodeCore<R, C, S> {
         let mut plaintext = alloc::vec![0u8; max_plaintext_len];
         let decrypted_len = match link.decrypt(encrypted_data, &mut plaintext) {
             Ok(len) => len,
-            Err(_) => return,
+            Err(_) => {
+                tracing::debug!(
+                    link = %HexShort(link_id.as_bytes()),
+                    "Channel packet decryption failed"
+                );
+                return;
+            }
         };
         plaintext.truncate(decrypted_len);
 
@@ -872,9 +933,17 @@ impl<R: CryptoRngCore, C: Clock, S: Storage> NodeCore<R, C, S> {
         now_secs: u64,
     ) {
         let Some(link) = self.links.get_mut(&link_id) else {
+            tracing::trace!(
+                link = %HexShort(link_id.as_bytes()),
+                "Data packet for unknown link, ignoring"
+            );
             return;
         };
         if link.state() != LinkState::Active {
+            tracing::trace!(
+                link = %HexShort(link_id.as_bytes()),
+                "Data packet for non-active link, ignoring"
+            );
             return;
         }
 
@@ -916,7 +985,10 @@ impl<R: CryptoRngCore, C: Clock, S: Storage> NodeCore<R, C, S> {
                 });
             }
             Err(_) => {
-                // Decryption failed — silently discard
+                tracing::debug!(
+                    link = %HexShort(link_id.as_bytes()),
+                    "Plain data packet decryption failed"
+                );
             }
         }
     }
@@ -958,6 +1030,10 @@ impl<R: CryptoRngCore, C: Clock, S: Storage> NodeCore<R, C, S> {
             .collect();
 
         for link_id in timed_out {
+            tracing::debug!(
+                "Link <{}> establishment timed out",
+                HexShort(link_id.as_bytes())
+            );
             let (is_initiator, destination_hash) = self
                 .links
                 .get(&link_id)
@@ -988,6 +1064,7 @@ impl<R: CryptoRngCore, C: Clock, S: Storage> NodeCore<R, C, S> {
         for link_id in need_keepalive {
             if let Some(link) = self.links.get_mut(&link_id) {
                 if let Ok(packet) = link.build_keepalive_packet() {
+                    tracing::trace!("Sent keepalive on link <{}>", HexShort(link_id.as_bytes()));
                     link.record_keepalive_sent(now_secs);
                     self.route_link_packet(&link_id, &packet);
                 }
@@ -1007,6 +1084,10 @@ impl<R: CryptoRngCore, C: Clock, S: Storage> NodeCore<R, C, S> {
 
         for link_id in newly_stale {
             if let Some(link) = self.links.get_mut(&link_id) {
+                tracing::debug!(
+                    "Link <{}> marked stale, no activity",
+                    HexShort(link_id.as_bytes())
+                );
                 link.set_state(LinkState::Stale);
                 self.events.push(NodeEvent::LinkStale { link_id });
             }
@@ -1034,6 +1115,7 @@ impl<R: CryptoRngCore, C: Clock, S: Storage> NodeCore<R, C, S> {
             // link borrow dropped here
 
             if let Some((is_initiator, destination_hash, close_packet)) = close_info {
+                tracing::debug!("Closing stale link <{}>", HexShort(link_id.as_bytes()));
                 // Route close packet BEFORE removing link from map
                 if let Some(ref pkt) = close_packet {
                     self.route_link_packet(&link_id, pkt);

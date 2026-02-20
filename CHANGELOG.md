@@ -8,6 +8,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- **Logging quality improvement** — 68 new tracing calls (88 → 156 total) covering transport routing, link lifecycle, and all silent drop paths. `lrnsd -v` now shows routing decisions (path updates, announce rebroadcasts, link establishment/close, forwarding, path requests). `lrnsd -vv` shows per-packet flow with drop reasons (duplicate, rate limit, replay, TTL exceeded, hop mismatch, crypto failure). Every `packets_dropped` increment now has a corresponding log message explaining why.
+- **`HexShort` formatter** (`reticulum-core`) — displays first 16 hex chars (8 bytes) for compact log lines, mirroring Python's `prettyhexrep`. Used in debug!/trace! messages; full `HexFmt` retained for warn!/error! where precision matters.
+- **Logging section in `doc/ARCHITECTURE.md`** — documents logging philosophy (sentence-style messages inspired by Python rnsd), level mapping (info/debug/trace), message style guide, and per-component logging inventory.
+
+### Changed
+- **Transport tracing upgraded from key-value to sentence-style** — existing 5 trace! calls in transport.rs migrated from `HexFmt` to `HexShort` and from terse structured fields to readable sentences (e.g., "Destination <81b22f60...> is now 4 hops away via <ecc35451...> on iface 1"). `forward_packet()` upgraded from trace! to debug! for `-v` visibility.
+- **Silent drops eliminated** — all unhappy paths in transport.rs (proof hop mismatch, LRPROOF validation failures, data packet direction detection), link_management.rs (malformed link request, decryption failures, unknown/non-active link), and node/mod.rs (packet parse errors, decrypt failures) now log the drop reason.
+- **Startup summary** — `ReticulumNode::start()` now logs interface count and transport enabled/disabled at info! level.
+
 - **Storage trait refactoring (E9)** — all 11 long-lived Transport/NodeCore collections migrated to a type-safe Storage trait (~44 methods). Core is now a pure protocol engine with zero state management — Storage is the single source of truth for routing tables, link entries, announce state, packet dedup, receipts, path requests, known identities, and ratchets.
 - **`storage_types` module** (`reticulum-core`) — pure data structs shared between Storage and Transport: `PathEntry`, `PathState`, `ReverseEntry`, `LinkEntry`, `AnnounceEntry`, `AnnounceRateEntry`, `PacketReceipt`, `ReceiptStatus`. All `pub` with `pub` fields (data transfer objects at the Storage API boundary).
 - **`MemoryStorage`** (`reticulum-core`, `pub`) — BTreeMap/BTreeSet-backed Storage implementation with configurable per-collection caps. Not `#[cfg(test)]` — this is the production implementation for embedded targets and the test storage for core tests. Two presets: `with_defaults()` (generous for Linux) and `compact()` (small caps for constrained devices).

@@ -423,3 +423,85 @@ tcp_interface_task()                     [reticulum-std]
   ▼
 Network
 ```
+
+## Logging
+
+### Philosophy
+
+Log messages should let a developer follow the communication flow on the wire
+by running `lrnsd -v`. The logging style is inspired by Python rnsd: messages
+read as informative sentences that combine context (destination, interface,
+hop count) into a single line explaining what happened and why.
+
+Good:
+```
+Destination <81b22f6033435068> is now 4 hops away via <ecc35451ae3cfe26> on iface 1
+Rebroadcasting announce for <81b22f6033435068> with hop count 4
+Incoming link request <a3f79c021b4e8d12> for <51cd62fda20433ba> accepted on iface 0
+Answering path request for <4c0c6c7f420da5df> on iface 1, path is known
+Rebroadcasted announce for <e0685699d98f2174> has been passed on to another node, no further tries needed
+```
+
+Bad (too terse, no context):
+```
+path updated dest=81b22f60 hops=4
+announce rebroadcast
+link request accepted
+```
+
+### Levels
+
+The `tracing` crate provides five levels. Leviculum maps them as follows:
+
+| Level | CLI | What to log | Volume |
+|-------|-----|-------------|--------|
+| `error!` | always | Persistent failures, unrecoverable errors | rare |
+| `warn!`  | always | Recoverable errors, degraded operation | occasional |
+| `info!`  | default | Startup, shutdown, major lifecycle events | few per run |
+| `debug!` | `-v` | Routing decisions, path updates, link lifecycle, forwarding | per-event |
+| `trace!` | `-vv` | Every packet received, drop reasons, queue ops, keepalives | per-packet |
+
+**debug!** is the primary developer-facing level. A developer running `-v` should
+see every routing decision: path updates, announce rebroadcasts, link establishment,
+forwarding decisions, path request responses.
+
+**trace!** is for full packet flow. Every packet that enters `process_incoming()`
+is logged at trace, and every drop reason (duplicate, rate limit, replay, TTL
+exceeded) is logged at trace so a developer can understand why packets disappear.
+
+### Message Style
+
+- **Sentence-style**: Messages read as explanations, not key-value dumps
+- **Include context inline**: destination hash, hop count, interface, and reason
+  are woven into the message text
+- **Hashes**: Use `HexShort` (first 16 hex chars) for readability in log lines;
+  use full `HexFmt` only in warn!/error! where precision matters
+- **Interface references**: `iface {N}` where N is the InterfaceId index (core
+  does not know interface names; the driver logs names separately at registration)
+- **Link references**: `link <{hash}>` using HexShort
+- **Explain the decision**: Don't just say "dropped" — say why: "rate limited",
+  "no path known", "duplicate packet", "TTL exceeded"
+
+### Where to Log
+
+| Component | What | Level |
+|-----------|------|-------|
+| `transport.rs` process_incoming | Each packet type dispatched | `trace!` |
+| `transport.rs` process_incoming | Each drop reason (dup, filter, TTL) | `trace!` |
+| `transport.rs` handle_announce | Path update (accepted) | `debug!` |
+| `transport.rs` handle_announce | Rebroadcast decision | `debug!` |
+| `transport.rs` handle_announce | Rebroadcast suppression (passed on) | `trace!` |
+| `transport.rs` handle_path_request | Request received, response type | `debug!` |
+| `transport.rs` forward_packet | Forwarding decision | `debug!` |
+| `node/link_management.rs` | Link accepted, established, closed, stale | `debug!` |
+| `node/link_management.rs` | Keepalive sent | `trace!` |
+| `driver/mod.rs` | Startup summary, interface registration | `info!` |
+| `interfaces/*.rs` | Connection events, I/O errors | `info!`/`warn!` |
+
+### no_std Compatibility
+
+`tracing` is used with `default-features = false` in reticulum-core, making all
+macros (trace!, debug!, info!, warn!, error!) available without std. The subscriber
+(which formats and emits the output) is initialized only in reticulum-std/reticulum-cli.
+When no subscriber is registered (embedded without tracing), all macros are no-ops
+with zero runtime cost.
