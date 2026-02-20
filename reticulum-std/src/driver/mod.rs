@@ -171,7 +171,13 @@ impl ReticulumNode {
         let registry = self.initialize_interfaces(&next_id, &new_iface_tx)?;
 
         {
-            let core = self.inner.lock().unwrap();
+            let mut core = self.inner.lock().unwrap();
+
+            // Register human-readable interface names with core for log messages
+            for handle in registry.handles() {
+                core.set_interface_name(handle.info.id.0, handle.info.name.clone());
+            }
+
             let transport_enabled = core.transport_config().enable_transport;
             let iface_count = self.interfaces.iter().filter(|c| c.enabled).count();
             tracing::info!(
@@ -759,6 +765,10 @@ async fn run_event_loop(
             // Branch 5: Dynamic interface registration (TCP server accept loop)
             Some(handle) = new_interface_rx.recv() => {
                 tracing::info!("New connection: {} ({})", handle.info.name, handle.info.id);
+                {
+                    let mut core = inner.lock().unwrap();
+                    core.set_interface_name(handle.info.id.0, handle.info.name.clone());
+                }
                 registry.register(handle);
             }
 

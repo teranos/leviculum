@@ -117,6 +117,11 @@ impl InterfaceRegistry {
             .unwrap_or("unknown")
     }
 
+    /// Immutable slice of all handles
+    pub(crate) fn handles(&self) -> &[InterfaceHandle] {
+        &self.handles
+    }
+
     /// Mutable access to handles and poll_start for recv_any
     pub(crate) fn handles_mut(&mut self) -> (&mut Vec<InterfaceHandle>, &mut usize) {
         (&mut self.handles, &mut self.poll_start)

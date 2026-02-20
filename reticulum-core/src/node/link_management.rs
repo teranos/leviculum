@@ -500,10 +500,10 @@ impl<R: CryptoRngCore, C: Clock, S: Storage> NodeCore<R, C, S> {
         self.links.insert(link_id, link);
 
         tracing::debug!(
-            "Incoming link request <{}> for <{}> accepted on iface {}",
+            "Incoming link request <{}> for <{}> accepted on {}",
             HexShort(link_id.as_bytes()),
             HexShort(dest_hash.as_bytes()),
-            interface_index
+            self.transport.iface_name(interface_index)
         );
 
         // Emit event directly as NodeEvent

@@ -400,9 +400,9 @@ impl<R: CryptoRngCore, C: Clock, S: Storage> NodeCore<R, C, S> {
         // Process through transport layer
         if let Err(e) = self.transport.process_incoming(iface.0, data) {
             tracing::trace!(
-                iface = iface.0,
-                error = %e,
-                "Failed to process incoming packet"
+                "Failed to process incoming packet on {}: {}",
+                self.transport.iface_name(iface.0),
+                e
             );
         }
 
@@ -453,6 +453,14 @@ impl<R: CryptoRngCore, C: Clock, S: Storage> NodeCore<R, C, S> {
         }
     }
 
+    /// Register a human-readable name for an interface.
+    ///
+    /// The driver should call this after spawning each interface so that
+    /// log messages show names instead of numeric IDs.
+    pub fn set_interface_name(&mut self, id: usize, name: alloc::string::String) {
+        self.transport.set_interface_name(id, name);
+    }
+
     /// Notify core that an interface has gone offline (sans-I/O)
     ///
     /// The driver should call this when it detects that an interface is no
@@ -468,9 +476,10 @@ impl<R: CryptoRngCore, C: Clock, S: Storage> NodeCore<R, C, S> {
         // Remove path entries referencing this interface
         let lost_paths = self.transport.remove_paths_for_interface(iface_idx);
 
+        // Log before removing the name so the message still shows the human-readable name
         tracing::debug!(
             "Interface {} went down, removed {} paths",
-            iface_idx,
+            self.transport.iface_name(iface_idx),
             lost_paths.len()
         );
 
@@ -489,6 +498,9 @@ impl<R: CryptoRngCore, C: Clock, S: Storage> NodeCore<R, C, S> {
 
         // Remove announce cap state for this interface
         self.transport.unregister_interface_announce_cap(iface_idx);
+
+        // Remove interface name (after logging so the name is still available above)
+        self.transport.remove_interface_name(iface_idx);
 
         // Emit the InterfaceDown event
         self.events.push(NodeEvent::InterfaceDown(iface_idx));
