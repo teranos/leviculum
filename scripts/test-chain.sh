@@ -33,6 +33,7 @@ RNCP_SENDER_LOG="$LOGDIR/rncp_sender.log"
 LRNSD_BIN="/home/lew/coding/leviculum/target/debug/lrnsd"
 LRNSD_HOME="/home/lew/retis/leviculum"
 VENV_ACTIVATE="/home/lew/pythonenvironment/bin/activate"
+REMOTE_HOST="schneckenschreck"
 
 is_running() {
     local pidfile="$1"
@@ -46,6 +47,8 @@ is_running() {
     return 1
 }
 
+# Kill a process by PID file. Sends SIGTERM, waits, then SIGKILL.
+# Also kills the process group to catch any children.
 kill_pid() {
     local pidfile="$1"
     local name="$2"
@@ -53,7 +56,9 @@ kill_pid() {
         local pid
         pid=$(cat "$pidfile")
         if kill -0 "$pid" 2>/dev/null; then
-            kill "$pid" 2>/dev/null || true
+            # Kill the process group (negative PID) to catch children,
+            # fall back to single PID if it's not a group leader
+            kill -- -"$pid" 2>/dev/null || kill "$pid" 2>/dev/null || true
             # Wait up to 3 seconds for graceful shutdown
             for _ in 1 2 3 4 5 6; do
                 if ! kill -0 "$pid" 2>/dev/null; then
@@ -63,7 +68,7 @@ kill_pid() {
             done
             # Force kill if still running
             if kill -0 "$pid" 2>/dev/null; then
-                kill -9 "$pid" 2>/dev/null || true
+                kill -9 -- -"$pid" 2>/dev/null || kill -9 "$pid" 2>/dev/null || true
                 echo "  $name (pid $pid) force-killed"
             else
                 echo "  $name (pid $pid) stopped"
@@ -75,6 +80,21 @@ kill_pid() {
     else
         echo "  $name not running"
     fi
+}
+
+# Kill any orphaned local processes by name pattern
+kill_local_orphans() {
+    pkill -f "ssh.*${REMOTE_HOST}.*rnsd" 2>/dev/null || true
+    pkill -f "ssh.*${REMOTE_HOST}.*rncp" 2>/dev/null || true
+    # rncp listener that might have been started outside pid tracking
+    pkill -f "rncp -nl" 2>/dev/null || true
+}
+
+# Kill remote processes on schneckenschreck (best-effort, non-blocking)
+kill_remote_orphans() {
+    ssh -o ConnectTimeout=3 "$REMOTE_HOST" \
+        'pkill -f "rnsd -v" 2>/dev/null; pkill -f "rncp " 2>/dev/null; true' \
+        2>/dev/null || true
 }
 
 do_start() {
@@ -144,7 +164,7 @@ do_start() {
 
     # 3. Start schneckenschreck rnsd (remote Python)
     echo "Starting schneckenschreck rnsd (Python, remote)..."
-    ssh -tt schneckenschreck "source $VENV_ACTIVATE && PYTHONUNBUFFERED=1 rnsd -v" > "$SCHNECK_LOG" 2>&1 &
+    ssh -tt "$REMOTE_HOST" "source $VENV_ACTIVATE && PYTHONUNBUFFERED=1 rnsd -v" > "$SCHNECK_LOG" 2>&1 &
     echo $! > "$SCHNECK_PID"
     echo "  pid $(cat "$SCHNECK_PID"), log: $SCHNECK_LOG"
 
@@ -165,9 +185,8 @@ do_stop() {
     kill_pid "$SCHNECK_PID" "schneckenschreck"
     kill_pid "$RNSD_PID" "rnsd"
     kill_pid "$LRNSD_PID" "lrnsd"
-    # Clean up any orphaned ssh sessions to schneckenschreck
-    pkill -f "ssh.*schneckenschreck.*rnsd" 2>/dev/null || true
-    pkill -f "ssh.*schneckenschreck.*rncp" 2>/dev/null || true
+    kill_local_orphans
+    kill_remote_orphans
     echo "All stopped."
 }
 
@@ -210,12 +229,22 @@ do_cat_one() {
     esac
 }
 
+# Clean up rncp listener — called from trap and on error exits
+cleanup_rncp_listener() {
+    kill_pid "$RNCP_LISTENER_PID" "rncp-listener" > /dev/null 2>&1
+    # Also kill any remote rncp that might be lingering
+    ssh -o ConnectTimeout=3 "$REMOTE_HOST" 'pkill -f "rncp " 2>/dev/null; true' 2>/dev/null || true
+}
+
 do_rncp() {
     local test_file="${1:-/home/lew/pythonenvironment/bin/python3}"
     local test_file_basename
     test_file_basename=$(basename "$test_file")
     local received_file="/tmp/test-chain-rncp-received/$test_file_basename"
     mkdir -p /tmp/test-chain-rncp-received
+
+    # Ensure listener is cleaned up on any exit (Ctrl+C, error, normal)
+    trap cleanup_rncp_listener EXIT INT TERM
 
     # Ensure the chain is running
     if ! is_running "$LRNSD_PID" || ! is_running "$RNSD_PID" || ! is_running "$SCHNECK_PID"; then
@@ -249,7 +278,6 @@ do_rncp() {
     if [[ -z "$dest_hash" ]]; then
         echo "ERROR: rncp listener did not produce a destination hash"
         cat "$RNCP_LISTENER_LOG"
-        kill_pid "$RNCP_LISTENER_PID" "rncp-listener"
         exit 1
     fi
     echo "  Listener ready: <$dest_hash>"
@@ -272,23 +300,22 @@ do_rncp() {
     fi
 
     # 3. Verify test file exists on schneckenschreck
-    if ! ssh schneckenschreck "test -f '$test_file'" 2>/dev/null; then
-        echo "ERROR: Test file '$test_file' does not exist on schneckenschreck"
-        kill_pid "$RNCP_LISTENER_PID" "rncp-listener"
+    if ! ssh "$REMOTE_HOST" "test -f '$test_file'" 2>/dev/null; then
+        echo "ERROR: Test file '$test_file' does not exist on $REMOTE_HOST"
         exit 1
     fi
     local remote_size
-    remote_size=$(ssh schneckenschreck "stat -c%s '$test_file'" 2>/dev/null)
-    echo "  Source file: $test_file ($remote_size bytes) on schneckenschreck"
+    remote_size=$(ssh "$REMOTE_HOST" "stat -c%s '$test_file'" 2>/dev/null)
+    echo "  Source file: $test_file ($remote_size bytes) on $REMOTE_HOST"
 
     # 4. Run rncp sender on schneckenschreck (foreground, blocks until done)
     echo "Starting file transfer..."
-    ssh -tt schneckenschreck \
+    local sender_rc=0
+    ssh -tt "$REMOTE_HOST" \
         "source $VENV_ACTIVATE && PYTHONUNBUFFERED=1 rncp -v '$test_file' '$dest_hash'" \
-        > "$RNCP_SENDER_LOG" 2>&1
-    local sender_rc=$?
+        > "$RNCP_SENDER_LOG" 2>&1 || sender_rc=$?
 
-    # 5. Stop rncp listener
+    # 5. Stop rncp listener (trap will also fire, but kill_pid is idempotent)
     sleep 1
     kill_pid "$RNCP_LISTENER_PID" "rncp-listener" > /dev/null 2>&1
 
@@ -298,7 +325,7 @@ do_rncp() {
         echo "FAIL: rncp sender exited with code $sender_rc"
         echo ""
         echo "--- Sender log ---"
-        cat "$RNCP_SENDER_LOG" | tr '\r' '\n' | grep -v '^\[2K' | tail -20
+        tr '\r' '\n' < "$RNCP_SENDER_LOG" | grep -v '^\[2K' | tail -20
         echo ""
         echo "--- Listener log ---"
         cat "$RNCP_LISTENER_LOG"
@@ -324,7 +351,7 @@ do_rncp() {
     fi
 
     local remote_md5 local_md5
-    remote_md5=$(ssh schneckenschreck "md5sum '$test_file'" 2>/dev/null | awk '{print $1}')
+    remote_md5=$(ssh "$REMOTE_HOST" "md5sum '$test_file'" 2>/dev/null | awk '{print $1}')
     local_md5=$(md5sum "$received_file" | awk '{print $1}')
 
     if [[ "$remote_md5" != "$local_md5" ]]; then
