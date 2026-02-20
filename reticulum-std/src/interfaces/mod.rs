@@ -31,6 +31,9 @@ pub(crate) struct OutgoingPacket {
 pub(crate) struct InterfaceInfo {
     pub id: InterfaceId,
     pub name: String,
+    /// Hardware MTU for link MTU negotiation (e.g., TCP=262144, UDP=1064).
+    /// `None` means the interface uses the base protocol MTU (500).
+    pub hw_mtu: Option<u32>,
 }
 
 /// Event loop's handle to a spawned interface task

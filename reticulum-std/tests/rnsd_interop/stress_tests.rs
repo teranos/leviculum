@@ -74,7 +74,7 @@ async fn test_extended_exchange_100_messages() {
     link.set_destination_keys(&signing_key_bytes).unwrap();
 
     let mut stream = connect_to_daemon(&daemon).await;
-    let raw_packet = link.build_link_request_packet();
+    let raw_packet = link.build_link_request_packet(None);
 
     let mut framed = Vec::new();
     frame(&raw_packet, &mut framed);
@@ -208,7 +208,7 @@ async fn test_rapid_link_creation_teardown() {
         let mut link = Link::new_outgoing(dest_hash.into(), &mut OsRng);
         link.set_destination_keys(&signing_key_bytes).unwrap();
 
-        let raw_packet = link.build_link_request_packet();
+        let raw_packet = link.build_link_request_packet(None);
 
         // Connect (new connection for each link)
         let stream_result = tokio::net::TcpStream::connect(daemon.rns_addr()).await;
@@ -353,7 +353,7 @@ async fn test_concurrent_links_to_daemon() {
                 .expect("Failed to connect");
             tokio::time::sleep(DAEMON_SETTLE_TIME).await;
 
-            let raw_packet = link.build_link_request_packet();
+            let raw_packet = link.build_link_request_packet(None);
             let mut framed = Vec::new();
             frame(&raw_packet, &mut framed);
             stream.write_all(&framed).await.unwrap();
@@ -482,7 +482,7 @@ async fn test_large_payload_variety() {
     link.set_destination_keys(&signing_key_bytes).unwrap();
 
     let mut stream = connect_to_daemon(&daemon).await;
-    let raw_packet = link.build_link_request_packet();
+    let raw_packet = link.build_link_request_packet(None);
 
     let mut framed = Vec::new();
     frame(&raw_packet, &mut framed);
@@ -610,7 +610,7 @@ async fn test_extended_exchange_rapid_fire() {
     link.set_destination_keys(&signing_key_bytes).unwrap();
 
     let mut stream = connect_to_daemon(&daemon).await;
-    let raw_packet = link.build_link_request_packet();
+    let raw_packet = link.build_link_request_packet(None);
 
     let mut framed = Vec::new();
     frame(&raw_packet, &mut framed);

@@ -225,7 +225,7 @@ async fn test_link_id_calculation_matches_python() {
     let mut link = Link::new_outgoing(dest_hash.into(), &mut OsRng);
     link.set_destination_keys(&signing_key_bytes).unwrap();
 
-    let raw_packet = link.build_link_request_packet();
+    let raw_packet = link.build_link_request_packet(None);
     let our_link_id = *link.id();
 
     println!("Our link_id: {}", hex::encode(our_link_id));
@@ -278,7 +278,7 @@ async fn test_link_request_to_unknown_destination() {
     let mut link = Link::new_outgoing(random_dest.into(), &mut OsRng);
     let _ = link.set_destination_keys(&dummy_key);
 
-    let raw_packet = link.build_link_request_packet();
+    let raw_packet = link.build_link_request_packet(None);
 
     // Send request
     let mut stream = connect_to_daemon(&daemon).await;
@@ -329,7 +329,7 @@ async fn test_duplicate_link_request_handling() {
     let mut link = Link::new_outgoing(dest_hash.into(), &mut OsRng);
     link.set_destination_keys(&signing_key_bytes).unwrap();
 
-    let raw_packet = link.build_link_request_packet();
+    let raw_packet = link.build_link_request_packet(None);
 
     let mut stream = connect_to_daemon(&daemon).await;
     let mut framed = Vec::new();
@@ -394,7 +394,7 @@ async fn test_data_on_aes_block_boundary() {
     link.set_destination_keys(&signing_key_bytes).unwrap();
 
     let mut stream = connect_to_daemon(&daemon).await;
-    let raw_packet = link.build_link_request_packet();
+    let raw_packet = link.build_link_request_packet(None);
 
     let mut framed = Vec::new();
     frame(&raw_packet, &mut framed);
@@ -499,7 +499,7 @@ async fn test_empty_data_packet() {
     link.set_destination_keys(&signing_key_bytes).unwrap();
 
     let mut stream = connect_to_daemon(&daemon).await;
-    let raw_packet = link.build_link_request_packet();
+    let raw_packet = link.build_link_request_packet(None);
 
     let mut framed = Vec::new();
     frame(&raw_packet, &mut framed);
@@ -583,7 +583,7 @@ async fn test_large_payload_near_mtu() {
     link.set_destination_keys(&signing_key_bytes).unwrap();
 
     let mut stream = connect_to_daemon(&daemon).await;
-    let raw_packet = link.build_link_request_packet();
+    let raw_packet = link.build_link_request_packet(None);
 
     let mut framed = Vec::new();
     frame(&raw_packet, &mut framed);

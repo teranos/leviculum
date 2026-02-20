@@ -486,6 +486,10 @@ pub struct Transport<C: Clock, S: Storage> {
     /// Populated by the driver at registration time, removed on interface down.
     interface_names: BTreeMap<usize, String>,
 
+    /// Hardware MTU per interface (for link MTU negotiation).
+    /// Keyed by interface index. Set by driver at registration, removed on interface down.
+    interface_hw_mtus: BTreeMap<usize, u32>,
+
     /// Pending I/O actions for the driver (sans-I/O buffer)
     pending_actions: Vec<Action>,
 
@@ -517,6 +521,7 @@ impl<C: Clock, S: Storage> Transport<C, S> {
             // announce_rate_table: migrated to Storage
             interface_announce_caps: BTreeMap::new(),
             interface_names: BTreeMap::new(),
+            interface_hw_mtus: BTreeMap::new(),
             pending_actions: Vec::new(),
             #[cfg(test)]
             interfaces: Vec::new(),
@@ -2257,6 +2262,31 @@ impl<C: Clock, S: Storage> Transport<C, S> {
             names: &self.interface_names,
             id,
         }
+    }
+
+    // ─── Public: Interface HW_MTU API ──────────────────────────────────
+
+    /// Register the hardware MTU for an interface (called by driver at registration).
+    pub fn set_interface_hw_mtu(&mut self, id: usize, hw_mtu: u32) {
+        self.interface_hw_mtus.insert(id, hw_mtu);
+    }
+
+    /// Remove interface hardware MTU (called during handle_interface_down cleanup).
+    pub fn remove_interface_hw_mtu(&mut self, id: usize) {
+        self.interface_hw_mtus.remove(&id);
+    }
+
+    /// Get the HW_MTU for the next-hop interface toward a destination.
+    ///
+    /// Looks up the path entry for the destination, then returns the registered
+    /// HW_MTU for that path's interface. Returns `None` if no path exists or
+    /// the interface has no HW_MTU registered.
+    pub(crate) fn next_hop_interface_hw_mtu(
+        &self,
+        dest_hash: &[u8; TRUNCATED_HASHBYTES],
+    ) -> Option<u32> {
+        let path = self.storage.get_path(dest_hash)?;
+        self.interface_hw_mtus.get(&path.interface_index).copied()
     }
 
     // ─── Internal: Helpers ─────────────────────────────────────────────
@@ -5404,7 +5434,7 @@ mod tests {
 
             // Build a link request arriving on if0
             let mut link = Link::new_outgoing(dest_hash.into(), &mut OsRng);
-            let raw = link.build_link_request_packet();
+            let raw = link.build_link_request_packet(None);
             transport.process_incoming(0, &raw).unwrap();
 
             assert!(
@@ -5456,7 +5486,7 @@ mod tests {
 
             // Build a link request arriving on if0
             let mut link = Link::new_outgoing(dest_hash.into(), &mut OsRng);
-            let raw = link.build_link_request_packet();
+            let raw = link.build_link_request_packet(None);
             transport.process_incoming(0, &raw).unwrap();
 
             assert!(
@@ -5518,8 +5548,9 @@ mod tests {
             // ── Part A: Type1 link request arriving on if0, forwarded to if1 ──
 
             let mut link_a = Link::new_outgoing(dest_hash.into(), &mut OsRng);
-            let original_request_data_a = link_a.create_link_request();
-            let raw_type1 = link_a.build_link_request_packet();
+            let original_request_data_a =
+                link_a.create_link_request_with_mtu(MTU as u32, crate::constants::MODE_AES256_CBC);
+            let raw_type1 = link_a.build_link_request_packet(None);
 
             // Verify the original is Type1
             let original_pkt_a = Packet::unpack(&raw_type1).unwrap();
@@ -5593,10 +5624,12 @@ mod tests {
             // (in the real protocol, transport_id identifies the next relay node)
             let own_transport_id = *transport.identity.hash();
             let mut link_b = Link::new_outgoing(dest_hash.into(), &mut OsRng);
-            let original_request_data_b = link_b.create_link_request();
+            let original_request_data_b =
+                link_b.create_link_request_with_mtu(MTU as u32, crate::constants::MODE_AES256_CBC);
             let raw_type2 = link_b.build_link_request_packet_with_transport(
                 Some(own_transport_id),
                 1, // hops_to_dest
+                None,
             );
 
             // Verify the original is Type2
@@ -5677,9 +5710,10 @@ mod tests {
             );
 
             let mut link_c = Link::new_outgoing(dest_hash.into(), &mut OsRng);
-            let original_request_data_c = link_c.create_link_request();
+            let original_request_data_c =
+                link_c.create_link_request_with_mtu(MTU as u32, crate::constants::MODE_AES256_CBC);
             let raw_type2_multi =
-                link_c.build_link_request_packet_with_transport(Some(own_transport_id), 3);
+                link_c.build_link_request_packet_with_transport(Some(own_transport_id), 3, None);
 
             let forwarded_before = transport.stats().packets_forwarded;
             transport.process_incoming(0, &raw_type2_multi).unwrap();

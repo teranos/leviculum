@@ -461,6 +461,14 @@ impl<R: CryptoRngCore, C: Clock, S: Storage> NodeCore<R, C, S> {
         self.transport.set_interface_name(id, name);
     }
 
+    /// Register the hardware MTU for an interface.
+    ///
+    /// The driver should call this after spawning each interface so that
+    /// link MTU negotiation can signal the correct MTU.
+    pub fn set_interface_hw_mtu(&mut self, id: usize, hw_mtu: u32) {
+        self.transport.set_interface_hw_mtu(id, hw_mtu);
+    }
+
     /// Notify core that an interface has gone offline (sans-I/O)
     ///
     /// The driver should call this when it detects that an interface is no
@@ -499,8 +507,9 @@ impl<R: CryptoRngCore, C: Clock, S: Storage> NodeCore<R, C, S> {
         // Remove announce cap state for this interface
         self.transport.unregister_interface_announce_cap(iface_idx);
 
-        // Remove interface name (after logging so the name is still available above)
+        // Remove interface name and HW_MTU (after logging so the name is still available above)
         self.transport.remove_interface_name(iface_idx);
+        self.transport.remove_interface_hw_mtu(iface_idx);
 
         // Emit the InterfaceDown event
         self.events.push(NodeEvent::InterfaceDown(iface_idx));

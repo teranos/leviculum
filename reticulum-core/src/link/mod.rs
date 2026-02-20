@@ -42,7 +42,7 @@ pub mod channel;
 use crate::constants::{
     ED25519_SIGNATURE_SIZE, KEEPALIVE_INITIATOR_BYTE, KEEPALIVE_PAYLOAD_SIZE,
     KEEPALIVE_RESPONDER_BYTE, LINK_KEEPALIVE_MAX_RTT, LINK_KEEPALIVE_MIN_SECS, LINK_KEEPALIVE_SECS,
-    LINK_KEEPALIVE_TIMEOUT_FACTOR, LINK_STALE_FACTOR, LINK_STALE_GRACE_SECS, PROOF_DATA_SIZE,
+    LINK_KEEPALIVE_TIMEOUT_FACTOR, LINK_STALE_FACTOR, LINK_STALE_GRACE_SECS, MTU, PROOF_DATA_SIZE,
     SIGNALING_MODE_MASK, SIGNALING_MODE_SHIFT, SIGNALING_MTU_MASK, TRUNCATED_HASHBYTES,
     X25519_KEY_SIZE,
 };
@@ -74,6 +74,47 @@ fn encode_signaling_bytes(mtu: u32, mode: u8) -> [u8; SIGNALING_SIZE] {
         (mtu & SIGNALING_MTU_MASK) | ((mode as u32 & SIGNALING_MODE_MASK) << SIGNALING_MODE_SHIFT);
     let bytes = signaling.to_be_bytes();
     [bytes[1], bytes[2], bytes[3]]
+}
+
+/// Decode MTU and mode from 3-byte signaling format
+///
+/// Inverse of `encode_signaling_bytes()`. Extracts the 21-bit MTU and
+/// 3-bit mode from the packed big-endian representation.
+fn decode_signaling_bytes(bytes: &[u8; SIGNALING_SIZE]) -> (u32, u8) {
+    let raw = (bytes[0] as u32) << 16 | (bytes[1] as u32) << 8 | bytes[2] as u32;
+    let mtu = raw & SIGNALING_MTU_MASK;
+    let mode = ((raw >> SIGNALING_MODE_SHIFT) & SIGNALING_MODE_MASK) as u8;
+    (mtu, mode)
+}
+
+/// Validate that a signaled mode is supported.
+///
+/// Only `MODE_AES256_CBC` (0x01) is enabled in the Reticulum protocol.
+/// Python's `Link.ENABLED_MODES = [MODE_AES256_CBC]` rejects all others.
+fn validate_mode(mode: u8) -> Result<(), LinkError> {
+    if mode == crate::constants::MODE_AES256_CBC {
+        Ok(())
+    } else {
+        Err(LinkError::UnsupportedMode)
+    }
+}
+
+/// Compute encrypted link MDU from a given link MTU.
+///
+/// Accounts for minimum header, IFAC, encryption token overhead,
+/// and AES block alignment. Matches Python `Link.update_mdu()`:
+/// ```python
+/// mdu = floor((mtu - IFAC_MIN_SIZE - HEADER_MINSIZE - TOKEN_OVERHEAD)
+///             / AES128_BLOCKSIZE) * AES128_BLOCKSIZE - 1
+/// ```
+fn compute_link_mdu(mtu: u32) -> usize {
+    use crate::constants::{AES_BLOCK_SIZE, HEADER_MINSIZE, IFAC_MIN_SIZE, TOKEN_OVERHEAD};
+    let mtu = mtu as usize;
+    let usable = mtu
+        .saturating_sub(IFAC_MIN_SIZE)
+        .saturating_sub(HEADER_MINSIZE)
+        .saturating_sub(TOKEN_OVERHEAD);
+    (usable / AES_BLOCK_SIZE) * AES_BLOCK_SIZE - 1
 }
 
 /// Build the signed data for proof verification/generation
@@ -141,6 +182,8 @@ pub enum LinkError {
     InvalidRtt,
     /// Link not found
     NotFound,
+    /// Unsupported link encryption mode signaled by the peer
+    UnsupportedMode,
     /// Channel send window is full (mirrors [`ChannelError::WindowFull`])
     WindowFull,
     /// Channel is pacing sends — retry at the given time (mirrors [`ChannelError::PacingDelay`])
@@ -160,6 +203,7 @@ impl core::fmt::Display for LinkError {
             LinkError::NoIdentity => write!(f, "no identity to sign with"),
             LinkError::InvalidRtt => write!(f, "invalid RTT packet"),
             LinkError::NotFound => write!(f, "link not found"),
+            LinkError::UnsupportedMode => write!(f, "unsupported link encryption mode"),
             LinkError::WindowFull => write!(f, "channel send window full"),
             LinkError::PacingDelay { ready_at_ms } => {
                 write!(f, "pacing delay until {}ms", ready_at_ms)
@@ -342,6 +386,10 @@ pub struct Link {
     attached_interface: Option<usize>,
     /// Whether compression is enabled for this link
     compression_enabled: bool,
+    /// Negotiated link MTU from signaling bytes (default: base protocol MTU).
+    /// Set during link establishment from the peer's signaling bytes.
+    /// Removed when link is closed.
+    negotiated_mtu: u32,
     /// Handshake phase (pending outgoing, pending incoming, or established)
     phase: LinkPhase,
     /// Channel for multiplexed message delivery (created lazily on first send/receive)
@@ -391,6 +439,7 @@ impl Link {
             dest_signing_key: None,
             attached_interface: None,
             compression_enabled: false,
+            negotiated_mtu: MTU as u32,
             phase: LinkPhase::Established,
             channel: None,
         }
@@ -416,8 +465,7 @@ impl Link {
         destination_hash: DestinationHash,
         rng: &mut impl CryptoRngCore,
     ) -> Result<Self, LinkError> {
-        // LINK_REQUEST payload: [peer_x25519_pub (32)] [peer_ed25519_pub (32)]
-        // May have additional MTU signaling bytes but we only need first LINK_REQUEST_BASE_SIZE
+        // LINK_REQUEST payload: [peer_x25519_pub (32)] [peer_ed25519_pub (32)] [signaling (0-3)]
         if request_data.len() < LINK_REQUEST_BASE_SIZE {
             return Err(LinkError::InvalidRequest);
         }
@@ -429,6 +477,23 @@ impl Link {
         let peer_ed25519_bytes: [u8; 32] = request_data[32..64]
             .try_into()
             .map_err(|_| LinkError::InvalidRequest)?;
+
+        // Extract negotiated MTU and validate mode from signaling bytes (if present)
+        let negotiated_mtu = if request_data.len() >= LINK_REQUEST_SIGNALING_SIZE {
+            let sig_bytes: [u8; SIGNALING_SIZE] = request_data
+                [LINK_REQUEST_BASE_SIZE..LINK_REQUEST_SIGNALING_SIZE]
+                .try_into()
+                .map_err(|_| LinkError::InvalidRequest)?;
+            let (mtu, mode) = decode_signaling_bytes(&sig_bytes);
+            validate_mode(mode)?;
+            if mtu >= MTU as u32 {
+                mtu
+            } else {
+                MTU as u32
+            }
+        } else {
+            MTU as u32
+        };
 
         let peer_ephemeral_public = x25519_dalek::PublicKey::from(peer_x25519_bytes);
         let peer_verifying_key = ed25519_dalek::VerifyingKey::from_bytes(&peer_ed25519_bytes)
@@ -468,6 +533,7 @@ impl Link {
             dest_signing_key: None,
             attached_interface: None,
             compression_enabled: false,
+            negotiated_mtu,
             phase: LinkPhase::Established,
             channel: None,
         })
@@ -701,14 +767,24 @@ impl Link {
 
     /// Get the maximum data unit for this link
     ///
-    /// This returns the maximum payload size that can be sent over the link
-    /// after encryption overhead. For channel messages, subtract the envelope
-    /// header size (6 bytes) from this value.
+    /// Returns the encrypted link MDU calculated from the negotiated MTU.
+    /// Accounts for minimum header, IFAC, encryption token overhead,
+    /// and AES block alignment. Matches Python `Link.update_mdu()`.
+    ///
+    /// With the default MTU (500), this returns 431. For larger negotiated
+    /// MTUs (e.g., TCP with HW_MTU=262144), returns proportionally larger
+    /// values. Note: `constants::MDU` (464) is the unencrypted packet MDU;
+    /// this method returns the encrypted link MDU which is always smaller.
     pub fn mdu(&self) -> usize {
-        // Returns the protocol-default MDU. MTU signaling does not exist in the
-        // Reticulum protocol yet, so this is the only correct value.
-        // TODO(ROADMAP 2.5 Kleinere Lücken): Support negotiated MTU via signaling
-        crate::constants::MDU
+        compute_link_mdu(self.negotiated_mtu)
+    }
+
+    /// Get the negotiated link MTU
+    ///
+    /// Returns the MTU established during link handshake via signaling bytes.
+    /// Defaults to `MTU` (500) if no larger MTU was negotiated.
+    pub fn negotiated_mtu(&self) -> u32 {
+        self.negotiated_mtu
     }
 
     /// Get our ephemeral public key bytes for the link request
@@ -1160,6 +1236,15 @@ impl Link {
         // Derive link key using HKDF
         let link_key = Self::derive_link_key(shared_secret.as_bytes(), &self.id);
 
+        // Validate mode and store confirmed MTU from responder's signaling bytes
+        let (confirmed_mtu, mode) = decode_signaling_bytes(&signalling_bytes);
+        validate_mode(mode).map_err(|_| LinkError::InvalidProof)?;
+        self.negotiated_mtu = if confirmed_mtu >= MTU as u32 {
+            confirmed_mtu
+        } else {
+            MTU as u32
+        };
+
         // Update state
         self.peer_ephemeral_public = Some(peer_ephemeral_public);
         self.link_key = Some(link_key);
@@ -1208,15 +1293,24 @@ impl Link {
         self.link_key.as_ref()
     }
 
-    /// Build the complete link request packet data
+    /// Build the complete link request packet data with MTU signaling.
     ///
-    /// Returns the raw packet bytes ready for framing/transmission.
+    /// Always includes 3-byte signaling bytes (67-byte payload) for interop
+    /// with Python Reticulum, which accepts both 64-byte and 67-byte requests.
+    ///
+    /// # Arguments
+    /// * `hw_mtu` - Hardware MTU of the outbound interface, or `None` to use base MTU (500)
+    ///
+    /// # Returns
+    /// The raw packet bytes ready for framing/transmission.
     /// Also sets the link_id on this Link.
-    pub fn build_link_request_packet(&mut self) -> alloc::vec::Vec<u8> {
+    pub fn build_link_request_packet(&mut self, hw_mtu: Option<u32>) -> alloc::vec::Vec<u8> {
+        use crate::constants::MODE_AES256_CBC;
         use crate::destination::DestinationType;
         use crate::packet::{HeaderType, PacketContext, PacketFlags, PacketType, TransportType};
 
-        let request_data = self.create_link_request();
+        let mtu = hw_mtu.unwrap_or(MTU as u32);
+        let request_data = self.create_link_request_with_mtu(mtu, MODE_AES256_CBC);
 
         // Build flags
         let flags = PacketFlags {
@@ -1228,9 +1322,9 @@ impl Link {
             packet_type: PacketType::LinkRequest,
         };
 
-        // Packet format: [flags (1)] [hops (1)] [dest_hash (16)] [context (1)] [data (64)]
+        // Packet format: [flags (1)] [hops (1)] [dest_hash (16)] [context (1)] [data (67)]
         let mut packet = alloc::vec::Vec::with_capacity(
-            1 + 1 + TRUNCATED_HASHBYTES + 1 + LINK_REQUEST_BASE_SIZE,
+            1 + 1 + TRUNCATED_HASHBYTES + 1 + LINK_REQUEST_SIGNALING_SIZE,
         );
         packet.push(flags.to_byte());
         packet.push(0); // hops = 0
@@ -1254,6 +1348,7 @@ impl Link {
     /// # Arguments
     /// * `next_hop` - The transport_id (identity hash of the next hop node that will forward this packet)
     /// * `hops_to_dest` - Number of hops to the destination (from path info, stored for reference)
+    /// * `hw_mtu` - Hardware MTU of the outbound interface, or `None` to use base MTU (500)
     ///
     /// # Returns
     /// The raw packet bytes ready for framing/transmission.
@@ -1268,15 +1363,19 @@ impl Link {
         &mut self,
         next_hop: Option<[u8; TRUNCATED_HASHBYTES]>,
         hops_to_dest: u8,
+        hw_mtu: Option<u32>,
     ) -> alloc::vec::Vec<u8> {
+        use crate::constants::MODE_AES256_CBC;
         use crate::destination::DestinationType;
         use crate::packet::{HeaderType, PacketContext, PacketFlags, PacketType, TransportType};
 
         // If no transport_id provided, use HEADER_1 (direct/broadcast)
         let Some(transport_id) = next_hop else {
-            return self.build_link_request_packet();
+            return self.build_link_request_packet(hw_mtu);
         };
-        let request_data = self.create_link_request();
+
+        let mtu = hw_mtu.unwrap_or(MTU as u32);
+        let request_data = self.create_link_request_with_mtu(mtu, MODE_AES256_CBC);
 
         // Build flags for HEADER_2 with transport routing
         // Type2=1 (bit 6), Transport=1 (bit 4), Single=1 (bits 3-2), LinkReq=2 (bits 1-0)
@@ -1289,9 +1388,9 @@ impl Link {
             packet_type: PacketType::LinkRequest,
         };
 
-        // Packet format: [flags (1)] [hops (1)] [transport_id (16)] [dest_hash (16)] [context (1)] [data (64)]
+        // Packet format: [flags (1)] [hops (1)] [transport_id (16)] [dest_hash (16)] [context (1)] [data (67)]
         let mut packet = alloc::vec::Vec::with_capacity(
-            1 + 1 + TRUNCATED_HASHBYTES + TRUNCATED_HASHBYTES + 1 + LINK_REQUEST_BASE_SIZE,
+            1 + 1 + TRUNCATED_HASHBYTES + TRUNCATED_HASHBYTES + 1 + LINK_REQUEST_SIGNALING_SIZE,
         );
         packet.push(flags.to_byte());
         packet.push(0); // hops = 0 (we're originating)
@@ -1875,7 +1974,7 @@ mod tests {
         //   pub_bytes = responder's X25519 ephemeral public key
         //   sig_pub_bytes = responder's Ed25519 signing public key
         //   signalling = MTU and mode bytes
-        let signalling_bytes: [u8; 3] = [0x43, 0x0f, 0x38]; // Example signalling bytes
+        let signalling_bytes = encode_signaling_bytes(500, crate::constants::MODE_AES256_CBC);
         let mut signed_data = [0u8; 83];
         signed_data[..TRUNCATED_HASHBYTES].copy_from_slice(link_id.as_bytes());
         signed_data[TRUNCATED_HASHBYTES..TRUNCATED_HASHBYTES + 32]
@@ -2291,7 +2390,7 @@ mod tests {
 
         // Test with transport_id and hops=1 (should still use HEADER_2 because transport_id is set)
         let mut link1 = Link::new_outgoing(dest_hash, &mut OsRng);
-        let packet1 = link1.build_link_request_packet_with_transport(Some(transport_id), 1);
+        let packet1 = link1.build_link_request_packet_with_transport(Some(transport_id), 1, None);
 
         // Should be HEADER_2 (transport_id is set, even with hops=1)
         let parsed1 = Packet::unpack(&packet1).unwrap();
@@ -2303,7 +2402,7 @@ mod tests {
 
         // Test with hops > 1 and transport_id (should use HEADER_2)
         let mut link2 = Link::new_outgoing(dest_hash, &mut OsRng);
-        let packet2 = link2.build_link_request_packet_with_transport(Some(transport_id), 2);
+        let packet2 = link2.build_link_request_packet_with_transport(Some(transport_id), 2, None);
 
         // Should be HEADER_2 with transport_id
         let parsed2 = Packet::unpack(&packet2).unwrap();
@@ -2315,7 +2414,7 @@ mod tests {
 
         // Test with no transport_id (should use HEADER_1)
         let mut link3 = Link::new_outgoing(dest_hash, &mut OsRng);
-        let packet3 = link3.build_link_request_packet_with_transport(None, 5);
+        let packet3 = link3.build_link_request_packet_with_transport(None, 5, None);
 
         let parsed3 = Packet::unpack(&packet3).unwrap();
         assert_eq!(parsed3.flags.header_type, HeaderType::Type1);
@@ -2330,7 +2429,7 @@ mod tests {
         let transport_id = [0xCD; TRUNCATED_HASHBYTES];
 
         let mut link = Link::new_outgoing(dest_hash, &mut OsRng);
-        let packet = link.build_link_request_packet_with_transport(Some(transport_id), 3);
+        let packet = link.build_link_request_packet_with_transport(Some(transport_id), 3, None);
 
         // Parse and verify flags byte
         let parsed = Packet::unpack(&packet).unwrap();
@@ -2723,5 +2822,200 @@ mod tests {
 
         // Just verify no panic - internal fields not exposed
         assert!(link.established_at.is_some());
+    }
+
+    // ─── MTU Negotiation Tests ───────────────────────────────────────────
+
+    #[test]
+    fn test_decode_signaling_bytes_roundtrip() {
+        // Round-trip: encode then decode must produce the same values
+        let test_cases: &[(u32, u8)] = &[
+            (500, 1),
+            (262_144, 1),
+            (1064, 1),
+            (0, 0),
+            (SIGNALING_MTU_MASK, 7), // max values
+        ];
+        for &(mtu, mode) in test_cases {
+            let encoded = encode_signaling_bytes(mtu, mode);
+            let (decoded_mtu, decoded_mode) = decode_signaling_bytes(&encoded);
+            assert_eq!(decoded_mtu, mtu, "MTU roundtrip failed for {}", mtu);
+            assert_eq!(decoded_mode, mode, "Mode roundtrip failed for {}", mode);
+        }
+    }
+
+    #[test]
+    fn test_decode_signaling_bytes_known_values() {
+        // Zero signaling bytes → MTU=0, mode=0
+        let (mtu, mode) = decode_signaling_bytes(&[0, 0, 0]);
+        assert_eq!(mtu, 0);
+        assert_eq!(mode, 0);
+
+        // MTU=500 (0x1F4), mode=1 → signaling = (1 << 21) | 500 = 0x2001F4
+        // Big-endian bytes: [0x20, 0x01, 0xF4]
+        let encoded = encode_signaling_bytes(500, 1);
+        assert_eq!(encoded, [0x20, 0x01, 0xF4]);
+        let (mtu, mode) = decode_signaling_bytes(&encoded);
+        assert_eq!(mtu, 500);
+        assert_eq!(mode, 1);
+    }
+
+    #[test]
+    fn test_compute_link_mdu_default() {
+        // With default MTU=500, Python's formula gives 431
+        // floor((500 - 1 - 19 - 48) / 16) * 16 - 1 = 27*16 - 1 = 431
+        assert_eq!(compute_link_mdu(500), 431);
+    }
+
+    #[test]
+    fn test_compute_link_mdu_large() {
+        // With TCP HW_MTU=262144
+        // floor((262144 - 1 - 19 - 48) / 16) * 16 - 1
+        // = floor(262076 / 16) * 16 - 1
+        // = 16379 * 16 - 1
+        // = 262064 - 1 = 262063
+        assert_eq!(compute_link_mdu(262_144), 262_063);
+    }
+
+    #[test]
+    fn test_compute_link_mdu_udp() {
+        // With UDP HW_MTU=1064
+        // floor((1064 - 1 - 19 - 48) / 16) * 16 - 1
+        // = floor(996 / 16) * 16 - 1
+        // = 62 * 16 - 1
+        // = 992 - 1 = 991
+        assert_eq!(compute_link_mdu(1064), 991);
+    }
+
+    #[test]
+    fn test_link_mdu_default() {
+        let dest_hash = DestinationHash::new([0x42; TRUNCATED_HASHBYTES]);
+        let link = Link::new_outgoing(dest_hash, &mut OsRng);
+        // Default negotiated_mtu is 500 → mdu() should return 431
+        assert_eq!(link.mdu(), 431);
+        assert_eq!(link.negotiated_mtu(), MTU as u32);
+    }
+
+    #[test]
+    fn test_link_mdu_after_negotiation() {
+        let dest_hash = DestinationHash::new([0x42; TRUNCATED_HASHBYTES]);
+        let mut link = Link::new_outgoing(dest_hash, &mut OsRng);
+        // Simulate MTU negotiation
+        link.negotiated_mtu = 262_144;
+        assert_eq!(link.mdu(), 262_063);
+    }
+
+    #[test]
+    fn test_new_incoming_with_signaling_bytes() {
+        let dest_hash = DestinationHash::new([0x42; TRUNCATED_HASHBYTES]);
+        let link_id = LinkId::new([0x01; TRUNCATED_HASHBYTES]);
+
+        // Build a 67-byte request with MTU=262144
+        let outgoing = Link::new_outgoing(dest_hash, &mut OsRng);
+        let request_data = outgoing.create_link_request_with_mtu(262_144, 1);
+        assert_eq!(request_data.len(), LINK_REQUEST_SIGNALING_SIZE);
+
+        let incoming = Link::new_incoming(&request_data, link_id, dest_hash, &mut OsRng).unwrap();
+        assert_eq!(incoming.negotiated_mtu(), 262_144);
+        assert_eq!(incoming.mdu(), 262_063);
+    }
+
+    #[test]
+    fn test_new_incoming_without_signaling_bytes() {
+        let dest_hash = DestinationHash::new([0x42; TRUNCATED_HASHBYTES]);
+        let link_id = LinkId::new([0x01; TRUNCATED_HASHBYTES]);
+
+        // Build a 64-byte request without signaling
+        let outgoing = Link::new_outgoing(dest_hash, &mut OsRng);
+        let request_data = outgoing.create_link_request();
+        assert_eq!(request_data.len(), LINK_REQUEST_BASE_SIZE);
+
+        let incoming = Link::new_incoming(&request_data, link_id, dest_hash, &mut OsRng).unwrap();
+        // No signaling → defaults to base MTU
+        assert_eq!(incoming.negotiated_mtu(), MTU as u32);
+        assert_eq!(incoming.mdu(), 431);
+    }
+
+    #[test]
+    fn test_new_incoming_signaling_below_base_mtu() {
+        let dest_hash = DestinationHash::new([0x42; TRUNCATED_HASHBYTES]);
+        let link_id = LinkId::new([0x01; TRUNCATED_HASHBYTES]);
+
+        // Signaling with MTU=100 (below base MTU) → should clamp to 500
+        let outgoing = Link::new_outgoing(dest_hash, &mut OsRng);
+        let request_data = outgoing.create_link_request_with_mtu(100, 1);
+
+        let incoming = Link::new_incoming(&request_data, link_id, dest_hash, &mut OsRng).unwrap();
+        assert_eq!(incoming.negotiated_mtu(), MTU as u32);
+    }
+
+    #[test]
+    fn test_build_link_request_always_includes_signaling() {
+        let dest_hash = DestinationHash::new([0x42; TRUNCATED_HASHBYTES]);
+        let mut link = Link::new_outgoing(dest_hash, &mut OsRng);
+        let packet = link.build_link_request_packet(None);
+
+        // Packet: flags(1) + hops(1) + dest_hash(16) + context(1) + data(67) = 86
+        assert_eq!(
+            packet.len(),
+            1 + 1 + TRUNCATED_HASHBYTES + 1 + LINK_REQUEST_SIGNALING_SIZE
+        );
+    }
+
+    #[test]
+    fn test_build_link_request_with_hw_mtu() {
+        let dest_hash = DestinationHash::new([0x42; TRUNCATED_HASHBYTES]);
+        let mut link = Link::new_outgoing(dest_hash, &mut OsRng);
+        let packet = link.build_link_request_packet(Some(262_144));
+
+        // Should still be 86 bytes (signaling always present)
+        assert_eq!(
+            packet.len(),
+            1 + 1 + TRUNCATED_HASHBYTES + 1 + LINK_REQUEST_SIGNALING_SIZE
+        );
+
+        // Verify signaling bytes encode the HW_MTU
+        let data_start = 1 + 1 + TRUNCATED_HASHBYTES + 1; // flags+hops+dest+context
+        let sig_bytes: [u8; SIGNALING_SIZE] = packet
+            [data_start + LINK_REQUEST_BASE_SIZE..data_start + LINK_REQUEST_SIGNALING_SIZE]
+            .try_into()
+            .unwrap();
+        let (mtu, mode) = decode_signaling_bytes(&sig_bytes);
+        assert_eq!(mtu, 262_144);
+        assert_eq!(mode, crate::constants::MODE_AES256_CBC);
+    }
+
+    #[test]
+    fn test_validate_mode_accepts_aes256_cbc() {
+        assert!(validate_mode(crate::constants::MODE_AES256_CBC).is_ok());
+    }
+
+    #[test]
+    fn test_validate_mode_rejects_unknown() {
+        // MODE_AES128_CBC (0x00) is defined in Python but NOT enabled
+        assert_eq!(validate_mode(0x00), Err(LinkError::UnsupportedMode));
+        // MODE_AES256_GCM (0x02) is reserved
+        assert_eq!(validate_mode(0x02), Err(LinkError::UnsupportedMode));
+        // All other values
+        for mode in [0x03, 0x04, 0x05, 0x06, 0x07] {
+            assert_eq!(validate_mode(mode), Err(LinkError::UnsupportedMode));
+        }
+    }
+
+    #[test]
+    fn test_new_incoming_rejects_unsupported_mode() {
+        let dest_hash = DestinationHash::new([0x42; TRUNCATED_HASHBYTES]);
+        let link_id = LinkId::new([0x01; TRUNCATED_HASHBYTES]);
+
+        // Build request with unsupported mode (AES-128-CBC = 0x00)
+        let outgoing = Link::new_outgoing(dest_hash, &mut OsRng);
+        let request_data = outgoing.create_link_request_with_mtu(500, 0x00);
+
+        let result = Link::new_incoming(&request_data, link_id, dest_hash, &mut OsRng);
+        assert!(
+            matches!(result, Err(LinkError::UnsupportedMode)),
+            "expected UnsupportedMode, got {:?}",
+            result.err()
+        );
     }
 }

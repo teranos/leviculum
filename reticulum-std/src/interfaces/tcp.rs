@@ -98,7 +98,11 @@ pub(crate) fn spawn_tcp_interface_from_stream(
     });
 
     InterfaceHandle {
-        info: InterfaceInfo { id, name },
+        info: InterfaceInfo {
+            id,
+            name,
+            hw_mtu: Some(262_144),
+        },
         incoming: incoming_rx,
         outgoing: outgoing_tx,
     }
@@ -233,7 +237,11 @@ pub(crate) fn spawn_tcp_client_with_reconnect(
     });
 
     InterfaceHandle {
-        info: InterfaceInfo { id, name },
+        info: InterfaceInfo {
+            id,
+            name,
+            hw_mtu: Some(262_144),
+        },
         incoming: incoming_rx,
         outgoing: outgoing_tx,
     }

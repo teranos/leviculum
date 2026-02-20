@@ -173,9 +173,12 @@ impl ReticulumNode {
         {
             let mut core = self.inner.lock().unwrap();
 
-            // Register human-readable interface names with core for log messages
+            // Register human-readable interface names and HW_MTU with core
             for handle in registry.handles() {
                 core.set_interface_name(handle.info.id.0, handle.info.name.clone());
+                if let Some(hw_mtu) = handle.info.hw_mtu {
+                    core.set_interface_hw_mtu(handle.info.id.0, hw_mtu);
+                }
             }
 
             let transport_enabled = core.transport_config().enable_transport;
@@ -768,6 +771,9 @@ async fn run_event_loop(
                 {
                     let mut core = inner.lock().unwrap();
                     core.set_interface_name(handle.info.id.0, handle.info.name.clone());
+                    if let Some(hw_mtu) = handle.info.hw_mtu {
+                        core.set_interface_hw_mtu(handle.info.id.0, hw_mtu);
+                    }
                 }
                 registry.register(handle);
             }

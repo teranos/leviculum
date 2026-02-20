@@ -242,7 +242,7 @@ fn test_link_request_packet_byte_layout() {
     let dest_hash = [0x42u8; TRUNCATED_HASHBYTES];
     let mut link = Link::new_outgoing(dest_hash.into(), &mut rand_core::OsRng);
 
-    let raw = link.build_link_request_packet();
+    let raw = link.build_link_request_packet(None);
 
     // Expected: [flags(1)] [hops(1)] [dest_hash(16)] [context(1)] [payload(64)]
     assert_eq!(raw.len(), 83, "Link request should be 83 bytes total");

@@ -59,7 +59,7 @@ fn run_link_test(
     }
 
     // Build the link request packet
-    let packet = link.build_link_request_packet();
+    let packet = link.build_link_request_packet(None);
 
     // Frame with HDLC
     let mut framed = Vec::new();

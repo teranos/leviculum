@@ -76,7 +76,7 @@ async fn test_link_establishment_basic() {
         .expect("Failed to set destination keys");
 
     // Build and send link request
-    let raw_packet = link.build_link_request_packet();
+    let raw_packet = link.build_link_request_packet(None);
     println!("Sending link request, link_id: {}", hex::encode(link.id()));
 
     let mut stream = connect_to_daemon(&daemon).await;
@@ -166,7 +166,7 @@ async fn test_link_encrypted_data() {
     let mut link = Link::new_outgoing(dest_hash.into(), &mut OsRng);
     link.set_destination_keys(&signing_key_bytes).unwrap();
 
-    let raw_packet = link.build_link_request_packet();
+    let raw_packet = link.build_link_request_packet(None);
     let mut stream = connect_to_daemon(&daemon).await;
     let mut framed = Vec::new();
     frame(&raw_packet, &mut framed);
@@ -270,7 +270,7 @@ async fn test_link_echo() {
     let mut link = Link::new_outgoing(dest_hash.into(), &mut OsRng);
     link.set_destination_keys(&signing_key_bytes).unwrap();
 
-    let raw_packet = link.build_link_request_packet();
+    let raw_packet = link.build_link_request_packet(None);
     let mut stream = connect_to_daemon(&daemon).await;
     let mut framed = Vec::new();
     frame(&raw_packet, &mut framed);
@@ -350,7 +350,7 @@ async fn test_link_request_nonexistent_destination() {
     let dummy_key = [0u8; 32];
     let _ = link.set_destination_keys(&dummy_key);
 
-    let raw_packet = link.build_link_request_packet();
+    let raw_packet = link.build_link_request_packet(None);
     println!(
         "Sending link request to non-existent destination: {}",
         hex::encode(random_dest_hash)
@@ -415,7 +415,7 @@ async fn test_link_multiple_data_packets() {
     let mut link = Link::new_outgoing(dest_hash.into(), &mut OsRng);
     link.set_destination_keys(&signing_key_bytes).unwrap();
 
-    let raw_packet = link.build_link_request_packet();
+    let raw_packet = link.build_link_request_packet(None);
     let mut stream = connect_to_daemon(&daemon).await;
     let mut framed = Vec::new();
     frame(&raw_packet, &mut framed);
@@ -615,7 +615,7 @@ async fn test_link_proof_validation() {
     let mut link = Link::new_outgoing(dest_hash.into(), &mut OsRng);
     link.set_destination_keys(&signing_key_bytes).unwrap();
 
-    let raw_packet = link.build_link_request_packet();
+    let raw_packet = link.build_link_request_packet(None);
 
     let mut stream = connect_to_daemon(&daemon).await;
     let mut framed = Vec::new();

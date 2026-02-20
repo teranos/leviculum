@@ -444,6 +444,7 @@ async fn phase2_link_establishment(network: &mut MultiNodeTestNetwork) {
                 let raw_packet = link.build_link_request_packet_with_transport(
                     announce_info.transport_id,
                     announce_info.hops,
+                    None,
                 );
                 let mut framed = Vec::new();
                 frame(&raw_packet, &mut framed);
@@ -526,7 +527,7 @@ async fn phase2_link_establishment(network: &mut MultiNodeTestNetwork) {
 
     // Use HEADER_2 format with transport_id for routing through the daemon
     // hops_to_dest=1 since Rust-B is reachable through Py-1 (1 hop)
-    let raw_packet = link_ab.build_link_request_packet_with_transport(py1_transport_id, 1);
+    let raw_packet = link_ab.build_link_request_packet_with_transport(py1_transport_id, 1, None);
     let mut framed = Vec::new();
     frame(&raw_packet, &mut framed);
     network
@@ -654,7 +655,7 @@ async fn phase2_link_establishment(network: &mut MultiNodeTestNetwork) {
     link_cd.set_destination_keys(&rust_d_signing_key).unwrap();
 
     // Use HEADER_2 format with transport_id for routing through Py-3
-    let raw_packet = link_cd.build_link_request_packet_with_transport(py3_transport_id, 1);
+    let raw_packet = link_cd.build_link_request_packet_with_transport(py3_transport_id, 1, None);
     framed.clear();
     frame(&raw_packet, &mut framed);
     network
@@ -1149,7 +1150,7 @@ async fn test_rust_to_python_link() {
     let mut link = Link::new_outgoing(dest_hash, &mut OsRng);
     link.set_destination_keys(&signing_key).unwrap();
 
-    let raw_packet = link.build_link_request_packet();
+    let raw_packet = link.build_link_request_packet(None);
     let mut framed = Vec::new();
     frame(&raw_packet, &mut framed);
     node_a.stream.write_all(&framed).await.unwrap();

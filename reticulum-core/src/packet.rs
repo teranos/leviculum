@@ -7,9 +7,9 @@
 //! - Header Type 1: destination_hash only (16 bytes)
 //! - Header Type 2: transport_id + destination_hash (32 bytes)
 
-use crate::constants::{HEADER_MAXSIZE, HEADER_MINSIZE, MDU, TRUNCATED_HASHBYTES};
 #[cfg(test)]
 use crate::constants::MTU;
+use crate::constants::{HEADER_MAXSIZE, HEADER_MINSIZE, MDU, TRUNCATED_HASHBYTES};
 
 // ─── Flag Byte Bit Masks ─────────────────────────────────────────────────────
 // Bit layout: [ifac:1][header_type:1][context:1][transport:1][dest_type:2][packet_type:2]

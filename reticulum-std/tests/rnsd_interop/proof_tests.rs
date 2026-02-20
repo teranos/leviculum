@@ -540,7 +540,7 @@ async fn test_prove_all_link_traffic_comprehensive() {
     link.set_destination_keys(&signing_key)
         .expect("Failed to set destination keys");
 
-    let link_request = link.build_link_request_packet();
+    let link_request = link.build_link_request_packet(None);
     let mut framed = Vec::new();
     frame(&link_request, &mut framed);
     stream

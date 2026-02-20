@@ -7,7 +7,7 @@
 use alloc::vec::Vec;
 
 use crate::constants::{
-    DATA_RECEIPT_TIMEOUT_MS, LINK_PENDING_TIMEOUT_MS, MODE_AES256_CBC, MS_PER_SECOND, MTU,
+    DATA_RECEIPT_TIMEOUT_MS, LINK_PENDING_TIMEOUT_MS, MODE_AES256_CBC, MS_PER_SECOND,
     PROOF_DATA_SIZE, TRUNCATED_HASHBYTES,
 };
 use crate::destination::{DestinationHash, ProofStrategy};
@@ -191,9 +191,14 @@ impl<R: CryptoRngCore, C: Clock, S: Storage> NodeCore<R, C, S> {
 
         let now_ms = self.transport.clock().now_ms();
 
+        // Look up HW_MTU for next-hop interface (for link MTU negotiation)
+        let hw_mtu = self
+            .transport
+            .next_hop_interface_hw_mtu(dest_hash.as_bytes());
+
         // Create new outgoing link
         let mut link = Link::new_outgoing(dest_hash, &mut self.rng);
-        let packet = link.build_link_request_packet_with_transport(next_hop, hops);
+        let packet = link.build_link_request_packet_with_transport(next_hop, hops, hw_mtu);
         let link_id = *link.id();
         if let Err(e) = link.set_destination_keys(dest_signing_key) {
             tracing::debug!(%e, "set_destination_keys failed");
@@ -254,7 +259,8 @@ impl<R: CryptoRngCore, C: Clock, S: Storage> NodeCore<R, C, S> {
         if let Some(sk) = identity.ed25519_signing_key() {
             link.set_dest_signing_key(sk.clone());
         }
-        let proof = link.build_proof_packet(identity, MTU as u32, MODE_AES256_CBC)?;
+        let proof_mtu = link.negotiated_mtu();
+        let proof = link.build_proof_packet(identity, proof_mtu, MODE_AES256_CBC)?;
         link.set_phase(LinkPhase::PendingIncoming {
             proof_sent_at_ms: now_ms,
         });

@@ -91,7 +91,7 @@ async fn test_rotation_during_active_link() {
     link.set_destination_keys(&signing_key_bytes).unwrap();
 
     let mut stream = connect_to_daemon(&daemon).await;
-    let raw_packet = link.build_link_request_packet();
+    let raw_packet = link.build_link_request_packet(None);
 
     let mut framed = Vec::new();
     frame(&raw_packet, &mut framed);
@@ -490,7 +490,7 @@ async fn test_link_to_ratcheted_destination() {
     link.set_destination_keys(&signing_key_bytes).unwrap();
 
     let mut stream = connect_to_daemon(&daemon).await;
-    let raw_packet = link.build_link_request_packet();
+    let raw_packet = link.build_link_request_packet(None);
 
     let mut framed = Vec::new();
     frame(&raw_packet, &mut framed);

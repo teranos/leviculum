@@ -52,7 +52,11 @@ pub(crate) fn spawn_udp_interface(
     });
 
     Ok(InterfaceHandle {
-        info: InterfaceInfo { id, name },
+        info: InterfaceInfo {
+            id,
+            name,
+            hw_mtu: Some(1064),
+        },
         incoming: incoming_rx,
         outgoing: outgoing_tx,
     })

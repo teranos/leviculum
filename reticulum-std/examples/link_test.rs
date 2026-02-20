@@ -87,7 +87,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         .map_err(|e| format!("Failed to set destination keys: {:?}", e))?;
 
     // Build the link request packet
-    let packet = link.build_link_request_packet();
+    let packet = link.build_link_request_packet(None);
     println!("\nLink request packet ({} bytes):", packet.len());
     println!("  Raw: {}", bytes_to_hex(&packet));
     println!("  Link ID: {}", bytes_to_hex(link.id().as_bytes()));

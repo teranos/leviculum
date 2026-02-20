@@ -450,7 +450,7 @@ async fn test_link_through_single_python_relay() {
     let mut link = Link::new_outgoing(dest_hash.into(), &mut OsRng);
     link.set_destination_keys(&signing_key_bytes).unwrap();
 
-    let raw_packet = link.build_link_request_packet();
+    let raw_packet = link.build_link_request_packet(None);
     send_framed(&mut stream, &raw_packet).await;
 
     // Receive proof
@@ -570,8 +570,11 @@ async fn test_link_through_two_python_relays() {
     let mut link = Link::new_outgoing(dest_hash, &mut OsRng);
     link.set_destination_keys(&signing_key).unwrap();
 
-    let raw_request = link
-        .build_link_request_packet_with_transport(announce_info.transport_id, announce_info.hops);
+    let raw_request = link.build_link_request_packet_with_transport(
+        announce_info.transport_id,
+        announce_info.hops,
+        None,
+    );
     send_framed(&mut stream_a, &raw_request).await;
 
     // Wait for proof (routed back through D0->D1)
@@ -657,7 +660,7 @@ async fn test_link_data_routing_bidirectional() {
 
     let mut link = Link::new_outgoing(dest_hash.into(), &mut OsRng);
     link.set_destination_keys(&signing_key).unwrap();
-    let req = link.build_link_request_packet();
+    let req = link.build_link_request_packet(None);
     send_framed(&mut stream, &req).await;
 
     let proof = receive_proof_for_link(
@@ -728,7 +731,7 @@ async fn test_multiple_links_through_same_relay() {
 
     let mut link1 = Link::new_outgoing(dest1_hash.into(), &mut OsRng);
     link1.set_destination_keys(&signing_key1).unwrap();
-    let req1 = link1.build_link_request_packet();
+    let req1 = link1.build_link_request_packet(None);
     send_framed(&mut stream, &req1).await;
 
     let proof1 = receive_proof_for_link(
@@ -756,7 +759,7 @@ async fn test_multiple_links_through_same_relay() {
 
     let mut link2 = Link::new_outgoing(dest2_hash.into(), &mut OsRng);
     link2.set_destination_keys(&signing_key2).unwrap();
-    let req2 = link2.build_link_request_packet();
+    let req2 = link2.build_link_request_packet(None);
     send_framed(&mut stream, &req2).await;
 
     let proof2 = receive_proof_for_link(
@@ -1151,8 +1154,11 @@ async fn test_full_discovery_and_link_cycle() {
     let mut link = Link::new_outgoing(dest_hash, &mut OsRng);
     link.set_destination_keys(&signing_key).unwrap();
 
-    let raw_request = link
-        .build_link_request_packet_with_transport(announce_info.transport_id, announce_info.hops);
+    let raw_request = link.build_link_request_packet_with_transport(
+        announce_info.transport_id,
+        announce_info.hops,
+        None,
+    );
     send_framed(&mut stream_a, &raw_request).await;
 
     // Wait for proof (routed back through D0->D1->D2)
@@ -1306,7 +1312,7 @@ async fn test_path_discovery_then_link() {
     link.set_destination_keys(&signing_key).unwrap();
 
     let raw_request =
-        link.build_link_request_packet_with_transport(response.transport_id, response.hops);
+        link.build_link_request_packet_with_transport(response.transport_id, response.hops, None);
     send_framed(&mut stream_a, &raw_request).await;
 
     let proof = receive_proof_for_link(
@@ -1459,7 +1465,7 @@ async fn test_concurrent_links_through_relay() {
 
         let mut link = Link::new_outgoing(dest_hash.into(), &mut OsRng);
         link.set_destination_keys(&signing_key).unwrap();
-        let req = link.build_link_request_packet();
+        let req = link.build_link_request_packet(None);
         send_framed(&mut stream, &req).await;
 
         let proof = receive_proof_for_link(
@@ -1537,7 +1543,7 @@ async fn test_link_survives_idle_through_relay() {
 
     let mut link = Link::new_outgoing(dest_hash.into(), &mut OsRng);
     link.set_destination_keys(&signing_key).unwrap();
-    let req = link.build_link_request_packet();
+    let req = link.build_link_request_packet(None);
     send_framed(&mut stream, &req).await;
 
     let proof = receive_proof_for_link(
@@ -1653,7 +1659,7 @@ async fn test_link_request_to_unreachable_destination() {
     let mut link = Link::new_outgoing(random_hash.into(), &mut OsRng);
     // We don't have a real signing key, but the link request will be sent
     // and should be silently dropped by the daemon
-    let req = link.build_link_request_packet();
+    let req = link.build_link_request_packet(None);
     send_framed(&mut stream, &req).await;
 
     println!(

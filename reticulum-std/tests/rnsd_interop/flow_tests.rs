@@ -119,7 +119,7 @@ async fn test_discovery_then_link_establishment() {
         .expect("Failed to set destination keys");
 
     // Build and send link request
-    let raw_packet = link.build_link_request_packet();
+    let raw_packet = link.build_link_request_packet(None);
     println!("Sending link request, link_id: {}", hex::encode(link.id()));
 
     let mut framed = Vec::new();
@@ -208,7 +208,7 @@ async fn test_complete_roundtrip() {
     let mut link = Link::new_outgoing(dest_hash.into(), &mut OsRng);
     link.set_destination_keys(&signing_key_bytes).unwrap();
 
-    let raw_packet = link.build_link_request_packet();
+    let raw_packet = link.build_link_request_packet(None);
     let mut framed = Vec::new();
     frame(&raw_packet, &mut framed);
     stream.write_all(&framed).await.unwrap();
@@ -401,7 +401,7 @@ async fn test_multiple_destinations_selective_link() {
     let mut link = Link::new_outgoing(target_hash.into(), &mut OsRng);
     link.set_destination_keys(&signing_key_bytes).unwrap();
 
-    let raw_packet = link.build_link_request_packet();
+    let raw_packet = link.build_link_request_packet(None);
     let mut framed = Vec::new();
     frame(&raw_packet, &mut framed);
     stream.write_all(&framed).await.unwrap();
@@ -558,7 +558,7 @@ async fn test_discovery_path_update() {
     let mut link = Link::new_outgoing(dest_hash.into(), &mut OsRng);
     link.set_destination_keys(&signing_key_bytes).unwrap();
 
-    let raw_packet = link.build_link_request_packet();
+    let raw_packet = link.build_link_request_packet(None);
     let mut framed = Vec::new();
     frame(&raw_packet, &mut framed);
     stream.write_all(&framed).await.unwrap();
@@ -634,7 +634,7 @@ async fn test_discovery_link_multiple_messages() {
     let mut link = Link::new_outgoing(dest_hash.into(), &mut OsRng);
     link.set_destination_keys(&signing_key_bytes).unwrap();
 
-    let raw_packet = link.build_link_request_packet();
+    let raw_packet = link.build_link_request_packet(None);
     let mut framed = Vec::new();
     frame(&raw_packet, &mut framed);
     stream.write_all(&framed).await.unwrap();

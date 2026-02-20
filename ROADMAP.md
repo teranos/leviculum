@@ -137,7 +137,7 @@ Vollständige API für Destinations und Links. Leviculum kann sowohl Client als 
 - [x] 32-Byte Path Requests für Non-Transport-Nodes
 - [x] Multi-Hop Link von Non-Transport Nodes
 
-Kleinere Lücken (nicht blockierend für v1.0): Announce-Expiry-Timer, mehrere Pfade pro Destination, MTU-Signaling für Link-MDU-Verhandlung. Announce-Bandbreitenbegrenzung ist implementiert, aber für TCP-Interfaces inaktiv (bitrate=0); wird für zukünftige LoRa/Serial-Interfaces aktiviert (siehe E10 in `doc/OPEN_ISSUES_TRACKER.md`).
+Kleinere Lücken (nicht blockierend für v1.0): Announce-Expiry-Timer, mehrere Pfade pro Destination. MTU-Signaling für Link-MDU-Verhandlung ist implementiert (Link-Requests enthalten immer 3 Signaling-Bytes; Responder echot die MTU zurück; `Link::mdu()` berechnet den verschlüsselten MDU aus der verhandelten MTU). Announce-Bandbreitenbegrenzung ist implementiert, aber für TCP-Interfaces inaktiv (bitrate=0); wird für zukünftige LoRa/Serial-Interfaces aktiviert (siehe E10 in `doc/OPEN_ISSUES_TRACKER.md`).
 
 ### Bekannte Bugs und Lücken
 

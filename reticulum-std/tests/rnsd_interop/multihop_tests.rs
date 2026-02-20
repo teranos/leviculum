@@ -322,7 +322,7 @@ async fn test_destination_in_exit_daemon() {
     let mut link = Link::new_outgoing(dest_hash.into(), &mut OsRng);
     link.set_destination_keys(&signing_key_bytes).unwrap();
 
-    let raw_packet = link.build_link_request_packet();
+    let raw_packet = link.build_link_request_packet(None);
     println!("Sending direct link request to D1");
 
     let mut framed = Vec::new();
@@ -555,7 +555,7 @@ async fn test_link_table_queries_in_topology() {
     let mut link = Link::new_outgoing(dest_hash.into(), &mut OsRng);
     link.set_destination_keys(&signing_key_bytes).unwrap();
 
-    let raw_packet = link.build_link_request_packet();
+    let raw_packet = link.build_link_request_packet(None);
 
     let mut framed = Vec::new();
     frame(&raw_packet, &mut framed);
