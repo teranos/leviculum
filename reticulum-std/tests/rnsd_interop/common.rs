@@ -1238,7 +1238,7 @@ pub fn verify_test_payload(data: &[u8]) -> bool {
 /// Create a Transport for testing (sans-I/O, no interfaces registered).
 /// Returns `(transport, interface_index)`.
 pub fn create_test_transport() -> (
-    reticulum_core::transport::Transport<TestClock, reticulum_core::traits::NoStorage>,
+    reticulum_core::transport::Transport<TestClock, reticulum_core::MemoryStorage>,
     usize,
 ) {
     let clock = TestClock;
@@ -1247,7 +1247,7 @@ pub fn create_test_transport() -> (
     let transport = reticulum_core::transport::Transport::new(
         config,
         clock,
-        reticulum_core::traits::NoStorage,
+        reticulum_core::MemoryStorage::with_defaults(),
         identity,
     );
     (transport, 0)

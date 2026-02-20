@@ -40,9 +40,10 @@ use reticulum_core::identity::Identity;
 use reticulum_core::link::{LinkCloseReason, LinkId, LinkState};
 use reticulum_core::node::{NodeCoreBuilder, NodeEvent};
 use reticulum_core::packet::{Packet, PacketType};
-use reticulum_core::traits::{Clock, NoStorage};
+use reticulum_core::traits::Clock;
 use reticulum_core::transport::{Action, InterfaceId};
 use reticulum_core::DestinationHash;
+use reticulum_core::MemoryStorage;
 use reticulum_core::{Destination, DestinationType, Direction};
 use reticulum_std::interfaces::hdlc::{DeframeResult, Deframer};
 
@@ -135,7 +136,7 @@ fn is_active<R: rand_core::CryptoRngCore, C: Clock, S: reticulum_core::traits::S
 ///
 /// Returns (link_id, destination_info) on success.
 async fn establish_initiator_link(
-    node: &mut reticulum_core::node::NodeCore<OsRng, TestClock, NoStorage>,
+    node: &mut reticulum_core::node::NodeCore<OsRng, TestClock, MemoryStorage>,
     daemon: &TestDaemon,
     stream: &mut TcpStream,
     deframer: &mut Deframer,
@@ -191,7 +192,7 @@ async fn establish_initiator_link(
 ///
 /// Returns link_id on success.
 async fn establish_responder_link(
-    node: &mut reticulum_core::node::NodeCore<OsRng, TestClock, NoStorage>,
+    node: &mut reticulum_core::node::NodeCore<OsRng, TestClock, MemoryStorage>,
     _daemon: &TestDaemon,
     stream: &mut TcpStream,
     deframer: &mut Deframer,
@@ -270,7 +271,7 @@ async fn test_manager_initiator_basic_handshake() {
     let mut stream = connect_to_daemon(&daemon).await;
     let mut deframer = Deframer::new();
 
-    let mut node = NodeCoreBuilder::new().build(OsRng, TestClock, NoStorage);
+    let mut node = NodeCoreBuilder::new().build(OsRng, TestClock, MemoryStorage::with_defaults());
 
     // Establish link
     let (link_id, _dest_info) =
@@ -303,7 +304,7 @@ async fn test_manager_initiator_data_exchange() {
     let mut stream = connect_to_daemon(&daemon).await;
     let mut deframer = Deframer::new();
 
-    let mut node = NodeCoreBuilder::new().build(OsRng, TestClock, NoStorage);
+    let mut node = NodeCoreBuilder::new().build(OsRng, TestClock, MemoryStorage::with_defaults());
 
     let (link_id, _dest_info) =
         establish_initiator_link(&mut node, &daemon, &mut stream, &mut deframer)
@@ -346,7 +347,7 @@ async fn test_manager_initiator_data_exchange() {
 async fn test_manager_initiator_sequential_links() {
     let daemon = TestDaemon::start().await.expect("Failed to start daemon");
 
-    let mut node = NodeCoreBuilder::new().build(OsRng, TestClock, NoStorage);
+    let mut node = NodeCoreBuilder::new().build(OsRng, TestClock, MemoryStorage::with_defaults());
 
     // First link
     let mut stream1 = connect_to_daemon(&daemon).await;
@@ -416,19 +417,20 @@ async fn test_manager_initiator_concurrent_links() {
         .await
         .expect("Failed to register dest3");
 
-    let mut node = NodeCoreBuilder::new().build(OsRng, TestClock, NoStorage);
+    let mut node = NodeCoreBuilder::new().build(OsRng, TestClock, MemoryStorage::with_defaults());
 
     // Helper to initiate link
-    let initiate_link = |node: &mut reticulum_core::node::NodeCore<OsRng, TestClock, NoStorage>,
-                         dest_info: &DestinationInfo|
-     -> (LinkId, Vec<Vec<u8>>) {
-        let pub_key_bytes = hex::decode(&dest_info.public_key).unwrap();
-        let signing_key: [u8; 32] = pub_key_bytes[32..64].try_into().unwrap();
-        let dest_hash: [u8; 16] = hex::decode(&dest_info.hash).unwrap().try_into().unwrap();
-        let (link_id, _, output) = node.connect(DestinationHash::new(dest_hash), &signing_key);
-        let packets = extract_action_packets(&output);
-        (link_id, packets)
-    };
+    let initiate_link =
+        |node: &mut reticulum_core::node::NodeCore<OsRng, TestClock, MemoryStorage>,
+         dest_info: &DestinationInfo|
+         -> (LinkId, Vec<Vec<u8>>) {
+            let pub_key_bytes = hex::decode(&dest_info.public_key).unwrap();
+            let signing_key: [u8; 32] = pub_key_bytes[32..64].try_into().unwrap();
+            let dest_hash: [u8; 16] = hex::decode(&dest_info.hash).unwrap().try_into().unwrap();
+            let (link_id, _, output) = node.connect(DestinationHash::new(dest_hash), &signing_key);
+            let packets = extract_action_packets(&output);
+            (link_id, packets)
+        };
 
     // Initiate all three links
     let (link_id1, packets1) = initiate_link(&mut node, &dest1);
@@ -524,7 +526,7 @@ async fn test_manager_responder_accept_link() {
     let dest_hash_hex = hex::encode(dest_hash);
 
     // Register destination in node
-    let mut node = NodeCoreBuilder::new().build(OsRng, TestClock, NoStorage);
+    let mut node = NodeCoreBuilder::new().build(OsRng, TestClock, MemoryStorage::with_defaults());
     let mut dest = destination;
     dest.set_accepts_links(true);
     node.register_destination(dest);
@@ -596,7 +598,7 @@ async fn test_manager_responder_reject_link() {
     let dest_hash_hex = hex::encode(dest_hash);
 
     // Register destination in node
-    let mut node = NodeCoreBuilder::new().build(OsRng, TestClock, NoStorage);
+    let mut node = NodeCoreBuilder::new().build(OsRng, TestClock, MemoryStorage::with_defaults());
     let mut dest = destination;
     dest.set_accepts_links(true);
     node.register_destination(dest);
@@ -670,7 +672,7 @@ async fn test_manager_responder_data_exchange() {
     let dest_hash = *destination.hash();
     let dest_hash_hex = hex::encode(dest_hash);
 
-    let mut node = NodeCoreBuilder::new().build(OsRng, TestClock, NoStorage);
+    let mut node = NodeCoreBuilder::new().build(OsRng, TestClock, MemoryStorage::with_defaults());
     let mut dest = destination;
     dest.set_accepts_links(true);
     node.register_destination(dest);
@@ -772,7 +774,7 @@ async fn test_manager_responder_multiple_incoming() {
     let dest_hash = *destination.hash();
     let dest_hash_hex = hex::encode(dest_hash);
 
-    let mut node = NodeCoreBuilder::new().build(OsRng, TestClock, NoStorage);
+    let mut node = NodeCoreBuilder::new().build(OsRng, TestClock, MemoryStorage::with_defaults());
     let mut dest = destination;
     dest.set_accepts_links(true);
     node.register_destination(dest);
@@ -839,7 +841,7 @@ async fn test_rust_to_rust_via_daemon() {
     // --- Node B connects first to receive announces ---
     let mut stream_b = connect_to_daemon(&daemon).await;
     let mut deframer_b = Deframer::new();
-    let mut node_b = NodeCoreBuilder::new().build(OsRng, TestClock, NoStorage);
+    let mut node_b = NodeCoreBuilder::new().build(OsRng, TestClock, MemoryStorage::with_defaults());
 
     // --- Node A (Responder) ---
     let mut stream_a = connect_to_daemon(&daemon).await;
@@ -850,7 +852,7 @@ async fn test_rust_to_rust_via_daemon() {
 
     let dest_hash_a = *destination_a.hash();
 
-    let mut node_a = NodeCoreBuilder::new().build(OsRng, TestClock, NoStorage);
+    let mut node_a = NodeCoreBuilder::new().build(OsRng, TestClock, MemoryStorage::with_defaults());
     let mut dest_a = destination_a;
     dest_a.set_accepts_links(true);
     node_a.register_destination(dest_a);
@@ -1063,7 +1065,7 @@ async fn test_rust_to_rust_multiple_messages() {
     // --- B connects first to receive announces ---
     let mut stream_b = connect_to_daemon(&daemon).await;
     let mut deframer_b = Deframer::new();
-    let mut node_b = NodeCoreBuilder::new().build(OsRng, TestClock, NoStorage);
+    let mut node_b = NodeCoreBuilder::new().build(OsRng, TestClock, MemoryStorage::with_defaults());
 
     // --- A (Responder) sets up and announces ---
     let mut stream_a = connect_to_daemon(&daemon).await;
@@ -1074,7 +1076,7 @@ async fn test_rust_to_rust_multiple_messages() {
 
     let dest_hash_a = *destination_a.hash();
 
-    let mut node_a = NodeCoreBuilder::new().build(OsRng, TestClock, NoStorage);
+    let mut node_a = NodeCoreBuilder::new().build(OsRng, TestClock, MemoryStorage::with_defaults());
     let mut dest_a = destination_a;
     dest_a.set_accepts_links(true);
     node_a.register_destination(dest_a);
@@ -1168,7 +1170,7 @@ async fn test_rust_to_rust_multiple_messages() {
     fn process_incoming(
         deframer: &mut Deframer,
         raw: &[u8],
-        node: &mut reticulum_core::node::NodeCore<OsRng, TestClock, NoStorage>,
+        node: &mut reticulum_core::node::NodeCore<OsRng, TestClock, MemoryStorage>,
         pending_actions: &mut Vec<Vec<u8>>,
     ) -> usize {
         let mut count = 0;
@@ -1351,7 +1353,7 @@ async fn test_manager_handshake_timeout() {
     let clock = SharedMockClock::new(1_000_000);
     let clock_handle = clock.handle();
 
-    let mut node = NodeCoreBuilder::new().build(OsRng, clock, NoStorage);
+    let mut node = NodeCoreBuilder::new().build(OsRng, clock, MemoryStorage::with_defaults());
 
     let dest_hash = DestinationHash::new([0x42; 16]);
     let signing_key = [0x33; 32];
@@ -1387,7 +1389,7 @@ async fn test_manager_handshake_timeout() {
 /// Test sending on inactive link returns error.
 #[tokio::test]
 async fn test_manager_send_on_inactive_link() {
-    let mut node = NodeCoreBuilder::new().build(OsRng, TestClock, NoStorage);
+    let mut node = NodeCoreBuilder::new().build(OsRng, TestClock, MemoryStorage::with_defaults());
 
     let dest_hash = DestinationHash::new([0x42; 16]);
     let signing_key = [0x33; 32];
@@ -1408,7 +1410,7 @@ async fn test_manager_send_on_inactive_link() {
 /// Test operations on unknown link ID.
 #[tokio::test]
 async fn test_manager_operations_on_unknown_link() {
-    let mut node = NodeCoreBuilder::new().build(OsRng, TestClock, NoStorage);
+    let mut node = NodeCoreBuilder::new().build(OsRng, TestClock, MemoryStorage::with_defaults());
 
     let unknown_link_id = LinkId::new([0xFF; 16]);
 
@@ -1440,7 +1442,7 @@ async fn test_manager_responder_timeout() {
 
     let identity = Identity::generate(&mut OsRng);
 
-    let mut node = NodeCoreBuilder::new().build(OsRng, clock, NoStorage);
+    let mut node = NodeCoreBuilder::new().build(OsRng, clock, MemoryStorage::with_defaults());
     let _dest_hash_bytes = [0x42; 16];
 
     // Create a destination and register it
@@ -1523,7 +1525,7 @@ async fn test_manager_many_simultaneous_links() {
         destinations.push(dest);
     }
 
-    let mut node = NodeCoreBuilder::new().build(OsRng, TestClock, NoStorage);
+    let mut node = NodeCoreBuilder::new().build(OsRng, TestClock, MemoryStorage::with_defaults());
     let mut stream = connect_to_daemon(&daemon).await;
     let mut deframer = Deframer::new();
 
@@ -1599,7 +1601,7 @@ async fn test_manager_rapid_data_exchange() {
     let mut stream = connect_to_daemon(&daemon).await;
     let mut deframer = Deframer::new();
 
-    let mut node = NodeCoreBuilder::new().build(OsRng, TestClock, NoStorage);
+    let mut node = NodeCoreBuilder::new().build(OsRng, TestClock, MemoryStorage::with_defaults());
 
     let (link_id, _) = establish_initiator_link(&mut node, &daemon, &mut stream, &mut deframer)
         .await
@@ -1674,7 +1676,7 @@ async fn test_manager_large_payloads() {
     let mut stream = connect_to_daemon(&daemon).await;
     let mut deframer = Deframer::new();
 
-    let mut node = NodeCoreBuilder::new().build(OsRng, TestClock, NoStorage);
+    let mut node = NodeCoreBuilder::new().build(OsRng, TestClock, MemoryStorage::with_defaults());
 
     let (link_id, _) = establish_initiator_link(&mut node, &daemon, &mut stream, &mut deframer)
         .await
@@ -1768,12 +1770,12 @@ async fn test_manager_interleaved_operations() {
         .await
         .unwrap();
 
-    let mut node = NodeCoreBuilder::new().build(OsRng, TestClock, NoStorage);
+    let mut node = NodeCoreBuilder::new().build(OsRng, TestClock, MemoryStorage::with_defaults());
     let mut stream = connect_to_daemon(&daemon).await;
     let mut deframer = Deframer::new();
 
     // Helper to initiate
-    let initiate = |node: &mut reticulum_core::node::NodeCore<OsRng, TestClock, NoStorage>,
+    let initiate = |node: &mut reticulum_core::node::NodeCore<OsRng, TestClock, MemoryStorage>,
                     dest: &DestinationInfo|
      -> (LinkId, Vec<Vec<u8>>) {
         let pub_key_bytes = hex::decode(&dest.public_key).unwrap();
