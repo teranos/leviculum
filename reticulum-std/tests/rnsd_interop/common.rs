@@ -1178,6 +1178,17 @@ pub const UDP_LINK_MDU: usize = 991;
 /// Maximum channel payload over UDP link: 991 - 6 = 985
 pub const UDP_MAX_CHANNEL_PAYLOAD: usize = UDP_LINK_MDU - CHANNEL_OVERHEAD;
 
+/// Direct Rust-to-Rust TCP link MDU (no daemon clamping):
+/// floor((262144 - 1 - 19 - 48) / 16) * 16 - 1 = 262063
+pub const DIRECT_TCP_LINK_MDU: usize = 262063;
+
+/// Maximum channel payload over direct TCP link.
+///
+/// The link MDU formula gives 262063 - 6 = 262057, but the channel envelope
+/// uses a u16 length field (max 65535). The effective channel payload is
+/// min(link_mdu - overhead, u16::MAX) = 65535.
+pub const DIRECT_TCP_MAX_CHANNEL_PAYLOAD: usize = u16::MAX as usize;
+
 /// Generate a deterministic test payload of the given size.
 ///
 /// Uses a SHA-256 chain: block[0] = sha256(seed), block[n] = sha256(block[n-1]).

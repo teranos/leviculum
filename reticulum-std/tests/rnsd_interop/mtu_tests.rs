@@ -39,8 +39,11 @@ use reticulum_std::interfaces::hdlc::Deframer;
 use crate::common::{
     connect_to_daemon, generate_test_payload, receive_raw_proof_for_link, send_framed,
     setup_rust_destination, verify_test_payload, wait_for_any_announce_with_route_info,
-    wait_for_link_data_packet, wait_for_link_request, wait_for_rtt_packet, TestClock,
-    DAEMON_TCP_LINK_MDU, DAEMON_TCP_MAX_CHANNEL_PAYLOAD, DAEMON_TCP_NEGOTIATED_MTU, TCP_HW_MTU,
+    wait_for_data_event, wait_for_link_data_packet, wait_for_link_established,
+    wait_for_link_request, wait_for_link_request_event, wait_for_path_on_node, wait_for_rtt_packet,
+    TestClock, DAEMON_TCP_LINK_MDU, DAEMON_TCP_MAX_CHANNEL_PAYLOAD, DAEMON_TCP_NEGOTIATED_MTU,
+    DIRECT_TCP_LINK_MDU, DIRECT_TCP_MAX_CHANNEL_PAYLOAD, TCP_HW_MTU, UDP_HW_MTU, UDP_LINK_MDU,
+    UDP_MAX_CHANNEL_PAYLOAD,
 };
 use crate::harness::TestDaemon;
 
@@ -643,6 +646,166 @@ async fn test_mtu_a4_bidirectional_tcp_full_mdu() {
     );
 }
 
+/// A0: Direct Rust-to-Rust TCP — no Python daemon, full 262144 MTU.
+///
+/// RustA (TCP server, responder) <-TCP-> RustB (TCP client, initiator)
+///
+/// Without a Python daemon relay, no `optimise_mtu()` clamping occurs.
+/// Both sides negotiate the full TCP HW_MTU=262144.
+///
+/// Verifies:
+/// - negotiated MTU = 262144
+/// - MDU = 262063
+/// - Full channel-MDU payload (262057 bytes) transfers correctly
+#[tokio::test]
+async fn test_mtu_a0_direct_tcp_full_mtu() {
+    use reticulum_core::identity::Identity;
+    use reticulum_std::driver::ReticulumNodeBuilder;
+
+    // Allocate a random TCP port
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let tcp_port = listener.local_addr().unwrap().port();
+    drop(listener);
+
+    let tcp_addr: std::net::SocketAddr = format!("127.0.0.1:{}", tcp_port).parse().unwrap();
+
+    // Create identity for A (responder) before building node
+    let identity_a = Identity::generate(&mut OsRng);
+    let pub_key_bytes = identity_a.public_key_bytes();
+    let signing_key: [u8; 32] = pub_key_bytes[32..64].try_into().unwrap();
+
+    let mut dest_a = reticulum_core::Destination::new(
+        Some(identity_a),
+        Direction::In,
+        DestinationType::Single,
+        "mtu_a0",
+        &["test"],
+    )
+    .unwrap();
+    let dest_hash_a = *dest_a.hash();
+    dest_a.set_accepts_links(true);
+
+    // Node A: TCP server (responder)
+    let mut node_a = ReticulumNodeBuilder::new()
+        .add_tcp_server(tcp_addr)
+        .build()
+        .await
+        .expect("Failed to build node A");
+    node_a.start().await.expect("Failed to start node A");
+    node_a.register_destination(dest_a);
+
+    // Small delay to let TCP server bind
+    tokio::time::sleep(Duration::from_millis(200)).await;
+
+    // Node B: TCP client (initiator)
+    let mut node_b = ReticulumNodeBuilder::new()
+        .add_tcp_client(tcp_addr)
+        .build()
+        .await
+        .expect("Failed to build node B");
+    node_b.start().await.expect("Failed to start node B");
+
+    let mut events_a = node_a.take_event_receiver().unwrap();
+    let mut events_b = node_b.take_event_receiver().unwrap();
+
+    // Wait for TCP connection to stabilize
+    tokio::time::sleep(Duration::from_secs(1)).await;
+
+    // A announces
+    node_a
+        .announce_destination(&dest_hash_a, Some(b"responder"))
+        .await
+        .expect("A announce failed");
+
+    // Wait for B to learn path to A
+    assert!(
+        wait_for_path_on_node(&node_b, &dest_hash_a, Duration::from_secs(5)).await,
+        "B should learn path to A"
+    );
+
+    // B connects to A
+    let link_handle = node_b
+        .connect(&dest_hash_a, &signing_key)
+        .await
+        .expect("B connect failed");
+    let link_id_b = link_handle.link_id();
+
+    // A accepts link request
+    let (link_id_a, _) = wait_for_link_request_event(&mut events_a, Duration::from_secs(10))
+        .await
+        .expect("A should receive link request");
+
+    node_a
+        .accept_link(&link_id_a)
+        .await
+        .expect("A accept failed");
+
+    // Wait for both sides to be established
+    assert!(
+        wait_for_link_established(&mut events_b, link_id_b, Duration::from_secs(10)).await,
+        "B link should be established"
+    );
+    assert!(
+        wait_for_link_established(&mut events_a, &link_id_a, Duration::from_secs(10)).await,
+        "A link should be established"
+    );
+
+    // Verify negotiated MTU — full TCP HW_MTU, no daemon clamping
+    let mtu_a = node_a.link_negotiated_mtu(&link_id_a);
+    let mtu_b = node_b.link_negotiated_mtu(link_id_b);
+    assert_eq!(
+        mtu_a,
+        Some(TCP_HW_MTU),
+        "A should negotiate full TCP HW_MTU"
+    );
+    assert_eq!(
+        mtu_b,
+        Some(TCP_HW_MTU),
+        "B should negotiate full TCP HW_MTU"
+    );
+
+    let mdu_a = node_a.link_mdu(&link_id_a);
+    let mdu_b = node_b.link_mdu(link_id_b);
+    assert_eq!(
+        mdu_a,
+        Some(DIRECT_TCP_LINK_MDU),
+        "A MDU should be {}",
+        DIRECT_TCP_LINK_MDU
+    );
+    assert_eq!(
+        mdu_b,
+        Some(DIRECT_TCP_LINK_MDU),
+        "B MDU should be {}",
+        DIRECT_TCP_LINK_MDU
+    );
+
+    // Send full channel-MDU payload from B to A (262057 bytes)
+    let payload = generate_test_payload(DIRECT_TCP_MAX_CHANNEL_PAYLOAD);
+    link_handle.send(&payload).await.expect("B send failed");
+
+    let received = wait_for_data_event(&mut events_a, &link_id_a, Duration::from_secs(30))
+        .await
+        .expect("A should receive data from B");
+
+    assert_eq!(
+        received.len(),
+        DIRECT_TCP_MAX_CHANNEL_PAYLOAD,
+        "Received payload should be full direct TCP channel-MDU size"
+    );
+    assert!(
+        verify_test_payload(&received),
+        "Payload integrity check failed"
+    );
+
+    println!(
+        "SUCCESS: A0 - Direct TCP MTU={}, MDU={}, payload {} bytes verified",
+        TCP_HW_MTU, DIRECT_TCP_LINK_MDU, DIRECT_TCP_MAX_CHANNEL_PAYLOAD
+    );
+
+    node_a.stop().await.ok();
+    node_b.stop().await.ok();
+}
+
 // =========================================================================
 // Group B: UDP MTU negotiation
 // =========================================================================
@@ -743,7 +906,7 @@ async fn test_mtu_b1_rust_to_rust_udp_mtu() {
 
     // Wait for both sides to be established
     assert!(
-        wait_for_link_established(&mut events_b, &link_id_b, Duration::from_secs(10)).await,
+        wait_for_link_established(&mut events_b, link_id_b, Duration::from_secs(10)).await,
         "B link should be established"
     );
     assert!(
@@ -1006,20 +1169,340 @@ async fn test_mtu_c3_over_mdu() {
 // Group D: Multi-hop MTU clamping
 // =========================================================================
 
-/// D1: TCP -> Rust Relay -> UDP — verify MTU clamps to UDP bottleneck.
+/// D1: TCP -> RustRelay -> UDP — verify MTU clamps to UDP bottleneck (1064).
 ///
-/// This requires 3 Rust nodes with mixed interfaces, which is complex
-/// to set up with the current test infrastructure.
+/// Topology:
+///   RustA (TCP client, initiator) <-TCP-> RustRelay (TCP server + UDP, transport=true) <-UDP-> RustB (UDP, responder)
+///
+/// RustA's TCP interface has HW_MTU=262144. The relay's `clamp_link_request_mtu()`
+/// detects the outgoing UDP interface with HW_MTU=1064 and clamps the signaling
+/// bytes. Both sides negotiate MTU=1064.
 #[tokio::test]
-#[ignore = "requires mixed-interface relay infrastructure (see OPEN_ISSUES_TRACKER)"]
 async fn test_mtu_d1_tcp_relay_udp_clamp() {
-    // Core clamping logic is verified by unit tests in transport.rs.
-    // End-to-end verification requires a Rust transport relay with both
-    // TCP and UDP interfaces, which is not yet supported by the test
-    // infrastructure.
+    use reticulum_core::identity::Identity;
+    use reticulum_std::driver::ReticulumNodeBuilder;
+
+    // Allocate ports
+    let tcp_listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let tcp_port = tcp_listener.local_addr().unwrap().port();
+    drop(tcp_listener);
+
+    let udp_sock1 = std::net::UdpSocket::bind("127.0.0.1:0").unwrap();
+    let relay_udp_port = udp_sock1.local_addr().unwrap().port();
+    drop(udp_sock1);
+
+    let udp_sock2 = std::net::UdpSocket::bind("127.0.0.1:0").unwrap();
+    let b_udp_port = udp_sock2.local_addr().unwrap().port();
+    drop(udp_sock2);
+
+    let tcp_addr: std::net::SocketAddr = format!("127.0.0.1:{}", tcp_port).parse().unwrap();
+    let relay_udp_addr: std::net::SocketAddr =
+        format!("127.0.0.1:{}", relay_udp_port).parse().unwrap();
+    let b_udp_addr: std::net::SocketAddr = format!("127.0.0.1:{}", b_udp_port).parse().unwrap();
+
+    // Create identity for B (responder) before building node
+    let identity_b = Identity::generate(&mut OsRng);
+    let pub_key_bytes = identity_b.public_key_bytes();
+    let signing_key_b: [u8; 32] = pub_key_bytes[32..64].try_into().unwrap();
+
+    let mut dest_b = reticulum_core::Destination::new(
+        Some(identity_b),
+        Direction::In,
+        DestinationType::Single,
+        "mtu_d1",
+        &["test"],
+    )
+    .unwrap();
+    let dest_hash_b = *dest_b.hash();
+    dest_b.set_accepts_links(true);
+
+    // RustRelay: TCP server + UDP, transport enabled
+    let mut relay = ReticulumNodeBuilder::new()
+        .enable_transport(true)
+        .add_tcp_server(tcp_addr)
+        .add_udp_interface(relay_udp_addr, b_udp_addr)
+        .build()
+        .await
+        .expect("Failed to build relay");
+    relay.start().await.expect("Failed to start relay");
+
+    // Small delay to let TCP server bind
+    tokio::time::sleep(Duration::from_millis(200)).await;
+
+    // RustA: TCP client (initiator)
+    let mut node_a = ReticulumNodeBuilder::new()
+        .add_tcp_client(tcp_addr)
+        .build()
+        .await
+        .expect("Failed to build node A");
+    node_a.start().await.expect("Failed to start node A");
+
+    // RustB: UDP (responder)
+    let mut node_b = ReticulumNodeBuilder::new()
+        .add_udp_interface(b_udp_addr, relay_udp_addr)
+        .build()
+        .await
+        .expect("Failed to build node B");
+    node_b.start().await.expect("Failed to start node B");
+    node_b.register_destination(dest_b);
+
+    let mut events_a = node_a.take_event_receiver().unwrap();
+    let mut events_b = node_b.take_event_receiver().unwrap();
+
+    // Wait for connections to stabilize
+    tokio::time::sleep(Duration::from_secs(1)).await;
+
+    // B announces on UDP -> relay rebroadcasts on TCP -> A learns path
+    node_b
+        .announce_destination(&dest_hash_b, Some(b"responder"))
+        .await
+        .expect("B announce failed");
+
+    // Wait for A to learn path (through relay)
+    assert!(
+        wait_for_path_on_node(&node_a, &dest_hash_b, Duration::from_secs(10)).await,
+        "A should learn path to B via relay"
+    );
+
+    // A connects to B via relay
+    let link_handle = node_a
+        .connect(&dest_hash_b, &signing_key_b)
+        .await
+        .expect("A connect failed");
+    let link_id_a = link_handle.link_id();
+
+    // B accepts link request
+    let (link_id_b, _) = wait_for_link_request_event(&mut events_b, Duration::from_secs(10))
+        .await
+        .expect("B should receive link request");
+
+    node_b
+        .accept_link(&link_id_b)
+        .await
+        .expect("B accept failed");
+
+    // Wait for both sides to be established
+    assert!(
+        wait_for_link_established(&mut events_a, link_id_a, Duration::from_secs(10)).await,
+        "A link should be established"
+    );
+    assert!(
+        wait_for_link_established(&mut events_b, &link_id_b, Duration::from_secs(10)).await,
+        "B link should be established"
+    );
+
+    // Verify negotiated MTU — clamped to UDP bottleneck
+    let mtu_a = node_a.link_negotiated_mtu(link_id_a);
+    let mtu_b = node_b.link_negotiated_mtu(&link_id_b);
+    assert_eq!(
+        mtu_a,
+        Some(UDP_HW_MTU),
+        "A should negotiate UDP HW_MTU (clamped by relay)"
+    );
+    assert_eq!(mtu_b, Some(UDP_HW_MTU), "B should negotiate UDP HW_MTU");
+
+    let mdu_a = node_a.link_mdu(link_id_a);
+    let mdu_b = node_b.link_mdu(&link_id_b);
+    assert_eq!(
+        mdu_a,
+        Some(UDP_LINK_MDU),
+        "A MDU should be {}",
+        UDP_LINK_MDU
+    );
+    assert_eq!(
+        mdu_b,
+        Some(UDP_LINK_MDU),
+        "B MDU should be {}",
+        UDP_LINK_MDU
+    );
+
+    // Send max UDP channel payload from A to B
+    let payload = generate_test_payload(UDP_MAX_CHANNEL_PAYLOAD);
+    link_handle.send(&payload).await.expect("A send failed");
+
+    let received = wait_for_data_event(&mut events_b, &link_id_b, Duration::from_secs(10))
+        .await
+        .expect("B should receive data from A");
+
+    assert_eq!(received.len(), UDP_MAX_CHANNEL_PAYLOAD);
+    assert!(
+        verify_test_payload(&received),
+        "D1 payload integrity failed"
+    );
+
+    println!(
+        "SUCCESS: D1 - TCP->Relay->UDP MTU={}, MDU={}, payload {} bytes verified",
+        UDP_HW_MTU, UDP_LINK_MDU, UDP_MAX_CHANNEL_PAYLOAD
+    );
+
+    node_a.stop().await.ok();
+    node_b.stop().await.ok();
+    relay.stop().await.ok();
 }
 
-/// D2: Python -> Rust Relay -> Rust — similar complexity.
+/// D2: UDP -> RustRelay -> TCP — verify MTU stays at UDP bottleneck (1064).
+///
+/// Topology (reverse of D1):
+///   RustA (UDP, initiator) <-UDP-> RustRelay (TCP server + UDP, transport=true) <-TCP-> RustB (TCP client, responder)
+///
+/// RustA's UDP interface has HW_MTU=1064. The link request signaling bytes
+/// already encode 1064, so the relay doesn't need to clamp — but the packet
+/// still traverses UDP->Relay->TCP, proving the full relay path works.
 #[tokio::test]
-#[ignore = "requires mixed-interface relay infrastructure (see OPEN_ISSUES_TRACKER)"]
-async fn test_mtu_d2_python_relay_rust_clamp() {}
+async fn test_mtu_d2_udp_relay_tcp() {
+    use reticulum_core::identity::Identity;
+    use reticulum_std::driver::ReticulumNodeBuilder;
+
+    // Allocate ports
+    let tcp_listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let tcp_port = tcp_listener.local_addr().unwrap().port();
+    drop(tcp_listener);
+
+    let udp_sock1 = std::net::UdpSocket::bind("127.0.0.1:0").unwrap();
+    let relay_udp_port = udp_sock1.local_addr().unwrap().port();
+    drop(udp_sock1);
+
+    let udp_sock2 = std::net::UdpSocket::bind("127.0.0.1:0").unwrap();
+    let a_udp_port = udp_sock2.local_addr().unwrap().port();
+    drop(udp_sock2);
+
+    let tcp_addr: std::net::SocketAddr = format!("127.0.0.1:{}", tcp_port).parse().unwrap();
+    let relay_udp_addr: std::net::SocketAddr =
+        format!("127.0.0.1:{}", relay_udp_port).parse().unwrap();
+    let a_udp_addr: std::net::SocketAddr = format!("127.0.0.1:{}", a_udp_port).parse().unwrap();
+
+    // Create identity for B (responder, TCP side) before building node
+    let identity_b = Identity::generate(&mut OsRng);
+    let pub_key_bytes = identity_b.public_key_bytes();
+    let signing_key_b: [u8; 32] = pub_key_bytes[32..64].try_into().unwrap();
+
+    let mut dest_b = reticulum_core::Destination::new(
+        Some(identity_b),
+        Direction::In,
+        DestinationType::Single,
+        "mtu_d2",
+        &["test"],
+    )
+    .unwrap();
+    let dest_hash_b = *dest_b.hash();
+    dest_b.set_accepts_links(true);
+
+    // RustRelay: TCP server + UDP, transport enabled
+    let mut relay = ReticulumNodeBuilder::new()
+        .enable_transport(true)
+        .add_tcp_server(tcp_addr)
+        .add_udp_interface(relay_udp_addr, a_udp_addr)
+        .build()
+        .await
+        .expect("Failed to build relay");
+    relay.start().await.expect("Failed to start relay");
+
+    // Small delay to let TCP server bind
+    tokio::time::sleep(Duration::from_millis(200)).await;
+
+    // RustB: TCP client (responder)
+    let mut node_b = ReticulumNodeBuilder::new()
+        .add_tcp_client(tcp_addr)
+        .build()
+        .await
+        .expect("Failed to build node B");
+    node_b.start().await.expect("Failed to start node B");
+    node_b.register_destination(dest_b);
+
+    // RustA: UDP (initiator)
+    let mut node_a = ReticulumNodeBuilder::new()
+        .add_udp_interface(a_udp_addr, relay_udp_addr)
+        .build()
+        .await
+        .expect("Failed to build node A");
+    node_a.start().await.expect("Failed to start node A");
+
+    let mut events_a = node_a.take_event_receiver().unwrap();
+    let mut events_b = node_b.take_event_receiver().unwrap();
+
+    // Wait for connections to stabilize
+    tokio::time::sleep(Duration::from_secs(1)).await;
+
+    // B announces on TCP -> relay rebroadcasts on UDP -> A learns path
+    node_b
+        .announce_destination(&dest_hash_b, Some(b"responder"))
+        .await
+        .expect("B announce failed");
+
+    // Wait for A to learn path (through relay)
+    assert!(
+        wait_for_path_on_node(&node_a, &dest_hash_b, Duration::from_secs(10)).await,
+        "A should learn path to B via relay"
+    );
+
+    // A connects to B via relay
+    let link_handle = node_a
+        .connect(&dest_hash_b, &signing_key_b)
+        .await
+        .expect("A connect failed");
+    let link_id_a = link_handle.link_id();
+
+    // B accepts link request
+    let (link_id_b, _) = wait_for_link_request_event(&mut events_b, Duration::from_secs(10))
+        .await
+        .expect("B should receive link request");
+
+    node_b
+        .accept_link(&link_id_b)
+        .await
+        .expect("B accept failed");
+
+    // Wait for both sides to be established
+    assert!(
+        wait_for_link_established(&mut events_a, link_id_a, Duration::from_secs(10)).await,
+        "A link should be established"
+    );
+    assert!(
+        wait_for_link_established(&mut events_b, &link_id_b, Duration::from_secs(10)).await,
+        "B link should be established"
+    );
+
+    // Verify negotiated MTU — constrained by A's UDP interface
+    let mtu_a = node_a.link_negotiated_mtu(link_id_a);
+    let mtu_b = node_b.link_negotiated_mtu(&link_id_b);
+    assert_eq!(mtu_a, Some(UDP_HW_MTU), "A should negotiate UDP HW_MTU");
+    assert_eq!(mtu_b, Some(UDP_HW_MTU), "B should negotiate UDP HW_MTU");
+
+    let mdu_a = node_a.link_mdu(link_id_a);
+    let mdu_b = node_b.link_mdu(&link_id_b);
+    assert_eq!(
+        mdu_a,
+        Some(UDP_LINK_MDU),
+        "A MDU should be {}",
+        UDP_LINK_MDU
+    );
+    assert_eq!(
+        mdu_b,
+        Some(UDP_LINK_MDU),
+        "B MDU should be {}",
+        UDP_LINK_MDU
+    );
+
+    // Send max UDP channel payload from A to B
+    let payload = generate_test_payload(UDP_MAX_CHANNEL_PAYLOAD);
+    link_handle.send(&payload).await.expect("A send failed");
+
+    let received = wait_for_data_event(&mut events_b, &link_id_b, Duration::from_secs(10))
+        .await
+        .expect("B should receive data from A");
+
+    assert_eq!(received.len(), UDP_MAX_CHANNEL_PAYLOAD);
+    assert!(
+        verify_test_payload(&received),
+        "D2 payload integrity failed"
+    );
+
+    println!(
+        "SUCCESS: D2 - UDP->Relay->TCP MTU={}, MDU={}, payload {} bytes verified",
+        UDP_HW_MTU, UDP_LINK_MDU, UDP_MAX_CHANNEL_PAYLOAD
+    );
+
+    node_a.stop().await.ok();
+    node_b.stop().await.ok();
+    relay.stop().await.ok();
+}
