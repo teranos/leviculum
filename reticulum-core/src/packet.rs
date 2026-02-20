@@ -7,7 +7,9 @@
 //! - Header Type 1: destination_hash only (16 bytes)
 //! - Header Type 2: transport_id + destination_hash (32 bytes)
 
-use crate::constants::{HEADER_MAXSIZE, HEADER_MINSIZE, MDU, MTU, TRUNCATED_HASHBYTES};
+use crate::constants::{HEADER_MAXSIZE, HEADER_MINSIZE, MDU, TRUNCATED_HASHBYTES};
+#[cfg(test)]
+use crate::constants::MTU;
 
 // ─── Flag Byte Bit Masks ─────────────────────────────────────────────────────
 // Bit layout: [ifac:1][header_type:1][context:1][transport:1][dest_type:2][packet_type:2]
@@ -285,13 +287,15 @@ impl Packet {
     }
 
     /// Pack the packet into a byte buffer
+    ///
+    /// The caller controls the maximum packet size by choosing the buffer
+    /// size. Packets created locally should use `[0u8; MTU]`; forwarded
+    /// packets (which may use a negotiated link MTU larger than the base
+    /// MTU) should use a buffer sized to `packed_size()`.
     pub fn pack(&self, output: &mut [u8]) -> Result<usize, PacketError> {
         let size = self.packed_size();
         if output.len() < size {
             return Err(PacketError::TooShort);
-        }
-        if size > MTU {
-            return Err(PacketError::TooLong);
         }
 
         let mut pos = 0;
@@ -327,13 +331,14 @@ impl Packet {
     }
 
     /// Unpack a packet from bytes
+    ///
+    /// No upper size limit is enforced: a transport relay must accept
+    /// any deframed packet, including those using a negotiated link MTU
+    /// larger than the base protocol MTU (link MTU discovery).
     pub fn unpack(raw: &[u8]) -> Result<Self, PacketError> {
         // HEADER_MINSIZE includes flags(1) + hops(1) + dest_hash(16) + context(1) = 19 bytes
         if raw.len() < HEADER_MINSIZE {
             return Err(PacketError::TooShort);
-        }
-        if raw.len() > MTU {
-            return Err(PacketError::TooLong);
         }
 
         let mut pos = 0;

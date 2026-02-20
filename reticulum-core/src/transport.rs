@@ -2100,7 +2100,8 @@ impl<C: Clock, S: Storage> Transport<C, S> {
             self.stats.packets_dropped += 1;
             return;
         }
-        let mut buf = [0u8; MTU];
+        let size = packet.packed_size();
+        let mut buf = alloc::vec![0u8; size];
         if let Ok(len) = packet.pack(&mut buf) {
             self.send_on_all_interfaces_except(except_index, &buf[..len]);
             self.stats.packets_forwarded += 1;
@@ -2112,7 +2113,10 @@ impl<C: Clock, S: Storage> Transport<C, S> {
         interface_index: usize,
         packet: &Packet,
     ) -> Result<(), TransportError> {
-        let mut buf = [0u8; crate::constants::MTU];
+        // Use a dynamically-sized buffer so forwarded packets with a
+        // negotiated link MTU larger than the base MTU can be serialized.
+        let size = packet.packed_size();
+        let mut buf = alloc::vec![0u8; size];
         let len = packet.pack(&mut buf)?;
 
         self.send_on_interface(interface_index, &buf[..len])

@@ -7,6 +7,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+- **Link MTU discovery compatibility** — transport relay no longer rejects packets larger than the base 500-byte MTU. Python Reticulum 1.1.3 negotiates higher link MTUs over TCP (up to 262 KB), causing resource transfers (e.g. `rncp`) through lrnsd to fail with "packet too long". Removed the hard MTU check from `Packet::unpack()` and `Packet::pack()`, and switched forwarding buffers from fixed `[0u8; 500]` to dynamically-sized `Vec<u8>`.
+
 ### Added
 - **Logging quality improvement** — 68 new tracing calls (88 → 156 total) covering transport routing, link lifecycle, and all silent drop paths. `lrnsd -v` now shows routing decisions (path updates, announce rebroadcasts, link establishment/close, forwarding, path requests). `lrnsd -vv` shows per-packet flow with drop reasons (duplicate, rate limit, replay, TTL exceeded, hop mismatch, crypto failure). Every `packets_dropped` increment now has a corresponding log message explaining why.
 - **`HexShort` formatter** (`reticulum-core`) — displays first 16 hex chars (8 bytes) for compact log lines, mirroring Python's `prettyhexrep`. Used in debug!/trace! messages; full `HexFmt` retained for warn!/error! where precision matters.
