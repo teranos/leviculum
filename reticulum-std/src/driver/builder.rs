@@ -231,7 +231,7 @@ impl ReticulumNodeBuilder {
     }
 
     /// Add an AutoInterface with custom configuration
-    pub(crate) fn add_auto_interface_with_config(
+    pub fn add_auto_interface_with_config(
         mut self,
         config: crate::interfaces::auto_interface::AutoInterfaceConfig,
     ) -> Self {

@@ -60,7 +60,7 @@ fn scope_to_byte(scope: &str) -> &'static str {
 
 /// Configuration for an AutoInterface instance
 #[derive(Debug, Clone)]
-pub(crate) struct AutoInterfaceConfig {
+pub struct AutoInterfaceConfig {
     pub group_id: Vec<u8>,
     pub discovery_port: u16,
     pub data_port: u16,
@@ -91,7 +91,7 @@ impl Default for AutoInterfaceConfig {
 
 /// A network interface adopted for AutoInterface use
 #[derive(Debug, Clone)]
-pub(crate) struct AdoptedNic {
+pub struct AdoptedNic {
     /// Interface name (e.g. "eth0", "wlan0")
     pub name: String,
     /// IPv6 link-local address on this interface
@@ -107,7 +107,7 @@ pub(crate) struct AdoptedNic {
 /// - Not loopback
 /// - Respects `allowed_devices` whitelist and `ignored_devices` blacklist
 /// - Skips docker/veth/br- virtual interfaces on Linux
-pub(crate) fn enumerate_nics(config: &AutoInterfaceConfig) -> Vec<AdoptedNic> {
+pub fn enumerate_nics(config: &AutoInterfaceConfig) -> Vec<AdoptedNic> {
     let ifaces = match if_addrs::get_if_addrs() {
         Ok(v) => v,
         Err(e) => {
