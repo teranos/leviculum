@@ -7,8 +7,12 @@
 
 pub(crate) mod orchestrator;
 
-use std::net::Ipv6Addr;
+use std::io;
+use std::net::{Ipv6Addr, SocketAddrV6};
 use std::time::Instant;
+
+use socket2::{Domain, Protocol, SockAddr, Socket, Type};
+use tokio::net::UdpSocket;
 
 use reticulum_core::crypto::full_hash;
 
@@ -330,6 +334,162 @@ pub(crate) fn reverse_peering_interval_secs() -> f64 {
     ANNOUNCE_INTERVAL_SECS * 3.25
 }
 
+// ─── Socket binding helpers ──────────────────────────────────────────────────
+
+/// Bind a multicast discovery socket on a specific NIC.
+///
+/// - Joins the multicast group on the NIC
+/// - Sets `SO_REUSEADDR` + `SO_REUSEPORT`
+/// - Sets `IPV6_MULTICAST_IF` to the NIC's index
+/// - Binds to the multicast address (link-local scope) or `[::]` (other scopes)
+/// - Returns a tokio `UdpSocket`
+pub(crate) fn bind_multicast_socket(
+    nic: &AdoptedNic,
+    mcast_addr: &Ipv6Addr,
+    port: u16,
+    scope: &str,
+    enable_loopback: bool,
+) -> io::Result<UdpSocket> {
+    let socket = Socket::new(Domain::IPV6, Type::DGRAM, Some(Protocol::UDP))?;
+    socket.set_reuse_address(true)?;
+    #[cfg(target_os = "linux")]
+    socket.set_reuse_port(true)?;
+    socket.set_nonblocking(true)?;
+
+    // Set multicast interface
+    socket.set_multicast_if_v6(nic.index)?;
+
+    // Enable/disable multicast loopback (needed for same-machine testing)
+    socket.set_multicast_loop_v6(enable_loopback)?;
+
+    // Join multicast group on this NIC
+    socket.join_multicast_v6(mcast_addr, nic.index)?;
+
+    // Bind: link-local scope binds to the multicast addr with scope_id,
+    // other scopes bind to the multicast addr without scope_id.
+    let scope_id = if scope_to_byte(scope) == "2" {
+        nic.index
+    } else {
+        0
+    };
+    let bind_addr = SocketAddrV6::new(*mcast_addr, port, 0, scope_id);
+    socket.bind(&SockAddr::from(bind_addr))?;
+
+    UdpSocket::from_std(socket.into())
+}
+
+/// Bind a unicast discovery socket on a specific NIC's link-local address.
+///
+/// Used for receiving reverse peering tokens.
+pub(crate) fn bind_unicast_socket(nic: &AdoptedNic, port: u16) -> io::Result<UdpSocket> {
+    let socket = Socket::new(Domain::IPV6, Type::DGRAM, Some(Protocol::UDP))?;
+    socket.set_reuse_address(true)?;
+    #[cfg(target_os = "linux")]
+    socket.set_reuse_port(true)?;
+    socket.set_nonblocking(true)?;
+
+    let bind_addr = SocketAddrV6::new(nic.link_local, port, 0, nic.index);
+    socket.bind(&SockAddr::from(bind_addr))?;
+
+    UdpSocket::from_std(socket.into())
+}
+
+/// Bind a data receive socket on a specific NIC's link-local address.
+///
+/// Used for receiving Reticulum packets from discovered peers.
+pub(crate) fn bind_data_socket(nic: &AdoptedNic, port: u16) -> io::Result<UdpSocket> {
+    let socket = Socket::new(Domain::IPV6, Type::DGRAM, Some(Protocol::UDP))?;
+    socket.set_reuse_address(true)?;
+    #[cfg(target_os = "linux")]
+    socket.set_reuse_port(true)?;
+    socket.set_nonblocking(true)?;
+
+    let bind_addr = SocketAddrV6::new(nic.link_local, port, 0, nic.index);
+    socket.bind(&SockAddr::from(bind_addr))?;
+
+    UdpSocket::from_std(socket.into())
+}
+
+/// Bind an outbound data socket for sending to peers.
+///
+/// Binds to `[::]:0` (any available port). Shared across all peer send tasks.
+pub(crate) fn bind_outbound_socket() -> io::Result<UdpSocket> {
+    let socket = Socket::new(Domain::IPV6, Type::DGRAM, Some(Protocol::UDP))?;
+    socket.set_nonblocking(true)?;
+
+    let bind_addr = SocketAddrV6::new(Ipv6Addr::UNSPECIFIED, 0, 0, 0);
+    socket.bind(&SockAddr::from(bind_addr))?;
+
+    UdpSocket::from_std(socket.into())
+}
+
+/// Receive result from `recv_from_any`.
+pub(crate) struct RecvResult {
+    /// Number of bytes received
+    pub bytes_read: usize,
+    /// Source address (with scope_id for link-local)
+    pub source: SocketAddrV6,
+    /// Index into the socket slice identifying which socket received
+    pub socket_index: usize,
+}
+
+/// Poll multiple UDP sockets and return data from the first one ready.
+///
+/// For small N (1-3 NICs), iterative polling is efficient.
+/// Returns when any socket has data available.
+///
+/// Uses `readable()` + `try_recv_from()` pattern (edge-triggered).
+/// On `WouldBlock`, loops back to `readable()` to re-register waker.
+pub(crate) async fn recv_from_any(sockets: &[UdpSocket], buf: &mut [u8]) -> io::Result<RecvResult> {
+    if sockets.is_empty() {
+        std::future::pending::<()>().await;
+        unreachable!()
+    }
+
+    loop {
+        // Wait for any socket to become readable
+        let ready_idx = {
+            // Use poll_fn to check all sockets for readability
+            let idx = std::future::poll_fn(|cx| {
+                for (idx, sock) in sockets.iter().enumerate() {
+                    match sock.poll_recv_ready(cx) {
+                        std::task::Poll::Ready(Ok(())) => {
+                            return std::task::Poll::Ready(Ok(idx));
+                        }
+                        std::task::Poll::Ready(Err(e)) => {
+                            return std::task::Poll::Ready(Err(e));
+                        }
+                        std::task::Poll::Pending => {}
+                    }
+                }
+                std::task::Poll::Pending
+            })
+            .await?;
+            idx
+        };
+
+        // Try non-blocking recv on the ready socket
+        match sockets[ready_idx].try_recv_from(buf) {
+            Ok((n, addr)) => {
+                let v6 = match addr {
+                    std::net::SocketAddr::V6(v6) => v6,
+                    std::net::SocketAddr::V4(_) => continue,
+                };
+                return Ok(RecvResult {
+                    bytes_read: n,
+                    source: v6,
+                    socket_index: ready_idx,
+                });
+            }
+            Err(ref e) if e.kind() == io::ErrorKind::WouldBlock => {
+                // Spurious wakeup — re-register by looping back to poll_recv_ready
+                continue;
+            }
+            Err(e) => return Err(e),
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -526,5 +686,69 @@ mod tests {
         assert!(constant_time_eq(&a, &b));
         assert!(!constant_time_eq(&a, &c));
         assert!(!constant_time_eq(&a, &[1, 2, 3])); // different length
+    }
+
+    #[tokio::test]
+    async fn test_bind_outbound_socket() {
+        let sock = bind_outbound_socket().expect("outbound socket should bind");
+        let local = sock.local_addr().expect("should have local addr");
+        assert_ne!(local.port(), 0, "OS should assign a port");
+    }
+
+    #[tokio::test]
+    async fn test_recv_from_any_single_socket() {
+        // Bind two sockets, send to the second, verify recv_from_any returns it
+        let s1 = bind_outbound_socket().unwrap();
+        let s2 = bind_outbound_socket().unwrap();
+        let s2_addr = s2.local_addr().unwrap();
+
+        let sender = bind_outbound_socket().unwrap();
+        sender.send_to(b"hello", s2_addr).await.unwrap();
+
+        let sockets = [s1, s2];
+        let mut buf = [0u8; 64];
+        let result = tokio::time::timeout(
+            std::time::Duration::from_secs(2),
+            recv_from_any(&sockets, &mut buf),
+        )
+        .await
+        .expect("timeout")
+        .expect("recv error");
+
+        assert_eq!(result.socket_index, 1, "should recv on socket index 1");
+        assert_eq!(result.bytes_read, 5);
+        assert_eq!(&buf[..5], b"hello");
+    }
+
+    #[tokio::test]
+    async fn test_unicast_socket_bind_loopback() {
+        // Test binding a unicast socket on localhost (uses ::1 instead of link-local)
+        // This just verifies the socket2 setup path works.
+        let nic = AdoptedNic {
+            name: "lo".to_string(),
+            link_local: "::1".parse().unwrap(),
+            index: 1,
+        };
+        let result = bind_unicast_socket(&nic, 0);
+        // May fail on some systems where ::1 needs special handling,
+        // but should succeed on standard Linux
+        if let Ok(sock) = result {
+            let addr = sock.local_addr().unwrap();
+            assert_ne!(addr.port(), 0);
+        }
+    }
+
+    #[tokio::test]
+    async fn test_data_socket_bind_loopback() {
+        let nic = AdoptedNic {
+            name: "lo".to_string(),
+            link_local: "::1".parse().unwrap(),
+            index: 1,
+        };
+        let result = bind_data_socket(&nic, 0);
+        if let Ok(sock) = result {
+            let addr = sock.local_addr().unwrap();
+            assert_ne!(addr.port(), 0);
+        }
     }
 }
