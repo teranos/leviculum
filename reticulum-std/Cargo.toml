@@ -17,6 +17,9 @@ reticulum-core = { path = "../reticulum-core", default-features = true }
 rand_core = { version = "0.6", features = ["std", "getrandom"] }
 
 tokio.workspace = true
+if-addrs.workspace = true
+socket2.workspace = true
+libc.workspace = true
 tokio-serial = { workspace = true, optional = true }
 tracing = { workspace = true, features = ["std"] }
 serde.workspace = true

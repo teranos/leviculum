@@ -1,0 +1,530 @@
+//! AutoInterface — zero-configuration LAN discovery via IPv6 multicast
+//!
+//! Nodes on the same LAN discover each other via IPv6 multicast and
+//! communicate over UDP. Matches Python Reticulum's `AutoInterface`.
+//!
+//! Linux only. All protocol logic is in `reticulum-std` (no core changes).
+
+pub(crate) mod orchestrator;
+
+use std::net::Ipv6Addr;
+use std::time::Instant;
+
+use reticulum_core::crypto::full_hash;
+
+// ─── Constants (match Python exactly) ────────────────────────────────────────
+
+pub(crate) const DEFAULT_GROUP_ID: &[u8] = b"reticulum";
+pub(crate) const DEFAULT_DISCOVERY_PORT: u16 = 29716;
+pub(crate) const DEFAULT_DATA_PORT: u16 = 42671;
+
+/// Peer timeout — peer removed if not heard for this long
+pub(crate) const PEERING_TIMEOUT_SECS: f64 = 22.0;
+/// Multicast announce interval
+pub(crate) const ANNOUNCE_INTERVAL_SECS: f64 = 1.6;
+/// Peer maintenance job interval
+pub(crate) const PEER_JOB_INTERVAL_SECS: f64 = 4.0;
+/// Multicast echo timeout — carrier lost if no self-echo for this long
+pub(crate) const MCAST_ECHO_TIMEOUT_SECS: f64 = 6.5;
+
+/// Deduplication cache capacity (number of entries)
+pub(crate) const DEDUP_CACHE_SIZE: usize = 48;
+/// Deduplication cache TTL in seconds
+pub(crate) const DEDUP_TTL_SECS: f64 = 0.75;
+
+/// Hardware MTU for AutoInterface (matches Python `HW_MTU = 1196`)
+pub(crate) const AUTO_HW_MTU: u32 = 1196;
+
+/// Bitrate guess for AutoInterface (10 Mbit/s)
+pub(crate) const BITRATE_GUESS: u64 = 10_000_000;
+
+/// Multicast address type: "1" = temporary
+const MULTICAST_ADDRESS_TYPE: &str = "1";
+
+// ─── Scope mapping ───────────────────────────────────────────────────────────
+
+/// IPv6 multicast scope values matching Python's AutoInterface
+fn scope_to_byte(scope: &str) -> &'static str {
+    match scope.to_lowercase().as_str() {
+        "link" => "2",
+        "admin" => "4",
+        "site" => "5",
+        "organisation" => "8",
+        "global" => "e",
+        _ => "2", // default to link-local
+    }
+}
+
+// ─── Configuration ───────────────────────────────────────────────────────────
+
+/// Configuration for an AutoInterface instance
+#[derive(Debug, Clone)]
+pub(crate) struct AutoInterfaceConfig {
+    pub group_id: Vec<u8>,
+    pub discovery_port: u16,
+    pub data_port: u16,
+    pub discovery_scope: String,
+    /// Comma-separated whitelist of NIC names (None = all)
+    pub allowed_devices: Option<String>,
+    /// Comma-separated blacklist of NIC names
+    pub ignored_devices: Option<String>,
+    /// Enable multicast loopback (for testing on same machine)
+    pub multicast_loopback: bool,
+}
+
+impl Default for AutoInterfaceConfig {
+    fn default() -> Self {
+        Self {
+            group_id: DEFAULT_GROUP_ID.to_vec(),
+            discovery_port: DEFAULT_DISCOVERY_PORT,
+            data_port: DEFAULT_DATA_PORT,
+            discovery_scope: "link".to_string(),
+            allowed_devices: None,
+            ignored_devices: None,
+            multicast_loopback: false,
+        }
+    }
+}
+
+// ─── NIC enumeration ─────────────────────────────────────────────────────────
+
+/// A network interface adopted for AutoInterface use
+#[derive(Debug, Clone)]
+pub(crate) struct AdoptedNic {
+    /// Interface name (e.g. "eth0", "wlan0")
+    pub name: String,
+    /// IPv6 link-local address on this interface
+    pub link_local: Ipv6Addr,
+    /// OS interface index (needed for multicast join and scope_id)
+    pub index: u32,
+}
+
+/// Enumerate NICs suitable for AutoInterface.
+///
+/// Filters:
+/// - Must have an IPv6 link-local address (fe80::)
+/// - Not loopback
+/// - Respects `allowed_devices` whitelist and `ignored_devices` blacklist
+/// - Skips docker/veth/br- virtual interfaces on Linux
+pub(crate) fn enumerate_nics(config: &AutoInterfaceConfig) -> Vec<AdoptedNic> {
+    let ifaces = match if_addrs::get_if_addrs() {
+        Ok(v) => v,
+        Err(e) => {
+            tracing::warn!("Failed to enumerate network interfaces: {}", e);
+            return Vec::new();
+        }
+    };
+
+    let allowed: Option<Vec<&str>> = config
+        .allowed_devices
+        .as_ref()
+        .map(|s| s.split(',').map(|d| d.trim()).collect());
+    let ignored: Vec<&str> = config
+        .ignored_devices
+        .as_deref()
+        .map(|s| s.split(',').map(|d| d.trim()).collect())
+        .unwrap_or_default();
+
+    // Default ignored prefixes on Linux (virtual interfaces)
+    let default_ignored_prefixes = ["docker", "veth", "br-"];
+
+    let mut adopted = Vec::new();
+    let mut seen_names = std::collections::HashSet::new();
+
+    for iface in &ifaces {
+        // Skip loopback
+        if iface.is_loopback() {
+            continue;
+        }
+
+        // Only IPv6 link-local (fe80::)
+        let addr = match iface.addr.ip() {
+            std::net::IpAddr::V6(v6) if is_link_local_v6(&v6) => v6,
+            _ => continue,
+        };
+
+        let name = &iface.name;
+
+        // Skip default-ignored virtual interfaces
+        if default_ignored_prefixes.iter().any(|p| name.starts_with(p)) {
+            continue;
+        }
+
+        // Apply whitelist
+        if let Some(ref allowed_list) = allowed {
+            if !allowed_list.iter().any(|d| name == *d) {
+                continue;
+            }
+        }
+
+        // Apply blacklist
+        if ignored.iter().any(|d| name == *d) {
+            continue;
+        }
+
+        // Only take first link-local per interface name
+        if !seen_names.insert(name.clone()) {
+            continue;
+        }
+
+        // Get OS interface index
+        let index = name_to_index(name);
+        if index == 0 {
+            tracing::warn!("Could not get interface index for {}, skipping", name);
+            continue;
+        }
+
+        adopted.push(AdoptedNic {
+            name: name.clone(),
+            link_local: addr,
+            index,
+        });
+    }
+
+    adopted
+}
+
+/// Check if an IPv6 address is link-local (fe80::/10)
+fn is_link_local_v6(addr: &Ipv6Addr) -> bool {
+    let octets = addr.octets();
+    octets[0] == 0xfe && (octets[1] & 0xc0) == 0x80
+}
+
+/// Get the OS interface index for a NIC name.
+/// Returns 0 on failure.
+fn name_to_index(name: &str) -> u32 {
+    use std::ffi::CString;
+    let Ok(c_name) = CString::new(name) else {
+        return 0;
+    };
+    // SAFETY: if_nametoindex is a standard POSIX function that takes a
+    // null-terminated string and returns the interface index (or 0 on error).
+    let idx = unsafe { libc::if_nametoindex(c_name.as_ptr()) };
+    idx
+}
+
+// ─── Multicast address derivation ────────────────────────────────────────────
+
+/// Derive the IPv6 multicast discovery address from a group ID and scope.
+///
+/// Matches Python's AutoInterface multicast address derivation:
+/// - SHA-256 hash the group_id
+/// - Take bytes [2..14] as little-endian 16-bit pairs
+/// - Format as `ff{type}{scope}:0:{word1}:{word2}:{word3}:{word4}:{word5}:{word6}`
+pub(crate) fn derive_multicast_address(group_id: &[u8], scope: &str) -> Ipv6Addr {
+    let g = full_hash(group_id);
+    let scope_byte = scope_to_byte(scope);
+
+    // Build the address string matching Python's format exactly.
+    // Python: gt = "0" then ":"+format(g[3]+(g[2]<<8)) for pairs at indices 2..14
+    let addr_str = format!(
+        "ff{}{}:0:{:02x}:{:02x}:{:02x}:{:02x}:{:02x}:{:02x}",
+        MULTICAST_ADDRESS_TYPE,
+        scope_byte,
+        u16::from(g[3]) + (u16::from(g[2]) << 8),
+        u16::from(g[5]) + (u16::from(g[4]) << 8),
+        u16::from(g[7]) + (u16::from(g[6]) << 8),
+        u16::from(g[9]) + (u16::from(g[8]) << 8),
+        u16::from(g[11]) + (u16::from(g[10]) << 8),
+        u16::from(g[13]) + (u16::from(g[12]) << 8),
+    );
+
+    // Parse — this cannot fail for well-formed format strings
+    addr_str
+        .parse()
+        .expect("BUG: derive_multicast_address produced invalid IPv6")
+}
+
+// ─── Discovery tokens ────────────────────────────────────────────────────────
+
+/// Create a discovery token for multicast announcement.
+///
+/// `token = SHA-256(group_id + link_local_address_string)`
+///
+/// The address string is the text representation of the IPv6 link-local
+/// address (e.g. "fe80::1"), matching Python's `str(addr).encode("utf-8")`.
+pub(crate) fn make_discovery_token(group_id: &[u8], link_local_str: &str) -> [u8; 32] {
+    let mut input = Vec::with_capacity(group_id.len() + link_local_str.len());
+    input.extend_from_slice(group_id);
+    input.extend_from_slice(link_local_str.as_bytes());
+    full_hash(&input)
+}
+
+/// Verify a received discovery token against expected group_id and source address.
+///
+/// Uses constant-time comparison to prevent timing side channels.
+pub(crate) fn verify_discovery_token(token: &[u8], group_id: &[u8], src_addr_str: &str) -> bool {
+    if token.len() != 32 {
+        return false;
+    }
+    let expected = make_discovery_token(group_id, src_addr_str);
+    constant_time_eq(token, &expected)
+}
+
+/// Constant-time byte comparison
+fn constant_time_eq(a: &[u8], b: &[u8]) -> bool {
+    if a.len() != b.len() {
+        return false;
+    }
+    let mut diff = 0u8;
+    for (x, y) in a.iter().zip(b.iter()) {
+        diff |= x ^ y;
+    }
+    diff == 0
+}
+
+// ─── Deduplication cache ─────────────────────────────────────────────────────
+
+/// Cache for deduplicating packets received from multiple NICs.
+///
+/// Stores hashes of recently seen packets with timestamps.
+/// A packet is a duplicate if its hash was seen within DEDUP_TTL.
+///
+/// Uses a VecDeque with fixed max capacity matching Python's `deque(maxlen=48)`.
+pub(crate) struct DeduplicationCache {
+    entries: std::collections::VecDeque<(Instant, [u8; 32])>,
+    max_size: usize,
+    ttl: std::time::Duration,
+}
+
+impl DeduplicationCache {
+    pub(crate) fn new() -> Self {
+        Self {
+            entries: std::collections::VecDeque::with_capacity(DEDUP_CACHE_SIZE),
+            max_size: DEDUP_CACHE_SIZE,
+            ttl: std::time::Duration::from_millis((DEDUP_TTL_SECS * 1000.0) as u64),
+        }
+    }
+
+    /// Check if data is a duplicate. If not, adds it to the cache.
+    /// Returns `true` if the data was already seen (duplicate).
+    pub(crate) fn is_duplicate(&mut self, data: &[u8]) -> bool {
+        let hash = full_hash(data);
+        let now = Instant::now();
+
+        // Check for existing entry within TTL
+        for &(timestamp, ref h) in &self.entries {
+            if *h == hash && now.duration_since(timestamp) < self.ttl {
+                return true;
+            }
+        }
+
+        // Not a duplicate — add to cache
+        if self.entries.len() >= self.max_size {
+            self.entries.pop_front();
+        }
+        self.entries.push_back((now, hash));
+        false
+    }
+}
+
+// ─── Unicast discovery port ──────────────────────────────────────────────────
+
+/// The unicast discovery port is discovery_port + 1 (matches Python)
+pub(crate) fn unicast_discovery_port(discovery_port: u16) -> u16 {
+    discovery_port + 1
+}
+
+/// Reverse peering interval = announce_interval * 3.25 (matches Python)
+pub(crate) fn reverse_peering_interval_secs() -> f64 {
+    ANNOUNCE_INTERVAL_SECS * 3.25
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_derive_multicast_address_matches_python() {
+        // Python test vector: group_id=b"reticulum", scope="link"
+        // Expected: ff12:0:d70b:fb1c:16e4:5e39:485e:31e1
+        let addr = derive_multicast_address(b"reticulum", "link");
+        let expected: Ipv6Addr = "ff12:0:d70b:fb1c:16e4:5e39:485e:31e1".parse().unwrap();
+        assert_eq!(addr, expected, "multicast address must match Python output");
+    }
+
+    #[test]
+    fn test_derive_multicast_address_site_scope() {
+        let addr = derive_multicast_address(b"reticulum", "site");
+        let addr_str = addr.to_string();
+        // Scope "site" = "5", type = "1" → prefix ff15:
+        assert!(
+            addr_str.starts_with("ff15:"),
+            "site scope should produce ff15: prefix, got {}",
+            addr_str
+        );
+    }
+
+    #[test]
+    fn test_derive_multicast_address_custom_group() {
+        // Different group_id should produce a different address
+        let default_addr = derive_multicast_address(b"reticulum", "link");
+        let custom_addr = derive_multicast_address(b"my_custom_network", "link");
+        assert_ne!(default_addr, custom_addr);
+    }
+
+    #[test]
+    fn test_discovery_token_roundtrip() {
+        let group_id = b"reticulum";
+        let addr = "fe80::1";
+        let token = make_discovery_token(group_id, addr);
+        assert!(verify_discovery_token(&token, group_id, addr));
+    }
+
+    #[test]
+    fn test_discovery_token_matches_python() {
+        // Python test vector: group_id=b"reticulum", addr="fe80::1"
+        // Expected: 97b25576749ea936b0d8a8536ffaf442d157cf47d460dcf13c48b7bd18b6c163
+        let token = make_discovery_token(b"reticulum", "fe80::1");
+        let expected =
+            hex::decode("97b25576749ea936b0d8a8536ffaf442d157cf47d460dcf13c48b7bd18b6c163")
+                .unwrap();
+        assert_eq!(token.as_slice(), expected.as_slice());
+    }
+
+    #[test]
+    fn test_discovery_token_wrong_addr_rejected() {
+        let group_id = b"reticulum";
+        let token = make_discovery_token(group_id, "fe80::1");
+        assert!(!verify_discovery_token(&token, group_id, "fe80::2"));
+    }
+
+    #[test]
+    fn test_discovery_token_wrong_group_rejected() {
+        let token = make_discovery_token(b"reticulum", "fe80::1");
+        assert!(!verify_discovery_token(&token, b"other_group", "fe80::1"));
+    }
+
+    #[test]
+    fn test_discovery_token_wrong_length_rejected() {
+        assert!(!verify_discovery_token(&[0u8; 16], b"reticulum", "fe80::1"));
+        assert!(!verify_discovery_token(&[], b"reticulum", "fe80::1"));
+    }
+
+    #[test]
+    fn test_dedup_cache_rejects_duplicate() {
+        let mut cache = DeduplicationCache::new();
+        let data = b"test packet data";
+        assert!(!cache.is_duplicate(data), "first time should not be dup");
+        assert!(cache.is_duplicate(data), "second time should be dup");
+    }
+
+    #[test]
+    fn test_dedup_cache_different_data_not_duplicate() {
+        let mut cache = DeduplicationCache::new();
+        assert!(!cache.is_duplicate(b"packet A"));
+        assert!(!cache.is_duplicate(b"packet B"));
+    }
+
+    #[test]
+    fn test_dedup_cache_respects_max_size() {
+        let mut cache = DeduplicationCache::new();
+        // Fill past capacity
+        for i in 0..DEDUP_CACHE_SIZE + 10 {
+            let data = format!("packet_{}", i);
+            cache.is_duplicate(data.as_bytes());
+        }
+        assert!(cache.entries.len() <= DEDUP_CACHE_SIZE);
+    }
+
+    #[test]
+    fn test_dedup_cache_expires_after_ttl() {
+        let mut cache = DeduplicationCache {
+            entries: std::collections::VecDeque::with_capacity(DEDUP_CACHE_SIZE),
+            max_size: DEDUP_CACHE_SIZE,
+            // Use a very short TTL for testing
+            ttl: std::time::Duration::from_millis(1),
+        };
+        let data = b"expiring packet";
+        assert!(!cache.is_duplicate(data));
+        // Sleep past TTL
+        std::thread::sleep(std::time::Duration::from_millis(5));
+        assert!(
+            !cache.is_duplicate(data),
+            "should not be dup after TTL expires"
+        );
+    }
+
+    #[test]
+    fn test_scope_to_byte() {
+        assert_eq!(scope_to_byte("link"), "2");
+        assert_eq!(scope_to_byte("admin"), "4");
+        assert_eq!(scope_to_byte("site"), "5");
+        assert_eq!(scope_to_byte("organisation"), "8");
+        assert_eq!(scope_to_byte("global"), "e");
+        assert_eq!(scope_to_byte("Link"), "2"); // case insensitive
+        assert_eq!(scope_to_byte("unknown"), "2"); // default
+    }
+
+    #[test]
+    fn test_unicast_discovery_port() {
+        assert_eq!(unicast_discovery_port(29716), 29717);
+    }
+
+    #[test]
+    fn test_reverse_peering_interval() {
+        let interval = reverse_peering_interval_secs();
+        let expected = 1.6 * 3.25; // 5.2
+        assert!((interval - expected).abs() < 0.001);
+    }
+
+    #[test]
+    fn test_is_link_local_v6() {
+        assert!(is_link_local_v6(&"fe80::1".parse().unwrap()));
+        assert!(is_link_local_v6(
+            &"fe80::abcd:1234:5678:9abc".parse().unwrap()
+        ));
+        assert!(!is_link_local_v6(&"::1".parse().unwrap()));
+        assert!(!is_link_local_v6(&"2001:db8::1".parse().unwrap()));
+        assert!(!is_link_local_v6(&"ff02::1".parse().unwrap()));
+    }
+
+    #[test]
+    fn test_enumerate_nics_filters_loopback() {
+        let config = AutoInterfaceConfig::default();
+        let nics = enumerate_nics(&config);
+        // Loopback (lo) should never appear
+        for nic in &nics {
+            assert_ne!(nic.name, "lo", "loopback must be filtered out");
+        }
+    }
+
+    #[test]
+    fn test_enumerate_nics_ignores_docker() {
+        let config = AutoInterfaceConfig::default();
+        let nics = enumerate_nics(&config);
+        for nic in &nics {
+            assert!(
+                !nic.name.starts_with("docker"),
+                "docker interfaces must be filtered: {}",
+                nic.name
+            );
+            assert!(
+                !nic.name.starts_with("veth"),
+                "veth interfaces must be filtered: {}",
+                nic.name
+            );
+        }
+    }
+
+    #[test]
+    fn test_enumerate_nics_whitelist() {
+        // Whitelist a non-existent device — should return empty
+        let config = AutoInterfaceConfig {
+            allowed_devices: Some("nonexistent_device_xyz".to_string()),
+            ..Default::default()
+        };
+        let nics = enumerate_nics(&config);
+        assert!(nics.is_empty());
+    }
+
+    #[test]
+    fn test_constant_time_eq() {
+        let a = [1u8, 2, 3, 4];
+        let b = [1u8, 2, 3, 4];
+        let c = [1u8, 2, 3, 5];
+        assert!(constant_time_eq(&a, &b));
+        assert!(!constant_time_eq(&a, &c));
+        assert!(!constant_time_eq(&a, &[1, 2, 3])); // different length
+    }
+}

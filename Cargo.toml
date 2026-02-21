@@ -48,6 +48,10 @@ bytes = "1"
 # Compression (no_std compatible)
 libbz2-rs-sys = { version = "0.2", default-features = false, features = ["rust-allocator"] }
 
+# Networking
+if-addrs = "0.15"
+socket2 = { version = "0.6", features = ["all"] }
+
 # FFI
 libc = "0.2"
 

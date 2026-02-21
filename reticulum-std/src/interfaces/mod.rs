@@ -9,6 +9,7 @@
 //! core's [`dispatch_actions()`](reticulum_core::transport::dispatch_actions)
 //! can route packets to interfaces directly.
 
+pub(crate) mod auto_interface;
 pub mod hdlc;
 pub(crate) mod tcp;
 pub(crate) mod udp;
