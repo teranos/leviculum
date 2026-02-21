@@ -35,6 +35,7 @@ Phase numbering follows `doc/BATTLEPLAN.md`. Phases 0–7 are complete.
 | E21 | L | post-7 | open | Feature | AutoInterface: NIC hot-plug detection (NICs added/removed at runtime) |
 | E22 | L | post-7 | open | Feature | AutoInterface: multiple instances with different group_ids |
 | E23 | L | post-7 | open | Docs | AutoInterface: carrier_changed flag set but unused (Python too) |
+| E24 | H | post-7 | open | Test | Flaky interop tests: path_expires_when_idle and path_recovery_on_link_timeout |
 
 ---
 
@@ -158,6 +159,15 @@ Phase numbering follows `doc/BATTLEPLAN.md`. Phases 0–7 are complete.
 - **Detail:** The current implementation supports one AutoInterface instance per node. Python supports multiple `[[Auto Interface]]` sections with different `group_id` values, creating isolated discovery domains on the same LAN. The Rust builder's `add_auto_interface_with_config()` can be called multiple times, but port conflicts would occur since all instances bind the same discovery/data ports.
 - **Fix:** Each instance needs unique port allocation or port multiplexing. May require the orchestrator to handle multiple group_ids in a single task.
 - **Test:** Two AutoInterface instances with different group_ids on the same node, verify isolation.
+
+### E24: Flaky interop tests: path_expires_when_idle and path_recovery_on_link_timeout
+- **Status:** open
+- **Priority:** H
+- **Phase:** post-7
+- **Category:** Test
+- **Detail:** Two interop tests fail intermittently under load: `path_gap_tests::test_path_expires_when_idle` and `path_recovery_tests::test_rust_node_path_recovery_on_link_timeout`. Both hit `debug_assert!(delta > 0, "next_deadline() returned zero — would cause spin loop")` in `reticulum-std/src/driver/mod.rs:798`. The assertion fires when `handle_timeout()` returns a `next_deadline_ms` equal to (or less than) the current `now_ms`, producing a zero delta. This only manifests when many interop tests run concurrently (full suite of 218 tests), never when the two tests run in isolation. The root cause is likely a race between `core.now_ms()` advancing and the deadline computation — under CPU pressure the clock moves forward between the `handle_timeout()` call and the `now_ms()` read, making `deadline_ms.saturating_sub(now_ms)` return 0.
+- **Fix:** The `debug_assert!` already clamps to `delta.clamp(1, 1000)` in the non-assert path, so the spin loop is prevented in release builds. Options: (1) Remove the `debug_assert!` since the clamp already handles it. (2) Read `now_ms` inside the same lock as `handle_timeout()` to eliminate the race window (this is already done — both are inside the same lock scope). (3) The real issue may be that `next_deadline_ms` is computed from a stale `now_ms` inside `NodeCore` while the `SystemClock` has advanced — investigate whether `next_deadline()` should return a Duration rather than an absolute timestamp.
+- **Test:** Run `cargo test --package reticulum-std --test rnsd_interop` 10 times in a row and confirm zero failures.
 
 ### E23: AutoInterface: carrier_changed flag set but unused
 - **Status:** open

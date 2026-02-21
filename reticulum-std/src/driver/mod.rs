@@ -362,7 +362,7 @@ impl ReticulumNode {
                         multicast_loopback: false,
                     };
                     spawn_auto_interface(next_id.clone(), new_iface_tx.clone(), auto_config);
-                    tracing::info!("AutoInterface spawned");
+                    tracing::info!("AutoInterface: starting orchestrator");
                 }
                 other => {
                     tracing::warn!("Unknown interface type: {}", other);

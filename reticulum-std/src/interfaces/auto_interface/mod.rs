@@ -209,9 +209,9 @@ fn name_to_index(name: &str) -> u32 {
 ///
 /// Matches Python's AutoInterface multicast address derivation:
 /// - SHA-256 hash the group_id
-/// - Take bytes [2..14] as little-endian 16-bit pairs
+/// - Take bytes [2..14] as big-endian 16-bit words
 /// - Format as `ff{type}{scope}:0:{word1}:{word2}:{word3}:{word4}:{word5}:{word6}`
-pub(crate) fn derive_multicast_address(group_id: &[u8], scope: &str) -> Ipv6Addr {
+pub(crate) fn derive_multicast_address(group_id: &[u8], scope: &str) -> io::Result<Ipv6Addr> {
     let g = full_hash(group_id);
     let scope_byte = scope_to_byte(scope);
 
@@ -229,10 +229,12 @@ pub(crate) fn derive_multicast_address(group_id: &[u8], scope: &str) -> Ipv6Addr
         u16::from(g[13]) + (u16::from(g[12]) << 8),
     );
 
-    // Parse — this cannot fail for well-formed format strings
-    addr_str
-        .parse()
-        .expect("BUG: derive_multicast_address produced invalid IPv6")
+    addr_str.parse().map_err(|e| {
+        io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!("derive_multicast_address produced invalid IPv6: {}", e),
+        )
+    })
 }
 
 // ─── Discovery tokens ────────────────────────────────────────────────────────
@@ -434,20 +436,32 @@ pub(crate) struct RecvResult {
 /// For small N (1-3 NICs), iterative polling is efficient.
 /// Returns when any socket has data available.
 ///
+/// `poll_start` provides round-robin fairness: iteration starts at
+/// `*poll_start` and wraps. After a successful recv, `*poll_start` advances
+/// past the served socket so the next call starts elsewhere.
+///
 /// Uses `readable()` + `try_recv_from()` pattern (edge-triggered).
 /// On `WouldBlock`, loops back to `readable()` to re-register waker.
-pub(crate) async fn recv_from_any(sockets: &[UdpSocket], buf: &mut [u8]) -> io::Result<RecvResult> {
+pub(crate) async fn recv_from_any(
+    sockets: &[UdpSocket],
+    buf: &mut [u8],
+    poll_start: &mut usize,
+) -> io::Result<RecvResult> {
     if sockets.is_empty() {
         std::future::pending::<()>().await;
         unreachable!()
     }
 
+    let len = sockets.len();
+    let start = *poll_start;
+
     loop {
-        // Wait for any socket to become readable
+        // Wait for any socket to become readable (round-robin from poll_start)
         let ready_idx = {
-            // Use poll_fn to check all sockets for readability
             let idx = std::future::poll_fn(|cx| {
-                for (idx, sock) in sockets.iter().enumerate() {
+                for offset in 0..len {
+                    let idx = (start + offset) % len;
+                    let sock = &sockets[idx];
                     match sock.poll_recv_ready(cx) {
                         std::task::Poll::Ready(Ok(())) => {
                             return std::task::Poll::Ready(Ok(idx));
@@ -471,6 +485,7 @@ pub(crate) async fn recv_from_any(sockets: &[UdpSocket], buf: &mut [u8]) -> io::
                     std::net::SocketAddr::V6(v6) => v6,
                     std::net::SocketAddr::V4(_) => continue,
                 };
+                *poll_start = (ready_idx + 1) % len;
                 return Ok(RecvResult {
                     bytes_read: n,
                     source: v6,
@@ -494,14 +509,14 @@ mod tests {
     fn test_derive_multicast_address_matches_python() {
         // Python test vector: group_id=b"reticulum", scope="link"
         // Expected: ff12:0:d70b:fb1c:16e4:5e39:485e:31e1
-        let addr = derive_multicast_address(b"reticulum", "link");
+        let addr = derive_multicast_address(b"reticulum", "link").unwrap();
         let expected: Ipv6Addr = "ff12:0:d70b:fb1c:16e4:5e39:485e:31e1".parse().unwrap();
         assert_eq!(addr, expected, "multicast address must match Python output");
     }
 
     #[test]
     fn test_derive_multicast_address_site_scope() {
-        let addr = derive_multicast_address(b"reticulum", "site");
+        let addr = derive_multicast_address(b"reticulum", "site").unwrap();
         let addr_str = addr.to_string();
         // Scope "site" = "5", type = "1" → prefix ff15:
         assert!(
@@ -514,8 +529,8 @@ mod tests {
     #[test]
     fn test_derive_multicast_address_custom_group() {
         // Different group_id should produce a different address
-        let default_addr = derive_multicast_address(b"reticulum", "link");
-        let custom_addr = derive_multicast_address(b"my_custom_network", "link");
+        let default_addr = derive_multicast_address(b"reticulum", "link").unwrap();
+        let custom_addr = derive_multicast_address(b"my_custom_network", "link").unwrap();
         assert_ne!(default_addr, custom_addr);
     }
 
@@ -703,9 +718,10 @@ mod tests {
 
         let sockets = [s1, s2];
         let mut buf = [0u8; 64];
+        let mut poll_start = 0;
         let result = tokio::time::timeout(
             std::time::Duration::from_secs(2),
-            recv_from_any(&sockets, &mut buf),
+            recv_from_any(&sockets, &mut buf, &mut poll_start),
         )
         .await
         .expect("timeout")
@@ -714,6 +730,7 @@ mod tests {
         assert_eq!(result.socket_index, 1, "should recv on socket index 1");
         assert_eq!(result.bytes_read, 5);
         assert_eq!(&buf[..5], b"hello");
+        assert_eq!(poll_start, 0, "round-robin should advance past index 1");
     }
 
     #[tokio::test]

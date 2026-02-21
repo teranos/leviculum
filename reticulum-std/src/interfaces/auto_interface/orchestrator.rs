@@ -52,6 +52,55 @@ struct NicState {
     timed_out: bool,
 }
 
+/// Given all enumerated NICs and per-NIC bind results, return only the NICs
+/// that succeeded and pre-compute their discovery tokens.
+///
+/// Socket vecs (`mcast_sockets`, `unicast_sockets`, `data_sockets`) only contain
+/// entries for NICs where all three binds succeeded. This function produces a
+/// parallel `active_nics` vec so that `socket_index` maps to the correct NIC.
+///
+/// Removal path: entries are static for the lifetime of the orchestrator.
+pub(crate) fn build_active_nics_and_tokens(
+    nics: &[AdoptedNic],
+    bind_results: &[bool],
+    group_id: &[u8],
+) -> (Vec<AdoptedNic>, Vec<([u8; 32], String)>) {
+    let active: Vec<AdoptedNic> = nics
+        .iter()
+        .zip(bind_results.iter())
+        .filter(|(_, ok)| **ok)
+        .map(|(n, _)| n.clone())
+        .collect();
+
+    let tokens: Vec<([u8; 32], String)> = active
+        .iter()
+        .map(|n| {
+            let addr_str = n.link_local.to_string();
+            let token = make_discovery_token(group_id, &addr_str);
+            (token, addr_str)
+        })
+        .collect();
+
+    (active, tokens)
+}
+
+/// Compute the discovery token for a reverse peering announcement.
+///
+/// The token must be verifiable by the peer using the sender's source IP.
+/// Looks up the peer's NIC in `active_nics` to find OUR link-local address
+/// on that NIC — the peer will verify `hash(group_id + our_source_ip)`.
+///
+/// Returns `None` if the NIC is not found in `active_nics`.
+pub(crate) fn compute_reverse_peering_token(
+    group_id: &[u8],
+    peer_nic_name: &str,
+    active_nics: &[AdoptedNic],
+) -> Option<[u8; 32]> {
+    let our_nic = active_nics.iter().find(|n| n.name == peer_nic_name)?;
+    let our_addr_str = our_nic.link_local.to_string();
+    Some(make_discovery_token(group_id, &our_addr_str))
+}
+
 /// Spawn the AutoInterface orchestrator as a background tokio task.
 ///
 /// The orchestrator enumerates NICs, binds sockets, and runs the discovery
@@ -86,7 +135,7 @@ async fn run_auto_interface(
         return Ok(());
     }
 
-    let mcast_addr = derive_multicast_address(&config.group_id, &config.discovery_scope);
+    let mcast_addr = derive_multicast_address(&config.group_id, &config.discovery_scope)?;
     let unicast_port = unicast_discovery_port(config.discovery_port);
 
     tracing::info!(
@@ -97,10 +146,11 @@ async fn run_auto_interface(
         config.data_port
     );
 
-    // Bind sockets per NIC
+    // Bind sockets per NIC, tracking which succeeded
     let mut mcast_sockets = Vec::new();
     let mut unicast_sockets = Vec::new();
     let mut data_sockets = Vec::new();
+    let mut bind_results = Vec::with_capacity(nics.len());
     for nic in &nics {
         match bind_multicast_socket(
             nic,
@@ -123,6 +173,7 @@ async fn run_auto_interface(
                     nic.name,
                     e
                 );
+                bind_results.push(false);
                 continue;
             }
         }
@@ -137,6 +188,7 @@ async fn run_auto_interface(
                 );
                 // Remove the multicast socket we just pushed — can't function without unicast
                 mcast_sockets.pop();
+                bind_results.push(false);
                 continue;
             }
         }
@@ -149,9 +201,11 @@ async fn run_auto_interface(
                 tracing::warn!("AutoInterface: failed to bind data on {}: {}", nic.name, e);
                 mcast_sockets.pop();
                 unicast_sockets.pop();
+                bind_results.push(false);
                 continue;
             }
         }
+        bind_results.push(true);
     }
 
     if mcast_sockets.is_empty() {
@@ -192,26 +246,23 @@ async fn run_auto_interface(
     let mut announce_timer = tokio::time::interval(announce_interval);
     let mut peer_job_timer = tokio::time::interval(peer_job_interval);
 
+    // Build active_nics (only NICs where all 3 sockets bound) and their tokens
+    let (active_nics, our_tokens) =
+        build_active_nics_and_tokens(&nics, &bind_results, &config.group_id);
     // Collect our own link-local addresses for self-echo detection
-    let our_addrs: Vec<Ipv6Addr> = nics.iter().map(|n| n.link_local).collect();
-    // Pre-compute discovery tokens for each NIC
-    let our_tokens: Vec<([u8; 32], String)> = nics
-        .iter()
-        .map(|n| {
-            let addr_str = n.link_local.to_string();
-            let token = make_discovery_token(&config.group_id, &addr_str);
-            (token, addr_str)
-        })
-        .collect();
+    let our_addrs: Vec<Ipv6Addr> = active_nics.iter().map(|n| n.link_local).collect();
 
     let mut mcast_buf = [0u8; 64];
     let mut unicast_buf = [0u8; 64];
     let mut data_buf = [0u8; MAX_DATAGRAM_SIZE];
+    let mut mcast_poll = 0usize;
+    let mut unicast_poll = 0usize;
+    let mut data_poll = 0usize;
 
     loop {
         tokio::select! {
             // ── Multicast discovery recv ──────────────────────────────
-            result = recv_from_any(&mcast_sockets, &mut mcast_buf) => {
+            result = recv_from_any(&mcast_sockets, &mut mcast_buf, &mut mcast_poll) => {
                 let recv = match result {
                     Ok(r) => r,
                     Err(e) => {
@@ -221,8 +272,7 @@ async fn run_auto_interface(
                 };
                 let token = &mcast_buf[..recv.bytes_read];
                 let src_addr = *recv.source.ip();
-                let nic_idx = recv.socket_index.min(nics.len() - 1);
-                let nic = &nics[nic_idx];
+                let nic = &active_nics[recv.socket_index];
 
                 handle_discovery_token(
                     token,
@@ -235,11 +285,11 @@ async fn run_auto_interface(
                     &next_id,
                     &new_iface_tx,
                     &outbound,
-                ).await;
+                );
             }
 
             // ── Unicast discovery recv ────────────────────────────────
-            result = recv_from_any(&unicast_sockets, &mut unicast_buf) => {
+            result = recv_from_any(&unicast_sockets, &mut unicast_buf, &mut unicast_poll) => {
                 let recv = match result {
                     Ok(r) => r,
                     Err(e) => {
@@ -249,8 +299,7 @@ async fn run_auto_interface(
                 };
                 let token = &unicast_buf[..recv.bytes_read];
                 let src_addr = *recv.source.ip();
-                let nic_idx = recv.socket_index.min(nics.len() - 1);
-                let nic = &nics[nic_idx];
+                let nic = &active_nics[recv.socket_index];
 
                 handle_discovery_token(
                     token,
@@ -263,11 +312,11 @@ async fn run_auto_interface(
                     &next_id,
                     &new_iface_tx,
                     &outbound,
-                ).await;
+                );
             }
 
             // ── Data recv + demux ─────────────────────────────────────
-            result = recv_from_any(&data_sockets, &mut data_buf) => {
+            result = recv_from_any(&data_sockets, &mut data_buf, &mut data_poll) => {
                 let recv = match result {
                     Ok(r) => r,
                     Err(e) => {
@@ -292,9 +341,23 @@ async fn run_auto_interface(
                 if let Some(peer) = peers.get_mut(&src_addr) {
                     peer.last_heard = Instant::now();
                     // Forward to event loop via incoming channel
-                    let _ = peer.incoming_tx.try_send(IncomingPacket {
+                    match peer.incoming_tx.try_send(IncomingPacket {
                         data: data.to_vec(),
-                    });
+                    }) {
+                        Ok(()) => {}
+                        Err(mpsc::error::TrySendError::Full(_)) => {
+                            tracing::debug!(
+                                "AutoInterface: incoming channel full for {}, dropping packet",
+                                src_addr
+                            );
+                        }
+                        Err(mpsc::error::TrySendError::Closed(_)) => {
+                            tracing::warn!(
+                                "AutoInterface: incoming channel closed for {}",
+                                src_addr
+                            );
+                        }
+                    }
                 } else {
                     tracing::debug!(
                         "AutoInterface: data from unknown peer {}, dropping (no discovery yet)",
@@ -306,7 +369,7 @@ async fn run_auto_interface(
             // ── Announce timer (send multicast token) ─────────────────
             _ = announce_timer.tick() => {
                 for (nic_idx, sock) in mcast_sockets.iter().enumerate() {
-                    let nic = &nics[nic_idx];
+                    let nic = &active_nics[nic_idx];
                     let (ref token, _) = our_tokens[nic_idx];
                     let dest = SocketAddrV6::new(mcast_addr, config.discovery_port, 0, nic.index);
                     if let Err(e) = sock.send_to(token, dest).await {
@@ -346,10 +409,17 @@ async fn run_auto_interface(
                 for (addr, peer) in &mut peers {
                     if now.duration_since(peer.last_reverse_peering) > reverse_peering_interval {
                         peer.last_reverse_peering = now;
-                        let addr_str = addr.to_string();
-                        let token = make_discovery_token(&config.group_id, &addr_str);
-                        // Find the unicast socket for this peer's NIC
-                        if let Some(nic_idx) = nics.iter().position(|n| n.name == peer.nic_name) {
+                        // Token must be verifiable by the peer using OUR source IP
+                        let token = match compute_reverse_peering_token(
+                            &config.group_id,
+                            &peer.nic_name,
+                            &active_nics,
+                        ) {
+                            Some(t) => t,
+                            None => continue,
+                        };
+                        // Find the multicast socket for this peer's NIC
+                        if let Some(nic_idx) = active_nics.iter().position(|n| n.name == peer.nic_name) {
                             let dest = SocketAddrV6::new(
                                 *addr,
                                 unicast_port,
@@ -359,7 +429,13 @@ async fn run_auto_interface(
                             // Use the NIC's multicast socket for sending (it's already
                             // bound to the right interface)
                             if nic_idx < mcast_sockets.len() {
-                                let _ = mcast_sockets[nic_idx].send_to(&token, dest).await;
+                                if let Err(e) = mcast_sockets[nic_idx].send_to(&token, dest).await {
+                                    tracing::debug!(
+                                        "AutoInterface: reverse peering send to {} failed: {}",
+                                        addr,
+                                        e
+                                    );
+                                }
                             }
                         }
                     }
@@ -405,7 +481,7 @@ async fn run_auto_interface(
 /// If from a new peer, create channels and register the interface.
 /// If from a known peer, refresh the last_heard timestamp.
 #[allow(clippy::too_many_arguments)]
-async fn handle_discovery_token(
+fn handle_discovery_token(
     token: &[u8],
     src_addr: Ipv6Addr,
     nic: &AdoptedNic,
@@ -456,11 +532,9 @@ async fn handle_discovery_token(
         peer_send_task(outgoing_rx, send_socket, peer_sockaddr).await;
     });
 
-    // Format short address for interface name (last 4 hex chars)
-    let addr_short = format!(
-        "{:x}",
-        u32::from(src_addr.octets()[14]) << 8 | u32::from(src_addr.octets()[15])
-    );
+    // Format short address for interface name (last 4 octets as 8 hex chars)
+    let o = src_addr.octets();
+    let addr_short = format!("{:02x}{:02x}{:02x}{:02x}", o[12], o[13], o[14], o[15]);
     let iface_name = format!("auto/{}/{}", nic.name, addr_short);
 
     let handle = InterfaceHandle {
@@ -485,10 +559,21 @@ async fn handle_discovery_token(
         },
     );
 
-    if new_iface_tx.send(handle).await.is_err() {
-        tracing::warn!("AutoInterface: event loop gone, cannot register peer");
-        peers.remove(&src_addr);
-        return;
+    match new_iface_tx.try_send(handle) {
+        Ok(()) => {}
+        Err(mpsc::error::TrySendError::Full(_)) => {
+            tracing::warn!(
+                "AutoInterface: new-interface channel full, cannot register peer {}",
+                src_addr
+            );
+            peers.remove(&src_addr);
+            return;
+        }
+        Err(mpsc::error::TrySendError::Closed(_)) => {
+            tracing::warn!("AutoInterface: event loop gone, cannot register peer");
+            peers.remove(&src_addr);
+            return;
+        }
     }
 
     tracing::info!(
@@ -522,6 +607,118 @@ async fn peer_send_task(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn test_active_nics_skip_failed_binds() {
+        let nics = vec![
+            AdoptedNic {
+                name: "eth0".into(),
+                link_local: "fe80::1".parse().unwrap(),
+                index: 1,
+            },
+            AdoptedNic {
+                name: "eth1".into(),
+                link_local: "fe80::2".parse().unwrap(),
+                index: 2,
+            },
+            AdoptedNic {
+                name: "eth2".into(),
+                link_local: "fe80::3".parse().unwrap(),
+                index: 3,
+            },
+        ];
+        // eth0 failed to bind, eth1 and eth2 succeeded
+        let bind_results = vec![false, true, true];
+
+        let (active, tokens) = build_active_nics_and_tokens(&nics, &bind_results, b"reticulum");
+
+        // active_nics[0] must be eth1, NOT eth0
+        assert_eq!(active.len(), 2);
+        assert_eq!(active[0].name, "eth1");
+        assert_eq!(active[1].name, "eth2");
+
+        // Token at index 0 must be for eth1's address (fe80::2)
+        let expected = make_discovery_token(b"reticulum", "fe80::2");
+        assert_eq!(tokens[0].0, expected, "token[0] must match eth1, not eth0");
+    }
+
+    #[test]
+    fn test_active_nics_all_succeed() {
+        let nics = vec![
+            AdoptedNic {
+                name: "eth0".into(),
+                link_local: "fe80::1".parse().unwrap(),
+                index: 1,
+            },
+            AdoptedNic {
+                name: "eth1".into(),
+                link_local: "fe80::2".parse().unwrap(),
+                index: 2,
+            },
+        ];
+        let bind_results = vec![true, true];
+
+        let (active, tokens) = build_active_nics_and_tokens(&nics, &bind_results, b"reticulum");
+
+        assert_eq!(active.len(), 2);
+        assert_eq!(active[0].name, "eth0");
+        assert_eq!(active[1].name, "eth1");
+        assert_eq!(tokens.len(), 2);
+    }
+
+    #[test]
+    fn test_reverse_peering_token_verifiable_by_peer() {
+        let group_id = b"reticulum";
+        let our_nic = AdoptedNic {
+            name: "eth0".into(),
+            link_local: "fe80::1".parse().unwrap(),
+            index: 1,
+        };
+        let active_nics = vec![our_nic];
+        // Peer's address is different from ours
+        let _peer_addr: Ipv6Addr = "fe80::99".parse().unwrap();
+
+        let token =
+            compute_reverse_peering_token(group_id, "eth0", &active_nics).expect("should find NIC");
+
+        // Peer receives this token and verifies against our source IP (fe80::1)
+        assert!(
+            verify_discovery_token(&token, group_id, "fe80::1"),
+            "token must verify against sender's source IP, not peer's address"
+        );
+        // Must NOT verify against the peer's address
+        assert!(
+            !verify_discovery_token(&token, group_id, "fe80::99"),
+            "token must NOT verify against peer's own address"
+        );
+    }
+
+    #[test]
+    fn test_reverse_peering_token_unknown_nic() {
+        let active_nics = vec![AdoptedNic {
+            name: "eth0".into(),
+            link_local: "fe80::1".parse().unwrap(),
+            index: 1,
+        }];
+
+        let result = compute_reverse_peering_token(b"reticulum", "wlan0", &active_nics);
+        assert!(result.is_none(), "unknown NIC should return None");
+    }
+
+    #[test]
+    fn test_active_nics_all_fail() {
+        let nics = vec![AdoptedNic {
+            name: "eth0".into(),
+            link_local: "fe80::1".parse().unwrap(),
+            index: 1,
+        }];
+        let bind_results = vec![false];
+
+        let (active, tokens) = build_active_nics_and_tokens(&nics, &bind_results, b"reticulum");
+
+        assert!(active.is_empty());
+        assert!(tokens.is_empty());
+    }
 
     #[test]
     fn test_peer_info_fields() {
@@ -627,8 +824,7 @@ mod tests {
             &next_id,
             &new_iface_tx,
             &outbound,
-        )
-        .await;
+        );
 
         // Should NOT create a peer (self-echo)
         assert!(peers.is_empty(), "self-echo should not create a peer");
@@ -676,8 +872,7 @@ mod tests {
             &next_id,
             &new_iface_tx,
             &outbound,
-        )
-        .await;
+        );
 
         assert_eq!(peers.len(), 1, "should have one peer");
         assert!(peers.contains_key(&peer_addr));
@@ -726,8 +921,7 @@ mod tests {
             &next_id,
             &new_iface_tx,
             &outbound,
-        )
-        .await;
+        );
 
         let first_heard = peers[&peer_addr].last_heard;
 
@@ -746,8 +940,7 @@ mod tests {
             &next_id,
             &new_iface_tx,
             &outbound,
-        )
-        .await;
+        );
 
         assert_eq!(peers.len(), 1, "should still have one peer");
         assert!(
@@ -790,8 +983,7 @@ mod tests {
             &next_id,
             &new_iface_tx,
             &outbound,
-        )
-        .await;
+        );
 
         assert!(peers.is_empty(), "invalid token should not create a peer");
     }
