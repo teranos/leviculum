@@ -328,7 +328,7 @@ Sicherheitsfeatures verdrahten, Daemon-Zustand persistieren, Release-Qualität e
 - Interface-spezifischer Send-Side-Jitter für Shared-Medium-Interfaces (E10)
 - Serial Interface
 - KISS Interface (TNC-Protokoll)
-- AutoInterface (lokale Netzwerk-Autodiscovery)
+- ✅ AutoInterface (lokale Netzwerk-Autodiscovery) — IPv6-Multicast-Discovery, dynamisches Peer-Management, Linux
 
 ## C-API & Paketierung
 - `leviculum-ffi` erweitern (Reticulum-Instanz, Destinations, Links, Packets, Resources, Path Discovery)

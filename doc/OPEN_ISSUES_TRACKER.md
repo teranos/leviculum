@@ -29,9 +29,12 @@ Phase numbering follows `doc/BATTLEPLAN.md`. Phases 0–7 are complete.
 | E14 | L | post-7 | open | Design | FileStorage wraps MemoryStorage — cannot use IndexMap for insertion-order eviction |
 | E15 | L | post-7 | open | Docs | Git history has 11 commits where FileStorage was no-op — avoid git bisect in that range |
 | E16 | L | post-7 | open | Perf | FileStorage writes complete files on every flush — consider delta-based persistence |
-| E17 | M | post-7 | open | Feature | AutoInterface — multicast discovery + dynamic peer management over UDP |
 | E18 | L | post-7 | open | Feature | UDPInterface `device` parameter (bind to specific NIC) not yet supported |
 | E19 | L | post-7 | open | Feature | UDPInterface multiple forward addresses (multipoint) not yet supported |
+| E20 | L | post-7 | open | Feature | AutoInterface: macOS/Windows NIC enumeration not implemented |
+| E21 | L | post-7 | open | Feature | AutoInterface: NIC hot-plug detection (NICs added/removed at runtime) |
+| E22 | L | post-7 | open | Feature | AutoInterface: multiple instances with different group_ids |
+| E23 | L | post-7 | open | Docs | AutoInterface: carrier_changed flag set but unused (Python too) |
 
 ---
 
@@ -111,16 +114,6 @@ Phase numbering follows `doc/BATTLEPLAN.md`. Phases 0–7 are complete.
 - **Fix:** Requires a new on-disk format (e.g., log-structured or one-value-per-record) with a migration path from the current msgpack format. Python compatibility would need a conversion tool or dual-format support.
 - **Test:** Benchmark write amplification before and after format change.
 
-### E17: AutoInterface — multicast discovery + dynamic peer management over UDP
-- **Status:** open
-- **Priority:** M
-- **Phase:** post-7
-- **Category:** Feature
-- **Blocked-by:** UDPInterface (now complete)
-- **Detail:** Python's AutoInterface uses multicast discovery (group `ff02::1` or `224.0.0.1`) to automatically find peers on the local network and create dynamic UDP peerings. This builds on top of the static UDPInterface. Requires: multicast group join, peer timeout/expiry, group HMAC for authentication, and dynamic interface creation per discovered peer.
-- **Fix:** Implement AutoInterface in `reticulum-std/src/interfaces/auto.rs` with multicast listener + per-peer UDP sockets.
-- **Test:** Integration test with two Rust nodes on localhost discovering each other via multicast.
-
 ### E18: UDPInterface `device` parameter not yet supported
 - **Status:** open
 - **Priority:** L
@@ -138,3 +131,39 @@ Phase numbering follows `doc/BATTLEPLAN.md`. Phases 0–7 are complete.
 - **Detail:** The current Rust UDPInterface supports a single `forward_ip`/`forward_port` pair. Some configurations may benefit from sending to multiple forward addresses (e.g., multiple subnets). Python's UDPInterface also only supports one forward address, so this is a Rust-only enhancement.
 - **Fix:** Accept a list of forward addresses and send each outgoing packet to all of them.
 - **Test:** Unit test: verify packet is sent to all configured forward addresses.
+
+### E20: AutoInterface: macOS/Windows NIC enumeration not implemented
+- **Status:** open
+- **Priority:** L
+- **Phase:** post-7
+- **Category:** Feature
+- **Detail:** The AutoInterface NIC enumeration (`enumerate_nics()`) filters for IPv6 link-local addresses and uses `libc::if_nametoindex()` for scope_id resolution. This works on Linux but has not been tested or adapted for macOS (different multicast socket options) or Windows (different NIC enumeration APIs). The `if-addrs` crate is cross-platform, but the socket2 multicast setup and libc calls are Linux-specific.
+- **Fix:** Add platform-specific NIC enumeration and socket setup for macOS and Windows. May need conditional compilation (`#[cfg(target_os)]`).
+- **Test:** Manual test on macOS/Windows; CI matrix if available.
+
+### E21: AutoInterface: NIC hot-plug detection (NICs added/removed at runtime)
+- **Status:** open
+- **Priority:** L
+- **Phase:** post-7
+- **Category:** Feature
+- **Detail:** The AutoInterface enumerates NICs once at startup. If a NIC is added or removed at runtime (e.g., USB Ethernet adapter, WiFi reconnect), the orchestrator does not detect the change. Python's AutoInterface has the same limitation.
+- **Fix:** Periodic NIC re-enumeration (e.g., every 30s) or netlink socket monitoring on Linux. Add/remove multicast group memberships and data sockets dynamically.
+- **Test:** Manual test: plug/unplug NIC while AutoInterface is running.
+
+### E22: AutoInterface: multiple instances with different group_ids
+- **Status:** open
+- **Priority:** L
+- **Phase:** post-7
+- **Category:** Feature
+- **Detail:** The current implementation supports one AutoInterface instance per node. Python supports multiple `[[Auto Interface]]` sections with different `group_id` values, creating isolated discovery domains on the same LAN. The Rust builder's `add_auto_interface_with_config()` can be called multiple times, but port conflicts would occur since all instances bind the same discovery/data ports.
+- **Fix:** Each instance needs unique port allocation or port multiplexing. May require the orchestrator to handle multiple group_ids in a single task.
+- **Test:** Two AutoInterface instances with different group_ids on the same node, verify isolation.
+
+### E23: AutoInterface: carrier_changed flag set but unused
+- **Status:** open
+- **Priority:** L
+- **Phase:** post-7
+- **Category:** Docs
+- **Detail:** The Python AutoInterface sets a `carrier_changed` flag when multicast echo timeout is detected (no self-echo for 6.5s), but this flag is never read by any other code in the Python reference implementation. The Rust implementation logs a warning but does not track the flag. This appears to be dead code in both implementations.
+- **Fix:** No code change needed unless a consumer of carrier state is identified. Document as known dead code.
+- **Test:** N/A — informational only.

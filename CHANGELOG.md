@@ -7,6 +7,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- **AutoInterface** — zero-configuration LAN discovery via IPv6 multicast, matching Python Reticulum's `AutoInterface`. Nodes on the same LAN discover each other automatically and communicate over UDP. Each discovered peer becomes a separate interface handle with `HW_MTU=1196`. Features: multicast address derivation from group_id, SHA-256 discovery tokens with constant-time verification, per-NIC multicast/unicast/data sockets via socket2, peer timeout (22s) with automatic cleanup via channel-drop cascade, self-echo carrier detection (6.5s), deduplication cache (48 entries, 750ms TTL), reverse peering for bidirectional discovery. Linux only. Configurable via INI (`[[Auto Interface]]`) or builder (`add_auto_interface()`). 38 unit tests + Python-verified test vectors for multicast address and discovery token.
+
 ### Fixed
 - **Responder-side MTU clamping** — `Link::new_incoming()` now clamps the negotiated MTU to the receiving interface's HW_MTU (`min(signaled_mtu, interface_hw_mtu)`), matching Python `Transport.py:1944-1960`. Previously a peer could negotiate an MTU exceeding the link's actual capacity, causing silent data loss on constrained interfaces.
 - **Link MTU discovery compatibility** — transport relay no longer rejects packets larger than the base 500-byte MTU. Python Reticulum 1.1.3 negotiates higher link MTUs over TCP (up to 262 KB), causing resource transfers (e.g. `rncp`) through lrnsd to fail with "packet too long". Removed the hard MTU check from `Packet::unpack()` and `Packet::pack()`, and switched forwarding buffers from fixed `[0u8; 500]` to dynamically-sized `Vec<u8>`.
