@@ -128,6 +128,12 @@ impl ReticulumNodeBuilder {
             buffer_size: None,
             reconnect_interval_secs: None,
             max_reconnect_tries: None,
+            group_id: None,
+            discovery_scope: None,
+            discovery_port: None,
+            data_port: None,
+            devices: None,
+            ignored_devices: None,
             frequency: None,
             bandwidth: None,
             spreading_factor: None,
@@ -160,6 +166,12 @@ impl ReticulumNodeBuilder {
             buffer_size: None,
             reconnect_interval_secs: None,
             max_reconnect_tries: None,
+            group_id: None,
+            discovery_scope: None,
+            discovery_port: None,
+            data_port: None,
+            devices: None,
+            ignored_devices: None,
             frequency: None,
             bandwidth: None,
             spreading_factor: None,
@@ -193,6 +205,61 @@ impl ReticulumNodeBuilder {
             buffer_size: None,
             reconnect_interval_secs: None,
             max_reconnect_tries: None,
+            group_id: None,
+            discovery_scope: None,
+            discovery_port: None,
+            data_port: None,
+            devices: None,
+            ignored_devices: None,
+            frequency: None,
+            bandwidth: None,
+            spreading_factor: None,
+            coding_rate: None,
+            tx_power: None,
+        });
+        self
+    }
+
+    /// Add an AutoInterface with default configuration
+    ///
+    /// Zero-configuration LAN discovery via IPv6 multicast.
+    /// Peers are discovered automatically on the local network.
+    pub fn add_auto_interface(self) -> Self {
+        self.add_auto_interface_with_config(
+            crate::interfaces::auto_interface::AutoInterfaceConfig::default(),
+        )
+    }
+
+    /// Add an AutoInterface with custom configuration
+    pub(crate) fn add_auto_interface_with_config(
+        mut self,
+        config: crate::interfaces::auto_interface::AutoInterfaceConfig,
+    ) -> Self {
+        self.interfaces.push(InterfaceConfig {
+            interface_type: "AutoInterface".to_string(),
+            enabled: true,
+            outgoing: true,
+            bitrate: DEFAULT_BITRATE_BPS,
+            listen_ip: None,
+            listen_port: None,
+            target_host: None,
+            target_port: None,
+            forward_ip: None,
+            forward_port: None,
+            port: None,
+            speed: None,
+            databits: None,
+            parity: None,
+            stopbits: None,
+            buffer_size: None,
+            reconnect_interval_secs: None,
+            max_reconnect_tries: None,
+            group_id: Some(String::from_utf8_lossy(&config.group_id).to_string()),
+            discovery_scope: Some(config.discovery_scope),
+            discovery_port: Some(config.discovery_port),
+            data_port: Some(config.data_port),
+            devices: config.allowed_devices,
+            ignored_devices: config.ignored_devices,
             frequency: None,
             bandwidth: None,
             spreading_factor: None,

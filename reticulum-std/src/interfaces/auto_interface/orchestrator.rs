@@ -39,8 +39,6 @@ struct PeerInfo {
     last_heard: Instant,
     /// Last time we sent a reverse peering token to this peer
     last_reverse_peering: Instant,
-    /// Interface ID registered in the event loop
-    iface_id: InterfaceId,
     /// Channel to push incoming data to the event loop.
     /// Dropping this triggers handle_interface_down cascade.
     incoming_tx: mpsc::Sender<IncomingPacket>,
@@ -57,7 +55,7 @@ struct NicState {
 /// Spawn the AutoInterface orchestrator as a background tokio task.
 ///
 /// The orchestrator enumerates NICs, binds sockets, and runs the discovery
-/// + data forwarding loop. Discovered peers are registered as individual
+/// and data forwarding loop. Discovered peers are registered as individual
 /// interfaces via `new_iface_tx`.
 pub(crate) fn spawn_auto_interface(
     next_id: Arc<AtomicUsize>,
@@ -483,7 +481,6 @@ async fn handle_discovery_token(
             scope_id: nic.index,
             last_heard: now,
             last_reverse_peering: now,
-            iface_id: id,
             incoming_tx,
         },
     );
@@ -535,7 +532,6 @@ mod tests {
             scope_id: 2,
             last_heard: Instant::now(),
             last_reverse_peering: Instant::now(),
-            iface_id: InterfaceId(0),
             incoming_tx: tx,
         };
     }

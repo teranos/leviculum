@@ -106,6 +106,20 @@ pub struct InterfaceConfig {
     /// Maximum reconnect attempts before giving up (default: None = unlimited)
     pub max_reconnect_tries: Option<u64>,
 
+    // AutoInterface specific
+    /// Group identifier for multicast discovery
+    pub group_id: Option<String>,
+    /// Multicast discovery scope (link, admin, site, organisation, global)
+    pub discovery_scope: Option<String>,
+    /// Discovery port (default: 29716)
+    pub discovery_port: Option<u16>,
+    /// Data port (default: 42671)
+    pub data_port: Option<u16>,
+    /// Comma-separated whitelist of NIC names
+    pub devices: Option<String>,
+    /// Comma-separated blacklist of NIC names
+    pub ignored_devices: Option<String>,
+
     // RNode specific
     /// LoRa frequency in Hz
     pub frequency: Option<u64>,

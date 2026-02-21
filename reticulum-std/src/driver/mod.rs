@@ -74,6 +74,8 @@ use reticulum_core::{Destination, DestinationHash};
 use crate::clock::SystemClock;
 use crate::config::InterfaceConfig;
 use crate::error::Error;
+use crate::interfaces::auto_interface::orchestrator::spawn_auto_interface;
+use crate::interfaces::auto_interface::AutoInterfaceConfig;
 use crate::interfaces::tcp::{
     spawn_tcp_client_with_reconnect, spawn_tcp_server, TCP_DEFAULT_BUFFER_SIZE,
 };
@@ -335,6 +337,32 @@ impl ReticulumNode {
                         forward_addr
                     );
                     registry.register(handle);
+                }
+                "AutoInterface" => {
+                    let auto_config = AutoInterfaceConfig {
+                        group_id: config
+                            .group_id
+                            .as_deref()
+                            .map(|s| s.as_bytes().to_vec())
+                            .unwrap_or_else(|| {
+                                crate::interfaces::auto_interface::DEFAULT_GROUP_ID.to_vec()
+                            }),
+                        discovery_port: config
+                            .discovery_port
+                            .unwrap_or(crate::interfaces::auto_interface::DEFAULT_DISCOVERY_PORT),
+                        data_port: config
+                            .data_port
+                            .unwrap_or(crate::interfaces::auto_interface::DEFAULT_DATA_PORT),
+                        discovery_scope: config
+                            .discovery_scope
+                            .clone()
+                            .unwrap_or_else(|| "link".to_string()),
+                        allowed_devices: config.devices.clone(),
+                        ignored_devices: config.ignored_devices.clone(),
+                        multicast_loopback: false,
+                    };
+                    spawn_auto_interface(next_id.clone(), new_iface_tx.clone(), auto_config);
+                    tracing::info!("AutoInterface spawned");
                 }
                 other => {
                     tracing::warn!("Unknown interface type: {}", other);

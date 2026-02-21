@@ -60,6 +60,12 @@ pub(crate) fn parse_ini(content: &str) -> Result<Config, String> {
                     buffer_size: None,
                     reconnect_interval_secs: None,
                     max_reconnect_tries: None,
+                    group_id: None,
+                    discovery_scope: None,
+                    discovery_port: None,
+                    data_port: None,
+                    devices: None,
+                    ignored_devices: None,
                     frequency: None,
                     bandwidth: None,
                     spreading_factor: None,
@@ -109,7 +115,7 @@ pub(crate) fn parse_ini(content: &str) -> Result<Config, String> {
     let supported: HashMap<String, InterfaceConfig> = interfaces
         .into_iter()
         .filter(|(name, iface)| match iface.interface_type.as_str() {
-            "TCPServerInterface" | "TCPClientInterface" | "UDPInterface" => true,
+            "TCPServerInterface" | "TCPClientInterface" | "UDPInterface" | "AutoInterface" => true,
             other => {
                 tracing::info!(
                     "Skipping unsupported interface type '{}' for '{}'",
@@ -171,6 +177,13 @@ fn apply_interface_key(iface: &mut InterfaceConfig, key: &str, value: &str) {
         "spreadingfactor" | "spreading_factor" => iface.spreading_factor = value.parse().ok(),
         "codingrate" | "coding_rate" => iface.coding_rate = value.parse().ok(),
         "txpower" | "tx_power" => iface.tx_power = value.parse().ok(),
+        // AutoInterface specific
+        "group_id" => iface.group_id = Some(value.to_string()),
+        "discovery_scope" => iface.discovery_scope = Some(value.to_string()),
+        "discovery_port" => iface.discovery_port = value.parse().ok(),
+        "data_port" => iface.data_port = value.parse().ok(),
+        "devices" => iface.devices = Some(value.to_string()),
+        "ignored_devices" => iface.ignored_devices = Some(value.to_string()),
         _ => {} // Ignore unknown keys (id_callsign, id_interval, modulation, etc.)
     }
 }
@@ -268,9 +281,61 @@ mod tests {
         )
         .unwrap();
 
-        // AutoInterface and RNodeInterface should be skipped
-        assert_eq!(config.interfaces.len(), 1);
+        // RNodeInterface should be skipped; AutoInterface is now supported
+        assert_eq!(config.interfaces.len(), 2);
         assert!(config.interfaces.contains_key("TCP Server"));
+        assert!(config.interfaces.contains_key("Auto"));
+    }
+
+    #[test]
+    fn test_parse_auto_interface_all_params() {
+        let config = parse_ini(
+            r#"
+[interfaces]
+  [[Auto Interface]]
+    type = AutoInterface
+    enabled = yes
+    group_id = my_network
+    discovery_scope = site
+    discovery_port = 30000
+    data_port = 40000
+    devices = eth0, wlan0
+    ignored_devices = docker0
+"#,
+        )
+        .unwrap();
+
+        let auto = config.interfaces.get("Auto Interface").expect("auto iface");
+        assert_eq!(auto.interface_type, "AutoInterface");
+        assert!(auto.enabled);
+        assert_eq!(auto.group_id, Some("my_network".to_string()));
+        assert_eq!(auto.discovery_scope, Some("site".to_string()));
+        assert_eq!(auto.discovery_port, Some(30000));
+        assert_eq!(auto.data_port, Some(40000));
+        assert_eq!(auto.devices, Some("eth0, wlan0".to_string()));
+        assert_eq!(auto.ignored_devices, Some("docker0".to_string()));
+    }
+
+    #[test]
+    fn test_parse_auto_interface_defaults() {
+        let config = parse_ini(
+            r#"
+[interfaces]
+  [[Auto]]
+    type = AutoInterface
+"#,
+        )
+        .unwrap();
+
+        let auto = config.interfaces.get("Auto").expect("auto iface");
+        assert_eq!(auto.interface_type, "AutoInterface");
+        assert!(auto.enabled); // default
+        assert_eq!(auto.group_id, None);
+        assert_eq!(auto.discovery_scope, None);
+        assert_eq!(auto.discovery_port, None);
+        assert_eq!(auto.data_port, None);
+        assert_eq!(auto.devices, None);
+        assert_eq!(auto.ignored_devices, None);
     }
 
     #[test]

@@ -39,9 +39,6 @@ pub(crate) const DEDUP_TTL_SECS: f64 = 0.75;
 /// Hardware MTU for AutoInterface (matches Python `HW_MTU = 1196`)
 pub(crate) const AUTO_HW_MTU: u32 = 1196;
 
-/// Bitrate guess for AutoInterface (10 Mbit/s)
-pub(crate) const BITRATE_GUESS: u64 = 10_000_000;
-
 /// Multicast address type: "1" = temporary
 const MULTICAST_ADDRESS_TYPE: &str = "1";
 
@@ -203,8 +200,7 @@ fn name_to_index(name: &str) -> u32 {
     };
     // SAFETY: if_nametoindex is a standard POSIX function that takes a
     // null-terminated string and returns the interface index (or 0 on error).
-    let idx = unsafe { libc::if_nametoindex(c_name.as_ptr()) };
-    idx
+    unsafe { libc::if_nametoindex(c_name.as_ptr()) }
 }
 
 // ─── Multicast address derivation ────────────────────────────────────────────
