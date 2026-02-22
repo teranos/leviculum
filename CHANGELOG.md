@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- **SIGUSR1 diagnostic dump** — sending SIGUSR1 to `lrnsd` now prints a memory diagnostic summary to stderr, covering all protocol collections (storage, transport), estimated per-collection overhead, and process RSS.
+
+### Fixed
+- **AutoInterface failed to find network interfaces** — the `if-addrs` crate drops IPv6 link-local (fe80::) addresses by default; AutoInterface relies entirely on these for peer discovery. Enabled the `link-local` feature flag. Also added debug/trace logging to `enumerate_nics()` for future troubleshooting.
+
 ### Changed
 - **FileStorage packet_cache switched from BTreeSet to HashSet** — ~1.5x overhead per entry instead of ~3x. For 100k entries of 32-byte hashes, this saves ~4.8 MB. Cap lowered from 1M to 100k (real-world usage peaks around 100-200k). Oversized hashlists loaded from disk converge naturally through rotation.
 - **Default identity cap lowered from 5M to 50k** — prevents theoretical runaway growth (5M × 144B × 3x = 2 TB). Real-world networks have <15k identities. 50k is generous.

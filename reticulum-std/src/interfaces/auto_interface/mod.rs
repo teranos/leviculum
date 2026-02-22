@@ -132,22 +132,36 @@ pub fn enumerate_nics(config: &AutoInterfaceConfig) -> Vec<AdoptedNic> {
     let mut adopted = Vec::new();
     let mut seen_names = std::collections::HashSet::new();
 
+    tracing::debug!("AutoInterface: if_addrs returned {} entries", ifaces.len());
+
     for iface in &ifaces {
+        tracing::trace!(
+            "AutoInterface: evaluating iface '{}' addr={} loopback={}",
+            iface.name,
+            iface.addr.ip(),
+            iface.is_loopback()
+        );
+
         // Skip loopback
         if iface.is_loopback() {
+            tracing::trace!("AutoInterface: '{}' skipped (loopback)", iface.name);
             continue;
         }
 
         // Only IPv6 link-local (fe80::)
         let addr = match iface.addr.ip() {
             std::net::IpAddr::V6(v6) if is_link_local_v6(&v6) => v6,
-            _ => continue,
+            other => {
+                tracing::trace!("AutoInterface: '{}' skipped (not link-local v6: {})", iface.name, other);
+                continue;
+            }
         };
 
         let name = &iface.name;
 
         // Skip default-ignored virtual interfaces
         if default_ignored_prefixes.iter().any(|p| name.starts_with(p)) {
+            tracing::trace!("AutoInterface: '{}' skipped (default-ignored prefix)", name);
             continue;
         }
 
