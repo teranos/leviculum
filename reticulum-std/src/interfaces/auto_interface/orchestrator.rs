@@ -445,7 +445,7 @@ async fn run_auto_interface(
                 for (nic_name, state) in &mut nic_states {
                     let echo_timed_out = match state.last_echo {
                         Some(last) => now.duration_since(last) > echo_timeout,
-                        None => true, // Never received an echo
+                        None => continue, // No echo yet — normal at startup
                     };
 
                     if echo_timed_out && !state.timed_out {
