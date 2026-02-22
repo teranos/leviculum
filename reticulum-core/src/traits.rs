@@ -35,6 +35,7 @@
 
 extern crate alloc;
 
+use alloc::string::String;
 use alloc::vec::Vec;
 
 use crate::constants::TRUNCATED_HASHBYTES;
@@ -334,7 +335,8 @@ pub trait Storage {
         link_timeout_ms: u64,
     ) -> Vec<([u8; TRUNCATED_HASHBYTES], LinkEntry)>;
 
-    /// Remove path_states and announce_rate entries for destinations no longer in path_table
+    /// Remove path_states, announce_rate, and announce_cache entries for destinations
+    /// no longer in path_table
     fn clean_stale_path_metadata(&mut self);
 
     /// Remove link table entries that reference a specific interface (for interface-down cleanup)
@@ -375,6 +377,15 @@ pub trait Storage {
     /// List all ratchet keys
     fn list_ratchet_keys(&self) -> Vec<Vec<u8>> {
         self.list_keys("ratchets")
+    }
+
+    // ─── Diagnostics ─────────────────────────────────────────────────────────
+
+    /// Return a diagnostic dump of storage collection sizes and estimated byte usage.
+    ///
+    /// Returns (formatted_text, total_estimated_bytes). Default returns empty.
+    fn diagnostic_dump(&self) -> (String, u64) {
+        (String::new(), 0)
     }
 
     // ─── Legacy Generic API (kept for ratchet compatibility) ────────────────

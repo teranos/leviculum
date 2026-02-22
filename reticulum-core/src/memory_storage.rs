@@ -9,6 +9,7 @@ extern crate alloc;
 use alloc::collections::BTreeMap;
 use alloc::collections::BTreeSet;
 use alloc::collections::VecDeque;
+use alloc::string::String;
 use alloc::vec::Vec;
 
 use crate::constants::{HASHLIST_MAXSIZE, MAX_PATH_REQUEST_TAGS, TRUNCATED_HASHBYTES};
@@ -19,8 +20,9 @@ use crate::storage_types::{
 };
 use crate::traits::{Storage, StorageError};
 
-/// Default identity capacity for desktop/Linux (generous).
-const DEFAULT_IDENTITY_CAP: usize = 5_000_000;
+/// Default identity capacity for desktop/Linux.
+/// 50k identities at ~144 bytes × 3x BTreeMap overhead = ~21 MB max.
+const DEFAULT_IDENTITY_CAP: usize = 50_000;
 
 /// Compact packet hash capacity for constrained devices.
 const COMPACT_PACKET_HASH_CAP: usize = 10_000;
@@ -177,6 +179,212 @@ impl MemoryStorage {
     fn rotate_packet_cache(&mut self) {
         core::mem::swap(&mut self.packet_cache, &mut self.packet_cache_prev);
         self.packet_cache.clear();
+    }
+
+    /// Diagnostic dump for packet_cache and packet_cache_prev only.
+    ///
+    /// Returns (formatted_text, estimated_bytes). FileStorage overrides packet_cache
+    /// with its own HashSet and calls only `diagnostic_dump_non_packet_cache()`.
+    pub fn diagnostic_dump_packet_cache(&self) -> (String, u64) {
+        use core::fmt::Write;
+        let mut s = String::new();
+        let mut total = 0u64;
+
+        // packet_cache: BTreeSet<[u8; 32]> — 3x overhead
+        let n = self.packet_cache.len();
+        let raw = (n * 32) as u64;
+        let est = raw * 3;
+        total += est;
+        let _ = writeln!(
+            s,
+            "packet_cache: {} entries, raw {} bytes, estimated {} bytes (BTreeSet 3x)",
+            n, raw, est
+        );
+
+        // packet_cache_prev: BTreeSet<[u8; 32]> — 3x
+        let n = self.packet_cache_prev.len();
+        let raw = (n * 32) as u64;
+        let est = raw * 3;
+        total += est;
+        let _ = writeln!(
+            s,
+            "packet_cache_prev: {} entries, raw {} bytes, estimated {} bytes (BTreeSet 3x)",
+            n, raw, est
+        );
+
+        (s, total)
+    }
+
+    /// Diagnostic dump for all collections except packet_cache/packet_cache_prev.
+    ///
+    /// Used by FileStorage which manages its own packet_cache HashSets.
+    pub fn diagnostic_dump_non_packet_cache(&self) -> (String, u64) {
+        use core::fmt::Write;
+        let mut s = String::new();
+        let mut total = 0u64;
+
+        // path_table: BTreeMap<[u8; 16], PathEntry> — 3x
+        let n = self.path_table.len();
+        let mut raw = 0u64;
+        for entry in self.path_table.values() {
+            raw += (TRUNCATED_HASHBYTES + 33 + entry.random_blobs.len() * 10) as u64;
+        }
+        let est = raw * 3;
+        total += est;
+        let _ = writeln!(
+            s,
+            "path_table: {} entries, raw {} bytes, estimated {} bytes (BTreeMap 3x)",
+            n, raw, est
+        );
+
+        // path_states: BTreeMap<[u8; 16], PathState> — 3x
+        let n = self.path_states.len();
+        let raw = (n * (TRUNCATED_HASHBYTES + 1)) as u64;
+        let est = raw * 3;
+        total += est;
+        let _ = writeln!(
+            s,
+            "path_states: {} entries, raw {} bytes, estimated {} bytes (BTreeMap 3x)",
+            n, raw, est
+        );
+
+        // reverse_table: BTreeMap<[u8; 16], ReverseEntry> — 3x
+        let n = self.reverse_table.len();
+        let raw = (n * (TRUNCATED_HASHBYTES + 24)) as u64;
+        let est = raw * 3;
+        total += est;
+        let _ = writeln!(
+            s,
+            "reverse_table: {} entries, raw {} bytes, estimated {} bytes (BTreeMap 3x)",
+            n, raw, est
+        );
+
+        // link_table: BTreeMap<[u8; 16], LinkEntry> — 3x
+        let n = self.link_table.len();
+        let mut raw = 0u64;
+        for entry in self.link_table.values() {
+            raw += (TRUNCATED_HASHBYTES + 51) as u64;
+            if entry.peer_signing_key.is_some() {
+                raw += 32;
+            }
+        }
+        let est = raw * 3;
+        total += est;
+        let _ = writeln!(
+            s,
+            "link_table: {} entries, raw {} bytes, estimated {} bytes (BTreeMap 3x)",
+            n, raw, est
+        );
+
+        // announce_table: BTreeMap<[u8; 16], AnnounceEntry> — 3x
+        let n = self.announce_table.len();
+        let mut raw = 0u64;
+        for entry in self.announce_table.values() {
+            raw += (TRUNCATED_HASHBYTES + 28 + entry.raw_packet.len()) as u64;
+        }
+        let est = raw * 3;
+        total += est;
+        let _ = writeln!(
+            s,
+            "announce_table: {} entries, raw {} bytes, estimated {} bytes (BTreeMap 3x)",
+            n, raw, est
+        );
+
+        // announce_cache: BTreeMap<[u8; 16], Vec<u8>> — 3x
+        let n = self.announce_cache.len();
+        let mut raw = 0u64;
+        for v in self.announce_cache.values() {
+            raw += (TRUNCATED_HASHBYTES + v.len()) as u64;
+        }
+        let est = raw * 3;
+        total += est;
+        let _ = writeln!(
+            s,
+            "announce_cache: {} entries, raw {} bytes, estimated {} bytes (BTreeMap 3x)",
+            n, raw, est
+        );
+
+        // announce_rate_table: BTreeMap<[u8; 16], AnnounceRateEntry> — 3x
+        let n = self.announce_rate_table.len();
+        let raw = (n * (TRUNCATED_HASHBYTES + 17)) as u64;
+        let est = raw * 3;
+        total += est;
+        let _ = writeln!(
+            s,
+            "announce_rate_table: {} entries, raw {} bytes, estimated {} bytes (BTreeMap 3x)",
+            n, raw, est
+        );
+
+        // receipts: BTreeMap<[u8; 16], PacketReceipt> — 3x
+        let n = self.receipts.len();
+        let raw = (n * (TRUNCATED_HASHBYTES + 81)) as u64;
+        let est = raw * 3;
+        total += est;
+        let _ = writeln!(
+            s,
+            "receipts: {} entries, raw {} bytes, estimated {} bytes (BTreeMap 3x)",
+            n, raw, est
+        );
+
+        // path_requests: BTreeMap<[u8; 16], u64> — 3x
+        let n = self.path_requests.len();
+        let raw = (n * (TRUNCATED_HASHBYTES + 8)) as u64;
+        let est = raw * 3;
+        total += est;
+        let _ = writeln!(
+            s,
+            "path_requests: {} entries, raw {} bytes, estimated {} bytes (BTreeMap 3x)",
+            n, raw, est
+        );
+
+        // path_request_tags: VecDeque<[u8; 32]> — 1x
+        let n = self.path_request_tags.len();
+        let raw = (n * 32) as u64;
+        let est = raw;
+        total += est;
+        let _ = writeln!(
+            s,
+            "path_request_tags: {} entries, raw {} bytes, estimated {} bytes (VecDeque 1x)",
+            n, raw, est
+        );
+
+        // path_request_tag_set: BTreeSet<[u8; 32]> — 3x
+        let n = self.path_request_tag_set.len();
+        let raw = (n * 32) as u64;
+        let est = raw * 3;
+        total += est;
+        let _ = writeln!(
+            s,
+            "path_request_tag_set: {} entries, raw {} bytes, estimated {} bytes (BTreeSet 3x)",
+            n, raw, est
+        );
+
+        // known_identities: BTreeMap<[u8; 16], Identity> — 3x
+        let n = self.known_identities.len();
+        let raw = (n * (TRUNCATED_HASHBYTES + 128)) as u64;
+        let est = raw * 3;
+        total += est;
+        let _ = writeln!(
+            s,
+            "known_identities: {} entries, raw {} bytes, estimated {} bytes (BTreeMap 3x)",
+            n, raw, est
+        );
+
+        // generic: BTreeMap<(Vec<u8>, Vec<u8>), Vec<u8>> — 3x
+        let n = self.generic.len();
+        let mut raw = 0u64;
+        for (k, v) in &self.generic {
+            raw += (k.0.len() + k.1.len() + v.len()) as u64;
+        }
+        let est = raw * 3;
+        total += est;
+        let _ = writeln!(
+            s,
+            "generic: {} entries, raw {} bytes, estimated {} bytes (BTreeMap 3x)",
+            n, raw, est
+        );
+
+        (s, total)
     }
 }
 
@@ -439,6 +647,8 @@ impl Storage for MemoryStorage {
             .retain(|hash, _| self.path_table.contains_key(hash));
         self.announce_rate_table
             .retain(|hash, _| self.path_table.contains_key(hash));
+        self.announce_cache
+            .retain(|hash, _| self.path_table.contains_key(hash));
     }
 
     fn remove_link_entries_for_interface(
@@ -495,6 +705,16 @@ impl Storage for MemoryStorage {
             .min()
     }
 
+    // ─── Diagnostics ──────────────────────────────────────────────────────
+
+    fn diagnostic_dump(&self) -> (String, u64) {
+        let (mut s, mut total) = self.diagnostic_dump_packet_cache();
+        let (s2, total2) = self.diagnostic_dump_non_packet_cache();
+        s.push_str(&s2);
+        total += total2;
+        (s, total)
+    }
+
     // ─── Legacy Generic API (for ratchets) ──────────────────────────────
 
     fn load(&self, category: &str, key: &[u8]) -> Option<Vec<u8>> {
@@ -527,6 +747,7 @@ impl Storage for MemoryStorage {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use alloc::vec;
     use crate::destination::DestinationHash;
 
     #[test]
@@ -752,10 +973,21 @@ mod tests {
             },
         ); // stale
 
+        // announce_cache: h1 has path (kept), h2 has no path (stale)
+        s.set_announce_cache(h1, vec![0xAA; 20]);
+        s.set_announce_cache(h2, vec![0xBB; 20]);
+
         s.clean_stale_path_metadata();
         assert!(s.get_path_state(&h1).is_some());
         assert!(s.get_path_state(&h2).is_none());
         assert!(s.get_announce_rate(&h2).is_none());
+        assert!(s.get_announce_cache(&h1).is_some());
+        assert!(s.get_announce_cache(&h2).is_none());
+    }
+
+    #[test]
+    fn test_default_identity_cap() {
+        assert_eq!(DEFAULT_IDENTITY_CAP, 50_000);
     }
 
     // ─── D1: Announce table operations ────────────────────────────────
@@ -998,5 +1230,38 @@ mod tests {
         // Overwrite
         s.set_path_request_time(h1, 99000);
         assert_eq!(s.get_path_request_time(&h1), Some(99000));
+    }
+
+    #[test]
+    fn test_diagnostic_dump_empty() {
+        let s = MemoryStorage::with_defaults();
+        let (dump, total) = s.diagnostic_dump();
+        assert!(dump.contains("packet_cache: 0 entries"));
+        assert!(dump.contains("known_identities: 0 entries"));
+        assert!(dump.contains("generic: 0 entries"));
+        assert_eq!(total, 0);
+    }
+
+    #[test]
+    fn test_diagnostic_dump_with_data() {
+        let mut s = MemoryStorage::with_defaults();
+        // Add some packet hashes
+        s.add_packet_hash([0x01; 32]);
+        s.add_packet_hash([0x02; 32]);
+        // Add a path
+        s.set_path(
+            [0xAA; TRUNCATED_HASHBYTES],
+            PathEntry {
+                hops: 1,
+                expires_ms: u64::MAX,
+                interface_index: 0,
+                random_blobs: Vec::new(),
+                next_hop: None,
+            },
+        );
+        let (dump, total) = s.diagnostic_dump();
+        assert!(dump.contains("packet_cache: 2 entries"));
+        assert!(dump.contains("path_table: 1 entries"));
+        assert!(total > 0);
     }
 }

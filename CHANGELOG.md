@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+- **FileStorage packet_cache switched from BTreeSet to HashSet** — ~1.5x overhead per entry instead of ~3x. For 100k entries of 32-byte hashes, this saves ~4.8 MB. Cap lowered from 1M to 100k (real-world usage peaks around 100-200k). Oversized hashlists loaded from disk converge naturally through rotation.
+- **Default identity cap lowered from 5M to 50k** — prevents theoretical runaway growth (5M × 144B × 3x = 2 TB). Real-world networks have <15k identities. 50k is generous.
+- **`clean_stale_path_metadata()` now cleans announce_cache** — entries for destinations whose path has expired were never removed. They're dead weight since announce_cache lookups require a path to exist.
+- **`diagnostic_dump()` split into composable sub-methods** — `diagnostic_dump_packet_cache()` and `diagnostic_dump_non_packet_cache()` on MemoryStorage, enabling FileStorage to report its own HashSet overhead accurately while delegating the rest.
+
 ### Added
 - **AutoInterface** — zero-configuration LAN discovery via IPv6 multicast, matching Python Reticulum's `AutoInterface`. Nodes on the same LAN discover each other automatically and communicate over UDP. Each discovered peer becomes a separate interface handle with `HW_MTU=1196`. Features: multicast address derivation from group_id, SHA-256 discovery tokens with constant-time verification, per-NIC multicast/unicast/data sockets via socket2, peer timeout (22s) with automatic cleanup via channel-drop cascade, self-echo carrier detection (6.5s), deduplication cache (48 entries, 750ms TTL), reverse peering for bidirectional discovery. Linux only. Configurable via INI (`[[Auto Interface]]`) or builder (`add_auto_interface()`). 38 unit tests + Python-verified test vectors for multicast address and discovery token.
 

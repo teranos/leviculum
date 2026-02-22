@@ -10,7 +10,7 @@
 //! lost on process exit. Persistent data is written by [`Storage::flush()`]
 //! (called at shutdown from the driver).
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -38,15 +38,26 @@ use crate::packet_hashlist::{
 ///
 /// The legacy generic API (`load/store/delete/list_keys`) provides raw
 /// file-based key-value storage for ratchets.
+/// Default packet hash capacity for FileStorage (100k entries).
+/// Two-generation rotation: each generation holds up to cap/2 entries.
+/// At 32 bytes/entry × 1.5x HashSet overhead ≈ 4.8 MB max.
+const FILE_STORAGE_PACKET_HASH_CAP: usize = 100_000;
+
 pub(crate) struct Storage {
     /// Base directory for all storage
     base_path: PathBuf,
-    /// In-memory storage for all runtime collections
+    /// In-memory storage for all runtime collections (except packet_cache)
     inner: MemoryStorage,
     /// Python-compat persistence format for known_destinations.
     /// Loaded from disk at construction, merged with runtime identities
     /// and saved to disk by flush().
     known_dest_entries: BTreeMap<[u8; TRUNCATED_HASHBYTES], KnownDestEntry>,
+    /// Current generation of packet hashes (HashSet for lower overhead than BTreeSet)
+    packet_cache: HashSet<[u8; 32]>,
+    /// Previous generation (rotated out when current exceeds half cap)
+    packet_cache_prev: HashSet<[u8; 32]>,
+    /// Maximum total entries across both generations
+    packet_hash_cap: usize,
     /// True when add_packet_hash() has been called since last flush.
     packet_hashes_dirty: bool,
     /// True when set_identity() has been called since last flush.
@@ -92,28 +103,33 @@ impl Storage {
             }
         }
 
-        // Load packet_hashlist from disk
-        match std::fs::read(base_path.join(PACKET_HASHLIST_FILE)) {
+        // Load packet_hashlist from disk into own HashSet (not inner MemoryStorage).
+        // All hashes load into packet_cache regardless of cap — the cap is only
+        // enforced in add_packet_hash(), so an oversized list converges naturally.
+        let packet_cache = match std::fs::read(base_path.join(PACKET_HASHLIST_FILE)) {
             Ok(bytes) => match decode_packet_hashlist(&bytes) {
                 Ok(hashes) => {
                     tracing::info!("Loaded {} packet hashes from storage", hashes.len());
-                    for hash in hashes {
-                        CoreStorage::add_packet_hash(&mut inner, hash);
-                    }
+                    hashes.into_iter().collect()
                 }
                 Err(e) => {
                     tracing::warn!("Failed to decode packet_hashlist: {e}");
+                    HashSet::new()
                 }
             },
             Err(_) => {
                 tracing::debug!("No packet_hashlist file found");
+                HashSet::new()
             }
-        }
+        };
 
         Ok(Self {
             base_path,
             inner,
             known_dest_entries,
+            packet_cache,
+            packet_cache_prev: HashSet::new(),
+            packet_hash_cap: FILE_STORAGE_PACKET_HASH_CAP,
             packet_hashes_dirty: false,
             identities_dirty: false,
         })
@@ -265,12 +281,16 @@ fn hex_decode(s: &str) -> Option<Vec<u8>> {
 // for ratchet compatibility.
 
 impl reticulum_core::traits::Storage for Storage {
-    // ─── Packet Dedup ────────────────────────────────────────────────────
+    // ─── Packet Dedup (own HashSet, not inner MemoryStorage) ─────────────
     fn has_packet_hash(&self, hash: &[u8; 32]) -> bool {
-        self.inner.has_packet_hash(hash)
+        self.packet_cache.contains(hash) || self.packet_cache_prev.contains(hash)
     }
     fn add_packet_hash(&mut self, hash: [u8; 32]) {
-        self.inner.add_packet_hash(hash);
+        self.packet_cache.insert(hash);
+        if self.packet_cache.len() > self.packet_hash_cap / 2 {
+            std::mem::swap(&mut self.packet_cache, &mut self.packet_cache_prev);
+            self.packet_cache.clear();
+        }
         self.packet_hashes_dirty = true;
     }
 
@@ -576,7 +596,11 @@ impl reticulum_core::traits::Storage for Storage {
 
         // 2. Write packet_hashlist (only if hashes changed)
         if self.packet_hashes_dirty {
-            match encode_packet_hashlist(self.inner.packet_hash_iter()) {
+            match encode_packet_hashlist(
+                self.packet_cache
+                    .iter()
+                    .chain(self.packet_cache_prev.iter()),
+            ) {
                 Ok((encoded, count)) => {
                     if let Err(e) = self.write_root(PACKET_HASHLIST_FILE, &encoded) {
                         tracing::error!("Failed to save packet_hashlist: {e}");
@@ -590,6 +614,42 @@ impl reticulum_core::traits::Storage for Storage {
                 }
             }
         }
+    }
+
+    // ─── Diagnostics ──────────────────────────────────────────────────────
+    fn diagnostic_dump(&self) -> (String, u64) {
+        use std::fmt::Write;
+        let mut s = String::new();
+        let mut total = 0u64;
+
+        // packet_cache: HashSet<[u8; 32]> — 1.5x overhead
+        let n = self.packet_cache.len();
+        let raw = (n * 32) as u64;
+        let est = raw * 3 / 2;
+        total += est;
+        let _ = writeln!(
+            s,
+            "packet_cache: {} entries, raw {} bytes, estimated {} bytes (HashSet 1.5x)",
+            n, raw, est
+        );
+
+        // packet_cache_prev: HashSet<[u8; 32]> — 1.5x
+        let n = self.packet_cache_prev.len();
+        let raw = (n * 32) as u64;
+        let est = raw * 3 / 2;
+        total += est;
+        let _ = writeln!(
+            s,
+            "packet_cache_prev: {} entries, raw {} bytes, estimated {} bytes (HashSet 1.5x)",
+            n, raw, est
+        );
+
+        // Delegate remaining collections to inner MemoryStorage
+        let (s2, total2) = self.inner.diagnostic_dump_non_packet_cache();
+        s.push_str(&s2);
+        total += total2;
+
+        (s, total)
     }
 
     // ─── Legacy Generic API (for ratchets — always file-based) ───────────
@@ -960,5 +1020,125 @@ mod tests {
         }
 
         let _ = std::fs::remove_dir_all(&path);
+    }
+
+    #[test]
+    fn test_hashset_packet_cache_has_add() {
+        use reticulum_core::traits::Storage as CoreStorage;
+
+        let mut storage = temp_storage();
+        let hash = [0x42u8; 32];
+
+        assert!(!CoreStorage::has_packet_hash(&storage, &hash));
+        CoreStorage::add_packet_hash(&mut storage, hash);
+        assert!(CoreStorage::has_packet_hash(&storage, &hash));
+
+        // Inner MemoryStorage's packet_cache should stay empty
+        assert_eq!(storage.inner.packet_hash_count(), 0);
+    }
+
+    #[test]
+    fn test_hashset_packet_cache_rotation() {
+        use reticulum_core::traits::Storage as CoreStorage;
+
+        let path = temp_dir().join(format!("reticulum_test_rotation_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&path);
+
+        let mut storage = Storage::new(&path).unwrap();
+        // Override cap to a small value for testing
+        storage.packet_hash_cap = 10;
+
+        // Add 6 hashes (exceeds half of 10 = 5), triggers rotation
+        for i in 0..6u8 {
+            let mut hash = [0u8; 32];
+            hash[0] = i;
+            CoreStorage::add_packet_hash(&mut storage, hash);
+        }
+
+        // All 6 should still be findable (5 in prev, 1 in current after rotation)
+        for i in 0..6u8 {
+            let mut hash = [0u8; 32];
+            hash[0] = i;
+            assert!(
+                CoreStorage::has_packet_hash(&storage, &hash),
+                "hash {i} should be found after rotation"
+            );
+        }
+
+        // Current should have 1 entry (the 6th hash, after rotation cleared current)
+        // Wait — 6th hash triggers rotation, then gets inserted? No:
+        // add_packet_hash inserts first, then checks. So after inserting 6th:
+        // current has 6, exceeds 5, rotation happens: current(6) -> prev, current cleared.
+        // So current=0, prev=6. The 6th hash is in prev.
+        assert_eq!(storage.packet_cache.len(), 0);
+        assert_eq!(storage.packet_cache_prev.len(), 6);
+
+        let _ = std::fs::remove_dir_all(&path);
+    }
+
+    #[test]
+    fn test_hashset_packet_cache_persistence() {
+        use reticulum_core::traits::Storage as CoreStorage;
+
+        let path = temp_dir().join(format!(
+            "reticulum_test_hash_persist_{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&path);
+
+        let hash_a = [0xAA; 32];
+        let hash_b = [0xBB; 32];
+
+        // Create, add hashes to both generations, flush
+        {
+            let mut storage = Storage::new(&path).unwrap();
+            storage.packet_hash_cap = 4; // cap/2 = 2
+
+            CoreStorage::add_packet_hash(&mut storage, hash_a);
+            CoreStorage::add_packet_hash(&mut storage, hash_b);
+            // After 2 inserts: current has 2, but cap/2=2, so 2 > 2 is false — no rotation yet
+            // Actually: len() > cap/2 means 2 > 2 which is false, no rotation
+            // Add a third to trigger rotation
+            let hash_c = [0xCC; 32];
+            CoreStorage::add_packet_hash(&mut storage, hash_c);
+            // Now current had 3, 3 > 2, rotation: prev=[A,B,C], current=[]
+
+            CoreStorage::flush(&mut storage);
+        }
+
+        // Re-open — all hashes should be loaded
+        {
+            let storage = Storage::new(&path).unwrap();
+            assert!(
+                CoreStorage::has_packet_hash(&storage, &hash_a),
+                "hash_a should persist"
+            );
+            assert!(
+                CoreStorage::has_packet_hash(&storage, &hash_b),
+                "hash_b should persist"
+            );
+        }
+
+        let _ = std::fs::remove_dir_all(&path);
+    }
+
+    #[test]
+    fn test_hashset_diagnostic_dump() {
+        use reticulum_core::traits::Storage as CoreStorage;
+
+        let mut storage = temp_storage();
+        CoreStorage::add_packet_hash(&mut storage, [0x01; 32]);
+        CoreStorage::add_packet_hash(&mut storage, [0x02; 32]);
+
+        let (dump, total) = CoreStorage::diagnostic_dump(&storage);
+        assert!(
+            dump.contains("HashSet 1.5x"),
+            "should report HashSet overhead"
+        );
+        assert!(
+            dump.contains("packet_cache: 2 entries"),
+            "should show 2 entries in packet_cache"
+        );
+        assert!(total > 0);
     }
 }
