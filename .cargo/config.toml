@@ -9,3 +9,6 @@ check-esp32s3 = "build -p reticulum-core --target xtensa-esp32s3-none-elf"
 
 # Build for all stock rustup targets (no espup required)
 check-embedded = "build -p reticulum-core --target thumbv7em-none-eabihf --target thumbv6m-none-eabi"
+
+[target.aarch64-unknown-linux-gnu]
+linker = "aarch64-linux-gnu-gcc"

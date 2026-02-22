@@ -34,3 +34,6 @@ Thumbs.db
 *.profraw
 *.profdata
 __pycache__/
+
+# Local deploy scripts
+scripts/deploy-*.fish

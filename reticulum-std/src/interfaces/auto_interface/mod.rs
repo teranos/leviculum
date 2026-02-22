@@ -257,13 +257,13 @@ pub(crate) fn derive_multicast_address(group_id: &[u8], scope: &str) -> io::Resu
 
 // ─── Discovery tokens ────────────────────────────────────────────────────────
 
-/// Size of the per-instance nonce prepended to discovery tokens.
+/// Size of the per-instance nonce appended to discovery tokens.
 ///
 /// Each orchestrator generates a random nonce at startup. This nonce is
-/// prepended to every outgoing discovery token so that self-echo detection
+/// appended to every outgoing discovery token so that self-echo detection
 /// works correctly when multiple nodes share the same NIC addresses
 /// (e.g. two nodes in the same process for testing).
-pub(crate) const INSTANCE_NONCE_SIZE: usize = 8;
+const NONCE_SIZE: usize = 8;
 
 /// Create a discovery token for multicast announcement.
 ///
@@ -278,53 +278,67 @@ pub(crate) fn make_discovery_token(group_id: &[u8], link_local_str: &str) -> [u8
     full_hash(&input)
 }
 
-/// Discovery packet size: nonce(8) + token(32) + data_port(2) = 42 bytes.
-pub(crate) const DISCOVERY_PACKET_SIZE: usize = INSTANCE_NONCE_SIZE + 32 + 2;
+/// Discovery packet size: token(32) + nonce(8) + data_port(2) = 42 bytes.
+/// Token first for Python compatibility (Python reads `data[:32]`).
+pub(crate) const DISCOVERY_PACKET_SIZE: usize = 32 + NONCE_SIZE + 2;
 
-/// Build a wire-format discovery packet: `[nonce(8)] + [token(32)] + [data_port(2)]`.
+/// Build a wire-format discovery packet: `[token(32)] + [nonce(8)] + [data_port(2)]`.
 ///
-/// The nonce allows receivers to distinguish self-echoes from peer tokens
-/// when multiple nodes share the same NIC addresses. The data_port tells
-/// the peer which port to send data to (needed when multicast_loopback
-/// uses ephemeral ports to avoid SO_REUSEPORT conflicts).
+/// Token comes first so that Python Reticulum (which reads `data[:32]`)
+/// gets the valid token directly. The nonce allows Rust receivers to
+/// distinguish self-echoes from peer tokens when multiple nodes share
+/// the same NIC addresses. The data_port tells Rust peers which port
+/// to send unicast data to (distinct per node for same-machine operation).
 pub(crate) fn build_discovery_packet(
-    instance_nonce: &[u8; INSTANCE_NONCE_SIZE],
     token: &[u8; 32],
+    nonce: &[u8; NONCE_SIZE],
     data_port: u16,
 ) -> [u8; DISCOVERY_PACKET_SIZE] {
     let mut pkt = [0u8; DISCOVERY_PACKET_SIZE];
-    pkt[..INSTANCE_NONCE_SIZE].copy_from_slice(instance_nonce);
-    pkt[INSTANCE_NONCE_SIZE..INSTANCE_NONCE_SIZE + 32].copy_from_slice(token);
-    pkt[INSTANCE_NONCE_SIZE + 32..].copy_from_slice(&data_port.to_be_bytes());
+    pkt[..32].copy_from_slice(token);
+    pkt[32..32 + NONCE_SIZE].copy_from_slice(nonce);
+    pkt[32 + NONCE_SIZE..].copy_from_slice(&data_port.to_be_bytes());
     pkt
 }
 
 /// Parsed discovery packet fields.
-pub(crate) struct DiscoveryPacket {
-    pub nonce: [u8; INSTANCE_NONCE_SIZE],
+///
+/// - 32-byte (Python): token only, nonce and data_port are `None`
+/// - 42-byte (Rust): token + nonce + data_port
+pub(crate) struct DiscoveryFields {
     pub token: [u8; 32],
-    pub data_port: u16,
+    pub nonce: Option<[u8; NONCE_SIZE]>,
+    pub data_port: Option<u16>,
 }
 
 /// Parse a received discovery packet.
 ///
-/// Returns the parsed fields if the packet has the expected 42-byte format,
-/// or `None` if malformed.
-pub(crate) fn parse_discovery_packet(data: &[u8]) -> Option<DiscoveryPacket> {
-    if data.len() != DISCOVERY_PACKET_SIZE {
+/// Accepts both 32-byte (Python: token only) and 42-byte (Rust: token + nonce + data_port)
+/// packets. Returns `None` if the packet is too short.
+pub(crate) fn parse_discovery_packet(data: &[u8]) -> Option<DiscoveryFields> {
+    if data.len() < 32 {
         return None;
     }
-    let mut nonce = [0u8; INSTANCE_NONCE_SIZE];
     let mut token = [0u8; 32];
-    nonce.copy_from_slice(&data[..INSTANCE_NONCE_SIZE]);
-    token.copy_from_slice(&data[INSTANCE_NONCE_SIZE..INSTANCE_NONCE_SIZE + 32]);
-    let data_port = u16::from_be_bytes([
-        data[INSTANCE_NONCE_SIZE + 32],
-        data[INSTANCE_NONCE_SIZE + 33],
-    ]);
-    Some(DiscoveryPacket {
-        nonce,
+    token.copy_from_slice(&data[..32]);
+    let nonce = if data.len() >= 32 + NONCE_SIZE {
+        let mut n = [0u8; NONCE_SIZE];
+        n.copy_from_slice(&data[32..32 + NONCE_SIZE]);
+        Some(n)
+    } else {
+        None
+    };
+    let data_port = if data.len() >= 32 + NONCE_SIZE + 2 {
+        Some(u16::from_be_bytes([
+            data[32 + NONCE_SIZE],
+            data[32 + NONCE_SIZE + 1],
+        ]))
+    } else {
+        None
+    };
+    Some(DiscoveryFields {
         token,
+        nonce,
         data_port,
     })
 }
@@ -472,49 +486,25 @@ pub(crate) fn bind_unicast_socket(nic: &AdoptedNic, port: u16) -> io::Result<Udp
 /// Bind a data receive socket on a specific NIC's link-local address.
 ///
 /// Used for receiving Reticulum packets from discovered peers.
-///
-/// When `multicast_loopback` is true, binds to port 0 (ephemeral) to avoid
-/// SO_REUSEPORT conflicts when multiple nodes run on the same machine. The
-/// actual bound port is returned alongside the socket.
-///
-/// When `multicast_loopback` is false, binds to the configured `port` with
-/// SO_REUSEPORT for normal multi-process coexistence.
-pub(crate) fn bind_data_socket(
-    nic: &AdoptedNic,
-    port: u16,
-    multicast_loopback: bool,
-) -> io::Result<(UdpSocket, u16)> {
+/// Binds to the configured `port` with SO_REUSEPORT for multi-process coexistence.
+pub(crate) fn bind_data_socket(nic: &AdoptedNic, port: u16) -> io::Result<UdpSocket> {
     let socket = Socket::new(Domain::IPV6, Type::DGRAM, Some(Protocol::UDP))?;
     socket.set_nonblocking(true)?;
+    socket.set_reuse_address(true)?;
+    #[cfg(target_os = "linux")]
+    socket.set_reuse_port(true)?;
 
-    let bind_port = if multicast_loopback {
-        // Ephemeral port: no REUSEPORT needed, each node gets a unique port
-        0
-    } else {
-        // Production: use configured port with REUSEPORT for coexistence
-        socket.set_reuse_address(true)?;
-        #[cfg(target_os = "linux")]
-        socket.set_reuse_port(true)?;
-        port
-    };
-
-    let bind_addr = SocketAddrV6::new(nic.link_local, bind_port, 0, nic.index);
+    let bind_addr = SocketAddrV6::new(nic.link_local, port, 0, nic.index);
     socket.bind(&SockAddr::from(bind_addr))?;
 
-    // Get the actual bound port (may differ from bind_port if ephemeral)
-    let actual_port = match socket.local_addr()?.as_socket_ipv6() {
-        Some(v6) => v6.port(),
-        None => port,
-    };
-
-    Ok((UdpSocket::from_std(socket.into())?, actual_port))
+    UdpSocket::from_std(socket.into())
 }
 
 /// Bind a UDP socket on `[::]:0` (any available port).
 ///
-/// Used in tests as a stand-in for data sockets.
+/// Used in tests as a simple ephemeral socket for send/recv testing.
 #[cfg(test)]
-pub(crate) fn bind_outbound_socket() -> io::Result<UdpSocket> {
+fn bind_outbound_socket() -> io::Result<UdpSocket> {
     let socket = Socket::new(Domain::IPV6, Type::DGRAM, Some(Protocol::UDP))?;
     socket.set_nonblocking(true)?;
 
@@ -545,6 +535,8 @@ pub(crate) struct RecvResult {
 ///
 /// Uses `readable()` + `try_recv_from()` pattern (edge-triggered).
 /// On `WouldBlock`, loops back to `readable()` to re-register waker.
+///
+/// Generic over socket container: accepts `&[UdpSocket]` or `&[Arc<UdpSocket>]`.
 pub(crate) async fn recv_from_any<S: std::borrow::Borrow<UdpSocket>>(
     sockets: &[S],
     buf: &mut [u8],
@@ -564,8 +556,9 @@ pub(crate) async fn recv_from_any<S: std::borrow::Borrow<UdpSocket>>(
             let idx = std::future::poll_fn(|cx| {
                 for offset in 0..len {
                     let idx = (start + offset) % len;
-                    let sock = sockets[idx].borrow();
-                    match sock.poll_recv_ready(cx) {
+                    match std::borrow::Borrow::<UdpSocket>::borrow(&sockets[idx])
+                        .poll_recv_ready(cx)
+                    {
                         std::task::Poll::Ready(Ok(())) => {
                             return std::task::Poll::Ready(Ok(idx));
                         }
@@ -582,7 +575,7 @@ pub(crate) async fn recv_from_any<S: std::borrow::Borrow<UdpSocket>>(
         };
 
         // Try non-blocking recv on the ready socket
-        match sockets[ready_idx].borrow().try_recv_from(buf) {
+        match std::borrow::Borrow::<UdpSocket>::borrow(&sockets[ready_idx]).try_recv_from(buf) {
             Ok((n, addr)) => {
                 let v6 = match addr {
                     std::net::SocketAddr::V6(v6) => v6,
@@ -861,11 +854,60 @@ mod tests {
             link_local: "::1".parse().unwrap(),
             index: 1,
         };
-        let result = bind_data_socket(&nic, 0, false);
-        if let Ok((sock, port)) = result {
+        // Use port 0 so the OS assigns an ephemeral port for the test
+        let result = bind_data_socket(&nic, 0);
+        if let Ok(sock) = result {
             let addr = sock.local_addr().unwrap();
             assert_ne!(addr.port(), 0);
-            assert_eq!(addr.port(), port);
         }
+    }
+
+    #[test]
+    fn test_discovery_packet_42_byte_roundtrip() {
+        let token = make_discovery_token(b"reticulum", "fe80::1");
+        let nonce = [0x42u8; NONCE_SIZE];
+        let data_port = 42671u16;
+        let pkt = build_discovery_packet(&token, &nonce, data_port);
+        assert_eq!(pkt.len(), DISCOVERY_PACKET_SIZE);
+        assert_eq!(pkt.len(), 42);
+
+        let parsed = parse_discovery_packet(&pkt).expect("should parse 42 bytes");
+        assert_eq!(parsed.token, token);
+        assert_eq!(parsed.nonce, Some(nonce));
+        assert_eq!(parsed.data_port, Some(data_port));
+    }
+
+    #[test]
+    fn test_discovery_packet_32_byte_python_compat() {
+        // Python sends 32-byte packets: just the token
+        let token = make_discovery_token(b"reticulum", "fe80::1");
+        let parsed = parse_discovery_packet(&token).expect("should parse 32 bytes");
+        assert_eq!(parsed.token, token);
+        assert!(
+            parsed.nonce.is_none(),
+            "32-byte Python packet should have no nonce"
+        );
+        assert!(
+            parsed.data_port.is_none(),
+            "32-byte Python packet should have no data_port"
+        );
+    }
+
+    #[test]
+    fn test_discovery_packet_token_first() {
+        // Verify token occupies bytes [0..32] — Python reads data[:32]
+        let token = make_discovery_token(b"reticulum", "fe80::1");
+        let nonce = [0xABu8; NONCE_SIZE];
+        let data_port = 12345u16;
+        let pkt = build_discovery_packet(&token, &nonce, data_port);
+        assert_eq!(&pkt[..32], &token[..]);
+        assert_eq!(&pkt[32..40], &nonce[..]);
+        assert_eq!(&pkt[40..42], &data_port.to_be_bytes());
+    }
+
+    #[test]
+    fn test_discovery_packet_too_short_rejected() {
+        assert!(parse_discovery_packet(&[0u8; 31]).is_none());
+        assert!(parse_discovery_packet(&[]).is_none());
     }
 }

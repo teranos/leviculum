@@ -128,6 +128,8 @@ pub struct ReticulumNode {
     action_dispatch_tx: mpsc::Sender<TickOutput>,
     /// Fault injection: corrupt ~1 byte per N bytes on TCP write
     corrupt_every: Option<u64>,
+    /// Peer count from AutoInterface orchestrator (if configured)
+    auto_peer_count_rx: Option<watch::Receiver<usize>>,
 }
 
 impl ReticulumNode {
@@ -150,6 +152,7 @@ impl ReticulumNode {
             runner_handle: None,
             action_dispatch_tx,
             corrupt_every,
+            auto_peer_count_rx: None,
         }
     }
 
@@ -236,7 +239,7 @@ impl ReticulumNode {
     /// Static interfaces (TCP clients) are connected and registered directly.
     /// Server listeners spawn accept loops that send new handles via `new_iface_tx`.
     fn initialize_interfaces(
-        &self,
+        &mut self,
         next_id: &Arc<AtomicUsize>,
         new_iface_tx: &mpsc::Sender<InterfaceHandle>,
     ) -> Result<InterfaceRegistry, Error> {
@@ -361,7 +364,9 @@ impl ReticulumNode {
                         ignored_devices: config.ignored_devices.clone(),
                         multicast_loopback: config.multicast_loopback.unwrap_or(false),
                     };
-                    spawn_auto_interface(next_id.clone(), new_iface_tx.clone(), auto_config);
+                    let peer_count_rx =
+                        spawn_auto_interface(next_id.clone(), new_iface_tx.clone(), auto_config);
+                    self.auto_peer_count_rx = Some(peer_count_rx);
                     tracing::info!("AutoInterface: starting orchestrator");
                 }
                 other => {
@@ -669,6 +674,16 @@ impl ReticulumNode {
             .unwrap()
             .transport_config()
             .enable_transport
+    }
+
+    /// Get the number of discovered AutoInterface peers
+    ///
+    /// Returns 0 if no AutoInterface is configured.
+    pub fn auto_interface_peer_count(&self) -> usize {
+        self.auto_peer_count_rx
+            .as_ref()
+            .map(|rx| *rx.borrow())
+            .unwrap_or(0)
     }
 }
 

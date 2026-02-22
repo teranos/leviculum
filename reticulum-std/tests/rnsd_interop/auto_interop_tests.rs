@@ -48,11 +48,20 @@ const AUTO_MAX_CHANNEL_PAYLOAD: usize = AUTO_LINK_MDU - CHANNEL_OVERHEAD;
 // Helpers
 // =========================================================================
 
-fn auto_config_for_test(test_name: &str, base_port: u16) -> AutoInterfaceConfig {
+/// Create AutoInterface config for a test node.
+///
+/// Port layout per test:
+///   base_port     = multicast discovery port (shared by all nodes in a test)
+///   base_port + 1 = unicast discovery port (= discovery_port + 1)
+///   base_port + 2 + node_index = data port (unique per node for same-machine disambiguation)
+///
+/// Each node in a test must use a different `node_index` so that their data_ports
+/// don't collide. This avoids SO_REUSEPORT ambiguity for unicast data delivery.
+fn auto_config_for_test(test_name: &str, base_port: u16, node_index: u16) -> AutoInterfaceConfig {
     AutoInterfaceConfig {
         group_id: format!("test_{}", test_name).into_bytes(),
         discovery_port: base_port,
-        data_port: base_port + 1,
+        data_port: base_port + 2 + node_index,
         multicast_loopback: true,
         ..Default::default()
     }
@@ -65,7 +74,7 @@ fn auto_config_for_test(test_name: &str, base_port: u16) -> AutoInterfaceConfig 
 fn have_suitable_nics() -> bool {
     crate::common::init_tracing();
 
-    let config = auto_config_for_test("check", 39000);
+    let config = auto_config_for_test("check", 39000, 0);
     let nics = enumerate_nics(&config);
     if nics.is_empty() {
         tracing::warn!("SKIP: no suitable NICs for AutoInterface test");
@@ -94,8 +103,8 @@ async fn test_auto_mutual_discovery() {
         return;
     }
 
-    let config_a = auto_config_for_test("discovery", 39100);
-    let config_b = auto_config_for_test("discovery", 39100);
+    let config_a = auto_config_for_test("discovery", 39100, 0);
+    let config_b = auto_config_for_test("discovery", 39100, 1);
     let storage_a = temp_storage("discovery", "a");
     let storage_b = temp_storage("discovery", "b");
 
@@ -173,8 +182,8 @@ async fn test_auto_announce_propagation() {
         return;
     }
 
-    let config_a = auto_config_for_test("announce", 39200);
-    let config_b = auto_config_for_test("announce", 39200);
+    let config_a = auto_config_for_test("announce", 39200, 0);
+    let config_b = auto_config_for_test("announce", 39200, 1);
     let storage_a = temp_storage("announce", "a");
     let storage_b = temp_storage("announce", "b");
 
@@ -251,8 +260,8 @@ async fn test_auto_link_bidirectional_data() {
         return;
     }
 
-    let config_a = auto_config_for_test("link_data", 39300);
-    let config_b = auto_config_for_test("link_data", 39300);
+    let config_a = auto_config_for_test("link_data", 39300, 0);
+    let config_b = auto_config_for_test("link_data", 39300, 1);
     let storage_a = temp_storage("link_data", "a");
     let storage_b = temp_storage("link_data", "b");
 
@@ -389,8 +398,8 @@ async fn test_auto_mtu_negotiation() {
         return;
     }
 
-    let config_a = auto_config_for_test("mtu", 39400);
-    let config_b = auto_config_for_test("mtu", 39400);
+    let config_a = auto_config_for_test("mtu", 39400, 0);
+    let config_b = auto_config_for_test("mtu", 39400, 1);
     let storage_a = temp_storage("mtu", "a");
     let storage_b = temp_storage("mtu", "b");
 
@@ -527,8 +536,8 @@ async fn test_auto_peer_timeout() {
         return;
     }
 
-    let config_a = auto_config_for_test("timeout", 39500);
-    let config_b = auto_config_for_test("timeout", 39500);
+    let config_a = auto_config_for_test("timeout", 39500, 0);
+    let config_b = auto_config_for_test("timeout", 39500, 1);
     let storage_a = temp_storage("timeout", "a");
     let storage_b = temp_storage("timeout", "b");
 
@@ -646,18 +655,17 @@ async fn test_auto_peer_timeout() {
 
 /// Three nodes in the same group all discover each other and receive announces.
 ///
-/// Peers are keyed by (IP, data_port), so multiple nodes behind the same
-/// link-local address (e.g. same machine with ephemeral data ports) are
-/// correctly distinguished as separate peers.
+/// Each node uses a unique data_port so that same-machine peers are disambiguated
+/// by (IP, data_port) in the peer map.
 #[tokio::test]
 async fn test_auto_three_node_mesh() {
     if !have_suitable_nics() {
         return;
     }
 
-    let config_a = auto_config_for_test("mesh", 39600);
-    let config_b = auto_config_for_test("mesh", 39600);
-    let config_c = auto_config_for_test("mesh", 39600);
+    let config_a = auto_config_for_test("mesh", 39600, 0);
+    let config_b = auto_config_for_test("mesh", 39600, 1);
+    let config_c = auto_config_for_test("mesh", 39600, 2);
     let storage_a = temp_storage("mesh", "a");
     let storage_b = temp_storage("mesh", "b");
     let storage_c = temp_storage("mesh", "c");
@@ -763,26 +771,27 @@ async fn test_auto_group_isolation() {
         return;
     }
 
-    // Nodes A + B: group "test_alpha", same ports
+    // Nodes A + B: group "test_alpha", different data_ports for same-machine disambiguation
+    // Port layout: discovery=39700, unicast=39701, data=39702+node_index
     let config_a = AutoInterfaceConfig {
         group_id: b"test_alpha".to_vec(),
         discovery_port: 39700,
-        data_port: 39701,
+        data_port: 39702,
         multicast_loopback: true,
         ..Default::default()
     };
     let config_b = AutoInterfaceConfig {
         group_id: b"test_alpha".to_vec(),
         discovery_port: 39700,
-        data_port: 39701,
+        data_port: 39703,
         multicast_loopback: true,
         ..Default::default()
     };
-    // Node C: group "test_beta", SAME ports — isolation by group only
+    // Node C: group "test_beta", different group → isolation by multicast address + token
     let config_c = AutoInterfaceConfig {
         group_id: b"test_beta".to_vec(),
         discovery_port: 39700,
-        data_port: 39701,
+        data_port: 39704,
         multicast_loopback: true,
         ..Default::default()
     };
@@ -878,5 +887,76 @@ async fn test_auto_group_isolation() {
     assert!(
         found_c.is_none(),
         "Node C (different group) should NOT receive announce"
+    );
+}
+
+// =========================================================================
+// Test 8: Python AutoInterface Discovery
+// =========================================================================
+
+/// Start a Python rnsd with AutoInterface and verify Rust discovers it via
+/// multicast. Tests only discovery packets — no unicast data transfer (which
+/// is unreliable on the same machine due to SO_REUSEPORT routing ambiguity).
+///
+/// Ignored: Python's socketserver.UDPServer binds the data port without
+/// SO_REUSEPORT, so Rust cannot co-bind the same data port on the same machine.
+/// The AutoInterface orchestrator fails with "no sockets could be bound" and
+/// never reaches the discovery phase. Cross-machine interop is verified manually
+/// (hamster ↔ miauhaus). See plan Step 8.
+#[ignore = "same-machine Python↔Rust data port conflict: Python socketserver lacks SO_REUSEPORT"]
+#[tokio::test]
+async fn test_auto_python_discovery() {
+    if !have_suitable_nics() {
+        return;
+    }
+
+    // Unique group_id to avoid interference from other tests or running rnsd
+    let group_id = b"rust_py_interop_test";
+
+    // Start Python rnsd with AutoInterface
+    let _daemon = match crate::harness::TestDaemon::start_with_auto_interface(group_id).await {
+        Ok(d) => d,
+        Err(e) => {
+            tracing::warn!(
+                "SKIP: failed to start Python daemon with AutoInterface: {}",
+                e
+            );
+            return;
+        }
+    };
+
+    // Start Rust node with matching AutoInterface config
+    let storage = temp_storage("py_discovery", "rust");
+    let mut node = ReticulumNodeBuilder::new()
+        .enable_transport(true)
+        .storage_path(storage.clone())
+        .add_auto_interface_with_config(AutoInterfaceConfig {
+            group_id: group_id.to_vec(),
+            multicast_loopback: true,
+            ..Default::default()
+        })
+        .build()
+        .await
+        .expect("build Rust node");
+    node.start().await.expect("start Rust node");
+
+    // Wait for Rust to discover the Python peer via multicast
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(10);
+    while tokio::time::Instant::now() < deadline {
+        if node.auto_interface_peer_count() >= 1 {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(200)).await;
+    }
+
+    let peer_count = node.auto_interface_peer_count();
+
+    node.stop().await.ok();
+    let _ = std::fs::remove_dir_all(&storage);
+
+    assert!(
+        peer_count >= 1,
+        "Rust should have discovered Python peer via multicast (got {} peers)",
+        peer_count
     );
 }

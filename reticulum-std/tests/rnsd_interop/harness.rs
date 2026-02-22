@@ -348,6 +348,100 @@ impl TestDaemon {
         }
     }
 
+    /// Start a daemon with AutoInterface enabled for LAN discovery testing.
+    ///
+    /// The daemon will have both a TCPServerInterface (for lifecycle management
+    /// and the READY signal) and an AutoInterface with the given group_id.
+    ///
+    /// # Arguments
+    /// * `group_id` - The group ID bytes for the AutoInterface
+    pub async fn start_with_auto_interface(group_id: &[u8]) -> Result<Self, HarnessError> {
+        ensure_reticulum_submodule()?;
+
+        let mut last_error = HarnessError::StartupTimeout;
+        let group_id_str = String::from_utf8_lossy(group_id).to_string();
+
+        for attempt in 0..Self::MAX_STARTUP_RETRIES {
+            let (rns_port, cmd_port) = find_two_available_ports()?;
+
+            match Self::start_with_auto_interface_ports(rns_port, cmd_port, &group_id_str).await {
+                Ok(daemon) => return Ok(daemon),
+                Err(HarnessError::StartupTimeout) => {
+                    if attempt + 1 < Self::MAX_STARTUP_RETRIES {
+                        tokio::time::sleep(Duration::from_millis(100)).await;
+                    }
+                    last_error = HarnessError::StartupTimeout;
+                }
+                Err(e) => return Err(e),
+            }
+        }
+
+        Err(last_error)
+    }
+
+    /// Start a daemon with AutoInterface on specific ports.
+    async fn start_with_auto_interface_ports(
+        rns_port: u16,
+        cmd_port: u16,
+        group_id: &str,
+    ) -> Result<Self, HarnessError> {
+        let mut process = Command::new("python3")
+            .args([
+                Self::DAEMON_SCRIPT,
+                "--rns-port",
+                &rns_port.to_string(),
+                "--cmd-port",
+                &cmd_port.to_string(),
+                "--auto-interface",
+                "--group-id",
+                group_id,
+            ])
+            .stdout(Stdio::piped())
+            .stderr(Stdio::inherit())
+            .spawn()
+            .map_err(HarnessError::SpawnFailed)?;
+
+        let stdout = process.stdout.take().expect("stdout should be captured");
+        let reader = BufReader::new(stdout);
+
+        let ready_result = tokio::task::spawn_blocking(move || {
+            for line in reader.lines() {
+                match line {
+                    Ok(line) if line.starts_with("READY ") => {
+                        return Ok(line);
+                    }
+                    Ok(_) => continue,
+                    Err(e) => return Err(HarnessError::ParseError(e.to_string())),
+                }
+            }
+            Err(HarnessError::StartupTimeout)
+        });
+
+        let _ready_line = timeout(Self::STARTUP_TIMEOUT, ready_result)
+            .await
+            .map_err(|_| HarnessError::StartupTimeout)?
+            .map_err(|_| HarnessError::StartupTimeout)??;
+
+        // Wait briefly for interfaces to fully initialize
+        tokio::time::sleep(Duration::from_millis(200)).await;
+
+        let daemon = Self {
+            process,
+            rns_port,
+            cmd_port,
+            udp_listen_port: None,
+            udp_forward_port: None,
+        };
+
+        match daemon.ping().await {
+            Ok(_) => Ok(daemon),
+            Err(e) => {
+                drop(daemon);
+                Err(e)
+            }
+        }
+    }
+
     /// Kill this daemon and restart it on the same ports.
     ///
     /// The new daemon is a fresh Python process with empty state — all

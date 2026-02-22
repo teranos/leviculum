@@ -100,11 +100,14 @@ class RawBytesMessage(RNS.Channel.MessageBase):
 
 class TestDaemon:
     def __init__(self, rns_port: int, cmd_port: int, verbose: bool = False,
-                 udp_listen_port: int = None, udp_forward_port: int = None):
+                 udp_listen_port: int = None, udp_forward_port: int = None,
+                 auto_interface: bool = False, group_id: str = None):
         self.rns_port = rns_port
         self.cmd_port = cmd_port
         self.udp_listen_port = udp_listen_port
         self.udp_forward_port = udp_forward_port
+        self.auto_interface = auto_interface
+        self.group_id = group_id or "reticulum"
         self.verbose = verbose
         self.running = True
         self.destinations = {}  # hash -> (identity, destination)
@@ -125,6 +128,8 @@ class TestDaemon:
             if self.udp_listen_port:
                 print(f"UDP listen port: {self.udp_listen_port}")
                 print(f"UDP forward port: {self.udp_forward_port}")
+            if self.auto_interface:
+                print(f"AutoInterface enabled, group_id: {self.group_id}")
 
         # Initialize Reticulum in standalone mode
         loglevel = RNS.LOG_DEBUG if self.verbose else RNS.LOG_WARNING
@@ -163,6 +168,14 @@ class TestDaemon:
     listen_port = {self.udp_listen_port}
     forward_ip = 127.0.0.1
     forward_port = {self.udp_forward_port}
+"""
+
+        if self.auto_interface:
+            config += f"""
+  [[Default Interface]]
+    type = AutoInterface
+    enabled = yes
+    group_id = {self.group_id}
 """
 
         config_path = os.path.join(self.config_dir, "config")
@@ -1161,6 +1174,10 @@ def main():
                         help="Port for UDP interface (listen)")
     parser.add_argument("--udp-forward-port", type=int, default=None,
                         help="Port for UDP interface (forward)")
+    parser.add_argument("--auto-interface", action="store_true",
+                        help="Enable AutoInterface for LAN discovery")
+    parser.add_argument("--group-id", type=str, default=None,
+                        help="Group ID for AutoInterface (default: reticulum)")
     parser.add_argument("-v", "--verbose", action="store_true",
                         help="Enable verbose output")
 
@@ -1172,6 +1189,8 @@ def main():
         verbose=args.verbose,
         udp_listen_port=args.udp_listen_port,
         udp_forward_port=args.udp_forward_port,
+        auto_interface=args.auto_interface,
+        group_id=args.group_id,
     )
     daemon.run()
 
