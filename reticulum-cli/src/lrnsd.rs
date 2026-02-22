@@ -73,13 +73,20 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     info!("Reticulum daemon running");
 
-    // Wait for shutdown signal (SIGINT or SIGTERM)
+    // Wait for shutdown signal (SIGINT or SIGTERM), dump diagnostics on SIGUSR1
     {
         use tokio::signal::unix::{signal, SignalKind};
         let mut sigterm = signal(SignalKind::terminate())?;
-        tokio::select! {
-            _ = tokio::signal::ctrl_c() => { info!("Received SIGINT"); }
-            _ = sigterm.recv() => { info!("Received SIGTERM"); }
+        let mut sigusr1 = signal(SignalKind::user_defined1())?;
+        loop {
+            tokio::select! {
+                _ = tokio::signal::ctrl_c() => { info!("Received SIGINT"); break; }
+                _ = sigterm.recv() => { info!("Received SIGTERM"); break; }
+                _ = sigusr1.recv() => {
+                    let dump = rns.diagnostic_dump();
+                    eprint!("{}", dump);
+                }
+            }
         }
     }
 

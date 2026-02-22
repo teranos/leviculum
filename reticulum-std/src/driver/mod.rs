@@ -657,6 +657,11 @@ impl ReticulumNode {
         )
     }
 
+    /// Return a diagnostic dump of all protocol state memory usage
+    pub fn diagnostic_dump(&self) -> String {
+        self.inner.lock().unwrap().diagnostic_dump()
+    }
+
     /// Check if transport mode (relay/routing) is enabled
     pub fn is_transport_enabled(&self) -> bool {
         self.inner

@@ -1106,6 +1106,46 @@ impl<C: Clock, S: Storage> Transport<C, S> {
         &self.stats
     }
 
+    /// Return diagnostic dump of Transport-owned collections (not on Storage)
+    pub fn diagnostic_dump(&self) -> (String, u64) {
+        use core::fmt::Write;
+        let mut s = String::new();
+        let mut total = 0u64;
+        let _ = writeln!(s, "--- Transport ---");
+
+        // announce_queues: per-interface VecDeque<QueuedAnnounce> — 1x
+        let n_ifaces = self.interface_announce_caps.len();
+        let mut n_queued = 0usize;
+        let mut raw = 0u64;
+        for cap in self.interface_announce_caps.values() {
+            n_queued += cap.queue.len();
+            for qa in &cap.queue {
+                // QueuedAnnounce: raw(Vec payload) + hops(1) + queued_at_ms(8) = 9 + raw.len()
+                raw += (9 + qa.raw.len()) as u64;
+            }
+        }
+        let est = raw; // VecDeque 1x
+        total += est;
+        let _ = writeln!(
+            s,
+            "announce_queues: {} interfaces, {} total queued, raw {} bytes, estimated {} bytes (VecDeque 1x)",
+            n_ifaces, n_queued, raw, est
+        );
+
+        // local_destinations: BTreeSet<[u8; 16]> — 3x
+        let n = self.local_destinations.len();
+        let raw_ld = (n * TRUNCATED_HASHBYTES) as u64;
+        let est_ld = raw_ld * 3;
+        total += est_ld;
+        let _ = writeln!(
+            s,
+            "local_destinations: {} entries, raw {} bytes, estimated {} bytes (BTreeSet 3x)",
+            n, raw_ld, est_ld
+        );
+
+        (s, total)
+    }
+
     /// Get the transport configuration
     pub fn config(&self) -> &TransportConfig {
         &self.config

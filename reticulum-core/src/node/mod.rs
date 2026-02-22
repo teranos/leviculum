@@ -51,6 +51,7 @@ pub use event::{DeliveryError, NodeEvent};
 pub use send::SendError;
 
 use alloc::collections::BTreeMap;
+use alloc::string::String;
 use alloc::vec::Vec;
 
 use crate::announce::AnnounceError;
@@ -579,6 +580,26 @@ impl<R: CryptoRngCore, C: Clock, S: Storage> NodeCore<R, C, S> {
     /// Get transport statistics
     pub fn transport_stats(&self) -> TransportStats {
         self.transport.stats().clone()
+    }
+
+    /// Return a diagnostic dump of all protocol state memory usage
+    pub fn diagnostic_dump(&self) -> String {
+        use core::fmt::Write;
+
+        let mut out = String::new();
+        let _ = writeln!(out, "=== Memory Diagnostic ===");
+
+        // Storage collections
+        let (storage_dump, storage_total) = self.transport.storage().diagnostic_dump();
+        out.push_str(&storage_dump);
+
+        // Transport-owned collections
+        let (transport_dump, transport_total) = self.transport.diagnostic_dump();
+        out.push_str(&transport_dump);
+
+        let grand_total = storage_total + transport_total;
+        let _ = writeln!(out, "=== Total estimated: {} bytes ===", grand_total);
+        out
     }
 
     /// Get the current time in milliseconds from the transport clock

@@ -75,6 +75,21 @@ impl Reticulum {
         self.node.is_transport_enabled()
     }
 
+    /// Return a diagnostic dump of memory usage including process RSS
+    pub fn diagnostic_dump(&self) -> String {
+        let mut dump = self.node.diagnostic_dump();
+        // Read RSS from /proc/self/statm (Linux only)
+        if let Ok(statm) = std::fs::read_to_string("/proc/self/statm") {
+            if let Some(rss_pages) = statm.split_whitespace().nth(1) {
+                if let Ok(pages) = rss_pages.parse::<u64>() {
+                    let rss_bytes = pages * 4096;
+                    dump.push_str(&format!("=== Process RSS: {} bytes ===\n", rss_bytes));
+                }
+            }
+        }
+        dump
+    }
+
     /// Take the event receiver (can only be called once)
     pub fn take_event_receiver(&mut self) -> Option<mpsc::Receiver<NodeEvent>> {
         self.node.take_event_receiver()
