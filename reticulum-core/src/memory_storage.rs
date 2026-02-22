@@ -747,8 +747,8 @@ impl Storage for MemoryStorage {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use alloc::vec;
     use crate::destination::DestinationHash;
+    use alloc::vec;
 
     #[test]
     fn test_packet_hash_dedup() {

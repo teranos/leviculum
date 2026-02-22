@@ -66,6 +66,7 @@ pub(crate) fn parse_ini(content: &str) -> Result<Config, String> {
                     data_port: None,
                     devices: None,
                     ignored_devices: None,
+                    multicast_loopback: None,
                     frequency: None,
                     bandwidth: None,
                     spreading_factor: None,
@@ -184,6 +185,7 @@ fn apply_interface_key(iface: &mut InterfaceConfig, key: &str, value: &str) {
         "data_port" => iface.data_port = value.parse().ok(),
         "devices" => iface.devices = Some(value.to_string()),
         "ignored_devices" => iface.ignored_devices = Some(value.to_string()),
+        "multicast_loopback" => iface.multicast_loopback = Some(parse_bool(value)),
         _ => {} // Ignore unknown keys (id_callsign, id_interval, modulation, etc.)
     }
 }

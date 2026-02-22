@@ -359,7 +359,7 @@ impl ReticulumNode {
                             .unwrap_or_else(|| "link".to_string()),
                         allowed_devices: config.devices.clone(),
                         ignored_devices: config.ignored_devices.clone(),
-                        multicast_loopback: false,
+                        multicast_loopback: config.multicast_loopback.unwrap_or(false),
                     };
                     spawn_auto_interface(next_id.clone(), new_iface_tx.clone(), auto_config);
                     tracing::info!("AutoInterface: starting orchestrator");
@@ -800,7 +800,6 @@ async fn run_event_loop(
                 let interval = match next {
                     Some(deadline_ms) => {
                         let delta = deadline_ms.saturating_sub(now_ms);
-                        debug_assert!(delta > 0, "next_deadline() returned zero — would cause spin loop");
                         Duration::from_millis(delta.clamp(1, 1000))
                     }
                     None => Duration::from_secs(1),

@@ -119,6 +119,8 @@ pub struct InterfaceConfig {
     pub devices: Option<String>,
     /// Comma-separated blacklist of NIC names
     pub ignored_devices: Option<String>,
+    /// Enable multicast loopback (for same-machine testing)
+    pub multicast_loopback: Option<bool>,
 
     // RNode specific
     /// LoRa frequency in Hz

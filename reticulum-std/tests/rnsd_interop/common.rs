@@ -7,6 +7,21 @@ use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpStream;
 use tokio::time::timeout;
 
+/// Initialize tracing for tests. Safe to call multiple times (idempotent).
+///
+/// Controlled via `RUST_LOG` env var, e.g. `RUST_LOG=debug`.
+/// Uses `with_test_writer()` so output goes through libtest's capture mechanism.
+pub fn init_tracing() {
+    use std::sync::Once;
+    static INIT: Once = Once::new();
+    INIT.call_once(|| {
+        tracing_subscriber::fmt()
+            .with_env_filter(tracing_subscriber::EnvFilter::from_default_env())
+            .with_test_writer()
+            .init();
+    });
+}
+
 use reticulum_core::constants::{MTU, TRUNCATED_HASHBYTES};
 use reticulum_core::crypto::truncated_hash;
 use reticulum_core::identity::Identity;

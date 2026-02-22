@@ -152,7 +152,11 @@ pub fn enumerate_nics(config: &AutoInterfaceConfig) -> Vec<AdoptedNic> {
         let addr = match iface.addr.ip() {
             std::net::IpAddr::V6(v6) if is_link_local_v6(&v6) => v6,
             other => {
-                tracing::trace!("AutoInterface: '{}' skipped (not link-local v6: {})", iface.name, other);
+                tracing::trace!(
+                    "AutoInterface: '{}' skipped (not link-local v6: {})",
+                    iface.name,
+                    other
+                );
                 continue;
             }
         };
@@ -253,6 +257,14 @@ pub(crate) fn derive_multicast_address(group_id: &[u8], scope: &str) -> io::Resu
 
 // ─── Discovery tokens ────────────────────────────────────────────────────────
 
+/// Size of the per-instance nonce prepended to discovery tokens.
+///
+/// Each orchestrator generates a random nonce at startup. This nonce is
+/// prepended to every outgoing discovery token so that self-echo detection
+/// works correctly when multiple nodes share the same NIC addresses
+/// (e.g. two nodes in the same process for testing).
+pub(crate) const INSTANCE_NONCE_SIZE: usize = 8;
+
 /// Create a discovery token for multicast announcement.
 ///
 /// `token = SHA-256(group_id + link_local_address_string)`
@@ -264,6 +276,57 @@ pub(crate) fn make_discovery_token(group_id: &[u8], link_local_str: &str) -> [u8
     input.extend_from_slice(group_id);
     input.extend_from_slice(link_local_str.as_bytes());
     full_hash(&input)
+}
+
+/// Discovery packet size: nonce(8) + token(32) + data_port(2) = 42 bytes.
+pub(crate) const DISCOVERY_PACKET_SIZE: usize = INSTANCE_NONCE_SIZE + 32 + 2;
+
+/// Build a wire-format discovery packet: `[nonce(8)] + [token(32)] + [data_port(2)]`.
+///
+/// The nonce allows receivers to distinguish self-echoes from peer tokens
+/// when multiple nodes share the same NIC addresses. The data_port tells
+/// the peer which port to send data to (needed when multicast_loopback
+/// uses ephemeral ports to avoid SO_REUSEPORT conflicts).
+pub(crate) fn build_discovery_packet(
+    instance_nonce: &[u8; INSTANCE_NONCE_SIZE],
+    token: &[u8; 32],
+    data_port: u16,
+) -> [u8; DISCOVERY_PACKET_SIZE] {
+    let mut pkt = [0u8; DISCOVERY_PACKET_SIZE];
+    pkt[..INSTANCE_NONCE_SIZE].copy_from_slice(instance_nonce);
+    pkt[INSTANCE_NONCE_SIZE..INSTANCE_NONCE_SIZE + 32].copy_from_slice(token);
+    pkt[INSTANCE_NONCE_SIZE + 32..].copy_from_slice(&data_port.to_be_bytes());
+    pkt
+}
+
+/// Parsed discovery packet fields.
+pub(crate) struct DiscoveryPacket {
+    pub nonce: [u8; INSTANCE_NONCE_SIZE],
+    pub token: [u8; 32],
+    pub data_port: u16,
+}
+
+/// Parse a received discovery packet.
+///
+/// Returns the parsed fields if the packet has the expected 42-byte format,
+/// or `None` if malformed.
+pub(crate) fn parse_discovery_packet(data: &[u8]) -> Option<DiscoveryPacket> {
+    if data.len() != DISCOVERY_PACKET_SIZE {
+        return None;
+    }
+    let mut nonce = [0u8; INSTANCE_NONCE_SIZE];
+    let mut token = [0u8; 32];
+    nonce.copy_from_slice(&data[..INSTANCE_NONCE_SIZE]);
+    token.copy_from_slice(&data[INSTANCE_NONCE_SIZE..INSTANCE_NONCE_SIZE + 32]);
+    let data_port = u16::from_be_bytes([
+        data[INSTANCE_NONCE_SIZE + 32],
+        data[INSTANCE_NONCE_SIZE + 33],
+    ]);
+    Some(DiscoveryPacket {
+        nonce,
+        token,
+        data_port,
+    })
 }
 
 /// Verify a received discovery token against expected group_id and source address.
@@ -409,17 +472,42 @@ pub(crate) fn bind_unicast_socket(nic: &AdoptedNic, port: u16) -> io::Result<Udp
 /// Bind a data receive socket on a specific NIC's link-local address.
 ///
 /// Used for receiving Reticulum packets from discovered peers.
-pub(crate) fn bind_data_socket(nic: &AdoptedNic, port: u16) -> io::Result<UdpSocket> {
+///
+/// When `multicast_loopback` is true, binds to port 0 (ephemeral) to avoid
+/// SO_REUSEPORT conflicts when multiple nodes run on the same machine. The
+/// actual bound port is returned alongside the socket.
+///
+/// When `multicast_loopback` is false, binds to the configured `port` with
+/// SO_REUSEPORT for normal multi-process coexistence.
+pub(crate) fn bind_data_socket(
+    nic: &AdoptedNic,
+    port: u16,
+    multicast_loopback: bool,
+) -> io::Result<(UdpSocket, u16)> {
     let socket = Socket::new(Domain::IPV6, Type::DGRAM, Some(Protocol::UDP))?;
-    socket.set_reuse_address(true)?;
-    #[cfg(target_os = "linux")]
-    socket.set_reuse_port(true)?;
     socket.set_nonblocking(true)?;
 
-    let bind_addr = SocketAddrV6::new(nic.link_local, port, 0, nic.index);
+    let bind_port = if multicast_loopback {
+        // Ephemeral port: no REUSEPORT needed, each node gets a unique port
+        0
+    } else {
+        // Production: use configured port with REUSEPORT for coexistence
+        socket.set_reuse_address(true)?;
+        #[cfg(target_os = "linux")]
+        socket.set_reuse_port(true)?;
+        port
+    };
+
+    let bind_addr = SocketAddrV6::new(nic.link_local, bind_port, 0, nic.index);
     socket.bind(&SockAddr::from(bind_addr))?;
 
-    UdpSocket::from_std(socket.into())
+    // Get the actual bound port (may differ from bind_port if ephemeral)
+    let actual_port = match socket.local_addr()?.as_socket_ipv6() {
+        Some(v6) => v6.port(),
+        None => port,
+    };
+
+    Ok((UdpSocket::from_std(socket.into())?, actual_port))
 }
 
 /// Bind an outbound data socket for sending to peers.
@@ -772,10 +860,11 @@ mod tests {
             link_local: "::1".parse().unwrap(),
             index: 1,
         };
-        let result = bind_data_socket(&nic, 0);
-        if let Ok(sock) = result {
+        let result = bind_data_socket(&nic, 0, false);
+        if let Ok((sock, port)) = result {
             let addr = sock.local_addr().unwrap();
             assert_ne!(addr.port(), 0);
+            assert_eq!(addr.port(), port);
         }
     }
 }
