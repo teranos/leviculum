@@ -14,12 +14,11 @@ use tokio::net::UdpSocket;
 use tokio::sync::mpsc;
 
 use super::{
-    bind_data_socket, bind_multicast_socket, bind_outbound_socket, bind_unicast_socket,
-    build_discovery_packet, derive_multicast_address, enumerate_nics, make_discovery_token,
-    parse_discovery_packet, recv_from_any, unicast_discovery_port, verify_discovery_token,
-    AdoptedNic, AutoInterfaceConfig, DeduplicationCache, ANNOUNCE_INTERVAL_SECS, AUTO_HW_MTU,
-    DISCOVERY_PACKET_SIZE, INSTANCE_NONCE_SIZE, MCAST_ECHO_TIMEOUT_SECS, PEERING_TIMEOUT_SECS,
-    PEER_JOB_INTERVAL_SECS,
+    bind_data_socket, bind_multicast_socket, bind_unicast_socket, build_discovery_packet,
+    derive_multicast_address, enumerate_nics, make_discovery_token, parse_discovery_packet,
+    recv_from_any, unicast_discovery_port, verify_discovery_token, AdoptedNic, AutoInterfaceConfig,
+    DeduplicationCache, ANNOUNCE_INTERVAL_SECS, AUTO_HW_MTU, DISCOVERY_PACKET_SIZE,
+    INSTANCE_NONCE_SIZE, MCAST_ECHO_TIMEOUT_SECS, PEERING_TIMEOUT_SECS, PEER_JOB_INTERVAL_SECS,
 };
 use crate::interfaces::{IncomingPacket, InterfaceHandle, InterfaceInfo, OutgoingPacket};
 use reticulum_core::transport::InterfaceId;
@@ -155,7 +154,7 @@ async fn run_auto_interface(
     // Bind sockets per NIC, tracking which succeeded
     let mut mcast_sockets = Vec::new();
     let mut unicast_sockets = Vec::new();
-    let mut data_sockets = Vec::new();
+    let mut data_sockets: Vec<Arc<UdpSocket>> = Vec::new();
     let mut data_ports: Vec<u16> = Vec::new();
     let mut bind_results = Vec::with_capacity(nics.len());
     for nic in &nics {
@@ -202,7 +201,7 @@ async fn run_auto_interface(
 
         match bind_data_socket(nic, config.data_port, config.multicast_loopback) {
             Ok((s, actual_port)) => {
-                data_sockets.push(s);
+                data_sockets.push(Arc::new(s));
                 data_ports.push(actual_port);
             }
             Err(e) => {
@@ -220,9 +219,6 @@ async fn run_auto_interface(
         tracing::warn!("AutoInterface: no sockets could be bound, exiting");
         return Ok(());
     }
-
-    // Shared outbound socket for peer send tasks
-    let outbound = Arc::new(bind_outbound_socket()?);
 
     // Per-peer state: keyed by peer's (IPv6 link-local, data_port).
     // Using SocketAddrV6 distinguishes multiple nodes behind the same IP
@@ -296,7 +292,8 @@ async fn run_auto_interface(
                 };
                 let data = &mcast_buf[..recv.bytes_read];
                 let src_addr = *recv.source.ip();
-                let nic = &active_nics[recv.socket_index];
+                let nic_idx = recv.socket_index;
+                let nic = &active_nics[nic_idx];
 
                 handle_discovery_packet(
                     data,
@@ -308,7 +305,7 @@ async fn run_auto_interface(
                     &mut peers,
                     &next_id,
                     &new_iface_tx,
-                    &outbound,
+                    &data_sockets[nic_idx],
                 );
             }
 
@@ -323,7 +320,8 @@ async fn run_auto_interface(
                 };
                 let data = &unicast_buf[..recv.bytes_read];
                 let src_addr = *recv.source.ip();
-                let nic = &active_nics[recv.socket_index];
+                let nic_idx = recv.socket_index;
+                let nic = &active_nics[nic_idx];
 
                 handle_discovery_packet(
                     data,
@@ -335,7 +333,7 @@ async fn run_auto_interface(
                     &mut peers,
                     &next_id,
                     &new_iface_tx,
-                    &outbound,
+                    &data_sockets[nic_idx],
                 );
             }
 
@@ -359,16 +357,12 @@ async fn run_auto_interface(
                     continue;
                 }
 
-                let src_ip = *recv.source.ip();
+                // Peer sends from its data socket, so source addr = (peer_ip, peer_data_port).
+                // This matches our peer map key exactly.
+                let src = recv.source;
 
-                // Look up peer by source IP. Data packets arrive from the peer's
-                // outbound socket (ephemeral port), not their data socket, so we
-                // match by IP only. Multiple peers may share an IP (e.g. containers
-                // or same-machine testing); we route to the first match since all
-                // peers on the same IP share the same physical network.
-                if let Some((_, peer)) = peers.iter_mut().find(|(k, _)| *k.ip() == src_ip) {
+                if let Some(peer) = peers.get_mut(&src) {
                     peer.last_heard = Instant::now();
-                    // Forward to event loop via incoming channel
                     match peer.incoming_tx.try_send(IncomingPacket {
                         data: data.to_vec(),
                     }) {
@@ -376,20 +370,20 @@ async fn run_auto_interface(
                         Err(mpsc::error::TrySendError::Full(_)) => {
                             tracing::debug!(
                                 "AutoInterface: incoming channel full for {}, dropping packet",
-                                src_ip
+                                src
                             );
                         }
                         Err(mpsc::error::TrySendError::Closed(_)) => {
                             tracing::warn!(
                                 "AutoInterface: incoming channel closed for {}",
-                                src_ip
+                                src
                             );
                         }
                     }
                 } else {
                     tracing::debug!(
                         "AutoInterface: data from unknown peer {}, dropping (no discovery yet)",
-                        src_ip
+                        src
                     );
                 }
             }
@@ -524,7 +518,7 @@ fn handle_discovery_packet(
     peers: &mut HashMap<SocketAddrV6, PeerInfo>,
     next_id: &Arc<AtomicUsize>,
     new_iface_tx: &mpsc::Sender<InterfaceHandle>,
-    outbound: &Arc<UdpSocket>,
+    data_socket: &Arc<UdpSocket>,
 ) {
     // Parse nonce + token + data_port
     let parsed = match parse_discovery_packet(data) {
@@ -578,8 +572,9 @@ fn handle_discovery_packet(
     let (incoming_tx, incoming_rx) = mpsc::channel(PEER_CHANNEL_BUFFER);
     let (outgoing_tx, outgoing_rx) = mpsc::channel(PEER_CHANNEL_BUFFER);
 
-    // Spawn per-peer send task — sends to peer's advertised data port
-    let send_socket = outbound.clone();
+    // Spawn per-peer send task — sends from our data socket to peer's data port.
+    // Source port = our data_port, which the peer already knows from discovery.
+    let send_socket = data_socket.clone();
     tokio::spawn(async move {
         peer_send_task(outgoing_rx, send_socket, peer_key).await;
     });
@@ -639,7 +634,10 @@ fn handle_discovery_packet(
 }
 
 /// Per-peer send task: reads outgoing packets from the event loop and
-/// sends them to the peer's address via the shared outbound socket.
+/// sends them to the peer's address via the NIC's data socket.
+///
+/// Sending from the data socket means the source port equals our data_port,
+/// which the peer already knows from discovery — enabling direct peer map lookup.
 ///
 /// Exits when `outgoing_rx` is closed (event loop dropped the sender,
 /// which happens when the InterfaceHandle is removed from the registry).
@@ -659,6 +657,7 @@ async fn peer_send_task(
 
 #[cfg(test)]
 mod tests {
+    use super::super::bind_outbound_socket;
     use super::*;
 
     #[test]
@@ -869,7 +868,7 @@ mod tests {
         let mut peers = HashMap::new();
         let next_id = Arc::new(AtomicUsize::new(0));
         let (new_iface_tx, _new_iface_rx) = mpsc::channel(8);
-        let outbound = Arc::new(bind_outbound_socket().unwrap());
+        let data_socket = Arc::new(bind_outbound_socket().unwrap());
 
         // Create a valid discovery packet with OUR nonce
         let our_nonce = [0x42u8; INSTANCE_NONCE_SIZE];
@@ -886,7 +885,7 @@ mod tests {
             &mut peers,
             &next_id,
             &new_iface_tx,
-            &outbound,
+            &data_socket,
         );
 
         // Should NOT create a peer (self-echo: nonce matches)
@@ -917,7 +916,7 @@ mod tests {
         let mut peers = HashMap::new();
         let next_id = Arc::new(AtomicUsize::new(100));
         let (new_iface_tx, mut new_iface_rx) = mpsc::channel(8);
-        let outbound = Arc::new(bind_outbound_socket().unwrap());
+        let data_socket = Arc::new(bind_outbound_socket().unwrap());
 
         // Create a discovery packet from a different instance (different nonce)
         let our_nonce = [0x42u8; INSTANCE_NONCE_SIZE];
@@ -936,7 +935,7 @@ mod tests {
             &mut peers,
             &next_id,
             &new_iface_tx,
-            &outbound,
+            &data_socket,
         );
 
         assert_eq!(peers.len(), 1, "should have one peer");
@@ -969,7 +968,7 @@ mod tests {
         let mut peers = HashMap::new();
         let next_id = Arc::new(AtomicUsize::new(100));
         let (new_iface_tx, _new_iface_rx) = mpsc::channel(8);
-        let outbound = Arc::new(bind_outbound_socket().unwrap());
+        let data_socket = Arc::new(bind_outbound_socket().unwrap());
 
         let our_nonce = [0x42u8; INSTANCE_NONCE_SIZE];
         let peer_nonce = [0x99u8; INSTANCE_NONCE_SIZE];
@@ -988,7 +987,7 @@ mod tests {
             &mut peers,
             &next_id,
             &new_iface_tx,
-            &outbound,
+            &data_socket,
         );
 
         let peer_key = SocketAddrV6::new(peer_addr, config.data_port, 0, nic.index);
@@ -1008,7 +1007,7 @@ mod tests {
             &mut peers,
             &next_id,
             &new_iface_tx,
-            &outbound,
+            &data_socket,
         );
 
         assert_eq!(peers.len(), 1, "should still have one peer");
@@ -1037,7 +1036,7 @@ mod tests {
         let mut peers = HashMap::new();
         let next_id = Arc::new(AtomicUsize::new(100));
         let (new_iface_tx, _) = mpsc::channel(8);
-        let outbound = Arc::new(bind_outbound_socket().unwrap());
+        let data_socket = Arc::new(bind_outbound_socket().unwrap());
 
         let our_nonce = [0x42u8; INSTANCE_NONCE_SIZE];
 
@@ -1054,7 +1053,7 @@ mod tests {
             &mut peers,
             &next_id,
             &new_iface_tx,
-            &outbound,
+            &data_socket,
         );
 
         assert!(peers.is_empty(), "invalid token should not create a peer");
@@ -1080,7 +1079,7 @@ mod tests {
         let mut peers = HashMap::new();
         let next_id = Arc::new(AtomicUsize::new(0));
         let (new_iface_tx, mut new_iface_rx) = mpsc::channel(8);
-        let outbound = Arc::new(bind_outbound_socket().unwrap());
+        let data_socket = Arc::new(bind_outbound_socket().unwrap());
 
         let our_nonce = [0x42u8; INSTANCE_NONCE_SIZE];
         let peer_nonce = [0x99u8; INSTANCE_NONCE_SIZE];
@@ -1099,7 +1098,7 @@ mod tests {
             &mut peers,
             &next_id,
             &new_iface_tx,
-            &outbound,
+            &data_socket,
         );
 
         assert_eq!(

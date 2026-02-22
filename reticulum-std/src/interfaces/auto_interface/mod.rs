@@ -510,9 +510,10 @@ pub(crate) fn bind_data_socket(
     Ok((UdpSocket::from_std(socket.into())?, actual_port))
 }
 
-/// Bind an outbound data socket for sending to peers.
+/// Bind a UDP socket on `[::]:0` (any available port).
 ///
-/// Binds to `[::]:0` (any available port). Shared across all peer send tasks.
+/// Used in tests as a stand-in for data sockets.
+#[cfg(test)]
 pub(crate) fn bind_outbound_socket() -> io::Result<UdpSocket> {
     let socket = Socket::new(Domain::IPV6, Type::DGRAM, Some(Protocol::UDP))?;
     socket.set_nonblocking(true)?;
@@ -544,8 +545,8 @@ pub(crate) struct RecvResult {
 ///
 /// Uses `readable()` + `try_recv_from()` pattern (edge-triggered).
 /// On `WouldBlock`, loops back to `readable()` to re-register waker.
-pub(crate) async fn recv_from_any(
-    sockets: &[UdpSocket],
+pub(crate) async fn recv_from_any<S: std::borrow::Borrow<UdpSocket>>(
+    sockets: &[S],
     buf: &mut [u8],
     poll_start: &mut usize,
 ) -> io::Result<RecvResult> {
@@ -563,7 +564,7 @@ pub(crate) async fn recv_from_any(
             let idx = std::future::poll_fn(|cx| {
                 for offset in 0..len {
                     let idx = (start + offset) % len;
-                    let sock = &sockets[idx];
+                    let sock = sockets[idx].borrow();
                     match sock.poll_recv_ready(cx) {
                         std::task::Poll::Ready(Ok(())) => {
                             return std::task::Poll::Ready(Ok(idx));
@@ -581,7 +582,7 @@ pub(crate) async fn recv_from_any(
         };
 
         // Try non-blocking recv on the ready socket
-        match sockets[ready_idx].try_recv_from(buf) {
+        match sockets[ready_idx].borrow().try_recv_from(buf) {
             Ok((n, addr)) => {
                 let v6 = match addr {
                     std::net::SocketAddr::V6(v6) => v6,
