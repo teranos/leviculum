@@ -8,9 +8,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- **AutoInterface integration tests (7 tests)** — comprehensive in-process tests covering mutual discovery, announce propagation, link + bidirectional data, MTU negotiation, peer timeout detection, three-node mesh, and group isolation. All tests use ephemeral data ports and unique group IDs for parallel-safe CI execution. No Python daemon required.
+- **`multicast_loopback` config passthrough** — the `multicast_loopback` field is now correctly propagated from `AutoInterfaceConfig` through `InterfaceConfig` to the driver. Previously the field was silently dropped and hardcoded to `false`. Parseable from INI config files.
 - **SIGUSR1 diagnostic dump** — sending SIGUSR1 to `lrnsd` now prints a memory diagnostic summary to stderr, covering all protocol collections (storage, transport), estimated per-collection overhead, and process RSS.
 
 ### Fixed
+- **AutoInterface peer identity by SocketAddrV6** — peers are now identified by `(IPv6 address, data port)` instead of just IPv6 address. Without this, two different Reticulum nodes behind the same IPv6 address (containers, same-machine testing) were treated as one peer, stomping each other's interface handles. Interface names now include the port: `auto/{nic}/{addr}:{port}`.
+- **AutoInterface sends via NIC data socket** — eliminated the shared outbound socket; each peer send task now transmits via the NIC's data socket (`Arc<UdpSocket>`). This makes the source port of outgoing data packets equal to our advertised `data_port`, enabling direct peer map lookup by full `SocketAddrV6` on the receiving side. `recv_from_any` made generic via `Borrow<UdpSocket>`.
+- **AutoInterface ephemeral data ports** — when `multicast_loopback=true`, data sockets bind to port 0 (system-chosen) to avoid `SO_REUSEPORT` conflicts between same-machine nodes. Discovery packets extended to 42 bytes (`[nonce(8)] + [token(32)] + [data_port(2)]`) with nonce-based self-echo detection replacing IP-based detection.
+- **Event loop debug_assert on zero deadline removed** — `debug_assert!(delta > 0)` in `driver/mod.rs` panicked when `next_deadline()` legitimately returned a past timestamp (e.g., during peer timeout processing). The `clamp(1, 1000)` already prevents spin loops; the assertion was unnecessary. Fixes E24.
 - **AutoInterface failed to find network interfaces** — the `if-addrs` crate drops IPv6 link-local (fe80::) addresses by default; AutoInterface relies entirely on these for peer discovery. Enabled the `link-local` feature flag. Also added debug/trace logging to `enumerate_nics()` for future troubleshooting.
 
 ### Changed
