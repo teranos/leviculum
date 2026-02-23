@@ -1122,6 +1122,16 @@ class TestDaemon:
             print(f"Channel message received: {message.data}")
 
         self.received_packets.append((time.time(), link, message.data))
+
+        # Echo back via channel
+        try:
+            echo = RawBytesMessage()
+            echo.data = message.data
+            link.get_channel().send(echo)
+        except Exception as e:
+            if self.verbose:
+                print(f"Failed to echo channel message: {e}")
+
         return True
 
     def _on_packet(self, link, message, packet):

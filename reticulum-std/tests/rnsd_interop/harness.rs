@@ -475,7 +475,7 @@ impl TestDaemon {
     }
 
     /// Start a shared instance daemon on specific ports.
-    async fn start_with_shared_instance_ports(
+    pub async fn start_with_shared_instance_ports(
         rns_port: u16,
         cmd_port: u16,
         instance_name: &str,
