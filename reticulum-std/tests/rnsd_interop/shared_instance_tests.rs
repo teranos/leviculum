@@ -5,6 +5,7 @@
 //! establishment through a Rust daemon's shared instance.
 
 use std::net::SocketAddr;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
 
 use reticulum_core::framing::hdlc::{frame, DeframeResult, Deframer};
@@ -34,7 +35,12 @@ fn connect_abstract_unix(instance_name: &str) -> std::io::Result<tokio::net::Uni
 /// Start a shared instance daemon with a unique instance name to avoid
 /// conflicts with parallel tests and any real system daemon.
 async fn start_shared_daemon() -> (TestDaemon, String) {
-    let instance_name = format!("test_{}", std::process::id());
+    static COUNTER: AtomicU64 = AtomicU64::new(0);
+    let instance_name = format!(
+        "test_{}_{}",
+        std::process::id(),
+        COUNTER.fetch_add(1, Ordering::Relaxed)
+    );
     let daemon = TestDaemon::start_with_shared_instance(&instance_name)
         .await
         .expect("Failed to start shared instance daemon");
