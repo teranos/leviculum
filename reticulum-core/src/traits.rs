@@ -201,6 +201,12 @@ pub trait Storage {
         self.get_path(dest_hash).is_some()
     }
 
+    /// Return owned copies of all path table entries (for RPC export).
+    fn path_entries(&self) -> Vec<([u8; TRUNCATED_HASHBYTES], PathEntry)>;
+
+    /// Return owned copies of all announce rate entries (for RPC export).
+    fn announce_rate_entries(&self) -> Vec<([u8; TRUNCATED_HASHBYTES], AnnounceRateEntry)>;
+
     // ─── Path State ─────────────────────────────────────────────────────────
 
     /// Get path quality state for a destination
@@ -463,6 +469,14 @@ impl Storage for NoStorage {
     }
     fn earliest_path_expiry(&self) -> Option<u64> {
         None
+    }
+
+    fn path_entries(&self) -> Vec<([u8; TRUNCATED_HASHBYTES], PathEntry)> {
+        Vec::new()
+    }
+
+    fn announce_rate_entries(&self) -> Vec<([u8; TRUNCATED_HASHBYTES], AnnounceRateEntry)> {
+        Vec::new()
     }
 
     fn get_path_state(&self, _dest_hash: &[u8; TRUNCATED_HASHBYTES]) -> Option<PathState> {

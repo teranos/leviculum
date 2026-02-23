@@ -6,8 +6,10 @@
 
 use std::io;
 use std::net::SocketAddr;
+use std::sync::atomic::Ordering;
+use std::sync::Arc;
 
-use super::{IncomingPacket, InterfaceHandle, InterfaceInfo, OutgoingPacket};
+use super::{IncomingPacket, InterfaceCounters, InterfaceHandle, InterfaceInfo, OutgoingPacket};
 use reticulum_core::transport::InterfaceId;
 use tokio::sync::mpsc;
 
@@ -44,11 +46,21 @@ pub(crate) fn spawn_udp_interface(
 
     let (incoming_tx, incoming_rx) = mpsc::channel(UDP_DEFAULT_BUFFER_SIZE);
     let (outgoing_tx, outgoing_rx) = mpsc::channel(UDP_DEFAULT_BUFFER_SIZE);
+    let counters = Arc::new(InterfaceCounters::new());
 
     let task_name = name.clone();
+    let task_counters = Arc::clone(&counters);
 
     tokio::spawn(async move {
-        udp_io_task(task_name, socket, forward_addr, incoming_tx, outgoing_rx).await;
+        udp_io_task(
+            task_name,
+            socket,
+            forward_addr,
+            incoming_tx,
+            outgoing_rx,
+            task_counters,
+        )
+        .await;
     });
 
     Ok(InterfaceHandle {
@@ -60,6 +72,7 @@ pub(crate) fn spawn_udp_interface(
         },
         incoming: incoming_rx,
         outgoing: outgoing_tx,
+        counters,
     })
 }
 
@@ -78,6 +91,7 @@ async fn udp_io_task(
     forward_addr: SocketAddr,
     incoming_tx: mpsc::Sender<IncomingPacket>,
     mut outgoing_rx: mpsc::Receiver<OutgoingPacket>,
+    counters: Arc<InterfaceCounters>,
 ) {
     let mut buf = [0u8; UDP_MTU];
 
@@ -86,18 +100,19 @@ async fn udp_io_task(
             result = socket.recv_from(&mut buf) => {
                 match result {
                     Ok((len, _src_addr)) => {
-                        if len > 0
-                            && len <= UDP_MTU
-                            && incoming_tx
+                        if len > 0 && len <= UDP_MTU {
+                            counters.rx_bytes.fetch_add(len as u64, Ordering::Relaxed);
+                            if incoming_tx
                                 .send(IncomingPacket {
                                     data: buf[..len].to_vec(),
                                 })
                                 .await
                                 .is_err()
-                        {
-                            // Event loop dropped its receiver
-                            tracing::debug!("UDP {} incoming channel closed", name);
-                            return;
+                            {
+                                // Event loop dropped its receiver
+                                tracing::debug!("UDP {} incoming channel closed", name);
+                                return;
+                            }
                         }
                     }
                     Err(e) => {
@@ -110,9 +125,14 @@ async fn udp_io_task(
             msg = outgoing_rx.recv() => {
                 match msg {
                     Some(pkt) => {
-                        if let Err(e) = socket.send_to(&pkt.data, forward_addr).await {
-                            tracing::warn!("UDP {} send error: {}", name, e);
-                            // Don't break — send errors are transient for UDP
+                        match socket.send_to(&pkt.data, forward_addr).await {
+                            Ok(n) => {
+                                counters.tx_bytes.fetch_add(n as u64, Ordering::Relaxed);
+                            }
+                            Err(e) => {
+                                tracing::warn!("UDP {} send error: {}", name, e);
+                                // Don't break — send errors are transient for UDP
+                            }
                         }
                     }
                     None => {

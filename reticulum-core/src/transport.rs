@@ -856,7 +856,12 @@ impl<C: Clock, S: Storage> Transport<C, S> {
             .create_proof(packet_hash)
             .map_err(|_| TransportError::NoPath)?; // Use NoPath for simplicity
 
-        let packet = build_proof_packet(destination_hash, &proof_data);
+        // Proof destination = truncated PACKET hash (not the destination hash).
+        // Relay nodes route proofs back via the reverse_transport_table, which is
+        // keyed by truncated packet hash. Python: ProofDestination.hash = packet.get_hash()[:16]
+        let mut proof_dest = [0u8; TRUNCATED_HASHBYTES];
+        proof_dest.copy_from_slice(&packet_hash[..TRUNCATED_HASHBYTES]);
+        let packet = build_proof_packet(&proof_dest, &proof_data);
 
         // Prefer explicit interface (PROVE_ALL), fall back to path lookup (PROVE_APP)
         let interface_index = match receiving_interface {

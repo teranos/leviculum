@@ -66,6 +66,14 @@ use rand_core::CryptoRngCore;
 
 use crate::hex_fmt::{HexFmt, HexShort};
 
+/// Interval between management announces (probe destination, etc.).
+/// Python: `mgmt_announce_interval = 2*60*60` (2 hours).
+const MGMT_ANNOUNCE_INTERVAL_MS: u64 = 2 * 60 * 60 * 1000;
+
+/// Delay before the first management announce after startup.
+/// Python defers by `mgmt_announce_interval - 15` so first fires at ~15s.
+const MGMT_ANNOUNCE_INITIAL_DELAY_MS: u64 = 15 * 1000;
+
 /// Link statistics for observability
 #[derive(Debug, Clone)]
 pub struct LinkStats {
@@ -140,6 +148,14 @@ pub struct NodeCore<R: CryptoRngCore, C: Clock, S: Storage> {
     default_proof_strategy: ProofStrategy,
     /// Pending events
     events: Vec<NodeEvent>,
+    /// Probe destination hash (if respond_to_probes is enabled).
+    /// Used for periodic management announces and status reporting.
+    probe_dest_hash: Option<DestinationHash>,
+    /// Management destinations to announce periodically (probe, etc.).
+    /// Announced 15s after startup, then every 2 hours (matching Python).
+    mgmt_destinations: Vec<DestinationHash>,
+    /// Next time (ms) to send management announces. None if no mgmt destinations.
+    next_mgmt_announce_ms: Option<u64>,
 }
 
 impl<R: CryptoRngCore, C: Clock, S: Storage> NodeCore<R, C, S> {
@@ -177,6 +193,9 @@ impl<R: CryptoRngCore, C: Clock, S: Storage> NodeCore<R, C, S> {
             destinations: BTreeMap::new(),
             default_proof_strategy: proof_strategy,
             events: Vec::new(),
+            probe_dest_hash: None,
+            mgmt_destinations: Vec::new(),
+            next_mgmt_announce_ms: None,
         }
     }
 
@@ -201,6 +220,62 @@ impl<R: CryptoRngCore, C: Clock, S: Storage> NodeCore<R, C, S> {
     pub fn unregister_destination(&mut self, hash: &DestinationHash) {
         self.transport.unregister_destination(hash.as_bytes());
         self.destinations.remove(hash);
+    }
+
+    /// Get the probe destination hash (if respond_to_probes is enabled).
+    ///
+    /// Used by RPC handlers (rnstatus) and status reporting.
+    pub fn probe_dest_hash(&self) -> Option<&DestinationHash> {
+        self.probe_dest_hash.as_ref()
+    }
+
+    /// Create and register the probe responder destination (rnstransport.probe).
+    ///
+    /// Called by `NodeCoreBuilder::build()` when `respond_to_probes` is set.
+    /// Reconstructs the transport identity from private key bytes, creates
+    /// a `Destination(identity, IN, SINGLE, "rnstransport", "probe")` with
+    /// `ProofStrategy::All`, registers it, and schedules periodic announces
+    /// (15s after startup, then every 2 hours — matching Python rnsd).
+    fn enable_probe_responder(&mut self) {
+        // Reconstruct identity for the probe destination (Transport owns the original)
+        let identity_bytes = match self.transport.identity().private_key_bytes() {
+            Ok(bytes) => bytes,
+            Err(e) => {
+                tracing::warn!("Cannot create probe destination: {e}");
+                return;
+            }
+        };
+        let probe_identity = match Identity::from_private_key_bytes(&identity_bytes) {
+            Ok(id) => id,
+            Err(e) => {
+                tracing::warn!("Cannot create probe destination: {e}");
+                return;
+            }
+        };
+        let mut probe_dest = match Destination::new(
+            Some(probe_identity),
+            crate::destination::Direction::In,
+            crate::destination::DestinationType::Single,
+            "rnstransport",
+            &["probe"],
+        ) {
+            Ok(d) => d,
+            Err(e) => {
+                tracing::warn!("Cannot create probe destination: {e}");
+                return;
+            }
+        };
+        probe_dest.set_proof_strategy(ProofStrategy::All);
+        let hash = *probe_dest.hash();
+        self.register_destination(probe_dest);
+        self.probe_dest_hash = Some(hash);
+        self.mgmt_destinations.push(hash);
+
+        // Schedule first announce 15s after startup
+        let now_ms = self.transport.clock().now_ms();
+        self.next_mgmt_announce_ms = Some(now_ms + MGMT_ANNOUNCE_INITIAL_DELAY_MS);
+
+        tracing::info!("Probe responder at <{}> active", hash);
     }
 
     /// Get a registered destination
@@ -411,6 +486,48 @@ impl<R: CryptoRngCore, C: Clock, S: Storage> NodeCore<R, C, S> {
         self.process_events_and_actions()
     }
 
+    /// Send management announces if their timer has expired.
+    ///
+    /// Announces each destination in `mgmt_destinations` (probe, etc.)
+    /// and reschedules the next announce 2 hours later.
+    /// Queues broadcast actions internally — they are drained by the
+    /// `process_events_and_actions()` call at the end of `handle_timeout()`.
+    fn check_mgmt_announces(&mut self, now_ms: u64) {
+        let deadline = match self.next_mgmt_announce_ms {
+            Some(d) if now_ms >= d => d,
+            _ => return,
+        };
+        let _ = deadline; // used only for the >= check
+
+        // Clone hashes to avoid borrow conflict with self
+        let hashes: Vec<DestinationHash> = self.mgmt_destinations.clone();
+        for dest_hash in &hashes {
+            let dest = match self.destinations.get_mut(dest_hash) {
+                Some(d) => d,
+                None => continue,
+            };
+            let packet = match dest.announce(None, &mut self.rng, now_ms) {
+                Ok(p) => p,
+                Err(e) => {
+                    tracing::warn!("Management announce failed for <{}>: {}", dest_hash, e);
+                    continue;
+                }
+            };
+            let mut buf = [0u8; crate::constants::MTU];
+            match packet.pack(&mut buf) {
+                Ok(len) => {
+                    self.transport.send_on_all_interfaces(&buf[..len]);
+                    tracing::debug!("Management announce sent for <{}>", dest_hash);
+                }
+                Err(_) => {
+                    tracing::warn!("Management announce pack failed for <{}>", dest_hash);
+                }
+            }
+        }
+
+        self.next_mgmt_announce_ms = Some(now_ms + MGMT_ANNOUNCE_INTERVAL_MS);
+    }
+
     /// Run periodic maintenance (sans-I/O)
     ///
     /// The driver should call this when the deadline from [`next_deadline`]
@@ -430,6 +547,9 @@ impl<R: CryptoRngCore, C: Clock, S: Storage> NodeCore<R, C, S> {
         self.check_stale_links(now_secs);
         self.check_channel_timeouts(now_ms);
 
+        // Send management announces (probe destination, etc.)
+        self.check_mgmt_announces(now_ms);
+
         // Process all resulting events and actions
         self.process_events_and_actions()
     }
@@ -445,13 +565,12 @@ impl<R: CryptoRngCore, C: Clock, S: Storage> NodeCore<R, C, S> {
         let now_ms = self.transport.clock().now_ms();
         let transport_deadline = self.transport.next_deadline();
         let link_deadline = self.link_next_deadline(now_ms);
+        let mgmt_deadline = self.next_mgmt_announce_ms;
 
-        match (transport_deadline, link_deadline) {
-            (Some(t), Some(l)) => Some(core::cmp::min(t, l)),
-            (Some(t), None) => Some(t),
-            (None, Some(l)) => Some(l),
-            (None, None) => None,
-        }
+        [transport_deadline, link_deadline, mgmt_deadline]
+            .into_iter()
+            .flatten()
+            .min()
     }
 
     /// Register a human-readable name for an interface.

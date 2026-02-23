@@ -20,7 +20,9 @@ use super::{
     DeduplicationCache, ANNOUNCE_INTERVAL_SECS, AUTO_HW_MTU, DISCOVERY_PACKET_SIZE,
     MCAST_ECHO_TIMEOUT_SECS, NONCE_SIZE, PEERING_TIMEOUT_SECS, PEER_JOB_INTERVAL_SECS,
 };
-use crate::interfaces::{IncomingPacket, InterfaceHandle, InterfaceInfo, OutgoingPacket};
+use crate::interfaces::{
+    IncomingPacket, InterfaceCounters, InterfaceHandle, InterfaceInfo, OutgoingPacket,
+};
 use reticulum_core::transport::InterfaceId;
 
 /// Maximum datagram size for AutoInterface (matches Python HW_MTU = 1196).
@@ -42,6 +44,8 @@ struct PeerInfo {
     /// Channel to push incoming data to the event loop.
     /// Dropping this triggers handle_interface_down cascade.
     incoming_tx: mpsc::Sender<IncomingPacket>,
+    /// Shared I/O counters (same Arc is in the InterfaceHandle)
+    counters: Arc<InterfaceCounters>,
 }
 
 /// Per-NIC multicast echo tracking for carrier detection
@@ -378,6 +382,7 @@ async fn run_auto_interface(
 
                 if let Some(peer) = lookup_key.and_then(|k| peers.get_mut(&k)) {
                     peer.last_heard = Instant::now();
+                    peer.counters.rx_bytes.fetch_add(data.len() as u64, std::sync::atomic::Ordering::Relaxed);
                     match peer.incoming_tx.try_send(IncomingPacket {
                         data: data.to_vec(),
                     }) {
@@ -599,13 +604,16 @@ fn handle_discovery_packet(
     let (incoming_tx, incoming_rx) = mpsc::channel(PEER_CHANNEL_BUFFER);
     let (outgoing_tx, outgoing_rx) = mpsc::channel(PEER_CHANNEL_BUFFER);
 
+    let counters = Arc::new(InterfaceCounters::new());
+
     // Spawn per-peer send task — sends via NIC data socket to peer's
     // (IP, data_port). Using the NIC data socket means our source port =
     // our data_port, which the peer matches against its peer map key.
     let peer_dest = SocketAddrV6::new(src_addr, peer_data_port, 0, nic.index);
     let send_socket = data_socket.clone();
+    let send_counters = Arc::clone(&counters);
     tokio::spawn(async move {
-        peer_send_task(outgoing_rx, send_socket, peer_dest).await;
+        peer_send_task(outgoing_rx, send_socket, peer_dest, send_counters).await;
     });
 
     // Format interface name: IP suffix + port (to distinguish same-IP peers)
@@ -626,6 +634,7 @@ fn handle_discovery_packet(
         },
         incoming: incoming_rx,
         outgoing: outgoing_tx,
+        counters: Arc::clone(&counters),
     };
 
     let now = Instant::now();
@@ -637,6 +646,7 @@ fn handle_discovery_packet(
             last_heard: now,
             last_reverse_peering: now,
             incoming_tx,
+            counters,
         },
     );
     let _ = peer_count_tx.send(peers.len());
@@ -680,11 +690,19 @@ async fn peer_send_task(
     mut outgoing_rx: mpsc::Receiver<OutgoingPacket>,
     socket: Arc<UdpSocket>,
     peer_addr: SocketAddrV6,
+    counters: Arc<InterfaceCounters>,
 ) {
     while let Some(pkt) = outgoing_rx.recv().await {
-        if let Err(e) = socket.send_to(&pkt.data, peer_addr).await {
-            tracing::debug!("AutoInterface: send to {} failed: {}", peer_addr.ip(), e);
-            // Don't break — send errors are transient for UDP
+        match socket.send_to(&pkt.data, peer_addr).await {
+            Ok(n) => {
+                counters
+                    .tx_bytes
+                    .fetch_add(n as u64, std::sync::atomic::Ordering::Relaxed);
+            }
+            Err(e) => {
+                tracing::debug!("AutoInterface: send to {} failed: {}", peer_addr.ip(), e);
+                // Don't break — send errors are transient for UDP
+            }
         }
     }
     tracing::debug!("AutoInterface: send task for {} exiting", peer_addr.ip());
@@ -817,6 +835,7 @@ mod tests {
             last_heard: Instant::now(),
             last_reverse_peering: Instant::now(),
             incoming_tx: tx,
+            counters: Arc::new(InterfaceCounters::new()),
         };
     }
 
@@ -836,8 +855,9 @@ mod tests {
         // Use a dummy address — we won't actually receive
         let peer_addr = SocketAddrV6::new("::1".parse().unwrap(), 9999, 0, 0);
 
+        let counters = Arc::new(InterfaceCounters::new());
         let handle = tokio::spawn(async move {
-            peer_send_task(outgoing_rx, socket, peer_addr).await;
+            peer_send_task(outgoing_rx, socket, peer_addr, counters).await;
         });
 
         // Drop the sender — task should exit
@@ -863,9 +883,10 @@ mod tests {
 
         // Rewrite to use loopback with correct port
         let peer_addr = SocketAddrV6::new("::1".parse().unwrap(), recv_v6.port(), 0, 0);
+        let counters = Arc::new(InterfaceCounters::new());
 
         tokio::spawn(async move {
-            peer_send_task(outgoing_rx, socket, peer_addr).await;
+            peer_send_task(outgoing_rx, socket, peer_addr, counters).await;
         });
 
         // Send a packet

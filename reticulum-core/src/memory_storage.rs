@@ -438,6 +438,20 @@ impl Storage for MemoryStorage {
         self.path_table.values().map(|e| e.expires_ms).min()
     }
 
+    fn path_entries(&self) -> Vec<([u8; TRUNCATED_HASHBYTES], PathEntry)> {
+        self.path_table
+            .iter()
+            .map(|(k, v)| (*k, v.clone()))
+            .collect()
+    }
+
+    fn announce_rate_entries(&self) -> Vec<([u8; TRUNCATED_HASHBYTES], AnnounceRateEntry)> {
+        self.announce_rate_table
+            .iter()
+            .map(|(k, v)| (*k, *v))
+            .collect()
+    }
+
     // ─── Path State ─────────────────────────────────────────────────────
 
     fn get_path_state(&self, dest_hash: &[u8; TRUNCATED_HASHBYTES]) -> Option<PathState> {

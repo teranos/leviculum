@@ -376,7 +376,9 @@ impl ReticulumNodeBuilder {
         } else {
             self.core_builder
         };
-        let core_builder = core_builder.enable_transport(enable_transport);
+        let core_builder = core_builder
+            .enable_transport(enable_transport)
+            .respond_to_probes(config.reticulum.respond_to_probes);
 
         // Build NodeCore (consumes storage — persistent data already loaded)
         let node_core = core_builder.build(rand_core::OsRng, clock, storage);
@@ -385,6 +387,7 @@ impl ReticulumNodeBuilder {
         if share_instance {
             node.set_share_instance(instance_name);
         }
+
         Ok(node)
     }
 
@@ -688,6 +691,34 @@ mod tests {
         let msg = b"test message";
         let sig = id.sign(msg).unwrap();
         assert!(id.verify(msg, &sig).unwrap());
+    }
+
+    #[test]
+    fn test_respond_to_probes_registers_destination() {
+        let mut config = Config::default();
+        config.reticulum.respond_to_probes = true;
+        let node = ReticulumNodeBuilder::new()
+            .config(config)
+            .build_sync()
+            .expect("build_sync with respond_to_probes failed");
+        // Core should have the probe destination hash
+        let inner = node.inner.lock().unwrap();
+        assert!(
+            inner.probe_dest_hash().is_some(),
+            "probe_dest_hash should be set when respond_to_probes is enabled"
+        );
+    }
+
+    #[test]
+    fn test_respond_to_probes_disabled_by_default() {
+        let node = ReticulumNodeBuilder::new()
+            .build_sync()
+            .expect("build_sync failed");
+        let inner = node.inner.lock().unwrap();
+        assert!(
+            inner.probe_dest_hash().is_none(),
+            "probe_dest_hash should be None when respond_to_probes is disabled"
+        );
     }
 
     // Reuse the dirs module from config.rs for home dir lookup in tests

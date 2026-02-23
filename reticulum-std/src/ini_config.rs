@@ -142,6 +142,9 @@ fn apply_reticulum_key(config: &mut ReticulumConfig, key: &str, value: &str) {
         "share_instance" => {
             config.shared_instance = parse_bool(value);
         }
+        "respond_to_probes" => {
+            config.respond_to_probes = parse_bool(value);
+        }
         "remote_management_enabled" => {
             config.remote_management_enabled = parse_bool(value);
         }
@@ -460,5 +463,23 @@ mod tests {
         assert!(!config.reticulum.enable_transport);
         assert!(config.reticulum.shared_instance);
         assert!(config.interfaces.is_empty());
+    }
+
+    #[test]
+    fn test_respond_to_probes_default_false() {
+        let config = parse_ini("[reticulum]\n").unwrap();
+        assert!(!config.reticulum.respond_to_probes);
+    }
+
+    #[test]
+    fn test_respond_to_probes_enabled() {
+        let config = parse_ini(
+            r#"
+[reticulum]
+  respond_to_probes = Yes
+"#,
+        )
+        .unwrap();
+        assert!(config.reticulum.respond_to_probes);
     }
 }

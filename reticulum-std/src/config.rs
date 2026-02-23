@@ -37,6 +37,13 @@ pub struct ReticulumConfig {
     /// The abstract socket path will be `\0rns/{instance_name}`.
     #[serde(default = "default_instance_name")]
     pub instance_name: String,
+    /// Respond to rnprobe requests
+    ///
+    /// When enabled, creates a probe destination (`rnstransport.probe`) with
+    /// `ProofStrategy::All`, so the node automatically sends a signed proof
+    /// for every incoming probe packet.
+    #[serde(default)]
+    pub respond_to_probes: bool,
     /// Enable remote management
     #[serde(default)]
     pub remote_management_enabled: bool,
@@ -60,6 +67,7 @@ impl Default for ReticulumConfig {
             use_implicit_proof: true,
             shared_instance: false,
             instance_name: default_instance_name(),
+            respond_to_probes: false,
             remote_management_enabled: false,
             storage_path: None,
         }

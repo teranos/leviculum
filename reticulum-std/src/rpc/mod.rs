@@ -17,8 +17,10 @@ pub(crate) mod pickle;
 use std::sync::{Arc, Mutex};
 
 use tokio::net::UnixListener;
+use tokio::sync::watch;
 
 use crate::driver::StdNodeCore;
+use crate::interfaces::InterfaceStatsMap;
 use connection::{read_message, server_handshake, write_message};
 use error::RpcError;
 use handlers::handle_request;
@@ -33,6 +35,8 @@ pub(crate) fn spawn_rpc_server(
     core: Arc<Mutex<StdNodeCore>>,
     authkey: [u8; 32],
     start_time: std::time::Instant,
+    iface_stats_map: InterfaceStatsMap,
+    auto_peer_count_rx: Option<watch::Receiver<usize>>,
 ) -> Result<(), std::io::Error> {
     let abstract_name = format!("rns/{}/rpc", instance_name);
 
@@ -49,7 +53,15 @@ pub(crate) fn spawn_rpc_server(
     );
 
     tokio::spawn(async move {
-        rpc_accept_loop(listener, core, authkey, start_time).await;
+        rpc_accept_loop(
+            listener,
+            core,
+            authkey,
+            start_time,
+            iface_stats_map,
+            auto_peer_count_rx,
+        )
+        .await;
     });
 
     Ok(())
@@ -61,6 +73,8 @@ async fn rpc_accept_loop(
     core: Arc<Mutex<StdNodeCore>>,
     authkey: [u8; 32],
     start_time: std::time::Instant,
+    iface_stats_map: InterfaceStatsMap,
+    auto_peer_count_rx: Option<watch::Receiver<usize>>,
 ) {
     loop {
         let (stream, _addr) = match listener.accept().await {
@@ -72,8 +86,19 @@ async fn rpc_accept_loop(
         };
 
         let core = Arc::clone(&core);
+        let stats_map = Arc::clone(&iface_stats_map);
+        let peer_count_rx = auto_peer_count_rx.clone();
         tokio::spawn(async move {
-            if let Err(e) = handle_rpc_connection(stream, &core, &authkey, start_time).await {
+            if let Err(e) = handle_rpc_connection(
+                stream,
+                &core,
+                &authkey,
+                start_time,
+                &stats_map,
+                &peer_count_rx,
+            )
+            .await
+            {
                 tracing::debug!("RPC connection error: {}", e);
             }
         });
@@ -86,6 +111,8 @@ async fn handle_rpc_connection(
     core: &Arc<Mutex<StdNodeCore>>,
     authkey: &[u8; 32],
     start_time: std::time::Instant,
+    iface_stats_map: &InterfaceStatsMap,
+    auto_peer_count_rx: &Option<watch::Receiver<usize>>,
 ) -> Result<(), RpcError> {
     server_handshake(&mut stream, authkey).await?;
 
@@ -95,8 +122,12 @@ async fn handle_rpc_connection(
     tracing::debug!("RPC request: {:?}", request);
 
     let response_bytes = {
-        let core = core.lock().unwrap();
-        handle_request(&request, &core, start_time)?
+        let mut core = core.lock().unwrap();
+        let peer_count = auto_peer_count_rx
+            .as_ref()
+            .map(|rx| *rx.borrow())
+            .unwrap_or(0);
+        handle_request(&request, &mut core, start_time, iface_stats_map, peer_count)?
     };
 
     write_message(&mut stream, &response_bytes).await?;
@@ -140,6 +171,7 @@ pub(crate) async fn rpc_client_call(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::interfaces::InterfaceStatsMap;
     use pickle::{pickle_dict, pickle_str, pickle_str_key};
     use serde_pickle::value::{HashableValue, Value};
 
@@ -163,6 +195,10 @@ mod tests {
         node.inner()
     }
 
+    fn empty_stats_map() -> InterfaceStatsMap {
+        Arc::new(std::sync::Mutex::new(std::collections::BTreeMap::new()))
+    }
+
     /// Spawn a minimal RPC server and test it with a Rust client.
     #[tokio::test]
     async fn test_rpc_interface_stats_round_trip() {
@@ -173,7 +209,15 @@ mod tests {
         let instance_name = format!("rpctest_{}", std::process::id());
         let abstract_name = format!("rns/{}/rpc", instance_name);
 
-        spawn_rpc_server(&instance_name, Arc::clone(&core), authkey, start_time).unwrap();
+        spawn_rpc_server(
+            &instance_name,
+            Arc::clone(&core),
+            authkey,
+            start_time,
+            empty_stats_map(),
+            None,
+        )
+        .unwrap();
         tokio::time::sleep(std::time::Duration::from_millis(50)).await;
 
         let request = pickle_dict(vec![(pickle_str_key("get"), pickle_str("interface_stats"))]);
@@ -216,7 +260,15 @@ mod tests {
         let instance_name = format!("rpctest_auth_{}", std::process::id());
         let abstract_name = format!("rns/{}/rpc", instance_name);
 
-        spawn_rpc_server(&instance_name, Arc::clone(&core), authkey, start_time).unwrap();
+        spawn_rpc_server(
+            &instance_name,
+            Arc::clone(&core),
+            authkey,
+            start_time,
+            empty_stats_map(),
+            None,
+        )
+        .unwrap();
         tokio::time::sleep(std::time::Duration::from_millis(50)).await;
 
         let wrong_key = [0xFFu8; 32];
@@ -235,7 +287,15 @@ mod tests {
         let instance_name = format!("rpctest_lc_{}", std::process::id());
         let abstract_name = format!("rns/{}/rpc", instance_name);
 
-        spawn_rpc_server(&instance_name, Arc::clone(&core), authkey, start_time).unwrap();
+        spawn_rpc_server(
+            &instance_name,
+            Arc::clone(&core),
+            authkey,
+            start_time,
+            empty_stats_map(),
+            None,
+        )
+        .unwrap();
         tokio::time::sleep(std::time::Duration::from_millis(50)).await;
 
         let request = pickle_dict(vec![(pickle_str_key("get"), pickle_str("link_count"))]);

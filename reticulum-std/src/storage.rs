@@ -323,6 +323,22 @@ impl reticulum_core::traits::Storage for Storage {
     fn earliest_path_expiry(&self) -> Option<u64> {
         self.inner.earliest_path_expiry()
     }
+    fn path_entries(
+        &self,
+    ) -> Vec<(
+        [u8; TRUNCATED_HASHBYTES],
+        reticulum_core::storage_types::PathEntry,
+    )> {
+        self.inner.path_entries()
+    }
+    fn announce_rate_entries(
+        &self,
+    ) -> Vec<(
+        [u8; TRUNCATED_HASHBYTES],
+        reticulum_core::storage_types::AnnounceRateEntry,
+    )> {
+        self.inner.announce_rate_entries()
+    }
 
     // ─── Path State ──────────────────────────────────────────────────────
     fn get_path_state(

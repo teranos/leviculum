@@ -174,7 +174,11 @@ fn build_interface_stats(
             pickle_bytes(identity.hash()),
         ));
         entries.push((pickle_str_key("transport_uptime"), pickle_float(uptime)));
-        entries.push((pickle_str_key("probe_responder"), pickle_none()));
+        let probe_value = match core.probe_dest_hash() {
+            Some(hash) => pickle_bytes(hash.as_bytes()),
+            None => pickle_none(),
+        };
+        entries.push((pickle_str_key("probe_responder"), probe_value));
         entries.push((pickle_str_key("network_id"), pickle_none()));
     }
 
@@ -225,8 +229,11 @@ fn build_path_table(
             (
                 pickle_str_key("via"),
                 match &entry.next_hop {
+                    // Relayed: next_hop is the relay's transport ID
                     Some(h) => pickle_bytes(h),
-                    None => pickle_none(),
+                    // Direct: Python uses the destination hash as received_from
+                    // (Transport.py:1600), never None — rnpath crashes on None.
+                    None => pickle_bytes(&entry.hash),
                 },
             ),
             (pickle_str_key("hops"), pickle_int(python_hops)),
@@ -283,7 +290,8 @@ fn get_next_hop(core: &StdNodeCore, destination_hash: &[u8]) -> Value {
     match core.get_path_clone(&hash) {
         Some(entry) => match &entry.next_hop {
             Some(h) => pickle_bytes(h),
-            None => pickle_none(),
+            // Direct path: Python returns destination_hash (Transport.py:1600)
+            None => pickle_bytes(&hash),
         },
         None => pickle_none(),
     }

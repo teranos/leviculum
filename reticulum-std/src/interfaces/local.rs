@@ -19,7 +19,7 @@ use tokio::io::AsyncWriteExt;
 use tokio::net::UnixStream;
 use tokio::sync::mpsc;
 
-use super::{IncomingPacket, InterfaceHandle, InterfaceInfo, OutgoingPacket};
+use super::{IncomingPacket, InterfaceCounters, InterfaceHandle, InterfaceInfo, OutgoingPacket};
 
 /// Default channel buffer size for local interfaces.
 pub(crate) const LOCAL_DEFAULT_BUFFER_SIZE: usize = 256;
@@ -108,11 +108,13 @@ fn spawn_local_interface_from_stream(
 ) -> InterfaceHandle {
     let (incoming_tx, incoming_rx) = mpsc::channel(buffer_size);
     let (outgoing_tx, outgoing_rx) = mpsc::channel(buffer_size);
+    let counters = Arc::new(InterfaceCounters::new());
 
     let task_name = name.clone();
+    let task_counters = Arc::clone(&counters);
 
     tokio::spawn(async move {
-        local_interface_task(task_name, stream, incoming_tx, outgoing_rx).await;
+        local_interface_task(task_name, stream, incoming_tx, outgoing_rx, task_counters).await;
     });
 
     InterfaceHandle {
@@ -124,6 +126,7 @@ fn spawn_local_interface_from_stream(
         },
         incoming: incoming_rx,
         outgoing: outgoing_tx,
+        counters,
     }
 }
 
@@ -136,6 +139,7 @@ async fn local_interface_task(
     stream: UnixStream,
     incoming_tx: mpsc::Sender<IncomingPacket>,
     mut outgoing_rx: mpsc::Receiver<OutgoingPacket>,
+    counters: Arc<InterfaceCounters>,
 ) {
     let (reader, mut writer) = stream.into_split();
 
@@ -156,6 +160,7 @@ async fn local_interface_task(
                                     return;
                                 }
                                 Ok(n) => {
+                                    counters.rx_bytes.fetch_add(n as u64, Ordering::Relaxed);
                                     let results = deframer.process(&read_buf[..n]);
                                     for r in results {
                                         if let DeframeResult::Frame(data) = r {
@@ -191,6 +196,7 @@ async fn local_interface_task(
                             tracing::debug!("Local interface {} write error: {}", name, e);
                             return;
                         }
+                        counters.tx_bytes.fetch_add(frame_buf.len() as u64, Ordering::Relaxed);
                     }
                     None => {
                         tracing::debug!("Local interface {} outgoing channel closed", name);

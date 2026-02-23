@@ -38,6 +38,7 @@ pub struct NodeCoreBuilder {
     identity: Option<Identity>,
     proof_strategy: ProofStrategy,
     transport_config: TransportConfig,
+    respond_to_probes: bool,
 }
 
 impl Default for NodeCoreBuilder {
@@ -53,6 +54,7 @@ impl NodeCoreBuilder {
             identity: None,
             proof_strategy: ProofStrategy::None,
             transport_config: TransportConfig::default(),
+            respond_to_probes: false,
         }
     }
 
@@ -94,6 +96,16 @@ impl NodeCoreBuilder {
         self
     }
 
+    /// Enable probe responder (rnstransport.probe destination with PROVE_ALL).
+    ///
+    /// When enabled, the node creates a probe destination from its transport
+    /// identity at build time and announces it periodically. Other nodes can
+    /// then use `rnprobe` to measure RTT via delivery proofs.
+    pub fn respond_to_probes(mut self, enable: bool) -> Self {
+        self.respond_to_probes = enable;
+        self
+    }
+
     /// Set the full transport configuration
     pub fn transport_config(mut self, config: TransportConfig) -> Self {
         self.transport_config = config;
@@ -130,14 +142,20 @@ impl NodeCoreBuilder {
             None => Identity::generate(&mut rng),
         };
 
-        NodeCore::new(
+        let mut node = NodeCore::new(
             identity,
             self.transport_config,
             self.proof_strategy,
             rng,
             clock,
             storage,
-        )
+        );
+
+        if self.respond_to_probes {
+            node.enable_probe_responder();
+        }
+
+        node
     }
 }
 
@@ -211,5 +229,63 @@ mod tests {
         assert_eq!(node.default_proof_strategy(), ProofStrategy::App);
         assert!(!node.transport_config().enable_transport);
         assert_eq!(node.transport_config().max_hops, 5);
+    }
+
+    #[test]
+    fn test_respond_to_probes_creates_destination() {
+        let clock = MockClock::new(TEST_TIME_MS);
+        let node = NodeCoreBuilder::new()
+            .respond_to_probes(true)
+            .build(OsRng, clock, NoStorage);
+
+        let probe_hash = node.probe_dest_hash();
+        assert!(
+            probe_hash.is_some(),
+            "probe destination should be registered"
+        );
+
+        // Verify it's a real registered destination
+        let hash = probe_hash.unwrap();
+        assert!(node.destination(hash).is_some());
+    }
+
+    #[test]
+    fn test_respond_to_probes_disabled_by_default() {
+        let clock = MockClock::new(TEST_TIME_MS);
+        let node = NodeCoreBuilder::new().build(OsRng, clock, NoStorage);
+
+        assert!(
+            node.probe_dest_hash().is_none(),
+            "probe should not be enabled by default"
+        );
+    }
+
+    #[test]
+    fn test_probe_destination_has_prove_all_strategy() {
+        let clock = MockClock::new(TEST_TIME_MS);
+        let node = NodeCoreBuilder::new()
+            .respond_to_probes(true)
+            .build(OsRng, clock, NoStorage);
+
+        let hash = node.probe_dest_hash().unwrap();
+        let dest = node.destination(hash).unwrap();
+        assert_eq!(dest.proof_strategy(), ProofStrategy::All);
+    }
+
+    #[test]
+    fn test_probe_schedules_mgmt_announce() {
+        let clock = MockClock::new(TEST_TIME_MS);
+        let node = NodeCoreBuilder::new()
+            .respond_to_probes(true)
+            .build(OsRng, clock, NoStorage);
+
+        // Should have a next_deadline for the mgmt announce (15s after startup)
+        let deadline = node.next_deadline();
+        assert!(
+            deadline.is_some(),
+            "mgmt announce should schedule a deadline"
+        );
+        let expected = TEST_TIME_MS + 15_000;
+        assert_eq!(deadline.unwrap(), expected);
     }
 }

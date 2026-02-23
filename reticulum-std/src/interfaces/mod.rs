@@ -15,9 +15,101 @@ pub(crate) mod local;
 pub(crate) mod tcp;
 pub(crate) mod udp;
 
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::Arc;
+use std::time::Instant;
+
 use reticulum_core::traits::{InterfaceError, InterfaceMode};
 use reticulum_core::transport::InterfaceId;
 use tokio::sync::mpsc;
+
+/// Speed sampling state, updated every second by the traffic counter task.
+struct SpeedState {
+    prev_rx: u64,
+    prev_tx: u64,
+    prev_time: Instant,
+    cached_rxs: f64,
+    cached_txs: f64,
+}
+
+/// Shared I/O counters for an interface, readable from the RPC handler.
+///
+/// Created by each interface spawn function, cloned into the I/O task.
+/// The RPC handler reads these via `InterfaceStatsMap`.
+///
+/// `rx_bytes`/`tx_bytes` are written by I/O tasks (lock-free atomics).
+/// `speed` is updated every second by a background task (see
+/// `spawn_traffic_counter`) and read by the RPC handler.
+pub(crate) struct InterfaceCounters {
+    pub rx_bytes: AtomicU64,
+    pub tx_bytes: AtomicU64,
+    speed: std::sync::Mutex<SpeedState>,
+}
+
+impl InterfaceCounters {
+    pub(crate) fn new() -> Self {
+        Self {
+            rx_bytes: AtomicU64::new(0),
+            tx_bytes: AtomicU64::new(0),
+            speed: std::sync::Mutex::new(SpeedState {
+                prev_rx: 0,
+                prev_tx: 0,
+                prev_time: Instant::now(),
+                cached_rxs: 0.0,
+                cached_txs: 0.0,
+            }),
+        }
+    }
+
+    /// Sample current byte counters and recompute cached speeds.
+    ///
+    /// Called every second by the traffic counter task. Formula matches
+    /// Python's `count_traffic_loop`: `(byte_diff * 8) / time_diff`.
+    pub(crate) fn update_speed(&self) {
+        let mut state = self.speed.lock().unwrap();
+        let now = Instant::now();
+        let elapsed = now.duration_since(state.prev_time).as_secs_f64();
+        if elapsed > 0.0 {
+            let rx = self.rx_bytes.load(Ordering::Relaxed);
+            let tx = self.tx_bytes.load(Ordering::Relaxed);
+            state.cached_rxs = (rx.saturating_sub(state.prev_rx) as f64 * 8.0) / elapsed;
+            state.cached_txs = (tx.saturating_sub(state.prev_tx) as f64 * 8.0) / elapsed;
+            state.prev_rx = rx;
+            state.prev_tx = tx;
+            state.prev_time = now;
+        }
+    }
+
+    /// Return the cached rx/tx speeds in bits per second.
+    ///
+    /// Returns the values last computed by `update_speed()`.
+    pub(crate) fn speeds(&self) -> (f64, f64) {
+        let state = self.speed.lock().unwrap();
+        (state.cached_rxs, state.cached_txs)
+    }
+}
+
+/// Spawn a background task that samples interface byte counters every second
+/// and updates cached speeds. Mirrors Python's `Transport.count_traffic_loop()`.
+pub(crate) fn spawn_traffic_counter(iface_stats_map: InterfaceStatsMap) {
+    tokio::spawn(async move {
+        let mut interval = tokio::time::interval(std::time::Duration::from_secs(1));
+        loop {
+            interval.tick().await;
+            let map = iface_stats_map.lock().unwrap();
+            for counters in map.values() {
+                counters.update_speed();
+            }
+        }
+    });
+}
+
+/// Shared map of interface counters, keyed by interface ID index.
+///
+/// Populated by the event loop when handles are registered.
+/// Read by the RPC handler for byte counter reporting.
+pub(crate) type InterfaceStatsMap =
+    Arc<std::sync::Mutex<std::collections::BTreeMap<usize, Arc<InterfaceCounters>>>>;
 
 /// Packet received from an interface, ready for the event loop
 pub(crate) struct IncomingPacket {
@@ -46,6 +138,7 @@ pub(crate) struct InterfaceHandle {
     pub info: InterfaceInfo,
     pub incoming: mpsc::Receiver<IncomingPacket>,
     pub outgoing: mpsc::Sender<OutgoingPacket>,
+    pub counters: Arc<InterfaceCounters>,
 }
 
 impl reticulum_core::traits::Interface for InterfaceHandle {

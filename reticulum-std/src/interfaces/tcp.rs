@@ -14,7 +14,7 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 
-use super::{IncomingPacket, InterfaceInfo, OutgoingPacket};
+use super::{IncomingPacket, InterfaceCounters, InterfaceInfo, OutgoingPacket};
 use rand_core::RngCore;
 use reticulum_core::constants::MTU;
 use reticulum_core::framing::hdlc::{frame, DeframeResult, Deframer};
@@ -89,12 +89,21 @@ pub(crate) fn spawn_tcp_interface_from_stream(
 ) -> InterfaceHandle {
     let (incoming_tx, incoming_rx) = mpsc::channel(buffer_size);
     let (outgoing_tx, outgoing_rx) = mpsc::channel(buffer_size);
+    let counters = Arc::new(InterfaceCounters::new());
 
     let task_name = name.clone();
+    let task_counters = Arc::clone(&counters);
 
     tokio::spawn(async move {
-        let _rx =
-            tcp_interface_task(task_name, stream, incoming_tx, outgoing_rx, corrupt_every).await;
+        let _rx = tcp_interface_task(
+            task_name,
+            stream,
+            incoming_tx,
+            outgoing_rx,
+            corrupt_every,
+            task_counters,
+        )
+        .await;
     });
 
     InterfaceHandle {
@@ -106,6 +115,7 @@ pub(crate) fn spawn_tcp_interface_from_stream(
         },
         incoming: incoming_rx,
         outgoing: outgoing_tx,
+        counters,
     }
 }
 
@@ -221,8 +231,10 @@ pub(crate) fn spawn_tcp_client_with_reconnect(
 ) -> InterfaceHandle {
     let (incoming_tx, incoming_rx) = mpsc::channel(buffer_size);
     let (outgoing_tx, outgoing_rx) = mpsc::channel(buffer_size);
+    let counters = Arc::new(InterfaceCounters::new());
 
     let task_name = name.clone();
+    let task_counters = Arc::clone(&counters);
 
     tokio::spawn(async move {
         tcp_client_reconnect_task(
@@ -233,6 +245,7 @@ pub(crate) fn spawn_tcp_client_with_reconnect(
             corrupt_every,
             reconnect_interval,
             max_reconnect_tries,
+            task_counters,
         )
         .await;
     });
@@ -246,6 +259,7 @@ pub(crate) fn spawn_tcp_client_with_reconnect(
         },
         incoming: incoming_rx,
         outgoing: outgoing_tx,
+        counters,
     }
 }
 
@@ -254,6 +268,7 @@ pub(crate) fn spawn_tcp_client_with_reconnect(
 /// Owns the channel endpoints and keeps them alive across reconnection cycles.
 /// The driver never sees `RecvEvent::Disconnected` — only a gap in incoming
 /// packets during downtime.
+#[allow(clippy::too_many_arguments)]
 async fn tcp_client_reconnect_task(
     addr: SocketAddr,
     name: String,
@@ -262,6 +277,7 @@ async fn tcp_client_reconnect_task(
     corrupt_every: Option<u64>,
     reconnect_interval: Duration,
     max_reconnect_tries: Option<u64>,
+    counters: Arc<InterfaceCounters>,
 ) {
     let mut attempt = 0u64;
     loop {
@@ -279,6 +295,7 @@ async fn tcp_client_reconnect_task(
                     incoming_tx.clone(),
                     outgoing_rx,
                     corrupt_every,
+                    Arc::clone(&counters),
                 )
                 .await;
                 tracing::warn!("{}: connection lost, will reconnect", name);
@@ -324,6 +341,7 @@ async fn tcp_interface_task(
     incoming_tx: mpsc::Sender<IncomingPacket>,
     mut outgoing_rx: mpsc::Receiver<OutgoingPacket>,
     corrupt_every: Option<u64>,
+    counters: Arc<InterfaceCounters>,
 ) -> mpsc::Receiver<OutgoingPacket> {
     let (reader, mut writer) = stream.into_split();
 
@@ -346,6 +364,7 @@ async fn tcp_interface_task(
                                     return outgoing_rx;
                                 }
                                 Ok(n) => {
+                                    counters.rx_bytes.fetch_add(n as u64, Ordering::Relaxed);
                                     let results = deframer.process(&read_buf[..n]);
                                     for r in results {
                                         if let DeframeResult::Frame(data) = r {
@@ -392,6 +411,7 @@ async fn tcp_interface_task(
                             tracing::debug!("TCP interface {} write error: {}", name, e);
                             return outgoing_rx;
                         }
+                        counters.tx_bytes.fetch_add(frame_buf.len() as u64, Ordering::Relaxed);
                     }
                     None => {
                         // Event loop dropped its sender — shut down

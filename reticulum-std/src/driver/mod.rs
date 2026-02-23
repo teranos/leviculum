@@ -80,7 +80,7 @@ use crate::interfaces::tcp::{
     spawn_tcp_client_with_reconnect, spawn_tcp_server, TCP_DEFAULT_BUFFER_SIZE,
 };
 use crate::interfaces::udp::spawn_udp_interface;
-use crate::interfaces::{InterfaceHandle, InterfaceRegistry};
+use crate::interfaces::{InterfaceHandle, InterfaceRegistry, InterfaceStatsMap};
 use crate::storage::Storage;
 
 /// Type alias for the concrete NodeCore used by std platforms
@@ -135,6 +135,8 @@ pub struct ReticulumNode {
     share_instance_name: Option<String>,
     /// Time when the node was created (for RPC uptime reporting).
     start_time: std::time::Instant,
+    /// Shared interface I/O counters, populated by the event loop.
+    iface_stats_map: InterfaceStatsMap,
 }
 
 impl ReticulumNode {
@@ -160,6 +162,7 @@ impl ReticulumNode {
             auto_peer_count_rx: None,
             share_instance_name: None,
             start_time: std::time::Instant::now(),
+            iface_stats_map: Arc::new(Mutex::new(std::collections::BTreeMap::new())),
         }
     }
 
@@ -185,11 +188,15 @@ impl ReticulumNode {
         {
             let mut core = self.inner.lock().unwrap();
 
-            // Register human-readable interface names and HW_MTU with core
-            for handle in registry.handles() {
-                core.set_interface_name(handle.info.id.0, handle.info.name.clone());
-                if let Some(hw_mtu) = handle.info.hw_mtu {
-                    core.set_interface_hw_mtu(handle.info.id.0, hw_mtu);
+            // Register human-readable interface names, HW_MTU, and counters with core
+            {
+                let mut stats = self.iface_stats_map.lock().unwrap();
+                for handle in registry.handles() {
+                    core.set_interface_name(handle.info.id.0, handle.info.name.clone());
+                    if let Some(hw_mtu) = handle.info.hw_mtu {
+                        core.set_interface_hw_mtu(handle.info.id.0, hw_mtu);
+                    }
+                    stats.insert(handle.info.id.0, Arc::clone(&handle.counters));
                 }
             }
 
@@ -222,6 +229,7 @@ impl ReticulumNode {
         // Clone handles for the runner
         let inner = Arc::clone(&self.inner);
         let event_tx = self.event_tx.clone();
+        let iface_stats_map = Arc::clone(&self.iface_stats_map);
 
         // Spawn the runner
         let runner_handle = tokio::spawn(async move {
@@ -232,6 +240,7 @@ impl ReticulumNode {
                 action_dispatch_rx,
                 new_iface_rx,
                 shutdown_rx,
+                iface_stats_map,
             )
             .await;
         });
@@ -416,10 +425,15 @@ impl ReticulumNode {
                 Arc::clone(&self.inner),
                 authkey,
                 self.start_time,
+                Arc::clone(&self.iface_stats_map),
+                self.auto_peer_count_rx.as_ref().cloned(),
             ) {
                 tracing::warn!("Failed to start RPC server: {}", e);
             }
         }
+
+        // Spawn background traffic counter (matches Python Transport.count_traffic_loop)
+        crate::interfaces::spawn_traffic_counter(Arc::clone(&self.iface_stats_map));
 
         Ok(registry)
     }
@@ -791,6 +805,7 @@ async fn run_event_loop(
     mut action_dispatch_rx: mpsc::Receiver<TickOutput>,
     mut new_interface_rx: mpsc::Receiver<InterfaceHandle>,
     mut shutdown: watch::Receiver<bool>,
+    iface_stats_map: InterfaceStatsMap,
 ) {
     let mut next_poll = tokio::time::Instant::now();
     let mut next_flush = tokio::time::Instant::now() + Duration::from_secs(FLUSH_INTERVAL_SECS);
@@ -835,6 +850,10 @@ async fn run_event_loop(
                             &event_tx,
                         );
                         registry.remove(iface_id);
+                        {
+                            let mut stats = iface_stats_map.lock().unwrap();
+                            stats.remove(&iface_id.0);
+                        }
                     }
                 }
             }
@@ -887,15 +906,20 @@ async fn run_event_loop(
             Some(handle) = new_interface_rx.recv() => {
                 tracing::info!("New connection: {} ({})", handle.info.name, handle.info.id);
                 let is_local = handle.info.is_local_client;
+                let iface_idx = handle.info.id.0;
                 {
                     let mut core = inner.lock().unwrap();
-                    core.set_interface_name(handle.info.id.0, handle.info.name.clone());
+                    core.set_interface_name(iface_idx, handle.info.name.clone());
                     if let Some(hw_mtu) = handle.info.hw_mtu {
-                        core.set_interface_hw_mtu(handle.info.id.0, hw_mtu);
+                        core.set_interface_hw_mtu(iface_idx, hw_mtu);
                     }
                     if is_local {
-                        core.set_interface_local_client(handle.info.id.0, true);
+                        core.set_interface_local_client(iface_idx, true);
                     }
+                }
+                {
+                    let mut stats = iface_stats_map.lock().unwrap();
+                    stats.insert(iface_idx, Arc::clone(&handle.counters));
                 }
                 registry.register(handle);
             }

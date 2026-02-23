@@ -11,9 +11,9 @@ use super::error::RpcError;
 /// Parsed RPC request.
 ///
 /// Fields are parsed from pickle dicts and logged via `Debug`.
-/// Stub handlers don't read them yet — real implementations will.
+/// Some stub fields (blackhole params) are not yet read by handlers.
 #[derive(Debug)]
-#[allow(dead_code)]
+#[allow(dead_code)] // blackhole fields not yet used — see ROADMAP
 pub(crate) enum RpcRequest {
     // GET commands
     GetInterfaceStats,
