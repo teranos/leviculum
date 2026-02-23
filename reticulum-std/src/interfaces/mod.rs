@@ -11,6 +11,7 @@
 
 pub mod auto_interface;
 pub mod hdlc;
+pub(crate) mod local;
 pub(crate) mod tcp;
 pub(crate) mod udp;
 
@@ -35,6 +36,9 @@ pub(crate) struct InterfaceInfo {
     /// Hardware MTU for link MTU negotiation (e.g., TCP=262144, UDP=1064).
     /// `None` means the interface uses the base protocol MTU (500).
     pub hw_mtu: Option<u32>,
+    /// Whether this interface is a local IPC client (shared instance).
+    /// Local clients receive announce forwarding and path request routing.
+    pub is_local_client: bool,
 }
 
 /// Event loop's handle to a spawned interface task

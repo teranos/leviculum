@@ -101,13 +101,16 @@ class RawBytesMessage(RNS.Channel.MessageBase):
 class TestDaemon:
     def __init__(self, rns_port: int, cmd_port: int, verbose: bool = False,
                  udp_listen_port: int = None, udp_forward_port: int = None,
-                 auto_interface: bool = False, group_id: str = None):
+                 auto_interface: bool = False, group_id: str = None,
+                 share_instance: bool = False, instance_name: str = None):
         self.rns_port = rns_port
         self.cmd_port = cmd_port
         self.udp_listen_port = udp_listen_port
         self.udp_forward_port = udp_forward_port
         self.auto_interface = auto_interface
         self.group_id = group_id or "reticulum"
+        self.share_instance = share_instance
+        self.instance_name = instance_name or "default"
         self.verbose = verbose
         self.running = True
         self.destinations = {}  # hash -> (identity, destination)
@@ -130,6 +133,8 @@ class TestDaemon:
                 print(f"UDP forward port: {self.udp_forward_port}")
             if self.auto_interface:
                 print(f"AutoInterface enabled, group_id: {self.group_id}")
+            if self.share_instance:
+                print(f"Shared instance enabled, name: {self.instance_name}")
 
         # Initialize Reticulum in standalone mode
         loglevel = RNS.LOG_DEBUG if self.verbose else RNS.LOG_WARNING
@@ -146,11 +151,16 @@ class TestDaemon:
 
     def _write_config(self):
         """Write minimal Reticulum config."""
+        share = "yes" if self.share_instance else "no"
         config = f"""[reticulum]
   enable_transport = yes
-  share_instance = no
+  share_instance = {share}
   panic_on_interface_error = no
+"""
+        if self.share_instance:
+            config += f"  instance_name = {self.instance_name}\n"
 
+        config += f"""
 [interfaces]
   [[Test TCP Server]]
     type = TCPServerInterface
@@ -1138,7 +1148,8 @@ class TestDaemon:
     def run(self):
         """Run the daemon until shutdown."""
         # Signal readiness by printing to stdout
-        print(f"READY {self.rns_port} {self.cmd_port}", flush=True)
+        extra = f" {self.instance_name}" if self.share_instance else ""
+        print(f"READY {self.rns_port} {self.cmd_port}{extra}", flush=True)
 
         try:
             while self.running:
@@ -1178,6 +1189,10 @@ def main():
                         help="Enable AutoInterface for LAN discovery")
     parser.add_argument("--group-id", type=str, default=None,
                         help="Group ID for AutoInterface (default: reticulum)")
+    parser.add_argument("--share-instance", action="store_true",
+                        help="Enable shared instance (local Unix socket)")
+    parser.add_argument("--instance-name", type=str, default=None,
+                        help="Instance name for shared instance (default: default)")
     parser.add_argument("-v", "--verbose", action="store_true",
                         help="Enable verbose output")
 
@@ -1191,6 +1206,8 @@ def main():
         udp_forward_port=args.udp_forward_port,
         auto_interface=args.auto_interface,
         group_id=args.group_id,
+        share_instance=args.share_instance,
+        instance_name=args.instance_name,
     )
     daemon.run()
 

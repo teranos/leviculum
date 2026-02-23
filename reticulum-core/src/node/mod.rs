@@ -470,6 +470,14 @@ impl<R: CryptoRngCore, C: Clock, S: Storage> NodeCore<R, C, S> {
         self.transport.set_interface_hw_mtu(id, hw_mtu);
     }
 
+    /// Mark or unmark an interface as a local IPC client (shared instance).
+    ///
+    /// Local client interfaces receive announce forwarding and path request
+    /// routing from the daemon.
+    pub fn set_interface_local_client(&mut self, id: usize, is_local: bool) {
+        self.transport.set_local_client(id, is_local);
+    }
+
     /// Notify core that an interface has gone offline (sans-I/O)
     ///
     /// The driver should call this when it detects that an interface is no
@@ -508,7 +516,9 @@ impl<R: CryptoRngCore, C: Clock, S: Storage> NodeCore<R, C, S> {
         // Remove announce cap state for this interface
         self.transport.unregister_interface_announce_cap(iface_idx);
 
-        // Remove interface name and HW_MTU (after logging so the name is still available above)
+        // Remove local client flag, interface name and HW_MTU
+        // (after logging so the name is still available above)
+        self.transport.set_local_client(iface_idx, false);
         self.transport.remove_interface_name(iface_idx);
         self.transport.remove_interface_hw_mtu(iface_idx);
 

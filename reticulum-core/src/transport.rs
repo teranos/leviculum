@@ -490,6 +490,11 @@ pub struct Transport<C: Clock, S: Storage> {
     /// Keyed by interface index. Set by driver at registration, removed on interface down.
     interface_hw_mtus: BTreeMap<usize, u32>,
 
+    /// Set of interface indices that are local IPC clients (shared instance).
+    /// Used for: announce forwarding, transport override, path request routing.
+    /// Removal path: removed in handle_interface_down via set_local_client(id, false).
+    local_client_interfaces: BTreeSet<usize>,
+
     /// Pending I/O actions for the driver (sans-I/O buffer)
     pending_actions: Vec<Action>,
 
@@ -522,6 +527,7 @@ impl<C: Clock, S: Storage> Transport<C, S> {
             interface_announce_caps: BTreeMap::new(),
             interface_names: BTreeMap::new(),
             interface_hw_mtus: BTreeMap::new(),
+            local_client_interfaces: BTreeSet::new(),
             pending_actions: Vec::new(),
             #[cfg(test)]
             interfaces: Vec::new(),
@@ -1420,9 +1426,24 @@ impl<C: Clock, S: Storage> Transport<C, S> {
                 );
             }
 
-            // Cache raw announce for path responses (when transport is enabled)
-            if self.config.enable_transport {
+            // Cache raw announce for path responses (when transport is enabled
+            // or local clients are connected — clients may issue path requests)
+            if self.config.enable_transport || self.has_local_clients() {
                 self.storage.set_announce_cache(dest_hash, raw.to_vec());
+            }
+
+            // Forward raw announce to local client interfaces (Python Transport.py:1788-1833).
+            // Local clients need announces to learn paths. Forward the raw bytes as-is
+            // since the client will parse them independently.
+            if self.has_local_clients() {
+                for &client_iface in &self.local_client_interfaces {
+                    if client_iface != interface_index {
+                        self.pending_actions.push(Action::SendPacket {
+                            iface: InterfaceId(client_iface),
+                            data: raw.to_vec(),
+                        });
+                    }
+                }
             }
 
             self.stats.announces_processed += 1;
@@ -1492,8 +1513,11 @@ impl<C: Clock, S: Storage> Transport<C, S> {
             return Ok(());
         }
 
-        // If we're a transport node, forward the link request and populate link table
-        if self.config.enable_transport {
+        // Forward link request if transport enabled, or if from/for a local client
+        // (Python Transport.py:1404)
+        let from_local = self.is_local_client(interface_index);
+        let for_local = self.is_for_local_client(&dest_hash);
+        if self.config.enable_transport || from_local || for_local {
             // Read path data into locals (releases immutable borrow)
             let (target_iface, path_hops, needs_relay, next_hop) =
                 if let Some(path) = self.storage.get_path(&dest_hash) {
@@ -1718,8 +1742,11 @@ impl<C: Clock, S: Storage> Transport<C, S> {
             return Ok(());
         }
 
-        // If we're a transport node, check link table for bidirectional routing
-        if self.config.enable_transport {
+        // Route proofs via link table if transport enabled, or for local client links
+        // (Python Transport.py:2016)
+        let from_local = self.is_local_client(interface_index);
+        let for_local_link = self.is_for_local_client_link(&dest_hash);
+        if self.config.enable_transport || from_local || for_local_link {
             if let Some(link_entry) = self.storage.get_link_entry(&dest_hash).cloned() {
                 // Determine direction with hop count validation
                 let target_iface = if interface_index == link_entry.next_hop_interface_index {
@@ -1863,23 +1890,33 @@ impl<C: Clock, S: Storage> Transport<C, S> {
                 let mut forwarded = packet;
                 return self.forward_on_interface(target_iface, &mut forwarded);
             }
+        }
 
-            // Check reverse table for regular proof routing
-            if let Some(reverse_entry) = self.storage.remove_reverse(&dest_hash) {
-                // The proof should arrive on the outbound interface (where the
-                // original packet was forwarded to) and be routed back to the
-                // receiving interface (where the original packet came from).
-                if interface_index == reverse_entry.outbound_interface_index {
-                    tracing::trace!(
-                        "Proof for <{}> forwarding via reverse table to {}",
-                        HexShort(&dest_hash),
-                        self.iface_name(reverse_entry.receiving_interface_index)
-                    );
-                    let mut forwarded = packet;
-                    return self.forward_on_interface(
-                        reverse_entry.receiving_interface_index,
-                        &mut forwarded,
-                    );
+        // Reverse table routing for regular proofs
+        // (Python Transport.py:2091)
+        {
+            let proof_for_local = self
+                .storage
+                .get_reverse(&dest_hash)
+                .map(|e| self.is_local_client(e.receiving_interface_index))
+                .unwrap_or(false);
+            if self.config.enable_transport || from_local || proof_for_local {
+                if let Some(reverse_entry) = self.storage.remove_reverse(&dest_hash) {
+                    // The proof should arrive on the outbound interface (where the
+                    // original packet was forwarded to) and be routed back to the
+                    // receiving interface (where the original packet came from).
+                    if interface_index == reverse_entry.outbound_interface_index {
+                        tracing::trace!(
+                            "Proof for <{}> forwarding via reverse table to {}",
+                            HexShort(&dest_hash),
+                            self.iface_name(reverse_entry.receiving_interface_index)
+                        );
+                        let mut forwarded = packet;
+                        return self.forward_on_interface(
+                            reverse_entry.receiving_interface_index,
+                            &mut forwarded,
+                        );
+                    }
                 }
             }
         }
@@ -1964,8 +2001,12 @@ impl<C: Clock, S: Storage> Transport<C, S> {
             return Ok(());
         }
 
-        // If we're a transport node, try link table first, then path table
-        if self.config.enable_transport {
+        // Route via link/path table if transport enabled, or for local client traffic
+        // (Python Transport.py:1404)
+        let from_local = self.is_local_client(interface_index);
+        let for_local = self.is_for_local_client(&dest_hash);
+        let for_local_link = self.is_for_local_client_link(&dest_hash);
+        if self.config.enable_transport || from_local || for_local || for_local_link {
             // Check link table for validated links
             if let Some(link_entry) = self.storage.get_link_entry(&dest_hash).cloned() {
                 if link_entry.validated {
@@ -2403,6 +2444,53 @@ impl<C: Clock, S: Storage> Transport<C, S> {
         self.interface_hw_mtus.get(&path.interface_index).copied()
     }
 
+    // ─── Public: Local Client Interface API ────────────────────────────
+
+    /// Mark or unmark an interface as a local IPC client (shared instance).
+    ///
+    /// Local client interfaces receive announce forwarding and path request
+    /// routing. Set by the driver when a local client connects via Unix socket.
+    pub fn set_local_client(&mut self, id: usize, is_local: bool) {
+        if is_local {
+            self.local_client_interfaces.insert(id);
+        } else {
+            self.local_client_interfaces.remove(&id);
+        }
+    }
+
+    /// Check if an interface is a local IPC client.
+    fn is_local_client(&self, id: usize) -> bool {
+        self.local_client_interfaces.contains(&id)
+    }
+
+    /// Check if any local IPC clients are connected.
+    fn has_local_clients(&self) -> bool {
+        !self.local_client_interfaces.is_empty()
+    }
+
+    /// Check if a destination is for a local client (path exists with hops=0
+    /// on a local client interface). Python Transport.py:1379.
+    /// Note: Python only checks hops==0 because it increments on receipt.
+    /// Rust doesn't increment on receipt, so we also need the interface check.
+    fn is_for_local_client(&self, dest_hash: &[u8; TRUNCATED_HASHBYTES]) -> bool {
+        if let Some(path) = self.storage.get_path(dest_hash) {
+            path.hops == 0 && self.is_local_client(path.interface_index)
+        } else {
+            false
+        }
+    }
+
+    /// Check if a link table entry references a local client interface
+    /// (either received_interface or next_hop_interface). Python Transport.py:1380-1381.
+    fn is_for_local_client_link(&self, dest_hash: &[u8; TRUNCATED_HASHBYTES]) -> bool {
+        if let Some(entry) = self.storage.get_link_entry(dest_hash) {
+            self.is_local_client(entry.received_interface_index)
+                || self.is_local_client(entry.next_hop_interface_index)
+        } else {
+            false
+        }
+    }
+
     // ─── Internal: Helpers ─────────────────────────────────────────────
 
     /// Compute the well-known path request destination hash
@@ -2497,6 +2585,8 @@ impl<C: Clock, S: Storage> Transport<C, S> {
             return Ok(());
         }
 
+        let from_local = self.is_local_client(interface_index);
+
         // 2. Check if we have a cached announce for this destination
         if self.config.enable_transport {
             if let Some(cached_raw) = self.storage.get_announce_cache(&requested_hash).cloned() {
@@ -2525,15 +2615,48 @@ impl<C: Clock, S: Storage> Transport<C, S> {
                 return Ok(());
             }
 
-            // 3. Unknown destination → forward path request on all interfaces except arrival
-            tracing::debug!(
-                "Path request for <{}> on {}, no path known, forwarding to all interfaces",
-                HexShort(&requested_hash),
-                self.iface_name(interface_index)
-            );
+            // 3. Unknown destination → forward path request
             let mut buf = [0u8; crate::constants::MTU];
             let len = packet.pack(&mut buf)?;
-            self.send_on_all_interfaces_except(interface_index, &buf[..len]);
+
+            if from_local {
+                // From local client → forward to all network (non-local) interfaces
+                // (Python Transport.py:2783-2790)
+                tracing::debug!(
+                    "Path request for <{}> from local client, forwarding to network interfaces",
+                    HexShort(&requested_hash),
+                );
+                let network_ifaces: Vec<usize> = self
+                    .interface_names
+                    .keys()
+                    .copied()
+                    .filter(|&id| id != interface_index && !self.is_local_client(id))
+                    .collect();
+                for iface_idx in network_ifaces {
+                    let _ = self.send_on_interface(iface_idx, &buf[..len]);
+                }
+            } else {
+                // From network → forward to all interfaces except arrival
+                tracing::debug!(
+                    "Path request for <{}> on {}, no path known, forwarding to all interfaces",
+                    HexShort(&requested_hash),
+                    self.iface_name(interface_index)
+                );
+                self.send_on_all_interfaces_except(interface_index, &buf[..len]);
+
+                // Also forward to local clients (Python Transport.py:2808-2813)
+                if self.has_local_clients() {
+                    let local_ifaces: Vec<usize> = self
+                        .local_client_interfaces
+                        .iter()
+                        .copied()
+                        .filter(|&id| id != interface_index)
+                        .collect();
+                    for client_iface in local_ifaces {
+                        let _ = self.send_on_interface(client_iface, &buf[..len]);
+                    }
+                }
+            }
         }
 
         Ok(())
@@ -9903,6 +10026,610 @@ mod tests {
                 &clamped.as_slice()[..LINK_REQUEST_BASE_SIZE],
                 &base,
                 "Base payload should be preserved"
+            );
+        }
+    }
+
+    // ─── Local Client Interface Tests ──────────────────────────────────
+
+    mod local_client {
+        use super::*;
+        use crate::destination::{Destination, DestinationType, Direction};
+        use crate::identity::Identity;
+        use crate::memory_storage::MemoryStorage;
+        use crate::packet::{HeaderType, PacketData, PacketFlags, TransportType};
+        use crate::test_utils::{MockClock, TEST_TIME_MS};
+        use rand_core::OsRng;
+
+        const LOCAL_CLIENT_IFACE: usize = 10;
+        const NETWORK_IFACE: usize = 0;
+
+        fn make_transport_with_local_client() -> Transport<MockClock, MemoryStorage> {
+            let clock = MockClock::new(TEST_TIME_MS);
+            let identity = Identity::generate(&mut OsRng);
+            let config = TransportConfig {
+                enable_transport: true,
+                ..TransportConfig::default()
+            };
+            let mut transport =
+                Transport::new(config, clock, MemoryStorage::with_defaults(), identity);
+            transport.set_interface_name(NETWORK_IFACE, "tcp_server/127.0.0.1".into());
+            transport.set_interface_name(LOCAL_CLIENT_IFACE, "Local[rns/default]/0".into());
+            transport.set_local_client(LOCAL_CLIENT_IFACE, true);
+            transport
+        }
+
+        /// Build a valid announce packet as raw bytes. Returns (raw_bytes, dest_hash).
+        fn make_announce_raw(
+            hops: u8,
+            context: PacketContext,
+        ) -> (Vec<u8>, [u8; TRUNCATED_HASHBYTES]) {
+            let identity = Identity::generate(&mut OsRng);
+            let dest = Destination::new(
+                Some(identity),
+                Direction::In,
+                DestinationType::Single,
+                "testapp",
+                &["localclient"],
+            )
+            .unwrap();
+
+            let id = dest.identity().unwrap();
+            let random_hash = [0x42u8; crate::constants::RANDOM_HASHBYTES];
+
+            let mut payload = Vec::new();
+            payload.extend_from_slice(&id.public_key_bytes());
+            payload.extend_from_slice(dest.name_hash());
+            payload.extend_from_slice(&random_hash);
+
+            let app_data = b"test";
+            let mut signed_data = Vec::new();
+            signed_data.extend_from_slice(dest.hash().as_bytes());
+            signed_data.extend_from_slice(&id.public_key_bytes());
+            signed_data.extend_from_slice(dest.name_hash());
+            signed_data.extend_from_slice(&random_hash);
+            signed_data.extend_from_slice(app_data);
+
+            let signature = id.sign(&signed_data).unwrap();
+            payload.extend_from_slice(&signature);
+            payload.extend_from_slice(app_data);
+
+            let packet = Packet {
+                flags: PacketFlags {
+                    ifac_flag: false,
+                    header_type: HeaderType::Type1,
+                    context_flag: false,
+                    transport_type: TransportType::Broadcast,
+                    dest_type: DestinationType::Single,
+                    packet_type: PacketType::Announce,
+                },
+                hops,
+                transport_id: None,
+                destination_hash: dest.hash().into_bytes(),
+                context,
+                data: PacketData::Owned(payload),
+            };
+
+            let mut buf = [0u8; 500];
+            let len = packet.pack(&mut buf).unwrap();
+            (buf[..len].to_vec(), dest.hash().into_bytes())
+        }
+
+        #[test]
+        fn test_local_client_set_and_query() {
+            let mut transport = make_transport_with_local_client();
+            assert!(transport.is_local_client(LOCAL_CLIENT_IFACE));
+            assert!(transport.has_local_clients());
+            assert!(!transport.is_local_client(NETWORK_IFACE));
+
+            // Remove
+            transport.set_local_client(LOCAL_CLIENT_IFACE, false);
+            assert!(!transport.is_local_client(LOCAL_CLIENT_IFACE));
+            assert!(!transport.has_local_clients());
+        }
+
+        #[test]
+        fn test_announce_forwarded_to_local_clients() {
+            let mut transport = make_transport_with_local_client();
+            let (raw, _dest_hash) = make_announce_raw(0, crate::packet::PacketContext::None);
+
+            // Process announce arriving from the network interface
+            let packet = Packet::unpack(&raw).unwrap();
+            let result = transport.handle_announce(packet, NETWORK_IFACE, &raw);
+            assert!(result.is_ok());
+
+            // Check that a SendPacket action was emitted for the local client
+            let actions = transport.drain_actions();
+            let local_sends: Vec<_> = actions
+                .iter()
+                .filter(|a| matches!(a, Action::SendPacket { iface, .. } if iface.0 == LOCAL_CLIENT_IFACE))
+                .collect();
+            assert!(
+                !local_sends.is_empty(),
+                "Should forward announce to local client"
+            );
+        }
+
+        #[test]
+        fn test_announce_not_forwarded_to_source_local_client() {
+            let mut transport = make_transport_with_local_client();
+            let (raw, _dest_hash) = make_announce_raw(0, crate::packet::PacketContext::None);
+
+            // Process announce arriving FROM the local client itself
+            let packet = Packet::unpack(&raw).unwrap();
+            let result = transport.handle_announce(packet, LOCAL_CLIENT_IFACE, &raw);
+            assert!(result.is_ok());
+
+            // Should NOT forward back to the same local client
+            let actions = transport.drain_actions();
+            let self_sends: Vec<_> = actions
+                .iter()
+                .filter(|a| matches!(a, Action::SendPacket { iface, .. } if iface.0 == LOCAL_CLIENT_IFACE))
+                .collect();
+            assert!(
+                self_sends.is_empty(),
+                "Should not forward announce back to the source local client"
+            );
+        }
+
+        #[test]
+        fn test_announce_not_forwarded_without_local_clients() {
+            let clock = MockClock::new(TEST_TIME_MS);
+            let identity = Identity::generate(&mut OsRng);
+            let config = TransportConfig {
+                enable_transport: true,
+                ..TransportConfig::default()
+            };
+            let mut transport =
+                Transport::new(config, clock, MemoryStorage::with_defaults(), identity);
+            transport.set_interface_name(NETWORK_IFACE, "tcp".into());
+
+            let (raw, _dest_hash) = make_announce_raw(0, crate::packet::PacketContext::None);
+            let packet = Packet::unpack(&raw).unwrap();
+            let result = transport.handle_announce(packet, NETWORK_IFACE, &raw);
+            assert!(result.is_ok());
+
+            // Without local clients, no SendPacket to local client should exist
+            let actions = transport.drain_actions();
+            let local_sends: Vec<_> = actions
+                .iter()
+                .filter(|a| matches!(a, Action::SendPacket { iface, .. } if iface.0 == LOCAL_CLIENT_IFACE))
+                .collect();
+            assert!(local_sends.is_empty());
+        }
+
+        #[test]
+        fn test_announce_cache_set_with_local_clients_no_transport() {
+            // Even with transport disabled, announce cache should be set if local clients exist
+            let clock = MockClock::new(TEST_TIME_MS);
+            let identity = Identity::generate(&mut OsRng);
+            let config = TransportConfig {
+                enable_transport: false,
+                ..TransportConfig::default()
+            };
+            let mut transport =
+                Transport::new(config, clock, MemoryStorage::with_defaults(), identity);
+            transport.set_interface_name(NETWORK_IFACE, "tcp".into());
+            transport.set_interface_name(LOCAL_CLIENT_IFACE, "local".into());
+            transport.set_local_client(LOCAL_CLIENT_IFACE, true);
+
+            let (raw, dest_hash) = make_announce_raw(0, crate::packet::PacketContext::None);
+            let packet = Packet::unpack(&raw).unwrap();
+            let _ = transport.handle_announce(packet, NETWORK_IFACE, &raw);
+
+            assert!(
+                transport.storage.get_announce_cache(&dest_hash).is_some(),
+                "Announce cache should be populated when local clients exist"
+            );
+        }
+
+        #[test]
+        fn test_path_request_from_local_client_forwarded_to_network() {
+            let mut transport = make_transport_with_local_client();
+
+            // Build a path request packet
+            let target_dest = [0xAAu8; TRUNCATED_HASHBYTES];
+            let tag = [0xBBu8; TRUNCATED_HASHBYTES];
+
+            let mut data = Vec::new();
+            data.extend_from_slice(&target_dest);
+            data.extend_from_slice(&tag);
+
+            let packet = Packet {
+                flags: PacketFlags {
+                    ifac_flag: false,
+                    header_type: HeaderType::Type1,
+                    context_flag: false,
+                    transport_type: TransportType::Broadcast,
+                    dest_type: DestinationType::Plain,
+                    packet_type: PacketType::Data,
+                },
+                hops: 0,
+                transport_id: None,
+                destination_hash: transport.path_request_hash,
+                context: PacketContext::None,
+                data: PacketData::Owned(data),
+            };
+
+            let result = transport.handle_path_request(packet, LOCAL_CLIENT_IFACE);
+            assert!(result.is_ok());
+
+            let actions = transport.drain_actions();
+            // Should have a SendPacket to the network interface
+            let network_sends: Vec<_> = actions
+                .iter()
+                .filter(
+                    |a| matches!(a, Action::SendPacket { iface, .. } if iface.0 == NETWORK_IFACE),
+                )
+                .collect();
+            assert!(
+                !network_sends.is_empty(),
+                "Path request from local client should be forwarded to network interfaces"
+            );
+
+            // Should NOT have a SendPacket back to the local client
+            let self_sends: Vec<_> = actions
+                .iter()
+                .filter(|a| matches!(a, Action::SendPacket { iface, .. } if iface.0 == LOCAL_CLIENT_IFACE))
+                .collect();
+            assert!(
+                self_sends.is_empty(),
+                "Path request should not be forwarded back to source local client"
+            );
+        }
+
+        /// Create a transport with enable_transport=false and a local client.
+        /// This ensures local client conditions are the sole routing enablers.
+        fn make_no_transport_with_local_client() -> Transport<MockClock, MemoryStorage> {
+            let clock = MockClock::new(TEST_TIME_MS);
+            let identity = Identity::generate(&mut OsRng);
+            let config = TransportConfig {
+                enable_transport: false,
+                ..TransportConfig::default()
+            };
+            let mut transport =
+                Transport::new(config, clock, MemoryStorage::with_defaults(), identity);
+            transport.set_interface_name(NETWORK_IFACE, "tcp_server/127.0.0.1".into());
+            transport.set_interface_name(LOCAL_CLIENT_IFACE, "Local[rns/default]/0".into());
+            transport.set_local_client(LOCAL_CLIENT_IFACE, true);
+            transport
+        }
+
+        #[test]
+        fn test_link_request_routed_to_local_client() {
+            // enable_transport=false, local client announced dest, network sends
+            // link request → verify SendPacket targets local client + link table created
+            let mut transport = make_no_transport_with_local_client();
+
+            let dest_hash = [0xEEu8; TRUNCATED_HASHBYTES];
+
+            // Insert path pointing to local client interface (hops=0)
+            transport.insert_path(
+                dest_hash,
+                PathEntry {
+                    hops: 0,
+                    expires_ms: TEST_TIME_MS + 300_000,
+                    interface_index: LOCAL_CLIENT_IFACE,
+                    random_blobs: Vec::new(),
+                    next_hop: None,
+                },
+            );
+
+            // Build a link request from the network
+            let packet = Packet {
+                flags: PacketFlags {
+                    ifac_flag: false,
+                    header_type: HeaderType::Type1,
+                    context_flag: false,
+                    transport_type: TransportType::Broadcast,
+                    dest_type: DestinationType::Link,
+                    packet_type: PacketType::LinkRequest,
+                },
+                hops: 0,
+                transport_id: None,
+                destination_hash: dest_hash,
+                context: PacketContext::None,
+                data: PacketData::Owned(alloc::vec![0u8; 96]),
+            };
+
+            let mut buf = [0u8; MTU];
+            let len = packet.pack(&mut buf).unwrap();
+            transport
+                .process_incoming(NETWORK_IFACE, &buf[..len])
+                .unwrap();
+
+            // Should forward to the local client
+            let actions = transport.drain_actions();
+            let local_sends: Vec<_> = actions
+                .iter()
+                .filter(|a| matches!(a, Action::SendPacket { iface, .. } if iface.0 == LOCAL_CLIENT_IFACE))
+                .collect();
+            assert!(
+                !local_sends.is_empty(),
+                "Link request should be forwarded to local client (enable_transport=false)"
+            );
+
+            // Link table entry should be created
+            let link_id = Link::calculate_link_id(&buf[..len]);
+            assert!(
+                transport
+                    .storage
+                    .get_link_entry(link_id.as_bytes())
+                    .is_some(),
+                "Link table entry should be created for local client routing"
+            );
+        }
+
+        #[test]
+        fn test_from_local_client_link_request_forwarded() {
+            // enable_transport=false, local client sends link request →
+            // verify forwarded to network interface
+            let mut transport = make_no_transport_with_local_client();
+
+            let dest_hash = [0xFFu8; TRUNCATED_HASHBYTES];
+
+            // Insert path pointing to network interface
+            transport.insert_path(
+                dest_hash,
+                PathEntry {
+                    hops: 2,
+                    expires_ms: TEST_TIME_MS + 300_000,
+                    interface_index: NETWORK_IFACE,
+                    random_blobs: Vec::new(),
+                    next_hop: None,
+                },
+            );
+
+            // Build a link request from the local client
+            let packet = Packet {
+                flags: PacketFlags {
+                    ifac_flag: false,
+                    header_type: HeaderType::Type1,
+                    context_flag: false,
+                    transport_type: TransportType::Broadcast,
+                    dest_type: DestinationType::Link,
+                    packet_type: PacketType::LinkRequest,
+                },
+                hops: 0,
+                transport_id: None,
+                destination_hash: dest_hash,
+                context: PacketContext::None,
+                data: PacketData::Owned(alloc::vec![0u8; 96]),
+            };
+
+            let mut buf = [0u8; MTU];
+            let len = packet.pack(&mut buf).unwrap();
+            transport
+                .process_incoming(LOCAL_CLIENT_IFACE, &buf[..len])
+                .unwrap();
+
+            // Should forward to the network
+            let actions = transport.drain_actions();
+            let network_sends: Vec<_> = actions
+                .iter()
+                .filter(
+                    |a| matches!(a, Action::SendPacket { iface, .. } if iface.0 == NETWORK_IFACE),
+                )
+                .collect();
+            assert!(
+                !network_sends.is_empty(),
+                "Link request from local client should be forwarded to network (enable_transport=false)"
+            );
+        }
+
+        #[test]
+        fn test_proof_routed_via_link_table_to_local_client() {
+            // LRPROOF from network → verify forwarded to local client via link table
+            let mut transport = make_no_transport_with_local_client();
+
+            let link_id = [0xAAu8; TRUNCATED_HASHBYTES];
+
+            // Insert link table entry: received from local client, next hop is network
+            transport.storage.set_link_entry(
+                link_id,
+                LinkEntry {
+                    timestamp_ms: TEST_TIME_MS,
+                    next_hop_interface_index: LOCAL_CLIENT_IFACE,
+                    remaining_hops: 0,
+                    received_interface_index: NETWORK_IFACE,
+                    hops: 1,
+                    validated: false,
+                    proof_timeout_ms: TEST_TIME_MS + 60_000,
+                    destination_hash: [0xBBu8; TRUNCATED_HASHBYTES],
+                    peer_signing_key: None,
+                },
+            );
+
+            // Build LRPROOF arriving from the local client (responder side)
+            // LRPROOF = sig(64) + X25519(32) = 96 bytes
+            let packet = Packet {
+                flags: PacketFlags {
+                    ifac_flag: false,
+                    header_type: HeaderType::Type1,
+                    context_flag: false,
+                    transport_type: TransportType::Broadcast,
+                    dest_type: DestinationType::Link,
+                    packet_type: PacketType::Proof,
+                },
+                hops: 0,
+                transport_id: None,
+                destination_hash: link_id,
+                context: PacketContext::Lrproof,
+                data: PacketData::Owned(alloc::vec![0u8; 96]),
+            };
+
+            let mut buf = [0u8; MTU];
+            let len = packet.pack(&mut buf).unwrap();
+            transport
+                .process_incoming(LOCAL_CLIENT_IFACE, &buf[..len])
+                .unwrap();
+
+            // Should forward to the network interface
+            let actions = transport.drain_actions();
+            let network_sends: Vec<_> = actions
+                .iter()
+                .filter(
+                    |a| matches!(a, Action::SendPacket { iface, .. } if iface.0 == NETWORK_IFACE),
+                )
+                .collect();
+            assert!(
+                !network_sends.is_empty(),
+                "LRPROOF from local client should be forwarded to network via link table (enable_transport=false)"
+            );
+        }
+
+        #[test]
+        fn test_proof_routed_via_reverse_table_to_local_client() {
+            // Regular proof from network → verify forwarded to local client via reverse table
+            let mut transport = make_no_transport_with_local_client();
+
+            let dest_hash = [0xCCu8; TRUNCATED_HASHBYTES];
+
+            // Insert reverse table entry: original packet came from local client,
+            // was forwarded to network
+            transport.storage.set_reverse(
+                dest_hash,
+                crate::storage_types::ReverseEntry {
+                    timestamp_ms: TEST_TIME_MS,
+                    receiving_interface_index: LOCAL_CLIENT_IFACE,
+                    outbound_interface_index: NETWORK_IFACE,
+                },
+            );
+
+            // Build a regular proof arriving from the network (outbound side)
+            // Explicit proof = packet_hash(32) + signature(64) = 96 bytes
+            let packet = Packet {
+                flags: PacketFlags {
+                    ifac_flag: false,
+                    header_type: HeaderType::Type1,
+                    context_flag: false,
+                    transport_type: TransportType::Broadcast,
+                    dest_type: DestinationType::Single,
+                    packet_type: PacketType::Proof,
+                },
+                hops: 0,
+                transport_id: None,
+                destination_hash: dest_hash,
+                context: PacketContext::None,
+                data: PacketData::Owned(alloc::vec![0u8; 96]),
+            };
+
+            let mut buf = [0u8; MTU];
+            let len = packet.pack(&mut buf).unwrap();
+            transport
+                .process_incoming(NETWORK_IFACE, &buf[..len])
+                .unwrap();
+
+            // Should forward to the local client
+            let actions = transport.drain_actions();
+            let local_sends: Vec<_> = actions
+                .iter()
+                .filter(|a| matches!(a, Action::SendPacket { iface, .. } if iface.0 == LOCAL_CLIENT_IFACE))
+                .collect();
+            assert!(
+                !local_sends.is_empty(),
+                "Proof should be forwarded to local client via reverse table (enable_transport=false)"
+            );
+        }
+
+        #[test]
+        fn test_data_routed_to_local_client_via_link_table() {
+            // Data packet from network → verify forwarded to local client via link table
+            let mut transport = make_no_transport_with_local_client();
+
+            let link_id = [0xDDu8; TRUNCATED_HASHBYTES];
+
+            // Insert validated link table entry: received from network, next hop is local client
+            transport.storage.set_link_entry(
+                link_id,
+                LinkEntry {
+                    timestamp_ms: TEST_TIME_MS,
+                    next_hop_interface_index: LOCAL_CLIENT_IFACE,
+                    remaining_hops: 0,
+                    received_interface_index: NETWORK_IFACE,
+                    hops: 1,
+                    validated: true,
+                    proof_timeout_ms: TEST_TIME_MS + 60_000,
+                    destination_hash: [0xBBu8; TRUNCATED_HASHBYTES],
+                    peer_signing_key: None,
+                },
+            );
+
+            // Build data packet from network (from the received_interface side)
+            let packet = Packet {
+                flags: PacketFlags {
+                    ifac_flag: false,
+                    header_type: HeaderType::Type1,
+                    context_flag: false,
+                    transport_type: TransportType::Broadcast,
+                    dest_type: DestinationType::Link,
+                    packet_type: PacketType::Data,
+                },
+                hops: 1, // must match link_entry.hops for received_interface direction
+                transport_id: None,
+                destination_hash: link_id,
+                context: PacketContext::None,
+                data: PacketData::Owned(b"hello local client".to_vec()),
+            };
+
+            let mut buf = [0u8; MTU];
+            let len = packet.pack(&mut buf).unwrap();
+            transport
+                .process_incoming(NETWORK_IFACE, &buf[..len])
+                .unwrap();
+
+            // Should forward to the local client
+            let actions = transport.drain_actions();
+            let local_sends: Vec<_> = actions
+                .iter()
+                .filter(|a| matches!(a, Action::SendPacket { iface, .. } if iface.0 == LOCAL_CLIENT_IFACE))
+                .collect();
+            assert!(
+                !local_sends.is_empty(),
+                "Data should be forwarded to local client via link table (enable_transport=false)"
+            );
+        }
+
+        #[test]
+        fn test_path_request_from_network_forwarded_to_local_clients() {
+            let mut transport = make_transport_with_local_client();
+
+            // Build a path request packet
+            let target_dest = [0xCCu8; TRUNCATED_HASHBYTES];
+            let tag = [0xDDu8; TRUNCATED_HASHBYTES];
+
+            let mut data = Vec::new();
+            data.extend_from_slice(&target_dest);
+            data.extend_from_slice(&tag);
+
+            let packet = Packet {
+                flags: PacketFlags {
+                    ifac_flag: false,
+                    header_type: HeaderType::Type1,
+                    context_flag: false,
+                    transport_type: TransportType::Broadcast,
+                    dest_type: DestinationType::Plain,
+                    packet_type: PacketType::Data,
+                },
+                hops: 0,
+                transport_id: None,
+                destination_hash: transport.path_request_hash,
+                context: PacketContext::None,
+                data: PacketData::Owned(data),
+            };
+
+            let result = transport.handle_path_request(packet, NETWORK_IFACE);
+            assert!(result.is_ok());
+
+            let actions = transport.drain_actions();
+            // Should have a SendPacket to the local client
+            let local_sends: Vec<_> = actions
+                .iter()
+                .filter(|a| matches!(a, Action::SendPacket { iface, .. } if iface.0 == LOCAL_CLIENT_IFACE))
+                .collect();
+            assert!(
+                !local_sends.is_empty(),
+                "Path request from network should be forwarded to local clients"
             );
         }
     }

@@ -130,6 +130,9 @@ pub struct ReticulumNode {
     corrupt_every: Option<u64>,
     /// Peer count from AutoInterface orchestrator (if configured)
     auto_peer_count_rx: Option<watch::Receiver<usize>>,
+    /// Shared instance name (if enabled). When Some, the daemon listens on
+    /// abstract Unix socket `\0rns/{name}` for local IPC clients.
+    share_instance_name: Option<String>,
 }
 
 impl ReticulumNode {
@@ -153,6 +156,7 @@ impl ReticulumNode {
             action_dispatch_tx,
             corrupt_every,
             auto_peer_count_rx: None,
+            share_instance_name: None,
         }
     }
 
@@ -375,6 +379,16 @@ impl ReticulumNode {
             }
         }
 
+        // Start local (shared instance) server if enabled
+        if let Some(ref instance_name) = self.share_instance_name {
+            crate::interfaces::local::spawn_local_server(
+                instance_name,
+                next_id.clone(),
+                new_iface_tx.clone(),
+                crate::interfaces::local::LOCAL_DEFAULT_BUFFER_SIZE,
+            )?;
+        }
+
         Ok(registry)
     }
 
@@ -410,6 +424,13 @@ impl ReticulumNode {
         use reticulum_core::traits::Storage as _;
         let mut core = self.inner.lock().unwrap();
         core.storage_mut().flush();
+    }
+
+    /// Enable shared instance with the given instance name.
+    ///
+    /// Called by the builder when `share_instance = true`.
+    pub(crate) fn set_share_instance(&mut self, name: String) {
+        self.share_instance_name = Some(name);
     }
 
     /// Check if the node is running
@@ -830,14 +851,18 @@ async fn run_event_loop(
                 }
             }
 
-            // Branch 5: Dynamic interface registration (TCP server accept loop)
+            // Branch 5: Dynamic interface registration (TCP server, local server accept loops)
             Some(handle) = new_interface_rx.recv() => {
                 tracing::info!("New connection: {} ({})", handle.info.name, handle.info.id);
+                let is_local = handle.info.is_local_client;
                 {
                     let mut core = inner.lock().unwrap();
                     core.set_interface_name(handle.info.id.0, handle.info.name.clone());
                     if let Some(hw_mtu) = handle.info.hw_mtu {
                         core.set_interface_hw_mtu(handle.info.id.0, hw_mtu);
+                    }
+                    if is_local {
+                        core.set_interface_local_client(handle.info.id.0, true);
                     }
                 }
                 registry.register(handle);

@@ -295,6 +295,7 @@ Sicherheitsfeatures verdrahten, Daemon-Zustand persistieren, Release-Qualität e
 | MTU Negotiation (TCP, UDP, Relay-Clamping, Boundary, Bidirektional) | ✅ |
 | AutoInterface (Discovery, Announce, Link, Daten, MTU, Peer-Timeout, Mesh, Isolation) | ✅ |
 | AutoInterface Cross-Machine (Rust@schneckenschreck ↔ Python@hamster, 4 Phasen + RUST_LOG + Datenempfang) | ✅ |
+| Shared Instance (LocalInterface Unix Socket IPC, HDLC-Framing, Announce Rx+Tx) | ✅ |
 | Resource Transfer | ⬜ (v1.1) |
 
 ### Testumgebung
@@ -321,9 +322,10 @@ Sicherheitsfeatures verdrahten, Daemon-Zustand persistieren, Release-Qualität e
 - Interop-Tests: Dateitransfer zwischen Rust und Python
 
 ## IPC (Shared Instance)
-- LocalInterface: Unix-Domain-Socket-basierte IPC-Kommunikation zwischen `lrnsd` und Client-Programmen (wie Python's `LocalClientInterface` / `LocalServerInterface`)
-- Mehrere Programme teilen sich eine Reticulum-Instanz über den laufenden Daemon
-- `is_connected_to_shared_instance`-Semantik (Python-Äquivalent) für lokale Transport-Entscheidungen
+- ✅ LocalInterface: Unix-Domain-Socket-basierte IPC-Kommunikation zwischen `lrnsd` und Client-Programmen (wie Python's `LocalClientInterface` / `LocalServerInterface`) — Abstract Unix Socket (`\0rns/{instance_name}`), HDLC-Framing, `spawn_local_server()`, Config-Integration (`share_instance`/`instance_name`), 2 Python-Interop-Tests
+- ✅ Routing-Gates für Local-Client-Bedingungen: `handle_link_request()`, `handle_proof()`, `handle_data()` routen Pakete für/von Local-Client-Interfaces auch ohne `enable_transport`, matching Python Transport.py:1378-1404. 5 Unit-Tests mit `enable_transport=false`
+- [ ] Mehrere Programme teilen sich eine Reticulum-Instanz über den laufenden Daemon (End-to-End-Validierung)
+- [ ] `is_connected_to_shared_instance`-Semantik (Python-Äquivalent) für lokale Transport-Entscheidungen
 
 ## Hardware-Interfaces
 - RNode/LoRa Interface (KISS-Protokoll, LoRa-Parameter, Radio-State, Airtime-Limiting)

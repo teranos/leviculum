@@ -41,6 +41,10 @@ pub struct ReticulumNodeBuilder {
     corrupt_every: Option<u64>,
     /// Explicit enable_transport override (takes priority over config value)
     enable_transport_explicit: Option<bool>,
+    /// Explicit shared_instance override (takes priority over config value)
+    share_instance_explicit: Option<bool>,
+    /// Explicit instance_name override (takes priority over config value)
+    instance_name_explicit: Option<String>,
 }
 
 impl Default for ReticulumNodeBuilder {
@@ -60,6 +64,8 @@ impl ReticulumNodeBuilder {
             interfaces: Vec::new(),
             corrupt_every: None,
             enable_transport_explicit: None,
+            share_instance_explicit: None,
+            instance_name_explicit: None,
         }
     }
 
@@ -288,6 +294,23 @@ impl ReticulumNodeBuilder {
         self
     }
 
+    /// Enable or disable shared instance (local IPC socket).
+    ///
+    /// When enabled, the daemon listens on an abstract Unix socket for
+    /// local client programs. If not called, uses the config value (default: false).
+    pub fn share_instance(mut self, enabled: bool) -> Self {
+        self.share_instance_explicit = Some(enabled);
+        self
+    }
+
+    /// Set the instance name for the shared instance socket.
+    ///
+    /// The abstract socket path will be `\0rns/{name}`. Default: "default".
+    pub fn instance_name(mut self, name: String) -> Self {
+        self.instance_name_explicit = Some(name);
+        self
+    }
+
     /// Set path expiry duration in seconds.
     ///
     /// Paths not refreshed within this duration will be removed.
@@ -323,6 +346,14 @@ impl ReticulumNodeBuilder {
             .enable_transport_explicit
             .unwrap_or(config.reticulum.enable_transport);
 
+        // Apply shared_instance: explicit override > config value
+        let share_instance = self
+            .share_instance_explicit
+            .unwrap_or(config.reticulum.shared_instance);
+        let instance_name = self
+            .instance_name_explicit
+            .unwrap_or_else(|| config.reticulum.instance_name.clone());
+
         // Determine storage path
         let storage_path = self
             .storage_path
@@ -350,11 +381,11 @@ impl ReticulumNodeBuilder {
         // Build NodeCore (consumes storage — persistent data already loaded)
         let node_core = core_builder.build(rand_core::OsRng, clock, storage);
 
-        Ok(ReticulumNode::new(
-            node_core,
-            interfaces,
-            self.corrupt_every,
-        ))
+        let mut node = ReticulumNode::new(node_core, interfaces, self.corrupt_every);
+        if share_instance {
+            node.set_share_instance(instance_name);
+        }
+        Ok(node)
     }
 
     /// Build the ReticulumNode

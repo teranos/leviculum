@@ -131,6 +131,8 @@ pub struct TestDaemon {
     udp_listen_port: Option<u16>,
     /// UDP forward port (None if daemon has no UDP interface)
     udp_forward_port: Option<u16>,
+    /// Shared instance name (None if shared instance is not enabled)
+    instance_name: Option<String>,
 }
 
 impl TestDaemon {
@@ -239,6 +241,7 @@ impl TestDaemon {
             cmd_port,
             udp_listen_port: None,
             udp_forward_port: None,
+            instance_name: None,
         };
 
         // Ping to verify daemon is responsive
@@ -337,6 +340,7 @@ impl TestDaemon {
             cmd_port,
             udp_listen_port: Some(udp_listen_port),
             udp_forward_port: Some(udp_forward_port),
+            instance_name: None,
         };
 
         match daemon.ping().await {
@@ -431,6 +435,98 @@ impl TestDaemon {
             cmd_port,
             udp_listen_port: None,
             udp_forward_port: None,
+            instance_name: None,
+        };
+
+        match daemon.ping().await {
+            Ok(_) => Ok(daemon),
+            Err(e) => {
+                drop(daemon);
+                Err(e)
+            }
+        }
+    }
+
+    /// Start a daemon with shared instance enabled (local Unix socket).
+    ///
+    /// The daemon will have a TCPServerInterface plus a LocalServerInterface
+    /// listening on abstract Unix socket `\0rns/{instance_name}`.
+    pub async fn start_with_shared_instance(instance_name: &str) -> Result<Self, HarnessError> {
+        ensure_reticulum_submodule()?;
+
+        let mut last_error = HarnessError::StartupTimeout;
+
+        for attempt in 0..Self::MAX_STARTUP_RETRIES {
+            let (rns_port, cmd_port) = find_two_available_ports()?;
+
+            match Self::start_with_shared_instance_ports(rns_port, cmd_port, instance_name).await {
+                Ok(daemon) => return Ok(daemon),
+                Err(HarnessError::StartupTimeout) => {
+                    if attempt + 1 < Self::MAX_STARTUP_RETRIES {
+                        tokio::time::sleep(Duration::from_millis(100)).await;
+                    }
+                    last_error = HarnessError::StartupTimeout;
+                }
+                Err(e) => return Err(e),
+            }
+        }
+
+        Err(last_error)
+    }
+
+    /// Start a shared instance daemon on specific ports.
+    async fn start_with_shared_instance_ports(
+        rns_port: u16,
+        cmd_port: u16,
+        instance_name: &str,
+    ) -> Result<Self, HarnessError> {
+        let mut process = Command::new("python3")
+            .args([
+                Self::DAEMON_SCRIPT,
+                "--rns-port",
+                &rns_port.to_string(),
+                "--cmd-port",
+                &cmd_port.to_string(),
+                "--share-instance",
+                "--instance-name",
+                instance_name,
+            ])
+            .stdout(Stdio::piped())
+            .stderr(Stdio::inherit())
+            .spawn()
+            .map_err(HarnessError::SpawnFailed)?;
+
+        let stdout = process.stdout.take().expect("stdout should be captured");
+        let reader = BufReader::new(stdout);
+
+        let ready_result = tokio::task::spawn_blocking(move || {
+            for line in reader.lines() {
+                match line {
+                    Ok(line) if line.starts_with("READY ") => {
+                        return Ok(line);
+                    }
+                    Ok(_) => continue,
+                    Err(e) => return Err(HarnessError::ParseError(e.to_string())),
+                }
+            }
+            Err(HarnessError::StartupTimeout)
+        });
+
+        let _ready_line = timeout(Self::STARTUP_TIMEOUT, ready_result)
+            .await
+            .map_err(|_| HarnessError::StartupTimeout)?
+            .map_err(|_| HarnessError::StartupTimeout)??;
+
+        // Wait for local socket to be ready
+        tokio::time::sleep(Duration::from_millis(500)).await;
+
+        let daemon = Self {
+            process,
+            rns_port,
+            cmd_port,
+            udp_listen_port: None,
+            udp_forward_port: None,
+            instance_name: Some(instance_name.to_string()),
         };
 
         match daemon.ping().await {

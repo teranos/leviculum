@@ -622,6 +622,7 @@ fn handle_discovery_packet(
             id,
             name: iface_name.clone(),
             hw_mtu: Some(AUTO_HW_MTU),
+            is_local_client: false,
         },
         incoming: incoming_rx,
         outgoing: outgoing_tx,

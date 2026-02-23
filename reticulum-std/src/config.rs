@@ -29,9 +29,14 @@ pub struct ReticulumConfig {
     /// Use implicit proof for link identification
     #[serde(default = "default_true")]
     pub use_implicit_proof: bool,
-    /// Allow sharing instance across processes
+    /// Allow sharing instance across processes via local Unix socket.
+    /// When enabled, the daemon listens on `\0rns/{instance_name}` for local clients.
     #[serde(default)]
     pub shared_instance: bool,
+    /// Instance name for the shared instance socket (default: "default").
+    /// The abstract socket path will be `\0rns/{instance_name}`.
+    #[serde(default = "default_instance_name")]
+    pub instance_name: String,
     /// Enable remote management
     #[serde(default)]
     pub remote_management_enabled: bool,
@@ -44,12 +49,17 @@ fn default_true() -> bool {
     true
 }
 
+fn default_instance_name() -> String {
+    "default".to_string()
+}
+
 impl Default for ReticulumConfig {
     fn default() -> Self {
         Self {
             enable_transport: true,
             use_implicit_proof: true,
             shared_instance: false,
+            instance_name: default_instance_name(),
             remote_management_enabled: false,
             storage_path: None,
         }
