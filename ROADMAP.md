@@ -28,7 +28,7 @@
 
 ## Aktueller Stand
 
-**Aktuelle Version: 0.5.19.** Phase 1 (Protokoll-Fundament) und Phase 2 (Core API & Full Node) sind vollständig abgeschlossen, inklusive eines 7-phasigen Code-Refactorings (63 Issues in `doc/BATTLEPLAN.md`). Storage-Trait-Refactoring abgeschlossen: alle 11 Transport/NodeCore-Sammlungen auf typsicheren Storage-Trait migriert, FileStorage umschließt MemoryStorage mit Python-kompatibler Persistenz. UDP-Interface implementiert (Socket, I/O-Task, Config-Parsing, Interop-Tests). AutoInterface mit 7 Integrationstests abgedeckt: Discovery, Announce, Link+Daten, MTU, Peer-Timeout, 3-Node-Mesh, Gruppen-Isolation. Peer-Identität per SocketAddrV6 (IP+Port) statt nur IP — korrekt für Container und Same-Machine-Szenarien. Link-MTU-Verhandlung vollständig: Initiator-seitig, Responder-seitig mit Interface-HW_MTU-Clamping, Relay-Clamping bei gemischten Interfaces, 14 Interop-Tests (inkl. Python-zu-Python-Baseline). Logging-Qualität verbessert: 68 neue tracing-Aufrufe in Transport, Link-Management und Node-Layer — `lrnsd -v` zeigt Routing-Entscheidungen und Link-Lifecycle, `lrnsd -vv` zeigt Paketfluss und Drop-Gründe. Offene Issues: E10 (Interface-spezifischer Jitter für Shared-Medium-Interfaces).
+**Aktuelle Version: 0.5.19.** Phase 1 (Protokoll-Fundament) und Phase 2 (Core API & Full Node) sind vollständig abgeschlossen, inklusive eines 7-phasigen Code-Refactorings (63 Issues in `doc/BATTLEPLAN.md`). Storage-Trait-Refactoring abgeschlossen: alle 11 Transport/NodeCore-Sammlungen auf typsicheren Storage-Trait migriert, FileStorage umschließt MemoryStorage mit Python-kompatibler Persistenz. UDP-Interface implementiert (Socket, I/O-Task, Config-Parsing, Interop-Tests). AutoInterface mit 7 Integrationstests und Cross-Machine-Interop-Test abgedeckt: In-Process-Tests für Discovery, Announce, Link+Daten, MTU, Peer-Timeout, 3-Node-Mesh, Gruppen-Isolation; Cross-Machine-Test (`scripts/test-auto-crossmachine.fish`) validiert Rust↔Python über echtes LAN (hamster↔schneckenschreck VM). Zwei-Tier Peer-Lookup (exact match, dann IP-only Fallback) für Python-Interop. `lrnsd` respektiert jetzt `RUST_LOG`-Umgebungsvariable. Offene Issues: E10 (Interface-spezifischer Jitter für Shared-Medium-Interfaces).
 
 **Kernfunktionalität:** `NodeCore` (reticulum-core) und `ReticulumNode` (reticulum-std) bieten eine einheitliche async-kompatible API für Destinations, Links, Channels, Single-Packet-Verschlüsselung und Proof-Delivery. Vollständige Interoperabilität mit Python rnsd ist durch umfangreiche Interop-Tests nachgewiesen.
 
@@ -294,6 +294,7 @@ Sicherheitsfeatures verdrahten, Daemon-Zustand persistieren, Release-Qualität e
 | UDP Interop (Announce, Link, Daten, MTU-Verhandlung, Python-Baseline) | ✅ |
 | MTU Negotiation (TCP, UDP, Relay-Clamping, Boundary, Bidirektional) | ✅ |
 | AutoInterface (Discovery, Announce, Link, Daten, MTU, Peer-Timeout, Mesh, Isolation) | ✅ |
+| AutoInterface Cross-Machine (Rust@schneckenschreck ↔ Python@hamster, 4 Phasen + RUST_LOG + Datenempfang) | ✅ |
 | Resource Transfer | ⬜ (v1.1) |
 
 ### Testumgebung
@@ -357,6 +358,6 @@ Sicherheitsfeatures verdrahten, Daemon-Zustand persistieren, Release-Qualität e
 
 ---
 
-*Stand: 22. Februar 2026*
+*Stand: 23. Februar 2026*
 *Projekt: leviculum*
 *Lizenz: MIT*

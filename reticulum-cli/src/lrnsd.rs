@@ -7,6 +7,7 @@ use std::path::PathBuf;
 
 use clap::{ArgAction, Parser};
 use tracing::info;
+use tracing_subscriber::EnvFilter;
 
 use reticulum_std::config::Config;
 use reticulum_std::Reticulum;
@@ -36,17 +37,19 @@ struct Args {
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let args = Args::parse();
 
-    // Level: INFO at baseline, shifted by verbose/quiet
-    let level = match (args.verbose as i8) - (args.quiet as i8) {
-        2.. => tracing::Level::TRACE,
-        1 => tracing::Level::DEBUG,
-        0 => tracing::Level::INFO,
-        -1 => tracing::Level::WARN,
-        _ => tracing::Level::ERROR,
+    // RUST_LOG env takes precedence; otherwise use -v/-q flags
+    let default_filter = match (args.verbose as i8) - (args.quiet as i8) {
+        2.. => "trace",
+        1 => "debug",
+        0 => "info",
+        -1 => "warn",
+        _ => "error",
     };
     tracing_subscriber::fmt()
         .compact()
-        .with_max_level(level)
+        .with_env_filter(
+            EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new(default_filter)),
+        )
         .init();
 
     info!("Starting lrnsd v{}", env!("CARGO_PKG_VERSION"));

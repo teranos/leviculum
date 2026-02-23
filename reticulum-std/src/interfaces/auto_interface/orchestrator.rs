@@ -221,8 +221,10 @@ async fn run_auto_interface(
     }
 
     // Per-peer state: keyed by peer's (IPv6 link-local, data_port).
-    // Using (ip, port) allows same-machine nodes with different data_ports
-    // to be tracked as separate peers.
+    // Data receive does a two-tier lookup: try exact (ip, port) first,
+    // then fall back to ip-only. This handles both:
+    // - Same-machine Rust peers (send from data_port → exact match)
+    // - Cross-machine Python peers (send from ephemeral port → ip-only)
     // Removal path: peers are removed on timeout in the peer_job_timer branch.
     let mut peers: HashMap<(Ipv6Addr, u16), PeerInfo> = HashMap::new();
 
@@ -359,14 +361,22 @@ async fn run_auto_interface(
                     continue;
                 }
 
-                // Look up peer by (source IP, source port).
-                // The sender sends from their NIC data socket whose port = their data_port,
-                // which matches the key we stored from their discovery packet.
+                // Two-tier peer lookup:
+                // 1. Try exact (ip, src_port) — works for same-machine Rust peers
+                //    that send from their data_port via the NIC data socket.
+                // 2. Fall back to ip-only — works for cross-machine Python peers
+                //    that send from ephemeral ports.
                 let src_ip = *recv.source.ip();
                 let src_port = recv.source.port();
-                let peer_key = (src_ip, src_port);
 
-                if let Some(peer) = peers.get_mut(&peer_key) {
+                // Resolve the lookup key: exact match first, then ip-only fallback
+                let lookup_key = if peers.contains_key(&(src_ip, src_port)) {
+                    Some((src_ip, src_port))
+                } else {
+                    peers.keys().find(|(ip, _)| *ip == src_ip).copied()
+                };
+
+                if let Some(peer) = lookup_key.and_then(|k| peers.get_mut(&k)) {
                     peer.last_heard = Instant::now();
                     match peer.incoming_tx.try_send(IncomingPacket {
                         data: data.to_vec(),
@@ -573,8 +583,8 @@ fn handle_discovery_packet(
     }
 
     // Peer data_port: from discovery packet if present, else config default.
-    // Python sends 32-byte packets (no data_port) → use config.data_port.
-    // Rust sends 42-byte packets with data_port → use that for same-machine disambiguation.
+    // Used as destination port when sending TO this peer, and as part of the
+    // peer map key for same-machine disambiguation.
     let peer_data_port = parsed.data_port.unwrap_or(config.data_port);
     let peer_key = (src_addr, peer_data_port);
 
