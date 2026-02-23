@@ -206,7 +206,7 @@ async fn test_shared_instance_link_through_daemon() {
     // is_connected_to_shared_instance=True). JSON-RPC command port works
     // independently.
     let py_client =
-        TestDaemon::start_with_shared_instance_ports(py_rns_port, py_cmd_port, &instance_name)
+        TestDaemon::start_with_shared_instance_echo(py_rns_port, py_cmd_port, &instance_name)
             .await
             .expect("Failed to start Python shared instance client");
 

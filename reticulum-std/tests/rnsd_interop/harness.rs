@@ -480,17 +480,39 @@ impl TestDaemon {
         cmd_port: u16,
         instance_name: &str,
     ) -> Result<Self, HarnessError> {
+        Self::start_with_shared_instance_ports_opts(rns_port, cmd_port, instance_name, false).await
+    }
+
+    /// Start a shared instance daemon with echo-channel enabled.
+    pub async fn start_with_shared_instance_echo(
+        rns_port: u16,
+        cmd_port: u16,
+        instance_name: &str,
+    ) -> Result<Self, HarnessError> {
+        Self::start_with_shared_instance_ports_opts(rns_port, cmd_port, instance_name, true).await
+    }
+
+    async fn start_with_shared_instance_ports_opts(
+        rns_port: u16,
+        cmd_port: u16,
+        instance_name: &str,
+        echo_channel: bool,
+    ) -> Result<Self, HarnessError> {
+        let mut args = vec![
+            Self::DAEMON_SCRIPT.to_string(),
+            "--rns-port".to_string(),
+            rns_port.to_string(),
+            "--cmd-port".to_string(),
+            cmd_port.to_string(),
+            "--share-instance".to_string(),
+            "--instance-name".to_string(),
+            instance_name.to_string(),
+        ];
+        if echo_channel {
+            args.push("--echo-channel".to_string());
+        }
         let mut process = Command::new("python3")
-            .args([
-                Self::DAEMON_SCRIPT,
-                "--rns-port",
-                &rns_port.to_string(),
-                "--cmd-port",
-                &cmd_port.to_string(),
-                "--share-instance",
-                "--instance-name",
-                instance_name,
-            ])
+            .args(&args)
             .stdout(Stdio::piped())
             .stderr(Stdio::inherit())
             .spawn()

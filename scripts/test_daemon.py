@@ -102,7 +102,8 @@ class TestDaemon:
     def __init__(self, rns_port: int, cmd_port: int, verbose: bool = False,
                  udp_listen_port: int = None, udp_forward_port: int = None,
                  auto_interface: bool = False, group_id: str = None,
-                 share_instance: bool = False, instance_name: str = None):
+                 share_instance: bool = False, instance_name: str = None,
+                 echo_channel: bool = False):
         self.rns_port = rns_port
         self.cmd_port = cmd_port
         self.udp_listen_port = udp_listen_port
@@ -111,6 +112,7 @@ class TestDaemon:
         self.group_id = group_id or "reticulum"
         self.share_instance = share_instance
         self.instance_name = instance_name or "default"
+        self.echo_channel = echo_channel
         self.verbose = verbose
         self.running = True
         self.destinations = {}  # hash -> (identity, destination)
@@ -1123,14 +1125,15 @@ class TestDaemon:
 
         self.received_packets.append((time.time(), link, message.data))
 
-        # Echo back via channel
-        try:
-            echo = RawBytesMessage()
-            echo.data = message.data
-            link.get_channel().send(echo)
-        except Exception as e:
-            if self.verbose:
-                print(f"Failed to echo channel message: {e}")
+        # Echo back via channel (only when --echo-channel is set)
+        if self.echo_channel:
+            try:
+                echo = RawBytesMessage()
+                echo.data = message.data
+                link.get_channel().send(echo)
+            except Exception as e:
+                if self.verbose:
+                    print(f"Failed to echo channel message: {e}")
 
         return True
 
@@ -1203,6 +1206,8 @@ def main():
                         help="Enable shared instance (local Unix socket)")
     parser.add_argument("--instance-name", type=str, default=None,
                         help="Instance name for shared instance (default: default)")
+    parser.add_argument("--echo-channel", action="store_true",
+                        help="Echo received channel messages back via channel")
     parser.add_argument("-v", "--verbose", action="store_true",
                         help="Enable verbose output")
 
@@ -1218,6 +1223,7 @@ def main():
         group_id=args.group_id,
         share_instance=args.share_instance,
         instance_name=args.instance_name,
+        echo_channel=args.echo_channel,
     )
     daemon.run()
 
