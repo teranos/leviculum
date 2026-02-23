@@ -133,6 +133,8 @@ pub struct ReticulumNode {
     /// Shared instance name (if enabled). When Some, the daemon listens on
     /// abstract Unix socket `\0rns/{name}` for local IPC clients.
     share_instance_name: Option<String>,
+    /// Time when the node was created (for RPC uptime reporting).
+    start_time: std::time::Instant,
 }
 
 impl ReticulumNode {
@@ -157,6 +159,7 @@ impl ReticulumNode {
             corrupt_every,
             auto_peer_count_rx: None,
             share_instance_name: None,
+            start_time: std::time::Instant::now(),
         }
     }
 
@@ -387,6 +390,35 @@ impl ReticulumNode {
                 new_iface_tx.clone(),
                 crate::interfaces::local::LOCAL_DEFAULT_BUFFER_SIZE,
             )?;
+
+            // Start RPC server for Python CLI tool compatibility (rnstatus, rnpath, rnprobe)
+            let authkey = {
+                let core = self.inner.lock().unwrap();
+                match core.identity().private_key_bytes() {
+                    Ok(prv) => {
+                        use sha2::Digest;
+                        let hash = sha2::Sha256::digest(prv);
+                        let mut key = [0u8; 32];
+                        key.copy_from_slice(&hash);
+                        key
+                    }
+                    Err(e) => {
+                        tracing::warn!(
+                            "Cannot derive RPC authkey (no private key: {}), RPC server disabled",
+                            e
+                        );
+                        return Ok(registry);
+                    }
+                }
+            };
+            if let Err(e) = crate::rpc::spawn_rpc_server(
+                instance_name,
+                Arc::clone(&self.inner),
+                authkey,
+                self.start_time,
+            ) {
+                tracing::warn!("Failed to start RPC server: {}", e);
+            }
         }
 
         Ok(registry)

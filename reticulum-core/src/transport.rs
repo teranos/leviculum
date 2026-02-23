@@ -283,6 +283,17 @@ impl Default for TransportConfig {
     }
 }
 
+/// Interface metadata for RPC reporting.
+#[derive(Debug, Clone)]
+pub struct InterfaceStatEntry {
+    /// Interface index
+    pub id: usize,
+    /// Human-readable name
+    pub name: String,
+    /// Whether this is a local IPC client interface
+    pub is_local_client: bool,
+}
+
 /// Transport statistics
 #[derive(Debug, Default, Clone)]
 pub struct TransportStats {
@@ -2489,6 +2500,22 @@ impl<C: Clock, S: Storage> Transport<C, S> {
         } else {
             false
         }
+    }
+
+    // ─── Public: Interface Stats (for RPC) ──────────────────────────
+
+    /// Return metadata for all registered interfaces.
+    ///
+    /// Used by the RPC server to report interface status to CLI tools.
+    pub fn interface_stats(&self) -> Vec<InterfaceStatEntry> {
+        self.interface_names
+            .iter()
+            .map(|(&id, name)| InterfaceStatEntry {
+                id,
+                name: name.clone(),
+                is_local_client: self.local_client_interfaces.contains(&id),
+            })
+            .collect()
     }
 
     // ─── Internal: Helpers ─────────────────────────────────────────────

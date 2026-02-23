@@ -567,6 +567,11 @@ impl<R: CryptoRngCore, C: Clock, S: Storage> NodeCore<R, C, S> {
         self.transport.config()
     }
 
+    /// Return metadata for all registered interfaces (for RPC reporting).
+    pub fn interface_stats(&self) -> Vec<crate::transport::InterfaceStatEntry> {
+        self.transport.interface_stats()
+    }
+
     /// Get the default proof strategy
     pub fn default_proof_strategy(&self) -> ProofStrategy {
         self.default_proof_strategy

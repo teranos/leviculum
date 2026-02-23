@@ -21,6 +21,7 @@ pub mod interfaces;
 pub(crate) mod known_destinations;
 pub(crate) mod packet_hashlist;
 pub mod reticulum;
+pub(crate) mod rpc;
 pub(crate) mod storage;
 
 // Re-export commonly used core types for the high-level API

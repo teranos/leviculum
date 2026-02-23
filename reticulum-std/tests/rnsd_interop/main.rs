@@ -58,6 +58,7 @@ mod ratchet_tests;
 mod relay_integration_tests;
 mod responder_node_tests;
 mod responder_tests;
+mod rpc_interop_tests;
 mod rust_relay_tests;
 mod shared_instance_tests;
 mod stress_tests;
