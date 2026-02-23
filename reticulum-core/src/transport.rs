@@ -2814,7 +2814,25 @@ impl<C: Clock, S: Storage> Transport<C, S> {
 
         let from_local = self.is_local_client(interface_index);
 
-        // 2. Check if we have a cached announce for this destination
+        // 2a. Local client path request with cached announce → respond immediately
+        // Python Transport.py:2723,2755-2756: when is_from_local_client, send cached
+        // announce directly back to the requesting client (retransmit_timeout = now,
+        // attached_interface = requesting_interface).
+        if from_local {
+            if let Some(cached_raw) = self.storage.get_announce_cache(&requested_hash).cloned() {
+                tracing::debug!(
+                    "Answering path request for <{}> from local client, path is known",
+                    HexShort(&requested_hash),
+                );
+                self.pending_actions.push(Action::SendPacket {
+                    iface: InterfaceId(interface_index),
+                    data: cached_raw,
+                });
+                return Ok(());
+            }
+        }
+
+        // 2b. Transport node with cached announce → schedule deferred rebroadcast
         if self.config.enable_transport {
             if let Some(cached_raw) = self.storage.get_announce_cache(&requested_hash).cloned() {
                 tracing::debug!(
@@ -2842,28 +2860,11 @@ impl<C: Clock, S: Storage> Transport<C, S> {
                 return Ok(());
             }
 
-            // 3. Unknown destination → forward path request
-            let mut buf = [0u8; crate::constants::MTU];
-            let len = packet.pack(&mut buf)?;
+            // 3. Unknown destination from network → forward path request
+            if !from_local {
+                let mut buf = [0u8; crate::constants::MTU];
+                let len = packet.pack(&mut buf)?;
 
-            if from_local {
-                // From local client → forward to all network (non-local) interfaces
-                // (Python Transport.py:2783-2790)
-                tracing::debug!(
-                    "Path request for <{}> from local client, forwarding to network interfaces",
-                    HexShort(&requested_hash),
-                );
-                let network_ifaces: Vec<usize> = self
-                    .interface_names
-                    .keys()
-                    .copied()
-                    .filter(|&id| id != interface_index && !self.is_local_client(id))
-                    .collect();
-                for iface_idx in network_ifaces {
-                    let _ = self.send_on_interface(iface_idx, &buf[..len]);
-                }
-            } else {
-                // From network → forward to all interfaces except arrival
                 tracing::debug!(
                     "Path request for <{}> on {}, no path known, forwarding to all interfaces",
                     HexShort(&requested_hash),
@@ -2883,6 +2884,26 @@ impl<C: Clock, S: Storage> Transport<C, S> {
                         let _ = self.send_on_interface(client_iface, &buf[..len]);
                     }
                 }
+            }
+        }
+
+        // 4. Local client with unknown destination → forward to network interfaces
+        // (Python Transport.py:2783-2790). This works even without transport enabled.
+        if from_local {
+            let mut buf = [0u8; crate::constants::MTU];
+            let len = packet.pack(&mut buf)?;
+            tracing::debug!(
+                "Path request for <{}> from local client, forwarding to network interfaces",
+                HexShort(&requested_hash),
+            );
+            let network_ifaces: Vec<usize> = self
+                .interface_names
+                .keys()
+                .copied()
+                .filter(|&id| id != interface_index && !self.is_local_client(id))
+                .collect();
+            for iface_idx in network_ifaces {
+                let _ = self.send_on_interface(iface_idx, &buf[..len]);
             }
         }
 
@@ -10816,6 +10837,106 @@ mod tests {
             assert!(
                 !local_sends.is_empty(),
                 "Data should be forwarded to local client via link table (enable_transport=false)"
+            );
+        }
+
+        #[test]
+        fn test_path_request_from_local_client_returns_cached_announce() {
+            let mut transport = make_transport_with_local_client();
+
+            // Process an announce on the network interface to populate the cache
+            let (raw, dest_hash) = make_announce_raw(0, crate::packet::PacketContext::None);
+            let packet = Packet::unpack(&raw).unwrap();
+            let _ = transport.handle_announce(packet, NETWORK_IFACE, &raw);
+            transport.drain_actions();
+            transport.drain_events();
+
+            // Verify cache is populated
+            assert!(
+                transport.storage.get_announce_cache(&dest_hash).is_some(),
+                "Announce cache should be populated"
+            );
+            let cached_raw = transport
+                .storage
+                .get_announce_cache(&dest_hash)
+                .cloned()
+                .unwrap();
+
+            // Clear announce table (keep cache) to simulate fresh state
+            for key in transport.storage().announce_keys() {
+                transport.storage_mut().remove_announce(&key);
+            }
+
+            // Build a path request from the local client
+            let mut data = Vec::new();
+            data.extend_from_slice(&dest_hash);
+            data.extend_from_slice(&[0xBB; TRUNCATED_HASHBYTES]); // tag
+
+            let packet = Packet {
+                flags: PacketFlags {
+                    ifac_flag: false,
+                    header_type: HeaderType::Type1,
+                    context_flag: false,
+                    transport_type: TransportType::Broadcast,
+                    dest_type: DestinationType::Plain,
+                    packet_type: PacketType::Data,
+                },
+                hops: 0,
+                transport_id: None,
+                destination_hash: transport.path_request_hash,
+                context: PacketContext::None,
+                data: PacketData::Owned(data),
+            };
+
+            let result = transport.handle_path_request(packet, LOCAL_CLIENT_IFACE);
+            assert!(result.is_ok());
+
+            let actions = transport.drain_actions();
+
+            // Should have a SendPacket to the local client with the cached announce
+            let local_sends: Vec<_> = actions
+                .iter()
+                .filter(
+                    |a| matches!(a, Action::SendPacket { iface, .. } if iface.0 == LOCAL_CLIENT_IFACE),
+                )
+                .collect();
+            assert_eq!(
+                local_sends.len(),
+                1,
+                "Should send cached announce directly to local client"
+            );
+
+            // Verify the sent data is the cached announce
+            if let Action::SendPacket { data, .. } = local_sends[0] {
+                assert_eq!(data, &cached_raw, "Sent data should match cached announce");
+            }
+
+            // Should NOT have any sends to the network interface
+            let network_sends: Vec<_> = actions
+                .iter()
+                .filter(
+                    |a| matches!(a, Action::SendPacket { iface, .. } if iface.0 == NETWORK_IFACE),
+                )
+                .collect();
+            assert!(
+                network_sends.is_empty(),
+                "Should not send to network interface for local client path response"
+            );
+
+            // Should NOT have any Broadcast actions
+            let broadcasts: Vec<_> = actions
+                .iter()
+                .filter(|a| matches!(a, Action::Broadcast { .. }))
+                .collect();
+            assert!(
+                broadcasts.is_empty(),
+                "Should not broadcast for local client path response"
+            );
+
+            // Should NOT have created an announce table entry (no deferred rebroadcast)
+            assert!(
+                transport.storage().get_announce(&dest_hash).is_none(),
+                "Should not create deferred announce entry for local client response"
             );
         }
 

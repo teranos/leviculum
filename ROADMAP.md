@@ -325,6 +325,7 @@ Sicherheitsfeatures verdrahten, Daemon-Zustand persistieren, Release-Qualität e
 - ✅ LocalInterface: Unix-Domain-Socket-basierte IPC-Kommunikation zwischen `lrnsd` und Client-Programmen (wie Python's `LocalClientInterface` / `LocalServerInterface`) — Abstract Unix Socket (`\0rns/{instance_name}`), HDLC-Framing, `spawn_local_server()`, Config-Integration (`share_instance`/`instance_name`), 2 Python-Interop-Tests
 - ✅ Routing-Gates für Local-Client-Bedingungen: `handle_link_request()`, `handle_proof()`, `handle_data()` routen Pakete für/von Local-Client-Interfaces auch ohne `enable_transport`, matching Python Transport.py:1378-1404. 5 Unit-Tests mit `enable_transport=false`
 - ✅ End-to-End-Link durch Shared Instance: Rust-Daemon (in-process, TCP+IPC) → Python als Shared-Instance-Client → Link-Establishment + bidirektionaler Datenfluss (Channel-Echo + Raw-Packets), 1 Interop-Test
+- ✅ Path-Request-Handling für Local Clients: `rnpath`-Anfragen über Shared Instance werden korrekt beantwortet — gecachte Announces sofort zurückgeschickt, unbekannte Pfade an Netzwerk-Interfaces weitergeleitet (auch ohne `enable_transport`)
 - [ ] `is_connected_to_shared_instance`-Semantik (Python-Äquivalent) für lokale Transport-Entscheidungen
 
 ## Hardware-Interfaces
