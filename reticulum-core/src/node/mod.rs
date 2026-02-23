@@ -516,6 +516,9 @@ impl<R: CryptoRngCore, C: Clock, S: Storage> NodeCore<R, C, S> {
         // Remove announce cap state for this interface
         self.transport.unregister_interface_announce_cap(iface_idx);
 
+        // Remove announce frequency tracking state for this interface
+        self.transport.remove_announce_freq_tracking(iface_idx);
+
         // Remove local client flag, interface name and HW_MTU
         // (after logging so the name is still available above)
         self.transport.set_local_client(iface_idx, false);
@@ -620,6 +623,37 @@ impl<R: CryptoRngCore, C: Clock, S: Storage> NodeCore<R, C, S> {
     /// Get the current time in milliseconds from the transport clock
     pub fn now_ms(&self) -> u64 {
         self.transport.clock().now_ms()
+    }
+
+    /// Return all path table entries for RPC export.
+    pub fn path_table_entries(&self) -> Vec<crate::transport::PathTableExport> {
+        self.transport.path_table_entries()
+    }
+
+    /// Return all announce rate table entries for RPC export.
+    pub fn rate_table_entries(&self) -> Vec<crate::transport::RateTableExport> {
+        self.transport.rate_table_entries()
+    }
+
+    /// Clone a path entry by destination hash (for RPC lookups).
+    pub fn get_path_clone(
+        &self,
+        hash: &[u8; crate::constants::TRUNCATED_HASHBYTES],
+    ) -> Option<crate::storage_types::PathEntry> {
+        self.transport.get_path_clone(hash)
+    }
+
+    /// Remove a path entry by destination hash. Returns true if found.
+    pub fn remove_path(&mut self, hash: &[u8; crate::constants::TRUNCATED_HASHBYTES]) -> bool {
+        self.transport.remove_path(hash)
+    }
+
+    /// Remove all paths whose next_hop matches `via_hash`. Returns count removed.
+    pub fn drop_all_paths_via(
+        &mut self,
+        via_hash: &[u8; crate::constants::TRUNCATED_HASHBYTES],
+    ) -> usize {
+        self.transport.drop_all_paths_via(via_hash)
     }
 
     /// Access the underlying transport (test-only, for clock manipulation)

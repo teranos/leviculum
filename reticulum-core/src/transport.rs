@@ -65,6 +65,10 @@ use crate::storage_types::{
 };
 use crate::traits::{Clock, Storage};
 
+/// Number of announce timestamp samples per interface for frequency computation
+/// (matches Python Interface.py maxlen=6).
+const ANNOUNCE_FREQ_SAMPLES: usize = 6;
+
 // ─── Sans-I/O Types ─────────────────────────────────────────────────────────
 
 /// Opaque interface identifier
@@ -292,6 +296,38 @@ pub struct InterfaceStatEntry {
     pub name: String,
     /// Whether this is a local IPC client interface
     pub is_local_client: bool,
+    /// Incoming announce frequency in Hz (Python ia_freq_deque)
+    pub incoming_announce_frequency: f64,
+    /// Outgoing announce frequency in Hz (Python oa_freq_deque)
+    pub outgoing_announce_frequency: f64,
+}
+
+/// Exported path table entry for RPC reporting.
+#[derive(Debug, Clone)]
+pub struct PathTableExport {
+    /// Destination hash (16 bytes)
+    pub hash: [u8; TRUNCATED_HASHBYTES],
+    /// Number of hops
+    pub hops: u8,
+    /// When this path expires (ms since clock epoch)
+    pub expires_ms: u64,
+    /// Interface index where we learned this path
+    pub interface_index: usize,
+    /// Identity hash of the next relay hop
+    pub next_hop: Option<[u8; TRUNCATED_HASHBYTES]>,
+}
+
+/// Exported announce rate table entry for RPC reporting.
+#[derive(Debug, Clone)]
+pub struct RateTableExport {
+    /// Destination hash (16 bytes)
+    pub hash: [u8; TRUNCATED_HASHBYTES],
+    /// Timestamp of last accepted announce (ms)
+    pub last_ms: u64,
+    /// Number of rate violations
+    pub rate_violations: u8,
+    /// Blocked until (ms)
+    pub blocked_until_ms: u64,
 }
 
 /// Transport statistics
@@ -506,6 +542,14 @@ pub struct Transport<C: Clock, S: Storage> {
     /// Removal path: removed in handle_interface_down via set_local_client(id, false).
     local_client_interfaces: BTreeSet<usize>,
 
+    /// Per-interface incoming announce timestamps for frequency computation (Python ia_freq_deque).
+    /// Removal path: removed in handle_interface_down via remove_announce_freq_tracking().
+    interface_incoming_announce_times: BTreeMap<usize, VecDeque<u64>>,
+
+    /// Per-interface outgoing announce timestamps for frequency computation (Python oa_freq_deque).
+    /// Removal path: removed in handle_interface_down via remove_announce_freq_tracking().
+    interface_outgoing_announce_times: BTreeMap<usize, VecDeque<u64>>,
+
     /// Pending I/O actions for the driver (sans-I/O buffer)
     pending_actions: Vec<Action>,
 
@@ -539,6 +583,8 @@ impl<C: Clock, S: Storage> Transport<C, S> {
             interface_names: BTreeMap::new(),
             interface_hw_mtus: BTreeMap::new(),
             local_client_interfaces: BTreeSet::new(),
+            interface_incoming_announce_times: BTreeMap::new(),
+            interface_outgoing_announce_times: BTreeMap::new(),
             pending_actions: Vec::new(),
             #[cfg(test)]
             interfaces: Vec::new(),
@@ -1178,16 +1224,65 @@ impl<C: Clock, S: Storage> Transport<C, S> {
         &self.clock
     }
 
+    /// Return all path table entries for RPC export.
+    pub fn path_table_entries(&self) -> Vec<PathTableExport> {
+        self.storage
+            .path_entries()
+            .into_iter()
+            .map(|(hash, entry)| PathTableExport {
+                hash,
+                hops: entry.hops,
+                expires_ms: entry.expires_ms,
+                interface_index: entry.interface_index,
+                next_hop: entry.next_hop,
+            })
+            .collect()
+    }
+
+    /// Return all announce rate table entries for RPC export.
+    pub fn rate_table_entries(&self) -> Vec<RateTableExport> {
+        self.storage
+            .announce_rate_entries()
+            .into_iter()
+            .map(|(hash, entry)| RateTableExport {
+                hash,
+                last_ms: entry.last_ms,
+                rate_violations: entry.rate_violations,
+                blocked_until_ms: entry.blocked_until_ms,
+            })
+            .collect()
+    }
+
+    /// Clone a path entry by destination hash (for RPC lookups).
+    pub fn get_path_clone(&self, hash: &[u8; TRUNCATED_HASHBYTES]) -> Option<PathEntry> {
+        self.storage.get_path(hash).cloned()
+    }
+
+    /// Remove a path entry by destination hash. Returns true if found.
+    pub fn remove_path(&mut self, hash: &[u8; TRUNCATED_HASHBYTES]) -> bool {
+        self.storage.remove_path(hash).is_some()
+    }
+
+    /// Remove all paths whose next_hop matches `via_hash`. Returns count removed.
+    pub fn drop_all_paths_via(&mut self, via_hash: &[u8; TRUNCATED_HASHBYTES]) -> usize {
+        let to_remove: Vec<_> = self
+            .storage
+            .path_entries()
+            .iter()
+            .filter(|(_, e)| e.next_hop.as_ref() == Some(via_hash))
+            .map(|(h, _)| *h)
+            .collect();
+        let count = to_remove.len();
+        for h in to_remove {
+            self.storage.remove_path(&h);
+        }
+        count
+    }
+
     /// Insert a path entry (thin wrapper around storage, test helper)
     #[cfg(test)]
     pub(crate) fn insert_path(&mut self, hash: [u8; TRUNCATED_HASHBYTES], entry: PathEntry) {
         self.storage.set_path(hash, entry);
-    }
-
-    /// Remove a path entry by destination hash (thin wrapper around storage, test helper)
-    #[cfg(test)]
-    pub(crate) fn remove_path(&mut self, hash: &[u8; TRUNCATED_HASHBYTES]) {
-        self.storage.remove_path(hash);
     }
 
     /// Remove all path entries referencing a specific interface.
@@ -1409,8 +1504,12 @@ impl<C: Clock, S: Storage> Transport<C, S> {
 
                     if packet.hops == 0 || self.interface_announce_caps.is_empty() {
                         self.forward_on_all_except(interface_index, &mut rebroadcast);
+                        self.record_outgoing_announce_broadcast(interface_index);
                     } else {
                         self.broadcast_announce_with_caps(interface_index, &mut rebroadcast);
+                        // broadcast_announce_with_caps sends to individual capped
+                        // interfaces (tracked below) and broadcasts to uncapped ones
+                        self.record_outgoing_announce_broadcast(interface_index);
                     }
                 }
             }
@@ -1435,6 +1534,9 @@ impl<C: Clock, S: Storage> Transport<C, S> {
                         block_rebroadcasts: is_path_response,
                     },
                 );
+
+                // Track incoming announce frequency on receiving interface
+                self.record_incoming_announce(interface_index);
             }
 
             // Cache raw announce for path responses (when transport is enabled
@@ -2502,18 +2604,116 @@ impl<C: Clock, S: Storage> Transport<C, S> {
         }
     }
 
+    // ─── Public: Announce Frequency Tracking ────────────────────────
+
+    /// Record an incoming announce timestamp for the given interface.
+    fn record_incoming_announce(&mut self, iface: usize) {
+        let now = self.clock.now_ms();
+        let deque = self
+            .interface_incoming_announce_times
+            .entry(iface)
+            .or_default();
+        if deque.len() >= ANNOUNCE_FREQ_SAMPLES {
+            deque.pop_front();
+        }
+        deque.push_back(now);
+    }
+
+    /// Record an outgoing announce timestamp for a specific interface.
+    fn record_outgoing_announce(&mut self, iface: usize) {
+        let now = self.clock.now_ms();
+        let deque = self
+            .interface_outgoing_announce_times
+            .entry(iface)
+            .or_default();
+        if deque.len() >= ANNOUNCE_FREQ_SAMPLES {
+            deque.pop_front();
+        }
+        deque.push_back(now);
+    }
+
+    /// Record an outgoing announce on all registered interfaces except one.
+    /// Used when a Broadcast action is emitted for an announce.
+    fn record_outgoing_announce_broadcast(&mut self, except: usize) {
+        let now = self.clock.now_ms();
+        let ifaces: Vec<usize> = self
+            .interface_names
+            .keys()
+            .copied()
+            .filter(|&i| i != except)
+            .collect();
+        for iface in ifaces {
+            let deque = self
+                .interface_outgoing_announce_times
+                .entry(iface)
+                .or_default();
+            if deque.len() >= ANNOUNCE_FREQ_SAMPLES {
+                deque.pop_front();
+            }
+            deque.push_back(now);
+        }
+    }
+
+    /// Compute announce frequency from a timestamp deque (matches Python Interface.py).
+    ///
+    /// Returns frequency in Hz. If fewer than 2 samples, returns 0.0.
+    /// Includes time elapsed since last sample in the average, matching Python's
+    /// `delta_sum += time.time() - deque[-1]`.
+    fn announce_frequency(deque: &VecDeque<u64>, now_ms: u64) -> f64 {
+        if deque.len() <= 1 {
+            return 0.0;
+        }
+        let mut delta_sum_ms: u64 = 0;
+        for i in 1..deque.len() {
+            delta_sum_ms += deque[i].saturating_sub(deque[i - 1]);
+        }
+        // Add time since last sample (matches Python: delta_sum += time.time() - deque[-1])
+        if let Some(&last) = deque.back() {
+            delta_sum_ms += now_ms.saturating_sub(last);
+        }
+
+        if delta_sum_ms == 0 {
+            return 0.0;
+        }
+        let avg_delta_secs = (delta_sum_ms as f64 / 1000.0) / (deque.len() as f64);
+        1.0 / avg_delta_secs
+    }
+
+    /// Remove announce frequency tracking state for an interface.
+    ///
+    /// Called from `handle_interface_down()` during cleanup.
+    pub fn remove_announce_freq_tracking(&mut self, iface: usize) {
+        self.interface_incoming_announce_times.remove(&iface);
+        self.interface_outgoing_announce_times.remove(&iface);
+    }
+
     // ─── Public: Interface Stats (for RPC) ──────────────────────────
 
     /// Return metadata for all registered interfaces.
     ///
     /// Used by the RPC server to report interface status to CLI tools.
     pub fn interface_stats(&self) -> Vec<InterfaceStatEntry> {
+        let now = self.clock.now_ms();
         self.interface_names
             .iter()
-            .map(|(&id, name)| InterfaceStatEntry {
-                id,
-                name: name.clone(),
-                is_local_client: self.local_client_interfaces.contains(&id),
+            .map(|(&id, name)| {
+                let ia_freq = self
+                    .interface_incoming_announce_times
+                    .get(&id)
+                    .map(|d| Self::announce_frequency(d, now))
+                    .unwrap_or(0.0);
+                let oa_freq = self
+                    .interface_outgoing_announce_times
+                    .get(&id)
+                    .map(|d| Self::announce_frequency(d, now))
+                    .unwrap_or(0.0);
+                InterfaceStatEntry {
+                    id,
+                    name: name.clone(),
+                    is_local_client: self.local_client_interfaces.contains(&id),
+                    incoming_announce_frequency: ia_freq,
+                    outgoing_announce_frequency: oa_freq,
+                }
             })
             .collect()
     }
@@ -2774,6 +2974,7 @@ impl<C: Clock, S: Storage> Transport<C, S> {
                 } else {
                     self.broadcast_announce_with_caps(except_iface, &mut parsed);
                 }
+                self.record_outgoing_announce_broadcast(except_iface);
 
                 // If TTL exceeded, remove from announce table
                 if parsed.hops > self.config.max_hops {
@@ -2902,6 +3103,7 @@ impl<C: Clock, S: Storage> Transport<C, S> {
                 iface: InterfaceId(iface_idx),
                 data: raw,
             });
+            self.record_outgoing_announce(iface_idx);
         }
     }
 
@@ -10658,6 +10860,222 @@ mod tests {
                 !local_sends.is_empty(),
                 "Path request from network should be forwarded to local clients"
             );
+        }
+    }
+
+    mod announce_frequency_tests {
+        use super::*;
+        use crate::memory_storage::MemoryStorage;
+        use crate::test_utils::{MockClock, TEST_TIME_MS};
+        use alloc::collections::VecDeque;
+        use rand_core::OsRng;
+
+        extern crate std;
+
+        fn make_transport() -> Transport<MockClock, MemoryStorage> {
+            let clock = MockClock::new(TEST_TIME_MS);
+            let identity = crate::identity::Identity::generate(&mut OsRng);
+            let config = TransportConfig {
+                enable_transport: true,
+                ..TransportConfig::default()
+            };
+            let mut transport =
+                Transport::new(config, clock, MemoryStorage::with_defaults(), identity);
+            transport.set_interface_name(0, "iface0".into());
+            transport.set_interface_name(1, "iface1".into());
+            transport
+        }
+
+        #[test]
+        fn frequency_empty_deque_returns_zero() {
+            let deque = VecDeque::new();
+            assert_eq!(
+                Transport::<MockClock, MemoryStorage>::announce_frequency(&deque, 1000),
+                0.0
+            );
+        }
+
+        #[test]
+        fn frequency_single_sample_returns_zero() {
+            let mut deque = VecDeque::new();
+            deque.push_back(1000);
+            assert_eq!(
+                Transport::<MockClock, MemoryStorage>::announce_frequency(&deque, 2000),
+                0.0
+            );
+        }
+
+        #[test]
+        fn frequency_two_samples_one_second_apart() {
+            let mut deque = VecDeque::new();
+            deque.push_back(1000);
+            deque.push_back(2000);
+            // Deltas: [1000ms between samples] + [0ms since last sample queried at same time]
+            // avg_delta = 1000ms / 2 samples = 500ms = 0.5s
+            // freq = 1 / 0.5 = 2.0 Hz
+            let freq = Transport::<MockClock, MemoryStorage>::announce_frequency(&deque, 2000);
+            assert!((freq - 2.0).abs() < 0.001, "expected ~2.0 Hz, got {}", freq);
+        }
+
+        #[test]
+        fn frequency_includes_time_since_last_sample() {
+            let mut deque = VecDeque::new();
+            deque.push_back(1000);
+            deque.push_back(2000);
+            // Deltas: [1000ms between samples] + [3000ms since last sample (now=5000)]
+            // delta_sum = 1000 + 3000 = 4000ms
+            // avg_delta = 4000ms / 2 samples = 2000ms = 2.0s
+            // freq = 1 / 2.0 = 0.5 Hz
+            let freq = Transport::<MockClock, MemoryStorage>::announce_frequency(&deque, 5000);
+            assert!((freq - 0.5).abs() < 0.001, "expected ~0.5 Hz, got {}", freq);
+        }
+
+        #[test]
+        fn frequency_six_evenly_spaced_samples() {
+            let mut deque = VecDeque::new();
+            // 6 samples, 10s apart
+            for i in 0..6 {
+                deque.push_back(10_000 + i * 10_000);
+            }
+            // now_ms = last sample time (no additional elapsed)
+            let now = 10_000 + 5 * 10_000;
+            // 5 inter-sample deltas of 10000ms each + 0ms since last = 50000ms
+            // avg = 50000 / 6 = 8333.33ms = 8.333s
+            // freq = 1 / 8.333 = 0.12 Hz
+            let freq = Transport::<MockClock, MemoryStorage>::announce_frequency(&deque, now);
+            let expected = 1.0 / (50000.0 / 6.0 / 1000.0);
+            assert!(
+                (freq - expected).abs() < 0.001,
+                "expected ~{}, got {}",
+                expected,
+                freq
+            );
+        }
+
+        #[test]
+        fn record_incoming_stores_timestamp() {
+            let mut transport = make_transport();
+            transport.record_incoming_announce(0);
+            let stats = transport.interface_stats();
+            let iface0 = stats.iter().find(|s| s.id == 0).unwrap();
+            // Single sample → 0.0 Hz
+            assert_eq!(iface0.incoming_announce_frequency, 0.0);
+        }
+
+        #[test]
+        fn record_incoming_two_samples_computes_frequency() {
+            let mut transport = make_transport();
+            transport.record_incoming_announce(0);
+            transport.clock.advance(5000);
+            transport.record_incoming_announce(0);
+
+            let stats = transport.interface_stats();
+            let iface0 = stats.iter().find(|s| s.id == 0).unwrap();
+            // 2 samples, 5s apart, queried at last sample time
+            // delta_sum = 5000 + 0 = 5000ms, avg = 5000/2 = 2500ms = 2.5s
+            // freq = 1/2.5 = 0.4 Hz
+            assert!(
+                (iface0.incoming_announce_frequency - 0.4).abs() < 0.01,
+                "expected ~0.4 Hz, got {}",
+                iface0.incoming_announce_frequency
+            );
+        }
+
+        #[test]
+        fn record_outgoing_stores_timestamp() {
+            let mut transport = make_transport();
+            transport.record_outgoing_announce(0);
+            let stats = transport.interface_stats();
+            let iface0 = stats.iter().find(|s| s.id == 0).unwrap();
+            assert_eq!(iface0.outgoing_announce_frequency, 0.0);
+        }
+
+        #[test]
+        fn record_outgoing_broadcast_tracks_all_except() {
+            let mut transport = make_transport();
+            // Record broadcast excluding iface 0 → should only track on iface 1
+            transport.record_outgoing_announce_broadcast(0);
+            assert!(transport.interface_outgoing_announce_times.contains_key(&1));
+            assert!(!transport.interface_outgoing_announce_times.contains_key(&0));
+        }
+
+        #[test]
+        fn deque_capped_at_max_samples() {
+            let mut transport = make_transport();
+            for i in 0..10 {
+                transport.clock.advance(1000);
+                transport.record_incoming_announce(0);
+                let _ = i;
+            }
+            let deque = transport.interface_incoming_announce_times.get(&0).unwrap();
+            assert_eq!(deque.len(), ANNOUNCE_FREQ_SAMPLES);
+        }
+
+        #[test]
+        fn cleanup_removes_tracking() {
+            let mut transport = make_transport();
+            transport.record_incoming_announce(0);
+            transport.record_outgoing_announce(0);
+            transport.remove_announce_freq_tracking(0);
+            assert!(!transport.interface_incoming_announce_times.contains_key(&0));
+            assert!(!transport.interface_outgoing_announce_times.contains_key(&0));
+        }
+
+        #[test]
+        fn frequency_decays_with_time() {
+            let mut transport = make_transport();
+            // Record 3 announces 1s apart
+            transport.record_incoming_announce(0);
+            transport.clock.advance(1000);
+            transport.record_incoming_announce(0);
+            transport.clock.advance(1000);
+            transport.record_incoming_announce(0);
+
+            let stats_early = transport.interface_stats();
+            let freq_early = stats_early
+                .iter()
+                .find(|s| s.id == 0)
+                .unwrap()
+                .incoming_announce_frequency;
+
+            // Advance time significantly without new announces
+            transport.clock.advance(60_000);
+            let stats_late = transport.interface_stats();
+            let freq_late = stats_late
+                .iter()
+                .find(|s| s.id == 0)
+                .unwrap()
+                .incoming_announce_frequency;
+
+            assert!(
+                freq_late < freq_early,
+                "frequency should decay over time: early={}, late={}",
+                freq_early,
+                freq_late
+            );
+        }
+
+        #[test]
+        fn interface_stats_returns_both_frequencies() {
+            let mut transport = make_transport();
+            // Record some incoming on iface 0
+            transport.record_incoming_announce(0);
+            transport.clock.advance(2000);
+            transport.record_incoming_announce(0);
+
+            // Record some outgoing on iface 1
+            transport.record_outgoing_announce(1);
+            transport.clock.advance(3000);
+            transport.record_outgoing_announce(1);
+
+            let stats = transport.interface_stats();
+            let iface0 = stats.iter().find(|s| s.id == 0).unwrap();
+            let iface1 = stats.iter().find(|s| s.id == 1).unwrap();
+
+            assert!(iface0.incoming_announce_frequency > 0.0);
+            assert_eq!(iface0.outgoing_announce_frequency, 0.0);
+            assert_eq!(iface1.incoming_announce_frequency, 0.0);
+            assert!(iface1.outgoing_announce_frequency > 0.0);
         }
     }
 }
