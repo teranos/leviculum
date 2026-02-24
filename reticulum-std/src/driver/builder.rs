@@ -374,6 +374,14 @@ impl ReticulumNodeBuilder {
             let identity = load_or_generate_transport_identity(&storage)?;
             self.core_builder.identity(identity)
         } else {
+            // Explicit identity provided — write it to storage so Python tools
+            // (rnprobe, rnpath, rnstatus) can derive the same RPC HMAC auth key
+            // from {storage_path}/transport_identity.
+            if let Some(id) = self.core_builder.identity_ref() {
+                if let Ok(bytes) = id.private_key_bytes() {
+                    let _ = storage.write_root(IDENTITY_FILE, &bytes);
+                }
+            }
             self.core_builder
         };
         let core_builder = core_builder
@@ -618,11 +626,15 @@ mod tests {
 
         assert_eq!(node.identity_hash(), explicit_hash);
 
-        // No transport_identity file should exist (explicit identity bypasses persistence)
+        // transport_identity file should be written so Python tools can derive
+        // the same RPC HMAC auth key from {storage_path}/transport_identity.
         assert!(
-            !path.join(IDENTITY_FILE).exists(),
-            "explicit identity should not create a persistence file"
+            path.join(IDENTITY_FILE).exists(),
+            "explicit identity should write transport_identity for Python tool compatibility"
         );
+        let bytes = std::fs::read(path.join(IDENTITY_FILE)).unwrap();
+        let loaded = Identity::from_private_key_bytes(&bytes).unwrap();
+        assert_eq!(loaded.hash(), &explicit_hash);
 
         let _ = std::fs::remove_dir_all(&path);
     }

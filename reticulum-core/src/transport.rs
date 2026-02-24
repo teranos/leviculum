@@ -1580,16 +1580,29 @@ impl<C: Clock, S: Storage> Transport<C, S> {
                 self.storage.set_announce_cache(dest_hash, raw.to_vec());
             }
 
-            // Forward raw announce to local client interfaces (Python Transport.py:1788-1833).
-            // Local clients need announces to learn paths. Forward the raw bytes as-is
-            // since the client will parse them independently.
+            // Forward announce to local client interfaces (Python Transport.py:1788-1833).
+            // Convert to Header2 with the daemon's own transport_id and receipt-incremented
+            // hops. The client uses transport_id to construct outbound Header2 packets —
+            // if we forward raw network bytes, the client sets the relay's transport_id
+            // instead of ours, and our transport_id filter rejects the client's packets.
             if self.has_local_clients() {
-                for &client_iface in &self.local_client_interfaces {
-                    if client_iface != interface_index {
-                        self.pending_actions.push(Action::SendPacket {
-                            iface: InterfaceId(client_iface),
-                            data: raw.to_vec(),
-                        });
+                if let Ok(mut local_announce) = Packet::unpack(raw) {
+                    local_announce.hops = packet.hops;
+                    local_announce.flags.header_type = HeaderType::Type2;
+                    local_announce.flags.transport_type = TransportType::Transport;
+                    local_announce.transport_id = Some(*self.identity.hash());
+
+                    let size = local_announce.packed_size();
+                    let mut buf = alloc::vec![0u8; size];
+                    if let Ok(len) = local_announce.pack(&mut buf) {
+                        for &client_iface in &self.local_client_interfaces {
+                            if client_iface != interface_index {
+                                self.pending_actions.push(Action::SendPacket {
+                                    iface: InterfaceId(client_iface),
+                                    data: buf[..len].to_vec(),
+                                });
+                            }
+                        }
                     }
                 }
             }
@@ -10457,6 +10470,50 @@ mod tests {
             assert!(
                 !local_sends.is_empty(),
                 "Should forward announce to local client"
+            );
+        }
+
+        #[test]
+        fn test_announce_forwarded_to_local_client_has_daemon_transport_id() {
+            let mut transport = make_transport_with_local_client();
+            let daemon_hash = *transport.identity.hash();
+            let (raw, _dest_hash) = make_announce_raw(0, crate::packet::PacketContext::None);
+
+            // Simulate process_incoming's receipt hop increment
+            let mut packet = Packet::unpack(&raw).unwrap();
+            packet.hops = packet.hops.saturating_add(1);
+            let result = transport.handle_announce(packet, NETWORK_IFACE, &raw);
+            assert!(result.is_ok());
+
+            // Extract the forwarded announce bytes
+            let actions = transport.drain_actions();
+            let send_data = actions
+                .iter()
+                .find_map(|a| match a {
+                    Action::SendPacket { iface, data } if iface.0 == LOCAL_CLIENT_IFACE => {
+                        Some(data)
+                    }
+                    _ => None,
+                })
+                .expect("Should forward announce to local client");
+
+            // Unpack and verify Header2 with daemon's own transport_id
+            let forwarded = Packet::unpack(send_data).unwrap();
+            assert_eq!(
+                forwarded.flags.header_type,
+                HeaderType::Type2,
+                "Announce forwarded to local client must be Header2"
+            );
+            assert_eq!(
+                forwarded.transport_id,
+                Some(daemon_hash),
+                "Announce forwarded to local client must have daemon's transport_id, \
+                 not the relay's. Otherwise the client's outbound packets will have \
+                 a transport_id that fails the daemon's filter."
+            );
+            assert_eq!(
+                forwarded.hops, 1,
+                "Announce forwarded to local client should have receipt-incremented hops"
             );
         }
 
