@@ -142,6 +142,9 @@ fn apply_reticulum_key(config: &mut ReticulumConfig, key: &str, value: &str) {
         "share_instance" => {
             config.shared_instance = parse_bool(value);
         }
+        "instance_name" => {
+            config.instance_name = value.trim().to_string();
+        }
         "respond_to_probes" => {
             config.respond_to_probes = parse_bool(value);
         }
@@ -481,5 +484,25 @@ mod tests {
         )
         .unwrap();
         assert!(config.reticulum.respond_to_probes);
+    }
+
+    #[test]
+    fn test_instance_name_parsed() {
+        let config = parse_ini(
+            r#"
+[reticulum]
+  share_instance = Yes
+  instance_name = miauhaus
+"#,
+        )
+        .unwrap();
+        assert!(config.reticulum.shared_instance);
+        assert_eq!(config.reticulum.instance_name, "miauhaus");
+    }
+
+    #[test]
+    fn test_instance_name_defaults_to_default() {
+        let config = parse_ini("[reticulum]\n").unwrap();
+        assert_eq!(config.reticulum.instance_name, "default");
     }
 }
