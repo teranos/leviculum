@@ -1357,7 +1357,7 @@ impl<C: Clock, S: Storage> Transport<C, S> {
             return Ok(());
         }
 
-        tracing::trace!(
+        tracing::debug!(
             "received announce dest=<{}> iface={} hops={} path_response={}",
             HexShort(&dest_hash),
             self.iface_name(interface_index),
@@ -1367,10 +1367,15 @@ impl<C: Clock, S: Storage> Transport<C, S> {
         let random_hash = *announce.random_hash();
 
         // Random blob replay protection: reject if we've seen this exact random_hash,
-        // UNLESS the path is unresponsive — in that case allow through for path recovery
+        // UNLESS:
+        // - the path is unresponsive (path recovery), OR
+        // - the announce has fewer hops than the existing path (better route)
         // (Python Transport.py:1676-1681).
         if let Some(path) = self.storage.get_path(&dest_hash) {
-            if path.random_blobs.contains(&random_hash) && !self.path_is_unresponsive(&dest_hash) {
+            if path.random_blobs.contains(&random_hash)
+                && !self.path_is_unresponsive(&dest_hash)
+                && packet.hops >= path.hops
+            {
                 tracing::trace!(
                     dest = %HexShort(&dest_hash),
                     "Dropped announce, random hash already seen (replay)"
@@ -1428,8 +1433,12 @@ impl<C: Clock, S: Storage> Transport<C, S> {
             let announce_emitted = emission_from_random_hash(&random_hash);
             let path_timebase = max_emission_from_blobs(&existing.random_blobs);
             if packet.hops <= existing.hops {
-                // Equal or fewer hops: accept if emission is newer
-                if announce_emitted > path_timebase {
+                // Equal or fewer hops: accept if emission is newer, or if
+                // same emission but strictly fewer hops (same announce via
+                // a shorter path — e.g. direct vs relayed path response).
+                if announce_emitted > path_timebase
+                    || (announce_emitted == path_timebase && packet.hops < existing.hops)
+                {
                     self.mark_path_unknown_state(&dest_hash);
                     true
                 } else {
@@ -1565,6 +1574,7 @@ impl<C: Clock, S: Storage> Transport<C, S> {
                         },
                         raw_packet: raw.to_vec(),
                         receiving_interface_index: interface_index,
+                        target_interface: None,
                         local_rebroadcasts: 0,
                         block_rebroadcasts: is_path_response,
                     },
@@ -2833,10 +2843,15 @@ impl<C: Clock, S: Storage> Transport<C, S> {
             self.events.push(TransportEvent::PathRequestReceived {
                 destination_hash: requested_hash,
             });
-            // Also respond from cache if available
+            // Also respond from cache if available.
+            // Send only to the requesting interface (Python Transport.py:1037-1038).
             if let Some(cached_raw) = self.storage.get_announce_cache(&requested_hash).cloned() {
                 let now = self.clock.now_ms();
                 if let Ok(cached_packet) = Packet::unpack(&cached_raw) {
+                    tracing::debug!(
+                        "Responding to path request for local dest <{}> from cache",
+                        HexShort(&requested_hash)
+                    );
                     self.storage.set_announce(
                         requested_hash,
                         AnnounceEntry {
@@ -2846,6 +2861,7 @@ impl<C: Clock, S: Storage> Transport<C, S> {
                             retransmit_at_ms: Some(now + PATH_REQUEST_GRACE_MS),
                             raw_packet: cached_raw,
                             receiving_interface_index: interface_index,
+                            target_interface: Some(interface_index),
                             local_rebroadcasts: 0,
                             block_rebroadcasts: true,
                         },
@@ -2895,7 +2911,8 @@ impl<C: Clock, S: Storage> Transport<C, S> {
             }
         }
 
-        // 2b. Transport node with cached announce → schedule deferred rebroadcast
+        // 2b. Transport node with cached announce → schedule deferred rebroadcast.
+        // Send only to the requesting interface (Python Transport.py:1037-1038).
         if self.config.enable_transport {
             if let Some(cached_raw) = self.storage.get_announce_cache(&requested_hash).cloned() {
                 tracing::debug!(
@@ -2915,6 +2932,7 @@ impl<C: Clock, S: Storage> Transport<C, S> {
                             retransmit_at_ms: Some(now + PATH_REQUEST_GRACE_MS),
                             raw_packet: cached_raw,
                             receiving_interface_index: interface_index,
+                            target_interface: Some(interface_index),
                             local_rebroadcasts: 0,
                             block_rebroadcasts: true,
                         },
@@ -3026,6 +3044,7 @@ impl<C: Clock, S: Storage> Transport<C, S> {
                             entry.receiving_interface_index,
                             entry.hops,
                             entry.block_rebroadcasts,
+                            entry.target_interface,
                         ));
                     }
                 }
@@ -3038,7 +3057,7 @@ impl<C: Clock, S: Storage> Transport<C, S> {
 
         let transport_id = *self.identity.hash();
 
-        for (dest_hash, raw, except_iface, original_hops, block) in to_rebroadcast {
+        for (dest_hash, raw, except_iface, original_hops, block, target) in to_rebroadcast {
             // Rebuild packet as Header Type 2 with our transport ID
             if let Ok(mut parsed) = Packet::unpack(&raw) {
                 // Raw bytes have original wire hops; set to receipt-incremented value
@@ -3055,14 +3074,33 @@ impl<C: Clock, S: Storage> Transport<C, S> {
                     parsed.context = PacketContext::PathResponse;
                 }
 
-                // Locally-originated announces (hops == 0) bypass caps
-                // (Python Transport.py:1086-1089: `if packet.hops > 0:`)
-                if original_hops == 0 || self.interface_announce_caps.is_empty() {
-                    self.forward_on_all_except(except_iface, &mut parsed);
+                if let Some(target_iface) = target {
+                    // Path response: send only to the requesting interface
+                    let size = parsed.packed_size();
+                    let mut buf = alloc::vec![0u8; size];
+                    if let Ok(len) = parsed.pack(&mut buf) {
+                        tracing::debug!(
+                            "Sending targeted path response for <{}> to iface:{} ({} bytes)",
+                            HexShort(&dest_hash),
+                            target_iface,
+                            len
+                        );
+                        self.pending_actions.push(Action::SendPacket {
+                            iface: InterfaceId(target_iface),
+                            data: buf[..len].to_vec(),
+                        });
+                    }
                 } else {
-                    self.broadcast_announce_with_caps(except_iface, &mut parsed);
+                    // Normal rebroadcast: send to all except source
+                    // Locally-originated announces (hops == 0) bypass caps
+                    // (Python Transport.py:1086-1089: `if packet.hops > 0:`)
+                    if original_hops == 0 || self.interface_announce_caps.is_empty() {
+                        self.forward_on_all_except(except_iface, &mut parsed);
+                    } else {
+                        self.broadcast_announce_with_caps(except_iface, &mut parsed);
+                    }
+                    self.record_outgoing_announce_broadcast(except_iface);
                 }
-                self.record_outgoing_announce_broadcast(except_iface);
 
                 // If TTL exceeded, remove from announce table
                 if parsed.hops > self.config.max_hops {
@@ -3266,6 +3304,7 @@ impl<C: Clock, S: Storage> Transport<C, S> {
     /// Matches Python Transport.py:601-604, 813-814.
     fn clean_path_states(&mut self) {
         self.storage.clean_stale_path_metadata();
+        self.storage.clean_announce_cache(&self.local_destinations);
     }
 
     /// Check announce rate for a destination, returning true if rebroadcast should be blocked.
@@ -4429,6 +4468,100 @@ mod tests {
             let entry = transport.storage().get_announce(&dest_hash).unwrap();
             assert!(entry.retransmit_at_ms.is_none());
             assert!(entry.block_rebroadcasts);
+        }
+
+        /// Path request response must be sent to ALL interfaces, including the one
+        /// that sent the path request. Before the fix, `receiving_interface_index`
+        /// was set to the requesting interface, causing `forward_on_all_except` to
+        /// exclude the requester from the response.
+        #[test]
+        fn test_path_request_response_not_excluded_from_requester() {
+            let mut transport = make_transport_enabled();
+            let _idx0 = transport.register_interface(Box::new(MockInterface::new("if0", 1)));
+            let _idx1 = transport.register_interface(Box::new(MockInterface::new("if1", 2)));
+
+            // Process an announce from interface 0 to populate cache
+            let (raw, dest_hash) = make_announce_raw(2, PacketContext::None);
+            transport.process_incoming(0, &raw).unwrap();
+            transport.drain_actions();
+            transport.drain_events();
+
+            // Verify cache is populated
+            assert!(transport.storage.get_announce_cache(&dest_hash).is_some());
+
+            // Clear announce table (keep cache) to simulate fresh state
+            for key in transport.storage().announce_keys() {
+                transport.storage_mut().remove_announce(&key);
+            }
+            transport.storage_mut().clear_packet_hashes();
+
+            // Build a path request from interface 0 (the same one the announce came from)
+            let mut data = Vec::new();
+            data.extend_from_slice(&dest_hash);
+            data.extend_from_slice(&[0xBB; TRUNCATED_HASHBYTES]); // tag
+
+            let packet = Packet {
+                flags: PacketFlags {
+                    ifac_flag: false,
+                    header_type: HeaderType::Type1,
+                    context_flag: false,
+                    transport_type: TransportType::Broadcast,
+                    dest_type: DestinationType::Plain,
+                    packet_type: PacketType::Data,
+                },
+                hops: 0,
+                transport_id: None,
+                destination_hash: transport.path_request_hash,
+                context: PacketContext::None,
+                data: PacketData::Owned(data),
+            };
+
+            transport.handle_path_request(packet, 0).unwrap();
+
+            // No immediate actions — response is deferred
+            let actions = transport.drain_actions();
+            assert!(
+                actions
+                    .iter()
+                    .all(|a| !matches!(a, Action::Broadcast { .. } | Action::SendPacket { .. })),
+                "Response should be deferred, not immediate"
+            );
+
+            // Advance clock past PATH_REQUEST_GRACE_MS and poll to trigger rebroadcast
+            transport.clock.advance(PATH_REQUEST_GRACE_MS + 1);
+            transport.poll();
+
+            let actions = transport.drain_actions();
+
+            // Path response should be a targeted SendPacket to interface 0 (the requester),
+            // not a Broadcast. Python sends only to the requesting interface (Transport.py:1037-1038).
+            let sends: Vec<_> = actions
+                .iter()
+                .filter_map(|a| match a {
+                    Action::SendPacket { iface, data } => Some((iface, data)),
+                    _ => None,
+                })
+                .collect();
+
+            assert_eq!(
+                sends.len(),
+                1,
+                "Should have exactly one SendPacket for the path response"
+            );
+            assert_eq!(
+                sends[0].0 .0, 0,
+                "Path response must target the requesting interface (0)"
+            );
+
+            // No Broadcast actions — path response is targeted, not broadcast
+            let broadcasts: Vec<_> = actions
+                .iter()
+                .filter(|a| matches!(a, Action::Broadcast { .. }))
+                .collect();
+            assert!(
+                broadcasts.is_empty(),
+                "Path response should not be broadcast"
+            );
         }
 
         #[test]
@@ -5902,9 +6035,45 @@ mod tests {
             );
 
             // AND should schedule a rebroadcast from the cache
+            let entry = transport
+                .storage()
+                .get_announce(&dest_hash)
+                .expect("Should schedule announce rebroadcast from cache");
+            assert_eq!(
+                entry.target_interface,
+                Some(0),
+                "Local dest path response should target the requesting interface"
+            );
+
+            // Advance clock and poll to verify targeted SendPacket
+            transport.clock.advance(PATH_REQUEST_GRACE_MS + 1);
+            transport.poll();
+
+            let actions = transport.drain_actions();
+            let sends: Vec<_> = actions
+                .iter()
+                .filter_map(|a| match a {
+                    Action::SendPacket { iface, data } => Some((iface, data)),
+                    _ => None,
+                })
+                .collect();
+            assert_eq!(
+                sends.len(),
+                1,
+                "Should emit exactly one SendPacket for local dest path response"
+            );
+            assert_eq!(
+                sends[0].0 .0, 0,
+                "SendPacket must target the requesting interface (0)"
+            );
+
+            let broadcasts: Vec<_> = actions
+                .iter()
+                .filter(|a| matches!(a, Action::Broadcast { .. }))
+                .collect();
             assert!(
-                transport.storage().get_announce(&dest_hash).is_some(),
-                "Should schedule announce rebroadcast from cache"
+                broadcasts.is_empty(),
+                "Local dest path response should not broadcast"
             );
         }
 
@@ -7990,6 +8159,143 @@ mod tests {
 
             // Both announces processed
             assert_eq!(transport.stats().announces_processed, 2);
+        }
+
+        // ─── Replay bypass for better hop count ──────────────────────────
+
+        #[test]
+        fn test_replay_announce_accepted_when_fewer_hops() {
+            // Scenario: path request response arrives via relay (2 hops), then the
+            // direct announce from the source arrives (0 hops) with the same
+            // random_blob. The direct announce must NOT be rejected as replay.
+            use crate::destination::{Destination, DestinationType, Direction};
+
+            let mut transport = make_transport_enabled();
+            let _idx0 = transport.register_interface(Box::new(MockInterface::new("if0", 1)));
+            let _idx1 = transport.register_interface(Box::new(MockInterface::new("if1", 2)));
+
+            // Create a destination and build an announce
+            let identity = Identity::generate(&mut OsRng);
+            let mut dest = Destination::new(
+                Some(identity),
+                Direction::In,
+                DestinationType::Single,
+                "test",
+                &["replay"],
+            )
+            .unwrap();
+            let dest_hash = dest.hash().into_bytes();
+            let now = transport.clock.now_ms();
+            let announce_packet = dest.announce(None, &mut OsRng, now).unwrap();
+
+            // Pack the announce
+            let mut buf = [0u8; 500];
+            let len = announce_packet.pack(&mut buf).unwrap();
+
+            // First: receive the relayed version with 2 hops on interface 1
+            let mut relayed = Packet::unpack(&buf[..len]).unwrap();
+            relayed.hops = 2;
+            let mut relayed_buf = [0u8; 500];
+            let rlen = relayed.pack(&mut relayed_buf).unwrap();
+            transport.process_incoming(1, &relayed_buf[..rlen]).unwrap();
+            transport.drain_actions();
+            transport.drain_events();
+
+            // Verify: path established at 2 hops (receipt-incremented = 3)
+            assert_eq!(
+                transport.hops_to(&dest_hash),
+                Some(3),
+                "Initial path should be 3 hops (wire=2 + receipt increment)"
+            );
+
+            // Second: receive the direct version with 0 hops on interface 0.
+            // Advance clock past rate limit so the announce isn't rate-dropped.
+            transport
+                .clock
+                .advance(transport.config().announce_rate_limit_ms + 1);
+            transport.storage_mut().clear_packet_hashes(); // allow reprocessing
+            transport.process_incoming(0, &buf[..len]).unwrap();
+
+            // Path must be updated to the better route
+            assert_eq!(
+                transport.hops_to(&dest_hash),
+                Some(1),
+                "Direct announce (wire=0 + receipt) must replace the 3-hop relayed path"
+            );
+            assert_eq!(
+                transport.path(&dest_hash).unwrap().interface_index,
+                0,
+                "Path should now point to interface 0 (direct)"
+            );
+        }
+
+        #[test]
+        fn test_replay_announce_rejected_when_same_or_more_hops() {
+            // Same random_blob, same or worse hop count → still rejected as replay
+            use crate::destination::{Destination, DestinationType, Direction};
+
+            let mut transport = make_transport_enabled();
+            let _idx0 = transport.register_interface(Box::new(MockInterface::new("if0", 1)));
+            let _idx1 = transport.register_interface(Box::new(MockInterface::new("if1", 2)));
+
+            let identity = Identity::generate(&mut OsRng);
+            let mut dest = Destination::new(
+                Some(identity),
+                Direction::In,
+                DestinationType::Single,
+                "test",
+                &["replay"],
+            )
+            .unwrap();
+            let dest_hash = dest.hash().into_bytes();
+            let now = transport.clock.now_ms();
+            let announce_packet = dest.announce(None, &mut OsRng, now).unwrap();
+
+            let mut buf = [0u8; 500];
+            let len = announce_packet.pack(&mut buf).unwrap();
+
+            // First: receive with 1 hop on interface 0
+            let mut first = Packet::unpack(&buf[..len]).unwrap();
+            first.hops = 1;
+            let mut first_buf = [0u8; 500];
+            let flen = first.pack(&mut first_buf).unwrap();
+            transport.process_incoming(0, &first_buf[..flen]).unwrap();
+            transport.drain_actions();
+            transport.drain_events();
+
+            assert_eq!(transport.hops_to(&dest_hash), Some(2));
+
+            // Second: same announce, same hops, different interface → rejected
+            transport
+                .clock
+                .advance(transport.config().announce_rate_limit_ms + 1);
+            transport.storage_mut().clear_packet_hashes();
+            transport.process_incoming(1, &first_buf[..flen]).unwrap();
+
+            // Path unchanged — still on interface 0
+            assert_eq!(
+                transport.path(&dest_hash).unwrap().interface_index,
+                0,
+                "Same-hop replay must not change the path"
+            );
+
+            // Third: same announce, MORE hops → also rejected
+            let mut worse = Packet::unpack(&buf[..len]).unwrap();
+            worse.hops = 3;
+            let mut worse_buf = [0u8; 500];
+            let wlen = worse.pack(&mut worse_buf).unwrap();
+            transport
+                .clock
+                .advance(transport.config().announce_rate_limit_ms + 1);
+            transport.storage_mut().clear_packet_hashes();
+            transport.process_incoming(1, &worse_buf[..wlen]).unwrap();
+
+            assert_eq!(
+                transport.path(&dest_hash).unwrap().interface_index,
+                0,
+                "Worse-hop replay must not change the path"
+            );
+            assert_eq!(transport.hops_to(&dest_hash), Some(2));
         }
 
         // ─── Bug #14: HEADER_2 filtering for non-own transport_id ────────

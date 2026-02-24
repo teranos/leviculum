@@ -353,6 +353,9 @@ impl<R: CryptoRngCore, C: Clock, S: Storage> NodeCore<R, C, S> {
             .pack(&mut buf)
             .map_err(|_| AnnounceError::PacketTooLarge)?;
 
+        self.transport
+            .storage_mut()
+            .set_announce_cache(dest_hash.into_bytes(), buf[..len].to_vec());
         self.transport.send_on_all_interfaces(&buf[..len]);
         Ok(self.process_events_and_actions())
     }
@@ -520,6 +523,9 @@ impl<R: CryptoRngCore, C: Clock, S: Storage> NodeCore<R, C, S> {
             let mut buf = [0u8; crate::constants::MTU];
             match packet.pack(&mut buf) {
                 Ok(len) => {
+                    self.transport
+                        .storage_mut()
+                        .set_announce_cache(dest_hash.into_bytes(), buf[..len].to_vec());
                     self.transport.send_on_all_interfaces(&buf[..len]);
                     tracing::debug!("Management announce sent for <{}>", dest_hash);
                 }

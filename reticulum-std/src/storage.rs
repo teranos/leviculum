@@ -530,6 +530,12 @@ impl reticulum_core::traits::Storage for Storage {
     fn clean_stale_path_metadata(&mut self) {
         self.inner.clean_stale_path_metadata()
     }
+    fn clean_announce_cache(
+        &mut self,
+        local_destinations: &std::collections::BTreeSet<[u8; TRUNCATED_HASHBYTES]>,
+    ) {
+        self.inner.clean_announce_cache(local_destinations)
+    }
     fn remove_link_entries_for_interface(
         &mut self,
         iface_index: usize,

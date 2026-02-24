@@ -112,6 +112,10 @@ pub struct AnnounceEntry {
     pub raw_packet: Vec<u8>,
     /// Interface index this announce arrived on
     pub receiving_interface_index: usize,
+    /// If set, send the deferred rebroadcast only to this specific interface
+    /// instead of broadcasting to all. Used for path request responses, which
+    /// should go only to the requesting interface (Python Transport.py:1037-1038).
+    pub target_interface: Option<usize>,
     /// Number of times neighbors echoed this announce
     pub local_rebroadcasts: u8,
     /// If true, do not re-rebroadcast (PATH_RESPONSE context)

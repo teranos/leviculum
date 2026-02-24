@@ -661,8 +661,12 @@ impl Storage for MemoryStorage {
             .retain(|hash, _| self.path_table.contains_key(hash));
         self.announce_rate_table
             .retain(|hash, _| self.path_table.contains_key(hash));
-        self.announce_cache
-            .retain(|hash, _| self.path_table.contains_key(hash));
+    }
+
+    fn clean_announce_cache(&mut self, local_destinations: &BTreeSet<[u8; TRUNCATED_HASHBYTES]>) {
+        self.announce_cache.retain(|hash, _| {
+            self.path_table.contains_key(hash) || local_destinations.contains(hash)
+        });
     }
 
     fn remove_link_entries_for_interface(
@@ -987,7 +991,6 @@ mod tests {
             },
         ); // stale
 
-        // announce_cache: h1 has path (kept), h2 has no path (stale)
         s.set_announce_cache(h1, vec![0xAA; 20]);
         s.set_announce_cache(h2, vec![0xBB; 20]);
 
@@ -995,8 +998,22 @@ mod tests {
         assert!(s.get_path_state(&h1).is_some());
         assert!(s.get_path_state(&h2).is_none());
         assert!(s.get_announce_rate(&h2).is_none());
+        // clean_stale_path_metadata does NOT touch announce_cache
         assert!(s.get_announce_cache(&h1).is_some());
-        assert!(s.get_announce_cache(&h2).is_none());
+        assert!(s.get_announce_cache(&h2).is_some());
+
+        // clean_announce_cache removes entries with no path AND not local
+        let h3 = [0x03u8; TRUNCATED_HASHBYTES];
+        s.set_announce_cache(h3, vec![0xCC; 20]);
+        let mut local = BTreeSet::new();
+        local.insert(h2); // h2 is "local" — no path but should survive
+        s.clean_announce_cache(&local);
+        assert!(s.get_announce_cache(&h1).is_some(), "has path → kept");
+        assert!(s.get_announce_cache(&h2).is_some(), "local dest → kept");
+        assert!(
+            s.get_announce_cache(&h3).is_none(),
+            "no path, not local → removed"
+        );
     }
 
     #[test]
@@ -1026,6 +1043,7 @@ mod tests {
                 retransmit_at_ms: Some(2000),
                 raw_packet: [0xAA; 10].to_vec(),
                 receiving_interface_index: 0,
+                target_interface: None,
                 local_rebroadcasts: 0,
                 block_rebroadcasts: false,
             },
@@ -1046,6 +1064,7 @@ mod tests {
                 retransmit_at_ms: None,
                 raw_packet: [0xBB; 5].to_vec(),
                 receiving_interface_index: 1,
+                target_interface: None,
                 local_rebroadcasts: 0,
                 block_rebroadcasts: true,
             },
