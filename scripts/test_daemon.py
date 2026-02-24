@@ -103,7 +103,7 @@ class TestDaemon:
                  udp_listen_port: int = None, udp_forward_port: int = None,
                  auto_interface: bool = False, group_id: str = None,
                  share_instance: bool = False, instance_name: str = None,
-                 echo_channel: bool = False):
+                 echo_channel: bool = False, respond_to_probes: bool = False):
         self.rns_port = rns_port
         self.cmd_port = cmd_port
         self.udp_listen_port = udp_listen_port
@@ -113,6 +113,7 @@ class TestDaemon:
         self.share_instance = share_instance
         self.instance_name = instance_name or "default"
         self.echo_channel = echo_channel
+        self.respond_to_probes = respond_to_probes
         self.verbose = verbose
         self.running = True
         self.destinations = {}  # hash -> (identity, destination)
@@ -148,15 +149,28 @@ class TestDaemon:
         if self.verbose:
             print("Reticulum initialized")
 
+        # Print probe destination hash if respond_to_probes is enabled.
+        # Reticulum auto-creates the probe destination when the config option
+        # is set, so we read it from Transport.probe_destination directly.
+        self.probe_dest_hash = None
+        if self.respond_to_probes:
+            probe_dest = getattr(Transport, 'probe_destination', None)
+            if probe_dest is not None:
+                self.probe_dest_hash = probe_dest.hash.hex()
+                # Print before READY so the harness can parse it from stdout
+                print(f"PROBE_DEST:{self.probe_dest_hash}", flush=True)
+
         # Start JSON-RPC command server
         self._start_cmd_server()
 
     def _write_config(self):
         """Write minimal Reticulum config."""
         share = "yes" if self.share_instance else "no"
+        probes = "yes" if self.respond_to_probes else "no"
         config = f"""[reticulum]
   enable_transport = yes
   share_instance = {share}
+  respond_to_probes = {probes}
   panic_on_interface_error = no
 """
         if self.share_instance:
@@ -1208,6 +1222,8 @@ def main():
                         help="Instance name for shared instance (default: default)")
     parser.add_argument("--echo-channel", action="store_true",
                         help="Echo received channel messages back via channel")
+    parser.add_argument("--respond-to-probes", action="store_true",
+                        help="Enable respond_to_probes (prints PROBE_DEST:<hex> on startup)")
     parser.add_argument("-v", "--verbose", action="store_true",
                         help="Enable verbose output")
 
@@ -1224,6 +1240,7 @@ def main():
         share_instance=args.share_instance,
         instance_name=args.instance_name,
         echo_channel=args.echo_channel,
+        respond_to_probes=args.respond_to_probes,
     )
     daemon.run()
 

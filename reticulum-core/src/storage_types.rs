@@ -43,15 +43,15 @@ pub struct PathEntry {
 
 impl PathEntry {
     /// Destination is directly connected (no relay needed).
-    /// Rust stores raw wire hops: 0 = direct neighbor.
-    /// Python equivalent: hops == 1 (Python increments on receipt).
+    /// Hops are incremented on receipt: 1 = direct neighbor, 0 = local client.
+    /// Matches Python semantics (hops == 1 after receipt increment).
     pub fn is_direct(&self) -> bool {
-        self.hops == 0
+        self.hops == 1
     }
 
     /// Destination requires relay forwarding AND we know the next hop.
     pub fn needs_relay(&self) -> bool {
-        self.hops > 0 && self.next_hop.is_some()
+        self.hops > 1 && self.next_hop.is_some()
     }
 }
 

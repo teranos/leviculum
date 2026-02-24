@@ -204,8 +204,8 @@ fn build_path_table(
 
     let mut list = Vec::new();
     for entry in &entries {
-        // Python reports hops+1 (it increments on receive, we don't)
-        let python_hops = entry.hops as i64 + 1;
+        // Hops are now incremented on receipt (matching Python semantics)
+        let python_hops = entry.hops as i64;
         if let Some(max) = max_hops {
             if python_hops > max {
                 continue;

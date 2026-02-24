@@ -56,7 +56,7 @@ use alloc::vec::Vec;
 
 use crate::announce::AnnounceError;
 use crate::constants::TRUNCATED_HASHBYTES;
-use crate::destination::{Destination, DestinationHash, ProofStrategy};
+use crate::destination::{Destination, DestinationHash, Direction, ProofStrategy};
 use crate::identity::Identity;
 use crate::link::{Link, LinkId};
 use crate::packet::packet_hash;
@@ -208,10 +208,14 @@ impl<R: CryptoRngCore, C: Clock, S: Storage> NodeCore<R, C, S> {
     pub fn register_destination(&mut self, dest: Destination) {
         let hash = *dest.hash();
 
-        // Register with transport for packet routing.
-        // All destination metadata (proof strategy, accepts_links, identity)
-        // stays on NodeCore — Transport only knows "is this hash local?".
-        self.transport.register_destination(hash.into_bytes());
+        // Only Direction::In destinations are locally reachable and should
+        // be registered with transport for routing. Direction::Out destinations
+        // are remote peer references (for encryption/proof verification) and
+        // must NOT appear in local_destinations — otherwise their announces
+        // would be dropped as self-echoes.
+        if dest.direction() == Direction::In {
+            self.transport.register_destination(hash.into_bytes());
+        }
 
         self.destinations.insert(hash, dest);
     }

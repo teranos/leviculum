@@ -103,7 +103,7 @@ pub(crate) const ANNOUNCE_RATCHETED_MIN_SIZE: usize = ANNOUNCE_MIN_SIZE + RATCHE
 /// Generate a random hash for announces (5 random + 5 timestamp bytes).
 ///
 /// The random hash ensures announce uniqueness even for the same destination.
-/// Format: 5 bytes from truncated_hash(random_16) + 5 bytes from timestamp_ms.
+/// Format: 5 bytes from truncated_hash(random_16) + 5 bytes from timestamp (seconds).
 pub(crate) fn generate_random_hash(
     rng: &mut impl CryptoRngCore,
     now_ms: u64,
@@ -112,7 +112,9 @@ pub(crate) fn generate_random_hash(
     rng.fill_bytes(&mut random_16);
     let random_part = truncated_hash(&random_16);
 
-    let timestamp_bytes = now_ms.to_be_bytes();
+    // Convert to seconds to match Python's int(time.time()).to_bytes(5, "big")
+    // (Destination.py:282). Cross-source emission comparison requires same units.
+    let timestamp_bytes = (now_ms / 1000).to_be_bytes();
 
     let mut result = [0u8; RANDOM_HASHBYTES]; // 10 bytes
     result[..RANDOM_HASH_RANDOM_SIZE].copy_from_slice(&random_part[..RANDOM_HASH_RANDOM_SIZE]);
@@ -127,7 +129,7 @@ pub(crate) fn generate_random_hash(
 /// The random_hash is 10 bytes: 5 random + 5 timestamp. This reads bytes 5..10
 /// as a big-endian integer, matching Python's `int.from_bytes(random_blob[5:10], "big")`
 /// (Transport.py:2935-2936). The result is a 40-bit value used only for
-/// relative comparison — not a full millisecond timestamp.
+/// relative comparison — a truncated seconds-since-epoch timestamp.
 pub(crate) fn emission_from_random_hash(random_hash: &[u8; RANDOM_HASHBYTES]) -> u64 {
     let ts = &random_hash[RANDOM_HASH_RANDOM_SIZE..];
     // Read 5 bytes big-endian into u64
@@ -717,11 +719,11 @@ mod tests {
         // Should be 10 bytes
         assert_eq!(hash.len(), RANDOM_HASHBYTES);
 
-        // Last 5 bytes should be from timestamp (1704067200000 ms)
-        // 1704067200000 = 0x18CC251F400
-        // to_be_bytes() gives [0x00, 0x00, 0x01, 0x8C, 0xC2, 0x51, 0xF4, 0x00]
-        // bytes 3..8 are [0x8C, 0xC2, 0x51, 0xF4, 0x00]
-        assert_eq!(&hash[5..10], &[0x8C, 0xC2, 0x51, 0xF4, 0x00]);
+        // Last 5 bytes should be from timestamp in seconds (1704067200000 / 1000 = 1704067200)
+        // 1704067200 = 0x65920080
+        // to_be_bytes() gives [0x00, 0x00, 0x00, 0x00, 0x65, 0x92, 0x00, 0x80]
+        // bytes 3..8 are [0x00, 0x65, 0x92, 0x00, 0x80]
+        assert_eq!(&hash[5..10], &[0x00, 0x65, 0x92, 0x00, 0x80]);
     }
 
     #[test]
@@ -775,6 +777,7 @@ mod tests {
         let h2 = generate_random_hash(&mut OsRng, 3_000_000);
         let h3 = generate_random_hash(&mut OsRng, 2_000_000);
         let blobs = [h1, h2, h3];
-        assert_eq!(max_emission_from_blobs(&blobs), 3_000_000);
+        // Emission timestamps are stored in seconds (ms / 1000)
+        assert_eq!(max_emission_from_blobs(&blobs), 3_000);
     }
 }

@@ -133,6 +133,8 @@ pub struct TestDaemon {
     udp_forward_port: Option<u16>,
     /// Shared instance name (None if shared instance is not enabled)
     instance_name: Option<String>,
+    /// Probe destination hash (hex, set when --respond-to-probes is used)
+    probe_dest_hash: Option<String>,
 }
 
 impl TestDaemon {
@@ -242,6 +244,7 @@ impl TestDaemon {
             udp_listen_port: None,
             udp_forward_port: None,
             instance_name: None,
+            probe_dest_hash: None,
         };
 
         // Ping to verify daemon is responsive
@@ -341,6 +344,7 @@ impl TestDaemon {
             udp_listen_port: Some(udp_listen_port),
             udp_forward_port: Some(udp_forward_port),
             instance_name: None,
+            probe_dest_hash: None,
         };
 
         match daemon.ping().await {
@@ -436,6 +440,7 @@ impl TestDaemon {
             udp_listen_port: None,
             udp_forward_port: None,
             instance_name: None,
+            probe_dest_hash: None,
         };
 
         match daemon.ping().await {
@@ -549,6 +554,105 @@ impl TestDaemon {
             udp_listen_port: None,
             udp_forward_port: None,
             instance_name: Some(instance_name.to_string()),
+            probe_dest_hash: None,
+        };
+
+        match daemon.ping().await {
+            Ok(_) => Ok(daemon),
+            Err(e) => {
+                drop(daemon);
+                Err(e)
+            }
+        }
+    }
+
+    /// Start a daemon with `respond_to_probes` enabled.
+    ///
+    /// The daemon prints `PROBE_DEST:<hex>` to stdout before the READY line.
+    /// The probe destination hash is stored and accessible via `probe_dest_hash()`.
+    pub async fn start_with_probes() -> Result<Self, HarnessError> {
+        ensure_reticulum_submodule()?;
+
+        let mut last_error = HarnessError::StartupTimeout;
+
+        for attempt in 0..Self::MAX_STARTUP_RETRIES {
+            let (rns_port, cmd_port) = find_two_available_ports()?;
+
+            match Self::start_with_probes_ports(rns_port, cmd_port).await {
+                Ok(daemon) => return Ok(daemon),
+                Err(HarnessError::StartupTimeout) => {
+                    if attempt + 1 < Self::MAX_STARTUP_RETRIES {
+                        tokio::time::sleep(Duration::from_millis(100)).await;
+                    }
+                    last_error = HarnessError::StartupTimeout;
+                }
+                Err(e) => return Err(e),
+            }
+        }
+
+        Err(last_error)
+    }
+
+    /// Start a daemon with `respond_to_probes` on specific ports.
+    async fn start_with_probes_ports(rns_port: u16, cmd_port: u16) -> Result<Self, HarnessError> {
+        let mut process = Command::new("python3")
+            .args([
+                Self::DAEMON_SCRIPT,
+                "--rns-port",
+                &rns_port.to_string(),
+                "--cmd-port",
+                &cmd_port.to_string(),
+                "--respond-to-probes",
+            ])
+            .stdout(Stdio::piped())
+            .stderr(Stdio::inherit())
+            .spawn()
+            .map_err(HarnessError::SpawnFailed)?;
+
+        let stdout = process.stdout.take().expect("stdout should be captured");
+        let reader = BufReader::new(stdout);
+
+        // Parse both PROBE_DEST:<hex> and READY lines from stdout
+        let ready_result = tokio::task::spawn_blocking(move || {
+            let mut probe_hash = None;
+            for line in reader.lines() {
+                match line {
+                    Ok(line) if line.starts_with("PROBE_DEST:") => {
+                        probe_hash = Some(line["PROBE_DEST:".len()..].trim().to_string());
+                    }
+                    Ok(line) if line.starts_with("READY ") => {
+                        return Ok((line, probe_hash));
+                    }
+                    Ok(_) => continue,
+                    Err(e) => return Err(HarnessError::ParseError(e.to_string())),
+                }
+            }
+            Err(HarnessError::StartupTimeout)
+        });
+
+        let (ready_line, probe_dest_hash) = timeout(Self::STARTUP_TIMEOUT, ready_result)
+            .await
+            .map_err(|_| HarnessError::StartupTimeout)?
+            .map_err(|_| HarnessError::StartupTimeout)??;
+
+        let parts: Vec<&str> = ready_line.split_whitespace().collect();
+        if parts.len() < 3 {
+            return Err(HarnessError::ParseError(format!(
+                "Invalid READY line: {}",
+                ready_line
+            )));
+        }
+
+        tokio::time::sleep(Duration::from_millis(200)).await;
+
+        let daemon = Self {
+            process,
+            rns_port,
+            cmd_port,
+            udp_listen_port: None,
+            udp_forward_port: None,
+            instance_name: None,
+            probe_dest_hash,
         };
 
         match daemon.ping().await {
@@ -620,6 +724,13 @@ impl TestDaemon {
     /// Get the RNS port number.
     pub fn rns_port(&self) -> u16 {
         self.rns_port
+    }
+
+    /// Get the probe destination hash (hex string), if available.
+    ///
+    /// Set when the daemon was started with `--respond-to-probes`.
+    pub fn probe_dest_hash(&self) -> Option<&str> {
+        self.probe_dest_hash.as_deref()
     }
 
     /// Send a JSON-RPC command to the daemon and return the result.
