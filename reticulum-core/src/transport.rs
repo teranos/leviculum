@@ -2850,14 +2850,34 @@ impl<C: Clock, S: Storage> Transport<C, S> {
         // attached_interface = requesting_interface).
         if from_local {
             if let Some(cached_raw) = self.storage.get_announce_cache(&requested_hash).cloned() {
-                tracing::debug!(
-                    "Answering path request for <{}> from local client, path is known",
-                    HexShort(&requested_hash),
-                );
-                self.pending_actions.push(Action::SendPacket {
-                    iface: InterfaceId(interface_index),
-                    data: cached_raw,
-                });
+                // Convert cached Header1 announce to Header2 with the daemon's
+                // transport_id and receipt-incremented hops. This is required because
+                // Python shared instance clients use hops to decide routing:
+                //  - hops == 0: destination is directly reachable, send Header1
+                //  - hops == 1: destination needs transport, convert to Header2
+                //    with transport_id from path table (Transport.py:1000-1011)
+                // Sending Header2 with our identity ensures the client's path table
+                // stores our transport_id, so outbound packets use the correct
+                // transport_id and pass our filter (Transport.py:1192-1194).
+                if let Ok(mut announce) = Packet::unpack(&cached_raw) {
+                    announce.hops = announce.hops.saturating_add(1);
+                    announce.flags.header_type = HeaderType::Type2;
+                    announce.flags.transport_type = TransportType::Transport;
+                    announce.transport_id = Some(*self.identity.hash());
+
+                    let size = announce.packed_size();
+                    let mut buf = alloc::vec![0u8; size];
+                    if let Ok(len) = announce.pack(&mut buf) {
+                        tracing::debug!(
+                            "Answering path request for <{}> from local client, path is known",
+                            HexShort(&requested_hash),
+                        );
+                        self.pending_actions.push(Action::SendPacket {
+                            iface: InterfaceId(interface_index),
+                            data: buf[..len].to_vec(),
+                        });
+                    }
+                }
                 return Ok(());
             }
         }
@@ -10946,9 +10966,31 @@ mod tests {
                 "Should send cached announce directly to local client"
             );
 
-            // Verify the sent data is the cached announce
+            // Verify the sent data is a Header2 announce with hops +1 and transport_id
             if let Action::SendPacket { data, .. } = local_sends[0] {
-                assert_eq!(data, &cached_raw, "Sent data should match cached announce");
+                let unpacked = Packet::unpack(data).expect("Sent data should be a valid packet");
+                assert_eq!(
+                    unpacked.flags.header_type,
+                    HeaderType::Type2,
+                    "Should be converted to Header2 for local client"
+                );
+                assert_eq!(
+                    unpacked.flags.transport_type,
+                    TransportType::Transport,
+                    "Should have Transport type"
+                );
+                assert_eq!(
+                    unpacked.transport_id,
+                    Some(*transport.identity.hash()),
+                    "Transport ID should be daemon's identity"
+                );
+                // Hops should be wire hops + 1 (receipt increment)
+                let original = Packet::unpack(&cached_raw).unwrap();
+                assert_eq!(
+                    unpacked.hops,
+                    original.hops + 1,
+                    "Hops should be receipt-incremented"
+                );
             }
 
             // Should NOT have any sends to the network interface
@@ -10981,8 +11023,6 @@ mod tests {
         }
 
         #[test]
-        #[ignore] // EXPECTED FAIL: raw cached bytes have wire hops=0, not receipt-incremented
-                  // hops=1. Fix requires patching hops in announce forwarding to local clients.
         fn test_path_request_local_client_receives_correct_hops() {
             let mut transport = make_transport_with_local_client();
 

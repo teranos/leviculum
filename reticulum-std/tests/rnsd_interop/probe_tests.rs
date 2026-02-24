@@ -84,8 +84,6 @@ fn cleanup_config_dir(path: &Path) {
 /// which contain wire hops=0 (pre-increment). The local client's process_incoming
 /// applies +1 then -1 (net zero), so rnprobe sees hops=0 instead of hops=1.
 #[tokio::test]
-#[ignore] // EXPECTED FAIL: raw cached bytes have wire hops=0, not receipt-incremented
-          // hops=1. Fix requires patching hops in announce forwarding to local clients.
 async fn test_rnprobe_reports_correct_hops() {
     init_tracing();
 
