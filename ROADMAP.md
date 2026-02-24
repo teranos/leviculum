@@ -28,7 +28,7 @@
 
 ## Aktueller Stand
 
-**Aktuelle Version: 0.5.19.** Phase 1 (Protokoll-Fundament) und Phase 2 (Core API & Full Node) sind vollständig abgeschlossen, inklusive eines 7-phasigen Code-Refactorings (63 Issues in `doc/BATTLEPLAN.md`). Storage-Trait-Refactoring abgeschlossen: alle 11 Transport/NodeCore-Sammlungen auf typsicheren Storage-Trait migriert, FileStorage umschließt MemoryStorage mit Python-kompatibler Persistenz. UDP-Interface implementiert (Socket, I/O-Task, Config-Parsing, Interop-Tests). AutoInterface mit 7 Integrationstests und Cross-Machine-Interop-Test abgedeckt: In-Process-Tests für Discovery, Announce, Link+Daten, MTU, Peer-Timeout, 3-Node-Mesh, Gruppen-Isolation; Cross-Machine-Test (`scripts/test-auto-crossmachine.fish`) validiert Rust↔Python über echtes LAN (hamster↔schneckenschreck VM). Zwei-Tier Peer-Lookup (exact match, dann IP-only Fallback) für Python-Interop. `lrnsd` respektiert jetzt `RUST_LOG`-Umgebungsvariable. Offene Issues: E10 (Interface-spezifischer Jitter für Shared-Medium-Interfaces).
+**Aktuelle Version: 0.5.19.** Phase 1 (Protokoll-Fundament) und Phase 2 (Core API & Full Node) sind vollständig abgeschlossen, inklusive eines 7-phasigen Code-Refactorings (63 Issues in `doc/BATTLEPLAN.md`). Storage-Trait-Refactoring abgeschlossen: alle 11 Transport/NodeCore-Sammlungen auf typsicheren Storage-Trait migriert, FileStorage umschließt MemoryStorage mit Python-kompatibler Persistenz. UDP-Interface implementiert (Socket, I/O-Task, Config-Parsing, Interop-Tests). AutoInterface mit 7 Integrationstests und Cross-Machine-Interop-Test abgedeckt. RPC-Server implementiert: Python-CLI-Tools (`rnstatus`, `rnpath`, `rnprobe`) funktionieren gegen den Rust-Daemon, inklusive HMAC-MD5/SHA256-Kompatibilität für Python 3.11+. Probe-Responder eingebaut. Hops werden jetzt bei Empfang inkrementiert (wie Python). Transport-Identity wird über Neustarts persistiert. Offene Issues: E10 (Interface-spezifischer Jitter für Shared-Medium-Interfaces).
 
 **Kernfunktionalität:** `NodeCore` (reticulum-core) und `ReticulumNode` (reticulum-std) bieten eine einheitliche async-kompatible API für Destinations, Links, Channels, Single-Packet-Verschlüsselung und Proof-Delivery. Vollständige Interoperabilität mit Python rnsd ist durch umfangreiche Interop-Tests nachgewiesen.
 
@@ -296,6 +296,7 @@ Sicherheitsfeatures verdrahten, Daemon-Zustand persistieren, Release-Qualität e
 | AutoInterface (Discovery, Announce, Link, Daten, MTU, Peer-Timeout, Mesh, Isolation) | ✅ |
 | AutoInterface Cross-Machine (Rust@schneckenschreck ↔ Python@hamster, 4 Phasen + RUST_LOG + Datenempfang) | ✅ |
 | Shared Instance (LocalInterface Unix Socket IPC, HDLC-Framing, Announce Rx+Tx) | ✅ |
+| RPC (rnstatus, rnpath, rnprobe gegen Rust-Daemon, HMAC-MD5/SHA256 Auth) | ✅ |
 | Resource Transfer | ⬜ (v1.1) |
 
 ### Testumgebung
@@ -326,6 +327,8 @@ Sicherheitsfeatures verdrahten, Daemon-Zustand persistieren, Release-Qualität e
 - ✅ Routing-Gates für Local-Client-Bedingungen: `handle_link_request()`, `handle_proof()`, `handle_data()` routen Pakete für/von Local-Client-Interfaces auch ohne `enable_transport`, matching Python Transport.py:1378-1404. 5 Unit-Tests mit `enable_transport=false`
 - ✅ End-to-End-Link durch Shared Instance: Rust-Daemon (in-process, TCP+IPC) → Python als Shared-Instance-Client → Link-Establishment + bidirektionaler Datenfluss (Channel-Echo + Raw-Packets), 1 Interop-Test
 - ✅ Path-Request-Handling für Local Clients: `rnpath`-Anfragen über Shared Instance werden korrekt beantwortet — gecachte Announces sofort zurückgeschickt, unbekannte Pfade an Netzwerk-Interfaces weitergeleitet (auch ohne `enable_transport`)
+- ✅ RPC-Server: Python's `multiprocessing.connection`-Wire-Protokoll auf Abstract Unix Socket (`\0rns/{instance_name}/rpc`). HMAC-MD5 (Python < 3.12) und HMAC-SHA256 (Python >= 3.12) Authentifizierung. `rnstatus`, `rnpath`, `rnprobe` funktionieren gegen den Rust-Daemon. 28 Unit-Tests + 6 Interop-Tests
+- ✅ Probe-Responder: Management-Destination (`rnstransport.probe`) beantwortet Probe-Anfragen, I/O-Counter (rxb/txb) pro Interface
 - [ ] `is_connected_to_shared_instance`-Semantik (Python-Äquivalent) für lokale Transport-Entscheidungen
 
 ## Hardware-Interfaces
@@ -361,6 +364,6 @@ Sicherheitsfeatures verdrahten, Daemon-Zustand persistieren, Release-Qualität e
 
 ---
 
-*Stand: 23. Februar 2026*
+*Stand: 24. Februar 2026*
 *Projekt: leviculum*
 *Lizenz: MIT*

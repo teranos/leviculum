@@ -186,9 +186,19 @@ mod tests {
         key
     }
 
+    static RPC_TEST_COUNTER: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
+
     /// Create a minimal ReticulumNode and extract its inner Arc<Mutex<StdNodeCore>>.
     fn make_test_core(transport: bool) -> Arc<Mutex<StdNodeCore>> {
+        let id = RPC_TEST_COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let storage_path = std::env::temp_dir().join(format!(
+            "reticulum_rpc_test_{}_{}_{}",
+            std::process::id(),
+            id,
+            transport
+        ));
         let node = crate::driver::ReticulumNodeBuilder::new()
+            .storage_path(storage_path)
             .enable_transport(transport)
             .build_sync()
             .expect("build_sync failed");

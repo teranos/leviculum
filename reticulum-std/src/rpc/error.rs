@@ -14,7 +14,4 @@ pub(crate) enum RpcError {
 
     #[error("pickle error: {0}")]
     Pickle(String),
-
-    #[error("unsupported digest: {0}")]
-    UnsupportedDigest(String),
 }
