@@ -139,10 +139,51 @@ pub fn execute_steps(runner: &TestRunner) -> Result<(), StepError> {
 
     for (i, step) in steps.iter().enumerate() {
         let step_num = i + 1;
-        execute_step(runner, i, step, &mut cache, step_num, total)?;
+        if let Err(e) = execute_step(runner, i, &step, &mut cache, step_num, total) {
+            report_failure(runner, step_num, total, &step, &e);
+            return Err(e);
+        }
     }
 
     Ok(())
+}
+
+/// Print formatted failure report with log collection.
+fn report_failure(
+    runner: &TestRunner,
+    step_num: usize,
+    total: usize,
+    step: &Step,
+    error: &StepError,
+) {
+    let sep = "══════════════════════════════════════════════════";
+    let thin = "──────────────────────────────────────────────────";
+
+    eprintln!("\n{sep}");
+    eprintln!("STEP FAILED: [{step_num}/{total}] {step:?}");
+    eprintln!("{}", error);
+    eprintln!("{sep}");
+
+    match runner.collect_logs() {
+        Ok(log_path) => eprintln!("Logs saved to: {}", log_path.display()),
+        Err(e) => eprintln!("Failed to collect logs: {e}"),
+    }
+    eprintln!("{thin}");
+
+    for name in runner.node_names() {
+        match runner.container_logs_tail(name, 50) {
+            Ok(tail) => {
+                eprintln!("Last 50 lines from {name}:");
+                for line in tail.lines() {
+                    eprintln!("  {line}");
+                }
+            }
+            Err(e) => eprintln!("Failed to get logs for {name}: {e}"),
+        }
+        eprintln!("{thin}");
+    }
+
+    eprintln!("{sep}\n");
 }
 
 fn execute_step(
@@ -531,12 +572,7 @@ Reticulum Transport Instance running
         runner.wait_ready(30).expect("wait_ready failed");
 
         let result = execute_steps(&runner);
-        if let Err(ref e) = result {
-            eprintln!("execute_steps failed: {e}");
-            let _ = runner.collect_logs();
-        }
         runner.down().expect("down failed");
-
         result.expect("execute_steps should succeed");
     }
 
@@ -556,12 +592,7 @@ Reticulum Transport Instance running
         runner.wait_ready(60).expect("wait_ready failed");
 
         let result = execute_steps(&runner);
-        if let Err(ref e) = result {
-            eprintln!("execute_steps failed: {e}");
-            let _ = runner.collect_logs();
-        }
         runner.down().expect("down failed");
-
         result.expect("execute_steps should succeed");
     }
 
@@ -581,12 +612,7 @@ Reticulum Transport Instance running
         runner.wait_ready(60).expect("wait_ready failed");
 
         let result = execute_steps(&runner);
-        if let Err(ref e) = result {
-            eprintln!("execute_steps failed: {e}");
-            let _ = runner.collect_logs();
-        }
         runner.down().expect("down failed");
-
         result.expect("execute_steps should succeed");
     }
 
@@ -606,12 +632,7 @@ Reticulum Transport Instance running
         runner.wait_ready(60).expect("wait_ready failed");
 
         let result = execute_steps(&runner);
-        if let Err(ref e) = result {
-            eprintln!("execute_steps failed: {e}");
-            let _ = runner.collect_logs();
-        }
         runner.down().expect("down failed");
-
         result.expect("execute_steps should succeed");
     }
 
@@ -631,12 +652,7 @@ Reticulum Transport Instance running
         runner.wait_ready(60).expect("wait_ready failed");
 
         let result = execute_steps(&runner);
-        if let Err(ref e) = result {
-            eprintln!("execute_steps failed: {e}");
-            let _ = runner.collect_logs();
-        }
         runner.down().expect("down failed");
-
         result.expect("execute_steps should succeed");
     }
 
@@ -656,12 +672,7 @@ Reticulum Transport Instance running
         runner.wait_ready(60).expect("wait_ready failed");
 
         let result = execute_steps(&runner);
-        if let Err(ref e) = result {
-            eprintln!("execute_steps failed: {e}");
-            let _ = runner.collect_logs();
-        }
         runner.down().expect("down failed");
-
         result.expect("execute_steps should succeed");
     }
 
@@ -681,12 +692,7 @@ Reticulum Transport Instance running
         runner.wait_ready(60).expect("wait_ready failed");
 
         let result = execute_steps(&runner);
-        if let Err(ref e) = result {
-            eprintln!("execute_steps failed: {e}");
-            let _ = runner.collect_logs();
-        }
         runner.down().expect("down failed");
-
         result.expect("execute_steps should succeed");
     }
 
@@ -706,12 +712,7 @@ Reticulum Transport Instance running
         runner.wait_ready(60).expect("wait_ready failed");
 
         let result = execute_steps(&runner);
-        if let Err(ref e) = result {
-            eprintln!("execute_steps failed: {e}");
-            let _ = runner.collect_logs();
-        }
         runner.down().expect("down failed");
-
         result.expect("execute_steps should succeed");
     }
 
@@ -731,12 +732,7 @@ Reticulum Transport Instance running
         runner.wait_ready(60).expect("wait_ready failed");
 
         let result = execute_steps(&runner);
-        if let Err(ref e) = result {
-            eprintln!("execute_steps failed: {e}");
-            let _ = runner.collect_logs();
-        }
         runner.down().expect("down failed");
-
         result.expect("execute_steps should succeed");
     }
 
@@ -756,12 +752,7 @@ Reticulum Transport Instance running
         runner.wait_ready(60).expect("wait_ready failed");
 
         let result = execute_steps(&runner);
-        if let Err(ref e) = result {
-            eprintln!("execute_steps failed: {e}");
-            let _ = runner.collect_logs();
-        }
         runner.down().expect("down failed");
-
         result.expect("execute_steps should succeed");
     }
 
@@ -781,12 +772,7 @@ Reticulum Transport Instance running
         runner.wait_ready(60).expect("wait_ready failed");
 
         let result = execute_steps(&runner);
-        if let Err(ref e) = result {
-            eprintln!("execute_steps failed: {e}");
-            let _ = runner.collect_logs();
-        }
         runner.down().expect("down failed");
-
         result.expect("execute_steps should succeed");
     }
 }

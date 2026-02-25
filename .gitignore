@@ -28,6 +28,7 @@ Thumbs.db
 # Testing artifacts
 *.log
 *.tmp
+reticulum-integ/logs/
 
 # Coverage reports
 /coverage/

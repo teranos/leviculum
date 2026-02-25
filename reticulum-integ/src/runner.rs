@@ -225,16 +225,42 @@ impl TestRunner {
         }
     }
 
-    /// Collect container logs and write to `{test_name}_failure.log` in cwd.
+    /// Collect container logs and write to `reticulum-integ/logs/{test_name}_failure.log`.
+    ///
+    /// Creates the logs directory if it doesn't exist. Returns the path to
+    /// the written log file.
     pub fn collect_logs(&self) -> Result<PathBuf, RunnerError> {
+        let logs_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("logs");
+        fs::create_dir_all(&logs_dir)?;
+
         let output = self
             .compose_cmd()
-            .args(["logs", "--no-color"])
+            .args(["logs", "--no-color", "--timestamps"])
             .output()?;
 
-        let log_file = PathBuf::from(format!("{}_failure.log", self.scenario.test.name));
+        let log_file = logs_dir.join(format!("{}_failure.log", self.scenario.test.name));
         fs::write(&log_file, &output.stdout)?;
         Ok(log_file)
+    }
+
+    /// Return the last `n` lines of a single container's log.
+    pub fn container_logs_tail(&self, node: &str, n: usize) -> Result<String, RunnerError> {
+        let container = self.container_name(node);
+        let output = Command::new("docker")
+            .args(["logs", "--tail", &n.to_string(), &container])
+            .output()?;
+        // docker logs writes to both stdout and stderr; combine them.
+        let mut combined = String::from_utf8_lossy(&output.stdout).into_owned();
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        if !stderr.is_empty() {
+            combined.push_str(&stderr);
+        }
+        Ok(combined)
+    }
+
+    /// Return ordered node names from the scenario.
+    pub fn node_names(&self) -> Vec<&str> {
+        self.scenario.nodes.keys().map(|s| s.as_str()).collect()
     }
 
     /// Bring down containers with a 10-second timeout. No-op if not up.
