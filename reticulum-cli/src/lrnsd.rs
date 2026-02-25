@@ -16,11 +16,11 @@ use reticulum_std::Reticulum;
 #[command(name = "lrnsd")]
 #[command(author, version, about = "Reticulum network daemon")]
 struct Args {
-    /// Configuration file path
+    /// Path to Reticulum config directory (like Python rnsd --config)
     #[arg(short, long)]
     config: Option<PathBuf>,
 
-    /// Storage directory path
+    /// Storage directory path (default: <config_dir>/storage)
     #[arg(short, long)]
     storage: Option<PathBuf>,
 
@@ -54,18 +54,18 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     info!("Starting lrnsd v{}", env!("CARGO_PKG_VERSION"));
 
-    // Load configuration
-    let config_path = args.config.unwrap_or_else(Config::default_config_path);
-    let storage_path = args
-        .storage
-        .unwrap_or_else(|| Config::default_config_dir().join("storage"));
+    // --config is a directory (like Python rnsd), config file is {dir}/config
+    let config_dir = args.config.unwrap_or_else(Config::default_config_dir);
+    let config_file = config_dir.join("config");
+    let storage_path = args.storage.unwrap_or_else(|| config_dir.join("storage"));
 
-    info!("Config: {}", config_path.display());
+    info!("Config dir: {}", config_dir.display());
+    info!("Config file: {}", config_file.display());
     info!("Storage: {}", storage_path.display());
 
     // Load and configure Reticulum
-    let mut config = if config_path.exists() {
-        Config::load(&config_path)?
+    let mut config = if config_file.exists() {
+        Config::load(&config_file)?
     } else {
         Config::default()
     };

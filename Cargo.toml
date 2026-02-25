@@ -5,6 +5,7 @@ members = [
     "reticulum-std",
     "reticulum-ffi",
     "reticulum-cli",
+    "reticulum-integ",
 ]
 
 # reticulum-nrf requires cross-compilation (thumbv7em-none-eabihf) and

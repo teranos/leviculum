@@ -1,0 +1,537 @@
+use std::collections::BTreeMap;
+use std::fmt;
+use std::thread;
+use std::time::Duration;
+
+use crate::runner::{RunnerError, TestRunner};
+use crate::topology::Step;
+
+// ---------------------------------------------------------------------------
+// Error type
+// ---------------------------------------------------------------------------
+
+#[derive(Debug)]
+pub enum StepError {
+    /// Could not resolve "node.aspect" to a hex destination hash.
+    DestinationResolve { destination: String, detail: String },
+    /// A step's assertion failed (wrong exit code, missing output, wrong hops).
+    StepFailed {
+        step_index: usize,
+        action: String,
+        detail: String,
+    },
+    /// Underlying runner/docker error.
+    Runner(RunnerError),
+}
+
+impl fmt::Display for StepError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            StepError::DestinationResolve {
+                destination,
+                detail,
+            } => {
+                write!(f, "cannot resolve destination '{destination}': {detail}")
+            }
+            StepError::StepFailed {
+                step_index,
+                action,
+                detail,
+            } => {
+                write!(f, "step {step_index} ({action}) failed: {detail}")
+            }
+            StepError::Runner(e) => write!(f, "runner error: {e}"),
+        }
+    }
+}
+
+impl std::error::Error for StepError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            StepError::Runner(e) => Some(e),
+            _ => None,
+        }
+    }
+}
+
+impl From<RunnerError> for StepError {
+    fn from(e: RunnerError) -> Self {
+        StepError::Runner(e)
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Destination resolution
+// ---------------------------------------------------------------------------
+
+/// Parse "bob.probe" into (node_name, aspect).
+fn parse_dest_spec(spec: &str) -> Result<(&str, &str), StepError> {
+    match spec.find('.') {
+        Some(pos) if pos > 0 && pos < spec.len() - 1 => Ok((&spec[..pos], &spec[pos + 1..])),
+        _ => Err(StepError::DestinationResolve {
+            destination: spec.to_string(),
+            detail: "expected format 'node.aspect' (e.g. 'bob.probe')".into(),
+        }),
+    }
+}
+
+/// Extract probe responder hash from rnstatus output.
+///
+/// Looks for: `Probe responder at <HEX32>` and returns the 32-char hex hash.
+fn extract_probe_hash(rnstatus_output: &str) -> Option<&str> {
+    let marker = "Probe responder at <";
+    let start = rnstatus_output.find(marker)? + marker.len();
+    let rest = &rnstatus_output[start..];
+    let end = rest.find('>')?;
+    let hash = &rest[..end];
+    // Validate: must be exactly 32 hex chars.
+    if hash.len() == 32 && hash.chars().all(|c| c.is_ascii_hexdigit()) {
+        Some(hash)
+    } else {
+        None
+    }
+}
+
+/// Resolve "bob.probe" to a 32-char hex destination hash by running rnstatus
+/// on the target node. Caches results in `cache` to avoid repeated docker execs.
+fn resolve_destination(
+    runner: &TestRunner,
+    spec: &str,
+    cache: &mut BTreeMap<String, String>,
+) -> Result<String, StepError> {
+    if let Some(cached) = cache.get(spec) {
+        return Ok(cached.clone());
+    }
+
+    let (node_name, aspect) = parse_dest_spec(spec)?;
+
+    let output = runner.docker_exec(node_name, &["rnstatus", "--config", "/root/.reticulum"])?;
+    let stdout = String::from_utf8_lossy(&output.stdout);
+
+    let hash = match aspect {
+        "probe" => extract_probe_hash(&stdout).ok_or_else(|| StepError::DestinationResolve {
+            destination: spec.to_string(),
+            detail: format!(
+                "no 'Probe responder at <hash>' found in rnstatus output on '{node_name}'"
+            ),
+        })?,
+        other => {
+            return Err(StepError::DestinationResolve {
+                destination: spec.to_string(),
+                detail: format!("unsupported aspect '{other}', only 'probe' is implemented"),
+            });
+        }
+    };
+
+    cache.insert(spec.to_string(), hash.to_string());
+    Ok(hash.to_string())
+}
+
+// ---------------------------------------------------------------------------
+// Step execution
+// ---------------------------------------------------------------------------
+
+/// Execute all steps from the scenario against running containers.
+pub fn execute_steps(runner: &TestRunner) -> Result<(), StepError> {
+    let steps = runner.scenario().steps.clone();
+    let total = steps.len();
+    let mut cache = BTreeMap::new();
+
+    for (i, step) in steps.iter().enumerate() {
+        let step_num = i + 1;
+        execute_step(runner, i, step, &mut cache, step_num, total)?;
+    }
+
+    Ok(())
+}
+
+fn execute_step(
+    runner: &TestRunner,
+    index: usize,
+    step: &Step,
+    cache: &mut BTreeMap<String, String>,
+    step_num: usize,
+    total: usize,
+) -> Result<(), StepError> {
+    match step {
+        Step::WaitForPath {
+            on,
+            destination,
+            timeout_secs,
+        } => {
+            println!("[{step_num}/{total}] wait_for_path on {on} for {destination}...");
+            execute_wait_for_path(runner, index, on, destination, *timeout_secs, cache)
+        }
+        Step::RnProbe {
+            from,
+            to,
+            expect_hops,
+            expect_result,
+            timeout_secs,
+        } => {
+            println!("[{step_num}/{total}] rnprobe from {from} to {to}...");
+            execute_rnprobe(
+                runner,
+                index,
+                from,
+                to,
+                expect_hops.as_ref().copied(),
+                expect_result,
+                *timeout_secs,
+                cache,
+            )
+        }
+        Step::Sleep { duration_secs } => {
+            println!("[{step_num}/{total}] sleep {duration_secs}s...");
+            thread::sleep(Duration::from_secs(*duration_secs));
+            Ok(())
+        }
+        Step::RnPath { .. } => {
+            unimplemented!("step type 'rnpath' — see ROADMAP")
+        }
+        Step::RnStatus { .. } => {
+            unimplemented!("step type 'rnstatus' — see ROADMAP")
+        }
+        Step::Exec { .. } => {
+            unimplemented!("step type 'exec' — see ROADMAP")
+        }
+        Step::Restart { .. } => {
+            unimplemented!("step type 'restart' — see ROADMAP")
+        }
+    }
+}
+
+fn execute_wait_for_path(
+    runner: &TestRunner,
+    index: usize,
+    on: &str,
+    destination: &str,
+    timeout_secs: u64,
+    cache: &mut BTreeMap<String, String>,
+) -> Result<(), StepError> {
+    let hash = resolve_destination(runner, destination, cache)?;
+    let timeout_str = timeout_secs.to_string();
+
+    let output = runner.docker_exec(
+        on,
+        &[
+            "rnpath",
+            &hash,
+            "--config",
+            "/root/.reticulum",
+            "-w",
+            &timeout_str,
+        ],
+    )?;
+
+    if output.status.success() {
+        println!("  path resolved: {hash}");
+        Ok(())
+    } else {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        Err(StepError::StepFailed {
+            step_index: index,
+            action: "wait_for_path".into(),
+            detail: format!("rnpath exited {}: {stdout} {stderr}", output.status),
+        })
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn execute_rnprobe(
+    runner: &TestRunner,
+    index: usize,
+    from: &str,
+    to: &str,
+    expect_hops: Option<u32>,
+    expect_result: &str,
+    timeout_secs: u64,
+    cache: &mut BTreeMap<String, String>,
+) -> Result<(), StepError> {
+    let hash = resolve_destination(runner, to, cache)?;
+    let timeout_str = timeout_secs.to_string();
+
+    let output = runner.docker_exec(
+        from,
+        &[
+            "rnprobe",
+            "rnstransport.probe",
+            &hash,
+            "--config",
+            "/root/.reticulum",
+            "-t",
+            &timeout_str,
+        ],
+    )?;
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+
+    // Check expected result.
+    if expect_result == "success" && !output.status.success() {
+        return Err(StepError::StepFailed {
+            step_index: index,
+            action: "rnprobe".into(),
+            detail: format!("expected success but rnprobe exited {}: {stdout} {stderr}", output.status),
+        });
+    }
+    if expect_result == "failure" && output.status.success() {
+        return Err(StepError::StepFailed {
+            step_index: index,
+            action: "rnprobe".into(),
+            detail: "expected failure but rnprobe exited successfully".into(),
+        });
+    }
+
+    // Check expected hops.
+    if let Some(expected) = expect_hops {
+        let actual = parse_hops_from_output(&stdout);
+        match actual {
+            Some(hops) if hops == expected => {
+                println!("  probe ok: {hops} hop(s) to {hash}");
+            }
+            Some(hops) => {
+                return Err(StepError::StepFailed {
+                    step_index: index,
+                    action: "rnprobe".into(),
+                    detail: format!("expected {expected} hop(s) but got {hops}"),
+                });
+            }
+            None => {
+                return Err(StepError::StepFailed {
+                    step_index: index,
+                    action: "rnprobe".into(),
+                    detail: format!("could not parse hop count from output: {stdout}"),
+                });
+            }
+        }
+    } else {
+        println!("  probe ok: {hash}");
+    }
+
+    Ok(())
+}
+
+/// Parse hop count from rnprobe output. Looks for `over N hop` pattern.
+fn parse_hops_from_output(output: &str) -> Option<u32> {
+    // rnprobe output: "Probe reply received ... over 1 hops"
+    let marker = "over ";
+    let start = output.find(marker)? + marker.len();
+    let rest = &output[start..];
+    // Take digits until non-digit.
+    let end = rest.find(|c: char| !c.is_ascii_digit()).unwrap_or(rest.len());
+    let digits = &rest[..end];
+    digits.parse().ok()
+}
+
+// ---------------------------------------------------------------------------
+// Tests
+// ---------------------------------------------------------------------------
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parse_dest_spec_valid() {
+        let (node, aspect) = parse_dest_spec("bob.probe").unwrap();
+        assert_eq!(node, "bob");
+        assert_eq!(aspect, "probe");
+    }
+
+    #[test]
+    fn parse_dest_spec_multi_part() {
+        let (node, aspect) = parse_dest_spec("alice.custom_aspect").unwrap();
+        assert_eq!(node, "alice");
+        assert_eq!(aspect, "custom_aspect");
+    }
+
+    #[test]
+    fn parse_dest_spec_no_dot() {
+        let result = parse_dest_spec("bob");
+        assert!(result.is_err());
+        match result.unwrap_err() {
+            StepError::DestinationResolve { destination, .. } => {
+                assert_eq!(destination, "bob");
+            }
+            other => panic!("expected DestinationResolve, got: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn parse_dest_spec_trailing_dot() {
+        let result = parse_dest_spec("bob.");
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn parse_dest_spec_leading_dot() {
+        let result = parse_dest_spec(".probe");
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn extract_probe_hash_from_rnstatus() {
+        let output = r#"
+Reticulum Transport Instance running
+  Uptime is 42 seconds
+  Transport Identity is <abcdef0123456789abcdef0123456789>
+  1 path table entry
+  Probe responder at <c46bbee6a9437963a27ad5d18ce4a87c> active
+"#;
+        let hash = extract_probe_hash(output).unwrap();
+        assert_eq!(hash, "c46bbee6a9437963a27ad5d18ce4a87c");
+    }
+
+    #[test]
+    fn extract_probe_hash_not_present() {
+        let output = "Reticulum running, no probe responder\n";
+        assert!(extract_probe_hash(output).is_none());
+    }
+
+    #[test]
+    fn extract_probe_hash_invalid_hex() {
+        let output = "Probe responder at <not_a_valid_hex_string_here_!> active\n";
+        assert!(extract_probe_hash(output).is_none());
+    }
+
+    #[test]
+    fn extract_probe_hash_wrong_length() {
+        let output = "Probe responder at <c46bbee6> active\n";
+        assert!(extract_probe_hash(output).is_none());
+    }
+
+    #[test]
+    fn parse_hops_single() {
+        assert_eq!(parse_hops_from_output("Probe reply over 1 hops"), Some(1));
+    }
+
+    #[test]
+    fn parse_hops_multi() {
+        assert_eq!(
+            parse_hops_from_output("Probe reply received over 3 hops in 234ms"),
+            Some(3)
+        );
+    }
+
+    #[test]
+    fn parse_hops_none() {
+        assert_eq!(parse_hops_from_output("Probe timed out"), None);
+    }
+
+    #[test]
+    fn step_error_display_destination_resolve() {
+        let err = StepError::DestinationResolve {
+            destination: "bob.probe".into(),
+            detail: "not found".into(),
+        };
+        let msg = err.to_string();
+        assert!(msg.contains("bob.probe"));
+        assert!(msg.contains("not found"));
+    }
+
+    #[test]
+    fn step_error_display_step_failed() {
+        let err = StepError::StepFailed {
+            step_index: 2,
+            action: "rnprobe".into(),
+            detail: "expected 1 hop(s) but got 3".into(),
+        };
+        let msg = err.to_string();
+        assert!(msg.contains("step 2"));
+        assert!(msg.contains("rnprobe"));
+        assert!(msg.contains("expected 1 hop(s) but got 3"));
+    }
+
+    #[test]
+    fn step_error_display_runner() {
+        let runner_err = RunnerError::Compose {
+            action: "up".into(),
+            stderr: "fail".into(),
+        };
+        let err = StepError::Runner(runner_err);
+        let msg = err.to_string();
+        assert!(msg.contains("runner error"));
+        assert!(msg.contains("up"));
+    }
+
+    // -----------------------------------------------------------------------
+    // Integration test (requires Docker)
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn basic_probe_end_to_end() {
+        let toml_str = std::fs::read_to_string(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/tests/basic_probe.toml"
+        ))
+        .expect("basic_probe.toml not found");
+        let scenario =
+            crate::topology::parse_scenario(&toml_str).expect("parse failed");
+
+        let mut runner = TestRunner::new(scenario).expect("TestRunner::new failed");
+
+        runner.up().expect("up failed");
+        runner.wait_ready(30).expect("wait_ready failed");
+
+        let result = execute_steps(&runner);
+        if let Err(ref e) = result {
+            eprintln!("execute_steps failed: {e}");
+            let _ = runner.collect_logs();
+        }
+        runner.down().expect("down failed");
+
+        result.expect("execute_steps should succeed");
+    }
+
+    #[test]
+    fn probe_through_relay() {
+        let toml_str = std::fs::read_to_string(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/tests/probe_through_relay.toml"
+        ))
+        .expect("probe_through_relay.toml not found");
+        let scenario =
+            crate::topology::parse_scenario(&toml_str).expect("parse failed");
+
+        let mut runner = TestRunner::new(scenario).expect("TestRunner::new failed");
+
+        runner.up().expect("up failed");
+        runner.wait_ready(60).expect("wait_ready failed");
+
+        let result = execute_steps(&runner);
+        if let Err(ref e) = result {
+            eprintln!("execute_steps failed: {e}");
+            let _ = runner.collect_logs();
+        }
+        runner.down().expect("down failed");
+
+        result.expect("execute_steps should succeed");
+    }
+
+    #[test]
+    fn path_self_healing() {
+        let toml_str = std::fs::read_to_string(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/tests/path_self_healing.toml"
+        ))
+        .expect("path_self_healing.toml not found");
+        let scenario =
+            crate::topology::parse_scenario(&toml_str).expect("parse failed");
+
+        let mut runner = TestRunner::new(scenario).expect("TestRunner::new failed");
+
+        runner.up().expect("up failed");
+        runner.wait_ready(60).expect("wait_ready failed");
+
+        let result = execute_steps(&runner);
+        if let Err(ref e) = result {
+            eprintln!("execute_steps failed: {e}");
+            let _ = runner.collect_logs();
+        }
+        runner.down().expect("down failed");
+
+        result.expect("execute_steps should succeed");
+    }
+}

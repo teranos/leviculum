@@ -1,0 +1,17 @@
+[package]
+name = "reticulum-integ"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+description = "Docker-based integration test framework for leviculum"
+
+[[bin]]
+name = "reticulum-integ"
+path = "src/main.rs"
+
+[dependencies]
+serde = { workspace = true }
+toml = { workspace = true }
+tempfile = "3"
+rand = "0.8"
