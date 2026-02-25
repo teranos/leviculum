@@ -185,38 +185,44 @@ impl TestRunner {
     /// `ReadinessTimeout`.
     pub fn wait_ready(&self, timeout_secs: u64) -> Result<(), RunnerError> {
         for (name, _node) in &self.scenario.nodes {
-            let container = self.container_name(name);
-            let deadline = Instant::now() + Duration::from_secs(timeout_secs);
-
-            loop {
-                let output = Command::new("docker")
-                    .args([
-                        "exec",
-                        &container,
-                        "rnstatus",
-                        "--config",
-                        "/root/.reticulum",
-                    ])
-                    .output()?;
-
-                if output.status.success() {
-                    break;
-                }
-
-                if Instant::now() >= deadline {
-                    // Best-effort log collection before returning error.
-                    let _ = self.collect_logs();
-                    return Err(RunnerError::ReadinessTimeout {
-                        node: name.clone(),
-                        timeout_secs,
-                    });
-                }
-
-                thread::sleep(Duration::from_millis(500));
-            }
+            self.wait_ready_single(name, timeout_secs)?;
         }
-
         Ok(())
+    }
+
+    /// Poll a single node until `rnstatus` exits successfully, or timeout.
+    ///
+    /// Polls every 500ms. On timeout, collects logs and returns
+    /// `ReadinessTimeout`.
+    pub fn wait_ready_single(&self, node: &str, timeout_secs: u64) -> Result<(), RunnerError> {
+        let container = self.container_name(node);
+        let deadline = Instant::now() + Duration::from_secs(timeout_secs);
+
+        loop {
+            let output = Command::new("docker")
+                .args([
+                    "exec",
+                    &container,
+                    "rnstatus",
+                    "--config",
+                    "/root/.reticulum",
+                ])
+                .output()?;
+
+            if output.status.success() {
+                return Ok(());
+            }
+
+            if Instant::now() >= deadline {
+                let _ = self.collect_logs();
+                return Err(RunnerError::ReadinessTimeout {
+                    node: node.to_string(),
+                    timeout_secs,
+                });
+            }
+
+            thread::sleep(Duration::from_millis(500));
+        }
     }
 
     /// Collect container logs and write to `{test_name}_failure.log` in cwd.

@@ -192,11 +192,66 @@ fn execute_step(
         Step::RnStatus { .. } => {
             unimplemented!("step type 'rnstatus' — see ROADMAP")
         }
-        Step::Exec { .. } => {
-            unimplemented!("step type 'exec' — see ROADMAP")
+        Step::Exec {
+            on,
+            command,
+            expect_exit_code,
+            expect_stdout_contains,
+        } => {
+            println!("[{step_num}/{total}] exec on {on}: {command}...");
+            let args: Vec<&str> = command.split_whitespace().collect();
+            let output = runner.docker_exec(on, &args)?;
+            let stdout = String::from_utf8_lossy(&output.stdout);
+            let code = output.status.code().unwrap_or(-1);
+
+            if let Some(expected) = expect_exit_code {
+                if code != *expected {
+                    return Err(StepError::StepFailed {
+                        step_index: index,
+                        action: format!("exec on {on}"),
+                        detail: format!(
+                            "exit code {code}, expected {expected}\nstdout: {stdout}\nstderr: {}",
+                            String::from_utf8_lossy(&output.stderr)
+                        ),
+                    });
+                }
+            }
+
+            if let Some(needle) = expect_stdout_contains {
+                if !stdout.contains(needle.as_str()) {
+                    return Err(StepError::StepFailed {
+                        step_index: index,
+                        action: format!("exec on {on}"),
+                        detail: format!(
+                            "stdout does not contain '{needle}'\nstdout: {stdout}"
+                        ),
+                    });
+                }
+            }
+
+            println!("  exec ok (exit code {code})");
+            Ok(())
         }
-        Step::Restart { .. } => {
-            unimplemented!("step type 'restart' — see ROADMAP")
+        Step::Restart { node } => {
+            println!("[{step_num}/{total}] restart {node}...");
+            let container = runner.container_name(node);
+            let output = std::process::Command::new("docker")
+                .args(["restart", &container])
+                .output()
+                .map_err(|e| StepError::Runner(RunnerError::Io(e)))?;
+            if !output.status.success() {
+                return Err(StepError::StepFailed {
+                    step_index: index,
+                    action: "restart".into(),
+                    detail: format!(
+                        "docker restart {container} failed: {}",
+                        String::from_utf8_lossy(&output.stderr)
+                    ),
+                });
+            }
+            runner.wait_ready_single(node, 30)?;
+            println!("  {node} restarted and ready");
+            Ok(())
         }
     }
 }
@@ -517,6 +572,206 @@ Reticulum Transport Instance running
             "/tests/path_self_healing.toml"
         ))
         .expect("path_self_healing.toml not found");
+        let scenario =
+            crate::topology::parse_scenario(&toml_str).expect("parse failed");
+
+        let mut runner = TestRunner::new(scenario).expect("TestRunner::new failed");
+
+        runner.up().expect("up failed");
+        runner.wait_ready(60).expect("wait_ready failed");
+
+        let result = execute_steps(&runner);
+        if let Err(ref e) = result {
+            eprintln!("execute_steps failed: {e}");
+            let _ = runner.collect_logs();
+        }
+        runner.down().expect("down failed");
+
+        result.expect("execute_steps should succeed");
+    }
+
+    #[test]
+    fn node_restart_path_recovery() {
+        let toml_str = std::fs::read_to_string(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/tests/node_restart_path_recovery.toml"
+        ))
+        .expect("node_restart_path_recovery.toml not found");
+        let scenario =
+            crate::topology::parse_scenario(&toml_str).expect("parse failed");
+
+        let mut runner = TestRunner::new(scenario).expect("TestRunner::new failed");
+
+        runner.up().expect("up failed");
+        runner.wait_ready(60).expect("wait_ready failed");
+
+        let result = execute_steps(&runner);
+        if let Err(ref e) = result {
+            eprintln!("execute_steps failed: {e}");
+            let _ = runner.collect_logs();
+        }
+        runner.down().expect("down failed");
+
+        result.expect("execute_steps should succeed");
+    }
+
+    #[test]
+    fn announce_replacement() {
+        let toml_str = std::fs::read_to_string(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/tests/announce_replacement.toml"
+        ))
+        .expect("announce_replacement.toml not found");
+        let scenario =
+            crate::topology::parse_scenario(&toml_str).expect("parse failed");
+
+        let mut runner = TestRunner::new(scenario).expect("TestRunner::new failed");
+
+        runner.up().expect("up failed");
+        runner.wait_ready(60).expect("wait_ready failed");
+
+        let result = execute_steps(&runner);
+        if let Err(ref e) = result {
+            eprintln!("execute_steps failed: {e}");
+            let _ = runner.collect_logs();
+        }
+        runner.down().expect("down failed");
+
+        result.expect("execute_steps should succeed");
+    }
+
+    #[test]
+    fn four_node_chain() {
+        let toml_str = std::fs::read_to_string(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/tests/four_node_chain.toml"
+        ))
+        .expect("four_node_chain.toml not found");
+        let scenario =
+            crate::topology::parse_scenario(&toml_str).expect("parse failed");
+
+        let mut runner = TestRunner::new(scenario).expect("TestRunner::new failed");
+
+        runner.up().expect("up failed");
+        runner.wait_ready(60).expect("wait_ready failed");
+
+        let result = execute_steps(&runner);
+        if let Err(ref e) = result {
+            eprintln!("execute_steps failed: {e}");
+            let _ = runner.collect_logs();
+        }
+        runner.down().expect("down failed");
+
+        result.expect("execute_steps should succeed");
+    }
+
+    #[test]
+    fn rust_relay_python_endpoints() {
+        let toml_str = std::fs::read_to_string(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/tests/rust_relay_python_endpoints.toml"
+        ))
+        .expect("rust_relay_python_endpoints.toml not found");
+        let scenario =
+            crate::topology::parse_scenario(&toml_str).expect("parse failed");
+
+        let mut runner = TestRunner::new(scenario).expect("TestRunner::new failed");
+
+        runner.up().expect("up failed");
+        runner.wait_ready(60).expect("wait_ready failed");
+
+        let result = execute_steps(&runner);
+        if let Err(ref e) = result {
+            eprintln!("execute_steps failed: {e}");
+            let _ = runner.collect_logs();
+        }
+        runner.down().expect("down failed");
+
+        result.expect("execute_steps should succeed");
+    }
+
+    #[test]
+    fn double_restart_identity_persistence() {
+        let toml_str = std::fs::read_to_string(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/tests/double_restart_identity_persistence.toml"
+        ))
+        .expect("double_restart_identity_persistence.toml not found");
+        let scenario =
+            crate::topology::parse_scenario(&toml_str).expect("parse failed");
+
+        let mut runner = TestRunner::new(scenario).expect("TestRunner::new failed");
+
+        runner.up().expect("up failed");
+        runner.wait_ready(60).expect("wait_ready failed");
+
+        let result = execute_steps(&runner);
+        if let Err(ref e) = result {
+            eprintln!("execute_steps failed: {e}");
+            let _ = runner.collect_logs();
+        }
+        runner.down().expect("down failed");
+
+        result.expect("execute_steps should succeed");
+    }
+
+    #[test]
+    fn rnstatus_transport_info() {
+        let toml_str = std::fs::read_to_string(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/tests/rnstatus_transport_info.toml"
+        ))
+        .expect("rnstatus_transport_info.toml not found");
+        let scenario =
+            crate::topology::parse_scenario(&toml_str).expect("parse failed");
+
+        let mut runner = TestRunner::new(scenario).expect("TestRunner::new failed");
+
+        runner.up().expect("up failed");
+        runner.wait_ready(60).expect("wait_ready failed");
+
+        let result = execute_steps(&runner);
+        if let Err(ref e) = result {
+            eprintln!("execute_steps failed: {e}");
+            let _ = runner.collect_logs();
+        }
+        runner.down().expect("down failed");
+
+        result.expect("execute_steps should succeed");
+    }
+
+    #[test]
+    fn non_transport_shared_instance() {
+        let toml_str = std::fs::read_to_string(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/tests/non_transport_shared_instance.toml"
+        ))
+        .expect("non_transport_shared_instance.toml not found");
+        let scenario =
+            crate::topology::parse_scenario(&toml_str).expect("parse failed");
+
+        let mut runner = TestRunner::new(scenario).expect("TestRunner::new failed");
+
+        runner.up().expect("up failed");
+        runner.wait_ready(60).expect("wait_ready failed");
+
+        let result = execute_steps(&runner);
+        if let Err(ref e) = result {
+            eprintln!("execute_steps failed: {e}");
+            let _ = runner.collect_logs();
+        }
+        runner.down().expect("down failed");
+
+        result.expect("execute_steps should succeed");
+    }
+
+    #[test]
+    fn five_node_mesh() {
+        let toml_str = std::fs::read_to_string(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/tests/five_node_mesh.toml"
+        ))
+        .expect("five_node_mesh.toml not found");
         let scenario =
             crate::topology::parse_scenario(&toml_str).expect("parse failed");
 

@@ -1,0 +1,56 @@
+[test]
+name = "five_node_mesh"
+description = "5-node ring: routing finds shortest paths, not just linear chains"
+timeout_secs = 120
+
+[nodes.n1]
+type = "rust"
+respond_to_probes = true
+
+[nodes.n2]
+type = "python"
+respond_to_probes = true
+
+[nodes.n3]
+type = "rust"
+respond_to_probes = true
+
+[nodes.n4]
+type = "python"
+respond_to_probes = true
+
+[nodes.n5]
+type = "rust"
+respond_to_probes = true
+
+[links]
+n1-n2 = "tcp"
+n2-n3 = "tcp"
+n3-n4 = "tcp"
+n4-n5 = "tcp"
+n1-n5 = "tcp"
+
+[[steps]]
+action = "sleep"
+duration_secs = 25
+
+[[steps]]
+action = "rnprobe"
+from = "n1"
+to = "n3.probe"
+expect_hops = 2
+expect_result = "success"
+
+[[steps]]
+action = "rnprobe"
+from = "n1"
+to = "n4.probe"
+expect_hops = 2
+expect_result = "success"
+
+[[steps]]
+action = "rnprobe"
+from = "n2"
+to = "n5.probe"
+expect_hops = 2
+expect_result = "success"
