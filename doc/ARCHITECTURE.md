@@ -45,24 +45,64 @@ leviculum/
 │   │   ├── interfaces/      # Concrete interface implementations
 │   │   │   ├── mod.rs       # InterfaceHandle (implements Interface trait), InterfaceRegistry
 │   │   │   ├── hdlc.rs      # HDLC framing codec
-│   │   │   └── tcp.rs       # TCP client with HDLC framing
+│   │   │   ├── tcp.rs       # TCP client + server with HDLC framing
+│   │   │   ├── udp.rs       # UDP point-to-point/broadcast, no framing
+│   │   │   ├── local.rs     # Unix abstract socket IPC (shared instance), HDLC-framed
+│   │   │   └── auto_interface/  # Zero-config IPv6 multicast LAN discovery
+│   │   │       ├── mod.rs       # Config, constants, dedup cache
+│   │   │       └── orchestrator.rs  # Per-NIC sockets, peer lifecycle, discovery
 │   │   ├── driver/          # Sans-I/O driver (event loop)
 │   │   │   ├── mod.rs       # ReticulumNode: owns interfaces, drives NodeCore
 │   │   │   ├── builder.rs   # ReticulumNodeBuilder
 │   │   │   ├── sender.rs    # PacketSender for fire-and-forget packets
 │   │   │   └── stream.rs    # LinkHandle (async send handle)
+│   │   ├── rpc/             # RPC server for Python CLI tools (rnstatus, rnpath, rnprobe)
+│   │   │   ├── mod.rs       # RPC listener setup
+│   │   │   ├── connection.rs # Python multiprocessing.connection wire protocol
+│   │   │   ├── pickle.rs    # Pickle serialization/deserialization
+│   │   │   ├── handlers.rs  # Request dispatch (get_status, probe, path, etc.)
+│   │   │   └── error.rs     # RPC error types
 │   │   ├── reticulum.rs     # High-level entry point with config
 │   │   ├── clock.rs         # SystemClock implementation
-│   │   ├── storage.rs       # Filesystem-backed persistence
-│   │   ├── config.rs        # Config file parsing
+│   │   ├── storage.rs       # FileStorage: MemoryStorage + disk persistence
+│   │   ├── config.rs        # Structured Config type with serde support
+│   │   ├── ini_config.rs    # Python-format INI config parser → Config
+│   │   ├── known_destinations.rs  # msgpack persistence (Python-compatible)
+│   │   ├── packet_hashlist.rs     # msgpack persistence (Python-compatible)
 │   │   └── error.rs         # Error types (thiserror)
 │   └── Cargo.toml
+│
+├── reticulum-integ/         # Docker-based integration test framework
 │
 ├── reticulum-nrf/           # Embedded driver for nRF52840 (T114 board, SX1262 LoRa)
 │
 ├── reticulum-ffi/           # C-API bindings
 └── reticulum-cli/           # Command-line tools (lrns, lrnsd)
 ```
+
+### reticulum-std Module Responsibilities
+
+| Module | Responsibility |
+|--------|---------------|
+| `driver/` | Sans-I/O driver: owns interfaces, runs async event loop, feeds packets to NodeCore, dispatches Action results |
+| `driver/builder.rs` | `ReticulumNodeBuilder` — fluent config, builds `ReticulumNode` |
+| `driver/sender.rs` | `PacketSender` — fire-and-forget packet sending from outside event loop |
+| `driver/stream.rs` | `LinkHandle` — async send handle for established links |
+| `interfaces/mod.rs` | `InterfaceHandle` (implements Interface trait via tokio channel), `InterfaceRegistry` (round-robin recv) |
+| `interfaces/tcp.rs` | TCP client with HDLC framing + reconnection, TCP server accept loop |
+| `interfaces/udp.rs` | UDP interface: point-to-point or broadcast, no framing |
+| `interfaces/local.rs` | LocalInterface: Unix abstract socket IPC for shared instance, HDLC-framed |
+| `interfaces/auto_interface/` | AutoInterface: IPv6 multicast peer discovery, per-NIC sockets, peer lifecycle |
+| `interfaces/hdlc.rs` | Re-exports HDLC framing codec from reticulum-core |
+| `rpc/` | RPC server: Python `multiprocessing.connection` wire protocol, HMAC auth, pickle ser/de |
+| `reticulum.rs` | High-level entry point wrapping `ReticulumNode` with config-driven setup |
+| `config.rs` | Structured `Config` type with serde support |
+| `ini_config.rs` | Python-format INI config parser → `Config` struct |
+| `clock.rs` | `SystemClock` implementation of `Clock` trait |
+| `storage.rs` | `FileStorage`: wraps `MemoryStorage` + Python-compatible disk persistence |
+| `known_destinations.rs` | msgpack decode/encode for known_destinations file |
+| `packet_hashlist.rs` | msgpack decode/encode for packet_hashlist file |
+| `error.rs` | Error types (thiserror) |
 
 ## Sans-I/O Architecture
 
@@ -84,29 +124,54 @@ The core engine never performs I/O directly. It operates as a pure state machine
   Action::Broadcast { data, exclude }    — send to all interfaces (except one)
 ```
 
-The **driver** (in `reticulum-std` or an embedded crate) owns the interfaces and runs the event loop:
+The **driver** (in `reticulum-std` or an embedded crate) owns the interfaces and runs the event loop.
+The `reticulum-std` driver has 6 `select!` branches:
 
 ```rust
 loop {
     select! {
-        // Poll interfaces for incoming data
-        (iface_id, data) = recv_any(&mut registry) => {
-            let output = core.handle_packet(iface_id, &data);
-            dispatch_output(output, &mut registry, &event_tx);
+        // 1. Packet received from any interface
+        (iface_id, data) = registry.recv_any() => {
+            output = core.handle_packet(iface_id, &data);
+            dispatch_output(output);
         }
-        // Dispatch deferred operations (connect, send, announce)
+
+        // 2. External action (connect, send, announce from app thread)
         output = action_dispatch_rx.recv() => {
-            dispatch_output(output, &mut registry, &event_tx);
+            dispatch_output(output);
         }
-        // Timer fires at next_deadline()
+
+        // 3. Timer fires at next_deadline()
         _ = sleep_until(next_poll) => {
-            let output = core.handle_timeout();
-            dispatch_output(output, &mut registry, &event_tx);
+            output = core.handle_timeout();
+            dispatch_output(output);
         }
-        _ = shutdown => break
+
+        // 4. Shutdown signal
+        _ = shutdown.changed() => break
+
+        // 5. New interface registered (TCP server accept, local client connect)
+        handle = new_interface_rx.recv() => {
+            registry.register(handle);
+            output = core.handle_interface_up(iface_idx);
+            dispatch_output(output);
+        }
+
+        // 6. Periodic storage flush (crash protection, every 3600s)
+        _ = sleep_until(next_flush) => {
+            core.storage_mut().flush();
+        }
     }
 }
 ```
+
+Branch 5 handles dynamic interface registration — when a TCP server accepts a
+new connection or a local client connects via Unix socket, the handle arrives on
+a channel and is registered with the interface registry. The driver then calls
+`handle_interface_up()` to send cached announces to the new peer.
+
+Branch 6 is crash protection only — normal shutdown calls `flush()` via the
+signal handler. Lost data from a crash is recovered via fresh announces.
 
 ## Interface Design
 
@@ -140,6 +205,18 @@ channels handle retransmission). This makes `try_send()` the natural API:
 - `Ok(())` — packet accepted for delivery
 - `Err(BufferFull)` — non-fatal, packet dropped (expected on constrained links)
 - `Err(Disconnected)` — interface dead, driver must call `handle_interface_down()`
+
+### Concrete Interface Implementations
+
+| Interface | Crate | Transport | HW_MTU | Framing |
+|-----------|-------|-----------|--------|---------|
+| TCP | std | TCP stream | 262144 | HDLC |
+| UDP | std | UDP datagram | 1064 | None |
+| LocalInterface | std | Unix abstract socket | 262144 | HDLC |
+| AutoInterface | std | IPv6 multicast + unicast UDP | 1196 | None |
+
+TCP and LocalInterface use HDLC framing to delimit packets on their stream-oriented
+transports. UDP and AutoInterface send one packet per datagram so no framing is needed.
 
 ### Zero-delay core, interface-side collision avoidance
 
@@ -215,7 +292,9 @@ Core does not own interfaces — it only references them by `InterfaceId`.
 
 ### 2. Run the event loop
 
-The event loop has 3-4 branches, all feeding into the same post-dispatch sequence:
+The minimum event loop has 3-4 branches (A–D below), all feeding into the same
+post-dispatch sequence. The `reticulum-std` driver adds two more (see the 6-branch
+`select!` in "Sans-I/O Architecture" above):
 
 ```
 loop {
@@ -275,6 +354,48 @@ the post-dispatch sequence.
 When an interface disconnects (channel closed, link down, hardware fault), call
 `core.handle_interface_down(iface_id)`, run post-dispatch, then remove the interface
 from the driver's registry.
+
+## Integration Test Framework (reticulum-integ)
+
+Docker-based multi-node test framework for exercising real routing behavior
+across mixed Rust/Python topologies.
+
+**TOML-defined scenarios** specify topology and step-by-step assertions:
+
+```toml
+[nodes.relay]
+type = "python"
+
+[nodes.client]
+type = "rust"
+
+[links]
+client_relay = { a = "client", b = "relay" }
+
+[[steps]]
+type = "wait_for_path"
+node = "client"
+destination = "relay"
+
+[[steps]]
+type = "rnprobe"
+node = "client"
+destination = "relay"
+```
+
+**Pipeline**: parse TOML → assign TCP interfaces → generate per-node configs →
+generate `docker-compose.yml` → start containers → poll readiness → execute
+steps → teardown.
+
+**Step types**:
+- `wait_for_path` — poll until a node discovers a path to a destination
+- `rnprobe` — send a probe and verify round-trip success
+- `rnpath` / `rnstatus` — query path or status via RPC
+- `sleep` — fixed delay for timing-sensitive scenarios
+- `restart` — stop and restart a container mid-test
+- `exec` — run an arbitrary command inside a container
+
+Each test run uses unique container names (PID-based) for parallel safety.
 
 ## Layer Architecture
 
@@ -422,6 +543,41 @@ tcp_interface_task()                     [reticulum-std]
   │  HDLC frame → TCP socket
   ▼
 Network
+```
+
+### Local Client (Shared Instance)
+
+```
+Local application (lrns, user program)
+  │
+  ▼
+Unix abstract socket → LocalInterface     [reticulum-std]
+  │  HDLC-framed, same as TCP
+  ▼
+recv_any() polls alongside TCP/UDP        [reticulum-std driver]
+  │
+  ▼
+NodeCore::handle_packet(iface, data)      [reticulum-core]
+  │  Packets from local clients are marked is_local_client=true
+  │  so the core knows not to loop them back to the originator
+  ▼
+TickOutput dispatched normally
+```
+
+### RPC Queries (rnstatus, rnpath, rnprobe)
+
+```
+Python CLI tool (rnstatus, rnpath, rnprobe)
+  │
+  ▼
+Unix socket → RPC server                  [reticulum-std/rpc]
+  │  Python multiprocessing.connection wire protocol
+  │  HMAC authentication, pickle ser/de
+  ▼
+RPC handler queries NodeCore state        [reticulum-std/rpc/handlers.rs]
+  │  or triggers probe via action_dispatch channel
+  ▼
+Pickle-encoded response → Unix socket → CLI tool
 ```
 
 ## Logging

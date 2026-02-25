@@ -3,21 +3,6 @@
 All known issues that cannot be fixed immediately go here.
 When an issue is fixed, remove it from this file entirely.
 
-## Phases
-
-Phase numbering follows `doc/BATTLEPLAN.md`. Phases 0–7 are complete.
-
-| Phase | Description | Status |
-|-------|-------------|--------|
-| 0 | Cleanup | done |
-| 1 | Test infrastructure | done |
-| 2 | Test coverage (TDD) | done |
-| 3 | Bug fixes | done |
-| 4 | The big rename (Connection → Link) | done |
-| 5 | Structural refactoring (LinkManager dissolution) | done |
-| 6 | Consolidation (SSOT, receipt tracking) | done |
-| 7 | API polish (naming, visibility, perf) | done |
-
 ## Status Overview
 
 | ID | P | Phase | Status | Category | Summary |

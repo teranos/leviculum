@@ -350,6 +350,7 @@ Sicherheitsfeatures verdrahten, Daemon-Zustand persistieren, Release-Qualität e
 - Maven Central Publikation
 
 ## Weitere Features (v1.1+)
+- Interface Discovery (Python: `Discovery.py`) — on-network auto-discovery of interfaces via special announces (`rnstransport.discovery.interface`), auto-connect to discovered TCP/LoRa peers, LXMF proof-of-work stamps for DOS protection. Requires: announce handler registry, dynamic interface creation at runtime, LXMF PoW stamps
 - I2P Interface (SAM v3-Protokoll)
 - AX.25 KISS Interface (Amateurfunk)
 - Roaming-Modus und Erreichbarkeitstracking
