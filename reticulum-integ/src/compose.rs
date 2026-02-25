@@ -12,7 +12,12 @@ use crate::topology::TestScenario;
 /// * `scenario` — parsed test scenario
 /// * `base_dir` — absolute path to tempdir containing per-node config/storage
 /// * `repo_root` — absolute path to the leviculum repository root
-pub fn generate_compose(scenario: &TestScenario, base_dir: &Path, repo_root: &Path) -> String {
+pub fn generate_compose(
+    scenario: &TestScenario,
+    run_id: u32,
+    base_dir: &Path,
+    repo_root: &Path,
+) -> String {
     let test_name = &scenario.test.name;
     let integ_dir = repo_root.join("reticulum-integ");
     let lrnsd_path = repo_root.join("target/release/lrnsd");
@@ -31,7 +36,7 @@ pub fn generate_compose(scenario: &TestScenario, base_dir: &Path, repo_root: &Pa
         writeln!(out, "    image: reticulum-test").ok();
         writeln!(
             out,
-            "    container_name: integ-{test_name}-{name}"
+            "    container_name: integ-{test_name}-{run_id}-{name}"
         )
         .ok();
         writeln!(out, "    environment:").ok();
@@ -92,7 +97,7 @@ mod tests {
     fn basic_probe_has_both_services() {
         let scenario = load_basic_probe();
         let (base_dir, repo_root) = sample_paths();
-        let yaml = generate_compose(&scenario, &base_dir, &repo_root);
+        let yaml = generate_compose(&scenario, 0, &base_dir, &repo_root);
 
         assert!(yaml.contains("\n  alice:\n"), "missing alice service block");
         assert!(yaml.contains("\n  bob:\n"), "missing bob service block");
@@ -102,7 +107,7 @@ mod tests {
     fn node_type_environment_correct() {
         let scenario = load_basic_probe();
         let (base_dir, repo_root) = sample_paths();
-        let yaml = generate_compose(&scenario, &base_dir, &repo_root);
+        let yaml = generate_compose(&scenario, 0, &base_dir, &repo_root);
 
         // Split into per-service blocks to check each independently.
         let alice_idx = yaml.find("  alice:").expect("no alice");
@@ -128,7 +133,7 @@ mod tests {
     fn volume_mounts_present() {
         let scenario = load_basic_probe();
         let (base_dir, repo_root) = sample_paths();
-        let yaml = generate_compose(&scenario, &base_dir, &repo_root);
+        let yaml = generate_compose(&scenario, 0, &base_dir, &repo_root);
 
         for node in ["alice", "bob"] {
             let node_dir = base_dir.join(node);
@@ -167,7 +172,7 @@ mod tests {
     fn build_context_points_to_integ_dir() {
         let scenario = load_basic_probe();
         let (base_dir, repo_root) = sample_paths();
-        let yaml = generate_compose(&scenario, &base_dir, &repo_root);
+        let yaml = generate_compose(&scenario, 0, &base_dir, &repo_root);
 
         let expected = format!("context: {}/reticulum-integ", repo_root.display());
         assert!(
@@ -180,14 +185,14 @@ mod tests {
     fn container_names_include_test_name() {
         let scenario = load_basic_probe();
         let (base_dir, repo_root) = sample_paths();
-        let yaml = generate_compose(&scenario, &base_dir, &repo_root);
+        let yaml = generate_compose(&scenario, 0, &base_dir, &repo_root);
 
         assert!(
-            yaml.contains("container_name: integ-basic_probe-alice"),
+            yaml.contains("container_name: integ-basic_probe-0-alice"),
             "missing alice container name"
         );
         assert!(
-            yaml.contains("container_name: integ-basic_probe-bob"),
+            yaml.contains("container_name: integ-basic_probe-0-bob"),
             "missing bob container name"
         );
     }
@@ -220,7 +225,7 @@ duration_secs = 5
 "#;
         let scenario = parse_scenario(toml_str).expect("parse failed");
         let (base_dir, repo_root) = sample_paths();
-        let yaml = generate_compose(&scenario, &base_dir, &repo_root);
+        let yaml = generate_compose(&scenario, 0, &base_dir, &repo_root);
 
         assert!(yaml.contains("\n  alice:\n"), "missing alice");
         assert!(yaml.contains("\n  bob:\n"), "missing bob");
@@ -231,7 +236,7 @@ duration_secs = 5
     fn no_ports_or_networks_sections() {
         let scenario = load_basic_probe();
         let (base_dir, repo_root) = sample_paths();
-        let yaml = generate_compose(&scenario, &base_dir, &repo_root);
+        let yaml = generate_compose(&scenario, 0, &base_dir, &repo_root);
 
         assert!(!yaml.contains("ports:"), "should not contain ports:");
         assert!(!yaml.contains("networks:"), "should not contain networks:");
@@ -250,7 +255,7 @@ duration_secs = 5
             .expect("no parent")
             .to_path_buf();
 
-        let yaml = generate_compose(&scenario, &base_dir, &repo_root);
+        let yaml = generate_compose(&scenario, 0, &base_dir, &repo_root);
         let compose_file = tmp.path().join("docker-compose.yml");
         fs::write(&compose_file, &yaml).unwrap();
 

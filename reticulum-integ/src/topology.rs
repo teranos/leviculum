@@ -20,6 +20,8 @@ pub struct TestScenario {
     pub steps: Vec<Step>,
 }
 
+// Fields populated by serde deserialization appear unused to the compiler.
+#[allow(dead_code)]
 #[derive(Debug, Clone, Deserialize)]
 pub struct TestMeta {
     pub name: String,
@@ -47,6 +49,9 @@ fn default_true() -> bool {
     true
 }
 
+// Fields on unimplemented step variants are populated by serde but not yet
+// read by the executor (see unimplemented!() arms in executor.rs).
+#[allow(dead_code)]
 #[derive(Debug, Clone, Deserialize)]
 #[serde(tag = "action")]
 pub enum Step {

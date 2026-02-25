@@ -1,8 +1,9 @@
 use std::fmt;
 use std::fs;
 use std::io;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::process::{Command, Output};
+use std::sync::atomic::{AtomicU32, Ordering};
 use std::thread;
 use std::time::{Duration, Instant};
 
@@ -10,6 +11,9 @@ use tempfile::TempDir;
 
 use crate::compose::generate_compose;
 use crate::topology::{generate_node_configs, parse_scenario, TestScenario};
+
+/// Monotonic counter for generating unique run IDs within a process.
+static RUN_COUNTER: AtomicU32 = AtomicU32::new(0);
 
 // ---------------------------------------------------------------------------
 // Error type
@@ -19,7 +23,6 @@ use crate::topology::{generate_node_configs, parse_scenario, TestScenario};
 pub enum RunnerError {
     Compose { action: String, stderr: String },
     ReadinessTimeout { node: String, timeout_secs: u64 },
-    Exec { container: String, command: String, stderr: String },
     Io(io::Error),
     LrnsdNotFound(PathBuf),
     ConfigGeneration(String),
@@ -33,13 +36,6 @@ impl fmt::Display for RunnerError {
             }
             RunnerError::ReadinessTimeout { node, timeout_secs } => {
                 write!(f, "node '{node}' not ready after {timeout_secs}s")
-            }
-            RunnerError::Exec {
-                container,
-                command,
-                stderr,
-            } => {
-                write!(f, "exec in '{container}' failed: {command}: {stderr}")
             }
             RunnerError::Io(e) => write!(f, "I/O error: {e}"),
             RunnerError::LrnsdNotFound(path) => {
@@ -75,14 +71,17 @@ impl From<io::Error> for RunnerError {
 // Free helpers (testable without Docker)
 // ---------------------------------------------------------------------------
 
-/// Format a container name: `integ-{test_name}-{node_name}`.
-pub fn format_container_name(test_name: &str, node_name: &str) -> String {
-    format!("integ-{test_name}-{node_name}")
+/// Format a container name: `integ-{test_name}-{run_id}-{node_name}`.
+///
+/// The `run_id` ensures parallel test runs using the same TOML scenario
+/// do not collide on container names.
+pub fn format_container_name(test_name: &str, run_id: u32, node_name: &str) -> String {
+    format!("integ-{test_name}-{run_id}-{node_name}")
 }
 
-/// Format a compose project name: `integ-{test_name}`.
-pub fn format_project_name(test_name: &str) -> String {
-    format!("integ-{test_name}")
+/// Format a compose project name: `integ-{test_name}-{run_id}`.
+pub fn format_project_name(test_name: &str, run_id: u32) -> String {
+    format!("integ-{test_name}-{run_id}")
 }
 
 // ---------------------------------------------------------------------------
@@ -91,10 +90,10 @@ pub fn format_project_name(test_name: &str) -> String {
 
 pub struct TestRunner {
     scenario: TestScenario,
+    run_id: u32,
     _tempdir: TempDir,
     compose_file: PathBuf,
     project_name: String,
-    repo_root: PathBuf,
     is_up: bool,
 }
 
@@ -121,30 +120,27 @@ impl TestRunner {
         generate_node_configs(&scenario, &base_dir)
             .map_err(|e| RunnerError::ConfigGeneration(e.to_string()))?;
 
-        let yaml = generate_compose(&scenario, &base_dir, &repo_root);
+        let run_id = RUN_COUNTER.fetch_add(1, Ordering::Relaxed);
+
+        let yaml = generate_compose(&scenario, run_id, &base_dir, &repo_root);
         let compose_file = tempdir.path().join("docker-compose.yml");
         fs::write(&compose_file, &yaml)?;
 
-        let project_name = format_project_name(&scenario.test.name);
+        let project_name = format_project_name(&scenario.test.name, run_id);
 
         Ok(TestRunner {
             scenario,
+            run_id,
             _tempdir: tempdir,
             compose_file,
             project_name,
-            repo_root,
             is_up: false,
         })
     }
 
     /// Return the container name for a node.
     pub fn container_name(&self, node: &str) -> String {
-        format_container_name(&self.scenario.test.name, node)
-    }
-
-    /// Return the repo root path.
-    pub fn repo_root(&self) -> &Path {
-        &self.repo_root
+        format_container_name(&self.scenario.test.name, self.run_id, node)
     }
 
     /// Return a reference to the scenario.
@@ -291,14 +287,17 @@ mod tests {
     #[test]
     fn container_name_format() {
         assert_eq!(
-            format_container_name("basic_probe", "alice"),
-            "integ-basic_probe-alice"
+            format_container_name("basic_probe", 42, "alice"),
+            "integ-basic_probe-42-alice"
         );
     }
 
     #[test]
     fn project_name_format() {
-        assert_eq!(format_project_name("basic_probe"), "integ-basic_probe");
+        assert_eq!(
+            format_project_name("basic_probe", 42),
+            "integ-basic_probe-42"
+        );
     }
 
     #[test]
