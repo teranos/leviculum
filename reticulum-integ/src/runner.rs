@@ -163,10 +163,7 @@ impl TestRunner {
 
     /// Bring up containers in detached mode, building images first.
     pub fn up(&mut self) -> Result<(), RunnerError> {
-        let output = self
-            .compose_cmd()
-            .args(["up", "-d", "--build"])
-            .output()?;
+        let output = self.compose_cmd().args(["up", "-d", "--build"]).output()?;
 
         if !output.status.success() {
             return Err(RunnerError::Compose {
@@ -367,9 +364,11 @@ mod tests {
 
     #[test]
     fn basic_probe_lifecycle() {
-        let toml_str =
-            fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/tests/basic_probe.toml"))
-                .expect("basic_probe.toml not found");
+        let toml_str = fs::read_to_string(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/tests/basic_probe.toml"
+        ))
+        .expect("basic_probe.toml not found");
         let scenario = parse_scenario(&toml_str).expect("parse failed");
 
         let mut runner = TestRunner::new(scenario).expect("TestRunner::new failed");

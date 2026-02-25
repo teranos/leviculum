@@ -126,8 +126,15 @@ pub fn parse_scenario(toml_str: &str) -> Result<TestScenario, toml::de::Error> {
 /// A single interface entry for a node's config.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum InterfaceEntry {
-    TcpServer { peer: String, port: u16 },
-    TcpClient { peer: String, target_host: String, port: u16 },
+    TcpServer {
+        peer: String,
+        port: u16,
+    },
+    TcpClient {
+        peer: String,
+        target_host: String,
+        port: u16,
+    },
 }
 
 /// Parse all links and return a map: node_name -> Vec<InterfaceEntry>.
@@ -149,9 +156,7 @@ pub fn assign_interfaces(
 
         let parts: Vec<&str> = link_key.split('-').collect();
         if parts.len() != 2 {
-            return Err(format!(
-                "link key must be 'nodeA-nodeB', got: {link_key}"
-            ));
+            return Err(format!("link key must be 'nodeA-nodeB', got: {link_key}"));
         }
 
         // Alphabetically first = server, second = client.
@@ -215,6 +220,9 @@ pub fn render_config(node: &NodeDef, ifaces: &[InterfaceEntry]) -> String {
                 writeln!(out, "    enabled = yes").ok();
                 writeln!(out, "    listen_ip = 0.0.0.0").ok();
                 writeln!(out, "    listen_port = {port}").ok();
+                // Disable ingress control in integration tests to avoid
+                // non-deterministic announce suppression during rapid startup.
+                writeln!(out, "    ingress_control = false").ok();
             }
             InterfaceEntry::TcpClient {
                 peer,
@@ -226,6 +234,7 @@ pub fn render_config(node: &NodeDef, ifaces: &[InterfaceEntry]) -> String {
                 writeln!(out, "    enabled = yes").ok();
                 writeln!(out, "    target_host = {target_host}").ok();
                 writeln!(out, "    target_port = {port}").ok();
+                writeln!(out, "    ingress_control = false").ok();
             }
         }
     }
@@ -238,10 +247,7 @@ pub fn render_config(node: &NodeDef, ifaces: &[InterfaceEntry]) -> String {
 /// Creates for each node:
 ///   - `{base_dir}/{node_name}/storage/transport_identity` (64 random bytes)
 ///   - `{base_dir}/{node_name}/config` (Reticulum INI format)
-pub fn generate_node_configs(
-    scenario: &TestScenario,
-    base_dir: &Path,
-) -> io::Result<()> {
+pub fn generate_node_configs(scenario: &TestScenario, base_dir: &Path) -> io::Result<()> {
     let interfaces = assign_interfaces(&scenario.links)
         .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
 
@@ -277,9 +283,11 @@ mod tests {
     use tempfile::TempDir;
 
     fn load_basic_probe() -> TestScenario {
-        let toml_str =
-            fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/tests/basic_probe.toml"))
-                .expect("basic_probe.toml not found");
+        let toml_str = fs::read_to_string(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/tests/basic_probe.toml"
+        ))
+        .expect("basic_probe.toml not found");
         parse_scenario(&toml_str).expect("parse failed")
     }
 
@@ -372,10 +380,16 @@ mod tests {
         generate_node_configs(&scenario, tmp.path()).unwrap();
 
         let config = fs::read_to_string(tmp.path().join("alice/config")).unwrap();
-        assert!(config.contains("TCPServerInterface"), "alice should have TCPServerInterface");
+        assert!(
+            config.contains("TCPServerInterface"),
+            "alice should have TCPServerInterface"
+        );
         assert!(config.contains("listen_port = 4242"));
         assert!(config.contains("listen_ip = 0.0.0.0"));
-        assert!(!config.contains("TCPClientInterface"), "alice should NOT have TCPClientInterface");
+        assert!(
+            !config.contains("TCPClientInterface"),
+            "alice should NOT have TCPClientInterface"
+        );
     }
 
     #[test]
@@ -386,10 +400,16 @@ mod tests {
         generate_node_configs(&scenario, tmp.path()).unwrap();
 
         let config = fs::read_to_string(tmp.path().join("bob/config")).unwrap();
-        assert!(config.contains("TCPClientInterface"), "bob should have TCPClientInterface");
+        assert!(
+            config.contains("TCPClientInterface"),
+            "bob should have TCPClientInterface"
+        );
         assert!(config.contains("target_host = alice"));
         assert!(config.contains("target_port = 4242"));
-        assert!(!config.contains("TCPServerInterface"), "bob should NOT have TCPServerInterface");
+        assert!(
+            !config.contains("TCPServerInterface"),
+            "bob should NOT have TCPServerInterface"
+        );
     }
 
     #[test]
@@ -400,11 +420,24 @@ mod tests {
         generate_node_configs(&scenario, tmp.path()).unwrap();
 
         for node_name in ["alice", "bob"] {
-            let config = fs::read_to_string(tmp.path().join(format!("{node_name}/config"))).unwrap();
-            assert!(config.contains("enable_transport = yes"), "{node_name}: missing enable_transport");
-            assert!(config.contains("share_instance = yes"), "{node_name}: missing share_instance");
-            assert!(config.contains("respond_to_probes = yes"), "{node_name}: missing respond_to_probes");
-            assert!(config.contains("loglevel = 5"), "{node_name}: missing loglevel");
+            let config =
+                fs::read_to_string(tmp.path().join(format!("{node_name}/config"))).unwrap();
+            assert!(
+                config.contains("enable_transport = yes"),
+                "{node_name}: missing enable_transport"
+            );
+            assert!(
+                config.contains("share_instance = yes"),
+                "{node_name}: missing share_instance"
+            );
+            assert!(
+                config.contains("respond_to_probes = yes"),
+                "{node_name}: missing respond_to_probes"
+            );
+            assert!(
+                config.contains("loglevel = 5"),
+                "{node_name}: missing loglevel"
+            );
         }
     }
 

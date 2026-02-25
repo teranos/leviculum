@@ -665,6 +665,50 @@ impl<R: CryptoRngCore, C: Clock, S: Storage> NodeCore<R, C, S> {
         }
     }
 
+    /// Notify core that a new non-local interface has come online (sans-I/O).
+    ///
+    /// Generates fresh announces for all local destinations and broadcasts
+    /// them on all interfaces. Using fresh announces (new random_hash)
+    /// ensures peers accept the path update even if they already have a
+    /// stale entry from a longer ring-propagated path with the old
+    /// random_hash.
+    pub fn handle_interface_up(&mut self, _interface_index: usize) -> crate::transport::TickOutput {
+        let now_ms = self.transport.clock().now_ms();
+
+        // Collect destination hashes first to avoid borrow conflict
+        let local_hashes: Vec<crate::destination::DestinationHash> = self
+            .destinations
+            .keys()
+            .filter(|h| self.transport.has_destination(h.as_bytes()))
+            .copied()
+            .collect();
+
+        for dest_hash in &local_hashes {
+            if let Some(dest) = self.destinations.get_mut(dest_hash) {
+                match dest.announce(None, &mut self.rng, now_ms) {
+                    Ok(packet) => {
+                        let mut buf = [0u8; crate::constants::MTU];
+                        if let Ok(len) = packet.pack(&mut buf) {
+                            self.transport
+                                .storage_mut()
+                                .set_announce_cache(dest_hash.into_bytes(), buf[..len].to_vec());
+                            self.transport.send_on_all_interfaces(&buf[..len]);
+                        }
+                    }
+                    Err(e) => {
+                        tracing::warn!(
+                            "Failed to re-announce <{}> on new interface: {:?}",
+                            HexShort(dest_hash.as_bytes()),
+                            e,
+                        );
+                    }
+                }
+            }
+        }
+
+        self.process_events_and_actions()
+    }
+
     /// Internal: Process transport events, drain actions
     ///
     /// Shared logic between `handle_packet` and `handle_timeout`.
@@ -1000,6 +1044,8 @@ impl<R: CryptoRngCore, C: Clock, S: Storage> NodeCore<R, C, S> {
 
 #[cfg(test)]
 mod tests {
+    use alloc::boxed::Box;
+
     use super::*;
     use crate::destination::{DestinationType, Direction};
     use crate::link::{LinkCloseReason, LinkState};
@@ -4436,5 +4482,90 @@ mod tests {
         // Since send_single_packet returns Err, no TickOutput is produced.
         // The error path cannot possibly emit actions because no TickOutput
         // is returned. This is correct by construction.
+    }
+
+    #[test]
+    fn test_handle_interface_up_triggers_fresh_announces() {
+        // Fix 3: When a new non-local interface comes online, the node
+        // should generate fresh announces for all local destinations.
+        // This ensures the new peer learns about destinations even if the
+        // original announce was sent before the connection was established.
+        use crate::transport::Action;
+
+        let clock = MockClock::new(TEST_TIME_MS);
+        let mut node = NodeCoreBuilder::new().enable_transport(true).build(
+            OsRng,
+            clock,
+            MemoryStorage::with_defaults(),
+        );
+
+        // Register an interface so we can send packets
+        let iface = Box::new(MockInterface::new("if0", 1));
+        node.transport.register_interface(iface);
+
+        // Register a destination and announce it (populates announce_cache)
+        let identity = Identity::generate(&mut OsRng);
+        let dest = Destination::new(
+            Some(identity),
+            Direction::In,
+            DestinationType::Single,
+            "testapp",
+            &["ifaceup"],
+        )
+        .unwrap();
+        let dest_hash = *dest.hash();
+        node.register_destination(dest);
+
+        let _ = node.announce_destination(&dest_hash, None).unwrap();
+
+        // Verify announce_cache is populated
+        assert!(
+            node.transport
+                .storage()
+                .get_announce_cache(dest_hash.as_bytes())
+                .is_some(),
+            "announce_cache should be populated after announce_destination"
+        );
+
+        // Now simulate a new interface coming online
+        let iface2 = Box::new(MockInterface::new("if1", 2));
+        node.transport.register_interface(iface2);
+
+        let output = node.handle_interface_up(1);
+
+        // Should produce Broadcast actions (fresh announces sent on all interfaces)
+        assert!(
+            !output.actions.is_empty(),
+            "handle_interface_up should produce actions"
+        );
+        assert!(
+            output
+                .actions
+                .iter()
+                .any(|a| matches!(a, Action::Broadcast { .. })),
+            "handle_interface_up should broadcast fresh announces"
+        );
+    }
+
+    #[test]
+    fn test_handle_interface_up_no_announces_without_destinations() {
+        // If no local destinations are registered, handle_interface_up
+        // should produce no broadcast actions.
+        let clock = MockClock::new(TEST_TIME_MS);
+        let mut node = NodeCoreBuilder::new().enable_transport(true).build(
+            OsRng,
+            clock,
+            MemoryStorage::with_defaults(),
+        );
+
+        let iface = Box::new(MockInterface::new("if0", 1));
+        node.transport.register_interface(iface);
+
+        let output = node.handle_interface_up(0);
+
+        assert!(
+            output.actions.is_empty(),
+            "no destinations registered, should have no actions"
+        );
     }
 }

@@ -263,9 +263,7 @@ fn execute_step(
                     return Err(StepError::StepFailed {
                         step_index: index,
                         action: format!("exec on {on}"),
-                        detail: format!(
-                            "stdout does not contain '{needle}'\nstdout: {stdout}"
-                        ),
+                        detail: format!("stdout does not contain '{needle}'\nstdout: {stdout}"),
                     });
                 }
             }
@@ -369,7 +367,10 @@ fn execute_rnprobe(
         return Err(StepError::StepFailed {
             step_index: index,
             action: "rnprobe".into(),
-            detail: format!("expected success but rnprobe exited {}: {stdout} {stderr}", output.status),
+            detail: format!(
+                "expected success but rnprobe exited {}: {stdout} {stderr}",
+                output.status
+            ),
         });
     }
     if expect_result == "failure" && output.status.success() {
@@ -416,7 +417,9 @@ fn parse_hops_from_output(output: &str) -> Option<u32> {
     let start = output.find(marker)? + marker.len();
     let rest = &output[start..];
     // Take digits until non-digit.
-    let end = rest.find(|c: char| !c.is_ascii_digit()).unwrap_or(rest.len());
+    let end = rest
+        .find(|c: char| !c.is_ascii_digit())
+        .unwrap_or(rest.len());
     let digits = &rest[..end];
     digits.parse().ok()
 }
@@ -563,8 +566,7 @@ Reticulum Transport Instance running
             "/tests/basic_probe.toml"
         ))
         .expect("basic_probe.toml not found");
-        let scenario =
-            crate::topology::parse_scenario(&toml_str).expect("parse failed");
+        let scenario = crate::topology::parse_scenario(&toml_str).expect("parse failed");
 
         let mut runner = TestRunner::new(scenario).expect("TestRunner::new failed");
 
@@ -583,8 +585,7 @@ Reticulum Transport Instance running
             "/tests/probe_through_relay.toml"
         ))
         .expect("probe_through_relay.toml not found");
-        let scenario =
-            crate::topology::parse_scenario(&toml_str).expect("parse failed");
+        let scenario = crate::topology::parse_scenario(&toml_str).expect("parse failed");
 
         let mut runner = TestRunner::new(scenario).expect("TestRunner::new failed");
 
@@ -603,8 +604,7 @@ Reticulum Transport Instance running
             "/tests/path_self_healing.toml"
         ))
         .expect("path_self_healing.toml not found");
-        let scenario =
-            crate::topology::parse_scenario(&toml_str).expect("parse failed");
+        let scenario = crate::topology::parse_scenario(&toml_str).expect("parse failed");
 
         let mut runner = TestRunner::new(scenario).expect("TestRunner::new failed");
 
@@ -623,8 +623,7 @@ Reticulum Transport Instance running
             "/tests/node_restart_path_recovery.toml"
         ))
         .expect("node_restart_path_recovery.toml not found");
-        let scenario =
-            crate::topology::parse_scenario(&toml_str).expect("parse failed");
+        let scenario = crate::topology::parse_scenario(&toml_str).expect("parse failed");
 
         let mut runner = TestRunner::new(scenario).expect("TestRunner::new failed");
 
@@ -643,8 +642,7 @@ Reticulum Transport Instance running
             "/tests/announce_replacement.toml"
         ))
         .expect("announce_replacement.toml not found");
-        let scenario =
-            crate::topology::parse_scenario(&toml_str).expect("parse failed");
+        let scenario = crate::topology::parse_scenario(&toml_str).expect("parse failed");
 
         let mut runner = TestRunner::new(scenario).expect("TestRunner::new failed");
 
@@ -663,8 +661,7 @@ Reticulum Transport Instance running
             "/tests/four_node_chain.toml"
         ))
         .expect("four_node_chain.toml not found");
-        let scenario =
-            crate::topology::parse_scenario(&toml_str).expect("parse failed");
+        let scenario = crate::topology::parse_scenario(&toml_str).expect("parse failed");
 
         let mut runner = TestRunner::new(scenario).expect("TestRunner::new failed");
 
@@ -683,8 +680,7 @@ Reticulum Transport Instance running
             "/tests/rust_relay_python_endpoints.toml"
         ))
         .expect("rust_relay_python_endpoints.toml not found");
-        let scenario =
-            crate::topology::parse_scenario(&toml_str).expect("parse failed");
+        let scenario = crate::topology::parse_scenario(&toml_str).expect("parse failed");
 
         let mut runner = TestRunner::new(scenario).expect("TestRunner::new failed");
 
@@ -703,8 +699,7 @@ Reticulum Transport Instance running
             "/tests/double_restart_identity_persistence.toml"
         ))
         .expect("double_restart_identity_persistence.toml not found");
-        let scenario =
-            crate::topology::parse_scenario(&toml_str).expect("parse failed");
+        let scenario = crate::topology::parse_scenario(&toml_str).expect("parse failed");
 
         let mut runner = TestRunner::new(scenario).expect("TestRunner::new failed");
 
@@ -723,8 +718,7 @@ Reticulum Transport Instance running
             "/tests/rnstatus_transport_info.toml"
         ))
         .expect("rnstatus_transport_info.toml not found");
-        let scenario =
-            crate::topology::parse_scenario(&toml_str).expect("parse failed");
+        let scenario = crate::topology::parse_scenario(&toml_str).expect("parse failed");
 
         let mut runner = TestRunner::new(scenario).expect("TestRunner::new failed");
 
@@ -743,8 +737,7 @@ Reticulum Transport Instance running
             "/tests/non_transport_shared_instance.toml"
         ))
         .expect("non_transport_shared_instance.toml not found");
-        let scenario =
-            crate::topology::parse_scenario(&toml_str).expect("parse failed");
+        let scenario = crate::topology::parse_scenario(&toml_str).expect("parse failed");
 
         let mut runner = TestRunner::new(scenario).expect("TestRunner::new failed");
 
@@ -763,8 +756,7 @@ Reticulum Transport Instance running
             "/tests/five_node_mesh.toml"
         ))
         .expect("five_node_mesh.toml not found");
-        let scenario =
-            crate::topology::parse_scenario(&toml_str).expect("parse failed");
+        let scenario = crate::topology::parse_scenario(&toml_str).expect("parse failed");
 
         let mut runner = TestRunner::new(scenario).expect("TestRunner::new failed");
 

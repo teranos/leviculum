@@ -34,11 +34,7 @@ pub fn generate_compose(
         writeln!(out, "    build:").ok();
         writeln!(out, "      context: {}", integ_dir.display()).ok();
         writeln!(out, "    image: reticulum-test").ok();
-        writeln!(
-            out,
-            "    container_name: integ-{test_name}-{run_id}-{name}"
-        )
-        .ok();
+        writeln!(out, "    container_name: integ-{test_name}-{run_id}-{name}").ok();
         writeln!(out, "    environment:").ok();
         writeln!(out, "      NODE_TYPE: {}", node.node_type).ok();
         writeln!(out, "    volumes:").ok();
@@ -80,9 +76,11 @@ mod tests {
     use tempfile::TempDir;
 
     fn load_basic_probe() -> TestScenario {
-        let toml_str =
-            fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/tests/basic_probe.toml"))
-                .expect("basic_probe.toml not found");
+        let toml_str = fs::read_to_string(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/tests/basic_probe.toml"
+        ))
+        .expect("basic_probe.toml not found");
         parse_scenario(&toml_str).expect("parse failed")
     }
 

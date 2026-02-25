@@ -35,6 +35,7 @@ Phase numbering follows `doc/BATTLEPLAN.md`. Phases 0–7 are complete.
 | E21 | L | post-7 | open | Feature | AutoInterface: NIC hot-plug detection (NICs added/removed at runtime) |
 | E22 | L | post-7 | open | Feature | AutoInterface: multiple instances with different group_ids |
 | E23 | L | post-7 | open | Docs | AutoInterface: carrier_changed flag set but unused (Python too) |
+| E24 | M | post-7 | open | Design | Ingress control should be a per-interface trait with medium-appropriate defaults |
 
 ---
 
@@ -159,6 +160,15 @@ Phase numbering follows `doc/BATTLEPLAN.md`. Phases 0–7 are complete.
 - **Fix:** Each instance needs unique port allocation or port multiplexing. May require the orchestrator to handle multiple group_ids in a single task.
 - **Test:** Two AutoInterface instances with different group_ids on the same node, verify isolation.
 
+
+### E24: Ingress control should be a per-interface trait with medium-appropriate defaults
+- **Status:** open
+- **Priority:** M
+- **Phase:** post-7
+- **Category:** Design
+- **Detail:** Python Reticulum's `ingress_control` feature rate-limits unknown-destination announces on new interfaces (< 2 hours old). The burst threshold is `IC_BURST_FREQ_NEW = 3.5s`, with 60s hold + 300s penalty. This is critical for shared-medium interfaces (LoRa, radio) to prevent announce storms, but counterproductive for TCP — it silently suppresses valid announces during rapid startup, causing non-deterministic path table failures in mesh/ring topologies. Currently, integration tests bypass this with `ingress_control = false` in generated Python configs. The real solution is making ingress control a per-interface concern with medium-appropriate defaults: TCP/UDP = off (reliable, point-to-point), LoRa/serial = on (shared medium, bandwidth-constrained).
+- **Fix:** Add an `ingress_control` field to the `Interface` trait or config struct. Default to `false` for TCP/UDP interfaces, `true` for shared-medium interfaces (LoRa, serial). Remove the `ingress_control = false` workaround from `reticulum-integ/src/topology.rs` when this is implemented.
+- **Test:** Integration test: verify TCP interfaces do not apply ingress limiting. Unit test: verify shared-medium interfaces apply ingress limiting.
 
 ### E23: AutoInterface: carrier_changed flag set but unused
 - **Status:** open

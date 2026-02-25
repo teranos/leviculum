@@ -1385,8 +1385,16 @@ impl<C: Clock, S: Storage> Transport<C, S> {
             }
         }
 
-        // Rate limiting: check if we've seen this destination recently
-        // Also detect local rebroadcasts from neighbors
+        // Rate limiting: check if we've seen this destination recently.
+        // Also detect local rebroadcasts from neighbors.
+        //
+        // IMPORTANT: Rate limiting only suppresses rebroadcasting.
+        // Path table updates must still proceed when a better route arrives
+        // (fewer hops), otherwise nodes in ring/mesh topologies can get
+        // stuck on suboptimal paths. Python's rate limiting (announce_rate_target)
+        // is inside the `if should_add:` block and only affects rebroadcast
+        // scheduling, not path table updates.
+        let mut rate_limited = false;
         if let Some(existing) = self.storage.get_announce_mut(&dest_hash) {
             let elapsed = now.saturating_sub(existing.timestamp_ms);
             if elapsed < self.config.announce_rate_limit_ms {
@@ -1415,12 +1423,7 @@ impl<C: Clock, S: Storage> Transport<C, S> {
                     );
                 }
 
-                tracing::trace!(
-                    dest = %HexShort(&dest_hash),
-                    "Dropped announce, rate limited"
-                );
-                self.stats.packets_dropped += 1;
-                return Ok(());
+                rate_limited = true;
             }
         }
 
@@ -1429,6 +1432,9 @@ impl<C: Clock, S: Storage> Transport<C, S> {
         // - Equal or fewer hops: accept if emission timestamp is newer
         // - More hops: accept only if path is expired, emission is newer,
         //   or path is unresponsive with same emission (path recovery)
+        //
+        // Note: rate_limited announces still reach here so better-hop paths
+        // can update the table. Only rebroadcasting is suppressed below.
         let should_update = if let Some(existing) = self.storage.get_path(&dest_hash) {
             let announce_emitted = emission_from_random_hash(&random_hash);
             let path_timebase = max_emission_from_blobs(&existing.random_blobs);
@@ -1468,6 +1474,18 @@ impl<C: Clock, S: Storage> Transport<C, S> {
         } else {
             true // New destination
         };
+
+        // If rate-limited and the path table wouldn't improve, drop early.
+        // But if the path WOULD improve (e.g. fewer hops via shorter route),
+        // allow the update — only suppress the rebroadcast.
+        if rate_limited && !should_update {
+            tracing::trace!(
+                dest = %HexShort(&dest_hash),
+                "Dropped announce, rate limited (no path improvement)"
+            );
+            self.stats.packets_dropped += 1;
+            return Ok(());
+        }
 
         if should_update {
             // Preserve existing random_blobs and add the new one
@@ -1528,9 +1546,11 @@ impl<C: Clock, S: Storage> Transport<C, S> {
                 );
             }
 
-            // Determine if we should rebroadcast
+            // Determine if we should rebroadcast.
+            // Suppress rebroadcast when rate-limited (announce arrived within
+            // rate window but had fewer hops, so path table was still updated).
             let should_rebroadcast =
-                self.config.enable_transport && !is_path_response && !rate_blocked;
+                self.config.enable_transport && !is_path_response && !rate_blocked && !rate_limited;
 
             // Immediate first rebroadcast — no jitter, no deferral
             if should_rebroadcast {
@@ -1558,8 +1578,9 @@ impl<C: Clock, S: Storage> Transport<C, S> {
                 }
             }
 
-            // Update announce table (skipped when rate-blocked to prevent rebroadcast)
-            if !rate_blocked {
+            // Update announce table (skipped when rate-blocked or rate-limited to
+            // prevent rebroadcast; path table was already updated above)
+            if !rate_blocked && !rate_limited {
                 self.storage.set_announce(
                     dest_hash,
                     AnnounceEntry {
@@ -7720,6 +7741,312 @@ mod tests {
             assert!(
                 !actions.is_empty(),
                 "handle_path_request should schedule announce rebroadcast that produces actions"
+            );
+        }
+
+        #[test]
+        fn test_path_request_for_local_destination() {
+            // When a node receives a path request for one of its own registered
+            // destinations and has a cached announce, it should:
+            // 1. Emit PathRequestReceived event
+            // 2. Schedule a targeted announce rebroadcast (not forward the request)
+            // 3. NOT forward the path request to other interfaces
+            let mut transport = make_transport_enabled();
+            let net_iface = transport.register_interface(Box::new(MockInterface::new("net0", 1)));
+            let _net_iface2 = transport.register_interface(Box::new(MockInterface::new("net1", 2)));
+
+            // Create a destination and register it as local
+            let identity = Identity::generate(&mut OsRng);
+            let dest = crate::destination::Destination::new(
+                Some(identity),
+                crate::destination::Direction::In,
+                crate::destination::DestinationType::Single,
+                "rnstransport",
+                &["probe"],
+            )
+            .unwrap();
+            let dest_hash = dest.hash().into_bytes();
+            transport.register_destination(dest_hash);
+
+            // Populate the announce cache (as if we had previously announced)
+            let (raw_announce, _) = {
+                let id = dest.identity().unwrap();
+                let random_hash = [0x42u8; crate::constants::RANDOM_HASHBYTES];
+                let app_data: &[u8] = &[];
+
+                let mut payload = Vec::new();
+                payload.extend_from_slice(&id.public_key_bytes());
+                payload.extend_from_slice(dest.name_hash());
+                payload.extend_from_slice(&random_hash);
+                let mut signed_data = Vec::new();
+                signed_data.extend_from_slice(dest.hash().as_bytes());
+                signed_data.extend_from_slice(&id.public_key_bytes());
+                signed_data.extend_from_slice(dest.name_hash());
+                signed_data.extend_from_slice(&random_hash);
+                signed_data.extend_from_slice(app_data);
+                let signature = id.sign(&signed_data).unwrap();
+                payload.extend_from_slice(&signature);
+                payload.extend_from_slice(app_data);
+
+                let packet = Packet {
+                    flags: PacketFlags {
+                        ifac_flag: false,
+                        header_type: HeaderType::Type1,
+                        context_flag: false,
+                        transport_type: TransportType::Broadcast,
+                        dest_type: crate::destination::DestinationType::Single,
+                        packet_type: PacketType::Announce,
+                    },
+                    hops: 0,
+                    transport_id: None,
+                    destination_hash: dest_hash,
+                    context: PacketContext::None,
+                    data: PacketData::Owned(payload),
+                };
+                let mut buf = [0u8; 500];
+                let len = packet.pack(&mut buf).unwrap();
+                (buf[..len].to_vec(), dest_hash)
+            };
+            transport
+                .storage_mut()
+                .set_announce_cache(dest_hash, raw_announce);
+
+            // Build a path request packet for our local destination
+            let tag = [0xAA; TRUNCATED_HASHBYTES];
+            let requester_id = [0xBB; TRUNCATED_HASHBYTES];
+            let mut data = Vec::new();
+            data.extend_from_slice(&dest_hash);
+            data.extend_from_slice(&requester_id);
+            data.extend_from_slice(&tag);
+
+            let path_req_hash = *transport.path_request_hash();
+            let packet = Packet {
+                flags: PacketFlags {
+                    ifac_flag: false,
+                    header_type: HeaderType::Type1,
+                    context_flag: false,
+                    transport_type: TransportType::Broadcast,
+                    dest_type: crate::destination::DestinationType::Plain,
+                    packet_type: PacketType::Data,
+                },
+                hops: 0,
+                transport_id: None,
+                destination_hash: path_req_hash,
+                context: PacketContext::None,
+                data: PacketData::Owned(data),
+            };
+            let mut buf = [0u8; MTU];
+            let len = packet.pack(&mut buf).unwrap();
+
+            // Process the path request from the network interface
+            let _ = transport.process_incoming(net_iface, &buf[..len]);
+
+            // 1. Should emit PathRequestReceived event
+            let events: Vec<_> = transport.drain_events().collect();
+            assert!(
+                events.iter().any(|e| matches!(
+                    e,
+                    TransportEvent::PathRequestReceived { destination_hash }
+                        if destination_hash == &dest_hash
+                )),
+                "Should emit PathRequestReceived for local destination"
+            );
+
+            // 2. Should NOT have broadcast/forwarded the path request
+            let actions = transport.drain_actions();
+            let has_broadcast = actions
+                .iter()
+                .any(|a| matches!(a, Action::Broadcast { .. }));
+            assert!(
+                !has_broadcast,
+                "Should NOT forward path request for local destination"
+            );
+
+            // 3. Should have scheduled a targeted announce rebroadcast in the announce table
+            assert!(
+                transport.storage().get_announce(&dest_hash).is_some(),
+                "Should have scheduled announce rebroadcast for local destination"
+            );
+            let entry = transport.storage().get_announce(&dest_hash).unwrap();
+            assert_eq!(
+                entry.target_interface,
+                Some(net_iface),
+                "Announce rebroadcast should target the requesting interface"
+            );
+            assert!(
+                entry.block_rebroadcasts,
+                "Announce rebroadcast should block further rebroadcasts"
+            );
+
+            // 4. After grace period, the announce should produce a SendPacket action
+            transport.clock.advance(PATH_REQUEST_GRACE_MS + 1000);
+            transport.poll();
+            let actions = transport.drain_actions();
+            let has_send = actions.iter().any(|a| {
+                matches!(
+                    a,
+                    Action::SendPacket { iface, .. } if *iface == InterfaceId(net_iface)
+                )
+            });
+            assert!(
+                has_send,
+                "After grace period, should send path response to requesting interface"
+            );
+        }
+
+        #[test]
+        fn test_rate_limited_announce_still_updates_path_when_fewer_hops() {
+            // Fix 1: When the same announce arrives via two paths in a ring
+            // topology — long path (3 hops) first, then short path (2 hops)
+            // within the rate limit window — the path table must update to
+            // the shorter route. Previously the rate limiter did a hard
+            // `return Ok(())` that blocked path table updates.
+            use crate::destination::{Destination, DestinationType, Direction};
+
+            let mut transport = make_transport_enabled();
+            let _idx0 = transport.register_interface(Box::new(MockInterface::new("if0", 1)));
+            let _idx1 = transport.register_interface(Box::new(MockInterface::new("if1", 2)));
+
+            // Create a destination for the announce
+            let identity = Identity::generate(&mut OsRng);
+            let dest = Destination::new(
+                Some(identity),
+                Direction::In,
+                DestinationType::Single,
+                "testapp",
+                &["ratelimit"],
+            )
+            .unwrap();
+            let dest_hash = dest.hash().into_bytes();
+
+            // Use the same random_hash for both announces (same announce, different paths).
+            // process_incoming increments hops by 1, so wire hops = stored hops - 1.
+            let random_hash = make_random_hash([0xAA; 5], 1000);
+            let raw_3hops = make_announce_raw_with_random_hash(&dest, 2, &random_hash); // stored as 3
+            let raw_2hops = make_announce_raw_with_random_hash(&dest, 1, &random_hash); // stored as 2
+
+            // First: 3-hop announce arrives on if0 (long ring path)
+            let _ = transport.process_incoming(0, &raw_3hops);
+            let _ = transport.drain_actions();
+
+            assert_eq!(
+                transport.storage().get_path(&dest_hash).unwrap().hops,
+                3,
+                "initial path should be 3 hops"
+            );
+
+            // Second: 2-hop announce arrives on if1 within the rate window
+            // (no clock advance — same millisecond)
+            let _ = transport.process_incoming(1, &raw_2hops);
+            let _ = transport.drain_actions();
+
+            assert_eq!(
+                transport.storage().get_path(&dest_hash).unwrap().hops,
+                2,
+                "path should update to 2 hops despite rate limiting"
+            );
+        }
+
+        #[test]
+        fn test_rate_limited_announce_suppresses_rebroadcast() {
+            // Companion to the above: when a rate-limited announce updates
+            // the path table, it must NOT be rebroadcast (to avoid flooding).
+            use crate::destination::{Destination, DestinationType, Direction};
+
+            let mut transport = make_transport_enabled();
+            let _idx0 = transport.register_interface(Box::new(MockInterface::new("if0", 1)));
+            let _idx1 = transport.register_interface(Box::new(MockInterface::new("if1", 2)));
+
+            let identity = Identity::generate(&mut OsRng);
+            let dest = Destination::new(
+                Some(identity),
+                Direction::In,
+                DestinationType::Single,
+                "testapp",
+                &["ratelimit2"],
+            )
+            .unwrap();
+            let dest_hash = dest.hash().into_bytes();
+
+            // process_incoming increments hops by 1, so wire hops = stored hops - 1.
+            let random_hash = make_random_hash([0xBB; 5], 2000);
+            let raw_3hops = make_announce_raw_with_random_hash(&dest, 2, &random_hash); // stored as 3
+            let raw_2hops = make_announce_raw_with_random_hash(&dest, 1, &random_hash); // stored as 2
+
+            // 3-hop announce arrives — should produce Broadcast action (rebroadcast)
+            let _ = transport.process_incoming(0, &raw_3hops);
+            let actions = transport.drain_actions();
+            assert!(
+                actions
+                    .iter()
+                    .any(|a| matches!(a, Action::Broadcast { .. })),
+                "first announce should be rebroadcast"
+            );
+
+            // 2-hop announce within rate window — updates path but NO rebroadcast
+            let _ = transport.process_incoming(1, &raw_2hops);
+            let actions = transport.drain_actions();
+
+            // Should NOT have a Broadcast action (rate-limited suppresses rebroadcast)
+            assert!(
+                !actions
+                    .iter()
+                    .any(|a| matches!(a, Action::Broadcast { .. })),
+                "rate-limited announce should NOT be rebroadcast"
+            );
+
+            // But path should be updated
+            assert_eq!(
+                transport.storage().get_path(&dest_hash).unwrap().hops,
+                2,
+                "path should be 2 hops"
+            );
+        }
+
+        #[test]
+        fn test_rate_limited_worse_hop_announce_dropped() {
+            // A rate-limited announce with MORE hops than the existing path
+            // should be dropped entirely (no path update, no rebroadcast).
+            use crate::destination::{Destination, DestinationType, Direction};
+
+            let mut transport = make_transport_enabled();
+            let _idx0 = transport.register_interface(Box::new(MockInterface::new("if0", 1)));
+            let _idx1 = transport.register_interface(Box::new(MockInterface::new("if1", 2)));
+
+            let identity = Identity::generate(&mut OsRng);
+            let dest = Destination::new(
+                Some(identity),
+                Direction::In,
+                DestinationType::Single,
+                "testapp",
+                &["ratelimit3"],
+            )
+            .unwrap();
+            let dest_hash = dest.hash().into_bytes();
+
+            // process_incoming increments hops by 1, so wire hops = stored hops - 1.
+            let random_hash = make_random_hash([0xCC; 5], 3000);
+            let raw_2hops = make_announce_raw_with_random_hash(&dest, 1, &random_hash); // stored as 2
+            let raw_4hops = make_announce_raw_with_random_hash(&dest, 3, &random_hash); // stored as 4
+
+            // 2-hop announce arrives first
+            let _ = transport.process_incoming(0, &raw_2hops);
+            let _ = transport.drain_actions();
+
+            let dropped_before = transport.stats.packets_dropped;
+
+            // 4-hop announce within rate window — worse hops, should be dropped
+            let _ = transport.process_incoming(1, &raw_4hops);
+            let _ = transport.drain_actions();
+
+            assert_eq!(
+                transport.storage().get_path(&dest_hash).unwrap().hops,
+                2,
+                "path should remain 2 hops"
+            );
+            assert!(
+                transport.stats.packets_dropped > dropped_before,
+                "worse-hop rate-limited announce should increment packets_dropped"
             );
         }
 

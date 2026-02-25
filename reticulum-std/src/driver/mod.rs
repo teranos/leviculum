@@ -922,6 +922,17 @@ async fn run_event_loop(
                     stats.insert(iface_idx, Arc::clone(&handle.counters));
                 }
                 registry.register(handle);
+
+                // Send cached local-destination announces on the new interface
+                // so the new peer learns about our destinations even if the
+                // original announce was sent before the connection was established.
+                if !is_local {
+                    let output = {
+                        let mut core = inner.lock().unwrap();
+                        core.handle_interface_up(iface_idx)
+                    };
+                    dispatch_output(output, &mut registry, &event_tx);
+                }
             }
 
             // Branch 6: Periodic storage flush (persist identities + packet hashes)
