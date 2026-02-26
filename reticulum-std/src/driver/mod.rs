@@ -182,8 +182,14 @@ impl ReticulumNode {
         // Channel for dynamically registering interfaces (e.g. from TCP server accept loop)
         let (new_iface_tx, new_iface_rx) = mpsc::channel::<InterfaceHandle>(32);
 
+        // Channel for TCP client reconnection notifications (Block D).
+        // When a reconnecting TCP client re-establishes its connection, it sends
+        // its InterfaceId here so the event loop can call handle_interface_up()
+        // to re-announce destinations on the recovered link.
+        let (reconnect_tx, reconnect_rx) = mpsc::channel::<InterfaceId>(16);
+
         // Initialize interfaces — the driver owns them, NOT NodeCore
-        let registry = self.initialize_interfaces(&next_id, &new_iface_tx)?;
+        let registry = self.initialize_interfaces(&next_id, &new_iface_tx, &reconnect_tx)?;
 
         {
             let mut core = self.inner.lock().unwrap();
@@ -239,6 +245,7 @@ impl ReticulumNode {
                 event_tx,
                 action_dispatch_rx,
                 new_iface_rx,
+                reconnect_rx,
                 shutdown_rx,
                 iface_stats_map,
             )
@@ -258,6 +265,7 @@ impl ReticulumNode {
         &mut self,
         next_id: &Arc<AtomicUsize>,
         new_iface_tx: &mpsc::Sender<InterfaceHandle>,
+        reconnect_tx: &mpsc::Sender<InterfaceId>,
     ) -> Result<InterfaceRegistry, Error> {
         let mut registry = InterfaceRegistry::new();
 
@@ -301,6 +309,7 @@ impl ReticulumNode {
                         self.corrupt_every,
                         reconnect_interval,
                         config.max_reconnect_tries,
+                        Some(reconnect_tx.clone()),
                     );
                     tracing::info!("TCP client interface for {} (reconnect enabled)", addr);
                     registry.register(handle);
@@ -804,6 +813,7 @@ async fn run_event_loop(
     event_tx: mpsc::Sender<NodeEvent>,
     mut action_dispatch_rx: mpsc::Receiver<TickOutput>,
     mut new_interface_rx: mpsc::Receiver<InterfaceHandle>,
+    mut reconnect_rx: mpsc::Receiver<InterfaceId>,
     mut shutdown: watch::Receiver<bool>,
     iface_stats_map: InterfaceStatsMap,
 ) {
@@ -935,7 +945,22 @@ async fn run_event_loop(
                 }
             }
 
-            // Branch 6: Periodic storage flush (persist identities + packet hashes)
+            // Branch 6: TCP client reconnection (Block D)
+            //
+            // When a reconnecting TCP client re-establishes its connection, it
+            // sends a notification here. We call handle_interface_up() to
+            // re-announce all local destinations (daemon-owned get fresh announces,
+            // client-cached get rebroadcast) so the remote peer re-learns paths.
+            Some(iface_id) = reconnect_rx.recv() => {
+                tracing::info!("Interface {} reconnected, re-announcing destinations", iface_id);
+                let output = {
+                    let mut core = inner.lock().unwrap();
+                    core.handle_interface_up(iface_id.0)
+                };
+                dispatch_output(output, &mut registry, &event_tx);
+            }
+
+            // Branch 7: Periodic storage flush (persist identities + packet hashes)
             _ = tokio::time::sleep_until(next_flush) => {
                 {
                     use reticulum_core::traits::Storage as _;

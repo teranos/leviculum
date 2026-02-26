@@ -21,6 +21,7 @@ When an issue is fixed, remove it from this file entirely.
 | E22 | L | post-7 | open | Feature | AutoInterface: multiple instances with different group_ids |
 | E23 | L | post-7 | open | Docs | AutoInterface: carrier_changed flag set but unused (Python too) |
 | E24 | M | post-7 | open | Design | Ingress control should be a per-interface trait with medium-appropriate defaults |
+| E25 | L | post-7 | open | Test | Integration tests for shared-instance Blocks B/C need client framework support |
 
 ---
 
@@ -163,3 +164,12 @@ When an issue is fixed, remove it from this file entirely.
 - **Detail:** The Python AutoInterface sets a `carrier_changed` flag when multicast echo timeout is detected (no self-echo for 6.5s), but this flag is never read by any other code in the Python reference implementation. The Rust implementation logs a warning but does not track the flag. This appears to be dead code in both implementations.
 - **Fix:** No code change needed unless a consumer of carrier state is identified. Document as known dead code.
 - **Test:** N/A — informational only.
+
+### E25: Integration tests for shared-instance Blocks B/C need client framework support
+- **Status:** open
+- **Priority:** L
+- **Phase:** post-7
+- **Category:** Test
+- **Detail:** Blocks B (shared instance registration 250ms delay) and C (shared instance reconnect re-announce) have unit tests but no integration tests. Writing integration tests requires the reticulum-integ framework to support running a separate client program inside a container that registers a destination with a running daemon via shared instance (Unix socket IPC). Currently, every node runs a full daemon; there is no concept of a client-only node.
+- **Fix:** Extend the integration test framework with a client node type (e.g., `type = "rust-client"`) that runs a custom program connecting to a daemon's shared instance socket, registers a destination, and announces it. Then write `shared_instance_announce.toml` and `shared_instance_reconnect.toml` tests.
+- **Test:** The tests themselves: verify that a destination registered by a client is discoverable from a remote node, and that a client reconnect results in the destination being re-announced.

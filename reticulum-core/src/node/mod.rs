@@ -665,13 +665,14 @@ impl<R: CryptoRngCore, C: Clock, S: Storage> NodeCore<R, C, S> {
         }
     }
 
-    /// Notify core that a new non-local interface has come online (sans-I/O).
+    /// Notify core that a non-local interface has come online (sans-I/O).
     ///
-    /// Generates fresh announces for all local destinations and broadcasts
-    /// them on all interfaces. Using fresh announces (new random_hash)
-    /// ensures peers accept the path update even if they already have a
-    /// stale entry from a longer ring-propagated path with the old
-    /// random_hash.
+    /// Generates fresh announces for all daemon-owned destinations and
+    /// rebroadcasts cached announce bytes for local-client destinations.
+    /// Fresh announces ensure peers accept the path update even if they
+    /// already have a stale entry. Cached bytes are sufficient for client
+    /// destinations because the peer on the recovered interface has never
+    /// seen them (Block D).
     pub fn handle_interface_up(&mut self, _interface_index: usize) -> crate::transport::TickOutput {
         let now_ms = self.transport.clock().now_ms();
 
@@ -702,6 +703,33 @@ impl<R: CryptoRngCore, C: Clock, S: Storage> NodeCore<R, C, S> {
                             e,
                         );
                     }
+                }
+            }
+        }
+
+        // Block D: Rebroadcast cached announces for local client destinations.
+        // These are destinations announced by IPC clients (shared instance).
+        // The daemon doesn't hold their private keys, so it rebroadcasts cached
+        // bytes. This is safe because the peer on the recovered interface has
+        // never seen these announces.
+        let client_hashes: Vec<[u8; crate::constants::TRUNCATED_HASHBYTES]> = self
+            .transport
+            .local_client_known_dests()
+            .iter()
+            .copied()
+            .collect();
+        for hash in &client_hashes {
+            // Skip if this dest was already announced as a daemon-owned destination
+            if local_hashes.iter().any(|h| h.as_bytes() == hash) {
+                continue;
+            }
+            if let Some(cached_raw) = self.transport.storage().get_announce_cache(hash).cloned() {
+                if !cached_raw.is_empty() {
+                    tracing::debug!(
+                        "Re-announcing cached local-client dest <{}> on interface recovery",
+                        HexShort(hash),
+                    );
+                    self.transport.send_on_all_interfaces(&cached_raw);
                 }
             }
         }
@@ -1031,9 +1059,52 @@ impl<R: CryptoRngCore, C: Clock, S: Storage> NodeCore<R, C, S> {
                 });
             }
 
-            TransportEvent::PathRequestReceived { destination_hash } => {
-                // Informational event — auto-re-announce is already handled
-                // by Transport::process_path_request() internally.
+            TransportEvent::PathRequestReceived {
+                destination_hash,
+                requesting_interface,
+            } => {
+                // Block A: Generate a fresh announce (new signature, current app_data)
+                // instead of serving cached bytes. Transport set up a deferred AnnounceEntry
+                // with the 400ms grace period — we replace its raw_packet with fresh bytes.
+                let now_ms = self.transport.clock().now_ms();
+                if let Some(dest) = self
+                    .destinations
+                    .get_mut(&DestinationHash::new(destination_hash))
+                {
+                    match dest.announce(None, &mut self.rng, now_ms) {
+                        Ok(packet) => {
+                            let mut buf = [0u8; crate::constants::MTU];
+                            if let Ok(len) = packet.pack(&mut buf) {
+                                let fresh_raw = buf[..len].to_vec();
+                                // Update announce_cache with fresh bytes
+                                self.transport
+                                    .storage_mut()
+                                    .set_announce_cache(destination_hash, fresh_raw.clone());
+                                // Update the AnnounceEntry that Transport already set up
+                                if let Some(entry) = self
+                                    .transport
+                                    .storage_mut()
+                                    .get_announce_mut(&destination_hash)
+                                {
+                                    entry.raw_packet = fresh_raw;
+                                    entry.hops = 0; // Local destination
+                                    tracing::debug!(
+                                        "Fresh path response generated for <{}>",
+                                        HexShort(&destination_hash),
+                                    );
+                                }
+                            }
+                        }
+                        Err(e) => {
+                            tracing::warn!(
+                                "Failed to generate fresh path response for <{}>: {:?}",
+                                HexShort(&destination_hash),
+                                e,
+                            );
+                        }
+                    }
+                }
+                let _ = requesting_interface; // used by Transport for target_interface
                 self.events.push(NodeEvent::PathRequestReceived {
                     destination_hash: DestinationHash::new(destination_hash),
                 });
@@ -4566,6 +4637,265 @@ mod tests {
         assert!(
             output.actions.is_empty(),
             "no destinations registered, should have no actions"
+        );
+    }
+
+    // ─── Block A: Fresh Path Response for Local Destinations ─────────────
+
+    #[test]
+    fn test_path_response_local_dest_is_fresh() {
+        // When a path request arrives for our OWN destination, the response
+        // should contain a fresh announce (new signature, new random_hash)
+        // rather than cached bytes from the initial announce.
+        use crate::announce::ReceivedAnnounce;
+        use crate::constants::{PATH_REQUEST_GRACE_MS, TRUNCATED_HASHBYTES};
+        use crate::packet::{
+            HeaderType, PacketContext, PacketData, PacketFlags, PacketType, TransportType,
+        };
+        use crate::traits::Storage;
+
+        let clock = MockClock::new(TEST_TIME_MS);
+        let mut node = NodeCoreBuilder::new().enable_transport(true).build(
+            OsRng,
+            clock,
+            MemoryStorage::with_defaults(),
+        );
+
+        let iface = Box::new(MockInterface::new("if0", 1));
+        node.transport.register_interface(iface);
+
+        // Register a local destination
+        let identity = Identity::generate(&mut OsRng);
+        let dest = Destination::new(
+            Some(identity),
+            Direction::In,
+            DestinationType::Single,
+            "testapp",
+            &["echo"],
+        )
+        .unwrap();
+        let dest_hash = dest.hash().into_bytes();
+        node.register_destination(dest);
+
+        // Do an initial announce to populate the cache
+        let output = node.handle_interface_up(0);
+        let _ = output; // actions dispatched
+
+        // Grab the cached announce bytes
+        let initial_cached = node
+            .transport
+            .storage()
+            .get_announce_cache(&dest_hash)
+            .cloned()
+            .expect("announce cache should be populated after interface_up");
+
+        // Build a path request packet targeting the local destination
+        // The fresh announce will have different random_hash because
+        // generate_random_hash() uses the RNG (different on each call).
+        let path_req_hash = *node.transport.path_request_hash();
+        let mut data = Vec::new();
+        data.extend_from_slice(&dest_hash);
+        data.extend_from_slice(&[0xCC; TRUNCATED_HASHBYTES]); // tag
+
+        let packet = crate::packet::Packet {
+            flags: PacketFlags {
+                ifac_flag: false,
+                header_type: HeaderType::Type1,
+                context_flag: false,
+                transport_type: TransportType::Broadcast,
+                dest_type: DestinationType::Plain,
+                packet_type: PacketType::Data,
+            },
+            hops: 0,
+            transport_id: None,
+            destination_hash: path_req_hash,
+            context: PacketContext::None,
+            data: PacketData::Owned(data),
+        };
+
+        let mut buf = [0u8; 500];
+        let len = packet.pack(&mut buf).unwrap();
+
+        // Process the path request through NodeCore's handle_packet
+        let output = node.handle_packet(crate::transport::InterfaceId(0), &buf[..len]);
+
+        // Verify PathRequestReceived event is emitted
+        let path_req_event = output.events.iter().any(|e| {
+            matches!(e, NodeEvent::PathRequestReceived { destination_hash } if destination_hash.as_bytes() == &dest_hash)
+        });
+        assert!(path_req_event, "Expected PathRequestReceived event");
+
+        // Check that the AnnounceEntry has fresh bytes (different from initial cache)
+        let announce_entry = node
+            .transport
+            .storage()
+            .get_announce(&dest_hash)
+            .expect("AnnounceEntry should exist after path request");
+        assert_eq!(
+            announce_entry.retransmit_at_ms,
+            Some(TEST_TIME_MS + PATH_REQUEST_GRACE_MS),
+            "retransmit should be at now + 400ms grace"
+        );
+        assert_eq!(
+            announce_entry.target_interface,
+            Some(0),
+            "response should target the requesting interface"
+        );
+        assert!(
+            announce_entry.block_rebroadcasts,
+            "path response should block rebroadcasts"
+        );
+
+        // The fresh bytes should differ from initial (new random_hash + signature)
+        assert_ne!(
+            announce_entry.raw_packet, initial_cached,
+            "Path response should contain FRESH announce bytes, not cached bytes"
+        );
+
+        // Parse both to verify the fresh announce has different random_hash
+        let initial_pkt = crate::packet::Packet::unpack(&initial_cached).unwrap();
+        let fresh_pkt = crate::packet::Packet::unpack(&announce_entry.raw_packet).unwrap();
+        let initial_announce = ReceivedAnnounce::from_packet(&initial_pkt).unwrap();
+        let fresh_announce = ReceivedAnnounce::from_packet(&fresh_pkt).unwrap();
+        assert_ne!(
+            initial_announce.random_hash(),
+            fresh_announce.random_hash(),
+            "Fresh path response should have a new random_hash"
+        );
+
+        // The updated announce_cache should also have the fresh bytes
+        let updated_cache = node
+            .transport
+            .storage()
+            .get_announce_cache(&dest_hash)
+            .cloned()
+            .expect("announce cache should be updated");
+        assert_eq!(
+            updated_cache, announce_entry.raw_packet,
+            "announce_cache should match the fresh AnnounceEntry"
+        );
+    }
+
+    /// Block D: When handle_interface_up fires (TCP reconnect), the daemon
+    /// should rebroadcast cached announce bytes for local-client destinations
+    /// in addition to generating fresh announces for daemon-owned destinations.
+    #[test]
+    fn test_interface_up_rebroadcasts_client_cached_announces() {
+        use crate::traits::Storage;
+        use crate::transport::Action;
+
+        let clock = MockClock::new(TEST_TIME_MS);
+        let mut node = NodeCoreBuilder::new().enable_transport(true).build(
+            OsRng,
+            clock,
+            MemoryStorage::with_defaults(),
+        );
+
+        // Interface 0: network interface (TCP)
+        let iface0 = Box::new(MockInterface::new("tcp0", 1));
+        node.transport.register_interface(iface0);
+
+        // Interface 1: local client (IPC)
+        let iface1 = Box::new(MockInterface::new("local0", 1));
+        node.transport.register_interface(iface1);
+        node.transport.set_local_client(1, true);
+
+        // Register a daemon-owned destination
+        let daemon_identity = Identity::generate(&mut OsRng);
+        let daemon_dest = Destination::new(
+            Some(daemon_identity),
+            Direction::In,
+            DestinationType::Single,
+            "daemonapp",
+            &["echo"],
+        )
+        .unwrap();
+        let daemon_hash = daemon_dest.hash().into_bytes();
+        node.register_destination(daemon_dest);
+
+        // Create a client announce by generating a fresh identity and announce,
+        // then feeding it through the local client interface path.
+        let client_identity = Identity::generate(&mut OsRng);
+        let mut client_dest = Destination::new(
+            Some(client_identity),
+            Direction::In,
+            DestinationType::Single,
+            "clientapp",
+            &["svc"],
+        )
+        .unwrap();
+        let client_hash = client_dest.hash().into_bytes();
+        let now_ms = node.transport.clock().now_ms();
+        let announce_pkt = client_dest.announce(None, &mut OsRng, now_ms).unwrap();
+        let mut buf = [0u8; crate::constants::MTU];
+        let len = announce_pkt.pack(&mut buf).unwrap();
+        let client_announce_raw = buf[..len].to_vec();
+
+        // Feed the client announce through the local interface
+        let _output = node.handle_packet(crate::transport::InterfaceId(1), &client_announce_raw);
+
+        // The announce should have been accepted and cached
+        assert!(
+            node.transport
+                .storage()
+                .get_announce_cache(&client_hash)
+                .is_some(),
+            "Client announce should be cached after local client announce"
+        );
+        assert!(
+            node.transport
+                .local_client_known_dests()
+                .contains(&client_hash),
+            "Client dest should be tracked in local_client_known_dests"
+        );
+
+        // Advance clock past the 250ms registration delay and poll to flush
+        // the delayed announce rebroadcast (Block B).
+        node.transport.clock().advance(300);
+        let _ = node.handle_timeout();
+
+        // Now simulate interface recovery: call handle_interface_up
+        let output = node.handle_interface_up(0);
+
+        // We expect two broadcasts: one fresh announce for daemon_dest,
+        // and one cached rebroadcast for client_dest.
+        let broadcast_actions: Vec<&Vec<u8>> = output
+            .actions
+            .iter()
+            .filter_map(|a| match a {
+                Action::Broadcast { data, .. } => Some(data),
+                _ => None,
+            })
+            .collect();
+
+        assert!(
+            broadcast_actions.len() >= 2,
+            "Expected at least 2 broadcasts (daemon fresh + client cached), got {}",
+            broadcast_actions.len()
+        );
+
+        // Verify daemon dest got a fresh announce (different from anything cached before)
+        let has_daemon_broadcast = broadcast_actions.iter().any(|data| {
+            crate::packet::Packet::unpack(data)
+                .ok()
+                .map(|pkt| pkt.destination_hash == daemon_hash)
+                .unwrap_or(false)
+        });
+        assert!(
+            has_daemon_broadcast,
+            "Should broadcast fresh announce for daemon-owned dest"
+        );
+
+        // Verify client dest got its cached bytes rebroadcast
+        let has_client_broadcast = broadcast_actions.iter().any(|data| {
+            crate::packet::Packet::unpack(data)
+                .ok()
+                .map(|pkt| pkt.destination_hash == client_hash)
+                .unwrap_or(false)
+        });
+        assert!(
+            has_client_broadcast,
+            "Should rebroadcast cached announce for local-client dest"
         );
     }
 }

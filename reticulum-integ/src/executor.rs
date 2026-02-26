@@ -292,7 +292,52 @@ fn execute_step(
             println!("  {node} restarted and ready");
             Ok(())
         }
+        Step::BlockLink { from, to } => {
+            println!("[{step_num}/{total}] block_link {from} -> {to}...");
+            execute_iptables_rule(runner, index, from, to, "-A")
+        }
+        Step::RestoreLink { from, to } => {
+            println!("[{step_num}/{total}] restore_link {from} -> {to}...");
+            execute_iptables_rule(runner, index, from, to, "-D")
+        }
     }
+}
+
+/// Add or delete iptables DROP rules to block/restore traffic between containers.
+///
+/// `action` is `-A` (append/block) or `-D` (delete/restore).
+/// Resolves the target container's IP via `getent hosts` since iptables
+/// requires numeric IPs, not hostnames.
+fn execute_iptables_rule(
+    runner: &TestRunner,
+    step_index: usize,
+    from: &str,
+    to: &str,
+    action: &str,
+) -> Result<(), StepError> {
+    let cmd = format!(
+        "iptables {action} INPUT -s $(getent hosts {to} | awk '{{print $1}}') -j DROP && \
+         iptables {action} OUTPUT -d $(getent hosts {to} | awk '{{print $1}}') -j DROP"
+    );
+    let output = runner.docker_exec(from, &["sh", "-c", &cmd])?;
+    if !output.status.success() {
+        return Err(StepError::StepFailed {
+            step_index,
+            action: format!("iptables {action} on {from} targeting {to}"),
+            detail: format!(
+                "exit code {}, stderr: {}",
+                output.status.code().unwrap_or(-1),
+                String::from_utf8_lossy(&output.stderr)
+            ),
+        });
+    }
+    let verb = if action == "-A" {
+        "blocked"
+    } else {
+        "restored"
+    };
+    println!("  {verb} {from} <-> {to}");
+    Ok(())
 }
 
 fn execute_wait_for_path(
@@ -756,6 +801,25 @@ Reticulum Transport Instance running
             "/tests/five_node_mesh.toml"
         ))
         .expect("five_node_mesh.toml not found");
+        let scenario = crate::topology::parse_scenario(&toml_str).expect("parse failed");
+
+        let mut runner = TestRunner::new(scenario).expect("TestRunner::new failed");
+
+        runner.up().expect("up failed");
+        runner.wait_ready(60).expect("wait_ready failed");
+
+        let result = execute_steps(&runner);
+        runner.down().expect("down failed");
+        result.expect("execute_steps should succeed");
+    }
+
+    #[test]
+    fn link_failure_recovery() {
+        let toml_str = std::fs::read_to_string(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/tests/link_failure_recovery.toml"
+        ))
+        .expect("link_failure_recovery.toml not found");
         let scenario = crate::topology::parse_scenario(&toml_str).expect("parse failed");
 
         let mut runner = TestRunner::new(scenario).expect("TestRunner::new failed");

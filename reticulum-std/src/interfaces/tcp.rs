@@ -228,6 +228,7 @@ pub(crate) fn spawn_tcp_client_with_reconnect(
     corrupt_every: Option<u64>,
     reconnect_interval: Duration,
     max_reconnect_tries: Option<u64>,
+    reconnect_notify: Option<mpsc::Sender<InterfaceId>>,
 ) -> InterfaceHandle {
     let (incoming_tx, incoming_rx) = mpsc::channel(buffer_size);
     let (outgoing_tx, outgoing_rx) = mpsc::channel(buffer_size);
@@ -238,6 +239,7 @@ pub(crate) fn spawn_tcp_client_with_reconnect(
 
     tokio::spawn(async move {
         tcp_client_reconnect_task(
+            id,
             addr,
             task_name,
             incoming_tx,
@@ -246,6 +248,7 @@ pub(crate) fn spawn_tcp_client_with_reconnect(
             reconnect_interval,
             max_reconnect_tries,
             task_counters,
+            reconnect_notify,
         )
         .await;
     });
@@ -267,9 +270,12 @@ pub(crate) fn spawn_tcp_client_with_reconnect(
 ///
 /// Owns the channel endpoints and keeps them alive across reconnection cycles.
 /// The driver never sees `RecvEvent::Disconnected` — only a gap in incoming
-/// packets during downtime.
+/// packets during downtime. On reconnection (not the first connect), sends a
+/// notification on `reconnect_notify` so the driver can call
+/// `handle_interface_up` to re-announce destinations (Block D).
 #[allow(clippy::too_many_arguments)]
 async fn tcp_client_reconnect_task(
+    id: InterfaceId,
     addr: SocketAddr,
     name: String,
     incoming_tx: mpsc::Sender<IncomingPacket>,
@@ -278,14 +284,27 @@ async fn tcp_client_reconnect_task(
     reconnect_interval: Duration,
     max_reconnect_tries: Option<u64>,
     counters: Arc<InterfaceCounters>,
+    reconnect_notify: Option<mpsc::Sender<InterfaceId>>,
 ) {
     let mut attempt = 0u64;
+    let mut has_connected_before = false;
     loop {
         match tokio::net::TcpStream::connect(addr).await {
             Ok(stream) => {
                 stream.set_nodelay(true).ok();
+                let is_reconnect = has_connected_before;
+                has_connected_before = true;
                 attempt = 0;
                 tracing::info!("{}: connected to {}", name, addr);
+
+                // Notify the driver about reconnection so it can re-announce
+                // destinations on the recovered interface (Block D).
+                if is_reconnect {
+                    if let Some(ref notify) = reconnect_notify {
+                        let _ = notify.try_send(id);
+                    }
+                }
+
                 // Packets queued in outgoing_rx during disconnect will be sent on
                 // the new stream. If the channel overflowed (capacity limited),
                 // excess packets were dropped by the event loop (BufferFull).
@@ -560,6 +579,7 @@ mod tests {
             None,
             Duration::from_millis(200),
             Some(10),
+            None,
         );
 
         // 3. Accept first connection, send an HDLC-framed packet
@@ -625,6 +645,7 @@ mod tests {
             None,
             Duration::from_millis(100),
             Some(2),
+            None,
         );
 
         // Wait for the reconnect task to give up (2 attempts * 100ms + overhead)

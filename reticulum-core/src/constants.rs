@@ -124,6 +124,10 @@ pub const LINK_TIMEOUT_MS: u64 = 900_000;
 /// Equivalent to Python's PATH_REQUEST_GRACE = 0.4 (seconds)
 pub const PATH_REQUEST_GRACE_MS: u64 = 400;
 
+/// Delay before rebroadcasting a local client's first announce (milliseconds).
+/// Batches multiple registrations during startup. Python Transport.py:2232.
+pub const LOCAL_CLIENT_ANNOUNCE_DELAY_MS: u64 = 250;
+
 /// Timeout for path request round-trip (milliseconds)
 pub const PATH_REQUEST_TIMEOUT_MS: u64 = 15_000;
 

@@ -101,6 +101,13 @@ pub enum Step {
     Sleep { duration_secs: u64 },
     #[serde(rename = "restart")]
     Restart { node: String },
+    /// Block traffic between two containers using iptables DROP rules.
+    /// Must be applied on both sides for a clean bidirectional block.
+    #[serde(rename = "block_link")]
+    BlockLink { from: String, to: String },
+    /// Restore traffic between two containers by removing iptables DROP rules.
+    #[serde(rename = "restore_link")]
+    RestoreLink { from: String, to: String },
 }
 
 fn default_step_timeout() -> u64 {
