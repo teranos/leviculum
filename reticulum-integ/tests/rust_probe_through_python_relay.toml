@@ -1,6 +1,6 @@
 [test]
-name = "non_transport_shared_instance"
-description = "Sanity check: transport node probes through relay to remote target"
+name = "rust_probe_through_python_relay"
+description = "Rust transport node probes through Python relay to remote Rust target (2 hops)"
 timeout_secs = 90
 
 [nodes.daemon]

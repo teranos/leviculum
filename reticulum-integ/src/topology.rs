@@ -61,6 +61,8 @@ pub enum Step {
         destination: String,
         #[serde(default = "default_step_timeout")]
         timeout_secs: u64,
+        #[serde(default = "default_expect_success")]
+        expect_result: String,
     },
     #[serde(rename = "rnprobe")]
     RnProbe {
@@ -325,10 +327,12 @@ mod tests {
                 on,
                 destination,
                 timeout_secs,
+                expect_result,
             } => {
                 assert_eq!(on, "alice");
                 assert_eq!(destination, "bob.probe");
                 assert_eq!(*timeout_secs, 30);
+                assert_eq!(expect_result, "success");
             }
             other => panic!("expected WaitForPath, got: {other:?}"),
         }

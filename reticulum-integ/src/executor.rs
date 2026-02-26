@@ -199,9 +199,18 @@ fn execute_step(
             on,
             destination,
             timeout_secs,
+            expect_result,
         } => {
             println!("[{step_num}/{total}] wait_for_path on {on} for {destination}...");
-            execute_wait_for_path(runner, index, on, destination, *timeout_secs, cache)
+            execute_wait_for_path(
+                runner,
+                index,
+                on,
+                destination,
+                *timeout_secs,
+                expect_result,
+                cache,
+            )
         }
         Step::RnProbe {
             from,
@@ -346,6 +355,7 @@ fn execute_wait_for_path(
     on: &str,
     destination: &str,
     timeout_secs: u64,
+    expect_result: &str,
     cache: &mut BTreeMap<String, String>,
 ) -> Result<(), StepError> {
     let hash = resolve_destination(runner, destination, cache)?;
@@ -363,17 +373,34 @@ fn execute_wait_for_path(
         ],
     )?;
 
-    if output.status.success() {
-        println!("  path resolved: {hash}");
-        Ok(())
-    } else {
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        let stdout = String::from_utf8_lossy(&output.stdout);
-        Err(StepError::StepFailed {
+    match (expect_result, output.status.success()) {
+        ("success", true) => {
+            println!("  path resolved: {hash}");
+            Ok(())
+        }
+        ("success", false) => {
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            let stdout = String::from_utf8_lossy(&output.stdout);
+            Err(StepError::StepFailed {
+                step_index: index,
+                action: "wait_for_path".into(),
+                detail: format!("rnpath exited {}: {stdout} {stderr}", output.status),
+            })
+        }
+        ("no_path", false) => {
+            println!("  no path (expected): {hash}");
+            Ok(())
+        }
+        ("no_path", true) => Err(StepError::StepFailed {
             step_index: index,
             action: "wait_for_path".into(),
-            detail: format!("rnpath exited {}: {stdout} {stderr}", output.status),
-        })
+            detail: format!("expected no_path but path was resolved for {hash}"),
+        }),
+        _ => Err(StepError::StepFailed {
+            step_index: index,
+            action: "wait_for_path".into(),
+            detail: format!("unknown expect_result '{expect_result}', use 'success' or 'no_path'"),
+        }),
     }
 }
 
@@ -408,6 +435,7 @@ fn execute_rnprobe(
     let stderr = String::from_utf8_lossy(&output.stderr);
 
     // Check expected result.
+    let expect_fail = expect_result == "failure" || expect_result == "fail";
     if expect_result == "success" && !output.status.success() {
         return Err(StepError::StepFailed {
             step_index: index,
@@ -418,12 +446,16 @@ fn execute_rnprobe(
             ),
         });
     }
-    if expect_result == "failure" && output.status.success() {
+    if expect_fail && output.status.success() {
         return Err(StepError::StepFailed {
             step_index: index,
             action: "rnprobe".into(),
             detail: "expected failure but rnprobe exited successfully".into(),
         });
+    }
+    if expect_fail && !output.status.success() {
+        println!("  probe failed (expected): {hash}");
+        return Ok(());
     }
 
     // Check expected hops.
@@ -776,12 +808,12 @@ Reticulum Transport Instance running
     }
 
     #[test]
-    fn non_transport_shared_instance() {
+    fn rust_probe_through_python_relay() {
         let toml_str = std::fs::read_to_string(concat!(
             env!("CARGO_MANIFEST_DIR"),
-            "/tests/non_transport_shared_instance.toml"
+            "/tests/rust_probe_through_python_relay.toml"
         ))
-        .expect("non_transport_shared_instance.toml not found");
+        .expect("rust_probe_through_python_relay.toml not found");
         let scenario = crate::topology::parse_scenario(&toml_str).expect("parse failed");
 
         let mut runner = TestRunner::new(scenario).expect("TestRunner::new failed");
@@ -820,6 +852,25 @@ Reticulum Transport Instance running
             "/tests/link_failure_recovery.toml"
         ))
         .expect("link_failure_recovery.toml not found");
+        let scenario = crate::topology::parse_scenario(&toml_str).expect("parse failed");
+
+        let mut runner = TestRunner::new(scenario).expect("TestRunner::new failed");
+
+        runner.up().expect("up failed");
+        runner.wait_ready(60).expect("wait_ready failed");
+
+        let result = execute_steps(&runner);
+        runner.down().expect("down failed");
+        result.expect("execute_steps should succeed");
+    }
+
+    #[test]
+    fn non_transport_no_relay() {
+        let toml_str = std::fs::read_to_string(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/tests/non_transport_no_relay.toml"
+        ))
+        .expect("non_transport_no_relay.toml not found");
         let scenario = crate::topology::parse_scenario(&toml_str).expect("parse failed");
 
         let mut runner = TestRunner::new(scenario).expect("TestRunner::new failed");

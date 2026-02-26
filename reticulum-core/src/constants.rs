@@ -128,6 +128,15 @@ pub const PATH_REQUEST_GRACE_MS: u64 = 400;
 /// Batches multiple registrations during startup. Python Transport.py:2232.
 pub const LOCAL_CLIENT_ANNOUNCE_DELAY_MS: u64 = 250;
 
+/// Interval between management announces (probe destination, etc.).
+/// Python: `mgmt_announce_interval = 2*60*60` (2 hours).
+pub const MGMT_ANNOUNCE_INTERVAL_MS: u64 = 2 * 60 * 60 * 1000;
+
+/// Expiry time for local client destination tracking (milliseconds).
+/// 3 × management announce interval (6h). A client that hasn't re-announced
+/// in 6 hours is considered gone.
+pub const LOCAL_CLIENT_DEST_EXPIRY_MS: u64 = 3 * MGMT_ANNOUNCE_INTERVAL_MS;
+
 /// Timeout for path request round-trip (milliseconds)
 pub const PATH_REQUEST_TIMEOUT_MS: u64 = 15_000;
 

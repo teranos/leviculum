@@ -66,9 +66,7 @@ use rand_core::CryptoRngCore;
 
 use crate::hex_fmt::{HexFmt, HexShort};
 
-/// Interval between management announces (probe destination, etc.).
-/// Python: `mgmt_announce_interval = 2*60*60` (2 hours).
-const MGMT_ANNOUNCE_INTERVAL_MS: u64 = 2 * 60 * 60 * 1000;
+use crate::constants::MGMT_ANNOUNCE_INTERVAL_MS;
 
 /// Delay before the first management announce after startup.
 /// Python defers by `mgmt_announce_interval - 15` so first fires at ~15s.
@@ -715,7 +713,7 @@ impl<R: CryptoRngCore, C: Clock, S: Storage> NodeCore<R, C, S> {
         let client_hashes: Vec<[u8; crate::constants::TRUNCATED_HASHBYTES]> = self
             .transport
             .local_client_known_dests()
-            .iter()
+            .keys()
             .copied()
             .collect();
         for hash in &client_hashes {
@@ -4845,7 +4843,7 @@ mod tests {
         assert!(
             node.transport
                 .local_client_known_dests()
-                .contains(&client_hash),
+                .contains_key(&client_hash),
             "Client dest should be tracked in local_client_known_dests"
         );
 

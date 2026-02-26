@@ -388,12 +388,13 @@ generate `docker-compose.yml` → start containers → poll readiness → execut
 steps → teardown.
 
 **Step types**:
-- `wait_for_path` — poll until a node discovers a path to a destination
-- `rnprobe` — send a probe and verify round-trip success
+- `wait_for_path` — poll until a node discovers a path to a destination (supports `expect_result = "no_path"` for negative assertions)
+- `rnprobe` — send a probe and verify round-trip success (supports `expect_result = "fail"` for expected failures)
 - `rnpath` / `rnstatus` — query path or status via RPC
 - `sleep` — fixed delay for timing-sensitive scenarios
 - `restart` — stop and restart a container mid-test
 - `exec` — run an arbitrary command inside a container
+- `block_link` / `restore_link` — iptables-based link failure simulation
 
 Each test run uses unique container names (PID-based) for parallel safety.
 
@@ -559,7 +560,9 @@ recv_any() polls alongside TCP/UDP        [reticulum-std driver]
   ▼
 NodeCore::handle_packet(iface, data)      [reticulum-core]
   │  Packets from local clients are marked is_local_client=true
-  │  so the core knows not to loop them back to the originator
+  │  so the core knows not to loop them back to the originator.
+  │  Announces from local clients update local_client_known_dests
+  │  (timestamp refresh for expiry tracking, 6h TTL).
   ▼
 TickOutput dispatched normally
 ```

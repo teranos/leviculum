@@ -43,10 +43,10 @@ use alloc::vec::Vec;
 use crate::constants::{
     ANNOUNCE_RATE_GRACE, ANNOUNCE_RATE_LIMIT_MS, ANNOUNCE_RATE_PENALTY_MS,
     DEFAULT_ANNOUNCE_CAP_PERCENT, LINK_TIMEOUT_MS, LOCAL_CLIENT_ANNOUNCE_DELAY_MS,
-    LOCAL_REBROADCASTS_MAX, MAX_QUEUED_ANNOUNCES_PER_INTERFACE, MAX_RANDOM_BLOBS, MS_PER_SECOND,
-    MTU, PATHFINDER_EXPIRY_SECS, PATHFINDER_G_MS, PATHFINDER_MAX_HOPS, PATHFINDER_RETRIES,
-    PATH_REQUEST_GRACE_MS, PATH_REQUEST_MIN_INTERVAL_MS, REVERSE_TABLE_EXPIRY_MS,
-    TRUNCATED_HASHBYTES,
+    LOCAL_CLIENT_DEST_EXPIRY_MS, LOCAL_REBROADCASTS_MAX, MAX_QUEUED_ANNOUNCES_PER_INTERFACE,
+    MAX_RANDOM_BLOBS, MS_PER_SECOND, MTU, PATHFINDER_EXPIRY_SECS, PATHFINDER_G_MS,
+    PATHFINDER_MAX_HOPS, PATHFINDER_RETRIES, PATH_REQUEST_GRACE_MS, PATH_REQUEST_MIN_INTERVAL_MS,
+    REVERSE_TABLE_EXPIRY_MS, TRUNCATED_HASHBYTES,
 };
 
 use crate::announce::{emission_from_random_hash, max_emission_from_blobs, ReceivedAnnounce};
@@ -554,12 +554,12 @@ pub struct Transport<C: Clock, S: Storage> {
     /// the destination's path expires or is replaced by a network path.
     local_client_dest_map: BTreeMap<usize, BTreeSet<[u8; TRUNCATED_HASHBYTES]>>,
 
-    /// Set of destination hashes that were ever announced by any local client.
+    /// Destination hashes announced by local clients, mapped to `last_seen_ms`.
     /// Persists across client disconnects so the daemon can recognize returning
     /// clients' destinations during reconnect (Block C).
-    /// Removal path: entries removed when clean_announce_cache() runs and the
-    /// destination has no path and is not a local destination.
-    local_client_known_dests: BTreeSet<[u8; TRUNCATED_HASHBYTES]>,
+    /// Removal path: entries expire when `now - last_seen_ms > LOCAL_CLIENT_DEST_EXPIRY_MS`
+    /// in `clean_path_states()`.
+    local_client_known_dests: BTreeMap<[u8; TRUNCATED_HASHBYTES], u64>,
 
     /// Per-interface incoming announce timestamps for frequency computation (Python ia_freq_deque).
     /// Removal path: removed in handle_interface_down via remove_announce_freq_tracking().
@@ -603,7 +603,7 @@ impl<C: Clock, S: Storage> Transport<C, S> {
             interface_hw_mtus: BTreeMap::new(),
             local_client_interfaces: BTreeSet::new(),
             local_client_dest_map: BTreeMap::new(),
-            local_client_known_dests: BTreeSet::new(),
+            local_client_known_dests: BTreeMap::new(),
             interface_incoming_announce_times: BTreeMap::new(),
             interface_outgoing_announce_times: BTreeMap::new(),
             pending_actions: Vec::new(),
@@ -1255,7 +1255,8 @@ impl<C: Clock, S: Storage> Transport<C, S> {
         for dests in self.local_client_dest_map.values() {
             n_mapped += dests.len();
         }
-        let est_lc = ((n_mapped + n_known) * TRUNCATED_HASHBYTES * 3) as u64;
+        let est_lc = ((n_mapped * TRUNCATED_HASHBYTES * 3)
+            + (n_known * (TRUNCATED_HASHBYTES + 8) * 3)) as u64;
         total += est_lc;
         let _ = writeln!(
             s,
@@ -1511,6 +1512,13 @@ impl<C: Clock, S: Storage> Transport<C, S> {
             true // New destination
         };
 
+        // Refresh local client tracking timestamp unconditionally.
+        // Even when the path table isn't updated (same emission, same hops),
+        // the client is still alive and its expiry timer should reset.
+        if self.is_local_client(interface_index) {
+            self.local_client_known_dests.insert(dest_hash, now);
+        }
+
         // If rate-limited and the path table wouldn't improve, drop early.
         // But if the path WOULD improve (e.g. fewer hops via shorter route),
         // allow the update — only suppress the rebroadcast.
@@ -1591,15 +1599,15 @@ impl<C: Clock, S: Storage> Transport<C, S> {
             // Track local client destinations (Block B). When an announce arrives
             // from a local client, record (iface_id → dest_hash) so we can detect
             // client reconnects and manage per-client destination state.
+            // Note: local_client_known_dests timestamp is refreshed unconditionally
+            // above (before should_update check) so clients stay alive even when
+            // path table doesn't change.
             let from_local = self.is_local_client(interface_index);
             let is_new_local_client_dest = if from_local {
-                let is_new = self
-                    .local_client_dest_map
+                self.local_client_dest_map
                     .entry(interface_index)
                     .or_default()
-                    .insert(dest_hash);
-                self.local_client_known_dests.insert(dest_hash);
-                is_new
+                    .insert(dest_hash)
             } else {
                 false
             };
@@ -2727,7 +2735,7 @@ impl<C: Clock, S: Storage> Transport<C, S> {
 
     /// Return destination hashes that were announced by any local client.
     /// Used by Block C (reconnect re-announce) and Block D (interface recovery).
-    pub(crate) fn local_client_known_dests(&self) -> &BTreeSet<[u8; TRUNCATED_HASHBYTES]> {
+    pub(crate) fn local_client_known_dests(&self) -> &BTreeMap<[u8; TRUNCATED_HASHBYTES], u64> {
         &self.local_client_known_dests
     }
 
@@ -3417,11 +3425,18 @@ impl<C: Clock, S: Storage> Transport<C, S> {
     /// Matches Python Transport.py:601-604, 813-814.
     fn clean_path_states(&mut self) {
         self.storage.clean_stale_path_metadata();
+
+        // Expire local client dests not refreshed within expiry window.
+        let now = self.clock.now_ms();
+        self.local_client_known_dests.retain(|_, last_seen_ms| {
+            now.saturating_sub(*last_seen_ms) <= LOCAL_CLIENT_DEST_EXPIRY_MS
+        });
+
         // Preserve announce_cache entries for both daemon-owned destinations
-        // AND destinations announced by local clients (Block C: reconnect
+        // AND surviving local client destinations (Block C: reconnect
         // needs cached bytes to respond to path requests during client downtime).
         let mut preserved = self.local_destinations.clone();
-        for hash in &self.local_client_known_dests {
+        for hash in self.local_client_known_dests.keys() {
             preserved.insert(*hash);
         }
         self.storage.clean_announce_cache(&preserved);
@@ -11096,7 +11111,7 @@ mod tests {
         use crate::memory_storage::MemoryStorage;
         use crate::packet::{HeaderType, PacketData, PacketFlags, TransportType};
         use crate::test_utils::{MockClock, TEST_TIME_MS};
-        use rand_core::OsRng;
+        use rand_core::{OsRng, RngCore};
 
         const LOCAL_CLIENT_IFACE: usize = 10;
         const NETWORK_IFACE: usize = 0;
@@ -11979,7 +11994,7 @@ mod tests {
                 "Dest hash should be tracked in local_client_dest_map"
             );
             assert!(
-                transport.local_client_known_dests.contains(&dest_hash),
+                transport.local_client_known_dests.contains_key(&dest_hash),
                 "Dest hash should be tracked in local_client_known_dests"
             );
 
@@ -12094,7 +12109,7 @@ mod tests {
                 "Per-client dest map should be removed on disconnect"
             );
             assert!(
-                transport.local_client_known_dests.contains(&dest_hash),
+                transport.local_client_known_dests.contains_key(&dest_hash),
                 "Known dests should persist across disconnect for reconnect"
             );
 
@@ -12186,6 +12201,178 @@ mod tests {
             assert!(
                 transport.storage.get_announce_cache(&dest_hash).is_some(),
                 "Announce cache should survive cleanup while dest is in local_client_known_dests"
+            );
+        }
+
+        // ─── Expiry Tests ───────────────────────────────────────────────
+
+        /// Build an announce packet from a given Destination with a fresh random_hash.
+        fn make_announce_raw_from_dest(
+            dest: &Destination,
+            hops: u8,
+        ) -> (Vec<u8>, [u8; TRUNCATED_HASHBYTES]) {
+            let identity = dest.identity().unwrap();
+            let public_key = identity.public_key_bytes();
+            let app_data = b"test";
+
+            // Generate fresh random_hash (10 bytes: 5 random + 5 timestamp)
+            let mut random_hash = [0u8; crate::constants::RANDOM_HASHBYTES];
+            OsRng.fill_bytes(&mut random_hash[..5]);
+            // Leave last 5 bytes as zeros (timestamp); doesn't affect test logic.
+
+            let mut signed_data = Vec::new();
+            signed_data.extend_from_slice(dest.hash().as_bytes());
+            signed_data.extend_from_slice(&public_key);
+            signed_data.extend_from_slice(dest.name_hash());
+            signed_data.extend_from_slice(&random_hash);
+            signed_data.extend_from_slice(app_data);
+
+            let signature = identity.sign(&signed_data).unwrap();
+
+            let mut payload = Vec::new();
+            payload.extend_from_slice(&public_key);
+            payload.extend_from_slice(dest.name_hash());
+            payload.extend_from_slice(&random_hash);
+            payload.extend_from_slice(&signature);
+            payload.extend_from_slice(app_data);
+
+            let packet = Packet {
+                flags: PacketFlags {
+                    ifac_flag: false,
+                    header_type: HeaderType::Type1,
+                    context_flag: false,
+                    transport_type: TransportType::Broadcast,
+                    dest_type: DestinationType::Single,
+                    packet_type: PacketType::Announce,
+                },
+                hops,
+                transport_id: None,
+                destination_hash: dest.hash().into_bytes(),
+                context: PacketContext::None,
+                data: PacketData::Owned(payload),
+            };
+
+            let mut buf = [0u8; MTU];
+            let len = packet.pack(&mut buf).unwrap();
+            (buf[..len].to_vec(), dest.hash().into_bytes())
+        }
+
+        #[test]
+        fn test_local_client_known_dest_expiry() {
+            // A local client dest not refreshed within LOCAL_CLIENT_DEST_EXPIRY_MS
+            // should be removed from tracking and its announce cache cleaned up.
+            use crate::constants::LOCAL_CLIENT_DEST_EXPIRY_MS;
+
+            let mut transport = make_transport_with_local_client();
+
+            let (raw, dest_hash) = make_announce_raw(0, PacketContext::None);
+            transport
+                .process_incoming(LOCAL_CLIENT_IFACE, &raw)
+                .unwrap();
+            let _ = transport.drain_actions();
+            let _ = transport.drain_events();
+
+            // Flush 250ms delay
+            transport.clock.advance(LOCAL_CLIENT_ANNOUNCE_DELAY_MS + 1);
+            transport.poll();
+            let _ = transport.drain_actions();
+
+            assert!(
+                transport.local_client_known_dests.contains_key(&dest_hash),
+                "Dest should be tracked"
+            );
+            assert!(
+                transport.storage.get_announce_cache(&dest_hash).is_some(),
+                "Announce cache should exist"
+            );
+
+            // Advance past local_client_known_dests expiry
+            transport.clock.advance(LOCAL_CLIENT_DEST_EXPIRY_MS + 1);
+            transport.clean_path_states();
+
+            assert!(
+                !transport.local_client_known_dests.contains_key(&dest_hash),
+                "Expired dest should be removed from local_client_known_dests"
+            );
+            // The announce cache is still protected by the path_table entry
+            // (7-day expiry). Expire paths too, then re-clean to verify full cleanup.
+            transport.clock.advance(PATHFINDER_EXPIRY_SECS * 1000);
+            transport.expire_paths(transport.clock.now_ms());
+            transport.clean_path_states();
+            assert!(
+                transport.storage.get_announce_cache(&dest_hash).is_none(),
+                "Expired dest's announce cache should be cleaned up after path expires"
+            );
+        }
+
+        #[test]
+        fn test_local_client_known_dest_refreshed() {
+            // A local client that re-announces before expiry refreshes the timestamp.
+            // The dest should survive cleanup even if total time exceeds expiry.
+            use crate::constants::{ANNOUNCE_RATE_LIMIT_MS, LOCAL_CLIENT_DEST_EXPIRY_MS};
+
+            let mut transport = make_transport_with_local_client();
+
+            // Create a destination we can re-announce from
+            let identity = Identity::generate(&mut OsRng);
+            let dest = Destination::new(
+                Some(identity),
+                Direction::In,
+                DestinationType::Single,
+                "testapp",
+                &["refresh"],
+            )
+            .unwrap();
+
+            // First announce
+            let (raw1, dest_hash) = make_announce_raw_from_dest(&dest, 0);
+            transport
+                .process_incoming(LOCAL_CLIENT_IFACE, &raw1)
+                .unwrap();
+            let _ = transport.drain_actions();
+            let _ = transport.drain_events();
+
+            // Flush 250ms delay
+            transport.clock.advance(LOCAL_CLIENT_ANNOUNCE_DELAY_MS + 1);
+            transport.poll();
+            let _ = transport.drain_actions();
+
+            // Advance 5 hours (past half of expiry but not past full expiry)
+            let five_hours_ms = 5 * 60 * 60 * 1000;
+            transport.clock.advance(five_hours_ms);
+
+            // Advance past rate limit window so second announce is accepted
+            transport.clock.advance(ANNOUNCE_RATE_LIMIT_MS + 1);
+
+            // Second announce from SAME dest with NEW random_hash (refreshes timestamp)
+            let (raw2, _) = make_announce_raw_from_dest(&dest, 0);
+            transport
+                .process_incoming(LOCAL_CLIENT_IFACE, &raw2)
+                .unwrap();
+            let _ = transport.drain_actions();
+            let _ = transport.drain_events();
+
+            // Flush 250ms delay for second announce
+            transport.clock.advance(LOCAL_CLIENT_ANNOUNCE_DELAY_MS + 1);
+            transport.poll();
+            let _ = transport.drain_actions();
+
+            // Advance 2 more hours (total ~7h from first announce, ~2h from refresh)
+            let two_hours_ms = 2 * 60 * 60 * 1000;
+            transport.clock.advance(two_hours_ms);
+
+            // Cleanup — dest should survive because refresh was only ~2h ago
+            transport.clean_path_states();
+
+            assert!(
+                transport.local_client_known_dests.contains_key(&dest_hash),
+                "Refreshed dest should survive cleanup (only {}ms since refresh, expiry is {}ms)",
+                two_hours_ms,
+                LOCAL_CLIENT_DEST_EXPIRY_MS
+            );
+            assert!(
+                transport.storage.get_announce_cache(&dest_hash).is_some(),
+                "Refreshed dest's announce cache should survive cleanup"
             );
         }
     }
