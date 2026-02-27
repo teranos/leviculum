@@ -517,6 +517,23 @@ async fn send_single_msg(
     }
 }
 
+// ─── Address Resolution ─────────────────────────────────────────────────────
+
+/// Resolve an address string to a SocketAddr, supporting both IP:port and hostname:port.
+async fn resolve_address(addr: &str) -> Result<SocketAddr, Box<dyn std::error::Error>> {
+    // Try direct parse first (fast path for IP:port)
+    if let Ok(sa) = addr.parse::<SocketAddr>() {
+        return Ok(sa);
+    }
+    // DNS resolution for hostname:port
+    let resolved = tokio::net::lookup_host(addr)
+        .await
+        .map_err(|e| format!("cannot resolve '{addr}': {e}"))?
+        .next()
+        .ok_or_else(|| format!("no addresses found for '{addr}'"))?;
+    Ok(resolved)
+}
+
 // ─── Main Entry Point ────────────────────────────────────────────────────────
 
 pub async fn run_selftest(
@@ -528,22 +545,28 @@ pub async fn run_selftest(
 ) -> Result<(), Box<dyn std::error::Error>> {
     let run_link = mode == "all" || mode == "link";
     let run_packet = mode == "all" || mode == "packet";
+    let run_ratchet_basic = mode == "ratchet-basic";
+    let run_ratchet_enforced = mode == "ratchet-enforced";
+    let run_bulk_transfer = mode == "bulk-transfer";
+    let run_ratchet_rotation = mode == "ratchet-rotation";
+    let run_ratchet_any =
+        run_ratchet_basic || run_ratchet_enforced || run_bulk_transfer || run_ratchet_rotation;
 
-    if !run_link && !run_packet {
-        return Err(format!("invalid --mode '{mode}': expected all, link, or packet").into());
+    if !run_link && !run_packet && !run_ratchet_any {
+        return Err(format!(
+            "invalid --mode '{mode}': expected all, link, packet, \
+             ratchet-basic, ratchet-enforced, bulk-transfer, or ratchet-rotation"
+        )
+        .into());
     }
 
     if targets.is_empty() {
         return Err("at least one target address required".into());
     }
 
-    let addr_a: SocketAddr = targets[0]
-        .parse()
-        .map_err(|e| format!("invalid address '{}': {e}", targets[0]))?;
-    let addr_b: SocketAddr = if targets.len() > 1 {
-        targets[1]
-            .parse()
-            .map_err(|e| format!("invalid address '{}': {e}", targets[1]))?
+    let addr_a = resolve_address(&targets[0]).await?;
+    let addr_b = if targets.len() > 1 {
+        resolve_address(&targets[1]).await?
     } else {
         addr_a
     };
@@ -621,6 +644,17 @@ pub async fn run_selftest(
     )
     .map_err(|e| format!("destination error: {e}"))?;
     dest_a.set_accepts_links(true);
+    if run_ratchet_any {
+        dest_a
+            .enable_ratchets(&mut OsRng, 0)
+            .map_err(|e| format!("ratchet A: {e}"))?;
+        if run_ratchet_enforced {
+            dest_a.set_enforce_ratchets(true);
+        }
+        if run_ratchet_rotation {
+            dest_a.set_ratchet_interval(5000);
+        }
+    }
     let dest_hash_a = *dest_a.hash();
     node_a.register_destination(dest_a);
 
@@ -633,6 +667,17 @@ pub async fn run_selftest(
     )
     .map_err(|e| format!("destination error: {e}"))?;
     dest_b.set_accepts_links(true);
+    if run_ratchet_any {
+        dest_b
+            .enable_ratchets(&mut OsRng, 0)
+            .map_err(|e| format!("ratchet B: {e}"))?;
+        if run_ratchet_enforced {
+            dest_b.set_enforce_ratchets(true);
+        }
+        if run_ratchet_rotation {
+            dest_b.set_ratchet_interval(5000);
+        }
+    }
     let dest_hash_b = *dest_b.hash();
     node_b.register_destination(dest_b);
 
@@ -1099,6 +1144,274 @@ pub async fn run_selftest(
         tokio::time::sleep(std::time::Duration::from_secs(5)).await;
     }
 
+    // ── Ratchet Phases ──────────────────────────────────────────────────
+    let mut ratchet_verdict: Option<Verdict> = None;
+
+    if run_ratchet_any {
+        let ratchet_start = Instant::now();
+
+        // Wait for ratchet key propagation via announce
+        println!("[selftest] Ratchet: waiting 2s for ratchet key propagation...");
+        tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+
+        let ep_a = node_a.packet_sender(&dest_hash_b);
+        let ep_b = node_b.packet_sender(&dest_hash_a);
+
+        let pass_threshold = if run_bulk_transfer {
+            80.0
+        } else if run_ratchet_enforced && corrupt_every.is_some() {
+            50.0
+        } else {
+            90.0
+        };
+
+        if run_ratchet_basic || run_ratchet_enforced {
+            let msg_count = 10u64;
+            println!(
+                "[selftest] Ratchet: sending {msg_count} messages each direction (threshold: {pass_threshold:.0}%)"
+            );
+
+            state.single_packet_phase.store(true, Ordering::Relaxed);
+            // Reset single-packet stats
+            {
+                let mut st = state.stats.lock().unwrap();
+                st.sp_sent_a = 0;
+                st.sp_sent_b = 0;
+                st.sp_recv_a = 0;
+                st.sp_recv_b = 0;
+                st.sp_send_fails_a = 0;
+                st.sp_send_fails_b = 0;
+                st.sp_corrupt = 0;
+            }
+
+            for seq in 0..msg_count {
+                send_single_msg(&ep_a, "ab", seq, start_time, &state, true).await;
+                send_single_msg(&ep_b, "ba", seq, start_time, &state, false).await;
+                tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+            }
+
+            // Wait for delivery
+            tokio::time::sleep(std::time::Duration::from_secs(10)).await;
+
+            let (total_sent, total_recv, corrupt) = {
+                let st = state.stats.lock().unwrap();
+                (
+                    st.sp_sent_a + st.sp_sent_b,
+                    st.sp_recv_a + st.sp_recv_b,
+                    st.sp_corrupt,
+                )
+            };
+
+            let recv_pct = if total_sent > 0 {
+                (total_recv as f64 / total_sent as f64) * 100.0
+            } else {
+                0.0
+            };
+
+            let verdict = if recv_pct >= pass_threshold && corrupt == 0 {
+                Verdict::Pass
+            } else if total_recv > 0 {
+                Verdict::Warn
+            } else {
+                Verdict::Fail
+            };
+
+            println!(
+                "[selftest] Ratchet {mode}: sent={total_sent} recv={total_recv} ({recv_pct:.1}%) corrupt={corrupt} — {verdict}"
+            );
+            ratchet_verdict = Some(verdict);
+        } else if run_bulk_transfer {
+            let msg_count = 100u64;
+            println!(
+                "[selftest] Ratchet: bulk transfer {msg_count} messages each direction (threshold: {pass_threshold:.0}%)"
+            );
+
+            state.single_packet_phase.store(true, Ordering::Relaxed);
+            {
+                let mut st = state.stats.lock().unwrap();
+                st.sp_sent_a = 0;
+                st.sp_sent_b = 0;
+                st.sp_recv_a = 0;
+                st.sp_recv_b = 0;
+                st.sp_send_fails_a = 0;
+                st.sp_send_fails_b = 0;
+                st.sp_corrupt = 0;
+            }
+
+            for seq in 0..msg_count {
+                send_single_msg(&ep_a, "ab", seq, start_time, &state, true).await;
+                send_single_msg(&ep_b, "ba", seq, start_time, &state, false).await;
+                // Slight pacing to avoid overwhelming
+                if seq % 10 == 9 {
+                    tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+                }
+            }
+
+            // Wait for delivery
+            tokio::time::sleep(std::time::Duration::from_secs(15)).await;
+
+            let (total_sent, total_recv, corrupt) = {
+                let st = state.stats.lock().unwrap();
+                (
+                    st.sp_sent_a + st.sp_sent_b,
+                    st.sp_recv_a + st.sp_recv_b,
+                    st.sp_corrupt,
+                )
+            };
+
+            let recv_pct = if total_sent > 0 {
+                (total_recv as f64 / total_sent as f64) * 100.0
+            } else {
+                0.0
+            };
+
+            let verdict = if recv_pct >= pass_threshold && corrupt == 0 {
+                Verdict::Pass
+            } else if total_recv > 0 {
+                Verdict::Warn
+            } else {
+                Verdict::Fail
+            };
+
+            println!(
+                "[selftest] Ratchet bulk-transfer: sent={total_sent} recv={total_recv} ({recv_pct:.1}%) corrupt={corrupt} — {verdict}"
+            );
+            ratchet_verdict = Some(verdict);
+        } else if run_ratchet_rotation {
+            println!("[selftest] Ratchet rotation: pre-rotation exchange...");
+
+            // Capture ratchet keys before rotation
+            let ratchet_before_a = node_a.destination_ratchet_public(&dest_hash_a);
+            let ratchet_before_b = node_b.destination_ratchet_public(&dest_hash_b);
+
+            state.single_packet_phase.store(true, Ordering::Relaxed);
+            {
+                let mut st = state.stats.lock().unwrap();
+                st.sp_sent_a = 0;
+                st.sp_sent_b = 0;
+                st.sp_recv_a = 0;
+                st.sp_recv_b = 0;
+                st.sp_send_fails_a = 0;
+                st.sp_send_fails_b = 0;
+                st.sp_corrupt = 0;
+            }
+
+            // Pre-rotation exchange
+            for seq in 0..5u64 {
+                send_single_msg(&ep_a, "ab", seq, start_time, &state, true).await;
+                send_single_msg(&ep_b, "ba", seq, start_time, &state, false).await;
+                tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+            }
+            tokio::time::sleep(std::time::Duration::from_secs(5)).await;
+
+            let pre_recv = {
+                let st = state.stats.lock().unwrap();
+                st.sp_recv_a + st.sp_recv_b
+            };
+            let pre_sent = {
+                let st = state.stats.lock().unwrap();
+                st.sp_sent_a + st.sp_sent_b
+            };
+
+            let pre_pct = if pre_sent > 0 {
+                (pre_recv as f64 / pre_sent as f64) * 100.0
+            } else {
+                0.0
+            };
+            println!(
+                "[selftest] Ratchet rotation: pre-rotation sent={pre_sent} recv={pre_recv} ({pre_pct:.1}%)"
+            );
+
+            // Sleep to let ratchet interval expire (interval = 5s)
+            println!("[selftest] Ratchet rotation: sleeping 6s for interval expiry...");
+            tokio::time::sleep(std::time::Duration::from_secs(6)).await;
+
+            // Re-announce to trigger rotation
+            println!("[selftest] Ratchet rotation: re-announcing to trigger rotation...");
+            node_a
+                .announce_destination(&dest_hash_a, Some(b"selftest-a"))
+                .await
+                .map_err(|e| format!("re-announce A: {e}"))?;
+            node_b
+                .announce_destination(&dest_hash_b, Some(b"selftest-b"))
+                .await
+                .map_err(|e| format!("re-announce B: {e}"))?;
+
+            // Wait for announce propagation
+            tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+
+            // Verify rotation happened
+            let ratchet_after_a = node_a.destination_ratchet_public(&dest_hash_a);
+            let ratchet_after_b = node_b.destination_ratchet_public(&dest_hash_b);
+
+            let rotation_a = ratchet_before_a != ratchet_after_a;
+            let rotation_b = ratchet_before_b != ratchet_after_b;
+
+            if !rotation_a || !rotation_b {
+                println!(
+                    "[selftest] Ratchet rotation: FAIL — rotation did not happen (A={rotation_a} B={rotation_b})"
+                );
+                ratchet_verdict = Some(Verdict::Fail);
+            } else {
+                println!("[selftest] Ratchet rotation: keys rotated — exchanging post-rotation...");
+
+                // Reset stats for post-rotation exchange
+                {
+                    let mut st = state.stats.lock().unwrap();
+                    st.sp_sent_a = 0;
+                    st.sp_sent_b = 0;
+                    st.sp_recv_a = 0;
+                    st.sp_recv_b = 0;
+                    st.sp_send_fails_a = 0;
+                    st.sp_send_fails_b = 0;
+                    st.sp_corrupt = 0;
+                }
+
+                for seq in 100..105u64 {
+                    send_single_msg(&ep_a, "ab", seq, start_time, &state, true).await;
+                    send_single_msg(&ep_b, "ba", seq, start_time, &state, false).await;
+                    tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+                }
+                tokio::time::sleep(std::time::Duration::from_secs(5)).await;
+
+                let (post_sent, post_recv, post_corrupt) = {
+                    let st = state.stats.lock().unwrap();
+                    (
+                        st.sp_sent_a + st.sp_sent_b,
+                        st.sp_recv_a + st.sp_recv_b,
+                        st.sp_corrupt,
+                    )
+                };
+
+                let post_pct = if post_sent > 0 {
+                    (post_recv as f64 / post_sent as f64) * 100.0
+                } else {
+                    0.0
+                };
+
+                let verdict =
+                    if pre_pct >= pass_threshold && post_pct >= pass_threshold && post_corrupt == 0
+                    {
+                        Verdict::Pass
+                    } else if post_recv > 0 {
+                        Verdict::Warn
+                    } else {
+                        Verdict::Fail
+                    };
+
+                println!(
+                    "[selftest] Ratchet rotation: post-rotation sent={post_sent} recv={post_recv} ({post_pct:.1}%) corrupt={post_corrupt} — {verdict}"
+                );
+                ratchet_verdict = Some(verdict);
+            }
+        }
+
+        println!(
+            "[selftest] Ratchet phase completed in {:.1}s",
+            ratchet_start.elapsed().as_secs_f64()
+        );
+    }
+
     // ── Report ──────────────────────────────────────────────────────────
     let total_time = start_time.elapsed();
     let mut verdicts: Vec<Verdict> = Vec::new();
@@ -1243,6 +1556,13 @@ pub async fn run_selftest(
             }
         }
         println!("[selftest]  Verdict:       {sp_verdict}");
+    }
+
+    if let Some(rv) = ratchet_verdict {
+        verdicts.push(rv);
+        println!("[selftest] ──────────────────────────────────────────────────");
+        println!("[selftest]  RESULTS — Ratchet Phase ({mode})");
+        println!("[selftest]  Verdict:       {rv}");
     }
 
     println!("[selftest] ══════════════════════════════════════════════════");

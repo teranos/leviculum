@@ -21,6 +21,7 @@ pub fn generate_compose(
     let test_name = &scenario.test.name;
     let integ_dir = repo_root.join("reticulum-integ");
     let lrnsd_path = repo_root.join("target/release/lrnsd");
+    let lrns_path = repo_root.join("target/release/lrns");
     let vendor_path = repo_root.join("vendor/Reticulum");
 
     let mut out = String::new();
@@ -44,6 +45,12 @@ pub fn generate_compose(
             out,
             "      - {}:/usr/local/bin/lrnsd:ro",
             lrnsd_path.display()
+        )
+        .ok();
+        writeln!(
+            out,
+            "      - {}:/usr/local/bin/lrns:ro",
+            lrns_path.display()
         )
         .ok();
         writeln!(
@@ -143,6 +150,13 @@ mod tests {
                     repo_root.display()
                 )),
                 "{node}: missing lrnsd volume"
+            );
+            assert!(
+                yaml.contains(&format!(
+                    "{}/target/release/lrns:/usr/local/bin/lrns:ro",
+                    repo_root.display()
+                )),
+                "{node}: missing lrns volume"
             );
             assert!(
                 yaml.contains(&format!(

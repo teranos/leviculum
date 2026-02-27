@@ -637,6 +637,17 @@ impl ReticulumNode {
         self.inner.lock().unwrap().hops_to(dest_hash)
     }
 
+    /// Returns the current ratchet public key for a registered destination.
+    pub fn destination_ratchet_public(
+        &self,
+        dest_hash: &reticulum_core::DestinationHash,
+    ) -> Option<[u8; 32]> {
+        self.inner
+            .lock()
+            .unwrap()
+            .destination_ratchet_public(dest_hash)
+    }
+
     /// Get the number of known paths
     pub fn path_count(&self) -> usize {
         self.inner.lock().unwrap().path_count()

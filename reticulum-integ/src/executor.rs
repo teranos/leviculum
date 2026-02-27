@@ -882,4 +882,80 @@ Reticulum Transport Instance running
         runner.down().expect("down failed");
         result.expect("execute_steps should succeed");
     }
+
+    #[test]
+    fn selftest_ratchet_direct() {
+        let toml_str = std::fs::read_to_string(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/tests/selftest_ratchet_direct.toml"
+        ))
+        .expect("selftest_ratchet_direct.toml not found");
+        let scenario = crate::topology::parse_scenario(&toml_str).expect("parse failed");
+
+        let mut runner = TestRunner::new(scenario).expect("TestRunner::new failed");
+
+        runner.up().expect("up failed");
+        runner.wait_ready(60).expect("wait_ready failed");
+
+        let result = execute_steps(&runner);
+        runner.down().expect("down failed");
+        result.expect("execute_steps should succeed");
+    }
+
+    #[test]
+    fn selftest_ratchet_chain() {
+        let toml_str = std::fs::read_to_string(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/tests/selftest_ratchet_chain.toml"
+        ))
+        .expect("selftest_ratchet_chain.toml not found");
+        let scenario = crate::topology::parse_scenario(&toml_str).expect("parse failed");
+
+        let mut runner = TestRunner::new(scenario).expect("TestRunner::new failed");
+
+        runner.up().expect("up failed");
+        runner.wait_ready(60).expect("wait_ready failed");
+
+        let result = execute_steps(&runner);
+        runner.down().expect("down failed");
+        result.expect("execute_steps should succeed");
+    }
+
+    #[test]
+    fn selftest_ratchet_mixed() {
+        let toml_str = std::fs::read_to_string(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/tests/selftest_ratchet_mixed.toml"
+        ))
+        .expect("selftest_ratchet_mixed.toml not found");
+        let scenario = crate::topology::parse_scenario(&toml_str).expect("parse failed");
+
+        let mut runner = TestRunner::new(scenario).expect("TestRunner::new failed");
+
+        runner.up().expect("up failed");
+        runner.wait_ready(60).expect("wait_ready failed");
+
+        let result = execute_steps(&runner);
+        runner.down().expect("down failed");
+        result.expect("execute_steps should succeed");
+    }
+
+    #[test]
+    fn selftest_bulk() {
+        let toml_str = std::fs::read_to_string(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/tests/selftest_bulk.toml"
+        ))
+        .expect("selftest_bulk.toml not found");
+        let scenario = crate::topology::parse_scenario(&toml_str).expect("parse failed");
+
+        let mut runner = TestRunner::new(scenario).expect("TestRunner::new failed");
+
+        runner.up().expect("up failed");
+        runner.wait_ready(60).expect("wait_ready failed");
+
+        let result = execute_steps(&runner);
+        runner.down().expect("down failed");
+        result.expect("execute_steps should succeed");
+    }
 }

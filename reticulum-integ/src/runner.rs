@@ -114,6 +114,11 @@ impl TestRunner {
             return Err(RunnerError::LrnsdNotFound(lrnsd_path));
         }
 
+        let lrns_path = repo_root.join("target/release/lrns");
+        if !lrns_path.exists() {
+            return Err(RunnerError::LrnsdNotFound(lrns_path));
+        }
+
         let tempdir = TempDir::new()?;
         let base_dir = tempdir.path().join("nodes");
 

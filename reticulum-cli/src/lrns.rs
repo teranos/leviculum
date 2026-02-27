@@ -392,7 +392,7 @@ enum Commands {
         /// Messages per second per direction
         #[arg(long, default_value = "1")]
         rate: f64,
-        /// Which test phases to run: all, link, or packet
+        /// Which test phases to run: all, link, packet, ratchet-basic, ratchet-enforced, bulk-transfer, ratchet-rotation
         #[arg(long, default_value = "all")]
         mode: String,
     },

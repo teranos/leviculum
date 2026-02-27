@@ -668,14 +668,31 @@ entry in the loop is almost always the correct one.
 | Python format compatibility | Done | Verified with Python-generated test vectors |
 | Encryption with ratchet key | Done | `destination.rs`: `encrypt()` uses `get_ratchet()` |
 | Decryption with ratchet keys | Done | `destination.rs`: `decrypt()` tries all ratchets |
+| Ratchet public key accessor | Done | `node/mod.rs`: `destination_ratchet_public()` on NodeCore and ReticulumNode |
+
+### Selftest modes (end-to-end ratchet testing)
+
+`lrns selftest` supports 4 ratchet-specific modes that exercise encryption
+through relay daemons:
+
+| Mode | What it tests |
+|------|---------------|
+| `ratchet-basic` | 10 messages per direction with ratchets enabled, ≥90% delivery |
+| `ratchet-enforced` | Same with `enforce_ratchets`, ≥50% delivery with `--corrupt-every` active |
+| `bulk-transfer` | 100 messages per direction, ≥80% delivery |
+| `ratchet-rotation` | Captures `destination_ratchet_public()` before/after re-announce, asserts keys differ |
+
+Docker integration tests: `selftest_ratchet_direct` (single relay, including
+corruption test), `selftest_ratchet_chain` (two-hop Rust chain),
+`selftest_ratchet_mixed` (Python relay), `selftest_bulk` (bulk through chain).
 
 ### What is NOT yet implemented
 
 | Feature | Notes |
 |---------|-------|
 | Ratchet validation on announce receipt | `validate_announce()` parses ratchet bytes but does not call `_remember_ratchet()` in transport (ROADMAP 3.3) |
-| `enforce_ratchets` | Destination field exists but no enforcement in decrypt path |
-| Interop test: ratcheted announce exchange | Pending transport-level ratchet integration |
+| `enforce_ratchets` in production decrypt | Destination field exists; selftest exercises it but production decrypt path does not yet enforce |
+| Interop test: ratcheted announce exchange | Pending transport-level ratchet integration (selftest uses in-process nodes, not cross-daemon) |
 
 ### Sender-side persistence format
 

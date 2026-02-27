@@ -55,7 +55,7 @@ use alloc::string::String;
 use alloc::vec::Vec;
 
 use crate::announce::AnnounceError;
-use crate::constants::TRUNCATED_HASHBYTES;
+use crate::constants::{RATCHET_SIZE, TRUNCATED_HASHBYTES};
 use crate::destination::{Destination, DestinationHash, Direction, ProofStrategy};
 use crate::identity::Identity;
 use crate::link::{Link, LinkId};
@@ -854,6 +854,16 @@ impl<R: CryptoRngCore, C: Clock, S: Storage> NodeCore<R, C, S> {
     /// Get the hop count to a destination
     pub fn hops_to(&self, dest_hash: &DestinationHash) -> Option<u8> {
         self.transport.hops_to(dest_hash.as_bytes())
+    }
+
+    /// Returns the current ratchet public key for a registered destination.
+    pub fn destination_ratchet_public(
+        &self,
+        dest_hash: &DestinationHash,
+    ) -> Option<[u8; RATCHET_SIZE]> {
+        self.destinations
+            .get(dest_hash)
+            .and_then(|d| d.current_ratchet_public())
     }
 
     /// Get the number of known paths

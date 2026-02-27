@@ -132,7 +132,8 @@ esac
 
 | Host path | Container path | Purpose |
 |-----------|---------------|---------|
-| `./target/release/lrnsd` | `/usr/local/bin/lrnsd` | Rust binary (read-only) |
+| `./target/release/lrnsd` | `/usr/local/bin/lrnsd` | Rust daemon binary (read-only) |
+| `./target/release/lrns` | `/usr/local/bin/lrns` | Rust CLI binary (read-only, for selftest) |
 | `./vendor/Reticulum` | `/opt/vendor/Reticulum` | Python RNS source (read-only) |
 | `{tempdir}/{node_name}/config` | `/root/.reticulum/config` | Generated config |
 | `{tempdir}/{node_name}/storage/` | `/root/.reticulum/storage/` | Identity files |
@@ -529,11 +530,12 @@ read this file.
 
 ### lrnsd Binary
 
-The test framework expects a release build of lrnsd at `./target/release/lrnsd`
-(relative to the repo root). Build before running tests:
+The test framework expects release builds of `lrnsd` and `lrns` at
+`./target/release/lrnsd` and `./target/release/lrns` (relative to the repo
+root). Build before running tests:
 
 ```bash
-cargo build --release --bin lrnsd
+cargo build --release -p reticulum-cli
 ```
 
 ---
