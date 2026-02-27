@@ -6,6 +6,10 @@ authors.workspace = true
 license.workspace = true
 description = "Docker-based integration test framework for leviculum"
 
+[lib]
+name = "reticulum_integ"
+path = "src/lib.rs"
+
 [[bin]]
 name = "reticulum-integ"
 path = "src/main.rs"

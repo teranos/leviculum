@@ -188,6 +188,7 @@ impl Storage {
     }
 
     /// Read raw bytes from storage
+    #[cfg(test)]
     pub(crate) fn read_raw(&self, category: &str, name: &str) -> Result<Vec<u8>> {
         let path = self.category_path(category).join(name);
         std::fs::read(&path)
@@ -239,27 +240,6 @@ impl Storage {
                 .map_err(|e| Error::Storage(format!("Failed to delete {}: {e}", path.display())))?;
         }
         Ok(())
-    }
-
-    /// List files in a category
-    pub(crate) fn list(&self, category: &str) -> Result<Vec<String>> {
-        let path = self.category_path(category);
-        if !path.exists() {
-            return Ok(Vec::new());
-        }
-
-        let entries = std::fs::read_dir(&path)
-            .map_err(|e| Error::Storage(format!("Failed to read dir: {e}")))?;
-
-        let mut names = Vec::new();
-        for entry in entries {
-            let entry = entry.map_err(|e| Error::Storage(format!("Failed to read entry: {e}")))?;
-            if let Some(name) = entry.file_name().to_str() {
-                names.push(name.to_string());
-            }
-        }
-
-        Ok(names)
     }
 
     // ─── Ratchet disk persistence ─────────────────────────────────────────

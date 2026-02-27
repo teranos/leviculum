@@ -10,7 +10,7 @@ use std::time::{Duration, Instant};
 use tempfile::TempDir;
 
 use crate::compose::generate_compose;
-use crate::topology::{generate_node_configs, parse_scenario, TestScenario};
+use crate::topology::{generate_node_configs, TestScenario};
 
 /// Monotonic counter for generating unique run IDs within a process.
 static RUN_COUNTER: AtomicU32 = AtomicU32::new(0);
@@ -317,6 +317,7 @@ impl Drop for TestRunner {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::topology::parse_scenario;
 
     #[test]
     fn container_name_format() {

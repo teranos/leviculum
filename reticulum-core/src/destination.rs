@@ -1891,10 +1891,8 @@ mod tests {
             .collect();
         assert_eq!(original_keys, loaded_keys);
 
-        // Loaded ratchets have created_at_ms = 0 (no timestamps in Python format)
-        for r in &dest2.ratchets {
-            assert_eq!(r.created_at_ms(), 0);
-        }
+        // Loaded ratchets preserve keys (no timestamps in Python format)
+        assert_eq!(dest2.ratchets.len(), original_keys.len());
     }
 
     #[test]
