@@ -78,6 +78,7 @@ pub mod packet;
 pub(crate) mod ratchet;
 pub(crate) mod receipt;
 mod resource;
+pub mod rnode;
 pub mod storage_types;
 #[cfg(test)]
 pub(crate) mod test_utils;

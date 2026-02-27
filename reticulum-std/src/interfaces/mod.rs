@@ -12,6 +12,8 @@
 pub mod auto_interface;
 pub mod hdlc;
 pub(crate) mod local;
+#[cfg(feature = "serial")]
+pub(crate) mod rnode;
 pub(crate) mod tcp;
 pub(crate) mod udp;
 
