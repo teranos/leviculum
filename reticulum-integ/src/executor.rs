@@ -139,8 +139,8 @@ pub fn execute_steps(runner: &TestRunner) -> Result<(), StepError> {
 
     for (i, step) in steps.iter().enumerate() {
         let step_num = i + 1;
-        if let Err(e) = execute_step(runner, i, &step, &mut cache, step_num, total) {
-            report_failure(runner, step_num, total, &step, &e);
+        if let Err(e) = execute_step(runner, i, step, &mut cache, step_num, total) {
+            report_failure(runner, step_num, total, step, &e);
             return Err(e);
         }
     }

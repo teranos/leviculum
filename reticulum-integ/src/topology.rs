@@ -270,7 +270,7 @@ pub fn generate_node_configs(scenario: &TestScenario, base_dir: &Path) -> io::Re
         // Generate 64-byte identity file.
         let mut identity = [0u8; 64];
         rng.fill_bytes(&mut identity);
-        fs::write(storage_dir.join("transport_identity"), &identity)?;
+        fs::write(storage_dir.join("transport_identity"), identity)?;
 
         // Render and write config.
         let ifaces = interfaces.get(name.as_str()).cloned().unwrap_or_default();

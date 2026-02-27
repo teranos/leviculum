@@ -177,5 +177,4 @@ mod tests {
         assert_eq!(original.public_key_bytes(), restored.public_key_bytes());
         assert_eq!(original.id(), restored.id());
     }
-
 }

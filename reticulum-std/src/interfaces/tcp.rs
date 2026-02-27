@@ -29,6 +29,18 @@ use super::InterfaceHandle;
 /// Must be large enough to absorb short bursts during reconnection.
 pub(crate) const TCP_DEFAULT_BUFFER_SIZE: usize = 256;
 
+/// Configuration for a reconnecting TCP client interface.
+pub(crate) struct TcpClientConfig {
+    pub id: InterfaceId,
+    pub name: String,
+    pub addr: SocketAddr,
+    pub buffer_size: usize,
+    pub corrupt_every: Option<u64>,
+    pub reconnect_interval: Duration,
+    pub max_reconnect_tries: Option<u64>,
+    pub reconnect_notify: Option<mpsc::Sender<InterfaceId>>,
+}
+
 /// Fast non-cryptographic PRNG (xorshift64). Seeded from OsRng once per task.
 struct Xorshift64(u64);
 
@@ -220,35 +232,27 @@ pub(crate) fn spawn_tcp_server(
 /// `Disconnected`. Outgoing packets buffer in the channel (up to `buffer_size`);
 /// excess packets are dropped with `BufferFull`. On reconnect, buffered packets
 /// are sent on the new stream.
-pub(crate) fn spawn_tcp_client_with_reconnect(
-    id: InterfaceId,
-    name: String,
-    addr: SocketAddr,
-    buffer_size: usize,
-    corrupt_every: Option<u64>,
-    reconnect_interval: Duration,
-    max_reconnect_tries: Option<u64>,
-    reconnect_notify: Option<mpsc::Sender<InterfaceId>>,
-) -> InterfaceHandle {
-    let (incoming_tx, incoming_rx) = mpsc::channel(buffer_size);
-    let (outgoing_tx, outgoing_rx) = mpsc::channel(buffer_size);
+pub(crate) fn spawn_tcp_client_with_reconnect(config: TcpClientConfig) -> InterfaceHandle {
+    let (incoming_tx, incoming_rx) = mpsc::channel(config.buffer_size);
+    let (outgoing_tx, outgoing_rx) = mpsc::channel(config.buffer_size);
     let counters = Arc::new(InterfaceCounters::new());
 
-    let task_name = name.clone();
+    let id = config.id;
+    let task_name = config.name.clone();
     let task_counters = Arc::clone(&counters);
 
     tokio::spawn(async move {
         tcp_client_reconnect_task(
             id,
-            addr,
+            config.addr,
             task_name,
             incoming_tx,
             outgoing_rx,
-            corrupt_every,
-            reconnect_interval,
-            max_reconnect_tries,
+            config.corrupt_every,
+            config.reconnect_interval,
+            config.max_reconnect_tries,
             task_counters,
-            reconnect_notify,
+            config.reconnect_notify,
         )
         .await;
     });
@@ -256,7 +260,7 @@ pub(crate) fn spawn_tcp_client_with_reconnect(
     InterfaceHandle {
         info: InterfaceInfo {
             id,
-            name,
+            name: config.name,
             hw_mtu: Some(262_144),
             is_local_client: false,
         },
@@ -571,16 +575,16 @@ mod tests {
         let addr = listener.local_addr().unwrap();
 
         // 2. Spawn reconnecting client with short interval
-        let mut handle = spawn_tcp_client_with_reconnect(
-            InterfaceId(0),
-            "test_reconnect".to_string(),
+        let mut handle = spawn_tcp_client_with_reconnect(TcpClientConfig {
+            id: InterfaceId(0),
+            name: "test_reconnect".to_string(),
             addr,
-            32,
-            None,
-            Duration::from_millis(200),
-            Some(10),
-            None,
-        );
+            buffer_size: 32,
+            corrupt_every: None,
+            reconnect_interval: Duration::from_millis(200),
+            max_reconnect_tries: Some(10),
+            reconnect_notify: None,
+        });
 
         // 3. Accept first connection, send an HDLC-framed packet
         let (mut conn, _peer) = tokio::time::timeout(Duration::from_secs(2), listener.accept())
@@ -637,16 +641,16 @@ mod tests {
         let addr = listener.local_addr().unwrap();
         drop(listener); // nobody listening
 
-        let mut handle = spawn_tcp_client_with_reconnect(
-            InterfaceId(0),
-            "test_giveup".to_string(),
+        let mut handle = spawn_tcp_client_with_reconnect(TcpClientConfig {
+            id: InterfaceId(0),
+            name: "test_giveup".to_string(),
             addr,
-            16,
-            None,
-            Duration::from_millis(100),
-            Some(2),
-            None,
-        );
+            buffer_size: 16,
+            corrupt_every: None,
+            reconnect_interval: Duration::from_millis(100),
+            max_reconnect_tries: Some(2),
+            reconnect_notify: None,
+        });
 
         // Wait for the reconnect task to give up (2 attempts * 100ms + overhead)
         let result = tokio::time::timeout(Duration::from_secs(3), handle.incoming.recv()).await;

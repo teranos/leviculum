@@ -2441,10 +2441,7 @@ impl<C: Clock, S: Storage> Transport<C, S> {
 
         // Three-way min: MTU can only go down, never up.
         let ph_mtu = hw_mtus.get(&prev_hop_iface).copied().unwrap_or(u32::MAX);
-        let nh_mtu = match hw_mtus.get(&next_hop_iface).copied() {
-            Some(mtu) => mtu,
-            None => return None, // Unknown next-hop MTU — pass through
-        };
+        let nh_mtu = hw_mtus.get(&next_hop_iface).copied()?;
 
         let clamped = path_mtu.min(nh_mtu).min(ph_mtu);
 

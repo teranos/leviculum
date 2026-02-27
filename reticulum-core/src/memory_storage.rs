@@ -844,7 +844,7 @@ impl Storage for MemoryStorage {
     ) -> bool {
         self.local_client_dest_map
             .get(&iface_id)
-            .map_or(false, |set| set.contains(dest_hash))
+            .is_some_and(|set| set.contains(dest_hash))
     }
 
     // ─── Local Client Known Destinations ────────────────────────────────

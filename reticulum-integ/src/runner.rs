@@ -186,7 +186,7 @@ impl TestRunner {
     /// Polls every 500ms. On timeout, collects logs and returns
     /// `ReadinessTimeout`.
     pub fn wait_ready(&self, timeout_secs: u64) -> Result<(), RunnerError> {
-        for (name, _node) in &self.scenario.nodes {
+        for name in self.scenario.nodes.keys() {
             self.wait_ready_single(name, timeout_secs)?;
         }
         Ok(())

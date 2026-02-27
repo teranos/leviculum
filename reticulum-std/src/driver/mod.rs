@@ -77,7 +77,7 @@ use crate::error::Error;
 use crate::interfaces::auto_interface::orchestrator::spawn_auto_interface;
 use crate::interfaces::auto_interface::AutoInterfaceConfig;
 use crate::interfaces::tcp::{
-    spawn_tcp_client_with_reconnect, spawn_tcp_server, TCP_DEFAULT_BUFFER_SIZE,
+    spawn_tcp_client_with_reconnect, spawn_tcp_server, TcpClientConfig, TCP_DEFAULT_BUFFER_SIZE,
 };
 use crate::interfaces::udp::spawn_udp_interface;
 use crate::interfaces::{InterfaceHandle, InterfaceRegistry, InterfaceStatsMap};
@@ -96,6 +96,15 @@ const EVENT_CHANNEL_CAPACITY: usize = 256;
 /// Lost data from a crash is recovered via fresh announces.
 /// Hardcoded — see E12 for making this configurable.
 const FLUSH_INTERVAL_SECS: u64 = 3600;
+
+/// Channels consumed by the event loop.
+struct EventLoopChannels {
+    event_tx: mpsc::Sender<NodeEvent>,
+    action_dispatch_rx: mpsc::Receiver<TickOutput>,
+    new_interface_rx: mpsc::Receiver<InterfaceHandle>,
+    reconnect_rx: mpsc::Receiver<InterfaceId>,
+    shutdown: watch::Receiver<bool>,
+}
 
 /// Event received from any interface
 enum RecvEvent {
@@ -242,11 +251,13 @@ impl ReticulumNode {
             run_event_loop(
                 inner,
                 registry,
-                event_tx,
-                action_dispatch_rx,
-                new_iface_rx,
-                reconnect_rx,
-                shutdown_rx,
+                EventLoopChannels {
+                    event_tx,
+                    action_dispatch_rx,
+                    new_interface_rx: new_iface_rx,
+                    reconnect_rx,
+                    shutdown: shutdown_rx,
+                },
                 iface_stats_map,
             )
             .await;
@@ -301,16 +312,16 @@ impl ReticulumNode {
                     // (bitrate=0 means unlimited). Future LoRa/serial interfaces
                     // should call transport.register_interface_bitrate(id, bitrate)
                     // after registration to enable per-interface announce caps.
-                    let handle = spawn_tcp_client_with_reconnect(
+                    let handle = spawn_tcp_client_with_reconnect(TcpClientConfig {
                         id,
-                        iface_name,
+                        name: iface_name,
                         addr,
                         buffer_size,
-                        self.corrupt_every,
+                        corrupt_every: self.corrupt_every,
                         reconnect_interval,
-                        config.max_reconnect_tries,
-                        Some(reconnect_tx.clone()),
-                    );
+                        max_reconnect_tries: config.max_reconnect_tries,
+                        reconnect_notify: Some(reconnect_tx.clone()),
+                    });
                     tracing::info!("TCP client interface for {} (reconnect enabled)", addr);
                     registry.register(handle);
                 }
@@ -821,13 +832,14 @@ async fn recv_any(registry: &mut InterfaceRegistry) -> RecvEvent {
 async fn run_event_loop(
     inner: Arc<Mutex<StdNodeCore>>,
     mut registry: InterfaceRegistry,
-    event_tx: mpsc::Sender<NodeEvent>,
-    mut action_dispatch_rx: mpsc::Receiver<TickOutput>,
-    mut new_interface_rx: mpsc::Receiver<InterfaceHandle>,
-    mut reconnect_rx: mpsc::Receiver<InterfaceId>,
-    mut shutdown: watch::Receiver<bool>,
+    channels: EventLoopChannels,
     iface_stats_map: InterfaceStatsMap,
 ) {
+    let event_tx = channels.event_tx;
+    let mut action_dispatch_rx = channels.action_dispatch_rx;
+    let mut new_interface_rx = channels.new_interface_rx;
+    let mut reconnect_rx = channels.reconnect_rx;
+    let mut shutdown = channels.shutdown;
     let mut next_poll = tokio::time::Instant::now();
     let mut next_flush = tokio::time::Instant::now() + Duration::from_secs(FLUSH_INTERVAL_SECS);
 
