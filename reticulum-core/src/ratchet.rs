@@ -18,15 +18,9 @@
 //! that specific ratchet can be decrypted. Past and future ratchets remain
 //! secure because each ratchet is independently generated.
 
-use crate::constants::{
-    MS_PER_SECOND, RATCHET_EXPIRY_SECS, RATCHET_INTERVAL_SECS, RATCHET_SIZE, TRUNCATED_HASHBYTES,
-};
+use crate::constants::{MS_PER_SECOND, RATCHET_EXPIRY_SECS, RATCHET_INTERVAL_SECS, RATCHET_SIZE};
 use crate::crypto::sha256;
-use crate::destination::DestinationHash;
-use crate::traits::{Storage, StorageError};
 use rand_core::CryptoRngCore;
-
-use alloc::collections::BTreeMap;
 
 /// Ratchet ID size (first 10 bytes of SHA256(public_key))
 pub(crate) const RATCHET_ID_SIZE: usize = 10;
@@ -35,38 +29,20 @@ pub(crate) const RATCHET_ID_SIZE: usize = 10;
 pub(crate) const DEFAULT_RETAINED_RATCHETS: usize = 512;
 
 /// Serialized ratchet size: 32 (private key) + 8 (timestamp)
-const SERIALIZED_RATCHET_SIZE: usize = RATCHET_SIZE + 8;
-
-/// Storage category key for ratchet data
-const RATCHETS_CATEGORY: &str = "ratchets";
+pub(crate) const SERIALIZED_RATCHET_SIZE: usize = RATCHET_SIZE + 8;
 
 /// Error types for ratchet operations
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum RatchetError {
     /// Invalid serialized data length
     InvalidLength,
-    /// Ratchet has expired
-    Expired,
-    /// Decryption failed with all ratchets
-    DecryptionFailed,
-    /// Storage error
-    StorageError(StorageError),
 }
 
 impl core::fmt::Display for RatchetError {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         match self {
             RatchetError::InvalidLength => write!(f, "Invalid ratchet data length"),
-            RatchetError::Expired => write!(f, "Ratchet has expired"),
-            RatchetError::DecryptionFailed => write!(f, "Decryption failed with all ratchets"),
-            RatchetError::StorageError(e) => write!(f, "Storage error: {}", e),
         }
-    }
-}
-
-impl From<StorageError> for RatchetError {
-    fn from(e: StorageError) -> Self {
-        RatchetError::StorageError(e)
     }
 }
 
@@ -182,6 +158,28 @@ impl Ratchet {
     pub(crate) fn private_key(&self) -> &x25519_dalek::StaticSecret {
         &self.private_key
     }
+
+    /// Get the raw X25519 private key bytes (32 bytes).
+    ///
+    /// Used for Python-compatible serialization which stores only private keys
+    /// (public keys are derived on load).
+    pub(crate) fn private_key_bytes(&self) -> [u8; RATCHET_SIZE] {
+        *self.private_key.as_bytes()
+    }
+
+    /// Reconstruct a Ratchet from raw private key bytes.
+    ///
+    /// Derives the public key from the private key. Used when loading from
+    /// Python-compatible format which stores only private keys, no timestamps.
+    pub(crate) fn from_private_key_bytes(key: [u8; RATCHET_SIZE], created_at_ms: u64) -> Self {
+        let private_key = x25519_dalek::StaticSecret::from(key);
+        let public_key = x25519_dalek::PublicKey::from(&private_key);
+        Self {
+            private_key,
+            public_key,
+            created_at_ms,
+        }
+    }
 }
 
 impl core::fmt::Debug for Ratchet {
@@ -223,145 +221,6 @@ pub(crate) const DEFAULT_INTERVAL_MS: u64 = RATCHET_INTERVAL_SECS * 1000;
 
 /// Expiry time in milliseconds
 pub(crate) const EXPIRY_MS: u64 = RATCHET_EXPIRY_SECS * 1000;
-
-/// Manages ratchets received from other destinations (sender side)
-///
-/// When we receive an announce with a ratchet, we store it here so we can
-/// use it when sending encrypted packets to that destination.
-pub(crate) struct KnownRatchets {
-    /// In-memory cache: destination_hash -> (ratchet_public, received_at_ms)
-    cache: BTreeMap<DestinationHash, ([u8; RATCHET_SIZE], u64)>,
-}
-
-impl KnownRatchets {
-    /// Create a new empty known ratchets manager
-    pub(crate) fn new() -> Self {
-        Self {
-            cache: BTreeMap::new(),
-        }
-    }
-
-    /// Remember a ratchet from a received announce
-    ///
-    /// # Arguments
-    /// * `dest_hash` - Destination hash (16 bytes)
-    /// * `ratchet` - Ratchet public key (32 bytes)
-    /// * `timestamp_ms` - When the ratchet was received
-    pub(crate) fn remember(
-        &mut self,
-        dest_hash: &DestinationHash,
-        ratchet: &[u8; RATCHET_SIZE],
-        timestamp_ms: u64,
-    ) {
-        self.cache.insert(*dest_hash, (*ratchet, timestamp_ms));
-    }
-
-    /// Get the ratchet for a destination
-    ///
-    /// Returns None if no ratchet is known for this destination.
-    pub(crate) fn get(&self, dest_hash: &DestinationHash) -> Option<&[u8; RATCHET_SIZE]> {
-        self.cache.get(dest_hash).map(|(ratchet, _)| ratchet)
-    }
-
-    /// Check if we have a ratchet for a destination
-    pub(crate) fn has(&self, dest_hash: &DestinationHash) -> bool {
-        self.cache.contains_key(dest_hash)
-    }
-
-    /// Remove a ratchet for a destination
-    pub(crate) fn remove(&mut self, dest_hash: &DestinationHash) {
-        self.cache.remove(dest_hash);
-    }
-
-    /// Remove expired ratchets (older than 30 days)
-    ///
-    /// # Arguments
-    /// * `current_time_ms` - Current timestamp in milliseconds
-    ///
-    /// # Returns
-    /// Number of ratchets removed
-    pub(crate) fn clean_expired(&mut self, current_time_ms: u64) -> usize {
-        let before_count = self.cache.len();
-
-        self.cache.retain(|_, (_, received_at)| {
-            let age_ms = current_time_ms.saturating_sub(*received_at);
-            age_ms < EXPIRY_MS
-        });
-
-        before_count - self.cache.len()
-    }
-
-    /// Get the number of known ratchets
-    pub(crate) fn len(&self) -> usize {
-        self.cache.len()
-    }
-
-    /// Check if empty
-    pub(crate) fn is_empty(&self) -> bool {
-        self.cache.is_empty()
-    }
-
-    /// Persist to storage
-    ///
-    /// Each ratchet is stored as a separate key-value pair:
-    /// - Key: destination_hash (16 bytes)
-    /// - Value: ratchet_public (32 bytes) + received_at (8 bytes)
-    pub(crate) fn save(&self, storage: &mut impl Storage) -> Result<(), RatchetError> {
-        for (dest_hash, (ratchet, received_at)) in &self.cache {
-            let mut value = [0u8; RATCHET_SIZE + 8];
-            value[..RATCHET_SIZE].copy_from_slice(ratchet);
-            value[RATCHET_SIZE..].copy_from_slice(&received_at.to_be_bytes());
-
-            storage.store(RATCHETS_CATEGORY, dest_hash.as_bytes(), &value)?;
-        }
-
-        Ok(())
-    }
-
-    /// Load from storage
-    pub(crate) fn load(storage: &impl Storage) -> Self {
-        let mut cache = BTreeMap::new();
-
-        for key in storage.list_keys(RATCHETS_CATEGORY) {
-            if key.len() != TRUNCATED_HASHBYTES {
-                continue;
-            }
-
-            let mut dest_bytes = [0u8; TRUNCATED_HASHBYTES];
-            dest_bytes.copy_from_slice(&key);
-            let dest_hash = DestinationHash::new(dest_bytes);
-
-            if let Some(value) = storage.load(RATCHETS_CATEGORY, &key) {
-                if value.len() == RATCHET_SIZE + 8 {
-                    let mut ratchet = [0u8; RATCHET_SIZE];
-                    ratchet.copy_from_slice(&value[..RATCHET_SIZE]);
-
-                    let mut timestamp_bytes = [0u8; 8];
-                    timestamp_bytes.copy_from_slice(&value[RATCHET_SIZE..]);
-                    let received_at = u64::from_be_bytes(timestamp_bytes);
-
-                    cache.insert(dest_hash, (ratchet, received_at));
-                }
-            }
-        }
-
-        Self { cache }
-    }
-}
-
-impl Default for KnownRatchets {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
-impl core::fmt::Debug for KnownRatchets {
-    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-        f.debug_struct("KnownRatchets")
-            .field("count", &self.cache.len())
-            .finish()
-    }
-}
 
 #[cfg(test)]
 mod tests {
@@ -476,6 +335,20 @@ mod tests {
     }
 
     #[test]
+    fn test_private_key_bytes_roundtrip() {
+        let original = Ratchet::generate(&mut OsRng, 1704067200000);
+        let private_bytes = original.private_key_bytes();
+
+        let restored = Ratchet::from_private_key_bytes(private_bytes, 5000);
+
+        // Same public key (derived from private key)
+        assert_eq!(original.public_key_bytes(), restored.public_key_bytes());
+        assert_eq!(original.id(), restored.id());
+        // Timestamp is independently set
+        assert_eq!(restored.created_at_ms(), 5000);
+    }
+
+    #[test]
     fn test_should_rotate() {
         let last_rotation = 1000000u64;
         let interval = 30 * 60 * 1000; // 30 minutes in ms
@@ -503,140 +376,5 @@ mod tests {
             last_rotation + 31 * 60 * 1000,
             interval
         ));
-    }
-
-    // ─── KnownRatchets Tests ───────────────────────────────────────────────────
-
-    #[test]
-    fn test_known_ratchets_remember_get() {
-        let mut known = KnownRatchets::new();
-
-        let dest_hash = DestinationHash::new([0xaa; TRUNCATED_HASHBYTES]);
-        let ratchet = [0xbb; RATCHET_SIZE];
-        let timestamp = 1704067200000u64;
-
-        // Initially empty
-        assert!(known.get(&dest_hash).is_none());
-        assert!(!known.has(&dest_hash));
-
-        // Remember ratchet
-        known.remember(&dest_hash, &ratchet, timestamp);
-
-        // Now should be found
-        assert!(known.has(&dest_hash));
-        assert_eq!(known.get(&dest_hash), Some(&ratchet));
-        assert_eq!(known.len(), 1);
-    }
-
-    #[test]
-    fn test_known_ratchets_update() {
-        let mut known = KnownRatchets::new();
-
-        let dest_hash = DestinationHash::new([0xaa; TRUNCATED_HASHBYTES]);
-        let ratchet1 = [0xbb; RATCHET_SIZE];
-        let ratchet2 = [0xcc; RATCHET_SIZE];
-
-        // Remember first ratchet
-        known.remember(&dest_hash, &ratchet1, 1000);
-        assert_eq!(known.get(&dest_hash), Some(&ratchet1));
-
-        // Update with second ratchet
-        known.remember(&dest_hash, &ratchet2, 2000);
-        assert_eq!(known.get(&dest_hash), Some(&ratchet2));
-
-        // Still only one entry
-        assert_eq!(known.len(), 1);
-    }
-
-    #[test]
-    fn test_known_ratchets_remove() {
-        let mut known = KnownRatchets::new();
-
-        let dest_hash = DestinationHash::new([0xaa; TRUNCATED_HASHBYTES]);
-        let ratchet = [0xbb; RATCHET_SIZE];
-
-        known.remember(&dest_hash, &ratchet, 1000);
-        assert_eq!(known.len(), 1);
-
-        known.remove(&dest_hash);
-        assert_eq!(known.len(), 0);
-        assert!(known.get(&dest_hash).is_none());
-    }
-
-    #[test]
-    fn test_known_ratchets_clean_expired() {
-        let mut known = KnownRatchets::new();
-
-        let dest1 = DestinationHash::new([0x01; TRUNCATED_HASHBYTES]);
-        let dest2 = DestinationHash::new([0x02; TRUNCATED_HASHBYTES]);
-        let dest3 = DestinationHash::new([0x03; TRUNCATED_HASHBYTES]);
-        let ratchet = [0xaa; RATCHET_SIZE];
-
-        // Add ratchets at different times
-        let base_time = 1704067200000u64; // 2024-01-01
-
-        // Old ratchet (35 days ago)
-        known.remember(&dest1, &ratchet, base_time - 35 * 24 * 60 * 60 * 1000);
-
-        // Recent ratchet (5 days ago)
-        known.remember(&dest2, &ratchet, base_time - 5 * 24 * 60 * 60 * 1000);
-
-        // Very recent ratchet (1 hour ago)
-        known.remember(&dest3, &ratchet, base_time - 60 * 60 * 1000);
-
-        assert_eq!(known.len(), 3);
-
-        // Clean expired
-        let removed = known.clean_expired(base_time);
-        assert_eq!(removed, 1);
-        assert_eq!(known.len(), 2);
-
-        // Old one should be gone
-        assert!(known.get(&dest1).is_none());
-        assert!(known.get(&dest2).is_some());
-        assert!(known.get(&dest3).is_some());
-    }
-
-    #[test]
-    fn test_known_ratchets_multiple_destinations() {
-        let mut known = KnownRatchets::new();
-
-        for i in 0..10 {
-            let mut dest_bytes = [0u8; TRUNCATED_HASHBYTES];
-            dest_bytes[0] = i;
-            let dest_hash = DestinationHash::new(dest_bytes);
-
-            let mut ratchet = [0u8; RATCHET_SIZE];
-            ratchet[0] = i + 100;
-
-            known.remember(&dest_hash, &ratchet, (i as u64) * 1000);
-        }
-
-        assert_eq!(known.len(), 10);
-
-        // Verify each one
-        for i in 0..10 {
-            let mut dest_bytes = [0u8; TRUNCATED_HASHBYTES];
-            dest_bytes[0] = i;
-            let dest_hash = DestinationHash::new(dest_bytes);
-
-            let mut expected_ratchet = [0u8; RATCHET_SIZE];
-            expected_ratchet[0] = i + 100;
-
-            assert_eq!(known.get(&dest_hash), Some(&expected_ratchet));
-        }
-    }
-
-    #[test]
-    fn test_known_ratchets_empty() {
-        let known = KnownRatchets::new();
-        assert!(known.is_empty());
-        assert_eq!(known.len(), 0);
-    }
-
-    #[test]
-    fn test_known_ratchets_default() {
-        let known = KnownRatchets::default();
-        assert!(known.is_empty());
     }
 }

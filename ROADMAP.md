@@ -28,7 +28,7 @@
 
 ## Aktueller Stand
 
-**Aktuelle Version: 0.5.19.** Phase 1 (Protokoll-Fundament) und Phase 2 (Core API & Full Node) sind vollständig abgeschlossen, inklusive eines 7-phasigen Code-Refactorings (63 Issues in `doc/BATTLEPLAN.md`). Storage-Trait-Refactoring abgeschlossen: alle 11 Transport/NodeCore-Sammlungen auf typsicheren Storage-Trait migriert, FileStorage umschließt MemoryStorage mit Python-kompatibler Persistenz. UDP-Interface implementiert (Socket, I/O-Task, Config-Parsing, Interop-Tests). AutoInterface mit 7 Integrationstests und Cross-Machine-Interop-Test abgedeckt. RPC-Server implementiert: Python-CLI-Tools (`rnstatus`, `rnpath`, `rnprobe`) funktionieren gegen den Rust-Daemon, inklusive HMAC-MD5/SHA256-Kompatibilität für Python 3.11+. Probe-Responder eingebaut. Hops werden jetzt bei Empfang inkrementiert (wie Python). Transport-Identity wird über Neustarts persistiert. Path-Request-Responses werden jetzt gezielt nur an das anfragende Interface gesendet (nicht mehr Broadcast). Lokale Announces werden beim Senden gecacht, damit Path Requests beantwortet werden können. Replay-Schutz erlaubt bessere (weniger Hops) Routen durch. Docker-basiertes Integrationstest-Framework (`reticulum-integ`): TOML-definierte Szenarien mit gemischten Rust/Python-Topologien, automatischer Config-Generierung und schrittweisen Assertions (basic_probe, probe_through_relay, path_self_healing, four_node_chain, announce_replacement, node_restart_path_recovery, rust_relay_python_endpoints, five_node_mesh, rust_python_rust_chain, python_rust_python_chain, non_transport_no_relay). Announce Rate Limiter erlaubt jetzt Pfadtabellen-Updates auch innerhalb des Rate Windows, wenn weniger Hops. Re-Announce bei neuer TCP-Peer-Verbindung verhindert Startup-Races. Shared-Instance-Zustandsverwaltung: Local-Client-Destinations mit Zeitstempel-Expiry (6h), Block A-D (Announce-Regeln). Offene Issues: E10 (Interface-spezifischer Jitter für Shared-Medium-Interfaces), E24 (Ingress Control per-Interface).
+**Aktuelle Version: 0.5.19.** Phase 1 (Protokoll-Fundament) und Phase 2 (Core API & Full Node) sind vollständig abgeschlossen, inklusive eines 7-phasigen Code-Refactorings (63 Issues in `doc/BATTLEPLAN.md`). Storage-Trait-Refactoring abgeschlossen: alle 11 Transport/NodeCore-Sammlungen auf typsicheren Storage-Trait migriert, FileStorage umschließt MemoryStorage mit Python-kompatibler Persistenz. Ratchet-Schlüssel werden auf Disk persistiert (Sender-Seite: signiertes Msgpack in `ratchetkeys/`, Empfänger-Seite: Msgpack in `ratchets/`), Python-kompatibles Format. UDP-Interface implementiert (Socket, I/O-Task, Config-Parsing, Interop-Tests). AutoInterface mit 7 Integrationstests und Cross-Machine-Interop-Test abgedeckt. RPC-Server implementiert: Python-CLI-Tools (`rnstatus`, `rnpath`, `rnprobe`) funktionieren gegen den Rust-Daemon, inklusive HMAC-MD5/SHA256-Kompatibilität für Python 3.11+. Probe-Responder eingebaut. Hops werden jetzt bei Empfang inkrementiert (wie Python). Transport-Identity wird über Neustarts persistiert. Path-Request-Responses werden jetzt gezielt nur an das anfragende Interface gesendet (nicht mehr Broadcast). Lokale Announces werden beim Senden gecacht, damit Path Requests beantwortet werden können. Replay-Schutz erlaubt bessere (weniger Hops) Routen durch. Docker-basiertes Integrationstest-Framework (`reticulum-integ`): TOML-definierte Szenarien mit gemischten Rust/Python-Topologien, automatischer Config-Generierung und schrittweisen Assertions (basic_probe, probe_through_relay, path_self_healing, four_node_chain, announce_replacement, node_restart_path_recovery, rust_relay_python_endpoints, five_node_mesh, rust_python_rust_chain, python_rust_python_chain, non_transport_no_relay). Announce Rate Limiter erlaubt jetzt Pfadtabellen-Updates auch innerhalb des Rate Windows, wenn weniger Hops. Re-Announce bei neuer TCP-Peer-Verbindung verhindert Startup-Races. Shared-Instance-Zustandsverwaltung: Local-Client-Destinations mit Zeitstempel-Expiry (6h), Block A-D (Announce-Regeln). Offene Issues: E10 (Interface-spezifischer Jitter für Shared-Medium-Interfaces), E24 (Ingress Control per-Interface).
 
 **Kernfunktionalität:** `NodeCore` (reticulum-core) und `ReticulumNode` (reticulum-std) bieten eine einheitliche async-kompatible API für Destinations, Links, Channels, Single-Packet-Verschlüsselung und Proof-Delivery. Vollständige Interoperabilität mit Python rnsd ist durch umfangreiche Interop-Tests nachgewiesen.
 
@@ -50,7 +50,7 @@
 | Announce (Erstellung, Validierung, Signaturprüfung) | ✅ Fertig |
 | Destination (Hashing, Typen, Ratchets, Encrypt/Decrypt) | ✅ Fertig |
 | Receipt (Delivery-Tracking, Proof-Validierung) | ✅ Fertig |
-| Ratchet (Forward Secrecy) | ⚠️ Krypto fertig, Validierung nicht eingebunden |
+| Ratchet (Forward Secrecy) | ⚠️ Krypto + Persistenz fertig, Validierung nicht eingebunden |
 | IFAC (Interface Access Codes) | ⚠️ Modul fertig, nicht in Empfangspfad eingebunden |
 | Link-State-Machine (Handshake, Proof, RTT, Data) | ✅ Initiator + Responder |
 | Channel/Buffer (Reliable Messaging, Streams) | ✅ Fertig |
@@ -187,6 +187,7 @@ Sicherheitsfeatures verdrahten, Daemon-Zustand persistieren, Release-Qualität e
 - [ ] Interop-Test: IFAC-gesicherte Kommunikation zwischen Rust und Python
 
 ### Meilenstein 3.3: Ratchet-Validierung (B4)
+- [x] Ratchet-Schlüssel auf Disk persistieren (Python-kompatibles Format, signiert)
 - [ ] Ratchet-Validierung bei Announce-Empfang aktivieren
 - [ ] Ratchet-Austausch bei Link-Establishment aktivieren
 - [ ] Forward-Secrecy-Rotation im laufenden Betrieb
@@ -367,6 +368,6 @@ Sicherheitsfeatures verdrahten, Daemon-Zustand persistieren, Release-Qualität e
 
 ---
 
-*Stand: 26. Februar 2026*
+*Stand: 27. Februar 2026*
 *Projekt: leviculum*
 *Lizenz: MIT*

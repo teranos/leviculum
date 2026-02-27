@@ -46,7 +46,7 @@ use crate::constants::{
     LOCAL_CLIENT_DEST_EXPIRY_MS, LOCAL_REBROADCASTS_MAX, MAX_QUEUED_ANNOUNCES_PER_INTERFACE,
     MAX_RANDOM_BLOBS, MS_PER_SECOND, MTU, PATHFINDER_EXPIRY_SECS, PATHFINDER_G_MS,
     PATHFINDER_MAX_HOPS, PATHFINDER_RETRIES, PATH_REQUEST_GRACE_MS, PATH_REQUEST_MIN_INTERVAL_MS,
-    REVERSE_TABLE_EXPIRY_MS, TRUNCATED_HASHBYTES,
+    RATCHET_SIZE, REVERSE_TABLE_EXPIRY_MS, TRUNCATED_HASHBYTES,
 };
 
 use crate::announce::{emission_from_random_hash, max_emission_from_blobs, ReceivedAnnounce};
@@ -544,23 +544,6 @@ pub struct Transport<C: Clock, S: Storage> {
     /// Removal path: removed in handle_interface_down via set_local_client(id, false).
     local_client_interfaces: BTreeSet<usize>,
 
-    /// Maps local client interface IDs to the destination hashes they have announced.
-    /// Used to track which destinations belong to which client for reconnect
-    /// re-announcement (Block C). Entries are added in handle_announce() when an
-    /// announce arrives from a local client. Entries for a specific client are
-    /// removed when that client disconnects (set_local_client(id, false)), but the
-    /// dest hashes are preserved in `local_client_known_dests` for reconnect detection.
-    /// Removal path: per-client entries removed on disconnect; dest set cleared when
-    /// the destination's path expires or is replaced by a network path.
-    local_client_dest_map: BTreeMap<usize, BTreeSet<[u8; TRUNCATED_HASHBYTES]>>,
-
-    /// Destination hashes announced by local clients, mapped to `last_seen_ms`.
-    /// Persists across client disconnects so the daemon can recognize returning
-    /// clients' destinations during reconnect (Block C).
-    /// Removal path: entries expire when `now - last_seen_ms > LOCAL_CLIENT_DEST_EXPIRY_MS`
-    /// in `clean_path_states()`.
-    local_client_known_dests: BTreeMap<[u8; TRUNCATED_HASHBYTES], u64>,
-
     /// Per-interface incoming announce timestamps for frequency computation (Python ia_freq_deque).
     /// Removal path: removed in handle_interface_down via remove_announce_freq_tracking().
     interface_incoming_announce_times: BTreeMap<usize, VecDeque<u64>>,
@@ -602,8 +585,6 @@ impl<C: Clock, S: Storage> Transport<C, S> {
             interface_names: BTreeMap::new(),
             interface_hw_mtus: BTreeMap::new(),
             local_client_interfaces: BTreeSet::new(),
-            local_client_dest_map: BTreeMap::new(),
-            local_client_known_dests: BTreeMap::new(),
             interface_incoming_announce_times: BTreeMap::new(),
             interface_outgoing_announce_times: BTreeMap::new(),
             pending_actions: Vec::new(),
@@ -1248,21 +1229,8 @@ impl<C: Clock, S: Storage> Transport<C, S> {
             n, raw_ld, est_ld
         );
 
-        // local_client_dest_map + local_client_known_dests
-        let n_clients = self.local_client_dest_map.len();
-        let n_known = self.local_client_known_dests.len();
-        let mut n_mapped = 0usize;
-        for dests in self.local_client_dest_map.values() {
-            n_mapped += dests.len();
-        }
-        let est_lc = ((n_mapped * TRUNCATED_HASHBYTES * 3)
-            + (n_known * (TRUNCATED_HASHBYTES + 8) * 3)) as u64;
-        total += est_lc;
-        let _ = writeln!(
-            s,
-            "local_client_dests: {} clients, {} mapped, {} known, estimated {} bytes",
-            n_clients, n_mapped, n_known, est_lc
-        );
+        // local_client + known_ratchets collections are now in Storage
+        // and accounted for in Storage::diagnostic_dump()
 
         (s, total)
     }
@@ -1516,7 +1484,16 @@ impl<C: Clock, S: Storage> Transport<C, S> {
         // Even when the path table isn't updated (same emission, same hops),
         // the client is still alive and its expiry timer should reset.
         if self.is_local_client(interface_index) {
-            self.local_client_known_dests.insert(dest_hash, now);
+            self.storage.set_local_client_known_dest(dest_hash, now);
+        }
+
+        // Refresh known ratchet unconditionally for valid announces.
+        // Same reasoning as local_client timestamp: even when the path table isn't
+        // updated, a ratchet that keeps arriving in valid announces should refresh
+        // its expiry timer (Python Identity._remember_ratchet).
+        if let Some(ratchet_pub) = announce.ratchet() {
+            self.storage
+                .remember_known_ratchet(dest_hash, *ratchet_pub, now);
         }
 
         // If rate-limited and the path table wouldn't improve, drop early.
@@ -1604,10 +1581,8 @@ impl<C: Clock, S: Storage> Transport<C, S> {
             // path table doesn't change.
             let from_local = self.is_local_client(interface_index);
             let is_new_local_client_dest = if from_local {
-                self.local_client_dest_map
-                    .entry(interface_index)
-                    .or_default()
-                    .insert(dest_hash)
+                self.storage
+                    .add_local_client_dest(interface_index, dest_hash)
             } else {
                 false
             };
@@ -2729,14 +2704,19 @@ impl<C: Clock, S: Storage> Transport<C, S> {
             // Remove per-client dest tracking on disconnect.
             // The dest hashes remain in local_client_known_dests
             // so reconnecting clients can be recognized (Block C).
-            self.local_client_dest_map.remove(&id);
+            self.storage.remove_local_client_dests(id);
         }
     }
 
     /// Return destination hashes that were announced by any local client.
     /// Used by Block C (reconnect re-announce) and Block D (interface recovery).
-    pub(crate) fn local_client_known_dests(&self) -> &BTreeMap<[u8; TRUNCATED_HASHBYTES], u64> {
-        &self.local_client_known_dests
+    pub(crate) fn local_client_known_dest_hashes(&self) -> Vec<[u8; TRUNCATED_HASHBYTES]> {
+        self.storage.local_client_known_dest_hashes()
+    }
+
+    /// Get the ratchet public key for a destination, if known (owned copy).
+    pub(crate) fn get_ratchet(&self, dest_hash: &DestinationHash) -> Option<[u8; RATCHET_SIZE]> {
+        self.storage.get_known_ratchet(dest_hash.as_bytes())
     }
 
     /// Check if an interface is a local IPC client.
@@ -3428,16 +3408,19 @@ impl<C: Clock, S: Storage> Transport<C, S> {
 
         // Expire local client dests not refreshed within expiry window.
         let now = self.clock.now_ms();
-        self.local_client_known_dests.retain(|_, last_seen_ms| {
-            now.saturating_sub(*last_seen_ms) <= LOCAL_CLIENT_DEST_EXPIRY_MS
-        });
+        self.storage
+            .expire_local_client_known_dests(now, LOCAL_CLIENT_DEST_EXPIRY_MS);
+
+        // Expire stale ratchets not refreshed within 30 days.
+        self.storage
+            .expire_known_ratchets(now, crate::ratchet::EXPIRY_MS);
 
         // Preserve announce_cache entries for both daemon-owned destinations
         // AND surviving local client destinations (Block C: reconnect
         // needs cached bytes to respond to path requests during client downtime).
         let mut preserved = self.local_destinations.clone();
-        for hash in self.local_client_known_dests.keys() {
-            preserved.insert(*hash);
+        for hash in self.storage.local_client_known_dest_hashes() {
+            preserved.insert(hash);
         }
         self.storage.clean_announce_cache(&preserved);
     }
@@ -11987,14 +11970,15 @@ mod tests {
                 "First announce from local client should NOT broadcast immediately"
             );
 
-            // Verify the destination is tracked in local_client_dest_map
-            let client_dests = transport.local_client_dest_map.get(&LOCAL_CLIENT_IFACE);
+            // Verify the destination is tracked in Storage
             assert!(
-                client_dests.is_some_and(|d| d.contains(&dest_hash)),
+                transport
+                    .storage
+                    .has_local_client_dest(LOCAL_CLIENT_IFACE, &dest_hash),
                 "Dest hash should be tracked in local_client_dest_map"
             );
             assert!(
-                transport.local_client_known_dests.contains_key(&dest_hash),
+                transport.storage.has_local_client_known_dest(&dest_hash),
                 "Dest hash should be tracked in local_client_known_dests"
             );
 
@@ -12052,9 +12036,8 @@ mod tests {
             // is not possible (different identity = different hash), so we just
             // verify the tracking state: dest_hash is already in the map.
             let already_known = transport
-                .local_client_dest_map
-                .get(&LOCAL_CLIENT_IFACE)
-                .is_some_and(|d| d.contains(&dest_hash));
+                .storage
+                .has_local_client_dest(LOCAL_CLIENT_IFACE, &dest_hash);
             assert!(
                 already_known,
                 "After first announce, dest should be known — \
@@ -12071,8 +12054,6 @@ mod tests {
             // 1. Preserve announce_cache entries during disconnect
             // 2. Accept the fresh announces from the reconnected client
             // 3. Rebroadcast them to the network (with 250ms delay)
-            use crate::transport::InterfaceId;
-
             let mut transport = make_transport_with_local_client();
             const RECONNECTED_IFACE: usize = 20;
 
@@ -12102,14 +12083,13 @@ mod tests {
 
             // Verify per-client map is cleaned but known_dests persists
             assert!(
-                transport
-                    .local_client_dest_map
-                    .get(&LOCAL_CLIENT_IFACE)
-                    .is_none(),
+                !transport
+                    .storage
+                    .has_local_client_dest(LOCAL_CLIENT_IFACE, &dest_hash),
                 "Per-client dest map should be removed on disconnect"
             );
             assert!(
-                transport.local_client_known_dests.contains_key(&dest_hash),
+                transport.storage.has_local_client_known_dest(&dest_hash),
                 "Known dests should persist across disconnect for reconnect"
             );
 
@@ -12162,9 +12142,8 @@ mod tests {
             // 6. Verify tracking
             assert!(
                 transport
-                    .local_client_dest_map
-                    .get(&RECONNECTED_IFACE)
-                    .is_some_and(|d| d.contains(&dest_hash2)),
+                    .storage
+                    .has_local_client_dest(RECONNECTED_IFACE, &dest_hash2),
                 "New dest should be tracked for reconnected client"
             );
         }
@@ -12278,7 +12257,7 @@ mod tests {
             let _ = transport.drain_actions();
 
             assert!(
-                transport.local_client_known_dests.contains_key(&dest_hash),
+                transport.storage.has_local_client_known_dest(&dest_hash),
                 "Dest should be tracked"
             );
             assert!(
@@ -12291,7 +12270,7 @@ mod tests {
             transport.clean_path_states();
 
             assert!(
-                !transport.local_client_known_dests.contains_key(&dest_hash),
+                !transport.storage.has_local_client_known_dest(&dest_hash),
                 "Expired dest should be removed from local_client_known_dests"
             );
             // The announce cache is still protected by the path_table entry
@@ -12365,7 +12344,7 @@ mod tests {
             transport.clean_path_states();
 
             assert!(
-                transport.local_client_known_dests.contains_key(&dest_hash),
+                transport.storage.has_local_client_known_dest(&dest_hash),
                 "Refreshed dest should survive cleanup (only {}ms since refresh, expiry is {}ms)",
                 two_hours_ms,
                 LOCAL_CLIENT_DEST_EXPIRY_MS
@@ -12590,6 +12569,237 @@ mod tests {
             assert_eq!(iface0.outgoing_announce_frequency, 0.0);
             assert_eq!(iface1.incoming_announce_frequency, 0.0);
             assert!(iface1.outgoing_announce_frequency > 0.0);
+        }
+    }
+
+    mod known_ratchets_tests {
+        use super::*;
+        use crate::announce::build_announce_payload;
+        use crate::constants::{ANNOUNCE_RATE_LIMIT_MS, MTU, RATCHET_EXPIRY_SECS};
+        use crate::destination::{Destination, DestinationType, Direction};
+        use crate::memory_storage::MemoryStorage;
+        use crate::packet::{
+            HeaderType, Packet, PacketContext, PacketData, PacketFlags, PacketType, TransportType,
+        };
+        use crate::test_utils::{MockClock, MockInterface, TEST_TIME_MS};
+        use rand_core::OsRng;
+
+        extern crate std;
+
+        fn make_transport() -> Transport<MockClock, MemoryStorage> {
+            let clock = MockClock::new(TEST_TIME_MS);
+            let identity = crate::identity::Identity::generate(&mut OsRng);
+            let config = TransportConfig {
+                enable_transport: true,
+                ..TransportConfig::default()
+            };
+            Transport::new(config, clock, MemoryStorage::with_defaults(), identity)
+        }
+
+        /// Build a ratcheted announce packet from a destination with ratchets enabled.
+        fn make_ratcheted_announce_raw(dest: &Destination, hops: u8, now_ms: u64) -> Vec<u8> {
+            let identity = dest.identity().unwrap();
+            let ratchet_pub = dest.current_ratchet_public().unwrap();
+            let payload = build_announce_payload(
+                identity,
+                dest.hash().as_bytes(),
+                dest.name_hash(),
+                Some(&ratchet_pub),
+                Some(b"test"),
+                &mut OsRng,
+                now_ms,
+            )
+            .unwrap();
+
+            let packet = Packet {
+                flags: PacketFlags {
+                    ifac_flag: false,
+                    header_type: HeaderType::Type1,
+                    context_flag: true,
+                    transport_type: TransportType::Broadcast,
+                    dest_type: DestinationType::Single,
+                    packet_type: PacketType::Announce,
+                },
+                hops,
+                transport_id: None,
+                destination_hash: dest.hash().into_bytes(),
+                context: PacketContext::None,
+                data: PacketData::Owned(payload),
+            };
+
+            let mut buf = [0u8; MTU];
+            let len = packet.pack(&mut buf).unwrap();
+            buf[..len].to_vec()
+        }
+
+        /// Build a non-ratcheted announce packet from a destination.
+        fn make_plain_announce_raw(dest: &Destination, hops: u8, now_ms: u64) -> Vec<u8> {
+            let identity = dest.identity().unwrap();
+            let payload = build_announce_payload(
+                identity,
+                dest.hash().as_bytes(),
+                dest.name_hash(),
+                None,
+                Some(b"test"),
+                &mut OsRng,
+                now_ms,
+            )
+            .unwrap();
+
+            let packet = Packet {
+                flags: PacketFlags {
+                    ifac_flag: false,
+                    header_type: HeaderType::Type1,
+                    context_flag: false,
+                    transport_type: TransportType::Broadcast,
+                    dest_type: DestinationType::Single,
+                    packet_type: PacketType::Announce,
+                },
+                hops,
+                transport_id: None,
+                destination_hash: dest.hash().into_bytes(),
+                context: PacketContext::None,
+                data: PacketData::Owned(payload),
+            };
+
+            let mut buf = [0u8; MTU];
+            let len = packet.pack(&mut buf).unwrap();
+            buf[..len].to_vec()
+        }
+
+        fn make_ratcheted_dest() -> Destination {
+            let identity = crate::identity::Identity::generate(&mut OsRng);
+            let mut dest = Destination::new(
+                Some(identity),
+                Direction::In,
+                DestinationType::Single,
+                "testapp",
+                &["ratchet"],
+            )
+            .unwrap();
+            dest.enable_ratchets(&mut OsRng, TEST_TIME_MS).unwrap();
+            dest
+        }
+
+        #[test]
+        fn test_handle_announce_stores_ratchet() {
+            let mut transport = make_transport();
+            let _idx = transport.register_interface(Box::new(MockInterface::new("if0", 1)));
+
+            let dest = make_ratcheted_dest();
+            let dest_hash = dest.hash().into_bytes();
+            let expected_ratchet = dest.current_ratchet_public().unwrap();
+
+            let now = transport.clock.now_ms();
+            let raw = make_ratcheted_announce_raw(&dest, 1, now);
+            transport.process_incoming(0, &raw).unwrap();
+
+            let stored = transport.storage.get_known_ratchet(&dest_hash);
+            assert!(
+                stored.is_some(),
+                "Ratchet should be stored after valid announce"
+            );
+            assert_eq!(
+                stored.unwrap(),
+                expected_ratchet,
+                "Stored ratchet should match destination's current ratchet"
+            );
+        }
+
+        #[test]
+        fn test_handle_announce_no_ratchet_no_store() {
+            let mut transport = make_transport();
+            let _idx = transport.register_interface(Box::new(MockInterface::new("if0", 1)));
+
+            let identity = crate::identity::Identity::generate(&mut OsRng);
+            let dest = Destination::new(
+                Some(identity),
+                Direction::In,
+                DestinationType::Single,
+                "testapp",
+                &["noratchet"],
+            )
+            .unwrap();
+
+            let now = transport.clock.now_ms();
+            let raw = make_plain_announce_raw(&dest, 1, now);
+            transport.process_incoming(0, &raw).unwrap();
+
+            assert_eq!(
+                transport.storage.known_ratchet_count(),
+                0,
+                "No ratchet should be stored for non-ratcheted announce"
+            );
+        }
+
+        #[test]
+        fn test_handle_announce_ratchet_rotation() {
+            let mut transport = make_transport();
+            let _idx = transport.register_interface(Box::new(MockInterface::new("if0", 1)));
+
+            let mut dest = make_ratcheted_dest();
+            let dest_hash = dest.hash().into_bytes();
+            let first_ratchet = dest.current_ratchet_public().unwrap();
+
+            // First announce
+            let now1 = transport.clock.now_ms();
+            let raw1 = make_ratcheted_announce_raw(&dest, 1, now1);
+            transport.process_incoming(0, &raw1).unwrap();
+
+            assert_eq!(
+                transport.storage.get_known_ratchet(&dest_hash).unwrap(),
+                first_ratchet
+            );
+
+            // Advance past rate limit
+            transport.clock.advance(ANNOUNCE_RATE_LIMIT_MS + 1);
+
+            // Rotate ratchet on destination
+            let now2 = transport.clock.now_ms();
+            dest.rotate_ratchet_if_needed(&mut OsRng, now2);
+            // Force rotation by directly calling enable_ratchets again
+            // (rotate_ratchet_if_needed may not rotate if interval hasn't passed)
+            dest.enable_ratchets(&mut OsRng, now2).unwrap();
+            let second_ratchet = dest.current_ratchet_public().unwrap();
+            assert_ne!(first_ratchet, second_ratchet, "Ratchet should have rotated");
+
+            // Second announce with new ratchet
+            let raw2 = make_ratcheted_announce_raw(&dest, 1, now2);
+            transport.process_incoming(0, &raw2).unwrap();
+
+            let stored = transport.storage.get_known_ratchet(&dest_hash).unwrap();
+            assert_eq!(
+                stored, second_ratchet,
+                "Stored ratchet should be updated to the rotated one"
+            );
+        }
+
+        #[test]
+        fn test_known_ratchets_cleanup_in_path_states() {
+            let mut transport = make_transport();
+            let _idx = transport.register_interface(Box::new(MockInterface::new("if0", 1)));
+
+            let dest = make_ratcheted_dest();
+
+            let now = transport.clock.now_ms();
+            let raw = make_ratcheted_announce_raw(&dest, 1, now);
+            transport.process_incoming(0, &raw).unwrap();
+
+            let dest_hash_bytes = dest.hash().into_bytes();
+            assert!(transport
+                .storage
+                .get_known_ratchet(&dest_hash_bytes)
+                .is_some());
+
+            // Advance past 30-day expiry
+            transport.clock.advance(RATCHET_EXPIRY_SECS * 1000 + 1);
+            transport.clean_path_states();
+
+            assert_eq!(
+                transport.storage.known_ratchet_count(),
+                0,
+                "Expired ratchets should be cleaned up"
+            );
         }
     }
 }

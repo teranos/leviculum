@@ -476,8 +476,22 @@ Data types shared between Storage and Transport live in `storage_types.rs` (Laye
 `MemoryStorage` is `pub` (not `#[cfg(test)]`) — it is the production implementation
 for embedded targets. `FileStorage` wraps `MemoryStorage` internally for all
 runtime collections (no no-ops) and adds Python-compatible disk persistence for
-`known_destinations` (msgpack map) and `packet_hashlist` (msgpack array of 32-byte
-hashes). Non-persistent collections (paths, reverses, links, announces, receipts)
+four collections:
+
+| Directory/File | Format | Write strategy | Contents |
+|---------------|--------|----------------|----------|
+| `known_destinations` | msgpack map | Batch flush (hourly + shutdown) | Identity → destination mapping |
+| `packet_hashlist` | msgpack array | Batch flush (hourly + shutdown) | 32-byte packet hashes for dedup |
+| `ratchets/{dest_hash}` | msgpack map (`{"ratchet": bin32, "received": float}`) | Write-through (immediate) | Receiver-side known ratchet public keys |
+| `ratchetkeys/{dest_hash}` | signed msgpack (`{"signature": bin64, "ratchets": bin}`) | Write-through (immediate) | Sender-side ratchet private keys (Ed25519-signed) |
+
+Ratchet files use Python-compatible formats: receiver-side files are encoded with
+`rmpv` (reticulum-std), sender-side files use hand-rolled msgpack (reticulum-core,
+no_std). Clock domain conversion between core's monotonic `now_ms` and Python's
+wall-clock `time.time()` seconds is handled via `mono_offset_ms` (wall-clock
+timestamp at process start).
+
+Non-persistent collections (paths, reverses, links, announces, receipts)
 are RAM-only and lost on restart.
 
 ## Key Types

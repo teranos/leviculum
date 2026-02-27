@@ -427,6 +427,17 @@ class TestDaemon:
             except Exception as e:
                 return {"error": f"Failed to enable ratchets: {str(e)}"}
 
+        elif method == "enforce_ratchets":
+            dest_hash = params.get("hash")
+            if dest_hash not in self.destinations:
+                return {"error": f"Destination {dest_hash} not registered"}
+            _, dest = self.destinations[dest_hash]
+            try:
+                result = dest.enforce_ratchets()
+                return {"result": {"enforced": result}}
+            except Exception as e:
+                return {"error": f"Failed to enforce ratchets: {str(e)}"}
+
         elif method == "get_ratchet_info":
             # Get ratchet state for a destination
             dest_hash = params.get("hash")

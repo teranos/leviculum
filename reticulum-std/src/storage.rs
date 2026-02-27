@@ -1,14 +1,17 @@
 //! File-based storage with in-memory runtime state
 //!
 //! Wraps `MemoryStorage` for all runtime collections (paths, reverses, links,
-//! announces, etc.) and adds disk persistence for two Python-compatible
+//! announces, etc.) and adds disk persistence for four Python-compatible
 //! collections:
-//! - `known_destinations` — msgpack map of identity data
-//! - `packet_hashlist` — msgpack array of 32-byte dedup hashes
+//! - `known_destinations` — msgpack map of identity data (flush-on-shutdown)
+//! - `packet_hashlist` — msgpack array of 32-byte dedup hashes (flush-on-shutdown)
+//! - `ratchets/{hex_hash}` — receiver-side known ratchets (write-through)
+//! - `ratchetkeys/{hex_hash}` — sender-side ratchet private keys (write-through)
 //!
 //! All non-persistent collections live in the inner `MemoryStorage` and are
-//! lost on process exit. Persistent data is written by [`Storage::flush()`]
-//! (called at shutdown from the driver).
+//! lost on process exit. Flush-on-shutdown data is written by [`Storage::flush()`]
+//! (called at shutdown from the driver). Ratchet data uses write-through
+//! persistence (written immediately on each update).
 
 use std::collections::{BTreeMap, HashSet};
 use std::path::{Path, PathBuf};
@@ -43,6 +46,12 @@ use crate::packet_hashlist::{
 /// At 32 bytes/entry × 1.5x HashSet overhead ≈ 4.8 MB max.
 const FILE_STORAGE_PACKET_HASH_CAP: usize = 100_000;
 
+/// Directory for receiver-side known ratchets (one file per dest hash).
+const RATCHETS_DIR: &str = "ratchets";
+
+/// Directory for sender-side ratchet private keys (one file per dest hash).
+const RATCHETKEYS_DIR: &str = "ratchetkeys";
+
 pub(crate) struct Storage {
     /// Base directory for all storage
     base_path: PathBuf,
@@ -62,6 +71,10 @@ pub(crate) struct Storage {
     packet_hashes_dirty: bool,
     /// True when set_identity() has been called since last flush.
     identities_dirty: bool,
+    /// Wall-clock milliseconds at monotonic epoch (process start).
+    /// Used to convert between core's monotonic `now_ms` and Python's
+    /// `time.time()` (wall-clock seconds) for on-disk ratchet timestamps.
+    mono_offset_ms: u64,
 }
 
 impl Storage {
@@ -123,7 +136,12 @@ impl Storage {
             }
         };
 
-        Ok(Self {
+        let mono_offset_ms = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map(|d| d.as_millis() as u64)
+            .unwrap_or(0);
+
+        let mut storage = Self {
             base_path,
             inner,
             known_dest_entries,
@@ -132,7 +150,16 @@ impl Storage {
             packet_hash_cap: FILE_STORAGE_PACKET_HASH_CAP,
             packet_hashes_dirty: false,
             identities_dirty: false,
-        })
+            mono_offset_ms,
+        };
+
+        // Load known ratchets from disk (receiver-side)
+        storage.load_known_ratchets_from_disk();
+
+        // Load dest ratchet keys from disk (sender-side)
+        storage.load_dest_ratchet_keys_from_disk();
+
+        Ok(storage)
     }
 
     /// Get path for a specific storage category
@@ -234,6 +261,175 @@ impl Storage {
 
         Ok(names)
     }
+
+    // ─── Ratchet disk persistence ─────────────────────────────────────────
+
+    /// Load receiver-side known ratchets from `{base}/ratchets/`.
+    fn load_known_ratchets_from_disk(&mut self) {
+        let dir = self.base_path.join(RATCHETS_DIR);
+        let entries = match std::fs::read_dir(&dir) {
+            Ok(e) => e,
+            Err(_) => return, // directory doesn't exist yet
+        };
+
+        let mut loaded = 0usize;
+        for entry in entries {
+            let entry = match entry {
+                Ok(e) => e,
+                Err(_) => continue,
+            };
+            let name = match entry.file_name().into_string() {
+                Ok(n) => n,
+                Err(_) => continue,
+            };
+            // Skip temp files
+            if name.ends_with(".tmp") || name.ends_with(".out") {
+                continue;
+            }
+            let Some(hash_bytes) = hex_decode(&name) else {
+                continue;
+            };
+            if hash_bytes.len() != TRUNCATED_HASHBYTES {
+                continue;
+            }
+            let data = match std::fs::read(entry.path()) {
+                Ok(d) => d,
+                Err(e) => {
+                    tracing::warn!("Failed to read ratchet file {name}: {e}");
+                    continue;
+                }
+            };
+            let Some((ratchet_pub, received_secs)) = decode_known_ratchet(&data) else {
+                tracing::warn!("Corrupted ratchet file {name}, deleting");
+                let _ = std::fs::remove_file(entry.path());
+                continue;
+            };
+
+            let mut dest_hash = [0u8; TRUNCATED_HASHBYTES];
+            dest_hash.copy_from_slice(&hash_bytes);
+            let received_ms = wallclock_secs_to_mono_ms(received_secs, self.mono_offset_ms);
+            self.inner
+                .remember_known_ratchet(dest_hash, ratchet_pub, received_ms);
+            loaded += 1;
+        }
+
+        if loaded > 0 {
+            tracing::info!("Loaded {loaded} known ratchets from storage");
+        }
+    }
+
+    /// Load sender-side ratchet keys from `{base}/ratchetkeys/`.
+    fn load_dest_ratchet_keys_from_disk(&mut self) {
+        let dir = self.base_path.join(RATCHETKEYS_DIR);
+        let entries = match std::fs::read_dir(&dir) {
+            Ok(e) => e,
+            Err(_) => return,
+        };
+
+        let mut loaded = 0usize;
+        for entry in entries {
+            let entry = match entry {
+                Ok(e) => e,
+                Err(_) => continue,
+            };
+            let name = match entry.file_name().into_string() {
+                Ok(n) => n,
+                Err(_) => continue,
+            };
+            if name.ends_with(".tmp") {
+                continue;
+            }
+            let Some(hash_bytes) = hex_decode(&name) else {
+                continue;
+            };
+            if hash_bytes.len() != TRUNCATED_HASHBYTES {
+                continue;
+            }
+            let data = match std::fs::read(entry.path()) {
+                Ok(d) => d,
+                Err(e) => {
+                    tracing::warn!("Failed to read ratchet keys file {name}: {e}");
+                    continue;
+                }
+            };
+            if data.is_empty() {
+                tracing::warn!("Empty ratchet keys file {name}, deleting");
+                let _ = std::fs::remove_file(entry.path());
+                continue;
+            }
+
+            let mut dest_hash = [0u8; TRUNCATED_HASHBYTES];
+            dest_hash.copy_from_slice(&hash_bytes);
+            CoreStorage::store_dest_ratchet_keys(&mut self.inner, dest_hash, data);
+            loaded += 1;
+        }
+
+        if loaded > 0 {
+            tracing::info!("Loaded {loaded} dest ratchet key sets from storage");
+        }
+    }
+}
+
+// ─── Known ratchet file format (Python-compatible msgpack) ──────────────────
+//
+// Path: {storagepath}/ratchets/{hex_dest_hash}
+// Format: umsgpack.packb({"ratchet": bytes(32), "received": float(seconds)})
+
+fn encode_known_ratchet(ratchet_pub: &[u8; 32], received_secs: f64) -> Vec<u8> {
+    let map = rmpv::Value::Map(vec![
+        (
+            rmpv::Value::String("ratchet".into()),
+            rmpv::Value::Binary(ratchet_pub.to_vec()),
+        ),
+        (
+            rmpv::Value::String("received".into()),
+            rmpv::Value::F64(received_secs),
+        ),
+    ]);
+    let mut buf = Vec::new();
+    // rmpv encode only fails on I/O errors; Vec never fails
+    rmpv::encode::write_value(&mut buf, &map).expect("Vec write cannot fail");
+    buf
+}
+
+fn decode_known_ratchet(data: &[u8]) -> Option<([u8; 32], f64)> {
+    let value = rmpv::decode::read_value(&mut &data[..]).ok()?;
+    let map = value.as_map()?;
+
+    let mut ratchet: Option<[u8; 32]> = None;
+    let mut received: Option<f64> = None;
+
+    for (k, v) in map {
+        let key_str = k.as_str()?;
+        match key_str {
+            "ratchet" => {
+                let bytes = v.as_slice()?;
+                if bytes.len() != 32 {
+                    return None;
+                }
+                let mut arr = [0u8; 32];
+                arr.copy_from_slice(bytes);
+                ratchet = Some(arr);
+            }
+            "received" => {
+                received = Some(v.as_f64()?);
+            }
+            _ => {} // ignore unknown keys
+        }
+    }
+
+    Some((ratchet?, received?))
+}
+
+/// Convert monotonic milliseconds to wall-clock seconds (for disk storage).
+fn mono_to_wallclock_secs(mono_ms: u64, mono_offset_ms: u64) -> f64 {
+    mono_offset_ms.saturating_add(mono_ms) as f64 / 1000.0
+}
+
+/// Convert wall-clock seconds to monotonic milliseconds (for loading from disk).
+fn wallclock_secs_to_mono_ms(secs: f64, mono_offset_ms: u64) -> u64 {
+    let wallclock_ms = (secs * 1000.0) as u64;
+    wallclock_ms.saturating_sub(mono_offset_ms)
 }
 
 /// Atomic write: write to .tmp then rename into place.
@@ -674,39 +870,109 @@ impl reticulum_core::traits::Storage for Storage {
         (s, total)
     }
 
-    // ─── Legacy Generic API (for ratchets — always file-based) ───────────
-    fn load(&self, category: &str, key: &[u8]) -> Option<Vec<u8>> {
-        let name = hex_encode(key);
-        self.read_raw(category, &name).ok()
+    // ─── Known Ratchets (write-through to disk) ────────────────────────
+    fn get_known_ratchet(
+        &self,
+        dest_hash: &[u8; TRUNCATED_HASHBYTES],
+    ) -> Option<[u8; reticulum_core::constants::RATCHET_SIZE]> {
+        self.inner.get_known_ratchet(dest_hash)
     }
-
-    fn store(
+    fn remember_known_ratchet(
         &mut self,
-        category: &str,
-        key: &[u8],
-        value: &[u8],
-    ) -> std::result::Result<(), reticulum_core::traits::StorageError> {
-        let name = hex_encode(key);
-        self.write_raw(category, &name, value)
-            .map_err(|_| reticulum_core::traits::StorageError::IoError)
+        dest_hash: [u8; TRUNCATED_HASHBYTES],
+        ratchet: [u8; reticulum_core::constants::RATCHET_SIZE],
+        received_at_ms: u64,
+    ) {
+        self.inner
+            .remember_known_ratchet(dest_hash, ratchet, received_at_ms);
+
+        // Write-through to disk
+        let hex_name = hex_encode(&dest_hash);
+        let received_secs = mono_to_wallclock_secs(received_at_ms, self.mono_offset_ms);
+        let data = encode_known_ratchet(&ratchet, received_secs);
+        if let Err(e) = self.write_raw(RATCHETS_DIR, &hex_name, &data) {
+            tracing::warn!("Failed to persist known ratchet for {hex_name}: {e}");
+        }
+    }
+    fn known_ratchet_count(&self) -> usize {
+        self.inner.known_ratchet_count()
+    }
+    fn expire_known_ratchets(&mut self, now_ms: u64, expiry_ms: u64) -> usize {
+        // Collect hashes that will be expired (before memory expiry removes them)
+        let expired_hashes: Vec<[u8; TRUNCATED_HASHBYTES]> = self
+            .inner
+            .known_ratchet_iter()
+            .filter(|(_, (_, received_at))| now_ms.saturating_sub(*received_at) >= expiry_ms)
+            .map(|(hash, _)| *hash)
+            .collect();
+
+        let count = self.inner.expire_known_ratchets(now_ms, expiry_ms);
+
+        // Delete corresponding files from disk
+        for hash in &expired_hashes {
+            let hex_name = hex_encode(hash);
+            if let Err(e) = self.delete(RATCHETS_DIR, &hex_name) {
+                tracing::warn!("Failed to delete expired ratchet file {hex_name}: {e}");
+            }
+        }
+
+        count
     }
 
-    fn delete(
+    // ─── Local Client Destinations ──────────────────────────────────────
+    fn add_local_client_dest(
         &mut self,
-        category: &str,
-        key: &[u8],
-    ) -> std::result::Result<(), reticulum_core::traits::StorageError> {
-        let name = hex_encode(key);
-        Storage::delete(self, category, &name)
-            .map_err(|_| reticulum_core::traits::StorageError::NotFound)
+        iface_id: usize,
+        dest_hash: [u8; TRUNCATED_HASHBYTES],
+    ) -> bool {
+        self.inner.add_local_client_dest(iface_id, dest_hash)
+    }
+    fn remove_local_client_dests(&mut self, iface_id: usize) {
+        self.inner.remove_local_client_dests(iface_id)
+    }
+    fn has_local_client_dest(
+        &self,
+        iface_id: usize,
+        dest_hash: &[u8; TRUNCATED_HASHBYTES],
+    ) -> bool {
+        self.inner.has_local_client_dest(iface_id, dest_hash)
     }
 
-    fn list_keys(&self, category: &str) -> Vec<Vec<u8>> {
-        self.list(category)
-            .unwrap_or_default()
-            .into_iter()
-            .filter_map(|s| hex_decode(&s))
-            .collect()
+    // ─── Local Client Known Destinations ────────────────────────────────
+    fn set_local_client_known_dest(
+        &mut self,
+        dest_hash: [u8; TRUNCATED_HASHBYTES],
+        last_seen_ms: u64,
+    ) {
+        self.inner
+            .set_local_client_known_dest(dest_hash, last_seen_ms)
+    }
+    fn has_local_client_known_dest(&self, dest_hash: &[u8; TRUNCATED_HASHBYTES]) -> bool {
+        self.inner.has_local_client_known_dest(dest_hash)
+    }
+    fn local_client_known_dest_hashes(&self) -> Vec<[u8; TRUNCATED_HASHBYTES]> {
+        self.inner.local_client_known_dest_hashes()
+    }
+    fn expire_local_client_known_dests(&mut self, now_ms: u64, expiry_ms: u64) -> usize {
+        self.inner
+            .expire_local_client_known_dests(now_ms, expiry_ms)
+    }
+
+    // ─── Sender-Side Ratchet Keys (write-through to disk) ──────────────
+    fn store_dest_ratchet_keys(
+        &mut self,
+        dest_hash: [u8; TRUNCATED_HASHBYTES],
+        serialized: Vec<u8>,
+    ) {
+        // Write-through to disk first (before moving serialized into inner)
+        let hex_name = hex_encode(&dest_hash);
+        if let Err(e) = self.write_raw(RATCHETKEYS_DIR, &hex_name, &serialized) {
+            tracing::warn!("Failed to persist ratchet keys for {hex_name}: {e}");
+        }
+        self.inner.store_dest_ratchet_keys(dest_hash, serialized)
+    }
+    fn load_dest_ratchet_keys(&self, dest_hash: &[u8; TRUNCATED_HASHBYTES]) -> Option<Vec<u8>> {
+        self.inner.load_dest_ratchet_keys(dest_hash)
     }
 }
 
@@ -780,30 +1046,6 @@ mod tests {
         let storage = temp_storage();
         let result = storage.read_root("nonexistent");
         assert!(result.is_err());
-    }
-
-    #[test]
-    fn test_core_storage_legacy_trait() {
-        use reticulum_core::traits::Storage as CoreStorage;
-
-        let mut storage = temp_storage();
-        let key = [0x01, 0x02, 0x03];
-
-        // Store via legacy trait
-        CoreStorage::store(&mut storage, "core_test", &key, b"trait_value").unwrap();
-
-        // Load via legacy trait
-        let data = CoreStorage::load(&storage, "core_test", &key);
-        assert_eq!(data, Some(b"trait_value".to_vec()));
-
-        // List keys via legacy trait
-        let keys = CoreStorage::list_keys(&storage, "core_test");
-        assert_eq!(keys.len(), 1);
-        assert_eq!(keys[0], key.to_vec());
-
-        // Delete via legacy trait
-        CoreStorage::delete(&mut storage, "core_test", &key).unwrap();
-        assert!(CoreStorage::load(&storage, "core_test", &key).is_none());
     }
 
     #[test]
@@ -1162,5 +1404,134 @@ mod tests {
             "should show 2 entries in packet_cache"
         );
         assert!(total > 0);
+    }
+
+    // ─── Ratchet Persistence Tests ──────────────────────────────────────
+
+    /// Create a temp storage with a unique per-test directory.
+    fn unique_temp_storage(suffix: &str) -> (Storage, PathBuf) {
+        let path = temp_dir().join(format!("reticulum_ratchet_{}_{suffix}", std::process::id()));
+        // Clean up any previous run
+        let _ = std::fs::remove_dir_all(&path);
+        let storage = Storage::new(&path).unwrap();
+        (storage, path)
+    }
+
+    #[test]
+    fn test_known_ratchet_persists_to_disk() {
+        let (mut storage, path) = unique_temp_storage("kr_persist");
+
+        let hash = [0x11; TRUNCATED_HASHBYTES];
+        let ratchet = [0xaa; 32];
+        CoreStorage::remember_known_ratchet(&mut storage, hash, ratchet, 5000);
+
+        // Verify file exists
+        let hex = hex_encode(&hash);
+        let file_path = path.join(RATCHETS_DIR).join(&hex);
+        assert!(file_path.exists(), "Ratchet file should exist on disk");
+
+        // Drop and recreate from same directory
+        drop(storage);
+        let storage2 = Storage::new(&path).unwrap();
+        let loaded = CoreStorage::get_known_ratchet(&storage2, &hash);
+        assert_eq!(loaded, Some(ratchet), "Ratchet should survive restart");
+
+        // Cleanup
+        let _ = std::fs::remove_dir_all(&path);
+    }
+
+    #[test]
+    fn test_dest_ratchet_keys_persist_to_disk() {
+        let (mut storage, path) = unique_temp_storage("drk_persist");
+
+        let hash = [0x22; TRUNCATED_HASHBYTES];
+        let data = vec![0x82, 0xa9]; // fake signed msgpack header
+        CoreStorage::store_dest_ratchet_keys(&mut storage, hash, data.clone());
+
+        // Verify file exists
+        let hex = hex_encode(&hash);
+        let file_path = path.join(RATCHETKEYS_DIR).join(&hex);
+        assert!(file_path.exists(), "Ratchet keys file should exist on disk");
+
+        // Drop and recreate from same directory
+        drop(storage);
+        let storage2 = Storage::new(&path).unwrap();
+        let loaded = CoreStorage::load_dest_ratchet_keys(&storage2, &hash);
+        assert_eq!(loaded, Some(data), "Ratchet keys should survive restart");
+
+        // Cleanup
+        let _ = std::fs::remove_dir_all(&path);
+    }
+
+    #[test]
+    fn test_known_ratchet_expire_deletes_file() {
+        let (mut storage, path) = unique_temp_storage("kr_expire");
+
+        let h1 = [0x01; TRUNCATED_HASHBYTES];
+        let h2 = [0x02; TRUNCATED_HASHBYTES];
+        let ratchet = [0xbb; 32];
+
+        CoreStorage::remember_known_ratchet(&mut storage, h1, ratchet, 1000);
+        CoreStorage::remember_known_ratchet(&mut storage, h2, ratchet, 5000);
+
+        // Both files should exist
+        let hex1 = hex_encode(&h1);
+        let hex2 = hex_encode(&h2);
+        assert!(path.join(RATCHETS_DIR).join(&hex1).exists());
+        assert!(path.join(RATCHETS_DIR).join(&hex2).exists());
+
+        // Expire: h1 is 4000ms old at now=5000, threshold=3000
+        let removed = CoreStorage::expire_known_ratchets(&mut storage, 5000, 3000);
+        assert_eq!(removed, 1);
+
+        // h1 file should be deleted, h2 should remain
+        assert!(
+            !path.join(RATCHETS_DIR).join(&hex1).exists(),
+            "Expired ratchet file should be deleted"
+        );
+        assert!(
+            path.join(RATCHETS_DIR).join(&hex2).exists(),
+            "Non-expired ratchet file should remain"
+        );
+
+        // Cleanup
+        let _ = std::fs::remove_dir_all(&path);
+    }
+
+    #[test]
+    fn test_corrupted_ratchet_file_skipped() {
+        let (_, path) = unique_temp_storage("kr_corrupt");
+
+        // Write a corrupted file manually
+        let ratchets_dir = path.join(RATCHETS_DIR);
+        std::fs::create_dir_all(&ratchets_dir).unwrap();
+        let hex = hex_encode(&[0x33; TRUNCATED_HASHBYTES]);
+        std::fs::write(ratchets_dir.join(&hex), b"garbage data").unwrap();
+
+        // Recreate storage — should load without panic, skip corrupted file
+        let storage = Storage::new(&path).unwrap();
+        let loaded = CoreStorage::get_known_ratchet(&storage, &[0x33; TRUNCATED_HASHBYTES]);
+        assert!(loaded.is_none(), "Corrupted ratchet should not be loaded");
+
+        // Corrupted file should be deleted
+        assert!(
+            !ratchets_dir.join(&hex).exists(),
+            "Corrupted file should be deleted"
+        );
+
+        // Cleanup
+        let _ = std::fs::remove_dir_all(&path);
+    }
+
+    #[test]
+    fn test_wallclock_conversion_roundtrip() {
+        let offset = 1_700_000_000_000u64; // ~2023 in ms
+        let mono = 5_000u64; // 5 seconds into process
+
+        let secs = mono_to_wallclock_secs(mono, offset);
+        let back = wallclock_secs_to_mono_ms(secs, offset);
+
+        // Should round-trip (within f64 precision)
+        assert_eq!(back, mono);
     }
 }

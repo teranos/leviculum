@@ -39,7 +39,7 @@ use alloc::collections::BTreeSet;
 use alloc::string::String;
 use alloc::vec::Vec;
 
-use crate::constants::TRUNCATED_HASHBYTES;
+use crate::constants::{RATCHET_SIZE, TRUNCATED_HASHBYTES};
 use crate::identity::Identity;
 use crate::storage_types::{
     AnnounceEntry, AnnounceRateEntry, LinkEntry, PacketReceipt, PathEntry, PathState, ReverseEntry,
@@ -163,11 +163,6 @@ pub trait Clock {
 ///   storage for core tests.
 /// - `FileStorage` (in `reticulum-std`): wraps MemoryStorage + disk
 ///   persistence with Python-compatible file formats.
-///
-/// # Legacy API
-///
-/// The generic `load/store/delete/list_keys` methods are kept for ratchet
-/// compatibility (`ratchet.rs`). Ratchet migration is deferred (B4 scope).
 pub trait Storage {
     // ─── Packet Dedup ───────────────────────────────────────────────────────
 
@@ -322,6 +317,81 @@ pub trait Storage {
     /// Store a known remote identity
     fn set_identity(&mut self, dest_hash: [u8; TRUNCATED_HASHBYTES], identity: Identity);
 
+    // ─── Known Ratchets (sender-side cache) ────────────────────────────
+
+    /// Get the known ratchet public key for a destination (owned, not ref — disk-backed
+    /// Storage can't return references to deserialized data).
+    fn get_known_ratchet(
+        &self,
+        dest_hash: &[u8; TRUNCATED_HASHBYTES],
+    ) -> Option<[u8; RATCHET_SIZE]>;
+
+    /// Remember a ratchet public key received from an announce.
+    fn remember_known_ratchet(
+        &mut self,
+        dest_hash: [u8; TRUNCATED_HASHBYTES],
+        ratchet: [u8; RATCHET_SIZE],
+        received_at_ms: u64,
+    );
+
+    /// Check if a known ratchet exists for a destination.
+    fn has_known_ratchet(&self, dest_hash: &[u8; TRUNCATED_HASHBYTES]) -> bool {
+        self.get_known_ratchet(dest_hash).is_some()
+    }
+
+    /// Number of known ratchets stored.
+    fn known_ratchet_count(&self) -> usize;
+
+    /// Remove known ratchets older than `expiry_ms`. Returns count removed.
+    fn expire_known_ratchets(&mut self, now_ms: u64, expiry_ms: u64) -> usize;
+
+    // ─── Local Client Destinations (per-interface tracking) ──────────
+
+    /// Track a destination hash as belonging to a local client interface.
+    /// Returns true if the hash was newly inserted.
+    fn add_local_client_dest(
+        &mut self,
+        iface_id: usize,
+        dest_hash: [u8; TRUNCATED_HASHBYTES],
+    ) -> bool;
+
+    /// Remove all destination hashes for a local client interface.
+    fn remove_local_client_dests(&mut self, iface_id: usize);
+
+    /// Check if a destination hash is tracked for a local client interface.
+    fn has_local_client_dest(&self, iface_id: usize, dest_hash: &[u8; TRUNCATED_HASHBYTES])
+        -> bool;
+
+    // ─── Local Client Known Destinations (persist across disconnects) ─
+
+    /// Record a destination hash with its last-seen timestamp.
+    fn set_local_client_known_dest(
+        &mut self,
+        dest_hash: [u8; TRUNCATED_HASHBYTES],
+        last_seen_ms: u64,
+    );
+
+    /// Check if a destination hash is in the known-dest set.
+    fn has_local_client_known_dest(&self, dest_hash: &[u8; TRUNCATED_HASHBYTES]) -> bool;
+
+    /// Return all known destination hashes (callers build BTreeSet locally if needed).
+    fn local_client_known_dest_hashes(&self) -> Vec<[u8; TRUNCATED_HASHBYTES]>;
+
+    /// Remove entries older than `expiry_ms`. Returns count removed.
+    fn expire_local_client_known_dests(&mut self, now_ms: u64, expiry_ms: u64) -> usize;
+
+    // ─── Sender-Side Ratchet Keys (Destination private keys) ─────────
+
+    /// Persist serialized ratchet private keys for a destination.
+    fn store_dest_ratchet_keys(
+        &mut self,
+        dest_hash: [u8; TRUNCATED_HASHBYTES],
+        serialized: Vec<u8>,
+    );
+
+    /// Load serialized ratchet private keys for a destination.
+    fn load_dest_ratchet_keys(&self, dest_hash: &[u8; TRUNCATED_HASHBYTES]) -> Option<Vec<u8>>;
+
     // ─── Cleanup ────────────────────────────────────────────────────────────
 
     /// Remove expired reverse table entries. Returns count removed.
@@ -372,23 +442,6 @@ pub trait Storage {
     /// Persist all dirty state to underlying storage (no-op for in-memory implementations)
     fn flush(&mut self) {}
 
-    // ─── Ratchets (delegate to legacy API) ──────────────────────────────────
-
-    /// Load a ratchet by destination hash key
-    fn load_ratchet(&self, key: &[u8]) -> Option<Vec<u8>> {
-        self.load("ratchets", key)
-    }
-
-    /// Store a ratchet by destination hash key
-    fn store_ratchet(&mut self, key: &[u8], value: &[u8]) -> Result<(), StorageError> {
-        self.store("ratchets", key, value)
-    }
-
-    /// List all ratchet keys
-    fn list_ratchet_keys(&self) -> Vec<Vec<u8>> {
-        self.list_keys("ratchets")
-    }
-
     // ─── Diagnostics ─────────────────────────────────────────────────────────
 
     /// Return a diagnostic dump of storage collection sizes and estimated byte usage.
@@ -396,28 +449,6 @@ pub trait Storage {
     /// Returns (formatted_text, total_estimated_bytes). Default returns empty.
     fn diagnostic_dump(&self) -> (String, u64) {
         (String::new(), 0)
-    }
-
-    // ─── Legacy Generic API (kept for ratchet compatibility) ────────────────
-
-    /// Load data by key from a category (legacy — used by ratchet.rs)
-    fn load(&self, _category: &str, _key: &[u8]) -> Option<Vec<u8>> {
-        None
-    }
-
-    /// Store data by key in a category (legacy — used by ratchet.rs)
-    fn store(&mut self, _category: &str, _key: &[u8], _value: &[u8]) -> Result<(), StorageError> {
-        Ok(())
-    }
-
-    /// Delete data by key from a category (legacy — used by ratchet.rs)
-    fn delete(&mut self, _category: &str, _key: &[u8]) -> Result<(), StorageError> {
-        Ok(())
-    }
-
-    /// List all keys in a category (legacy — used by ratchet.rs)
-    fn list_keys(&self, _category: &str) -> Vec<Vec<u8>> {
-        Vec::new()
     }
 }
 
@@ -566,6 +597,72 @@ impl Storage for NoStorage {
     }
     fn set_identity(&mut self, _dest_hash: [u8; TRUNCATED_HASHBYTES], _identity: Identity) {}
 
+    // ─── Known Ratchets ─────────────────────────────────────────────────
+    fn get_known_ratchet(
+        &self,
+        _dest_hash: &[u8; TRUNCATED_HASHBYTES],
+    ) -> Option<[u8; RATCHET_SIZE]> {
+        None
+    }
+    fn remember_known_ratchet(
+        &mut self,
+        _dest_hash: [u8; TRUNCATED_HASHBYTES],
+        _ratchet: [u8; RATCHET_SIZE],
+        _received_at_ms: u64,
+    ) {
+    }
+    fn known_ratchet_count(&self) -> usize {
+        0
+    }
+    fn expire_known_ratchets(&mut self, _now_ms: u64, _expiry_ms: u64) -> usize {
+        0
+    }
+
+    // ─── Local Client Destinations ──────────────────────────────────────
+    fn add_local_client_dest(
+        &mut self,
+        _iface_id: usize,
+        _dest_hash: [u8; TRUNCATED_HASHBYTES],
+    ) -> bool {
+        false
+    }
+    fn remove_local_client_dests(&mut self, _iface_id: usize) {}
+    fn has_local_client_dest(
+        &self,
+        _iface_id: usize,
+        _dest_hash: &[u8; TRUNCATED_HASHBYTES],
+    ) -> bool {
+        false
+    }
+
+    // ─── Local Client Known Destinations ────────────────────────────────
+    fn set_local_client_known_dest(
+        &mut self,
+        _dest_hash: [u8; TRUNCATED_HASHBYTES],
+        _last_seen_ms: u64,
+    ) {
+    }
+    fn has_local_client_known_dest(&self, _dest_hash: &[u8; TRUNCATED_HASHBYTES]) -> bool {
+        false
+    }
+    fn local_client_known_dest_hashes(&self) -> Vec<[u8; TRUNCATED_HASHBYTES]> {
+        Vec::new()
+    }
+    fn expire_local_client_known_dests(&mut self, _now_ms: u64, _expiry_ms: u64) -> usize {
+        0
+    }
+
+    // ─── Sender-Side Ratchet Keys ───────────────────────────────────────
+    fn store_dest_ratchet_keys(
+        &mut self,
+        _dest_hash: [u8; TRUNCATED_HASHBYTES],
+        _serialized: Vec<u8>,
+    ) {
+    }
+    fn load_dest_ratchet_keys(&self, _dest_hash: &[u8; TRUNCATED_HASHBYTES]) -> Option<Vec<u8>> {
+        None
+    }
+
     fn expire_reverses(&mut self, _now_ms: u64, _timeout_ms: u64) -> usize {
         0
     }
@@ -607,6 +704,7 @@ impl Storage for NoStorage {
 mod tests {
     use super::*;
     use crate::test_utils::MockClock;
+    use alloc::vec;
 
     #[test]
     fn test_no_storage_packet_hash() {
@@ -637,12 +735,36 @@ mod tests {
     }
 
     #[test]
-    fn test_no_storage_legacy() {
+    fn test_no_storage_known_ratchets() {
         let mut storage = NoStorage;
-        assert!(storage.load("test", b"key").is_none());
-        assert!(storage.store("test", b"key", b"value").is_ok());
-        assert!(storage.delete("test", b"key").is_ok());
-        assert!(storage.list_keys("test").is_empty());
+        let hash = [0x42u8; TRUNCATED_HASHBYTES];
+        assert!(storage.get_known_ratchet(&hash).is_none());
+        assert!(!storage.has_known_ratchet(&hash));
+        assert_eq!(storage.known_ratchet_count(), 0);
+        storage.remember_known_ratchet(hash, [0xaa; 32], 1000);
+        assert!(storage.get_known_ratchet(&hash).is_none()); // NoStorage is a no-op
+        assert_eq!(storage.expire_known_ratchets(5000, 1000), 0);
+    }
+
+    #[test]
+    fn test_no_storage_local_client() {
+        let mut storage = NoStorage;
+        let hash = [0x42u8; TRUNCATED_HASHBYTES];
+        assert!(!storage.add_local_client_dest(0, hash));
+        assert!(!storage.has_local_client_dest(0, &hash));
+        storage.remove_local_client_dests(0);
+        storage.set_local_client_known_dest(hash, 1000);
+        assert!(!storage.has_local_client_known_dest(&hash));
+        assert!(storage.local_client_known_dest_hashes().is_empty());
+        assert_eq!(storage.expire_local_client_known_dests(5000, 1000), 0);
+    }
+
+    #[test]
+    fn test_no_storage_dest_ratchet_keys() {
+        let mut storage = NoStorage;
+        let hash = [0x42u8; TRUNCATED_HASHBYTES];
+        storage.store_dest_ratchet_keys(hash, vec![1, 2, 3]);
+        assert!(storage.load_dest_ratchet_keys(&hash).is_none());
     }
 
     #[test]

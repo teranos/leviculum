@@ -45,6 +45,10 @@ pub enum DestinationError {
     EncryptionFailed,
     /// Cannot enable ratchets on OUT destination
     CannotEnableRatchetsOnOut,
+    /// Invalid serialized ratchet data
+    InvalidRatchetData,
+    /// Ed25519 signature verification failed
+    InvalidSignature,
 }
 
 impl core::fmt::Display for DestinationError {
@@ -70,6 +74,12 @@ impl core::fmt::Display for DestinationError {
             }
             DestinationError::CannotEnableRatchetsOnOut => {
                 write!(f, "Cannot enable ratchets on OUT destination")
+            }
+            DestinationError::InvalidRatchetData => {
+                write!(f, "Invalid serialized ratchet data")
+            }
+            DestinationError::InvalidSignature => {
+                write!(f, "Ed25519 signature verification failed")
             }
         }
     }
@@ -255,6 +265,8 @@ pub struct Destination {
     enforce_ratchets: bool,
     /// If true, ratchets are enabled for this destination
     ratchets_enabled: bool,
+    /// If true, ratchet keys have changed since last persist
+    ratchets_dirty: bool,
 }
 
 impl Destination {
@@ -314,6 +326,7 @@ impl Destination {
             last_ratchet_time_ms: 0,
             enforce_ratchets: false,
             ratchets_enabled: false,
+            ratchets_dirty: false,
         })
     }
 
@@ -415,6 +428,7 @@ impl Destination {
         self.last_ratchet_time_ms = now_ms;
         self.ratchets.insert(0, ratchet);
         self.ratchets_enabled = true;
+        self.ratchets_dirty = true;
 
         Ok(())
     }
@@ -459,6 +473,7 @@ impl Destination {
         let ratchet = Ratchet::generate(rng, now_ms);
         self.ratchets.insert(0, ratchet);
         self.last_ratchet_time_ms = now_ms;
+        self.ratchets_dirty = true;
 
         // Trim old ratchets if exceeding limit
         if self.ratchets.len() > self.retained_ratchet_count {
@@ -506,6 +521,92 @@ impl Destination {
     /// Get the current number of ratchets stored
     pub fn ratchet_count(&self) -> usize {
         self.ratchets.len()
+    }
+
+    /// Check if ratchet keys have changed since last persist.
+    pub fn ratchets_dirty(&self) -> bool {
+        self.ratchets_dirty
+    }
+
+    /// Clear the dirty flag (call after persisting ratchet keys).
+    pub fn clear_ratchets_dirty(&mut self) {
+        self.ratchets_dirty = false;
+    }
+
+    /// Serialize ratchet private keys as Python-compatible signed msgpack.
+    ///
+    /// Format: `msgpack({"signature": Ed25519(inner), "ratchets": inner})`
+    /// where inner = `msgpack([key1, key2, ...])` and each key is 32 bytes
+    /// (X25519 private key), newest first.
+    ///
+    /// Python ref: `Destination._persist_ratchets()` (Destination.py:210-225).
+    /// Python stores only 32-byte private keys, no timestamps. Public keys
+    /// are derived on load via `X25519PrivateKey.from_private_bytes()`.
+    ///
+    /// Returns None if destination has no identity (cannot sign).
+    pub fn serialize_ratchets_signed(&self) -> Option<Vec<u8>> {
+        let identity = self.identity.as_ref()?;
+
+        // Build inner: msgpack array of N binary(32) entries
+        let inner = msgpack_encode_ratchet_array(&self.ratchets);
+
+        // Sign the inner bytes
+        let signature = identity.sign(&inner).ok()?;
+
+        // Build outer: msgpack fixmap(2) with "signature" and "ratchets" keys
+        msgpack_encode_signed_ratchets(&signature, &inner)
+    }
+
+    /// Load ratchet private keys from Python-compatible signed msgpack.
+    ///
+    /// Verifies Ed25519 signature, then reconstructs Ratchet structs.
+    /// Since Python doesn't store timestamps, loaded ratchets get
+    /// `created_at_ms = 0`.
+    ///
+    /// Python ref: `Destination._reload_ratchets()` (Destination.py:437-476).
+    pub fn load_ratchets_signed(&mut self, data: &[u8]) -> Result<usize, DestinationError> {
+        let identity = self.identity.as_ref().ok_or(DestinationError::NoIdentity)?;
+
+        // Parse outer map: extract "signature" and "ratchets" blobs
+        let (signature, inner) =
+            msgpack_parse_signed_ratchets(data).ok_or(DestinationError::InvalidRatchetData)?;
+
+        // Verify signature
+        let valid = identity
+            .verify(inner, signature)
+            .map_err(|_| DestinationError::InvalidSignature)?;
+        if !valid {
+            return Err(DestinationError::InvalidSignature);
+        }
+
+        // Parse inner array: extract 32-byte private key blobs
+        let keys =
+            msgpack_parse_ratchet_array(inner).ok_or(DestinationError::InvalidRatchetData)?;
+
+        let mut ratchets = Vec::with_capacity(keys.len());
+        for key_bytes in keys {
+            let mut key = [0u8; RATCHET_SIZE];
+            key.copy_from_slice(key_bytes);
+            ratchets.push(Ratchet::from_private_key_bytes(key, 0));
+        }
+
+        let count = ratchets.len();
+        self.ratchets = ratchets;
+        self.ratchets_dirty = false;
+
+        if count > 0 {
+            self.ratchets_enabled = true;
+        }
+
+        Ok(count)
+    }
+
+    /// Set the last ratchet rotation time.
+    ///
+    /// Used after loading persisted ratchets whose timestamps are from a
+    /// previous session's monotonic domain and would block rotation.
+    pub fn set_last_ratchet_time(&mut self, time_ms: u64) {
+        self.last_ratchet_time_ms = time_ms;
     }
 
     /// Enforce ratchet-only decryption
@@ -706,6 +807,209 @@ impl Destination {
         };
 
         Ok(packet)
+    }
+}
+
+// ─── Hand-rolled msgpack helpers (no_std compatible) ────────────────────────
+//
+// These encode/decode only the exact msgpack types needed for the signed
+// ratchet format. Not a general-purpose msgpack library.
+
+/// Encode an array of ratchet private keys as msgpack.
+///
+/// Format: array header + N × bin8(32).
+fn msgpack_encode_ratchet_array(ratchets: &[Ratchet]) -> Vec<u8> {
+    let n = ratchets.len();
+    // Each entry: 1 (bin8) + 1 (len=32) + 32 (data) = 34 bytes
+    let mut buf = Vec::with_capacity(3 + n * 34);
+
+    // Array header
+    if n <= 15 {
+        buf.push(0x90 | (n as u8));
+    } else {
+        buf.push(0xdc); // array16
+        buf.extend_from_slice(&(n as u16).to_be_bytes());
+    }
+
+    // Elements: bin8(32) for each private key
+    for ratchet in ratchets {
+        buf.push(0xc4); // bin8
+        buf.push(RATCHET_SIZE as u8); // 32
+        buf.extend_from_slice(&ratchet.private_key_bytes());
+    }
+
+    buf
+}
+
+/// Encode the outer signed ratchets map as msgpack.
+///
+/// Format: fixmap(2) { "signature": bin8(64), "ratchets": bin16/bin32(inner) }
+fn msgpack_encode_signed_ratchets(signature: &[u8; 64], inner: &[u8]) -> Option<Vec<u8>> {
+    // Outer map size: 1 (fixmap) + 10 (fixstr "signature") + 2+64 (bin8 sig)
+    //               + 9 (fixstr "ratchets") + 3..5+inner.len() (bin16/bin32)
+    let mut buf = Vec::with_capacity(1 + 10 + 66 + 9 + 5 + inner.len());
+
+    buf.push(0x82); // fixmap(2)
+
+    // Key: "signature" (9 bytes)
+    buf.push(0xa9); // fixstr(9)
+    buf.extend_from_slice(b"signature");
+
+    // Value: bin8(64) — Ed25519 signature
+    buf.push(0xc4); // bin8
+    buf.push(64);
+    buf.extend_from_slice(signature);
+
+    // Key: "ratchets" (8 bytes)
+    buf.push(0xa8); // fixstr(8)
+    buf.extend_from_slice(b"ratchets");
+
+    // Value: bin16 or bin32 — inner msgpack array
+    let inner_len = inner.len();
+    if inner_len <= 0xFFFF {
+        buf.push(0xc5); // bin16
+        buf.extend_from_slice(&(inner_len as u16).to_be_bytes());
+    } else {
+        buf.push(0xc6); // bin32
+        buf.extend_from_slice(&(inner_len as u32).to_be_bytes());
+    }
+    buf.extend_from_slice(inner);
+
+    Some(buf)
+}
+
+/// Parse the outer signed ratchets map from msgpack.
+///
+/// Returns (signature_bytes, inner_ratchets_bytes) or None if malformed.
+fn msgpack_parse_signed_ratchets(data: &[u8]) -> Option<(&[u8], &[u8])> {
+    let mut pos = 0;
+
+    // fixmap(2)
+    if read_byte(data, &mut pos)? != 0x82 {
+        return None;
+    }
+
+    let mut signature: Option<&[u8]> = None;
+    let mut ratchets: Option<&[u8]> = None;
+
+    for _ in 0..2 {
+        let key = read_msgpack_str(data, &mut pos)?;
+        let value = read_msgpack_bin(data, &mut pos)?;
+
+        if key == b"signature" {
+            signature = Some(value);
+        } else if key == b"ratchets" {
+            ratchets = Some(value);
+        }
+    }
+
+    Some((signature?, ratchets?))
+}
+
+/// Parse an array of 32-byte binary blobs from msgpack.
+///
+/// Returns slices into the original data.
+fn msgpack_parse_ratchet_array(data: &[u8]) -> Option<Vec<&[u8]>> {
+    let mut pos = 0;
+    let count = read_msgpack_array_len(data, &mut pos)?;
+
+    let mut keys = Vec::with_capacity(count);
+    for _ in 0..count {
+        let blob = read_msgpack_bin(data, &mut pos)?;
+        if blob.len() != RATCHET_SIZE {
+            return None;
+        }
+        keys.push(blob);
+    }
+
+    Some(keys)
+}
+
+// ─── Low-level msgpack readers ──────────────────────────────────────────────
+
+fn read_byte(data: &[u8], pos: &mut usize) -> Option<u8> {
+    let b = *data.get(*pos)?;
+    *pos += 1;
+    Some(b)
+}
+
+fn read_be_u16(data: &[u8], pos: &mut usize) -> Option<u16> {
+    if *pos + 2 > data.len() {
+        return None;
+    }
+    let val = u16::from_be_bytes([data[*pos], data[*pos + 1]]);
+    *pos += 2;
+    Some(val)
+}
+
+fn read_be_u32(data: &[u8], pos: &mut usize) -> Option<u32> {
+    if *pos + 4 > data.len() {
+        return None;
+    }
+    let val = u32::from_be_bytes([data[*pos], data[*pos + 1], data[*pos + 2], data[*pos + 3]]);
+    *pos += 4;
+    Some(val)
+}
+
+fn read_msgpack_str<'a>(data: &'a [u8], pos: &mut usize) -> Option<&'a [u8]> {
+    let tag = read_byte(data, pos)?;
+    let len = if tag & 0xe0 == 0xa0 {
+        // fixstr: 0xa0..0xbf, length in lower 5 bits
+        (tag & 0x1f) as usize
+    } else if tag == 0xd9 {
+        // str8
+        read_byte(data, pos)? as usize
+    } else if tag == 0xda {
+        // str16
+        read_be_u16(data, pos)? as usize
+    } else {
+        return None;
+    };
+
+    if *pos + len > data.len() {
+        return None;
+    }
+    let s = &data[*pos..*pos + len];
+    *pos += len;
+    Some(s)
+}
+
+fn read_msgpack_bin<'a>(data: &'a [u8], pos: &mut usize) -> Option<&'a [u8]> {
+    let tag = read_byte(data, pos)?;
+    let len = if tag == 0xc4 {
+        // bin8
+        read_byte(data, pos)? as usize
+    } else if tag == 0xc5 {
+        // bin16
+        read_be_u16(data, pos)? as usize
+    } else if tag == 0xc6 {
+        // bin32
+        read_be_u32(data, pos)? as usize
+    } else {
+        return None;
+    };
+
+    if *pos + len > data.len() {
+        return None;
+    }
+    let b = &data[*pos..*pos + len];
+    *pos += len;
+    Some(b)
+}
+
+fn read_msgpack_array_len(data: &[u8], pos: &mut usize) -> Option<usize> {
+    let tag = read_byte(data, pos)?;
+    if tag & 0xf0 == 0x90 {
+        // fixarray: 0x90..0x9f
+        Some((tag & 0x0f) as usize)
+    } else if tag == 0xdc {
+        // array16
+        Some(read_be_u16(data, pos)? as usize)
+    } else if tag == 0xdd {
+        // array32
+        Some(read_be_u32(data, pos)? as usize)
+    } else {
+        None
     }
 }
 
@@ -1532,5 +1836,172 @@ mod tests {
         assert_eq!(map.get(&hash), Some(&"test"));
         // Lookup via raw bytes via Borrow
         assert_eq!(map.get(&[0x42u8; 16]), Some(&"test"));
+    }
+
+    // ─── Signed Ratchet Serialization Tests ─────────────────────────────────
+
+    #[test]
+    fn test_serialize_ratchets_signed_roundtrip() {
+        let identity = Identity::generate(&mut OsRng);
+        let mut dest = Destination::new(
+            Some(identity),
+            Direction::In,
+            DestinationType::Single,
+            "testapp",
+            &["ratchetrt"],
+        )
+        .unwrap();
+
+        dest.enable_ratchets(&mut OsRng, TEST_TIME_MS).unwrap();
+        // Generate a few more ratchets by forcing rotation
+        dest.set_ratchet_interval(1000); // 1 second
+        assert!(dest.rotate_ratchet_if_needed(&mut OsRng, TEST_TIME_MS + 2000));
+        assert!(dest.rotate_ratchet_if_needed(&mut OsRng, TEST_TIME_MS + 4000));
+        let original_count = dest.ratchet_count();
+        assert_eq!(original_count, 3);
+
+        // Collect original public keys
+        let original_keys: Vec<[u8; RATCHET_SIZE]> =
+            dest.ratchets.iter().map(|r| r.public_key_bytes()).collect();
+
+        let signed = dest.serialize_ratchets_signed().unwrap();
+
+        // Load into a fresh destination with the same identity
+        let id_bytes = dest.identity().unwrap().private_key_bytes().unwrap();
+        let identity2 = Identity::from_private_key_bytes(&id_bytes).unwrap();
+        let mut dest2 = Destination::new(
+            Some(identity2),
+            Direction::In,
+            DestinationType::Single,
+            "testapp",
+            &["ratchetrt"],
+        )
+        .unwrap();
+
+        let loaded = dest2.load_ratchets_signed(&signed).unwrap();
+        assert_eq!(loaded, original_count);
+        assert_eq!(dest2.ratchet_count(), original_count);
+        assert!(dest2.ratchets_enabled());
+
+        // Verify same public keys (derived from same private keys)
+        let loaded_keys: Vec<[u8; RATCHET_SIZE]> = dest2
+            .ratchets
+            .iter()
+            .map(|r| r.public_key_bytes())
+            .collect();
+        assert_eq!(original_keys, loaded_keys);
+
+        // Loaded ratchets have created_at_ms = 0 (no timestamps in Python format)
+        for r in &dest2.ratchets {
+            assert_eq!(r.created_at_ms(), 0);
+        }
+    }
+
+    #[test]
+    fn test_load_ratchets_signed_bad_signature() {
+        let identity = Identity::generate(&mut OsRng);
+        let mut dest = Destination::new(
+            Some(identity),
+            Direction::In,
+            DestinationType::Single,
+            "testapp",
+            &["badsig"],
+        )
+        .unwrap();
+
+        dest.enable_ratchets(&mut OsRng, TEST_TIME_MS).unwrap();
+        let mut signed = dest.serialize_ratchets_signed().unwrap();
+
+        // Flip a byte in the signature (which is at a known offset after the key)
+        // The signature comes after: 0x82 + 0xa9 + "signature" + 0xc4 + 0x40 = 13 bytes
+        signed[13] ^= 0xff;
+
+        let id_bytes = dest.identity().unwrap().private_key_bytes().unwrap();
+        let identity2 = Identity::from_private_key_bytes(&id_bytes).unwrap();
+        let mut dest2 = Destination::new(
+            Some(identity2),
+            Direction::In,
+            DestinationType::Single,
+            "testapp",
+            &["badsig"],
+        )
+        .unwrap();
+
+        let result = dest2.load_ratchets_signed(&signed);
+        assert_eq!(result, Err(DestinationError::InvalidSignature));
+    }
+
+    #[test]
+    fn test_load_ratchets_signed_python_compat() {
+        // Test vector generated by scripts/gen_ratchet_test_vector.py using
+        // Python's umsgpack.packb() and Ed25519PrivateKey.sign() — the exact
+        // same code path as Destination._persist_ratchets().
+
+        // Identity private key bytes: [x25519_prv(32) | ed25519_prv(32)]
+        #[rustfmt::skip]
+        let identity_prv: [u8; 64] = [
+            // X25519 private key
+            96, 156, 116, 115, 83, 108, 6, 122, 130, 102, 19, 240, 158, 159, 111, 48,
+            143, 152, 128, 101, 110, 18, 55, 203, 191, 42, 184, 208, 141, 75, 215, 76,
+            // Ed25519 signing private key
+            190, 174, 16, 135, 56, 204, 86, 145, 169, 175, 200, 150, 128, 74, 169, 110,
+            166, 94, 141, 91, 116, 6, 94, 141, 196, 208, 179, 117, 237, 118, 121, 46,
+        ];
+
+        // Signed ratchet file bytes (123 bytes) — output of Python's
+        // umsgpack.packb({"signature": sign(packed), "ratchets": packed})
+        // where packed = umsgpack.packb([bytes(0x42 * 32)])
+        #[rustfmt::skip]
+        let python_file_bytes: [u8; 123] = [
+            0x82, 0xa9, 0x73, 0x69, 0x67, 0x6e, 0x61, 0x74, 0x75, 0x72, 0x65,
+            0xc4, 0x40,
+            0x48, 0xe4, 0x54, 0x9d, 0x60, 0xcf, 0xea, 0xfd, 0xc3, 0x87, 0xa7,
+            0x27, 0xa9, 0x7c, 0xdd, 0x0e, 0x88, 0x18, 0xde, 0x28, 0xd1, 0x21,
+            0xd8, 0x80, 0x6d, 0x29, 0x15, 0xfc, 0x48, 0xff, 0x7f, 0x93, 0xfe,
+            0xd2, 0x1b, 0x29, 0x7e, 0x75, 0xbf, 0x86, 0x10, 0x72, 0x15, 0xc4,
+            0xc6, 0x2c, 0xb2, 0xc5, 0xb7, 0x69, 0x44, 0x00, 0xaa, 0x29, 0xed,
+            0x90, 0x9c, 0xb1, 0x84, 0x70, 0xc4, 0x9b, 0x62, 0x08,
+            0xa8, 0x72, 0x61, 0x74, 0x63, 0x68, 0x65, 0x74, 0x73,
+            0xc4, 0x23,
+            0x91, 0xc4, 0x20,
+            0x42, 0x42, 0x42, 0x42, 0x42, 0x42, 0x42, 0x42, 0x42, 0x42, 0x42,
+            0x42, 0x42, 0x42, 0x42, 0x42, 0x42, 0x42, 0x42, 0x42, 0x42, 0x42,
+            0x42, 0x42, 0x42, 0x42, 0x42, 0x42, 0x42, 0x42, 0x42, 0x42,
+        ];
+
+        // Expected ratchet public key (derived by Python from the 0x42-filled private key)
+        #[rustfmt::skip]
+        let expected_ratchet_pub: [u8; 32] = [
+            19, 44, 68, 43, 224, 16, 251, 213, 126, 114, 96, 51, 40, 170, 118, 231,
+            31, 204, 193, 80, 58, 174, 33, 147, 39, 209, 77, 156, 153, 147, 244, 114,
+        ];
+
+        // Reconstruct the identity from private key bytes
+        let identity = Identity::from_private_key_bytes(&identity_prv).unwrap();
+
+        // Load the Python-generated signed ratchet file
+        let mut dest = Destination::new(
+            Some(identity),
+            Direction::In,
+            DestinationType::Single,
+            "testapp",
+            &["pycompat"],
+        )
+        .unwrap();
+
+        let loaded = dest.load_ratchets_signed(&python_file_bytes).unwrap();
+        assert_eq!(loaded, 1);
+
+        // Verify the loaded ratchet derives the same public key Python computed
+        assert_eq!(dest.ratchets[0].public_key_bytes(), expected_ratchet_pub);
+    }
+
+    #[test]
+    fn test_serialize_ratchets_signed_no_identity() {
+        // PLAIN destination has no identity, serialize should return None
+        let dest =
+            Destination::new(None, Direction::In, DestinationType::Plain, "plain", &[]).unwrap();
+
+        assert!(dest.serialize_ratchets_signed().is_none());
     }
 }

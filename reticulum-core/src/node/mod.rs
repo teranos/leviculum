@@ -205,6 +205,7 @@ impl<R: CryptoRngCore, C: Clock, S: Storage> NodeCore<R, C, S> {
     /// * `dest` - The destination to register
     pub fn register_destination(&mut self, dest: Destination) {
         let hash = *dest.hash();
+        let ratchets_enabled = dest.ratchets_enabled();
 
         // Only Direction::In destinations are locally reachable and should
         // be registered with transport for routing. Direction::Out destinations
@@ -216,6 +217,28 @@ impl<R: CryptoRngCore, C: Clock, S: Storage> NodeCore<R, C, S> {
         }
 
         self.destinations.insert(hash, dest);
+
+        // Load persisted ratchet keys if ratchets are enabled
+        if ratchets_enabled {
+            if let Some(serialized) = self
+                .transport
+                .storage()
+                .load_dest_ratchet_keys(hash.as_bytes())
+            {
+                if let Some(dest) = self.destinations.get_mut(&hash) {
+                    if let Err(e) = dest.load_ratchets_signed(&serialized) {
+                        tracing::warn!(
+                            "Failed to load persisted ratchet keys for <{}>: {}",
+                            hash,
+                            e
+                        );
+                    }
+                    // Reset rotation timer — loaded timestamps are from a previous
+                    // session's monotonic domain and would block rotation.
+                    dest.set_last_ratchet_time(0);
+                }
+            }
+        }
     }
 
     /// Unregister a destination
@@ -345,6 +368,7 @@ impl<R: CryptoRngCore, C: Clock, S: Storage> NodeCore<R, C, S> {
             .ok_or(AnnounceError::DestinationNotFound)?;
 
         let packet = dest.announce(app_data, &mut self.rng, now_ms)?;
+        let ratchet_pub = dest.current_ratchet_public();
 
         let mut buf = [0u8; crate::constants::MTU];
         let len = packet
@@ -355,6 +379,27 @@ impl<R: CryptoRngCore, C: Clock, S: Storage> NodeCore<R, C, S> {
             .storage_mut()
             .set_announce_cache(dest_hash.into_bytes(), buf[..len].to_vec());
         self.transport.send_on_all_interfaces(&buf[..len]);
+
+        // Sender self-remember: store own ratchet in known_ratchets so that
+        // encrypt-to-self works (Python Destination.announce -> _remember_ratchet).
+        if let Some(rp) = ratchet_pub {
+            self.transport
+                .storage_mut()
+                .remember_known_ratchet(dest_hash.into_bytes(), rp, now_ms);
+        }
+
+        // Persist ratchet private keys if they changed (new key generated).
+        if let Some(dest) = self.destinations.get_mut(dest_hash) {
+            if dest.ratchets_dirty() {
+                if let Some(signed) = dest.serialize_ratchets_signed() {
+                    self.transport
+                        .storage_mut()
+                        .store_dest_ratchet_keys(dest_hash.into_bytes(), signed);
+                }
+                dest.clear_ratchets_dirty();
+            }
+        }
+
         Ok(self.process_events_and_actions())
     }
 
@@ -384,12 +429,15 @@ impl<R: CryptoRngCore, C: Clock, S: Storage> NodeCore<R, C, S> {
             HeaderType, PacketContext, PacketData, PacketFlags, PacketType, TransportType,
         };
 
+        // Look up ratchet key for forward-secure encryption (Python Identity.encrypt).
+        let ratchet_key = self.transport.get_ratchet(dest_hash);
+
         // Encrypt payload using remote identity from storage.
         // Access transport.storage() directly to allow disjoint borrow of self.rng.
         let payload =
             if let Some(identity) = self.transport.storage().get_identity(dest_hash.as_bytes()) {
                 identity
-                    .encrypt_for_destination(data, None, &mut self.rng)
+                    .encrypt_for_destination(data, ratchet_key.as_ref(), &mut self.rng)
                     .map_err(|_| send::SendError::EncryptionFailed)?
             } else {
                 return Err(send::SendError::EncryptionFailed);
@@ -518,6 +566,8 @@ impl<R: CryptoRngCore, C: Clock, S: Storage> NodeCore<R, C, S> {
                     continue;
                 }
             };
+            let ratchet_pub = dest.current_ratchet_public();
+            let ratchets_dirty = dest.ratchets_dirty();
             let mut buf = [0u8; crate::constants::MTU];
             match packet.pack(&mut buf) {
                 Ok(len) => {
@@ -526,6 +576,27 @@ impl<R: CryptoRngCore, C: Clock, S: Storage> NodeCore<R, C, S> {
                         .set_announce_cache(dest_hash.into_bytes(), buf[..len].to_vec());
                     self.transport.send_on_all_interfaces(&buf[..len]);
                     tracing::debug!("Management announce sent for <{}>", dest_hash);
+
+                    // Sender self-remember for management destinations
+                    if let Some(rp) = ratchet_pub {
+                        self.transport.storage_mut().remember_known_ratchet(
+                            dest_hash.into_bytes(),
+                            rp,
+                            now_ms,
+                        );
+                    }
+
+                    // Persist ratchet keys if changed
+                    if ratchets_dirty {
+                        if let Some(dest) = self.destinations.get_mut(dest_hash) {
+                            if let Some(signed) = dest.serialize_ratchets_signed() {
+                                self.transport
+                                    .storage_mut()
+                                    .store_dest_ratchet_keys(dest_hash.into_bytes(), signed);
+                            }
+                            dest.clear_ratchets_dirty();
+                        }
+                    }
                 }
                 Err(_) => {
                     tracing::warn!("Management announce pack failed for <{}>", dest_hash);
@@ -710,12 +781,8 @@ impl<R: CryptoRngCore, C: Clock, S: Storage> NodeCore<R, C, S> {
         // The daemon doesn't hold their private keys, so it rebroadcasts cached
         // bytes. This is safe because the peer on the recovered interface has
         // never seen these announces.
-        let client_hashes: Vec<[u8; crate::constants::TRUNCATED_HASHBYTES]> = self
-            .transport
-            .local_client_known_dests()
-            .keys()
-            .copied()
-            .collect();
+        let client_hashes: Vec<[u8; crate::constants::TRUNCATED_HASHBYTES]> =
+            self.transport.local_client_known_dest_hashes();
         for hash in &client_hashes {
             // Skip if this dest was already announced as a daemon-owned destination
             if local_hashes.iter().any(|h| h.as_bytes() == hash) {
@@ -4113,6 +4180,89 @@ mod tests {
     }
 
     #[test]
+    fn test_send_single_packet_uses_ratchet_key() {
+        // Verify that send_single_packet uses the ratchet key when available.
+        // The receiver enforces ratchets, so packets encrypted without the
+        // ratchet key are silently dropped — proving the sender used it.
+        use crate::transport::{InterfaceId, PathEntry};
+
+        let recv_identity = Identity::generate(&mut OsRng);
+        let recv_pub_bytes = recv_identity.public_key_bytes();
+        let recv_clock = MockClock::new(TEST_TIME_MS);
+        let mut receiver = NodeCoreBuilder::new().build(OsRng, recv_clock, NoStorage);
+
+        let mut dest = Destination::new(
+            Some(recv_identity),
+            Direction::In,
+            DestinationType::Single,
+            "testapp",
+            &["ratchetenc"],
+        )
+        .unwrap();
+        let dest_hash = *dest.hash();
+
+        // Enable and enforce ratchets — receiver drops packets not using a ratchet
+        dest.enable_ratchets(&mut OsRng, TEST_TIME_MS).unwrap();
+        dest.set_enforce_ratchets(true);
+        let ratchet_pub = dest.current_ratchet_public().unwrap();
+
+        receiver.register_destination(dest);
+
+        let _recv_iface = receiver
+            .transport
+            .register_interface(alloc::boxed::Box::new(MockInterface::new("recv_if", 1)));
+
+        let send_clock = MockClock::new(TEST_TIME_MS);
+        let mut sender =
+            NodeCoreBuilder::new().build(OsRng, send_clock, MemoryStorage::with_defaults());
+        let sender_iface = sender
+            .transport
+            .register_interface(alloc::boxed::Box::new(MockInterface::new("send_if", 2)));
+        sender.transport.insert_path(
+            dest_hash.into_bytes(),
+            PathEntry {
+                hops: 1,
+                expires_ms: u64::MAX,
+                interface_index: sender_iface,
+                random_blobs: Vec::new(),
+                next_hop: None,
+            },
+        );
+
+        // Teach sender about receiver's identity
+        let pub_identity = Identity::from_public_key_bytes(&recv_pub_bytes).unwrap();
+        sender.remember_identity(dest_hash, pub_identity);
+
+        // Store the ratchet key in sender's known_ratchets (normally done by announce processing)
+        sender.transport.storage_mut().remember_known_ratchet(
+            dest_hash.into_bytes(),
+            ratchet_pub,
+            TEST_TIME_MS,
+        );
+
+        // Send encrypted packet — should use ratchet key
+        let payload = b"ratchet encrypted hello";
+        let (_receipt_hash, output) = sender.send_single_packet(&dest_hash, payload).unwrap();
+        let sent_raw = extract_broadcast_data(&output);
+
+        // Receiver processes the packet — enforce_ratchets means it drops non-ratcheted packets
+        let recv_output = receiver.handle_packet(InterfaceId(0), &sent_raw);
+        let received_data = recv_output
+            .events
+            .iter()
+            .find_map(|e| match e {
+                NodeEvent::PacketReceived { data, .. } => Some(data.clone()),
+                _ => None,
+            })
+            .expect("receiver should emit PacketReceived — proves ratchet key was used");
+
+        assert_eq!(
+            received_data, payload,
+            "decrypted data should match original plaintext"
+        );
+    }
+
+    #[test]
     fn test_announce_populates_known_identities() {
         // When a node receives an announce, it should populate storage identities
         use crate::transport::InterfaceId;
@@ -4842,8 +4992,8 @@ mod tests {
         );
         assert!(
             node.transport
-                .local_client_known_dests()
-                .contains_key(&client_hash),
+                .storage()
+                .has_local_client_known_dest(&client_hash),
             "Client dest should be tracked in local_client_known_dests"
         );
 
@@ -4894,6 +5044,199 @@ mod tests {
         assert!(
             has_client_broadcast,
             "Should rebroadcast cached announce for local-client dest"
+        );
+    }
+
+    #[test]
+    fn test_announce_self_remembers_ratchet() {
+        let clock = MockClock::new(TEST_TIME_MS);
+        let mut node = NodeCoreBuilder::new().enable_transport(true).build(
+            OsRng,
+            clock,
+            MemoryStorage::with_defaults(),
+        );
+
+        // Register interface so announce can be sent
+        node.transport
+            .register_interface(Box::new(MockInterface::new("if0", 1)));
+
+        // Create destination with ratchets enabled
+        let identity = Identity::generate(&mut OsRng);
+        let mut dest = Destination::new(
+            Some(identity),
+            Direction::In,
+            DestinationType::Single,
+            "testapp",
+            &["selfratchet"],
+        )
+        .unwrap();
+        dest.enable_ratchets(&mut OsRng, TEST_TIME_MS).unwrap();
+
+        let dest_hash = *dest.hash();
+        let expected_ratchet = dest.current_ratchet_public().unwrap();
+        node.register_destination(dest);
+
+        // Announce
+        let _output = node.announce_destination(&dest_hash, None).unwrap();
+
+        // Verify self-remember
+        let stored = node.transport.get_ratchet(&dest_hash);
+        assert!(
+            stored.is_some(),
+            "Sender should self-remember its ratchet after announce"
+        );
+        assert_eq!(
+            stored.unwrap(),
+            expected_ratchet,
+            "Self-remembered ratchet should match destination's current ratchet"
+        );
+    }
+
+    #[test]
+    fn test_announce_persists_ratchet_keys() {
+        let clock = MockClock::new(TEST_TIME_MS);
+        let storage = MemoryStorage::with_defaults();
+        let mut node = NodeCoreBuilder::new().build(OsRng, clock, storage);
+
+        let identity = Identity::generate(&mut OsRng);
+        let mut dest = Destination::new(
+            Some(identity),
+            Direction::In,
+            DestinationType::Single,
+            "testapp",
+            &["persistratchet"],
+        )
+        .unwrap();
+        dest.enable_ratchets(&mut OsRng, TEST_TIME_MS).unwrap();
+        let dest_hash = *dest.hash();
+        node.register_destination(dest);
+
+        // Announce triggers ratchet persistence
+        let _output = node.announce_destination(&dest_hash, None).unwrap();
+
+        // Verify ratchet keys were persisted via Storage
+        let stored_keys = node
+            .transport
+            .storage()
+            .load_dest_ratchet_keys(dest_hash.as_bytes());
+        assert!(
+            stored_keys.is_some(),
+            "Ratchet keys should be persisted after announce"
+        );
+
+        // Verify the serialized data is non-empty signed msgpack (starts with 0x82 fixmap)
+        let data = stored_keys.unwrap();
+        assert!(
+            !data.is_empty(),
+            "Serialized ratchet keys should not be empty"
+        );
+        assert_eq!(
+            data[0], 0x82,
+            "Signed ratchet keys should start with msgpack fixmap(2)"
+        );
+    }
+
+    #[test]
+    fn test_register_destination_loads_ratchet_keys() {
+        // Phase 1: Create a node, register a ratchet-enabled destination,
+        // announce it (persists keys), then extract the persisted bytes.
+        let clock = MockClock::new(TEST_TIME_MS);
+        let storage = MemoryStorage::with_defaults();
+        let mut node = NodeCoreBuilder::new().build(OsRng, clock, storage);
+
+        let identity = Identity::generate(&mut OsRng);
+        let mut dest = Destination::new(
+            Some(identity),
+            Direction::In,
+            DestinationType::Single,
+            "testapp",
+            &["loadratchet"],
+        )
+        .unwrap();
+        dest.enable_ratchets(&mut OsRng, TEST_TIME_MS).unwrap();
+        let dest_hash = *dest.hash();
+        node.register_destination(dest);
+        let _output = node.announce_destination(&dest_hash, None).unwrap();
+
+        // Confirm keys were persisted (now signed msgpack format)
+        let stored = node
+            .transport
+            .storage()
+            .load_dest_ratchet_keys(dest_hash.as_bytes());
+        assert!(stored.is_some(), "Keys should be persisted after announce");
+        let serialized = stored.unwrap();
+        assert!(!serialized.is_empty(), "Should have persisted ratchet keys");
+
+        // Phase 2: Build a new node with fresh storage pre-loaded with
+        // the serialized ratchet keys, then register a destination with
+        // the same hash. register_destination should load the persisted keys.
+        let mut fresh_storage = MemoryStorage::with_defaults();
+        fresh_storage.store_dest_ratchet_keys(dest_hash.into_bytes(), serialized);
+
+        let clock2 = MockClock::new(TEST_TIME_MS);
+        let mut node2 = NodeCoreBuilder::new().build(OsRng, clock2, fresh_storage);
+
+        // Take the destination out of the first node and re-register it
+        // on the second node. The load path in register_destination should
+        // find the pre-loaded keys in storage.
+        let dest_back = node.destinations.remove(&dest_hash).unwrap();
+        let count_before = dest_back.ratchet_count();
+
+        node2.register_destination(dest_back);
+        let loaded_dest = node2.destinations.get(&dest_hash).unwrap();
+        assert!(
+            loaded_dest.ratchet_count() >= count_before,
+            "Should have at least as many ratchets after loading from storage"
+        );
+    }
+
+    #[test]
+    fn test_register_destination_resets_ratchet_timer() {
+        // After loading persisted keys, the rotation timer should be 0
+        // so that rotation is not blocked by stale timestamps.
+        let clock = MockClock::new(TEST_TIME_MS);
+        let storage = MemoryStorage::with_defaults();
+        let mut node = NodeCoreBuilder::new().build(OsRng, clock, storage);
+
+        let identity = Identity::generate(&mut OsRng);
+        let mut dest = Destination::new(
+            Some(identity),
+            Direction::In,
+            DestinationType::Single,
+            "testapp",
+            &["resettimer"],
+        )
+        .unwrap();
+        dest.enable_ratchets(&mut OsRng, TEST_TIME_MS).unwrap();
+        let dest_hash = *dest.hash();
+        node.register_destination(dest);
+        let _output = node.announce_destination(&dest_hash, None).unwrap();
+
+        let serialized = node
+            .transport
+            .storage()
+            .load_dest_ratchet_keys(dest_hash.as_bytes())
+            .unwrap();
+
+        // Build second node and load keys
+        let mut fresh_storage = MemoryStorage::with_defaults();
+        fresh_storage.store_dest_ratchet_keys(dest_hash.into_bytes(), serialized);
+        // Use a time well past the default rotation interval (30 min = 1_800_000ms)
+        let future_ms = TEST_TIME_MS + 2_000_000;
+        let clock2 = MockClock::new(future_ms);
+        let mut node2 = NodeCoreBuilder::new().build(OsRng, clock2, fresh_storage);
+
+        let dest_back = node.destinations.remove(&dest_hash).unwrap();
+        node2.register_destination(dest_back);
+
+        // The loaded dest should be able to rotate immediately because
+        // the timer was reset to 0 and current time > rotation interval.
+        let loaded = node2.destinations.get_mut(&dest_hash).unwrap();
+        assert!(loaded.ratchets_enabled(), "Ratchets should be enabled");
+        let rotated = loaded.rotate_ratchet_if_needed(&mut OsRng, future_ms);
+        assert!(
+            rotated,
+            "Should be able to rotate after loading persisted keys (timer reset to 0)"
         );
     }
 }

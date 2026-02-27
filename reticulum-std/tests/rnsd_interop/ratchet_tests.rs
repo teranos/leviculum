@@ -8,7 +8,7 @@
 //! - Receiving ratcheted announces from Python
 //! - Sending ratcheted announces from Rust
 //! - Rust-to-Rust announce exchange via Python relay
-//! - Encrypted packet exchange using ratchets
+//! - Encrypted packet exchange using ratchets (with enforce_ratchets proving correctness)
 //!
 //! ## Running These Tests
 //!
@@ -28,12 +28,17 @@ use tokio::time::timeout;
 
 use reticulum_core::constants::{MTU, RATCHET_SIZE};
 use reticulum_core::identity::Identity;
+use reticulum_core::node::NodeEvent;
 use reticulum_core::packet::{Packet, PacketType};
-use reticulum_core::{Destination, DestinationType, Direction};
+use reticulum_core::{Destination, DestinationHash, DestinationType, Direction};
+use reticulum_std::driver::ReticulumNodeBuilder;
 use reticulum_std::interfaces::hdlc::{frame, DeframeResult, Deframer};
 
-use crate::common::{connect_to_daemon, now_ms, ParsedAnnounce, DAEMON_PROCESS_TIME};
-use crate::harness::TestDaemon;
+use crate::common::{
+    connect_to_daemon, now_ms, parse_dest_hash, wait_for_event, wait_for_path_on_node,
+    ParsedAnnounce, DAEMON_PROCESS_TIME,
+};
+use crate::harness::{DaemonTopology, TestDaemon};
 
 // =========================================================================
 // Receiving ratcheted announces from Python
@@ -495,4 +500,318 @@ async fn wait_for_announce_with_hash(
         }
     }
     None
+}
+
+// =========================================================================
+// Helpers for ratcheted encryption tests
+// =========================================================================
+
+/// Build a Rust node connected to a daemon, ready for single-packet operations.
+async fn build_rust_node(
+    daemon: &TestDaemon,
+) -> (
+    reticulum_std::driver::ReticulumNode,
+    tokio::sync::mpsc::Receiver<NodeEvent>,
+) {
+    let mut node = ReticulumNodeBuilder::new()
+        .add_tcp_client(daemon.rns_addr())
+        .build()
+        .await
+        .expect("Failed to build node");
+
+    let event_rx = node.take_event_receiver().unwrap();
+    node.start().await.expect("Failed to start node");
+
+    // Allow TCP connection to settle
+    tokio::time::sleep(Duration::from_secs(1)).await;
+
+    (node, event_rx)
+}
+
+/// Register Python destination with ratchets enabled and enforced, then announce.
+///
+/// Returns the destination hash (parsed) and public key hex.
+/// Enforcement means Python drops packets not encrypted with the ratchet key.
+async fn setup_ratcheted_python_dest(
+    daemon: &TestDaemon,
+    rust_node: &reticulum_std::driver::ReticulumNode,
+    app_name: &str,
+    aspects: &[&str],
+    app_data: &[u8],
+) -> (DestinationHash, String) {
+    let dest_info = daemon
+        .register_destination(app_name, aspects)
+        .await
+        .expect("Failed to register destination");
+
+    daemon
+        .set_proof_strategy(&dest_info.hash, "PROVE_ALL")
+        .await
+        .expect("Failed to set proof strategy");
+
+    // Enable and enforce ratchets — Python drops packets not using a ratchet
+    daemon
+        .enable_ratchets(&dest_info.hash)
+        .await
+        .expect("Failed to enable ratchets");
+    daemon
+        .enforce_ratchets(&dest_info.hash)
+        .await
+        .expect("Failed to enforce ratchets");
+
+    let py_dest_hash = parse_dest_hash(&dest_info.hash);
+
+    // Register Python's destination on Rust side for path + identity learning
+    let py_pub_bytes = hex::decode(&dest_info.public_key).expect("Invalid public key hex");
+    let py_identity =
+        Identity::from_public_key_bytes(&py_pub_bytes).expect("Failed to parse Python identity");
+    let py_dest_on_rust = Destination::new(
+        Some(py_identity),
+        Direction::Out,
+        DestinationType::Single,
+        app_name,
+        aspects,
+    )
+    .expect("Failed to create destination");
+    rust_node.register_destination(py_dest_on_rust);
+
+    // Python announces → Rust learns path + identity + ratchet key
+    daemon
+        .announce_destination(&dest_info.hash, app_data)
+        .await
+        .expect("Python announce should succeed");
+
+    let found = wait_for_path_on_node(rust_node, &py_dest_hash, Duration::from_secs(10)).await;
+    assert!(found, "Rust node should learn path to Python destination");
+
+    (py_dest_hash, dest_info.public_key)
+}
+
+// =========================================================================
+// Ratcheted encryption interop tests
+// =========================================================================
+
+/// Rust→Python: Send packet encrypted with ratchet key, Python enforces ratchets.
+///
+/// Proves the sender-side fix: if Rust used the identity key (old `None` behavior),
+/// Python's enforce_ratchets would reject the packet and the test would fail.
+#[tokio::test]
+async fn test_python_decrypts_ratcheted_packet_from_rust() {
+    let daemon = TestDaemon::start().await.expect("Failed to start daemon");
+    let (mut rust_node, _event_rx) = build_rust_node(&daemon).await;
+
+    let (py_dest_hash, _) =
+        setup_ratcheted_python_dest(&daemon, &rust_node, "ratchet_enc", &["r2p"], b"ratchet-r2p")
+            .await;
+
+    // Send encrypted single packet — sender should use ratchet key
+    let payload = b"ratchet encrypted from rust";
+    rust_node
+        .send_single_packet(&py_dest_hash, payload)
+        .await
+        .expect("send should succeed");
+
+    // Wait for Python to receive and decrypt
+    tokio::time::sleep(Duration::from_secs(2)).await;
+
+    let received = daemon
+        .get_received_single_packets()
+        .await
+        .expect("Failed to get received packets");
+
+    assert!(
+        !received.is_empty(),
+        "Python (enforce_ratchets) should receive the ratchet-encrypted packet"
+    );
+    assert_eq!(
+        received[0].data, payload,
+        "Python should decrypt exact plaintext"
+    );
+
+    rust_node.stop().await.expect("Failed to stop node");
+}
+
+/// Python→Rust: Python sends packet encrypted with ratchet key, Rust enforces ratchets.
+///
+/// Proves the receiver side: if Python used the identity key, Rust's enforce_ratchets
+/// would reject the packet and no PacketReceived event would be emitted.
+#[tokio::test]
+async fn test_rust_decrypts_ratcheted_packet_from_python() {
+    let daemon = TestDaemon::start().await.expect("Failed to start daemon");
+    let (mut rust_node, mut event_rx) = build_rust_node(&daemon).await;
+
+    // Create Rust destination with ratchets enabled and enforced
+    let identity = Identity::generate(&mut OsRng);
+    let mut dest = Destination::new(
+        Some(identity),
+        Direction::In,
+        DestinationType::Single,
+        "ratchet_enc",
+        &["p2r"],
+    )
+    .expect("Failed to create destination");
+
+    dest.enable_ratchets(&mut OsRng, now_ms())
+        .expect("Failed to enable ratchets");
+    dest.set_enforce_ratchets(true);
+
+    let dest_hash = *dest.hash();
+    let dest_hash_hex = hex::encode(dest_hash.as_bytes());
+
+    rust_node.register_destination(dest);
+
+    // Announce Rust destination (includes ratchet public key)
+    rust_node
+        .announce_destination(&dest_hash, Some(b"ratchet-p2r"))
+        .await
+        .expect("Announce should succeed");
+
+    // Wait for Python daemon to learn the path + ratchet
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(10);
+    while tokio::time::Instant::now() < deadline {
+        if daemon.has_path(&dest_hash).await {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(500)).await;
+    }
+    assert!(
+        daemon.has_path(&dest_hash).await,
+        "Python daemon should learn path to Rust destination"
+    );
+
+    // Python sends single packet — should use ratchet key from Rust's announce
+    let payload = b"ratchet encrypted from python";
+    daemon
+        .send_single_packet(&dest_hash_hex, payload)
+        .await
+        .expect("Python send should succeed");
+
+    // Wait for PacketReceived event on Rust side
+    let received = wait_for_event(
+        &mut event_rx,
+        Duration::from_secs(10),
+        |event| match event {
+            NodeEvent::PacketReceived { data, .. } => Some(data),
+            _ => None,
+        },
+    )
+    .await;
+
+    assert!(
+        received.is_some(),
+        "Rust (enforce_ratchets) should receive ratchet-encrypted packet from Python"
+    );
+    assert_eq!(
+        received.unwrap(),
+        payload,
+        "Rust should decrypt exact plaintext"
+    );
+
+    rust_node.stop().await.expect("Failed to stop node");
+}
+
+/// Rust → Python relay → Python server: Ratcheted packet through relay.
+///
+/// Proves the full chain: announce with ratchet survives relay, sender looks up
+/// ratchet from relayed announce, encrypts with ratchet, relay forwards ciphertext,
+/// server decrypts with ratchet. Server enforces ratchets, so identity-key-only
+/// encryption would be rejected.
+#[tokio::test]
+async fn test_ratcheted_packet_through_relay() {
+    let topology = DaemonTopology::linear(2)
+        .await
+        .expect("Failed to create topology");
+
+    let entry_daemon = topology.entry_daemon();
+    let exit_daemon = topology.exit_daemon();
+
+    // Register ratcheted destination on exit daemon (server)
+    let dest_info = exit_daemon
+        .register_destination("ratchet_enc", &["relay"])
+        .await
+        .expect("Failed to register destination");
+
+    exit_daemon
+        .set_proof_strategy(&dest_info.hash, "PROVE_ALL")
+        .await
+        .expect("Failed to set proof strategy");
+
+    exit_daemon
+        .enable_ratchets(&dest_info.hash)
+        .await
+        .expect("Failed to enable ratchets");
+    exit_daemon
+        .enforce_ratchets(&dest_info.hash)
+        .await
+        .expect("Failed to enforce ratchets");
+
+    // Announce from exit daemon — propagates through relay (entry daemon)
+    exit_daemon
+        .announce_destination(&dest_info.hash, b"ratchet-relay")
+        .await
+        .expect("Announce should succeed");
+
+    // Wait for announce to propagate to entry daemon
+    let py_dest_hash = parse_dest_hash(&dest_info.hash);
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(10);
+    while tokio::time::Instant::now() < deadline {
+        if entry_daemon.has_path(&py_dest_hash).await {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(500)).await;
+    }
+    assert!(
+        entry_daemon.has_path(&py_dest_hash).await,
+        "Entry daemon should learn path to exit daemon's destination"
+    );
+
+    // Build Rust node connected to entry daemon (relay)
+    let (mut rust_node, _event_rx) = build_rust_node(entry_daemon).await;
+
+    // Register exit daemon's destination on Rust side
+    let py_pub_bytes = hex::decode(&dest_info.public_key).expect("Invalid public key hex");
+    let py_identity =
+        Identity::from_public_key_bytes(&py_pub_bytes).expect("Failed to parse Python identity");
+    let py_dest_on_rust = Destination::new(
+        Some(py_identity),
+        Direction::Out,
+        DestinationType::Single,
+        "ratchet_enc",
+        &["relay"],
+    )
+    .expect("Failed to create destination");
+    rust_node.register_destination(py_dest_on_rust);
+
+    // Wait for Rust to learn path from entry daemon's rebroadcast
+    let found = wait_for_path_on_node(&rust_node, &py_dest_hash, Duration::from_secs(10)).await;
+    assert!(
+        found,
+        "Rust should learn path to exit daemon's destination via relay"
+    );
+
+    // Send ratcheted packet: Rust → entry daemon (relay) → exit daemon (server)
+    let payload = b"ratchet through relay";
+    rust_node
+        .send_single_packet(&py_dest_hash, payload)
+        .await
+        .expect("send should succeed");
+
+    // Wait for exit daemon to receive and decrypt
+    tokio::time::sleep(Duration::from_secs(3)).await;
+
+    let received = exit_daemon
+        .get_received_single_packets()
+        .await
+        .expect("Failed to get received packets");
+
+    assert!(
+        !received.is_empty(),
+        "Exit daemon (enforce_ratchets) should receive ratchet-encrypted packet through relay"
+    );
+    assert_eq!(
+        received[0].data, payload,
+        "Exit daemon should decrypt exact plaintext"
+    );
+
+    rust_node.stop().await.expect("Failed to stop node");
 }

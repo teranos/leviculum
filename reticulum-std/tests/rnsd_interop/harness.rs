@@ -1069,6 +1069,28 @@ impl TestDaemon {
         })
     }
 
+    /// Enforce ratchets for a destination.
+    ///
+    /// When enforced, the destination rejects packets not encrypted with a ratchet key,
+    /// even if they could be decrypted with the identity key.
+    ///
+    /// # Arguments
+    /// * `dest_hash` - The destination hash to enforce ratchets for
+    pub async fn enforce_ratchets(&self, dest_hash: &str) -> Result<bool, HarnessError> {
+        let result = self
+            .query(
+                "enforce_ratchets",
+                serde_json::json!({
+                    "hash": dest_hash,
+                }),
+            )
+            .await?;
+        Ok(result
+            .get("enforced")
+            .and_then(|v| v.as_bool())
+            .unwrap_or(false))
+    }
+
     /// Get ratchet state for a destination.
     ///
     /// # Arguments

@@ -12,13 +12,15 @@ use alloc::collections::VecDeque;
 use alloc::string::String;
 use alloc::vec::Vec;
 
-use crate::constants::{HASHLIST_MAXSIZE, MAX_PATH_REQUEST_TAGS, TRUNCATED_HASHBYTES};
+use crate::constants::{
+    HASHLIST_MAXSIZE, MAX_PATH_REQUEST_TAGS, RATCHET_SIZE, TRUNCATED_HASHBYTES,
+};
 use crate::identity::Identity;
 use crate::storage_types::{
     AnnounceEntry, AnnounceRateEntry, LinkEntry, PacketReceipt, PathEntry, PathState,
     ReceiptStatus, ReverseEntry,
 };
-use crate::traits::{Storage, StorageError};
+use crate::traits::Storage;
 
 /// Default identity capacity for desktop/Linux.
 /// 50k identities at ~144 bytes × 3x BTreeMap overhead = ~21 MB max.
@@ -72,8 +74,17 @@ pub struct MemoryStorage {
     // ─── Known identities ───────────────────────────────────────────────
     known_identities: BTreeMap<[u8; TRUNCATED_HASHBYTES], Identity>,
 
-    // ─── Legacy generic storage (for ratchets) ──────────────────────────
-    generic: BTreeMap<(Vec<u8>, Vec<u8>), Vec<u8>>,
+    // ─── Known ratchets (sender-side cache) ──────────────────────────────
+    known_ratchets: BTreeMap<[u8; TRUNCATED_HASHBYTES], ([u8; RATCHET_SIZE], u64)>,
+
+    // ─── Local client destinations (per-interface tracking) ──────────────
+    local_client_dest_map: BTreeMap<usize, BTreeSet<[u8; TRUNCATED_HASHBYTES]>>,
+
+    // ─── Local client known destinations (persist across disconnects) ────
+    local_client_known_dests: BTreeMap<[u8; TRUNCATED_HASHBYTES], u64>,
+
+    // ─── Sender-side ratchet keys (destination private keys) ─────────────
+    dest_ratchet_keys: BTreeMap<[u8; TRUNCATED_HASHBYTES], Vec<u8>>,
 }
 
 impl MemoryStorage {
@@ -96,7 +107,10 @@ impl MemoryStorage {
             path_request_tags: VecDeque::new(),
             path_request_tag_set: BTreeSet::new(),
             known_identities: BTreeMap::new(),
-            generic: BTreeMap::new(),
+            known_ratchets: BTreeMap::new(),
+            local_client_dest_map: BTreeMap::new(),
+            local_client_known_dests: BTreeMap::new(),
+            dest_ratchet_keys: BTreeMap::new(),
         }
     }
 
@@ -153,7 +167,10 @@ impl MemoryStorage {
         self.path_request_tags.clear();
         self.path_request_tag_set.clear();
         self.known_identities.clear();
-        self.generic.clear();
+        self.known_ratchets.clear();
+        self.local_client_dest_map.clear();
+        self.local_client_known_dests.clear();
+        self.dest_ratchet_keys.clear();
     }
 
     /// Number of entries in the announce rate table (test/stats convenience)
@@ -166,6 +183,13 @@ impl MemoryStorage {
         self.packet_cache
             .iter()
             .chain(self.packet_cache_prev.iter())
+    }
+
+    /// Iterate all known ratchets (for FileStorage disk persistence and expiry)
+    pub fn known_ratchet_iter(
+        &self,
+    ) -> impl Iterator<Item = (&[u8; TRUNCATED_HASHBYTES], &([u8; RATCHET_SIZE], u64))> {
+        self.known_ratchets.iter()
     }
 
     /// Iterate all known identities (for persistence on flush)
@@ -370,17 +394,50 @@ impl MemoryStorage {
             n, raw, est
         );
 
-        // generic: BTreeMap<(Vec<u8>, Vec<u8>), Vec<u8>> — 3x
-        let n = self.generic.len();
+        // known_ratchets: BTreeMap<[u8; 16], ([u8; 32], u64)> — 3x
+        let n = self.known_ratchets.len();
+        let raw = (n * (TRUNCATED_HASHBYTES + RATCHET_SIZE + 8)) as u64;
+        let est = raw * 3;
+        total += est;
+        let _ = writeln!(
+            s,
+            "known_ratchets: {} entries, raw {} bytes, estimated {} bytes (BTreeMap 3x)",
+            n, raw, est
+        );
+
+        // local_client_dest_map: BTreeMap<usize, BTreeSet<[u8; 16]>> — 3x
+        let n: usize = self.local_client_dest_map.values().map(|s| s.len()).sum();
+        let raw = (n * TRUNCATED_HASHBYTES + self.local_client_dest_map.len() * 8) as u64;
+        let est = raw * 3;
+        total += est;
+        let _ = writeln!(
+            s,
+            "local_client_dest_map: {} ifaces, {} dest entries, raw {} bytes, estimated {} bytes (BTreeMap 3x)",
+            self.local_client_dest_map.len(), n, raw, est
+        );
+
+        // local_client_known_dests: BTreeMap<[u8; 16], u64> — 3x
+        let n = self.local_client_known_dests.len();
+        let raw = (n * (TRUNCATED_HASHBYTES + 8)) as u64;
+        let est = raw * 3;
+        total += est;
+        let _ = writeln!(
+            s,
+            "local_client_known_dests: {} entries, raw {} bytes, estimated {} bytes (BTreeMap 3x)",
+            n, raw, est
+        );
+
+        // dest_ratchet_keys: BTreeMap<[u8; 16], Vec<u8>> — 3x
+        let n = self.dest_ratchet_keys.len();
         let mut raw = 0u64;
-        for (k, v) in &self.generic {
-            raw += (k.0.len() + k.1.len() + v.len()) as u64;
+        for v in self.dest_ratchet_keys.values() {
+            raw += (TRUNCATED_HASHBYTES + v.len()) as u64;
         }
         let est = raw * 3;
         total += est;
         let _ = writeln!(
             s,
-            "generic: {} entries, raw {} bytes, estimated {} bytes (BTreeMap 3x)",
+            "dest_ratchet_keys: {} entries, raw {} bytes, estimated {} bytes (BTreeMap 3x)",
             n, raw, est
         );
 
@@ -733,32 +790,101 @@ impl Storage for MemoryStorage {
         (s, total)
     }
 
-    // ─── Legacy Generic API (for ratchets) ──────────────────────────────
+    // ─── Known Ratchets ────────────────────────────────────────────────
 
-    fn load(&self, category: &str, key: &[u8]) -> Option<Vec<u8>> {
-        let k = (category.as_bytes().to_vec(), key.to_vec());
-        self.generic.get(&k).cloned()
+    fn get_known_ratchet(
+        &self,
+        dest_hash: &[u8; TRUNCATED_HASHBYTES],
+    ) -> Option<[u8; RATCHET_SIZE]> {
+        self.known_ratchets.get(dest_hash).map(|(r, _)| *r)
     }
 
-    fn store(&mut self, category: &str, key: &[u8], value: &[u8]) -> Result<(), StorageError> {
-        let k = (category.as_bytes().to_vec(), key.to_vec());
-        self.generic.insert(k, value.to_vec());
-        Ok(())
+    fn remember_known_ratchet(
+        &mut self,
+        dest_hash: [u8; TRUNCATED_HASHBYTES],
+        ratchet: [u8; RATCHET_SIZE],
+        received_at_ms: u64,
+    ) {
+        self.known_ratchets
+            .insert(dest_hash, (ratchet, received_at_ms));
     }
 
-    fn delete(&mut self, category: &str, key: &[u8]) -> Result<(), StorageError> {
-        let k = (category.as_bytes().to_vec(), key.to_vec());
-        self.generic.remove(&k);
-        Ok(())
+    fn known_ratchet_count(&self) -> usize {
+        self.known_ratchets.len()
     }
 
-    fn list_keys(&self, category: &str) -> Vec<Vec<u8>> {
-        let cat = category.as_bytes();
-        self.generic
-            .keys()
-            .filter(|(c, _)| c.as_slice() == cat)
-            .map(|(_, k)| k.clone())
-            .collect()
+    fn expire_known_ratchets(&mut self, now_ms: u64, expiry_ms: u64) -> usize {
+        let before = self.known_ratchets.len();
+        self.known_ratchets
+            .retain(|_, (_, received_at)| now_ms.saturating_sub(*received_at) < expiry_ms);
+        before - self.known_ratchets.len()
+    }
+
+    // ─── Local Client Destinations ──────────────────────────────────────
+
+    fn add_local_client_dest(
+        &mut self,
+        iface_id: usize,
+        dest_hash: [u8; TRUNCATED_HASHBYTES],
+    ) -> bool {
+        self.local_client_dest_map
+            .entry(iface_id)
+            .or_default()
+            .insert(dest_hash)
+    }
+
+    fn remove_local_client_dests(&mut self, iface_id: usize) {
+        self.local_client_dest_map.remove(&iface_id);
+    }
+
+    fn has_local_client_dest(
+        &self,
+        iface_id: usize,
+        dest_hash: &[u8; TRUNCATED_HASHBYTES],
+    ) -> bool {
+        self.local_client_dest_map
+            .get(&iface_id)
+            .map_or(false, |set| set.contains(dest_hash))
+    }
+
+    // ─── Local Client Known Destinations ────────────────────────────────
+
+    fn set_local_client_known_dest(
+        &mut self,
+        dest_hash: [u8; TRUNCATED_HASHBYTES],
+        last_seen_ms: u64,
+    ) {
+        self.local_client_known_dests
+            .insert(dest_hash, last_seen_ms);
+    }
+
+    fn has_local_client_known_dest(&self, dest_hash: &[u8; TRUNCATED_HASHBYTES]) -> bool {
+        self.local_client_known_dests.contains_key(dest_hash)
+    }
+
+    fn local_client_known_dest_hashes(&self) -> Vec<[u8; TRUNCATED_HASHBYTES]> {
+        self.local_client_known_dests.keys().copied().collect()
+    }
+
+    fn expire_local_client_known_dests(&mut self, now_ms: u64, expiry_ms: u64) -> usize {
+        let before = self.local_client_known_dests.len();
+        self.local_client_known_dests
+            .retain(|_, last_seen| now_ms.saturating_sub(*last_seen) < expiry_ms);
+        before - self.local_client_known_dests.len()
+    }
+
+    // ─── Sender-Side Ratchet Keys ───────────────────────────────────────
+
+    fn store_dest_ratchet_keys(
+        &mut self,
+        dest_hash: [u8; TRUNCATED_HASHBYTES],
+        serialized: Vec<u8>,
+    ) {
+        self.dest_ratchet_keys.insert(dest_hash, serialized);
+    }
+
+    fn load_dest_ratchet_keys(&self, dest_hash: &[u8; TRUNCATED_HASHBYTES]) -> Option<Vec<u8>> {
+        self.dest_ratchet_keys.get(dest_hash).cloned()
     }
 }
 
@@ -923,14 +1049,106 @@ mod tests {
     }
 
     #[test]
-    fn test_legacy_generic_api() {
+    fn test_known_ratchet_store_get() {
         let mut s = MemoryStorage::with_defaults();
-        assert!(s.load("ratchets", b"key1").is_none());
-        assert!(s.store("ratchets", b"key1", b"value1").is_ok());
-        assert_eq!(s.load("ratchets", b"key1"), Some(b"value1".to_vec()));
-        assert_eq!(s.list_keys("ratchets").len(), 1);
-        assert!(s.delete("ratchets", b"key1").is_ok());
-        assert!(s.load("ratchets", b"key1").is_none());
+        let hash = [0xaa; TRUNCATED_HASHBYTES];
+        let ratchet = [0xbb; RATCHET_SIZE];
+
+        assert!(s.get_known_ratchet(&hash).is_none());
+        assert!(!s.has_known_ratchet(&hash));
+        assert_eq!(s.known_ratchet_count(), 0);
+
+        s.remember_known_ratchet(hash, ratchet, 1000);
+        assert_eq!(s.get_known_ratchet(&hash), Some(ratchet));
+        assert!(s.has_known_ratchet(&hash));
+        assert_eq!(s.known_ratchet_count(), 1);
+
+        // Update replaces
+        let ratchet2 = [0xcc; RATCHET_SIZE];
+        s.remember_known_ratchet(hash, ratchet2, 2000);
+        assert_eq!(s.get_known_ratchet(&hash), Some(ratchet2));
+        assert_eq!(s.known_ratchet_count(), 1);
+    }
+
+    #[test]
+    fn test_known_ratchet_expire() {
+        let mut s = MemoryStorage::with_defaults();
+        let h1 = [0x01; TRUNCATED_HASHBYTES];
+        let h2 = [0x02; TRUNCATED_HASHBYTES];
+        let ratchet = [0xaa; RATCHET_SIZE];
+
+        s.remember_known_ratchet(h1, ratchet, 1000);
+        s.remember_known_ratchet(h2, ratchet, 5000);
+
+        // Expire with threshold: h1 is 4000ms old, h2 is 0ms old
+        let removed = s.expire_known_ratchets(5000, 3000);
+        assert_eq!(removed, 1);
+        assert!(s.get_known_ratchet(&h1).is_none());
+        assert!(s.get_known_ratchet(&h2).is_some());
+    }
+
+    #[test]
+    fn test_known_ratchet_iter() {
+        let mut s = MemoryStorage::with_defaults();
+        let h1 = [0x01; TRUNCATED_HASHBYTES];
+        let h2 = [0x02; TRUNCATED_HASHBYTES];
+        let r1 = [0xaa; RATCHET_SIZE];
+        let r2 = [0xbb; RATCHET_SIZE];
+
+        s.remember_known_ratchet(h1, r1, 1000);
+        s.remember_known_ratchet(h2, r2, 2000);
+
+        let entries: alloc::vec::Vec<_> = s.known_ratchet_iter().collect();
+        assert_eq!(entries.len(), 2);
+        // BTreeMap is sorted by key
+        assert_eq!(entries[0].0, &h1);
+        assert_eq!(entries[0].1, &(r1, 1000));
+        assert_eq!(entries[1].0, &h2);
+        assert_eq!(entries[1].1, &(r2, 2000));
+    }
+
+    #[test]
+    fn test_local_client_dest_add_remove() {
+        let mut s = MemoryStorage::with_defaults();
+        let hash = [0xaa; TRUNCATED_HASHBYTES];
+
+        assert!(!s.has_local_client_dest(0, &hash));
+        assert!(s.add_local_client_dest(0, hash)); // first insert returns true
+        assert!(!s.add_local_client_dest(0, hash)); // duplicate returns false
+        assert!(s.has_local_client_dest(0, &hash));
+        assert!(!s.has_local_client_dest(1, &hash)); // different iface
+
+        s.remove_local_client_dests(0);
+        assert!(!s.has_local_client_dest(0, &hash));
+    }
+
+    #[test]
+    fn test_local_client_known_dest_expire() {
+        let mut s = MemoryStorage::with_defaults();
+        let h1 = [0x01; TRUNCATED_HASHBYTES];
+        let h2 = [0x02; TRUNCATED_HASHBYTES];
+
+        s.set_local_client_known_dest(h1, 1000);
+        s.set_local_client_known_dest(h2, 5000);
+        assert!(s.has_local_client_known_dest(&h1));
+        assert_eq!(s.local_client_known_dest_hashes().len(), 2);
+
+        let removed = s.expire_local_client_known_dests(5000, 3000);
+        assert_eq!(removed, 1);
+        assert!(!s.has_local_client_known_dest(&h1));
+        assert!(s.has_local_client_known_dest(&h2));
+    }
+
+    #[test]
+    fn test_dest_ratchet_keys_store_load() {
+        let mut s = MemoryStorage::with_defaults();
+        let hash = [0xaa; TRUNCATED_HASHBYTES];
+
+        assert!(s.load_dest_ratchet_keys(&hash).is_none());
+
+        let data = vec![1, 2, 3, 4, 5];
+        s.store_dest_ratchet_keys(hash, data.clone());
+        assert_eq!(s.load_dest_ratchet_keys(&hash), Some(data));
     }
 
     #[test]
@@ -1271,7 +1489,7 @@ mod tests {
         let (dump, total) = s.diagnostic_dump();
         assert!(dump.contains("packet_cache: 0 entries"));
         assert!(dump.contains("known_identities: 0 entries"));
-        assert!(dump.contains("generic: 0 entries"));
+        assert!(dump.contains("known_ratchets: 0 entries"));
         assert_eq!(total, 0);
     }
 
