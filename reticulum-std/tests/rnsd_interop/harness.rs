@@ -131,8 +131,6 @@ pub struct TestDaemon {
     udp_listen_port: Option<u16>,
     /// UDP forward port (None if daemon has no UDP interface)
     udp_forward_port: Option<u16>,
-    /// Shared instance name (None if shared instance is not enabled)
-    instance_name: Option<String>,
     /// Probe destination hash (hex, set when --respond-to-probes is used)
     probe_dest_hash: Option<String>,
 }
@@ -243,7 +241,6 @@ impl TestDaemon {
             cmd_port,
             udp_listen_port: None,
             udp_forward_port: None,
-            instance_name: None,
             probe_dest_hash: None,
         };
 
@@ -343,7 +340,6 @@ impl TestDaemon {
             cmd_port,
             udp_listen_port: Some(udp_listen_port),
             udp_forward_port: Some(udp_forward_port),
-            instance_name: None,
             probe_dest_hash: None,
         };
 
@@ -439,7 +435,6 @@ impl TestDaemon {
             cmd_port,
             udp_listen_port: None,
             udp_forward_port: None,
-            instance_name: None,
             probe_dest_hash: None,
         };
 
@@ -553,7 +548,6 @@ impl TestDaemon {
             cmd_port,
             udp_listen_port: None,
             udp_forward_port: None,
-            instance_name: Some(instance_name.to_string()),
             probe_dest_hash: None,
         };
 
@@ -651,7 +645,6 @@ impl TestDaemon {
             cmd_port,
             udp_listen_port: None,
             udp_forward_port: None,
-            instance_name: None,
             probe_dest_hash,
         };
 
