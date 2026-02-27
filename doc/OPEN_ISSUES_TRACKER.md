@@ -21,6 +21,9 @@ When an issue is fixed, remove it from this file entirely.
 | E23 | L | post-7 | open | Docs | AutoInterface: carrier_changed flag set but unused (Python too) |
 | E24 | M | post-7 | open | Design | Ingress control should be a per-interface trait with medium-appropriate defaults |
 | E25 | L | post-7 | open | Test | Integration tests for shared-instance Blocks B/C need client framework support |
+| E26 | M | post-7 | open | Design | Storage trait is a ~60-method God-Interface — split into per-concern sub-traits |
+| E27 | M | post-7 | open | Design | FileStorage wraps MemoryStorage — prevents custom eviction, lazy-loading, RAM/disk split |
+| E28 | M | post-7 | open | Design | InterfaceMode::multiple_access defined but unused — wire up for E10 (jitter) and E24 (ingress) |
 
 ---
 
@@ -162,3 +165,33 @@ When an issue is fixed, remove it from this file entirely.
 - **Detail:** Blocks B (shared instance registration 250ms delay) and C (shared instance reconnect re-announce) have unit tests but no integration tests. Writing integration tests requires the reticulum-integ framework to support running a separate client program inside a container that registers a destination with a running daemon via shared instance (Unix socket IPC). Currently, every node runs a full daemon; there is no concept of a client-only node. Note: the framework now supports negative assertions (`expect_result = "no_path"` and `expect_result = "fail"`), which can be used to verify that client destinations disappear after disconnect/expiry.
 - **Fix:** Extend the integration test framework with a client node type (e.g., `type = "rust-client"`) that runs a custom program connecting to a daemon's shared instance socket, registers a destination, and announces it. Then write `shared_instance_announce.toml` and `shared_instance_reconnect.toml` tests.
 - **Test:** The tests themselves: verify that a destination registered by a client is discoverable from a remote node, and that a client reconnect results in the destination being re-announced.
+
+### E26: Storage trait is a ~60-method God-Interface — split into per-concern sub-traits
+- **Status:** open
+- **Priority:** M
+- **Phase:** post-7
+- **Category:** Design
+- **Blocked-by:** No blocker, but low urgency until a partial Storage backend is needed (e.g., ESP32 with external flash)
+- **Detail:** The `Storage` trait in `traits.rs` has ~60 methods spanning ~15 logical concerns (Path Table 8, Announce Table 7, Link Table 5, Ratchets 7, Receipts 3, Cleanup 8, Deadlines 2, etc.). This makes implementing a custom Storage backend a monolithic task — even if the node only needs path routing and packet dedup, all 60 methods must be implemented. The trait also mixes two concerns: collection semantics (get/set/remove) and lifecycle management (expire, flush, deadlines). The methods are correctly typed (not generic `load(key) -> bytes`), but typed does not require monolithic. The three existing implementations (NoStorage, MemoryStorage, FileStorage) all implement the full trait, so the current cost is borne only by hypothetical future backends. However, the real architectural limitation is that `NodeCore<R, C, S: Storage>` takes a single `S`, making it impossible to compose backends (e.g., path table on flash, ratchets in RAM).
+- **Fix:** Split into per-concern sub-traits (`PathStorage`, `AnnounceStorage`, `RatchetStorage`, `LinkStorage`, etc.) with an umbrella trait: `trait Storage: PathStorage + AnnounceStorage + ... {}` with blanket impl. NodeCore keeps `S: Storage`, so all existing code compiles unchanged. New partial backends only implement the sub-traits they need and compose with MemoryStorage for the rest. Lifecycle methods (expire, flush) can either stay on their respective sub-traits or move to a separate `StorageLifecycle` trait.
+- **Test:** All existing Storage tests must pass. New test: verify a composite backend (e.g., custom `PathStorage` + `MemoryStorage` for the rest) works with NodeCore.
+
+### E27: FileStorage wraps MemoryStorage — prevents custom eviction, lazy-loading, RAM/disk split
+- **Status:** open
+- **Priority:** M
+- **Phase:** post-7
+- **Category:** Design
+- **Related:** E13 (owned return values), E14 (IndexMap eviction), E16 (SD card wear)
+- **Detail:** FileStorage delegates ~59 of ~60 Storage methods to an inner `MemoryStorage`. It adds disk persistence for a few collections (ratchets write-through, known_destinations/packet_hashlist flush-on-shutdown). This means: (1) No custom eviction — BTreeMap has no insertion-order, so LRU-style eviction is impossible. (2) No lazy-loading — everything must fit in RAM at startup. (3) No partial RAM/disk split — hot data and cold data are treated identically. (4) SD card wear from full-file rewrites (E16). The wrapping is purely internal — no consumer (NodeCore, Transport, Driver) knows about it. Replacing the inner design is a refactor of one file (storage.rs, ~1500 lines), not an API change. This is technical debt with a clear exit path, not an architectural dead-end. It becomes relevant when: (a) a node manages 10k+ destinations needing LRU eviction, (b) an ESP32 with external flash needs direct disk access, or (c) SD card wear becomes a deployment issue.
+- **Fix:** FileStorage implements the Storage trait (or sub-traits, see E26) directly with its own state management. Hot collections stay in RAM (BTreeMap or IndexMap). Cold/large collections use lazy disk access. MemoryStorage remains for embedded and tests. This subsumes E13 (owned values become natural when disk-backed) and E14 (FileStorage can use IndexMap since it's std). E16 (write amplification) can be addressed independently with a log-structured format.
+- **Test:** All existing FileStorage tests must pass. Benchmark: memory usage and startup time with 10k+ known_destinations before and after.
+
+### E28: InterfaceMode::multiple_access defined but unused — wire up for E10 and E24
+- **Status:** open
+- **Priority:** M
+- **Phase:** post-7
+- **Category:** Design
+- **Related:** E10 (send-side jitter), E24 (ingress control)
+- **Detail:** The Interface trait already has `fn mode(&self) -> InterfaceMode` with a `multiple_access: bool` flag (traits.rs:69-76), defaulting to false. This is exactly the medium-type discriminator needed for E10 (jitter on shared-medium interfaces) and E24 (ingress control per medium). However: (1) No concrete interface sets it — `InterfaceHandle::mode()` returns `InterfaceMode::default()` (all false), no override anywhere. (2) Core never reads it — no code in transport.rs or node/ checks `mode().multiple_access`. (3) It is effectively dead code. The trait design is correct: `mode()` has a default impl, so adding new flags or changing existing ones does not break implementors. No new enum (e.g., `MediumType`) is needed.
+- **Fix:** Three steps: (a) AutoInterface and UDP-broadcast interfaces must override `mode()` to return `InterfaceMode { multiple_access: true, broadcast: true, .. }`. TCP and LocalInterface keep the default (all false). (b) E10 implementation checks `multiple_access` to decide whether to apply send-side jitter. (c) E24 implementation checks `multiple_access` to decide whether ingress control is active by default. Steps (b) and (c) are part of E10/E24 respectively — this issue tracks only the wiring gap (step a) and documents that the extension point exists.
+- **Test:** Unit test: verify AutoInterface returns `multiple_access: true`. Unit test: verify TCP returns `multiple_access: false` (default). Integration test deferred to E10/E24.
