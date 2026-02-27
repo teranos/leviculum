@@ -8,11 +8,21 @@
 //! # HDLC Framing
 //!
 //! The [`hdlc`] sub-module implements the framing scheme used by Python
-//! Reticulum: `0x7E` flag delimiters, `0x7D` escape byte with XOR `0x20`,
-//! and CRC-16-CCITT for integrity.
+//! Reticulum over TCP: `0x7E` flag delimiters, `0x7D` escape byte with
+//! XOR `0x20`, and CRC-16-CCITT for integrity.
 //!
 //! ```text
 //! [FLAG 0x7E] [escaped payload] [CRC-16 hi] [CRC-16 lo] [FLAG 0x7E]
+//! ```
+//!
+//! # KISS Framing
+//!
+//! The [`kiss`] sub-module implements KISS framing used by serial interfaces
+//! (RNode, KISSInterface): `0xC0` (FEND) delimiters, `0xDB` (FESC) escape
+//! sequences, and a command byte after the opening delimiter.
+//!
+//! ```text
+//! [FEND 0xC0] [command] [escaped payload] [FEND 0xC0]
 //! ```
 //!
 //! # Usage
@@ -36,6 +46,7 @@
 //! [`Deframer`] and [`frame`] require `alloc`.
 
 pub mod hdlc;
+pub mod kiss;
 
 // Re-export commonly used items
 pub use hdlc::{crc16, frame_to_slice, max_framed_size, needs_escape, ESCAPE, ESCAPE_XOR, FLAG};
