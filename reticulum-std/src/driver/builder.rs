@@ -146,6 +146,9 @@ impl ReticulumNodeBuilder {
             spreading_factor: None,
             coding_rate: None,
             tx_power: None,
+            flow_control: None,
+            airtime_limit_short: None,
+            airtime_limit_long: None,
         });
         self
     }
@@ -185,6 +188,9 @@ impl ReticulumNodeBuilder {
             spreading_factor: None,
             coding_rate: None,
             tx_power: None,
+            flow_control: None,
+            airtime_limit_short: None,
+            airtime_limit_long: None,
         });
         self
     }
@@ -225,6 +231,9 @@ impl ReticulumNodeBuilder {
             spreading_factor: None,
             coding_rate: None,
             tx_power: None,
+            flow_control: None,
+            airtime_limit_short: None,
+            airtime_limit_long: None,
         });
         self
     }
@@ -275,6 +284,9 @@ impl ReticulumNodeBuilder {
             spreading_factor: None,
             coding_rate: None,
             tx_power: None,
+            flow_control: None,
+            airtime_limit_short: None,
+            airtime_limit_long: None,
         });
         self
     }

@@ -133,6 +133,9 @@ pub(crate) struct InterfaceInfo {
     /// Whether this interface is a local IPC client (shared instance).
     /// Local clients receive announce forwarding and path request routing.
     pub is_local_client: bool,
+    /// On-air bitrate in bits/sec (e.g., LoRa ~5468 bps for SF7/CR5/BW125kHz).
+    /// `None` for interfaces without a fixed bitrate (TCP, UDP).
+    pub bitrate: Option<u32>,
 }
 
 /// Event loop's handle to a spawned interface task

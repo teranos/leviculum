@@ -151,6 +151,12 @@ pub struct InterfaceConfig {
     pub coding_rate: Option<u8>,
     /// TX power in dBm
     pub tx_power: Option<i8>,
+    /// Hardware flow control (RNode waits for CMD_READY before next TX)
+    pub flow_control: Option<bool>,
+    /// Short-term airtime limit as percent (0.0-100.0)
+    pub airtime_limit_short: Option<f64>,
+    /// Long-term airtime limit as percent (0.0-100.0)
+    pub airtime_limit_long: Option<f64>,
 }
 
 /// Default interface bitrate in bits/second (matches Python Reticulum default)

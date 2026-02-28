@@ -200,6 +200,24 @@ pub const SX128X: u8 = 0x20;
 pub const SX1280: u8 = 0x21;
 
 // ---------------------------------------------------------------------------
+// Firmware requirements
+// ---------------------------------------------------------------------------
+
+/// Minimum required firmware major version
+pub const REQUIRED_FW_MAJ: u8 = 1;
+/// Minimum required firmware minor version
+pub const REQUIRED_FW_MIN: u8 = 52;
+
+// ---------------------------------------------------------------------------
+// Frequency limits
+// ---------------------------------------------------------------------------
+
+/// Minimum allowed operating frequency (Hz)
+pub const FREQ_MIN: u32 = 137_000_000;
+/// Maximum allowed operating frequency (Hz) — covers 2.4 GHz SX128X
+pub const FREQ_MAX: u32 = 3_000_000_000;
+
+// ---------------------------------------------------------------------------
 // Hardware MTU
 // ---------------------------------------------------------------------------
 
@@ -483,6 +501,51 @@ pub fn decode_phy_params(payload: &[u8]) -> Option<PhyParams> {
         csma_slot_time_ms,
         difs_time_ms,
     })
+}
+
+// ---------------------------------------------------------------------------
+// Validation
+// ---------------------------------------------------------------------------
+
+/// Check whether the firmware version meets the minimum requirement
+pub fn validate_firmware(major: u8, minor: u8) -> bool {
+    (major, minor) >= (REQUIRED_FW_MAJ, REQUIRED_FW_MIN)
+}
+
+/// Validate radio configuration parameters
+///
+/// Returns `Ok(())` if all parameters are within valid ranges,
+/// or `Err` with a description of the first invalid parameter.
+pub fn validate_config(freq: u32, bw: u32, txp: u8, sf: u8, cr: u8) -> Result<(), &'static str> {
+    if !(FREQ_MIN..=FREQ_MAX).contains(&freq) {
+        return Err("frequency out of range (137 MHz - 3 GHz)");
+    }
+    // Valid LoRa bandwidths (Hz)
+    match bw {
+        7800 | 10400 | 15600 | 20800 | 31250 | 41700 | 62500 | 125000 | 250000 | 500000 => {}
+        _ => return Err("invalid bandwidth"),
+    }
+    if txp > 37 {
+        return Err("TX power out of range (0-37 dBm)");
+    }
+    if !(5..=12).contains(&sf) {
+        return Err("spreading factor out of range (5-12)");
+    }
+    if !(5..=8).contains(&cr) {
+        return Err("coding rate out of range (5-8)");
+    }
+    Ok(())
+}
+
+/// Compute the on-air bitrate for a LoRa configuration
+///
+/// Formula matches Python: `sf * (4.0 / cr) / (2^sf / (bw/1000)) * 1000`
+pub fn compute_bitrate(sf: u8, cr: u8, bandwidth: u32) -> u32 {
+    let sf_f = sf as f64;
+    let cr_f = cr as f64;
+    let bw_f = bandwidth as f64;
+    let bitrate = sf_f * (4.0 / cr_f) / ((2.0_f64).powi(sf as i32) / (bw_f / 1000.0)) * 1000.0;
+    bitrate as u32
 }
 
 // ---------------------------------------------------------------------------
@@ -940,5 +1003,73 @@ mod tests {
         assert_eq!(CMD_INT_DATA[9], 0xD0);
         assert_eq!(CMD_INT_DATA[10], 0xE0);
         assert_eq!(CMD_INT_DATA[11], 0xF0);
+    }
+
+    // --- Validation tests ---
+
+    #[test]
+    fn test_validate_firmware_ok() {
+        assert!(validate_firmware(1, 52));
+        assert!(validate_firmware(1, 85));
+        assert!(validate_firmware(2, 0));
+    }
+
+    #[test]
+    fn test_validate_firmware_too_old() {
+        assert!(!validate_firmware(1, 51));
+        assert!(!validate_firmware(0, 99));
+        assert!(!validate_firmware(1, 0));
+    }
+
+    #[test]
+    fn test_validate_config_ok() {
+        assert!(validate_config(868_000_000, 125_000, 17, 7, 5).is_ok());
+        assert!(validate_config(915_000_000, 500_000, 22, 12, 8).is_ok());
+        assert!(validate_config(2_400_000_000, 250_000, 0, 5, 5).is_ok());
+    }
+
+    #[test]
+    fn test_validate_config_bad_frequency() {
+        assert!(validate_config(100_000_000, 125_000, 17, 7, 5).is_err());
+        // u32 max is ~4.29 GHz, over the 3 GHz limit
+        assert!(validate_config(3_500_000_000, 125_000, 17, 7, 5).is_err());
+    }
+
+    #[test]
+    fn test_validate_config_bad_bandwidth() {
+        assert!(validate_config(868_000_000, 100_000, 17, 7, 5).is_err());
+    }
+
+    #[test]
+    fn test_validate_config_bad_txpower() {
+        assert!(validate_config(868_000_000, 125_000, 38, 7, 5).is_err());
+    }
+
+    #[test]
+    fn test_validate_config_bad_sf() {
+        assert!(validate_config(868_000_000, 125_000, 17, 4, 5).is_err());
+        assert!(validate_config(868_000_000, 125_000, 17, 13, 5).is_err());
+    }
+
+    #[test]
+    fn test_validate_config_bad_cr() {
+        assert!(validate_config(868_000_000, 125_000, 17, 7, 4).is_err());
+        assert!(validate_config(868_000_000, 125_000, 17, 7, 9).is_err());
+    }
+
+    #[test]
+    fn test_compute_bitrate() {
+        // SF7, CR5, BW125kHz → Python produces 5468
+        // Formula: 7 * (4.0/5) / (128 / 125) * 1000 = 7 * 0.8 / 1.024 * 1000 = 5468.75 → 5468
+        let br = compute_bitrate(7, 5, 125_000);
+        assert_eq!(br, 5468);
+    }
+
+    #[test]
+    fn test_compute_bitrate_sf12() {
+        // SF12, CR8, BW125kHz
+        // 12 * (4.0/8) / (4096 / 125) * 1000 = 12 * 0.5 / 32.768 * 1000 = 183.105... → 183
+        let br = compute_bitrate(12, 8, 125_000);
+        assert_eq!(br, 183);
     }
 }

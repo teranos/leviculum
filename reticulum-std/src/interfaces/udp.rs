@@ -69,6 +69,7 @@ pub(crate) fn spawn_udp_interface(
             name,
             hw_mtu: Some(1064),
             is_local_client: false,
+            bitrate: None,
         },
         incoming: incoming_rx,
         outgoing: outgoing_tx,

@@ -338,6 +338,7 @@ Sicherheitsfeatures verdrahten, Daemon-Zustand persistieren, Release-Qualität e
 
 ## Hardware-Interfaces
 - RNode/LoRa Interface (KISS-Protokoll, LoRa-Parameter, Radio-State, Airtime-Limiting)
+  - [ ] RNode Stats Parsing (RSSI, SNR, Channel-Time, Battery, Temperature) for rnstatus reporting
 - Interface-spezifischer Send-Side-Jitter für Shared-Medium-Interfaces (E10)
 - Serial Interface
 - KISS Interface (TNC-Protokoll)

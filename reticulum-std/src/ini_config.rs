@@ -72,6 +72,9 @@ pub(crate) fn parse_ini(content: &str) -> Result<Config, String> {
                     spreading_factor: None,
                     coding_rate: None,
                     tx_power: None,
+                    flow_control: None,
+                    airtime_limit_short: None,
+                    airtime_limit_long: None,
                 },
             ));
             continue;
@@ -116,7 +119,8 @@ pub(crate) fn parse_ini(content: &str) -> Result<Config, String> {
     let supported: HashMap<String, InterfaceConfig> = interfaces
         .into_iter()
         .filter(|(name, iface)| match iface.interface_type.as_str() {
-            "TCPServerInterface" | "TCPClientInterface" | "UDPInterface" | "AutoInterface" => true,
+            "TCPServerInterface" | "TCPClientInterface" | "UDPInterface" | "AutoInterface"
+            | "RNodeInterface" => true,
             other => {
                 tracing::info!(
                     "Skipping unsupported interface type '{}' for '{}'",
@@ -192,6 +196,9 @@ fn apply_interface_key(iface: &mut InterfaceConfig, key: &str, value: &str) {
         "devices" => iface.devices = Some(value.to_string()),
         "ignored_devices" => iface.ignored_devices = Some(value.to_string()),
         "multicast_loopback" => iface.multicast_loopback = Some(parse_bool(value)),
+        "flow_control" => iface.flow_control = Some(parse_bool(value)),
+        "airtime_limit_short" => iface.airtime_limit_short = value.parse().ok(),
+        "airtime_limit_long" => iface.airtime_limit_long = value.parse().ok(),
         _ => {} // Ignore unknown keys (id_callsign, id_interval, modulation, etc.)
     }
 }
@@ -285,14 +292,20 @@ mod tests {
     type = TCPServerInterface
     enabled = yes
     listen_port = 4242
+
+  [[Serial KISS]]
+    type = KISSInterface
+    port = /dev/ttyUSB0
 "#,
         )
         .unwrap();
 
-        // RNodeInterface should be skipped; AutoInterface is now supported
-        assert_eq!(config.interfaces.len(), 2);
+        // KISSInterface should be skipped; Auto, RNode, TCP are supported
+        assert_eq!(config.interfaces.len(), 3);
         assert!(config.interfaces.contains_key("TCP Server"));
         assert!(config.interfaces.contains_key("Auto"));
+        assert!(config.interfaces.contains_key("RNode"));
+        assert!(!config.interfaces.contains_key("Serial KISS"));
     }
 
     #[test]
@@ -504,5 +517,38 @@ mod tests {
     fn test_instance_name_defaults_to_default() {
         let config = parse_ini("[reticulum]\n").unwrap();
         assert_eq!(config.reticulum.instance_name, "default");
+    }
+
+    #[test]
+    fn test_parse_rnode_interface() {
+        let config = parse_ini(
+            r#"
+[interfaces]
+  [[My RNode]]
+    type = RNodeInterface
+    port = /dev/ttyACM0
+    frequency = 868000000
+    bandwidth = 125000
+    spreadingfactor = 7
+    codingrate = 5
+    txpower = 17
+    flow_control = true
+    airtime_limit_short = 15.0
+    airtime_limit_long = 5.0
+"#,
+        )
+        .unwrap();
+
+        let rnode = config.interfaces.get("My RNode").expect("rnode iface");
+        assert_eq!(rnode.interface_type, "RNodeInterface");
+        assert_eq!(rnode.port, Some("/dev/ttyACM0".to_string()));
+        assert_eq!(rnode.frequency, Some(868_000_000));
+        assert_eq!(rnode.bandwidth, Some(125_000));
+        assert_eq!(rnode.spreading_factor, Some(7));
+        assert_eq!(rnode.coding_rate, Some(5));
+        assert_eq!(rnode.tx_power, Some(17));
+        assert_eq!(rnode.flow_control, Some(true));
+        assert_eq!(rnode.airtime_limit_short, Some(15.0));
+        assert_eq!(rnode.airtime_limit_long, Some(5.0));
     }
 }
