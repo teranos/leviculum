@@ -17,6 +17,8 @@ pub struct TestScenario {
     #[serde(default)]
     pub links: BTreeMap<String, String>,
     #[serde(default)]
+    pub radio: Option<RadioConfig>,
+    #[serde(default)]
     pub steps: Vec<Step>,
 }
 
@@ -43,6 +45,21 @@ pub struct NodeDef {
     pub respond_to_probes: bool,
     #[serde(default = "default_true")]
     pub enable_transport: bool,
+    /// Host device path for RNode serial (e.g., "/dev/ttyACM0").
+    #[serde(default)]
+    pub rnode: Option<String>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct RadioConfig {
+    pub frequency: u64,
+    pub bandwidth: u32,
+    #[serde(alias = "sf")]
+    pub spreading_factor: u8,
+    #[serde(alias = "cr")]
+    pub coding_rate: u8,
+    #[serde(alias = "txpower")]
+    pub tx_power: u8,
 }
 
 fn default_true() -> bool {
@@ -205,7 +222,11 @@ pub fn assign_interfaces(
 // ---------------------------------------------------------------------------
 
 /// Generate the Reticulum INI config string for a node.
-pub fn render_config(node: &NodeDef, ifaces: &[InterfaceEntry]) -> String {
+pub fn render_config(
+    node: &NodeDef,
+    ifaces: &[InterfaceEntry],
+    radio: Option<&RadioConfig>,
+) -> String {
     let mut out = String::new();
 
     let enabled = if node.enable_transport { "yes" } else { "no" };
@@ -248,6 +269,19 @@ pub fn render_config(node: &NodeDef, ifaces: &[InterfaceEntry]) -> String {
         }
     }
 
+    if let (Some(port), Some(radio)) = (&node.rnode, radio) {
+        writeln!(out, "  [[RNode Interface]]").ok();
+        writeln!(out, "    type = RNodeInterface").ok();
+        writeln!(out, "    enabled = yes").ok();
+        writeln!(out, "    port = {port}").ok();
+        writeln!(out, "    frequency = {}", radio.frequency).ok();
+        writeln!(out, "    bandwidth = {}", radio.bandwidth).ok();
+        writeln!(out, "    spreadingfactor = {}", radio.spreading_factor).ok();
+        writeln!(out, "    codingrate = {}", radio.coding_rate).ok();
+        writeln!(out, "    txpower = {}", radio.tx_power).ok();
+        writeln!(out, "    ingress_control = false").ok();
+    }
+
     out
 }
 
@@ -259,6 +293,15 @@ pub fn render_config(node: &NodeDef, ifaces: &[InterfaceEntry]) -> String {
 pub fn generate_node_configs(scenario: &TestScenario, base_dir: &Path) -> io::Result<()> {
     let interfaces = assign_interfaces(&scenario.links)
         .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
+
+    // Validate: if any node has rnode set, [radio] must be present.
+    let has_rnode = scenario.nodes.values().any(|n| n.rnode.is_some());
+    if has_rnode && scenario.radio.is_none() {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "nodes with rnode require a [radio] section",
+        ));
+    }
 
     let mut rng = rand::thread_rng();
 
@@ -274,7 +317,7 @@ pub fn generate_node_configs(scenario: &TestScenario, base_dir: &Path) -> io::Re
 
         // Render and write config.
         let ifaces = interfaces.get(name.as_str()).cloned().unwrap_or_default();
-        let config = render_config(node, &ifaces);
+        let config = render_config(node, &ifaces, scenario.radio.as_ref());
         fs::write(node_dir.join("config"), config)?;
     }
 
@@ -562,5 +605,108 @@ hub-spoke2 = "tcp"
         let result = assign_interfaces(&links);
         assert!(result.is_err());
         assert!(result.unwrap_err().contains("nodeA-nodeB"));
+    }
+
+    #[test]
+    fn parse_radio_config() {
+        let toml_str = r#"
+[test]
+name = "radio_test"
+
+[radio]
+frequency = 868000000
+bandwidth = 125000
+sf = 7
+cr = 5
+txpower = 17
+
+[nodes.alpha]
+type = "rust"
+respond_to_probes = true
+rnode = "/dev/ttyACM0"
+"#;
+        let scenario = parse_scenario(toml_str).unwrap();
+        let radio = scenario.radio.as_ref().expect("radio should be present");
+        assert_eq!(radio.frequency, 868000000);
+        assert_eq!(radio.bandwidth, 125000);
+        assert_eq!(radio.spreading_factor, 7);
+        assert_eq!(radio.coding_rate, 5);
+        assert_eq!(radio.tx_power, 17);
+        assert_eq!(
+            scenario.nodes["alpha"].rnode.as_deref(),
+            Some("/dev/ttyACM0")
+        );
+    }
+
+    #[test]
+    fn rnode_config_generates_ini() {
+        let node = NodeDef {
+            node_type: "rust".into(),
+            respond_to_probes: true,
+            enable_transport: true,
+            rnode: Some("/dev/ttyACM0".into()),
+        };
+        let radio = RadioConfig {
+            frequency: 868000000,
+            bandwidth: 125000,
+            spreading_factor: 7,
+            coding_rate: 5,
+            tx_power: 17,
+        };
+        let config = render_config(&node, &[], Some(&radio));
+        assert!(
+            config.contains("[[RNode Interface]]"),
+            "missing RNode section"
+        );
+        assert!(config.contains("type = RNodeInterface"));
+        assert!(config.contains("enabled = yes"));
+        assert!(config.contains("port = /dev/ttyACM0"));
+        assert!(config.contains("frequency = 868000000"));
+        assert!(config.contains("bandwidth = 125000"));
+        assert!(config.contains("spreadingfactor = 7"));
+        assert!(config.contains("codingrate = 5"));
+        assert!(config.contains("txpower = 17"));
+        assert!(config.contains("ingress_control = false"));
+    }
+
+    #[test]
+    fn rnode_without_radio_section_errors() {
+        let toml_str = r#"
+[test]
+name = "missing_radio"
+
+[nodes.alpha]
+type = "rust"
+respond_to_probes = true
+rnode = "/dev/ttyACM0"
+"#;
+        let scenario = parse_scenario(toml_str).unwrap();
+        let tmp = TempDir::new().unwrap();
+        let result = generate_node_configs(&scenario, tmp.path());
+        assert!(result.is_err());
+        let err = result.unwrap_err().to_string();
+        assert!(
+            err.contains("rnode require a [radio] section"),
+            "unexpected error: {err}"
+        );
+    }
+
+    #[test]
+    fn existing_tcp_only_unchanged() {
+        // Verify that radio: None doesn't affect existing TCP-only scenarios.
+        let scenario = load_basic_probe();
+        assert!(scenario.radio.is_none());
+        assert!(scenario.nodes["alice"].rnode.is_none());
+
+        let tmp = TempDir::new().unwrap();
+        generate_node_configs(&scenario, tmp.path()).unwrap();
+
+        let alice_cfg = fs::read_to_string(tmp.path().join("alice/config")).unwrap();
+        assert!(alice_cfg.contains("TCPServerInterface"));
+        assert!(!alice_cfg.contains("RNodeInterface"));
+
+        let bob_cfg = fs::read_to_string(tmp.path().join("bob/config")).unwrap();
+        assert!(bob_cfg.contains("TCPClientInterface"));
+        assert!(!bob_cfg.contains("RNodeInterface"));
     }
 }

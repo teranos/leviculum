@@ -71,6 +71,12 @@ pub fn generate_compose(
             node_dir.join("storage").display()
         )
         .ok();
+
+        if let Some(device) = &node.rnode {
+            writeln!(out, "    privileged: true").ok();
+            writeln!(out, "    devices:").ok();
+            writeln!(out, "      - \"{device}:{device}\"").ok();
+        }
     }
 
     out
@@ -244,6 +250,65 @@ duration_secs = 5
         assert!(yaml.contains("\n  alice:\n"), "missing alice");
         assert!(yaml.contains("\n  bob:\n"), "missing bob");
         assert!(yaml.contains("\n  relay:\n"), "missing relay");
+    }
+
+    #[test]
+    fn rnode_compose_has_device_and_privileged() {
+        let toml_str = r#"
+[test]
+name = "rnode_test"
+
+[radio]
+frequency = 868000000
+bandwidth = 125000
+sf = 7
+cr = 5
+txpower = 17
+
+[nodes.alpha]
+type = "rust"
+respond_to_probes = true
+rnode = "/dev/ttyACM0"
+
+[nodes.beta]
+type = "rust"
+respond_to_probes = true
+"#;
+        let scenario = parse_scenario(toml_str).expect("parse failed");
+        let (base_dir, repo_root) = sample_paths();
+        let yaml = generate_compose(&scenario, 0, &base_dir, &repo_root);
+
+        // alpha has rnode — should have privileged and devices
+        let alpha_idx = yaml.find("  alpha:").expect("no alpha");
+        let beta_idx = yaml.find("  beta:").expect("no beta");
+        let alpha_block = if alpha_idx < beta_idx {
+            &yaml[alpha_idx..beta_idx]
+        } else {
+            &yaml[alpha_idx..]
+        };
+        assert!(
+            alpha_block.contains("privileged: true"),
+            "alpha should have privileged"
+        );
+        assert!(
+            alpha_block.contains("\"/dev/ttyACM0:/dev/ttyACM0\""),
+            "alpha should have device mapping"
+        );
+
+        // beta has no rnode — should NOT have privileged or devices
+        let beta_block = if beta_idx > alpha_idx {
+            &yaml[beta_idx..]
+        } else {
+            &yaml[beta_idx..alpha_idx]
+        };
+        assert!(
+            !beta_block.contains("privileged"),
+            "beta should not have privileged"
+        );
+        assert!(
+            !beta_block.contains("devices:"),
+            "beta should not have devices"
+        );
     }
 
     #[test]

@@ -941,6 +941,54 @@ Reticulum Transport Instance running
     }
 
     #[test]
+    #[ignore] // Requires RNode hardware at /dev/ttyACM0 and /dev/ttyACM1.
+              // Build lrnsd with: cargo build --release --bin lrnsd --features serial
+              // NOTE: If wait_for_path times out, check container logs for
+              // "configured" or "configuration failed" — wait_ready() succeeds
+              // even if the RNode device is not detected (reconnect runs in background).
+    fn lora_direct_rust() {
+        let toml_str = std::fs::read_to_string(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/tests/lora_direct_rust.toml"
+        ))
+        .expect("lora_direct_rust.toml not found");
+        let scenario = crate::topology::parse_scenario(&toml_str).expect("parse failed");
+
+        let mut runner = TestRunner::new(scenario).expect("TestRunner::new failed");
+
+        runner.up().expect("up failed");
+        runner.wait_ready(60).expect("wait_ready failed");
+
+        let result = execute_steps(&runner);
+        runner.down().expect("down failed");
+        result.expect("execute_steps should succeed");
+    }
+
+    #[test]
+    #[ignore] // Requires RNode hardware at /dev/ttyACM0 and /dev/ttyACM1.
+              // Build lrnsd with: cargo build --release --bin lrnsd --features serial
+              // Docker image must have pyserial installed for Python RNodeInterface.
+              // NOTE: If wait_for_path times out, check container logs for
+              // "configured"/"configuration failed" (Rust) or RNodeInterface errors (Python).
+    fn lora_interop_rust_python() {
+        let toml_str = std::fs::read_to_string(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/tests/lora_interop_rust_python.toml"
+        ))
+        .expect("lora_interop_rust_python.toml not found");
+        let scenario = crate::topology::parse_scenario(&toml_str).expect("parse failed");
+
+        let mut runner = TestRunner::new(scenario).expect("TestRunner::new failed");
+
+        runner.up().expect("up failed");
+        runner.wait_ready(60).expect("wait_ready failed");
+
+        let result = execute_steps(&runner);
+        runner.down().expect("down failed");
+        result.expect("execute_steps should succeed");
+    }
+
+    #[test]
     fn selftest_bulk() {
         let toml_str = std::fs::read_to_string(concat!(
             env!("CARGO_MANIFEST_DIR"),
