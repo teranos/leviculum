@@ -48,6 +48,10 @@ pub struct NodeDef {
     /// Host device path for RNode serial (e.g., "/dev/ttyACM0").
     #[serde(default)]
     pub rnode: Option<String>,
+    /// TCP server port for local tool access (e.g., selftest).
+    /// Generates a standalone TCPServerInterface, independent of [links].
+    #[serde(default)]
+    pub listen_port: Option<u16>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -279,6 +283,15 @@ pub fn render_config(
         writeln!(out, "    spreadingfactor = {}", radio.spreading_factor).ok();
         writeln!(out, "    codingrate = {}", radio.coding_rate).ok();
         writeln!(out, "    txpower = {}", radio.tx_power).ok();
+        writeln!(out, "    ingress_control = false").ok();
+    }
+
+    if let Some(port) = node.listen_port {
+        writeln!(out, "  [[Selftest TCP Server]]").ok();
+        writeln!(out, "    type = TCPServerInterface").ok();
+        writeln!(out, "    enabled = yes").ok();
+        writeln!(out, "    listen_ip = 0.0.0.0").ok();
+        writeln!(out, "    listen_port = {port}").ok();
         writeln!(out, "    ingress_control = false").ok();
     }
 
@@ -645,6 +658,7 @@ rnode = "/dev/ttyACM0"
             respond_to_probes: true,
             enable_transport: true,
             rnode: Some("/dev/ttyACM0".into()),
+            listen_port: None,
         };
         let radio = RadioConfig {
             frequency: 868000000,
@@ -708,5 +722,69 @@ rnode = "/dev/ttyACM0"
         let bob_cfg = fs::read_to_string(tmp.path().join("bob/config")).unwrap();
         assert!(bob_cfg.contains("TCPClientInterface"));
         assert!(!bob_cfg.contains("RNodeInterface"));
+    }
+
+    #[test]
+    fn listen_port_generates_tcp_server() {
+        let node = NodeDef {
+            node_type: "rust".into(),
+            respond_to_probes: true,
+            enable_transport: true,
+            rnode: None,
+            listen_port: Some(4242),
+        };
+        let config = render_config(&node, &[], None);
+        assert!(
+            config.contains("[[Selftest TCP Server]]"),
+            "missing Selftest TCP Server section"
+        );
+        assert!(config.contains("type = TCPServerInterface"));
+        assert!(config.contains("listen_ip = 0.0.0.0"));
+        assert!(config.contains("listen_port = 4242"));
+        assert!(config.contains("enabled = yes"));
+        assert!(config.contains("ingress_control = false"));
+    }
+
+    #[test]
+    fn listen_port_coexists_with_rnode() {
+        let node = NodeDef {
+            node_type: "rust".into(),
+            respond_to_probes: true,
+            enable_transport: true,
+            rnode: Some("/dev/ttyACM0".into()),
+            listen_port: Some(4242),
+        };
+        let radio = RadioConfig {
+            frequency: 868000000,
+            bandwidth: 125000,
+            spreading_factor: 7,
+            coding_rate: 5,
+            tx_power: 17,
+        };
+        let config = render_config(&node, &[], Some(&radio));
+        assert!(
+            config.contains("[[RNode Interface]]"),
+            "missing RNode section"
+        );
+        assert!(
+            config.contains("[[Selftest TCP Server]]"),
+            "missing Selftest TCP Server section"
+        );
+    }
+
+    #[test]
+    fn listen_port_none_no_section() {
+        let node = NodeDef {
+            node_type: "rust".into(),
+            respond_to_probes: true,
+            enable_transport: true,
+            rnode: None,
+            listen_port: None,
+        };
+        let config = render_config(&node, &[], None);
+        assert!(
+            !config.contains("Selftest TCP Server"),
+            "should not have Selftest TCP Server section"
+        );
     }
 }

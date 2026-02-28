@@ -989,6 +989,50 @@ Reticulum Transport Instance running
     }
 
     #[test]
+    #[ignore] // Requires RNode hardware at /dev/ttyACM0 and /dev/ttyACM1.
+              // Build lrnsd with: cargo build --release --bin lrnsd --features serial
+              // Build lrns with: cargo build --release --bin lrns
+    fn lora_link_rust() {
+        let toml_str = std::fs::read_to_string(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/tests/lora_link_rust.toml"
+        ))
+        .expect("lora_link_rust.toml not found");
+        let scenario = crate::topology::parse_scenario(&toml_str).expect("parse failed");
+
+        let mut runner = TestRunner::new(scenario).expect("TestRunner::new failed");
+
+        runner.up().expect("up failed");
+        runner.wait_ready(60).expect("wait_ready failed");
+
+        let result = execute_steps(&runner);
+        runner.down().expect("down failed");
+        result.expect("execute_steps should succeed");
+    }
+
+    #[test]
+    #[ignore] // Requires RNode hardware at /dev/ttyACM0 and /dev/ttyACM1.
+              // Build lrnsd with: cargo build --release --bin lrnsd --features serial
+              // Build lrns with: cargo build --release --bin lrns
+    fn lora_link_interop() {
+        let toml_str = std::fs::read_to_string(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/tests/lora_link_interop.toml"
+        ))
+        .expect("lora_link_interop.toml not found");
+        let scenario = crate::topology::parse_scenario(&toml_str).expect("parse failed");
+
+        let mut runner = TestRunner::new(scenario).expect("TestRunner::new failed");
+
+        runner.up().expect("up failed");
+        runner.wait_ready(60).expect("wait_ready failed");
+
+        let result = execute_steps(&runner);
+        runner.down().expect("down failed");
+        result.expect("execute_steps should succeed");
+    }
+
+    #[test]
     fn selftest_bulk() {
         let toml_str = std::fs::read_to_string(concat!(
             env!("CARGO_MANIFEST_DIR"),

@@ -1,0 +1,51 @@
+# Link establishment + channel messaging over LoRa, Rust↔Rust.
+# Uses selftest --mode link to verify bidirectional channel communication.
+# Requires two RNode devices at /dev/ttyACM0 and /dev/ttyACM1.
+# Build lrnsd with: cargo build --release --bin lrnsd --features serial
+# Build lrns with: cargo build --release --bin lrns
+
+[test]
+name = "lora_link_rust"
+description = "Rust↔Rust link and channel messages over LoRa via selftest"
+timeout_secs = 180
+
+[radio]
+frequency = 868000000
+bandwidth = 125000
+sf = 7
+cr = 5
+txpower = 17
+
+[nodes.alpha]
+type = "rust"
+respond_to_probes = true
+rnode = "/dev/ttyACM0"
+listen_port = 4242
+
+[nodes.beta]
+type = "rust"
+respond_to_probes = true
+rnode = "/dev/ttyACM1"
+listen_port = 4242
+
+[[steps]]
+action = "sleep"
+duration_secs = 20
+
+[[steps]]
+action = "wait_for_path"
+on = "alpha"
+destination = "beta.probe"
+timeout_secs = 45
+
+[[steps]]
+action = "wait_for_path"
+on = "beta"
+destination = "alpha.probe"
+timeout_secs = 45
+
+[[steps]]
+action = "exec"
+on = "alpha"
+command = "lrns selftest 127.0.0.1:4242 beta:4242 --mode link --rate 1 --duration 60"
+expect_exit_code = 0
