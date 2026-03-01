@@ -999,6 +999,13 @@ impl<R: CryptoRngCore, C: Clock, S: Storage> NodeCore<R, C, S> {
                 interface_index,
                 raw_hash,
             } => {
+                tracing::debug!(
+                    "node: PacketReceived dest=<{}> type={:?} ctx={:?} iface={}",
+                    HexShort(&destination_hash),
+                    packet.flags.packet_type,
+                    packet.context,
+                    interface_index,
+                );
                 // Check if this is a link-related packet
                 if packet.flags.packet_type == crate::packet::PacketType::LinkRequest
                     || packet.flags.packet_type == crate::packet::PacketType::Proof

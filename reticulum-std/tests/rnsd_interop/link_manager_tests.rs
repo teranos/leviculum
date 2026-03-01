@@ -1488,8 +1488,9 @@ async fn test_manager_responder_timeout() {
     // Verify pending incoming
     assert_eq!(node.pending_link_count(), 1);
 
-    // Advance time past timeout (don't send RTT)
-    clock_handle.advance(31_000);
+    // Advance time past responder establishment timeout (don't send RTT).
+    // Responder with 0 hops: 6000 * max(1,0) + 360000 = 366000ms.
+    clock_handle.advance(366_001);
     let output = node.handle_timeout();
 
     // Link should be timed out

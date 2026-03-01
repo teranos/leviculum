@@ -7,7 +7,7 @@
 [test]
 name = "lora_link_interop"
 description = "Rust↔Python link and channel messages over LoRa via selftest"
-timeout_secs = 360
+timeout_secs = 600
 
 [radio]
 frequency = 869525000
@@ -30,7 +30,7 @@ listen_port = 4242
 
 [[steps]]
 action = "sleep"
-duration_secs = 30
+duration_secs = 60
 
 [[steps]]
 action = "wait_for_path"
@@ -47,5 +47,5 @@ timeout_secs = 90
 [[steps]]
 action = "exec"
 on = "alpha"
-command = "lrns selftest 127.0.0.1:4242 beta:4242 --mode link --rate 1 --duration 60 --discovery-timeout 120"
+command = "lrns selftest 127.0.0.1:4242 beta:4242 --mode link --rate 1 --duration 60 --discovery-timeout 240"
 expect_exit_code = 0

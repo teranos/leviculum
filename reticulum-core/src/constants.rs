@@ -158,6 +158,15 @@ pub const LINK_STALE_GRACE_SECS: u64 = 5; // Grace period after stale before clo
 /// Timeout for pending link handshakes (milliseconds)
 pub const LINK_PENDING_TIMEOUT_MS: u64 = 30_000;
 
+/// Per-hop timeout for link establishment (milliseconds).
+/// Python: ESTABLISHMENT_TIMEOUT_PER_HOP = DEFAULT_PER_HOP_TIMEOUT = 6s
+pub const ESTABLISHMENT_TIMEOUT_PER_HOP_MS: u64 = DEFAULT_PER_HOP_TIMEOUT * 1000;
+
+/// Responder establishment bonus (milliseconds).
+/// Python adds KEEPALIVE (360s) to the responder's timeout because it must
+/// wait for the RTT packet to travel back through all hops.
+pub const ESTABLISHMENT_RESPONDER_BONUS_MS: u64 = LINK_KEEPALIVE_SECS * 1000;
+
 /// Timeout for data receipts awaiting proofs (milliseconds)
 pub const DATA_RECEIPT_TIMEOUT_MS: u64 = 30_000;
 

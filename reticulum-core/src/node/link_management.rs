@@ -7,8 +7,7 @@
 use alloc::vec::Vec;
 
 use crate::constants::{
-    DATA_RECEIPT_TIMEOUT_MS, LINK_PENDING_TIMEOUT_MS, MODE_AES256_CBC, MS_PER_SECOND,
-    PROOF_DATA_SIZE, TRUNCATED_HASHBYTES,
+    DATA_RECEIPT_TIMEOUT_MS, MODE_AES256_CBC, MS_PER_SECOND, PROOF_DATA_SIZE, TRUNCATED_HASHBYTES,
 };
 use crate::destination::{DestinationHash, ProofStrategy};
 use crate::hex_fmt::{HexFmt, HexShort};
@@ -199,6 +198,7 @@ impl<R: CryptoRngCore, C: Clock, S: Storage> NodeCore<R, C, S> {
         // Create new outgoing link
         let mut link = Link::new_outgoing(dest_hash, &mut self.rng);
         let packet = link.build_link_request_packet_with_transport(next_hop, hops, hw_mtu);
+        link.set_hops(hops);
         let link_id = *link.id();
         if let Err(e) = link.set_destination_keys(dest_signing_key) {
             tracing::debug!(%e, "set_destination_keys failed");
@@ -519,6 +519,9 @@ impl<R: CryptoRngCore, C: Clock, S: Storage> NodeCore<R, C, S> {
         // Set attached interface from the receiving interface
         link.set_attached_interface(interface_index);
 
+        // Copy the packet's hop count so establishment_timeout_ms() scales correctly
+        link.set_hops(packet.hops);
+
         // Extract peer keys for the event
         let peer_keys = PeerKeys {
             x25519_public: request_data[..32].try_into().unwrap_or([0; 32]),
@@ -553,6 +556,14 @@ impl<R: CryptoRngCore, C: Clock, S: Storage> NodeCore<R, C, S> {
         let link_id = LinkId::new(packet.destination_hash);
         let proof_data = packet.data.as_slice();
 
+        tracing::debug!(
+            "handle_link_proof: link=<{}> context={:?} proof_len={} iface={}",
+            HexShort(link_id.as_bytes()),
+            packet.context,
+            proof_data.len(),
+            interface_index,
+        );
+
         // Check if this is a data proof (not a link establishment proof)
         if proof_data.len() == PROOF_DATA_SIZE && packet.context == PacketContext::None {
             self.handle_data_proof(&link_id, proof_data);
@@ -560,22 +571,30 @@ impl<R: CryptoRngCore, C: Clock, S: Storage> NodeCore<R, C, S> {
         }
 
         let Some(link) = self.links.get_mut(&link_id) else {
-            tracing::trace!(
-                link = %HexShort(link_id.as_bytes()),
-                "Link proof for unknown link, ignoring"
+            tracing::debug!(
+                "handle_link_proof: link <{}> not found in self.links ({} links tracked)",
+                HexShort(link_id.as_bytes()),
+                self.links.len(),
             );
             return;
         };
 
         // Must be a pending outgoing link
         if !matches!(link.phase(), LinkPhase::PendingOutgoing { .. }) {
-            tracing::trace!(
-                link = %HexShort(link_id.as_bytes()),
-                "Link proof for non-pending link, ignoring"
+            tracing::debug!(
+                "handle_link_proof: link <{}> phase={:?}, expected PendingOutgoing",
+                HexShort(link_id.as_bytes()),
+                link.phase(),
             );
             return;
         }
         if link.state() != LinkState::Pending || !link.is_initiator() {
+            tracing::debug!(
+                "handle_link_proof: link <{}> state={:?} initiator={}, expected Pending+initiator",
+                HexShort(link_id.as_bytes()),
+                link.state(),
+                link.is_initiator(),
+            );
             return;
         }
 
@@ -585,7 +604,7 @@ impl<R: CryptoRngCore, C: Clock, S: Storage> NodeCore<R, C, S> {
         // Process the proof
         if link.process_proof(proof_data).is_err() {
             tracing::debug!(
-                "Link proof for <{}> is invalid, closing link",
+                "handle_link_proof: link <{}> proof verification failed, closing",
                 HexShort(link_id.as_bytes())
             );
             let is_initiator = link.is_initiator();
@@ -619,14 +638,27 @@ impl<R: CryptoRngCore, C: Clock, S: Storage> NodeCore<R, C, S> {
         );
 
         // Build RTT packet and route via attached interface
-        if let Ok(rtt_packet) = link.build_rtt_packet(rtt_seconds, &mut self.rng) {
-            self.events.push(NodeEvent::LinkEstablished {
-                link_id,
-                is_initiator: true,
-            });
-
-            // Route RTT packet via attached interface
-            self.route_link_packet(&link_id, &rtt_packet);
+        match link.build_rtt_packet(rtt_seconds, &mut self.rng) {
+            Ok(rtt_packet) => {
+                self.events.push(NodeEvent::LinkEstablished {
+                    link_id,
+                    is_initiator: true,
+                });
+                self.route_link_packet(&link_id, &rtt_packet);
+            }
+            Err(e) => {
+                tracing::warn!(
+                    "handle_link_proof: link <{}> established but build_rtt_packet failed: {:?}",
+                    HexShort(link_id.as_bytes()),
+                    e,
+                );
+                // Emit the event anyway — the link IS established even if the
+                // RTT packet could not be sent.
+                self.events.push(NodeEvent::LinkEstablished {
+                    link_id,
+                    is_initiator: true,
+                });
+            }
         }
     }
 
@@ -1080,7 +1112,7 @@ impl<R: CryptoRngCore, C: Clock, S: Storage> NodeCore<R, C, S> {
                     LinkPhase::PendingIncoming { proof_sent_at_ms } => proof_sent_at_ms,
                     LinkPhase::Established => return false,
                 };
-                now_ms.saturating_sub(started_at) > LINK_PENDING_TIMEOUT_MS
+                now_ms.saturating_sub(started_at) > link.establishment_timeout_ms()
             })
             .map(|(id, _)| *id)
             .collect();
@@ -1296,10 +1328,10 @@ impl<R: CryptoRngCore, C: Clock, S: Storage> NodeCore<R, C, S> {
         for link in self.links.values() {
             match link.phase() {
                 LinkPhase::PendingOutgoing { created_at_ms } => {
-                    update(created_at_ms.saturating_add(LINK_PENDING_TIMEOUT_MS));
+                    update(created_at_ms.saturating_add(link.establishment_timeout_ms()));
                 }
                 LinkPhase::PendingIncoming { proof_sent_at_ms } => {
-                    update(proof_sent_at_ms.saturating_add(LINK_PENDING_TIMEOUT_MS));
+                    update(proof_sent_at_ms.saturating_add(link.establishment_timeout_ms()));
                 }
                 LinkPhase::Established => {}
             }

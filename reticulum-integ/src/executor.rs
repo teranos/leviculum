@@ -638,6 +638,7 @@ Reticulum Transport Instance running
     // -----------------------------------------------------------------------
 
     #[test]
+    #[serial(docker)]
     fn basic_probe_end_to_end() {
         let toml_str = std::fs::read_to_string(concat!(
             env!("CARGO_MANIFEST_DIR"),
@@ -657,6 +658,7 @@ Reticulum Transport Instance running
     }
 
     #[test]
+    #[serial(docker)]
     fn probe_through_relay() {
         let toml_str = std::fs::read_to_string(concat!(
             env!("CARGO_MANIFEST_DIR"),
@@ -676,6 +678,7 @@ Reticulum Transport Instance running
     }
 
     #[test]
+    #[serial(docker)]
     fn path_self_healing() {
         let toml_str = std::fs::read_to_string(concat!(
             env!("CARGO_MANIFEST_DIR"),
@@ -695,6 +698,7 @@ Reticulum Transport Instance running
     }
 
     #[test]
+    #[serial(docker)]
     fn node_restart_path_recovery() {
         let toml_str = std::fs::read_to_string(concat!(
             env!("CARGO_MANIFEST_DIR"),
@@ -714,6 +718,7 @@ Reticulum Transport Instance running
     }
 
     #[test]
+    #[serial(docker)]
     fn announce_replacement() {
         let toml_str = std::fs::read_to_string(concat!(
             env!("CARGO_MANIFEST_DIR"),
@@ -733,6 +738,7 @@ Reticulum Transport Instance running
     }
 
     #[test]
+    #[serial(docker)]
     fn four_node_chain() {
         let toml_str = std::fs::read_to_string(concat!(
             env!("CARGO_MANIFEST_DIR"),
@@ -752,6 +758,7 @@ Reticulum Transport Instance running
     }
 
     #[test]
+    #[serial(docker)]
     fn rust_relay_python_endpoints() {
         let toml_str = std::fs::read_to_string(concat!(
             env!("CARGO_MANIFEST_DIR"),
@@ -771,6 +778,7 @@ Reticulum Transport Instance running
     }
 
     #[test]
+    #[serial(docker)]
     fn double_restart_identity_persistence() {
         let toml_str = std::fs::read_to_string(concat!(
             env!("CARGO_MANIFEST_DIR"),
@@ -790,6 +798,7 @@ Reticulum Transport Instance running
     }
 
     #[test]
+    #[serial(docker)]
     fn rnstatus_transport_info() {
         let toml_str = std::fs::read_to_string(concat!(
             env!("CARGO_MANIFEST_DIR"),
@@ -809,6 +818,7 @@ Reticulum Transport Instance running
     }
 
     #[test]
+    #[serial(docker)]
     fn rust_probe_through_python_relay() {
         let toml_str = std::fs::read_to_string(concat!(
             env!("CARGO_MANIFEST_DIR"),
@@ -828,6 +838,7 @@ Reticulum Transport Instance running
     }
 
     #[test]
+    #[serial(docker)]
     fn five_node_mesh() {
         let toml_str = std::fs::read_to_string(concat!(
             env!("CARGO_MANIFEST_DIR"),
@@ -847,6 +858,7 @@ Reticulum Transport Instance running
     }
 
     #[test]
+    #[serial(docker)]
     fn link_failure_recovery() {
         let toml_str = std::fs::read_to_string(concat!(
             env!("CARGO_MANIFEST_DIR"),
@@ -866,6 +878,7 @@ Reticulum Transport Instance running
     }
 
     #[test]
+    #[serial(docker)]
     fn non_transport_no_relay() {
         let toml_str = std::fs::read_to_string(concat!(
             env!("CARGO_MANIFEST_DIR"),
@@ -885,6 +898,7 @@ Reticulum Transport Instance running
     }
 
     #[test]
+    #[serial(docker)]
     fn selftest_ratchet_direct() {
         let toml_str = std::fs::read_to_string(concat!(
             env!("CARGO_MANIFEST_DIR"),
@@ -904,6 +918,7 @@ Reticulum Transport Instance running
     }
 
     #[test]
+    #[serial(docker)]
     fn selftest_ratchet_chain() {
         let toml_str = std::fs::read_to_string(concat!(
             env!("CARGO_MANIFEST_DIR"),
@@ -923,6 +938,7 @@ Reticulum Transport Instance running
     }
 
     #[test]
+    #[serial(docker)]
     fn selftest_ratchet_mixed() {
         let toml_str = std::fs::read_to_string(concat!(
             env!("CARGO_MANIFEST_DIR"),
@@ -1105,6 +1121,7 @@ Reticulum Transport Instance running
     }
 
     #[test]
+    #[serial(docker)]
     fn selftest_bulk() {
         let toml_str = std::fs::read_to_string(concat!(
             env!("CARGO_MANIFEST_DIR"),

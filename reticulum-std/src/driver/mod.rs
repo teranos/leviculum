@@ -928,12 +928,23 @@ async fn run_event_loop(
             event = recv_any(&mut registry) => {
                 match event {
                     RecvEvent::Packet(iface_id, pkt) => {
+                        tracing::debug!(
+                            "driver: received {} bytes from iface {} ({})",
+                            pkt.data.len(),
+                            iface_id,
+                            registry.name_of(iface_id),
+                        );
                         let (output, now_ms) = {
                             let mut core = inner.lock().unwrap();
                             let output = core.handle_packet(iface_id, &pkt.data);
                             let now_ms = core.now_ms();
                             (output, now_ms)
                         };
+                        tracing::debug!(
+                            "driver: handle_packet produced {} actions, {} events",
+                            output.actions.len(),
+                            output.events.len(),
+                        );
                         // Packet handling may schedule new deadlines (e.g. announce
                         // rebroadcast retries) — advance next_poll if sooner.
                         if let Some(deadline_ms) = output.next_deadline_ms {

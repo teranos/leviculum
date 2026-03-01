@@ -40,8 +40,9 @@
 pub mod channel;
 
 use crate::constants::{
-    ED25519_SIGNATURE_SIZE, KEEPALIVE_INITIATOR_BYTE, KEEPALIVE_PAYLOAD_SIZE,
-    KEEPALIVE_RESPONDER_BYTE, LINK_KEEPALIVE_MAX_RTT, LINK_KEEPALIVE_MIN_SECS, LINK_KEEPALIVE_SECS,
+    ED25519_SIGNATURE_SIZE, ESTABLISHMENT_RESPONDER_BONUS_MS, ESTABLISHMENT_TIMEOUT_PER_HOP_MS,
+    KEEPALIVE_INITIATOR_BYTE, KEEPALIVE_PAYLOAD_SIZE, KEEPALIVE_RESPONDER_BYTE,
+    LINK_KEEPALIVE_MAX_RTT, LINK_KEEPALIVE_MIN_SECS, LINK_KEEPALIVE_SECS,
     LINK_KEEPALIVE_TIMEOUT_FACTOR, LINK_STALE_FACTOR, LINK_STALE_GRACE_SECS, MTU, PROOF_DATA_SIZE,
     SIGNALING_MODE_MASK, SIGNALING_MODE_SHIFT, SIGNALING_MTU_MASK, TRUNCATED_HASHBYTES,
     X25519_KEY_SIZE,
@@ -740,6 +741,29 @@ impl Link {
     /// Get the hop count
     pub fn hops(&self) -> u8 {
         self.hops
+    }
+
+    /// Set the hop count (from path table or incoming packet)
+    pub fn set_hops(&mut self, hops: u8) {
+        self.hops = hops;
+    }
+
+    /// Compute the establishment timeout for this link, matching Python's formula.
+    ///
+    /// Initiator (PendingOutgoing):
+    ///   `ESTABLISHMENT_TIMEOUT_PER_HOP × (max(1, hops) + 1)`
+    ///   Without per-byte latency info, first_hop_timeout = per_hop_timeout.
+    ///
+    /// Responder (PendingIncoming):
+    ///   `ESTABLISHMENT_TIMEOUT_PER_HOP × max(1, hops) + KEEPALIVE`
+    ///   The KEEPALIVE term gives the RTT packet time to travel back.
+    pub fn establishment_timeout_ms(&self) -> u64 {
+        let hops = core::cmp::max(1, self.hops as u64);
+        if self.initiator {
+            ESTABLISHMENT_TIMEOUT_PER_HOP_MS * (hops + 1)
+        } else {
+            ESTABLISHMENT_TIMEOUT_PER_HOP_MS * hops + ESTABLISHMENT_RESPONDER_BONUS_MS
+        }
     }
 
     /// Get the RTT estimate in microseconds
@@ -3065,5 +3089,49 @@ mod tests {
             "expected UnsupportedMode, got {:?}",
             result.err()
         );
+    }
+
+    #[test]
+    fn establishment_timeout_initiator_0_hops() {
+        let dest_hash = DestinationHash::new([0x42; TRUNCATED_HASHBYTES]);
+        let link = Link::new_outgoing(dest_hash, &mut OsRng);
+        assert_eq!(link.hops(), 0);
+        // max(1,0)=1, (1+1)*6000 = 12000
+        assert_eq!(link.establishment_timeout_ms(), 12_000);
+    }
+
+    #[test]
+    fn establishment_timeout_initiator_3_hops() {
+        let dest_hash = DestinationHash::new([0x42; TRUNCATED_HASHBYTES]);
+        let mut link = Link::new_outgoing(dest_hash, &mut OsRng);
+        link.set_hops(3);
+        // (3+1)*6000 = 24000
+        assert_eq!(link.establishment_timeout_ms(), 24_000);
+    }
+
+    #[test]
+    fn establishment_timeout_responder_0_hops() {
+        let dest_hash = DestinationHash::new([0x42; TRUNCATED_HASHBYTES]);
+        let link_id = LinkId::new([0x01; TRUNCATED_HASHBYTES]);
+        let outgoing = Link::new_outgoing(dest_hash, &mut OsRng);
+        let request_data = outgoing.create_link_request();
+        let link = Link::new_incoming(&request_data, link_id, dest_hash, &mut OsRng, None).unwrap();
+        assert!(!link.is_initiator());
+        assert_eq!(link.hops(), 0);
+        // max(1,0)*6000 + 360000 = 366000
+        assert_eq!(link.establishment_timeout_ms(), 366_000);
+    }
+
+    #[test]
+    fn establishment_timeout_responder_3_hops() {
+        let dest_hash = DestinationHash::new([0x42; TRUNCATED_HASHBYTES]);
+        let link_id = LinkId::new([0x01; TRUNCATED_HASHBYTES]);
+        let outgoing = Link::new_outgoing(dest_hash, &mut OsRng);
+        let request_data = outgoing.create_link_request();
+        let mut link =
+            Link::new_incoming(&request_data, link_id, dest_hash, &mut OsRng, None).unwrap();
+        link.set_hops(3);
+        // 3*6000 + 360000 = 378000
+        assert_eq!(link.establishment_timeout_ms(), 378_000);
     }
 }
