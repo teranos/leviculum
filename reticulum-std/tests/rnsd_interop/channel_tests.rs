@@ -18,7 +18,7 @@
 use reticulum_core::constants::{
     CHANNEL_ENVELOPE_HEADER_SIZE, CHANNEL_MSGTYPE_RESERVED, CHANNEL_WINDOW_INITIAL,
 };
-use reticulum_core::link::channel::{Channel, ChannelError, Envelope, Message};
+use reticulum_core::link::channel::{Channel, ChannelError, Envelope, Message, ReceiveOutcome};
 
 // =========================================================================
 // Test message types
@@ -226,29 +226,27 @@ fn test_out_of_order_reception() {
 
     // Receive sequence 2 first (out of order)
     let env2 = Envelope::new(0x0001, 2, vec![3]);
-    let result = channel.receive(&env2.pack());
-    assert!(result.is_ok());
-    assert!(result.unwrap().is_none()); // Should be buffered
+    let result = channel.receive(&env2.pack(), [0u8; 32]);
+    assert_eq!(result, Ok(ReceiveOutcome::Buffered));
 
     // Receive sequence 1 (still out of order)
     let env1 = Envelope::new(0x0001, 1, vec![2]);
-    let result = channel.receive(&env1.pack());
-    assert!(result.is_ok());
-    assert!(result.unwrap().is_none()); // Should be buffered
+    let result = channel.receive(&env1.pack(), [0u8; 32]);
+    assert_eq!(result, Ok(ReceiveOutcome::Buffered));
 
     // Receive sequence 0 (in order)
     let env0 = Envelope::new(0x0001, 0, vec![1]);
-    let result = channel.receive(&env0.pack());
-    assert!(result.is_ok());
-    let received = result.unwrap();
-    assert!(received.is_some());
-    assert_eq!(received.unwrap().sequence, 0);
+    let result = channel.receive(&env0.pack(), [0u8; 32]);
+    match result.unwrap() {
+        ReceiveOutcome::Delivered(env) => assert_eq!(env.sequence, 0),
+        other => panic!("expected Delivered, got {:?}", other),
+    }
 
     // Drain should give us 1 and 2 in order
     let drained = channel.drain_received();
     assert_eq!(drained.len(), 2);
-    assert_eq!(drained[0].sequence, 1);
-    assert_eq!(drained[1].sequence, 2);
+    assert_eq!(drained[0].0.sequence, 1);
+    assert_eq!(drained[1].0.sequence, 2);
 }
 
 // =========================================================================

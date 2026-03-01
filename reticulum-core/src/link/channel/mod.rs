@@ -135,6 +135,10 @@ struct OutboundEnvelope {
     tries: u8,
     /// When the envelope was last sent (milliseconds)
     sent_at_ms: u64,
+    /// tx_ring length at the time this envelope was first sent.
+    /// Used for timeout calculation to avoid death-spiral where growing
+    /// queue inflates timeouts during drain.
+    queue_len_at_send: usize,
 }
 
 impl OutboundEnvelope {
@@ -144,6 +148,7 @@ impl OutboundEnvelope {
             state: MessageState::New,
             tries: 0,
             sent_at_ms: 0,
+            queue_len_at_send: 0,
         }
     }
 }
@@ -164,6 +169,21 @@ pub enum ChannelAction {
     TearDownLink,
 }
 
+/// Outcome of receiving a channel message, determines proof behavior.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ReceiveOutcome {
+    /// Message delivered in-order. Caller should send proof and emit event.
+    Delivered(Envelope),
+    /// Out-of-order, buffered in rx_ring. Do NOT send proof yet.
+    Buffered,
+    /// Duplicate of already-delivered message (seq < next_expected).
+    /// Caller should send proof so sender stops retransmitting.
+    AlreadyDelivered,
+    /// Duplicate of message already in rx_ring buffer.
+    /// Do NOT send proof — the gap is still open.
+    DuplicateBuffered,
+}
+
 /// Channel for reliable message delivery over a Link
 #[derive(Debug)]
 pub struct Channel {
@@ -173,8 +193,10 @@ pub struct Channel {
     next_rx_sequence: u16,
     /// Outbound envelopes awaiting acknowledgment
     tx_ring: VecDeque<OutboundEnvelope>,
-    /// Inbound envelopes received out of order
-    rx_ring: VecDeque<Option<Envelope>>,
+    /// Inbound envelopes received out of order, with proof hash for deferred proving.
+    /// The `[u8; 32]` is the packet hash needed to build a proof when the message is
+    /// eventually drained and delivered in-order to the application.
+    rx_ring: VecDeque<Option<(Envelope, [u8; 32])>>,
     /// Current window size
     window: usize,
     /// Minimum window size
@@ -471,6 +493,7 @@ impl Channel {
         outbound.state = MessageState::Sent;
         outbound.tries = 1;
         outbound.sent_at_ms = now_ms;
+        outbound.queue_len_at_send = self.tx_ring.len() + 1; // +1 for this entry
 
         self.tx_ring.push_back(outbound);
         self.next_send_at_ms = now_ms.saturating_add(self.pacing_interval_ms);
@@ -492,12 +515,20 @@ impl Channel {
 
     /// Receive decrypted channel data from link
     ///
-    /// Returns the envelope if it's the next expected in sequence,
-    /// or None if it's out of order (will be buffered).
+    /// Returns a `ReceiveOutcome` indicating what happened:
+    /// - `Delivered`: in-order message, caller should prove and emit event
+    /// - `Buffered`: out-of-order, stored for later delivery — do NOT prove yet
+    /// - `AlreadyDelivered`: duplicate of delivered message — re-prove so sender clears retransmit
+    /// - `DuplicateBuffered`: duplicate of buffered message — do NOT prove
     ///
     /// # Arguments
     /// * `data` - Decrypted envelope data from the link
-    pub fn receive(&mut self, data: &[u8]) -> Result<Option<Envelope>, ChannelError> {
+    /// * `proof_hash` - 32-byte packet hash for deferred proof generation
+    pub fn receive(
+        &mut self,
+        data: &[u8],
+        proof_hash: [u8; 32],
+    ) -> Result<ReceiveOutcome, ChannelError> {
         let envelope = Envelope::unpack(data)?;
 
         // Check if this is the next expected sequence
@@ -510,7 +541,7 @@ impl Channel {
                 self.rx_ring.pop_front();
             }
 
-            return Ok(Some(envelope));
+            return Ok(ReceiveOutcome::Delivered(envelope));
         }
 
         // Calculate the offset from expected sequence (handling wraparound)
@@ -519,7 +550,7 @@ impl Channel {
         // Backward sequence (retransmit of already-delivered message).
         // sequence_offset() wraps around for backward sequences, producing
         // values in the upper half of the sequence space (>= 32768).
-        // Return Ok(None) so the caller generates a proof — the original
+        // Return AlreadyDelivered so the caller generates a proof — the original
         // proof was likely lost on the return path.
         if offset >= CHANNEL_SEQ_MODULUS as usize / 2 {
             tracing::debug!(
@@ -527,7 +558,7 @@ impl Channel {
                 next_rx = self.next_rx_sequence,
                 "channel: duplicate/backward sequence, re-proving"
             );
-            return Ok(None);
+            return Ok(ReceiveOutcome::AlreadyDelivered);
         }
 
         // If offset is too large, the rx_ring is full
@@ -535,13 +566,20 @@ impl Channel {
             return Err(ChannelError::RxRingFull);
         }
 
-        // Buffer the out-of-order envelope
+        // Buffer the out-of-order envelope with proof hash for deferred proving
         while self.rx_ring.len() <= offset {
             self.rx_ring.push_back(None);
         }
-        self.rx_ring[offset] = Some(envelope);
 
-        Ok(None)
+        // Check if slot is already occupied (duplicate of buffered message)
+        let is_duplicate = self.rx_ring[offset].is_some();
+        self.rx_ring[offset] = Some((envelope, proof_hash));
+
+        if is_duplicate {
+            Ok(ReceiveOutcome::DuplicateBuffered)
+        } else {
+            Ok(ReceiveOutcome::Buffered)
+        }
     }
 
     /// Calculate sequence offset accounting for wraparound
@@ -595,10 +633,10 @@ impl Channel {
     /// }
     /// ```
     pub fn receive_message<M: Message>(&mut self, data: &[u8]) -> Result<Option<M>, ChannelError> {
-        // First receive the envelope
-        let envelope = match self.receive(data)? {
-            Some(env) => env,
-            None => return Ok(None), // Buffered or invalid
+        // First receive the envelope (test convenience — no real proof hash needed)
+        let envelope = match self.receive(data, [0u8; 32])? {
+            ReceiveOutcome::Delivered(env) => env,
+            _ => return Ok(None), // Buffered, duplicate, or already delivered
         };
 
         // Check message type
@@ -616,17 +654,18 @@ impl Channel {
     /// Drain received messages that are ready (in sequence order)
     ///
     /// Call this after `receive()` to get any buffered messages that
-    /// are now in sequence.
-    pub fn drain_received(&mut self) -> Vec<Envelope> {
+    /// are now in sequence. Returns `(Envelope, proof_hash)` tuples so
+    /// the caller can build deferred proofs for each delivered message.
+    pub fn drain_received(&mut self) -> Vec<(Envelope, [u8; 32])> {
         let mut ready = Vec::new();
 
         while let Some(front) = self.rx_ring.front() {
             match front {
-                Some(envelope) if envelope.sequence == self.next_rx_sequence => {
-                    if let Some(Some(env)) = self.rx_ring.pop_front() {
+                Some((envelope, _hash)) if envelope.sequence == self.next_rx_sequence => {
+                    if let Some(Some((env, hash))) = self.rx_ring.pop_front() {
                         self.next_rx_sequence =
                             ((self.next_rx_sequence as u32 + 1) % CHANNEL_SEQ_MODULUS) as u16;
-                        ready.push(env);
+                        ready.push((env, hash));
                     }
                 }
                 None => {
@@ -712,14 +751,14 @@ impl Channel {
         let mut pacing_doublings = 0usize;
         let eff_rtt = self.effective_rtt_ms(rtt_ms);
 
-        // Collect queue length once at start (used for timeout calculation)
-        let queue_len = self.tx_ring.len();
-
         // First pass: collect indices that need processing and their current tries
         let mut timed_out: Vec<(usize, u8)> = Vec::new();
         for (i, outbound) in self.tx_ring.iter().enumerate() {
             if outbound.state == MessageState::Sent {
-                let timeout = calculate_timeout(outbound.tries, eff_rtt, queue_len);
+                // Use queue_len from when message was sent, not current tx_ring size.
+                // Prevents death spiral: growing queue → inflated timeout → no retransmit → queue stays.
+                let timeout =
+                    calculate_timeout(outbound.tries, eff_rtt, outbound.queue_len_at_send);
                 if now_ms >= outbound.sent_at_ms.saturating_add(timeout) {
                     timed_out.push((i, outbound.tries));
                 }
@@ -966,11 +1005,12 @@ mod tests {
         let envelope = Envelope::new(0x0001, 0, vec![1, 2, 3]);
         let packed = envelope.pack();
 
-        let result = channel.receive(&packed);
+        let result = channel.receive(&packed, [0u8; 32]);
         assert!(result.is_ok());
-        let received = result.unwrap();
-        assert!(received.is_some());
-        assert_eq!(received.unwrap().sequence, 0);
+        match result.unwrap() {
+            ReceiveOutcome::Delivered(env) => assert_eq!(env.sequence, 0),
+            other => panic!("expected Delivered, got {:?}", other),
+        }
         assert_eq!(channel.next_rx_sequence(), 1);
     }
 
@@ -980,24 +1020,24 @@ mod tests {
 
         // Receive sequence 1 first (out of order)
         let envelope1 = Envelope::new(0x0001, 1, vec![2]);
-        let result = channel.receive(&envelope1.pack());
-        assert!(result.is_ok());
-        assert!(result.unwrap().is_none()); // Buffered
+        let result = channel.receive(&envelope1.pack(), [1u8; 32]);
+        assert_eq!(result, Ok(ReceiveOutcome::Buffered));
         assert_eq!(channel.next_rx_sequence(), 0); // Still expecting 0
 
         // Now receive sequence 0
         let envelope0 = Envelope::new(0x0001, 0, vec![1]);
-        let result = channel.receive(&envelope0.pack());
-        assert!(result.is_ok());
-        let received = result.unwrap();
-        assert!(received.is_some());
-        assert_eq!(received.unwrap().sequence, 0);
+        let result = channel.receive(&envelope0.pack(), [0u8; 32]);
+        match result.unwrap() {
+            ReceiveOutcome::Delivered(env) => assert_eq!(env.sequence, 0),
+            other => panic!("expected Delivered, got {:?}", other),
+        }
         assert_eq!(channel.next_rx_sequence(), 1);
 
-        // Drain should give us sequence 1
+        // Drain should give us sequence 1 with its proof hash
         let drained = channel.drain_received();
         assert_eq!(drained.len(), 1);
-        assert_eq!(drained[0].sequence, 1);
+        assert_eq!(drained[0].0.sequence, 1);
+        assert_eq!(drained[0].1, [1u8; 32]); // proof hash preserved
         assert_eq!(channel.next_rx_sequence(), 2);
     }
 
@@ -1258,7 +1298,7 @@ mod tests {
         // Drain should give us msg1
         let drained = receiver.drain_received();
         assert_eq!(drained.len(), 1);
-        assert_eq!(drained[0].data, vec![1]);
+        assert_eq!(drained[0].0.data, vec![1]);
     }
 
     #[test]
@@ -1271,7 +1311,7 @@ mod tests {
         let envelope = Envelope::new(0x0001, seq, vec![42]);
         let packed = envelope.pack();
 
-        let result = channel.receive(&packed);
+        let result = channel.receive(&packed, [0u8; 32]);
         assert_eq!(result, Err(ChannelError::RxRingFull));
     }
 
@@ -1285,8 +1325,8 @@ mod tests {
         let envelope = Envelope::new(0x0001, seq, vec![42]);
         let packed = envelope.pack();
 
-        let result = channel.receive(&packed);
-        assert_eq!(result, Ok(None)); // Buffered, not dropped
+        let result = channel.receive(&packed, [0u8; 32]);
+        assert_eq!(result, Ok(ReceiveOutcome::Buffered));
     }
 
     #[test]
@@ -1297,8 +1337,11 @@ mod tests {
 
         // Receive seq 0 in-order
         let env0 = Envelope::new(0x0001, 0, vec![1]);
-        let result = channel.receive(&env0.pack());
-        assert_eq!(result.unwrap().unwrap().sequence, 0);
+        let result = channel.receive(&env0.pack(), [0u8; 32]);
+        match result.unwrap() {
+            ReceiveOutcome::Delivered(env) => assert_eq!(env.sequence, 0),
+            other => panic!("expected Delivered, got {:?}", other),
+        }
         // next_rx_sequence is now 1
 
         // Drain (no buffered messages)
@@ -1306,9 +1349,9 @@ mod tests {
 
         // Simulate retransmit: receive seq 0 again (proof was lost)
         let env0_retx = Envelope::new(0x0001, 0, vec![1]);
-        let result = channel.receive(&env0_retx.pack());
-        // Must be Ok(None), NOT Err(RxRingFull)
-        assert_eq!(result, Ok(None));
+        let result = channel.receive(&env0_retx.pack(), [0u8; 32]);
+        // Must be AlreadyDelivered, NOT Err(RxRingFull)
+        assert_eq!(result, Ok(ReceiveOutcome::AlreadyDelivered));
 
         // rx_ring must not grow (duplicate was not buffered)
         assert!(channel.rx_ring_is_empty());
@@ -1323,16 +1366,23 @@ mod tests {
         // Advance next_rx_sequence to 141 by receiving 0..140 in order
         for seq in 0..141u16 {
             let env = Envelope::new(0x0001, seq, vec![seq as u8]);
-            let result = channel.receive(&env.pack());
-            assert!(result.unwrap().is_some());
+            let result = channel.receive(&env.pack(), [0u8; 32]);
+            assert_eq!(
+                result,
+                Ok(ReceiveOutcome::Delivered(Envelope::new(
+                    0x0001,
+                    seq,
+                    vec![seq as u8]
+                )))
+            );
         }
         assert_eq!(channel.next_rx_sequence(), 141);
 
         // Retransmit seq=128 (the scenario from the bug report)
         let env_retx = Envelope::new(0x0001, 128, vec![128]);
-        let result = channel.receive(&env_retx.pack());
-        // Must be Ok(None) — backward sequence re-proved
-        assert_eq!(result, Ok(None));
+        let result = channel.receive(&env_retx.pack(), [0u8; 32]);
+        // Must be AlreadyDelivered — backward sequence re-proved
+        assert_eq!(result, Ok(ReceiveOutcome::AlreadyDelivered));
     }
 
     #[test]
@@ -1347,8 +1397,8 @@ mod tests {
         // Receive seq=65534 — behind next_rx=5 across the wraparound boundary
         // offset = (65536 - 5 + 65534) % 65536 = 65529, which is >= 32768
         let env = Envelope::new(0x0001, 65534, vec![1]);
-        let result = channel.receive(&env.pack());
-        assert_eq!(result, Ok(None));
+        let result = channel.receive(&env.pack(), [0u8; 32]);
+        assert_eq!(result, Ok(ReceiveOutcome::AlreadyDelivered));
     }
 
     // ─── Pacing Tests ─────────────────────────────────────────────────────────
@@ -1534,79 +1584,77 @@ mod tests {
     // ─── Live Timeout Tests ──────────────────────────────────────────────────
 
     #[test]
-    fn test_live_timeout_uses_current_queue_len() {
-        // Send 5 messages (queue_len=5). Deliver 3. Poll remaining 2 with
-        // live timeout based on queue_len=2 (shorter). Verify retransmit
-        // triggers earlier than it would with queue_len=5.
+    fn test_timeout_uses_send_time_queue_len() {
+        // Send 5 messages. Deliver 3. Remaining 2 still use their
+        // send-time queue_len for timeout (not the shrunk tx_ring).
+        // This prevents the opposite problem: queue shrinking shouldn't
+        // speed up retransmit for messages sent when queue was large.
         let mut channel = Channel::new();
         channel.set_window_for_test(10);
         let rtt_ms = 100;
 
-        // Send 5 messages at t=0
+        // Send 5 messages at t=0. queue_len_at_send: 1,2,3,4,5
         for i in 0..5u8 {
             let msg = TestMessage { data: vec![i] };
             channel.send(&msg, MDU, 0, rtt_ms).unwrap();
         }
         assert_eq!(channel.outstanding(), 5);
 
-        // Mark seq=0,1,2 delivered at t=0 → queue_len drops to 2.
-        // now_ms=0 matches sent_at_ms=0, so sample_rtt=0 which is
-        // filtered by Karn (sample > 0 guard). SRTT stays unmeasured,
-        // effective_rtt_ms falls back to rtt_ms=100.
+        // Mark seq=0,1,2 delivered. Remaining: seq 3 (qlen=4), seq 4 (qlen=5).
         channel.mark_delivered(0, 0, rtt_ms);
         channel.mark_delivered(1, 0, rtt_ms);
         channel.mark_delivered(2, 0, rtt_ms);
         assert_eq!(channel.outstanding(), 2);
-        assert_eq!(channel.srtt_ms(), 0.0, "SRTT should stay unmeasured");
 
-        // Timeout with rtt=100, queue_len=5: 250 * (5+1.5) = 1625ms
-        // Timeout with rtt=100, queue_len=2: 250 * (2+1.5) = 875ms
-        // Poll at t=900: should trigger with live queue_len=2 (875 < 900)
-        // but would NOT trigger with original queue_len=5 (1625 > 900)
+        // Timeout for seq 3: 250 * 1.0 * (4+1.5) = 1375ms
+        // Timeout for seq 4: 250 * 1.0 * (5+1.5) = 1625ms
+        // Poll at t=900: neither triggers (send-time queue_len is preserved)
         let actions = channel.poll(900, rtt_ms);
-        assert_eq!(
-            actions.len(),
-            2,
-            "both remaining messages should retransmit with live queue_len=2"
+        assert!(
+            actions.is_empty(),
+            "send-time queue_len preserved: seq3 timeout=1375, seq4 timeout=1625"
         );
+
+        // Poll at t=1376: seq 3 triggers (1375 < 1376), seq 4 does not (1625 > 1376)
+        let actions = channel.poll(1376, rtt_ms);
+        assert_eq!(actions.len(), 1, "only seq 3 should retransmit at t=1376");
         assert!(matches!(
             &actions[0],
-            ChannelAction::Retransmit { sequence, .. } if *sequence == 3
-        ));
-        assert!(matches!(
-            &actions[1],
-            ChannelAction::Retransmit { sequence, .. } if *sequence == 4
+            ChannelAction::Retransmit { sequence: 3, .. }
         ));
     }
 
     #[test]
-    fn test_live_timeout_longer_when_queue_grows() {
-        // Send 1 message. Send 4 more (queue_len grows to 5).
-        // Poll: the first message's timeout is based on queue_len=5 (longer).
-        // Verify it does NOT trigger at a time that queue_len=1 timeout would.
+    fn test_timeout_not_inflated_by_later_sends() {
+        // Send 1 message (queue_len_at_send=1). Send 4 more.
+        // First message's timeout stays based on queue_len=1, not 5.
         let mut channel = Channel::new();
         channel.set_window_for_test(10);
         let rtt_ms = 100;
 
-        // Send 1 message at t=0
+        // Send 1 message at t=0 → queue_len_at_send=1
         let msg = TestMessage { data: vec![0] };
         channel.send(&msg, MDU, 0, rtt_ms).unwrap();
 
-        // Send 4 more (queue grows to 5)
+        // Send 4 more → queue_len_at_send: 2,3,4,5
         for i in 1..5u8 {
             let msg = TestMessage { data: vec![i] };
             channel.send(&msg, MDU, 0, rtt_ms).unwrap();
         }
         assert_eq!(channel.outstanding(), 5);
 
-        // Timeout with queue_len=1: 250 * (1+1.5) = 625ms
-        // Timeout with queue_len=5: 250 * (5+1.5) = 1625ms
-        // Poll at t=700: should NOT trigger (live queue_len=5 → 1625ms)
+        // Timeout for seq 0 with send-time queue_len=1: 250 * (1+1.5) = 625ms
+        // Poll at t=700: seq 0 SHOULD trigger (625 < 700)
         let actions = channel.poll(700, rtt_ms);
-        assert!(
-            actions.is_empty(),
-            "queue_len=5 timeout (1625ms) should prevent retransmit at t=700"
+        assert_eq!(
+            actions.len(),
+            1,
+            "seq 0 should retransmit: send-time queue_len=1 → timeout=625ms"
         );
+        assert!(matches!(
+            &actions[0],
+            ChannelAction::Retransmit { sequence: 0, .. }
+        ));
     }
 
     // ─── SRTT Tests ──────────────────────────────────────────────────────────
@@ -1950,6 +1998,136 @@ mod tests {
             "pacing {} should be less than handshake-based pacing {}",
             channel.pacing_interval_ms(),
             handshake_pacing
+        );
+    }
+
+    // ─── Deferred Proof Tests ─────────────────────────────────────────────
+
+    #[test]
+    fn test_receive_buffered_no_proof() {
+        let mut channel = Channel::new();
+
+        // Send seq 1 (skip 0) — out of order
+        let env1 = Envelope::new(0x0001, 1, vec![42]);
+        let result = channel.receive(&env1.pack(), [1u8; 32]);
+        assert_eq!(result, Ok(ReceiveOutcome::Buffered));
+        // next_rx_sequence unchanged
+        assert_eq!(channel.next_rx_sequence(), 0);
+    }
+
+    #[test]
+    fn test_receive_in_order_delivered_outcome() {
+        let mut channel = Channel::new();
+
+        let env0 = Envelope::new(0x0001, 0, vec![10, 20]);
+        let result = channel.receive(&env0.pack(), [0u8; 32]);
+        match result.unwrap() {
+            ReceiveOutcome::Delivered(env) => {
+                assert_eq!(env.sequence, 0);
+                assert_eq!(env.data, vec![10, 20]);
+            }
+            other => panic!("expected Delivered, got {:?}", other),
+        }
+        assert_eq!(channel.next_rx_sequence(), 1);
+    }
+
+    #[test]
+    fn test_receive_already_delivered_reprove() {
+        let mut channel = Channel::new();
+
+        // Deliver seq 0
+        let env0 = Envelope::new(0x0001, 0, vec![1]);
+        let result = channel.receive(&env0.pack(), [0u8; 32]);
+        assert!(matches!(result, Ok(ReceiveOutcome::Delivered(_))));
+
+        // Send seq 0 again — already delivered, should re-prove
+        let env0_dup = Envelope::new(0x0001, 0, vec![1]);
+        let result = channel.receive(&env0_dup.pack(), [0u8; 32]);
+        assert_eq!(result, Ok(ReceiveOutcome::AlreadyDelivered));
+    }
+
+    #[test]
+    fn test_receive_duplicate_buffered() {
+        let mut channel = Channel::new();
+
+        // Buffer seq 2 (out of order)
+        let env2 = Envelope::new(0x0001, 2, vec![42]);
+        let result = channel.receive(&env2.pack(), [2u8; 32]);
+        assert_eq!(result, Ok(ReceiveOutcome::Buffered));
+
+        // Send seq 2 again — duplicate of buffered
+        let env2_dup = Envelope::new(0x0001, 2, vec![42]);
+        let result = channel.receive(&env2_dup.pack(), [22u8; 32]);
+        assert_eq!(result, Ok(ReceiveOutcome::DuplicateBuffered));
+    }
+
+    #[test]
+    fn test_drain_returns_proof_hashes() {
+        let mut channel = Channel::new();
+
+        // Buffer seq 1, 2, 3 with distinct proof hashes
+        let hash1 = [1u8; 32];
+        let hash2 = [2u8; 32];
+        let hash3 = [3u8; 32];
+        let env1 = Envelope::new(0x0001, 1, vec![10]);
+        let env2 = Envelope::new(0x0001, 2, vec![20]);
+        let env3 = Envelope::new(0x0001, 3, vec![30]);
+        assert_eq!(
+            channel.receive(&env1.pack(), hash1),
+            Ok(ReceiveOutcome::Buffered)
+        );
+        assert_eq!(
+            channel.receive(&env2.pack(), hash2),
+            Ok(ReceiveOutcome::Buffered)
+        );
+        assert_eq!(
+            channel.receive(&env3.pack(), hash3),
+            Ok(ReceiveOutcome::Buffered)
+        );
+
+        // Deliver seq 0 to unblock the drain
+        let env0 = Envelope::new(0x0001, 0, vec![0]);
+        assert!(matches!(
+            channel.receive(&env0.pack(), [0u8; 32]),
+            Ok(ReceiveOutcome::Delivered(_))
+        ));
+
+        // Drain returns 3 entries with correct proof hashes
+        let drained = channel.drain_received();
+        assert_eq!(drained.len(), 3);
+        assert_eq!(drained[0].0.sequence, 1);
+        assert_eq!(drained[0].1, hash1);
+        assert_eq!(drained[1].0.sequence, 2);
+        assert_eq!(drained[1].1, hash2);
+        assert_eq!(drained[2].0.sequence, 3);
+        assert_eq!(drained[2].1, hash3);
+        assert_eq!(channel.next_rx_sequence(), 4);
+    }
+
+    #[test]
+    fn test_retransmit_fires_for_unproved() {
+        // Sender sends seq 0 and 1. Only seq 0 gets proved (mark_delivered).
+        // After timeout, poll() should retransmit seq 1.
+        let mut channel = Channel::new();
+        let msg0 = TestMessage { data: vec![0] };
+        let msg1 = TestMessage { data: vec![1] };
+
+        channel.send(&msg0, MDU, 1000, 100).unwrap();
+        channel.send(&msg1, MDU, 1000, 100).unwrap();
+        assert_eq!(channel.outstanding(), 2);
+
+        // Prove seq 0 only
+        assert!(channel.mark_delivered(0, 1100, 100));
+        assert_eq!(channel.outstanding(), 1);
+
+        // Advance well past timeout for seq 1
+        let actions = channel.poll(10000, 100);
+        assert!(
+            actions
+                .iter()
+                .any(|a| matches!(a, ChannelAction::Retransmit { sequence: 1, .. })),
+            "expected retransmit for seq 1, got {:?}",
+            actions
         );
     }
 }

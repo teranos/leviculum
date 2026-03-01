@@ -8,13 +8,13 @@
 [test]
 name = "lora_tcp_bridge_rust_relay"
 description = "LoRa-to-TCP bridge via Rust relay, selftest link+channel"
-timeout_secs = 180
+timeout_secs = 240
 
 [radio]
-frequency = 869431250
+frequency = 869525000
 bandwidth = 62500
 sf = 7
-cr = 6
+cr = 5
 txpower = 17
 
 [nodes.alpha]
@@ -38,29 +38,29 @@ beta-charlie = "tcp"
 
 [[steps]]
 action = "sleep"
-duration_secs = 25
+duration_secs = 40
 
 [[steps]]
 action = "wait_for_path"
 on = "alpha"
 destination = "charlie.probe"
-timeout_secs = 60
+timeout_secs = 120
 
 [[steps]]
 action = "wait_for_path"
 on = "charlie"
 destination = "alpha.probe"
-timeout_secs = 60
+timeout_secs = 120
 
 [[steps]]
 action = "rnprobe"
 from = "alpha"
 to = "charlie.probe"
 expect_result = "success"
-timeout_secs = 60
+timeout_secs = 120
 
 [[steps]]
 action = "exec"
 on = "alpha"
-command = "lrns selftest 127.0.0.1:4242 charlie:4242 --mode link --rate 1 --duration 3 --discovery-timeout 120"
+command = "lrns selftest 127.0.0.1:4242 charlie:4242 --mode link --rate 1 --duration 3 --discovery-timeout 240"
 expect_exit_code = 0

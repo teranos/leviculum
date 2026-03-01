@@ -135,7 +135,10 @@ impl Envelope {
     ///
     /// // Receive envelope and unpack
     /// let mut receiver = Channel::new();
-    /// let envelope = receiver.receive(&packet_data).unwrap().unwrap();
+    /// let envelope = match receiver.receive(&packet_data, [0u8; 32]).unwrap() {
+    ///     super::ReceiveOutcome::Delivered(env) => env,
+    ///     _ => panic!("expected delivery"),
+    /// };
     /// let msg: MyMessage = envelope.unpack_message().unwrap();
     /// assert_eq!(msg.data, vec![42]);
     /// ```

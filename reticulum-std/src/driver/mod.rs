@@ -61,7 +61,8 @@ use std::sync::{Arc, Mutex};
 use std::task::Poll;
 use std::time::Duration;
 
-use tokio::sync::{mpsc, watch};
+use tokio::sync::mpsc::{self, error::TrySendError};
+use tokio::sync::watch;
 
 use crate::interfaces::IncomingPacket;
 use reticulum_core::constants::TRUNCATED_HASHBYTES;
@@ -1107,7 +1108,22 @@ fn dispatch_output(
         if let NodeEvent::LinkEstablished { link_id, .. } = &event {
             tracing::debug!("Link established: {:?}", link_id);
         }
-        let _ = event_tx.try_send(event);
+        match event_tx.try_send(event) {
+            Ok(()) => {}
+            Err(TrySendError::Full(ev)) => {
+                tracing::warn!(
+                    "Event channel full (capacity {}), dropping: {:?}",
+                    EVENT_CHANNEL_CAPACITY,
+                    ev
+                );
+            }
+            Err(TrySendError::Closed(ev)) => {
+                tracing::warn!(
+                    "Event channel closed (receiver dropped), dropping: {:?}",
+                    ev
+                );
+            }
+        }
     }
 }
 

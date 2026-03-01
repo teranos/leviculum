@@ -12,7 +12,7 @@ use crate::constants::{
 };
 use crate::destination::{DestinationHash, ProofStrategy};
 use crate::hex_fmt::{HexFmt, HexShort};
-use crate::link::channel::{ChannelAction, ChannelError, Message};
+use crate::link::channel::{ChannelAction, ChannelError, Message, ReceiveOutcome};
 use crate::link::{Link, LinkCloseReason, LinkError, LinkId, LinkPhase, LinkState, PeerKeys};
 use crate::packet::{packet_hash, Packet, PacketContext, PacketType};
 use crate::traits::{Clock, Storage};
@@ -818,13 +818,21 @@ impl<R: CryptoRngCore, C: Clock, S: Storage> NodeCore<R, C, S> {
 
         // 2. Channel receive + drain + proof — link borrow scoped in this block
         // so that route_link_packet (which needs &mut self) can run afterward.
+        //
+        // Deferred proof strategy: only prove messages that are delivered in-order
+        // to the application. Out-of-order buffered messages store their proof hash
+        // and get proved when drained. This prevents the sender from clearing its
+        // retransmit queue for undelivered messages during head-of-line blocking.
         let mut rx_ring_full = false;
-        let proof_packet = {
+        let proof_packets: Vec<Vec<u8>> = {
             let rtt_ms = link.rtt_ms();
             let channel = link.ensure_channel(rtt_ms);
+            let full_packet_hash = packet_hash(raw_packet);
 
-            let message_accepted = match channel.receive(&plaintext) {
-                Ok(Some(envelope)) => {
+            let mut proofs = Vec::new();
+
+            match channel.receive(&plaintext, full_packet_hash) {
+                Ok(ReceiveOutcome::Delivered(envelope)) => {
                     tracing::debug!(
                         seq = envelope.sequence,
                         msgtype = envelope.msgtype,
@@ -837,64 +845,78 @@ impl<R: CryptoRngCore, C: Clock, S: Storage> NodeCore<R, C, S> {
                         sequence: envelope.sequence,
                         data: envelope.data,
                     });
-                    true
+                    if let Some(p) =
+                        Self::build_channel_proof_from_hash(link, &link_id, &full_packet_hash)
+                    {
+                        proofs.push(p);
+                    }
                 }
-                Ok(None) => {
+                Ok(ReceiveOutcome::AlreadyDelivered) => {
+                    // Duplicate of delivered msg: re-prove so sender clears retransmit
+                    if let Some(p) =
+                        Self::build_channel_proof_from_hash(link, &link_id, &full_packet_hash)
+                    {
+                        proofs.push(p);
+                    }
+                }
+                Ok(ReceiveOutcome::Buffered) => {
                     tracing::debug!("link_mgr: channel message buffered (out-of-order)");
-                    true
+                    // No proof — sender will retransmit the gap-filling packet
+                }
+                Ok(ReceiveOutcome::DuplicateBuffered) => {
+                    // Duplicate of buffered msg — no proof
                 }
                 Err(ChannelError::RxRingFull) => {
                     rx_ring_full = true;
-                    false
                 }
                 Err(e) => {
                     tracing::debug!(?e, "link_mgr: channel receive failed");
-                    false
                 }
             };
 
-            // Drain any buffered messages that are now ready
+            // Drain consecutive buffered messages now ready for delivery
             let drained: Vec<_> = link
                 .channel_mut()
                 .map(|ch| ch.drain_received())
                 .unwrap_or_default();
-            for envelope in drained {
+            for (envelope, stored_hash) in drained {
                 self.events.push(NodeEvent::MessageReceived {
                     link_id,
                     msgtype: envelope.msgtype,
                     sequence: envelope.sequence,
                     data: envelope.data,
                 });
+                if let Some(p) = Self::build_channel_proof_from_hash(link, &link_id, &stored_hash) {
+                    proofs.push(p);
+                }
             }
 
-            // 3. Build proof while link borrow is still held
-            if message_accepted {
-                Self::build_channel_proof(link, &link_id, raw_packet)
-            } else {
-                None
-            }
+            proofs
         };
 
-        // 4. Post-processing (link borrow released)
+        // 3. Post-processing (link borrow released)
         if rx_ring_full {
             self.update_rx_ring_full(now_ms);
         }
-        if let Some(proof) = proof_packet {
+        for proof in proof_packets {
             self.route_link_packet(&link_id, &proof);
         }
     }
 
-    /// Build a data proof for an accepted channel message.
+    /// Build a data proof from a pre-computed packet hash.
     ///
-    /// This is an associated function (not `&self`) to avoid borrow conflicts —
-    /// the caller holds `link` via `self.links.get_mut()`.
-    fn build_channel_proof(link: &Link, link_id: &LinkId, raw_packet: &[u8]) -> Option<Vec<u8>> {
-        let full_packet_hash = packet_hash(raw_packet);
+    /// Used for deferred proofs on buffered out-of-order messages where we
+    /// stored only the 32-byte hash, not the full encrypted packet.
+    fn build_channel_proof_from_hash(
+        link: &Link,
+        link_id: &LinkId,
+        full_packet_hash: &[u8; 32],
+    ) -> Option<Vec<u8>> {
         if let Some(signing_key) = link.proof_signing_key() {
-            match link.build_data_proof_packet_with_signing_key(&full_packet_hash, signing_key) {
+            match link.build_data_proof_packet_with_signing_key(full_packet_hash, signing_key) {
                 Ok(proof) => {
                     tracing::debug!(
-                        hash = %HexFmt(&full_packet_hash),
+                        hash = %HexFmt(full_packet_hash),
                         link = %HexFmt(link_id.as_bytes()),
                         proof_len = proof.len(),
                         "link_mgr: channel proof generated"
@@ -903,7 +925,7 @@ impl<R: CryptoRngCore, C: Clock, S: Storage> NodeCore<R, C, S> {
                 }
                 Err(e) => {
                     tracing::warn!(
-                        hash = %HexFmt(&full_packet_hash),
+                        hash = %HexFmt(full_packet_hash),
                         link = %HexFmt(link_id.as_bytes()),
                         error = %e,
                         "link_mgr: channel proof build failed"

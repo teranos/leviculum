@@ -6,6 +6,9 @@ authors.workspace = true
 license.workspace = true
 description = "Command-line tools for reticulum"
 
+[features]
+serial = ["reticulum-std/serial"]
+
 [[bin]]
 name = "lrnsd"
 path = "src/lrnsd.rs"

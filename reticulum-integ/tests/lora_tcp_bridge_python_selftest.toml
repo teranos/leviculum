@@ -1,13 +1,14 @@
-# LoRa-to-TCP bridge via Python relay.
-# alpha(Rust+RNode0) ~~~LoRa~~~ beta(Python+RNode1+TCPServer) --TCP-- charlie(Rust+TCPClient)
-# Proves bidirectional announce propagation and probe across LoRa↔TCP bridge.
+# Diagnostic: selftest through Python LoRa relay with long timeout.
+# alpha(Rust+RNode0) ~~~LoRa~~~ beta(Python+RNode1+TCPServer) --TCP-- charlie(Python+TCPClient)
+# Same topology as lora_tcp_bridge_rust_relay but with Python relay and generous timeouts.
 # Requires two RNode devices at /dev/ttyACM0 and /dev/ttyACM1.
 # Build lrnsd with: cargo build --release --bin lrnsd --features serial
+# Build lrns with: cargo build --release --bin lrns
 
 [test]
-name = "lora_tcp_bridge_python_relay"
-description = "LoRa-to-TCP bridge via Python relay, bidirectional probe"
-timeout_secs = 240
+name = "lora_tcp_bridge_python_selftest"
+description = "Diagnostic: selftest through Python LoRa relay with long timeout"
+timeout_secs = 600
 
 [radio]
 frequency = 869525000
@@ -20,6 +21,7 @@ txpower = 17
 type = "rust"
 respond_to_probes = true
 rnode = "/dev/ttyACM0"
+listen_port = 4242
 
 [nodes.beta]
 type = "python"
@@ -27,8 +29,9 @@ respond_to_probes = true
 rnode = "/dev/ttyACM1"
 
 [nodes.charlie]
-type = "rust"
+type = "python"
 respond_to_probes = true
+listen_port = 4242
 
 [links]
 beta-charlie = "tcp"
@@ -57,8 +60,7 @@ expect_result = "success"
 timeout_secs = 120
 
 [[steps]]
-action = "rnprobe"
-from = "charlie"
-to = "alpha.probe"
-expect_result = "success"
-timeout_secs = 120
+action = "exec"
+on = "alpha"
+command = "lrns selftest 127.0.0.1:4242 charlie:4242 --mode link --rate 1 --duration 3 --discovery-timeout 300"
+expect_exit_code = 0

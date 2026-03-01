@@ -6,11 +6,11 @@
 [test]
 name = "lora_interop_rust_python"
 description = "Rust and Python nodes, direct LoRa link, bidirectional probes"
-timeout_secs = 120
+timeout_secs = 180
 
 [radio]
-frequency = 868000000
-bandwidth = 125000
+frequency = 869525000
+bandwidth = 62500
 sf = 7
 cr = 5
 txpower = 17
@@ -29,30 +29,30 @@ rnode = "/dev/ttyACM1"
 
 [[steps]]
 action = "sleep"
-duration_secs = 20
+duration_secs = 30
 
 [[steps]]
 action = "wait_for_path"
 on = "alpha"
 destination = "beta.probe"
-timeout_secs = 45
+timeout_secs = 90
 
 [[steps]]
 action = "wait_for_path"
 on = "beta"
 destination = "alpha.probe"
-timeout_secs = 45
+timeout_secs = 90
 
 [[steps]]
 action = "rnprobe"
 from = "alpha"
 to = "beta.probe"
 expect_result = "success"
-timeout_secs = 45
+timeout_secs = 90
 
 [[steps]]
 action = "rnprobe"
 from = "beta"
 to = "alpha.probe"
 expect_result = "success"
-timeout_secs = 45
+timeout_secs = 90

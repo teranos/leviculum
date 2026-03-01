@@ -50,7 +50,9 @@ use tokio::net::TcpStream;
 
 use reticulum_core::constants::{MTU, TRUNCATED_HASHBYTES};
 use reticulum_core::identity::Identity;
-use reticulum_core::link::channel::{Channel, ChannelError, Envelope, Message, StreamDataMessage};
+use reticulum_core::link::channel::{
+    Channel, ChannelError, Envelope, Message, ReceiveOutcome, StreamDataMessage,
+};
 use reticulum_core::link::{Link, LinkId, LinkState};
 use reticulum_core::packet::{Packet, PacketContext};
 use reticulum_core::{Destination, DestinationHash, DestinationType, Direction};
@@ -861,27 +863,24 @@ async fn phase3_channel_messages(network: &mut MultiNodeTestNetwork) {
 
         // Receive sequence 2 first
         let env2 = Envelope::new(BulkDataMessage::MSGTYPE, 2, vec![3]);
-        let result = channel.receive(&env2.pack());
-        assert!(result.is_ok());
-        assert!(result.unwrap().is_none()); // Buffered
+        let result = channel.receive(&env2.pack(), [0u8; 32]);
+        assert_eq!(result, Ok(ReceiveOutcome::Buffered));
 
         // Receive sequence 1
         let env1 = Envelope::new(BulkDataMessage::MSGTYPE, 1, vec![2]);
-        let result = channel.receive(&env1.pack());
-        assert!(result.is_ok());
-        assert!(result.unwrap().is_none()); // Buffered
+        let result = channel.receive(&env1.pack(), [0u8; 32]);
+        assert_eq!(result, Ok(ReceiveOutcome::Buffered));
 
         // Receive sequence 0 (in order)
         let env0 = Envelope::new(BulkDataMessage::MSGTYPE, 0, vec![1]);
-        let result = channel.receive(&env0.pack());
-        assert!(result.is_ok());
-        assert!(result.unwrap().is_some()); // Delivered
+        let result = channel.receive(&env0.pack(), [0u8; 32]);
+        assert!(matches!(result, Ok(ReceiveOutcome::Delivered(_))));
 
         // Drain should give us 1 and 2
         let drained = channel.drain_received();
         assert_eq!(drained.len(), 2);
-        assert_eq!(drained[0].sequence, 1);
-        assert_eq!(drained[1].sequence, 2);
+        assert_eq!(drained[0].0.sequence, 1);
+        assert_eq!(drained[1].0.sequence, 2);
 
         println!("  Out-of-order handling correct");
     }
