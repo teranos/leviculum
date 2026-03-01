@@ -971,11 +971,19 @@ impl<C: Clock, S: Storage> Transport<C, S> {
         let is_single_announce = packet.flags.packet_type == PacketType::Announce
             && packet.flags.dest_type == DestinationType::Single;
         if !is_single_announce && self.storage.has_packet_hash(&full_packet_hash) {
-            tracing::trace!(
-                "Dropped duplicate packet for <{}> on {}",
-                HexShort(&packet.destination_hash),
-                self.iface_name(interface_index)
-            );
+            if packet.context == PacketContext::Lrproof {
+                tracing::debug!(
+                    "Dropped duplicate LRPROOF for <{}> on {}",
+                    HexShort(&packet.destination_hash),
+                    self.iface_name(interface_index)
+                );
+            } else {
+                tracing::trace!(
+                    "Dropped duplicate packet for <{}> on {}",
+                    HexShort(&packet.destination_hash),
+                    self.iface_name(interface_index)
+                );
+            }
             self.stats.packets_dropped += 1;
             return Ok(());
         }
@@ -1916,6 +1924,17 @@ impl<C: Clock, S: Storage> Transport<C, S> {
             proof_data.len()
         );
 
+        // Promote LRPROOF logging to DEBUG for diagnostics
+        if packet.context == PacketContext::Lrproof {
+            tracing::debug!(
+                "LRPROOF arrived dest=<{}> iface={} hops={} proof_len={}",
+                HexShort(&dest_hash),
+                self.iface_name(interface_index),
+                packet.hops,
+                proof_data.len()
+            );
+        }
+
         // Check if this is a proof for a receipt we're tracking.
         // Two proof formats (Python defaults to implicit):
         //   Explicit: [packet_hash (32)] + [signature (64)] = 96 bytes
@@ -1972,7 +1991,7 @@ impl<C: Clock, S: Storage> Transport<C, S> {
 
         // Check if this is for a registered destination (legacy behavior)
         if self.local_destinations.contains(&dest_hash) {
-            tracing::trace!(
+            tracing::debug!(
                 "Proof for <{}> delivered to local destination on {}",
                 HexShort(&dest_hash),
                 self.iface_name(interface_index)
@@ -1996,13 +2015,27 @@ impl<C: Clock, S: Storage> Transport<C, S> {
         let for_local_link = self.is_for_local_client_link(&dest_hash);
         if self.config.enable_transport || from_local || for_local_link {
             if let Some(link_entry) = self.storage.get_link_entry(&dest_hash).cloned() {
+                if packet.context == PacketContext::Lrproof {
+                    tracing::debug!(
+                        "LRPROOF link_table hit dest=<{}> iface={} hops={} entry(next_hop={} remaining={} recv={} hops={})",
+                        HexShort(&dest_hash),
+                        self.iface_name(interface_index),
+                        packet.hops,
+                        self.iface_name(link_entry.next_hop_interface_index),
+                        link_entry.remaining_hops,
+                        self.iface_name(link_entry.received_interface_index),
+                        link_entry.hops,
+                    );
+                }
                 // Determine direction with hop count validation
                 let target_iface = if interface_index == link_entry.next_hop_interface_index {
                     // From destination side: check remaining_hops
                     if packet.hops != link_entry.remaining_hops {
-                        tracing::trace!(
+                        tracing::debug!(
                             dest = %HexShort(&dest_hash),
-                            "Dropped proof, hop count mismatch (remaining_hops)"
+                            packet_hops = packet.hops,
+                            remaining_hops = link_entry.remaining_hops,
+                            "Dropped LRPROOF, hop count mismatch (remaining_hops)"
                         );
                         self.stats.packets_dropped += 1;
                         return Ok(());
@@ -2011,19 +2044,23 @@ impl<C: Clock, S: Storage> Transport<C, S> {
                 } else if interface_index == link_entry.received_interface_index {
                     // From initiator side: check taken hops
                     if packet.hops != link_entry.hops {
-                        tracing::trace!(
+                        tracing::debug!(
                             dest = %HexShort(&dest_hash),
-                            "Dropped proof, hop count mismatch (taken hops)"
+                            packet_hops = packet.hops,
+                            entry_hops = link_entry.hops,
+                            "Dropped LRPROOF, hop count mismatch (taken hops)"
                         );
                         self.stats.packets_dropped += 1;
                         return Ok(());
                     }
                     link_entry.next_hop_interface_index
                 } else {
-                    tracing::trace!(
-                        "Dropped proof for <{}> on {}, unknown link direction",
+                    tracing::debug!(
+                        "Dropped proof for <{}> on {}, unknown link direction (next_hop={}, recv={})",
                         HexShort(&dest_hash),
-                        self.iface_name(interface_index)
+                        self.iface_name(interface_index),
+                        self.iface_name(link_entry.next_hop_interface_index),
+                        self.iface_name(link_entry.received_interface_index),
                     );
                     return Ok(()); // Unknown direction
                 };
@@ -2130,14 +2167,29 @@ impl<C: Clock, S: Storage> Transport<C, S> {
                 }
 
                 // Forward proof via link table
-                tracing::trace!(
+                tracing::debug!(
                     "Proof for <{}> forwarding via link table to {}",
                     HexShort(&dest_hash),
                     self.iface_name(target_iface)
                 );
                 let mut forwarded = packet;
                 return self.forward_on_interface(target_iface, &mut forwarded);
+            } else if packet.context == PacketContext::Lrproof {
+                tracing::debug!(
+                    "LRPROOF for <{}> on {}: no link_table entry found",
+                    HexShort(&dest_hash),
+                    self.iface_name(interface_index),
+                );
             }
+        } else if packet.context == PacketContext::Lrproof {
+            tracing::debug!(
+                "LRPROOF for <{}> on {}: transport={} from_local={} for_local={}",
+                HexShort(&dest_hash),
+                self.iface_name(interface_index),
+                self.config.enable_transport,
+                from_local,
+                for_local_link,
+            );
         }
 
         // Reverse table routing for regular proofs

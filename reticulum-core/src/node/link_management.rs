@@ -208,6 +208,13 @@ impl<R: CryptoRngCore, C: Clock, S: Storage> NodeCore<R, C, S> {
         });
         self.links.insert(link_id, link);
 
+        // Register link_id as a local destination so that the returning
+        // LRPROOF (and subsequent data packets) are delivered to us.
+        // Without this, handle_proof() silently drops the proof on
+        // non-transport nodes that connect via TCP.
+        // Removed when the link is cleaned up (close, timeout, reject).
+        self.transport.register_destination(*link_id.as_bytes());
+
         // Route through transport: path lookup first, broadcast if no path
         let was_routed = self
             .transport
@@ -283,9 +290,19 @@ impl<R: CryptoRngCore, C: Clock, S: Storage> NodeCore<R, C, S> {
         Ok(self.process_events_and_actions())
     }
 
+    /// Remove a link and unregister its ID from local destinations.
+    ///
+    /// Every `self.links.insert(link_id, ..)` is paired with a
+    /// `self.transport.register_destination(link_id)`. This helper
+    /// ensures the reverse cleanup always happens together.
+    fn remove_link(&mut self, link_id: &LinkId) {
+        self.links.remove(link_id);
+        self.transport.unregister_destination(link_id.as_bytes());
+    }
+
     /// Reject an incoming link request
     pub fn reject_link(&mut self, link_id: &LinkId) {
-        self.links.remove(link_id);
+        self.remove_link(link_id);
     }
 
     /// Close a link gracefully
@@ -301,7 +318,7 @@ impl<R: CryptoRngCore, C: Clock, S: Storage> NodeCore<R, C, S> {
             } else {
                 link.close();
             }
-            self.links.remove(link_id);
+            self.remove_link(link_id);
             self.emit_link_closed(
                 *link_id,
                 LinkCloseReason::Normal,
@@ -511,6 +528,11 @@ impl<R: CryptoRngCore, C: Clock, S: Storage> NodeCore<R, C, S> {
         // Store the link
         self.links.insert(link_id, link);
 
+        // Register link_id as a local destination so that data packets
+        // addressed to this link are delivered to us.
+        // Removed when the link is cleaned up (close, timeout, reject).
+        self.transport.register_destination(*link_id.as_bytes());
+
         tracing::debug!(
             "Incoming link request <{}> for <{}> accepted on {}",
             HexShort(link_id.as_bytes()),
@@ -568,7 +590,7 @@ impl<R: CryptoRngCore, C: Clock, S: Storage> NodeCore<R, C, S> {
             );
             let is_initiator = link.is_initiator();
             let destination_hash = *link.destination_hash();
-            self.links.remove(&link_id);
+            self.remove_link(&link_id);
             self.emit_link_closed(
                 link_id,
                 LinkCloseReason::InvalidProof,
@@ -764,7 +786,7 @@ impl<R: CryptoRngCore, C: Clock, S: Storage> NodeCore<R, C, S> {
             tracing::debug!("Link <{}> closed by peer", HexShort(link_id.as_bytes()));
             let is_initiator = link.is_initiator();
             let destination_hash = *link.destination_hash();
-            self.links.remove(&link_id);
+            self.remove_link(&link_id);
             self.emit_link_closed(
                 link_id,
                 LinkCloseReason::PeerClosed,
@@ -1073,7 +1095,7 @@ impl<R: CryptoRngCore, C: Clock, S: Storage> NodeCore<R, C, S> {
                 .get(&link_id)
                 .map(|l| (l.is_initiator(), *l.destination_hash()))
                 .unwrap_or((false, DestinationHash::new([0; 16])));
-            self.links.remove(&link_id);
+            self.remove_link(&link_id);
             self.emit_link_closed(
                 link_id,
                 LinkCloseReason::Timeout,
@@ -1154,7 +1176,7 @@ impl<R: CryptoRngCore, C: Clock, S: Storage> NodeCore<R, C, S> {
                 if let Some(ref pkt) = close_packet {
                     self.route_link_packet(&link_id, pkt);
                 }
-                self.links.remove(&link_id);
+                self.remove_link(&link_id);
                 self.emit_link_closed(
                     link_id,
                     LinkCloseReason::Stale,
@@ -1245,7 +1267,7 @@ impl<R: CryptoRngCore, C: Clock, S: Storage> NodeCore<R, C, S> {
                             self.route_link_packet(&link_id, pkt);
                         }
 
-                        self.links.remove(&link_id);
+                        self.remove_link(&link_id);
                         self.emit_link_closed(
                             link_id,
                             LinkCloseReason::ChannelExhausted,
