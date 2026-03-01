@@ -508,6 +508,7 @@ fn parse_hops_from_output(output: &str) -> Option<u32> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use serial_test::serial;
 
     #[test]
     fn parse_dest_spec_valid() {
@@ -941,11 +942,13 @@ Reticulum Transport Instance running
     }
 
     #[test]
-    #[ignore] // Requires RNode hardware at /dev/ttyACM0 and /dev/ttyACM1.
-              // Build lrnsd with: cargo build --release --bin lrnsd --features serial
-              // NOTE: If wait_for_path times out, check container logs for
-              // "configured" or "configuration failed" — wait_ready() succeeds
-              // even if the RNode device is not detected (reconnect runs in background).
+    #[ignore]
+    // Requires RNode hardware at /dev/ttyACM0 and /dev/ttyACM1.
+    // Build lrnsd with: cargo build --release --bin lrnsd --features serial
+    // NOTE: If wait_for_path times out, check container logs for
+    // "configured" or "configuration failed" — wait_ready() succeeds
+    // even if the RNode device is not detected (reconnect runs in background).
+    #[serial(lora)]
     fn lora_direct_rust() {
         let toml_str = std::fs::read_to_string(concat!(
             env!("CARGO_MANIFEST_DIR"),
@@ -965,11 +968,13 @@ Reticulum Transport Instance running
     }
 
     #[test]
-    #[ignore] // Requires RNode hardware at /dev/ttyACM0 and /dev/ttyACM1.
-              // Build lrnsd with: cargo build --release --bin lrnsd --features serial
-              // Docker image must have pyserial installed for Python RNodeInterface.
-              // NOTE: If wait_for_path times out, check container logs for
-              // "configured"/"configuration failed" (Rust) or RNodeInterface errors (Python).
+    #[ignore]
+    // Requires RNode hardware at /dev/ttyACM0 and /dev/ttyACM1.
+    // Build lrnsd with: cargo build --release --bin lrnsd --features serial
+    // Docker image must have pyserial installed for Python RNodeInterface.
+    // NOTE: If wait_for_path times out, check container logs for
+    // "configured"/"configuration failed" (Rust) or RNodeInterface errors (Python).
+    #[serial(lora)]
     fn lora_interop_rust_python() {
         let toml_str = std::fs::read_to_string(concat!(
             env!("CARGO_MANIFEST_DIR"),
@@ -989,9 +994,11 @@ Reticulum Transport Instance running
     }
 
     #[test]
-    #[ignore] // Requires RNode hardware at /dev/ttyACM0 and /dev/ttyACM1.
-              // Build lrnsd with: cargo build --release --bin lrnsd --features serial
-              // Build lrns with: cargo build --release --bin lrns
+    #[ignore]
+    // Requires RNode hardware at /dev/ttyACM0 and /dev/ttyACM1.
+    // Build lrnsd with: cargo build --release --bin lrnsd --features serial
+    // Build lrns with: cargo build --release --bin lrns
+    #[serial(lora)]
     fn lora_link_rust() {
         let toml_str = std::fs::read_to_string(concat!(
             env!("CARGO_MANIFEST_DIR"),
@@ -1011,9 +1018,11 @@ Reticulum Transport Instance running
     }
 
     #[test]
-    #[ignore] // Requires RNode hardware at /dev/ttyACM0 and /dev/ttyACM1.
-              // Build lrnsd with: cargo build --release --bin lrnsd --features serial
-              // Build lrns with: cargo build --release --bin lrns
+    #[ignore]
+    // Requires RNode hardware at /dev/ttyACM0 and /dev/ttyACM1.
+    // Build lrnsd with: cargo build --release --bin lrnsd --features serial
+    // Build lrns with: cargo build --release --bin lrns
+    #[serial(lora)]
     fn lora_link_interop() {
         let toml_str = std::fs::read_to_string(concat!(
             env!("CARGO_MANIFEST_DIR"),
@@ -1033,7 +1042,8 @@ Reticulum Transport Instance running
     }
 
     #[test]
-    #[ignore]
+    #[ignore] // Requires RNode hardware
+    #[serial(lora)]
     fn lora_tcp_bridge_rust_relay() {
         let toml_str = std::fs::read_to_string(concat!(
             env!("CARGO_MANIFEST_DIR"),
@@ -1053,7 +1063,8 @@ Reticulum Transport Instance running
     }
 
     #[test]
-    #[ignore]
+    #[ignore] // Requires RNode hardware
+    #[serial(lora)]
     fn lora_tcp_bridge_python_relay() {
         let toml_str = std::fs::read_to_string(concat!(
             env!("CARGO_MANIFEST_DIR"),
@@ -1073,7 +1084,8 @@ Reticulum Transport Instance running
     }
 
     #[test]
-    #[ignore]
+    #[ignore] // Requires RNode hardware
+    #[serial(lora)]
     fn lora_tcp_bridge_python_selftest() {
         let toml_str = std::fs::read_to_string(concat!(
             env!("CARGO_MANIFEST_DIR"),
