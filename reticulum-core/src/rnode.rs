@@ -548,6 +548,15 @@ pub fn compute_bitrate(sf: u8, cr: u8, bandwidth: u32) -> u32 {
     bitrate as u32
 }
 
+/// Maximum random jitter (ms) for the first packet after idle.
+/// Matches Python's PATHFINDER_RW = 0.5s.
+pub const JITTER_MAX_MS: u64 = 500;
+
+/// Minimum spacing (ms) between consecutive transmissions.
+/// Prevents overrunning the serial buffer (508 bytes at 115200 baud ≈ 44ms).
+/// RNode firmware CSMA handles radio-level collision avoidance.
+pub const MIN_SPACING_MS: u64 = 50;
+
 // ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
@@ -1071,5 +1080,21 @@ mod tests {
         // 12 * (4.0/8) / (4096 / 125) * 1000 = 12 * 0.5 / 32.768 * 1000 = 183.105... → 183
         let br = compute_bitrate(12, 8, 125_000);
         assert_eq!(br, 183);
+    }
+
+    #[test]
+    fn test_compute_bitrate_62_5khz() {
+        // SF7, CR5, BW62.5kHz — the slow bandwidth used by LoRa integration tests
+        // 7 * (4.0/5) / (128 / 62.5) * 1000 = 7 * 0.8 / 2.048 * 1000 = 2734.375 → 2734
+        let br = compute_bitrate(7, 5, 62_500);
+        assert_eq!(br, 2734);
+    }
+
+    #[test]
+    fn test_compute_bitrate_500khz() {
+        // SF7, CR5, BW500kHz — fast LoRa configuration
+        // 7 * (4.0/5) / (128 / 500) * 1000 = 7 * 0.8 / 0.256 * 1000 = 21875
+        let br = compute_bitrate(7, 5, 500_000);
+        assert_eq!(br, 21875);
     }
 }

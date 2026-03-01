@@ -6,9 +6,11 @@
 //! Behind `#[cfg(feature = "serial")]`.
 
 use std::collections::VecDeque;
+use std::pin::Pin;
 use std::sync::Arc;
 use std::time::Duration;
 
+use rand_core::RngCore;
 use reticulum_core::framing::kiss::{KissDeframeResult, KissDeframer};
 use reticulum_core::rnode;
 use reticulum_core::transport::InterfaceId;
@@ -373,6 +375,11 @@ async fn validate_radio_config(
 ///
 /// Returns the `outgoing_rx` on disconnect so the reconnect wrapper can
 /// reuse the same channel (matching TCP interface pattern).
+///
+/// Send-side jitter: packets are not sent immediately. The first packet after
+/// idle gets a random 0–500ms delay (desynchronizes rebroadcasts from multiple
+/// nodes). Subsequent queued packets use a fixed 50ms spacing to avoid serial
+/// buffer overrun. RNode firmware CSMA handles radio-level collision avoidance.
 async fn rnode_io_task(
     name: String,
     mut port: tokio_serial::SerialStream,
@@ -380,15 +387,26 @@ async fn rnode_io_task(
     mut outgoing_rx: mpsc::Receiver<OutgoingPacket>,
     counters: Arc<InterfaceCounters>,
     flow_control: bool,
+    bitrate_bps: u32,
 ) -> mpsc::Receiver<OutgoingPacket> {
     let mut deframer = KissDeframer::with_max_payload(rnode::HW_MTU);
     let mut buf = [0u8; 1024];
     let mut interface_ready = !flow_control; // If no flow control, always ready
-    let mut tx_queue: VecDeque<(Vec<u8>, u64)> = VecDeque::new();
+    let mut send_queue: VecDeque<(Vec<u8>, u64)> = VecDeque::new();
+    let mut send_timer: Option<Pin<Box<tokio::time::Sleep>>> = None;
+    let mut timer_ready = false;
+
+    tracing::debug!(
+        "{}: jitter: bitrate={} bps, min_spacing={}ms, jitter_max={}ms",
+        name,
+        bitrate_bps,
+        rnode::MIN_SPACING_MS,
+        rnode::JITTER_MAX_MS
+    );
 
     loop {
         tokio::select! {
-            // Read from serial port
+            // Branch 1: Read from serial port
             result = port.read(&mut buf) => {
                 match result {
                     Ok(0) => {
@@ -414,18 +432,7 @@ async fn rnode_io_task(
                                     }
                                     rnode::CMD_READY => {
                                         if flow_control {
-                                            if let Some((queued_frame, payload_len)) = tx_queue.pop_front() {
-                                                if let Err(e) = port.write_all(&queued_frame).await {
-                                                    tracing::warn!("{}: write error: {}", name, e);
-                                                    return outgoing_rx;
-                                                }
-                                                counters.tx_bytes.fetch_add(
-                                                    payload_len,
-                                                    std::sync::atomic::Ordering::Relaxed,
-                                                );
-                                            } else {
-                                                interface_ready = true;
-                                            }
+                                            interface_ready = true;
                                         }
                                     }
                                     rnode::CMD_RESET => {
@@ -485,33 +492,26 @@ async fn rnode_io_task(
                 }
             }
 
-            // Write to serial port (outgoing packets from event loop)
+            // Branch 2: Outgoing packet from driver → enqueue with jitter
             recv = outgoing_rx.recv() => {
                 match recv {
                     Some(pkt) => {
                         let frame = rnode::build_data_frame(&pkt.data);
-                        if interface_ready || !flow_control {
-                            if let Err(e) = port.write_all(&frame).await {
-                                tracing::warn!("{}: write error: {}", name, e);
-                                return outgoing_rx;
-                            }
-                            counters.tx_bytes.fetch_add(
-                                pkt.data.len() as u64,
-                                std::sync::atomic::Ordering::Relaxed,
+                        if send_queue.len() >= FLOW_CONTROL_QUEUE_LIMIT {
+                            tracing::warn!("{}: send queue full, dropping oldest", name);
+                            send_queue.pop_front();
+                        }
+                        send_queue.push_back((frame, pkt.data.len() as u64));
+                        // Start jitter timer if idle (no active timer, no pending send)
+                        if send_timer.is_none() && !timer_ready {
+                            let delay = rand_core::OsRng.next_u64() % rnode::JITTER_MAX_MS;
+                            tracing::debug!(
+                                "{}: send queue: {} packets, jitter {}ms",
+                                name, send_queue.len(), delay
                             );
-                            if flow_control {
-                                interface_ready = false;
-                            }
-                        } else {
-                            // Flow control active, device not ready — queue
-                            if tx_queue.len() >= FLOW_CONTROL_QUEUE_LIMIT {
-                                tracing::warn!(
-                                    "{}: flow control queue full, dropping oldest packet",
-                                    name
-                                );
-                                tx_queue.pop_front();
-                            }
-                            tx_queue.push_back((frame, pkt.data.len() as u64));
+                            send_timer = Some(Box::pin(
+                                tokio::time::sleep(Duration::from_millis(delay))
+                            ));
                         }
                     }
                     None => {
@@ -520,6 +520,43 @@ async fn rnode_io_task(
                         return outgoing_rx;
                     }
                 }
+            }
+
+            // Branch 3: Send timer fires
+            _ = async { send_timer.as_mut().unwrap().await },
+                if send_timer.is_some() => {
+                send_timer = None;
+                timer_ready = true;
+            }
+        }
+
+        // After any branch: try to send if both gates are open
+        //   Gate 1: timer_ready (jitter/spacing delay elapsed)
+        //   Gate 2: interface_ready || !flow_control
+        if timer_ready && (interface_ready || !flow_control) {
+            if let Some((frame, payload_len)) = send_queue.pop_front() {
+                if let Err(e) = port.write_all(&frame).await {
+                    tracing::warn!("{}: write error: {}", name, e);
+                    return outgoing_rx;
+                }
+                counters
+                    .tx_bytes
+                    .fetch_add(payload_len, std::sync::atomic::Ordering::Relaxed);
+                tracing::trace!("{}: TX {} bytes", name, payload_len);
+
+                timer_ready = false;
+                if flow_control {
+                    interface_ready = false;
+                }
+
+                // Schedule next if queue not empty
+                if !send_queue.is_empty() {
+                    send_timer = Some(Box::pin(tokio::time::sleep(Duration::from_millis(
+                        rnode::MIN_SPACING_MS,
+                    ))));
+                }
+            } else {
+                timer_ready = false;
             }
         }
     }
@@ -544,6 +581,7 @@ async fn rnode_reconnect_task(
     counters: Arc<InterfaceCounters>,
 ) {
     let radio = config.radio_params();
+    let bitrate_bps = rnode::compute_bitrate(radio.sf, radio.cr, radio.bandwidth);
     let mut has_connected_before = false;
 
     loop {
@@ -580,6 +618,7 @@ async fn rnode_reconnect_task(
                     outgoing_rx,
                     Arc::clone(&counters),
                     config.flow_control,
+                    bitrate_bps,
                 )
                 .await;
 
