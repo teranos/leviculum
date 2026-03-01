@@ -316,6 +316,27 @@ pub fn generate_node_configs(scenario: &TestScenario, base_dir: &Path) -> io::Re
         ));
     }
 
+    // Validate: listen_port must not collide with link-based TCP server ports.
+    for (name, node) in &scenario.nodes {
+        if let Some(listen_port) = node.listen_port {
+            if let Some(ifaces) = interfaces.get(name.as_str()) {
+                for iface in ifaces {
+                    if let InterfaceEntry::TcpServer { port, .. } = iface {
+                        if *port == listen_port {
+                            return Err(io::Error::new(
+                                io::ErrorKind::InvalidData,
+                                format!(
+                                    "node '{name}': listen_port {listen_port} conflicts with \
+                                     link-based TCP server on the same port"
+                                ),
+                            ));
+                        }
+                    }
+                }
+            }
+        }
+    }
+
     let mut rng = rand::thread_rng();
 
     for (name, node) in &scenario.nodes {
@@ -770,6 +791,59 @@ rnode = "/dev/ttyACM0"
             config.contains("[[Selftest TCP Server]]"),
             "missing Selftest TCP Server section"
         );
+    }
+
+    #[test]
+    fn listen_port_collides_with_link_port() {
+        let toml_str = r#"
+[test]
+name = "port_collision"
+
+[nodes.alpha]
+type = "rust"
+respond_to_probes = true
+listen_port = 4242
+
+[nodes.beta]
+type = "rust"
+respond_to_probes = true
+
+[links]
+alpha-beta = "tcp"
+"#;
+        let scenario = parse_scenario(toml_str).unwrap();
+        let tmp = TempDir::new().unwrap();
+        let result = generate_node_configs(&scenario, tmp.path());
+        assert!(result.is_err());
+        let err = result.unwrap_err().to_string();
+        assert!(
+            err.contains("listen_port 4242 conflicts"),
+            "unexpected error: {err}"
+        );
+    }
+
+    #[test]
+    fn listen_port_no_collision_different_port() {
+        let toml_str = r#"
+[test]
+name = "no_collision"
+
+[nodes.alpha]
+type = "rust"
+respond_to_probes = true
+listen_port = 5555
+
+[nodes.beta]
+type = "rust"
+respond_to_probes = true
+
+[links]
+alpha-beta = "tcp"
+"#;
+        let scenario = parse_scenario(toml_str).unwrap();
+        let tmp = TempDir::new().unwrap();
+        // Should succeed — listen_port 5555 != link port 4242.
+        generate_node_configs(&scenario, tmp.path()).unwrap();
     }
 
     #[test]

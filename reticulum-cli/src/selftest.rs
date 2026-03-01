@@ -542,6 +542,7 @@ pub async fn run_selftest(
     rate: f64,
     mode: &str,
     corrupt_every: Option<u64>,
+    discovery_timeout_secs: u64,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let run_link = mode == "all" || mode == "link";
     let run_packet = mode == "all" || mode == "packet";
@@ -733,9 +734,12 @@ pub async fn run_selftest(
             state.b_discovered_a.notified()
         );
     };
-    tokio::time::timeout(std::time::Duration::from_secs(60), discovery)
-        .await
-        .map_err(|_| "Phase 2 timeout: discovery took >60s")?;
+    tokio::time::timeout(
+        std::time::Duration::from_secs(discovery_timeout_secs),
+        discovery,
+    )
+    .await
+    .map_err(|_| format!("Phase 2 timeout: discovery took >{discovery_timeout_secs}s"))?;
 
     let discovery_time = discovery_start.elapsed();
     let hops = node_a.hops_to(&dest_hash_b).unwrap_or(0);

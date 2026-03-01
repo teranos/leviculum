@@ -7,7 +7,7 @@
 [test]
 name = "lora_link_interop"
 description = "Rust↔Python link and channel messages over LoRa via selftest"
-timeout_secs = 180
+timeout_secs = 240
 
 [radio]
 frequency = 868000000

@@ -1033,6 +1033,46 @@ Reticulum Transport Instance running
     }
 
     #[test]
+    #[ignore]
+    fn lora_tcp_bridge_rust_relay() {
+        let toml_str = std::fs::read_to_string(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/tests/lora_tcp_bridge_rust_relay.toml"
+        ))
+        .expect("lora_tcp_bridge_rust_relay.toml not found");
+        let scenario = crate::topology::parse_scenario(&toml_str).expect("parse failed");
+
+        let mut runner = TestRunner::new(scenario).expect("TestRunner::new failed");
+
+        runner.up().expect("up failed");
+        runner.wait_ready(60).expect("wait_ready failed");
+
+        let result = execute_steps(&runner);
+        runner.down().expect("down failed");
+        result.expect("execute_steps should succeed");
+    }
+
+    #[test]
+    #[ignore]
+    fn lora_tcp_bridge_python_relay() {
+        let toml_str = std::fs::read_to_string(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/tests/lora_tcp_bridge_python_relay.toml"
+        ))
+        .expect("lora_tcp_bridge_python_relay.toml not found");
+        let scenario = crate::topology::parse_scenario(&toml_str).expect("parse failed");
+
+        let mut runner = TestRunner::new(scenario).expect("TestRunner::new failed");
+
+        runner.up().expect("up failed");
+        runner.wait_ready(60).expect("wait_ready failed");
+
+        let result = execute_steps(&runner);
+        runner.down().expect("down failed");
+        result.expect("execute_steps should succeed");
+    }
+
+    #[test]
     fn selftest_bulk() {
         let toml_str = std::fs::read_to_string(concat!(
             env!("CARGO_MANIFEST_DIR"),

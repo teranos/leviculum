@@ -395,6 +395,9 @@ enum Commands {
         /// Which test phases to run: all, link, packet, ratchet-basic, ratchet-enforced, bulk-transfer, ratchet-rotation
         #[arg(long, default_value = "all")]
         mode: String,
+        /// Discovery timeout in seconds (Phase 2: mutual path discovery)
+        #[arg(long, default_value = "60")]
+        discovery_timeout: u64,
     },
 
     /// Interactive session: connect to rnsd and enter command loop
@@ -1145,8 +1148,17 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             duration,
             rate,
             mode,
+            discovery_timeout,
         } => {
-            selftest::run_selftest(targets, duration, rate, &mode, args.corrupt_every).await?;
+            selftest::run_selftest(
+                targets,
+                duration,
+                rate,
+                &mode,
+                args.corrupt_every,
+                discovery_timeout,
+            )
+            .await?;
         }
 
         Commands::Connect { addr, identity } => {
