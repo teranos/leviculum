@@ -616,8 +616,15 @@ pub async fn run_selftest(
     let pk_b = id_b.private_key_bytes().map_err(|e| e.to_string())?;
     let id_b2 = Identity::from_private_key_bytes(&pk_b).map_err(|e| e.to_string())?;
 
+    // Each selftest node uses a unique temp storage directory so it never
+    // overwrites the daemon's ~/.reticulum/storage/transport_identity.
+    // The TempDir handles must live until after node shutdown.
+    let tmp_storage_a = tempfile::tempdir().map_err(|e| format!("tempdir A: {e}"))?;
+    let tmp_storage_b = tempfile::tempdir().map_err(|e| format!("tempdir B: {e}"))?;
+
     // Build and start nodes
     let mut node_a = ReticulumNodeBuilder::new()
+        .storage_path(tmp_storage_a.path().to_path_buf())
         .identity(id_a)
         .enable_transport(false)
         .add_tcp_client(addr_a)
@@ -627,6 +634,7 @@ pub async fn run_selftest(
     node_a.start().await?;
 
     let mut node_b = ReticulumNodeBuilder::new()
+        .storage_path(tmp_storage_b.path().to_path_buf())
         .identity(id_b)
         .enable_transport(false)
         .add_tcp_client(addr_b)
