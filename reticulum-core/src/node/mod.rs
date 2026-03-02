@@ -468,7 +468,10 @@ impl<R: CryptoRngCore, C: Clock, S: Storage> NodeCore<R, C, S> {
         // Send via transport
         self.transport
             .send_to_destination(dest_hash.as_bytes(), &buf[..len])
-            .map_err(|_| send::SendError::NoPath)?;
+            .map_err(|e| match e {
+                crate::transport::TransportError::Busy => send::SendError::Busy,
+                _ => send::SendError::NoPath,
+            })?;
 
         // Create receipt and return hash
         let packet_hash = self
@@ -674,6 +677,14 @@ impl<R: CryptoRngCore, C: Clock, S: Storage> NodeCore<R, C, S> {
     /// routing from the daemon.
     pub fn set_interface_local_client(&mut self, id: usize, is_local: bool) {
         self.transport.set_local_client(id, is_local);
+    }
+
+    /// Mark an interface as congested or clear congestion.
+    ///
+    /// Called by the driver when a per-interface retry queue becomes non-empty
+    /// (congested=true) or is fully drained (congested=false).
+    pub fn set_interface_congested(&mut self, iface_idx: usize, congested: bool) {
+        self.transport.set_interface_congested(iface_idx, congested);
     }
 
     /// Notify core that an interface has gone offline (sans-I/O)
@@ -5255,5 +5266,30 @@ mod tests {
             rotated,
             "Should be able to rotate after loading persisted keys (timer reset to 0)"
         );
+    }
+
+    #[test]
+    fn test_send_on_link_busy_when_congested() {
+        let mut pair = establish_nodecore_link_pair();
+
+        // The link was established via InterfaceId(0) — mark it congested
+        pair.initiator.set_interface_congested(0, true);
+
+        // send_on_link should return Busy without accepting the envelope
+        let result = pair
+            .initiator
+            .send_on_link(&pair.initiator_link_id, b"Hello!");
+        assert!(
+            matches!(result, Err(crate::node::send::SendError::Busy)),
+            "Expected SendError::Busy, got: {:?}",
+            result,
+        );
+
+        // Clear congestion — send should succeed
+        pair.initiator.set_interface_congested(0, false);
+        let result = pair
+            .initiator
+            .send_on_link(&pair.initiator_link_id, b"Hello!");
+        assert!(result.is_ok(), "Expected Ok after clearing congestion");
     }
 }

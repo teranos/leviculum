@@ -368,6 +368,16 @@ impl<R: CryptoRngCore, C: Clock, S: Storage> NodeCore<R, C, S> {
         let attached_iface = link.attached_interface();
         let dest_hash = *link.destination_hash();
 
+        // Check interface congestion before building/encrypting the packet.
+        // Only applies to app-originated sends; event-loop-internal sends
+        // (retransmits, proofs, keepalives) go through route_link_packet()
+        // and use the driver retry queue instead.
+        if let Some(iface_idx) = attached_iface {
+            if self.transport.is_interface_congested(iface_idx) {
+                return Err(send::SendError::Busy);
+            }
+        }
+
         let now_ms = self.transport.clock().now_ms();
 
         let link = self.links.get_mut(link_id).ok_or(send::SendError::NoLink)?;
@@ -381,7 +391,7 @@ impl<R: CryptoRngCore, C: Clock, S: Storage> NodeCore<R, C, S> {
             channel
                 .send(&RawBytesMessage(data), link_mdu, now_ms, rtt_ms)
                 .map_err(|e| match e {
-                    ChannelError::WindowFull => send::SendError::WindowFull,
+                    ChannelError::Busy => send::SendError::Busy,
                     ChannelError::PacingDelay { ready_at_ms } => {
                         send::SendError::PacingDelay { ready_at_ms }
                     }

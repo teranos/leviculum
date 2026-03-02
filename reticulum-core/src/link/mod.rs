@@ -185,8 +185,8 @@ pub enum LinkError {
     NotFound,
     /// Unsupported link encryption mode signaled by the peer
     UnsupportedMode,
-    /// Channel send window is full (mirrors [`ChannelError::WindowFull`])
-    WindowFull,
+    /// Send path is occupied — try later (mirrors [`ChannelError::Busy`])
+    Busy,
     /// Channel is pacing sends — retry at the given time (mirrors [`ChannelError::PacingDelay`])
     PacingDelay { ready_at_ms: u64 },
     /// Destination not registered on this node
@@ -205,7 +205,7 @@ impl core::fmt::Display for LinkError {
             LinkError::InvalidRtt => write!(f, "invalid RTT packet"),
             LinkError::NotFound => write!(f, "link not found"),
             LinkError::UnsupportedMode => write!(f, "unsupported link encryption mode"),
-            LinkError::WindowFull => write!(f, "channel send window full"),
+            LinkError::Busy => write!(f, "busy"),
             LinkError::PacingDelay { ready_at_ms } => {
                 write!(f, "pacing delay until {}ms", ready_at_ms)
             }

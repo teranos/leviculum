@@ -11,8 +11,8 @@ pub enum SendError {
     NoLink,
     /// Link failed
     LinkFailed,
-    /// Channel window is full (mirrors [`ChannelError::WindowFull`])
-    WindowFull,
+    /// Send path is occupied — try later (mirrors [`ChannelError::Busy`])
+    Busy,
     /// Channel is pacing sends — retry at the given time (mirrors [`ChannelError::PacingDelay`])
     PacingDelay { ready_at_ms: u64 },
     /// Encryption failed (identity not found in known_identities, or crypto error)
@@ -26,7 +26,7 @@ impl core::fmt::Display for SendError {
             SendError::TooLarge => write!(f, "data too large for single packet"),
             SendError::NoLink => write!(f, "no link available"),
             SendError::LinkFailed => write!(f, "link failed"),
-            SendError::WindowFull => write!(f, "channel window full"),
+            SendError::Busy => write!(f, "busy"),
             SendError::PacingDelay { ready_at_ms } => {
                 write!(f, "pacing delay until {}ms", ready_at_ms)
             }

@@ -189,17 +189,40 @@ impl core::fmt::Debug for TickOutput {
 ///
 /// The driver calls this after every `handle_packet()`, `handle_timeout()`,
 /// or deferred operation (connect, send, close, announce).
+/// A SendPacket that failed with BufferFull — driver must queue for retry.
+pub struct SendRetry {
+    /// Interface index (iface_id.0) for the retry queue key.
+    pub iface_idx: usize,
+    /// The packet data that failed to send.
+    pub data: Vec<u8>,
+}
+
+/// Result of dispatching actions to interfaces.
+pub struct DispatchResult {
+    /// Failed SendPacket actions — driver must queue these for retry.
+    pub retries: Vec<SendRetry>,
+    /// All errors (SendPacket and Broadcast) for logging.
+    pub errors: Vec<(InterfaceId, crate::traits::InterfaceError)>,
+}
+
 pub fn dispatch_actions(
     interfaces: &mut [&mut dyn crate::traits::Interface],
-    actions: &[Action],
-) -> Vec<(InterfaceId, crate::traits::InterfaceError)> {
+    actions: Vec<Action>,
+) -> DispatchResult {
+    let mut retries = Vec::new();
     let mut errors = Vec::new();
     for action in actions {
         match action {
             Action::SendPacket { iface, data } => {
-                if let Some(iface_obj) = interfaces.iter_mut().find(|i| i.id() == *iface) {
-                    if let Err(e) = iface_obj.try_send(data) {
-                        errors.push((*iface, e));
+                if let Some(iface_obj) = interfaces.iter_mut().find(|i| i.id() == iface) {
+                    if let Err(e) = iface_obj.try_send(&data) {
+                        errors.push((iface, e));
+                        if matches!(e, crate::traits::InterfaceError::BufferFull) {
+                            retries.push(SendRetry {
+                                iface_idx: iface.0,
+                                data,
+                            });
+                        }
                     }
                 }
             }
@@ -208,17 +231,17 @@ pub fn dispatch_actions(
                 exclude_iface,
             } => {
                 for iface_obj in interfaces.iter_mut() {
-                    if Some(iface_obj.id()) == *exclude_iface {
+                    if Some(iface_obj.id()) == exclude_iface {
                         continue;
                     }
-                    if let Err(e) = iface_obj.try_send(data) {
+                    if let Err(e) = iface_obj.try_send(&data) {
                         errors.push((iface_obj.id(), e));
                     }
                 }
             }
         }
     }
-    errors
+    DispatchResult { retries, errors }
 }
 
 // ─── Data Structures ────────────────────────────────────────────────────────
@@ -462,6 +485,8 @@ pub enum TransportEvent {
 pub enum TransportError {
     /// No path to destination
     NoPath,
+    /// Target interface is congested — try later
+    Busy,
     /// Packet parsing error
     PacketError(PacketError),
     /// Announce validation error
@@ -472,6 +497,7 @@ impl core::fmt::Display for TransportError {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         match self {
             TransportError::NoPath => write!(f, "no path to destination"),
+            TransportError::Busy => write!(f, "busy"),
             TransportError::PacketError(e) => write!(f, "packet error: {}", e),
             TransportError::AnnounceError(e) => write!(f, "announce error: {}", e),
         }
@@ -552,6 +578,12 @@ pub struct Transport<C: Clock, S: Storage> {
     /// Removal path: removed in handle_interface_down via remove_announce_freq_tracking().
     interface_outgoing_announce_times: BTreeMap<usize, VecDeque<u64>>,
 
+    /// Set of interface indices currently congested (driver retry queue non-empty).
+    /// Written by the driver via set_interface_congested(), read by send paths
+    /// to return Err(Busy) before building packets for a full interface.
+    /// Removal path: cleared by the driver when retry queue drains or interface disconnects.
+    interface_congested: BTreeSet<usize>,
+
     /// Pending I/O actions for the driver (sans-I/O buffer)
     pending_actions: Vec<Action>,
 
@@ -587,6 +619,7 @@ impl<C: Clock, S: Storage> Transport<C, S> {
             local_client_interfaces: BTreeSet::new(),
             interface_incoming_announce_times: BTreeMap::new(),
             interface_outgoing_announce_times: BTreeMap::new(),
+            interface_congested: BTreeSet::new(),
             pending_actions: Vec::new(),
             #[cfg(test)]
             interfaces: Vec::new(),
@@ -1059,6 +1092,10 @@ impl<C: Clock, S: Storage> Transport<C, S> {
             .ok_or(TransportError::NoPath)?;
 
         let interface_index = path.interface_index;
+
+        if self.is_interface_congested(interface_index) {
+            return Err(TransportError::Busy);
+        }
 
         // Only convert Type1 packets to Type2 for relay routing.
         // Type2 packets (e.g., link requests from initiate_with_path) are
@@ -2776,6 +2813,23 @@ impl<C: Clock, S: Storage> Transport<C, S> {
     /// Check if any local IPC clients are connected.
     fn has_local_clients(&self) -> bool {
         !self.local_client_interfaces.is_empty()
+    }
+
+    /// Mark an interface as congested or clear congestion.
+    ///
+    /// Called by the driver when a per-interface retry queue becomes non-empty
+    /// (congested=true) or is fully drained (congested=false).
+    pub fn set_interface_congested(&mut self, iface_idx: usize, congested: bool) {
+        if congested {
+            self.interface_congested.insert(iface_idx);
+        } else {
+            self.interface_congested.remove(&iface_idx);
+        }
+    }
+
+    /// Check if an interface is congested (driver retry queue non-empty).
+    pub fn is_interface_congested(&self, iface_idx: usize) -> bool {
+        self.interface_congested.contains(&iface_idx)
     }
 
     /// Check if a destination is for a local client (path exists with hops=0).
@@ -13004,6 +13058,110 @@ mod tests {
                 0,
                 "Expired ratchets should be cleaned up"
             );
+        }
+    }
+
+    mod backpressure_tests {
+        use super::*;
+        use crate::test_utils::{test_transport, MockInterface};
+        extern crate alloc;
+        use alloc::vec;
+
+        #[test]
+        fn test_interface_congested_flag() {
+            let mut transport = test_transport();
+
+            // Initially not congested
+            assert!(!transport.is_interface_congested(0));
+            assert!(!transport.is_interface_congested(1));
+
+            // Set congested
+            transport.set_interface_congested(0, true);
+            assert!(transport.is_interface_congested(0));
+            assert!(!transport.is_interface_congested(1));
+
+            // Clear congested
+            transport.set_interface_congested(0, false);
+            assert!(!transport.is_interface_congested(0));
+
+            // Set and clear multiple
+            transport.set_interface_congested(0, true);
+            transport.set_interface_congested(1, true);
+            assert!(transport.is_interface_congested(0));
+            assert!(transport.is_interface_congested(1));
+            transport.set_interface_congested(0, false);
+            assert!(!transport.is_interface_congested(0));
+            assert!(transport.is_interface_congested(1));
+        }
+
+        #[test]
+        fn test_send_to_destination_busy_when_congested() {
+            let mut transport = test_transport();
+
+            // Add a path to a destination via interface 0
+            let dest_hash = [0xAA; crate::constants::TRUNCATED_HASHBYTES];
+            let iface_idx = 0;
+            use crate::traits::Storage as _;
+            transport.storage_mut().set_path(
+                dest_hash,
+                crate::storage_types::PathEntry {
+                    interface_index: iface_idx,
+                    hops: 1,
+                    next_hop: None,
+                    expires_ms: 1000 + 3_600_000,
+                    random_blobs: vec![],
+                },
+            );
+
+            // Set interface congested
+            transport.set_interface_congested(iface_idx, true);
+
+            // Send should return Busy
+            let result = transport.send_to_destination(&dest_hash, &[0u8; 32]);
+            assert!(matches!(result, Err(TransportError::Busy)));
+        }
+
+        #[test]
+        fn test_dispatch_sendpacket_returns_retry() {
+            // Create a mock interface that returns BufferFull
+            let mut iface = MockInterface::new("test", 0);
+            iface.reject_sends = true;
+            let mut interfaces: Vec<&mut dyn crate::traits::Interface> = vec![&mut iface];
+
+            let actions = vec![Action::SendPacket {
+                iface: InterfaceId(0),
+                data: vec![1, 2, 3],
+            }];
+
+            let result = dispatch_actions(&mut interfaces, actions);
+
+            // Should have a retry entry
+            assert_eq!(result.retries.len(), 1);
+            assert_eq!(result.retries[0].iface_idx, 0);
+            assert_eq!(result.retries[0].data, vec![1, 2, 3]);
+
+            // Should also have an error logged
+            assert_eq!(result.errors.len(), 1);
+        }
+
+        #[test]
+        fn test_dispatch_broadcast_not_in_retries() {
+            // Create a mock interface that returns BufferFull
+            let mut iface = MockInterface::new("test", 0);
+            iface.reject_sends = true;
+            let mut interfaces: Vec<&mut dyn crate::traits::Interface> = vec![&mut iface];
+
+            let actions = vec![Action::Broadcast {
+                data: vec![1, 2, 3],
+                exclude_iface: None,
+            }];
+
+            let result = dispatch_actions(&mut interfaces, actions);
+
+            // Broadcast failures should NOT produce retries
+            assert!(result.retries.is_empty());
+            // But should still log the error
+            assert_eq!(result.errors.len(), 1);
         }
     }
 }

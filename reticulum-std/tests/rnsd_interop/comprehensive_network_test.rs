@@ -845,11 +845,7 @@ async fn phase3_channel_messages(network: &mut MultiNodeTestNetwork) {
             data: vec![0],
         };
         let result = channel.send(&msg, link_mdu, now_ms + 100, 100);
-        assert_eq!(
-            result,
-            Err(ChannelError::WindowFull),
-            "Should get WindowFull"
-        );
+        assert_eq!(result, Err(ChannelError::Busy), "Should get Busy");
 
         println!("  Window flow control working correctly");
     } else {

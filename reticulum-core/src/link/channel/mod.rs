@@ -414,7 +414,7 @@ impl Channel {
     /// # Errors
     /// - `InvalidMsgType` if the message type is reserved (>= 0xf000)
     /// - `TooLarge` if the message exceeds the channel MDU
-    /// - `WindowFull` if the send window is full
+    /// - `Busy` if the send window is full
     pub fn send<M: Message>(
         &mut self,
         message: &M,
@@ -439,7 +439,7 @@ impl Channel {
     ///
     /// # Errors
     /// - `TooLarge` if the message exceeds the channel MDU
-    /// - `WindowFull` if the send window is full
+    /// - `Busy` if the send window is full
     pub fn send_system<M: Message>(
         &mut self,
         message: &M,
@@ -474,9 +474,9 @@ impl Channel {
                 tx_ring = self.tx_ring.len(),
                 window = self.window,
                 window_max = self.window_max,
-                "channel: WindowFull — send rejected"
+                "channel: busy — send rejected"
             );
-            return Err(ChannelError::WindowFull);
+            return Err(ChannelError::Busy);
         }
         // 2. Pacing check SECOND — only when window has room
         if now_ms < self.next_send_at_ms {
@@ -964,7 +964,7 @@ mod tests {
     }
 
     #[test]
-    fn test_send_window_full() {
+    fn test_send_busy() {
         let mut channel = Channel::new();
         channel.set_window_for_test(1);
 
@@ -973,11 +973,8 @@ mod tests {
         // First send should succeed
         assert!(channel.send(&msg, MDU, 1000, 100).is_ok());
 
-        // Second send should fail (window full)
-        assert_eq!(
-            channel.send(&msg, MDU, 1000, 100),
-            Err(ChannelError::WindowFull)
-        );
+        // Second send should fail (busy)
+        assert_eq!(channel.send(&msg, MDU, 1000, 100), Err(ChannelError::Busy));
     }
 
     #[test]
@@ -1167,10 +1164,10 @@ mod tests {
         // First send should succeed
         assert!(channel.send_system(&msg, MDU, 1000, 100).is_ok());
 
-        // Second send should fail (window full)
+        // Second send should fail (busy)
         assert_eq!(
             channel.send_system(&msg, MDU, 1000, 100),
-            Err(ChannelError::WindowFull)
+            Err(ChannelError::Busy)
         );
     }
 
@@ -1431,9 +1428,9 @@ mod tests {
     }
 
     #[test]
-    fn test_window_full_before_pacing() {
+    fn test_busy_before_pacing() {
         // Window=1 with pacing active. After one send, the second should
-        // return WindowFull (not PacingDelay), because there's no window slot.
+        // return Busy (not PacingDelay), because there's no window slot.
         let mut channel = Channel::new();
         channel.set_window_for_test(1);
         channel.set_pacing_for_test(10, 0);
@@ -1441,9 +1438,9 @@ mod tests {
         let msg = TestMessage { data: vec![1] };
         channel.send(&msg, MDU, 1000, 100).unwrap();
 
-        // Second send: window full takes priority over pacing
+        // Second send: busy takes priority over pacing
         let result = channel.send(&msg, MDU, 1000, 100);
-        assert_eq!(result, Err(ChannelError::WindowFull));
+        assert_eq!(result, Err(ChannelError::Busy));
     }
 
     #[test]

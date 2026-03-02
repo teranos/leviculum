@@ -13,8 +13,8 @@ pub enum ChannelError {
     EnvelopeTruncated,
     /// Invalid stream_id (> STREAM_ID_MAX)
     InvalidStreamId,
-    /// Channel window is full
-    WindowFull,
+    /// Send path is occupied — try later
+    Busy,
     /// Channel is pacing sends — retry at the given time
     PacingDelay { ready_at_ms: u64 },
     /// Receive ring is full (message dropped)
@@ -29,7 +29,7 @@ impl core::fmt::Display for ChannelError {
             ChannelError::EnvelopeTooShort => write!(f, "envelope header too short"),
             ChannelError::EnvelopeTruncated => write!(f, "envelope data truncated"),
             ChannelError::InvalidStreamId => write!(f, "invalid stream ID"),
-            ChannelError::WindowFull => write!(f, "channel window full"),
+            ChannelError::Busy => write!(f, "busy"),
             ChannelError::PacingDelay { ready_at_ms } => {
                 write!(f, "pacing delay until {}ms", ready_at_ms)
             }

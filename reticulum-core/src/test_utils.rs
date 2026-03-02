@@ -47,6 +47,8 @@ pub(crate) struct MockInterface {
     id: InterfaceId,
     pub(crate) sent: Vec<Vec<u8>>,
     pub(crate) online: bool,
+    /// When true, try_send() returns BufferFull instead of accepting.
+    pub(crate) reject_sends: bool,
 }
 
 impl MockInterface {
@@ -56,6 +58,7 @@ impl MockInterface {
             id: InterfaceId(id as usize),
             sent: Vec::new(),
             online: true,
+            reject_sends: false,
         }
     }
 }
@@ -74,6 +77,9 @@ impl Interface for MockInterface {
         self.online
     }
     fn try_send(&mut self, data: &[u8]) -> Result<(), InterfaceError> {
+        if self.reject_sends {
+            return Err(InterfaceError::BufferFull);
+        }
         self.sent.push(data.to_vec());
         Ok(())
     }

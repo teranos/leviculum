@@ -967,7 +967,7 @@ pub async fn run_selftest(
         } else {
             // ── Phase 6: Burst ──────────────────────────────────────────
             // Send 10 messages as fast as possible. send() absorbs
-            // pacing delays and window-full automatically.
+            // pacing delays and busy conditions automatically.
             let mut burst_ok = 0u64;
             for seq in 0..10u64 {
                 let msg = build_message("ab", 10000 + seq, start_time.elapsed().as_millis() as u64);
@@ -1498,7 +1498,7 @@ pub async fn run_selftest(
         println!(
             "[selftest]  Integrity:     corrupt={corrupt} out_of_order={oo} duplicates={dupes}"
         );
-        println!("[selftest]  Send fails:    {total_fails} WindowFull");
+        println!("[selftest]  Send fails:    {total_fails} Busy");
         println!("[selftest]  Window:        final={final_win} (max={final_win_max})");
         let retransmits = {
             let st = state.stats.lock().unwrap();

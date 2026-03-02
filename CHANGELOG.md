@@ -8,6 +8,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- **Interface backpressure with retry queue and congestion flag** — when `try_send()` returns `BufferFull`, SendPacket actions are queued in a per-interface retry queue (cap 64, drop oldest on overflow) and retried on the next event loop tick. Broadcast actions are dropped (by design — they have built-in recovery). When the retry queue is non-empty, the interface is marked congested; app-originated sends (`send_on_link`, `send_to_destination`) return `Err(Busy)` before building/encrypting the packet. Internal sends (retransmits, proofs, keepalives) bypass the congestion check and use the retry queue instead. On LoRa, this prevents: channel data loss from buffer overflow, wasted retransmit tries from dropped proofs, and link teardowns from exhausted try counts. See `doc/BACKPRESSURE_DESIGN.md`.
+- `SendRetry` and `DispatchResult` types — `dispatch_actions()` now returns failed SendPacket data for the driver to queue, instead of discarding it
+- `Transport::set_interface_congested()` / `is_interface_congested()` — driver-written flag, same pattern as `is_online()`
+- `TransportError::Busy` variant for congested interface sends
+- 5 unit tests: congestion flag set/clear, send_to_destination busy, dispatch sendpacket retry, broadcast not queued, send_on_link busy
+
+### Changed
+- **Renamed `WindowFull` → `Busy`** across `ChannelError`, `LinkError`, and `SendError` — from the caller's perspective, channel-window-full and interface-buffer-full mean the same thing: try later. One error, one reaction.
+- `dispatch_actions()` now takes owned `Vec<Action>` (was `&[Action]`) and returns `DispatchResult` (was `Vec<(InterfaceId, InterfaceError)>`)
+- `dispatch_output()` in the driver now drains retry queues before dispatching new actions, and updates congestion flags after
+
+### Added
 - **Per-hop link establishment timeout** — link pending timeout now scales with hop count, matching Python's formula: initiator = `6s × (max(1, hops) + 1)`, responder = `6s × max(1, hops) + 360s` (KEEPALIVE bonus for RTT packet travel). Replaces the fixed 30s `LINK_PENDING_TIMEOUT_MS`. Prevents premature link timeout on multi-hop LoRa paths where round-trip can exceed 30s. 4 unit tests.
 - **10-node dual-cluster LoRa integration tests** — two new LoRa integration tests (`lora_dual_cluster_rust`, `lora_dual_cluster_mixed`) exercise a realistic 10-node dual-cluster topology where LoRa is the sole inter-cluster link. Each test spins up 4 Rust + 4 Python leaf nodes connected via TCP to two hub nodes bridged by LoRa. Tests verify: cross-cluster announce propagation (6 `wait_for_path` checks), cross-cluster data delivery + proof return (4 `rnprobe` round-trips through LoRa), and intra-cluster connectivity (2 `rnprobe` sanity checks). The "rust" variant uses two Rust hubs; the "mixed" variant uses a Rust hub_a and Python hub_b. Requires two RNode devices.
 - **LoRa late-announce escalation tests** — 5 new LoRa integration tests (`lora_late_announce_{2,4,6,8,10}node`) that start with only the LoRa bridge connected, then wait for announces to propagate across the LoRa link before testing cross-cluster probes. The 10-node variant includes 4 cross-cluster rnprobe steps that stress-test path discovery through the LoRa channel. These tests were instrumental in reproducing the path request forwarding bug.
@@ -205,19 +217,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [0.5.17] - 2026-02-14
 
 ### Added
-- **Sender-side pacing with AIMD congestion control** — Channel now spaces sends evenly across the RTT (`pacing_interval_ms = rtt / window`) instead of bursting until WindowFull. Additive Increase on delivery (window growth naturally decreases pacing interval via `recalculate_pacing()`), Multiplicative Decrease on retransmit (pacing doubled per retransmit, capped at RTT). No wire protocol changes, fully compatible with Python peers.
+- **Sender-side pacing with AIMD congestion control** — Channel now spaces sends evenly across the RTT (`pacing_interval_ms = rtt / window`) instead of bursting until Busy. Additive Increase on delivery (window growth naturally decreases pacing interval via `recalculate_pacing()`), Multiplicative Decrease on retransmit (pacing doubled per retransmit, capped at RTT). No wire protocol changes, fully compatible with Python peers.
 - `ChannelError::PacingDelay { ready_at_ms }` variant — returned when the caller sends before the pacing interval allows
 - `LinkError::PacingDelay` and `SendError::PacingDelay` variants for error propagation
 - `Channel::pacing_interval_ms()` and `Channel::next_send_at_ms()` accessors
 - `ConnectionStream::send_bytes()` — async method that absorbs pacing delays and window-full conditions by sleeping until ready, only returning errors on fatal conditions (connection lost, stream closed)
 - `NodeCore::now_ms()` accessor for reading the transport clock
 - `ConnectionStats::pacing_interval_ms` field
-- 8 unit tests for pacing: delay returned, next_send_at set, window-full priority, retransmit doubling, ceiling on retransmit, recalculate_pacing, delivery recalculates, no pacing before first RTT
+- 8 unit tests for pacing: delay returned, next_send_at set, busy-before-pacing priority, retransmit doubling, ceiling on retransmit, recalculate_pacing, delivery recalculates, no pacing before first RTT
 
 ### Changed
-- `ConnectionStream::send()` now maps `PacingDelay` to `WouldBlock` (alongside existing `WindowFull` mapping)
+- `ConnectionStream::send()` now maps `PacingDelay` to `WouldBlock` (alongside existing `Busy` mapping)
 - `lrns selftest` `send_msg()` uses `send_bytes()` instead of `send()` for automatic pacing absorption
-- `lrns selftest` Phase 6 burst replaced manual WindowFull retry loop with `send_bytes()` + `tokio::time::timeout`
+- `lrns selftest` Phase 6 burst replaced manual Busy retry loop with `send_bytes()` + `tokio::time::timeout`
 
 ## [0.5.16] - 2026-02-14
 
@@ -239,7 +251,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Added
 - `LinkManager::mark_channel_delivered()` for proof-driven delivery confirmation on the unified Channel
 - `LinkManager::channel_last_sent_sequence()` for reading the most recent sent sequence number
-- `LinkError::WindowFull` variant for propagating channel backpressure through the link layer
+- `LinkError::Busy` variant for propagating channel backpressure through the link layer
 
 ### Removed
 - `Connection` channel methods: `send_bytes()`, `send_message()`, `send_raw()`, `receive_message()`, `receive_bytes()`, `receive_envelope()`, `get_or_create_channel()`, `channel()`, `channel_mut()`, `last_sent_sequence()`, `has_channel()`, `is_ready_to_send()`, `outstanding_messages()` — all channel operations now go through `LinkManager`
@@ -247,10 +259,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [0.5.14] - 2026-02-13
 
 ### Fixed
-- **ConnectionStream silently dropped messages on WindowFull** — `send()` routed data through an mpsc channel to the event loop, which called `send_on_connection()` and silently discarded `WindowFull` errors. The caller received `Ok(())` for messages that were never sent. Now `ConnectionStream` locks the core directly and returns the real error, mapping `WindowFull` to `io::ErrorKind::WouldBlock` (retryable). Matches the lock + dispatch pattern already used by `PacketEndpoint`.
+- **ConnectionStream silently dropped messages when busy** — `send()` routed data through an mpsc channel to the event loop, which called `send_on_connection()` and silently discarded `Busy` errors. The caller received `Ok(())` for messages that were never sent. Now `ConnectionStream` locks the core directly and returns the real error, mapping `Busy` to `io::ErrorKind::WouldBlock` (retryable). Matches the lock + dispatch pattern already used by `PacketEndpoint`.
 - **Selftest Phase 7 closed links before all messages were confirmed** — used a fixed 2s sleep before closing, which abandoned in-flight messages in the channel tx_ring. Now drains until `confirmed >= sent` (15s timeout).
-- **Selftest Phase 6 burst silently counted WindowFull as failures** — burst sends did not retry on `WouldBlock`, permanently losing messages. Now retries with 200ms backoff (10s timeout per message).
-- **Interop lifecycle test failed on WindowFull** — rapid 5-message send in `test_full_link_lifecycle_through_relay` now retries on `WouldBlock` with 500ms backoff.
+- **Selftest Phase 6 burst silently counted Busy as failures** — burst sends did not retry on `WouldBlock`, permanently losing messages. Now retries with 200ms backoff (10s timeout per message).
+- **Interop lifecycle test failed on Busy** — rapid 5-message send in `test_full_link_lifecycle_through_relay` now retries on `WouldBlock` with 500ms backoff.
 
 ### Removed
 - `AsyncWrite` impl from `ConnectionStream` (unused by any caller)
@@ -337,7 +349,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Added
 - **Proof chain instrumentation** — tracing at three critical points in the data proof delivery chain: receipt registration (`register_data_receipt`), channel proof generation, and proof arrival/validation (`handle_data_proof`). Enables diagnosing why channel proofs may not match receipts.
 - **Repack symmetry check** — `TransportEvent::PacketReceived` now carries `raw_hash: Option<[u8; 32]>` (the SHA256 hash of original wire bytes). The node layer compares this against the hash of repacked bytes, logging a `REPACK HASH MISMATCH` warning if they diverge — which would indicate proof chain failure.
-- **Channel lifecycle tracing** — debug-level tracing for channel send, delivery, WindowFull, retransmit, max-retries-exceeded, and teardown events, including tx_ring size, window, and sequence numbers.
+- **Channel lifecycle tracing** — debug-level tracing for channel send, delivery, busy, retransmit, max-retries-exceeded, and teardown events, including tx_ring size, window, and sequence numbers.
 - `LinkEvent::LinkRecovered` and `NodeEvent::ConnectionRecovered` events for Stale→Active transitions
 - `tracing` dependency in `reticulum-core` (`no_std` compatible, `default-features = false`)
 - `lrns connect` commands: `/announce` (re-announce destination), `/quiet` (hide announce/path messages), `/verbose` (show announce/path messages)

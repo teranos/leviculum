@@ -313,7 +313,7 @@ fn test_window_blocking() {
     // Next send should fail
     let msg = TestMessage::new(vec![99]);
     let result = channel.send(&msg, 464, 0, 100);
-    assert_eq!(result, Err(ChannelError::WindowFull));
+    assert_eq!(result, Err(ChannelError::Busy));
 }
 
 // =========================================================================

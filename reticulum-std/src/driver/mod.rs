@@ -54,6 +54,7 @@ pub use builder::ReticulumNodeBuilder;
 pub use sender::PacketSender;
 pub use stream::LinkHandle;
 
+use std::collections::{BTreeMap, VecDeque};
 use std::net::SocketAddr;
 use std::net::ToSocketAddrs;
 use std::sync::atomic::AtomicUsize;
@@ -97,6 +98,10 @@ const EVENT_CHANNEL_CAPACITY: usize = 256;
 /// Lost data from a crash is recovered via fresh announces.
 /// Hardcoded — see E12 for making this configurable.
 const FLUSH_INTERVAL_SECS: u64 = 3600;
+
+/// Maximum packets per interface in the retry queue.
+/// Covers ~47s of LoRa traffic at 2734 bps. When full, oldest is dropped.
+const RETRY_QUEUE_CAP: usize = 64;
 
 /// Channels consumed by the event loop.
 struct EventLoopChannels {
@@ -921,6 +926,7 @@ async fn run_event_loop(
     let mut shutdown = channels.shutdown;
     let mut next_poll = tokio::time::Instant::now();
     let mut next_flush = tokio::time::Instant::now() + Duration::from_secs(FLUSH_INTERVAL_SECS);
+    let mut retry_queues: BTreeMap<usize, VecDeque<Vec<u8>>> = BTreeMap::new();
 
     loop {
         tokio::select! {
@@ -959,6 +965,8 @@ async fn run_event_loop(
                             output,
                             &mut registry,
                             &event_tx,
+                            &inner,
+                            &mut retry_queues,
                         );
                     }
                     RecvEvent::Disconnected(iface_id) => {
@@ -971,7 +979,15 @@ async fn run_event_loop(
                             output,
                             &mut registry,
                             &event_tx,
+                            &inner,
+                            &mut retry_queues,
                         );
+                        // Clear retry queue and congested flag for disconnected interface
+                        retry_queues.remove(&iface_id.0);
+                        {
+                            let mut core = inner.lock().unwrap();
+                            core.set_interface_congested(iface_id.0, false);
+                        }
                         registry.remove(iface_id);
                         {
                             let mut stats = iface_stats_map.lock().unwrap();
@@ -988,6 +1004,8 @@ async fn run_event_loop(
                     output,
                     &mut registry,
                     &event_tx,
+                    &inner,
+                    &mut retry_queues,
                 );
             }
 
@@ -1004,6 +1022,8 @@ async fn run_event_loop(
                     output,
                     &mut registry,
                     &event_tx,
+                    &inner,
+                    &mut retry_queues,
                 );
 
                 // Advance next_poll based on next_deadline_ms
@@ -1054,7 +1074,7 @@ async fn run_event_loop(
                         let mut core = inner.lock().unwrap();
                         core.handle_interface_up(iface_idx)
                     };
-                    dispatch_output(output, &mut registry, &event_tx);
+                    dispatch_output(output, &mut registry, &event_tx, &inner, &mut retry_queues);
                 }
             }
 
@@ -1070,7 +1090,7 @@ async fn run_event_loop(
                     let mut core = inner.lock().unwrap();
                     core.handle_interface_up(iface_id.0)
                 };
-                dispatch_output(output, &mut registry, &event_tx);
+                dispatch_output(output, &mut registry, &event_tx, &inner, &mut retry_queues);
             }
 
             // Branch 7: Periodic storage flush (persist identities + packet hashes)
@@ -1086,35 +1106,86 @@ async fn run_event_loop(
     }
 }
 
-/// Dispatch a TickOutput: route Actions to interfaces via core, forward Events
+/// Dispatch a TickOutput: drain retry queues, route Actions to interfaces, forward Events.
 fn dispatch_output(
     output: TickOutput,
     registry: &mut InterfaceRegistry,
     event_tx: &mpsc::Sender<NodeEvent>,
+    inner: &Arc<Mutex<StdNodeCore>>,
+    retry_queues: &mut BTreeMap<usize, VecDeque<Vec<u8>>>,
 ) {
-    // 1. Dispatch actions to interfaces (protocol logic in core)
+    // 1. Drain retry queues before dispatching new actions
+    for (iface_idx, queue) in retry_queues.iter_mut() {
+        let iface_id = InterfaceId(*iface_idx);
+        while let Some(data) = queue.front() {
+            if let Some(handle) = registry.handles_mut_slice().iter_mut().find(|h| {
+                use reticulum_core::traits::Interface;
+                h.id() == iface_id
+            }) {
+                use reticulum_core::traits::Interface;
+                match handle.try_send(data) {
+                    Ok(()) => {
+                        queue.pop_front();
+                    }
+                    Err(InterfaceError::BufferFull) => break,
+                    Err(InterfaceError::Disconnected) => {
+                        queue.clear();
+                        break;
+                    }
+                }
+            } else {
+                // Interface removed — clear queue
+                queue.clear();
+                break;
+            }
+        }
+    }
+
+    // 2. Dispatch new actions to interfaces (protocol logic in core)
     let mut ifaces: Vec<&mut dyn reticulum_core::traits::Interface> = registry
         .handles_mut_slice()
         .iter_mut()
         .map(|h| h as &mut dyn reticulum_core::traits::Interface)
         .collect();
-    let errors = reticulum_core::transport::dispatch_actions(&mut ifaces, &output.actions);
+    let result = reticulum_core::transport::dispatch_actions(&mut ifaces, output.actions);
 
-    // 2. React to dispatch errors
-    for (iface_id, error) in &errors {
+    // 3. Log dispatch errors
+    for (iface_id, error) in &result.errors {
         match error {
             InterfaceError::BufferFull => {
-                tracing::warn!("Interface {} buffer full, packet dropped", iface_id);
+                tracing::trace!("Interface {} buffer full", iface_id);
             }
             InterfaceError::Disconnected => {
                 tracing::warn!("Interface {} disconnected during dispatch", iface_id);
-                // Actual cleanup happens when recv_any() detects channel closure
-                // and triggers handle_interface_down(). This is a secondary signal.
             }
         }
     }
 
-    // 3. Forward events to application (best effort — drop if full)
+    // 4. Queue SendPacket retries (with cap enforcement)
+    for retry in result.retries {
+        let queue = retry_queues.entry(retry.iface_idx).or_default();
+        if queue.len() >= RETRY_QUEUE_CAP {
+            queue.pop_front();
+            tracing::warn!(
+                "Retry queue full for iface {}, dropping oldest packet",
+                retry.iface_idx,
+            );
+        }
+        queue.push_back(retry.data);
+    }
+
+    // 5. Update congestion flags based on queue state
+    {
+        let mut core = inner.lock().unwrap();
+        // Set congested for all interfaces with non-empty queues
+        for (&iface_idx, queue) in retry_queues.iter() {
+            core.set_interface_congested(iface_idx, !queue.is_empty());
+        }
+    }
+    // Remove empty queues to avoid accumulating stale entries
+    retry_queues.retain(|_, queue| !queue.is_empty());
+
+    // 6. Forward events to application (best effort — drop if full)
     for event in output.events {
         if let NodeEvent::LinkEstablished { link_id, .. } = &event {
             tracing::debug!("Link established: {:?}", link_id);

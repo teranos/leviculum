@@ -145,15 +145,14 @@ async fn test_full_link_lifecycle_through_relay() {
     // ── Phase 3: Channel ACK / Delivery Confirmation (proves Fix 2) ──────
 
     // Step 10: Send 5 messages from Rust, each going through Channel as RawBytesMessage.
-    // Space sends to avoid WindowFull (channel window starts small after handshake).
+    // Space sends to avoid Busy (channel window starts small after handshake).
     for i in 0..5 {
         let msg = format!("lifecycle-ack-{}", i);
         loop {
             match stream.try_send(msg.as_bytes()).await {
                 Ok(()) => break,
                 Err(reticulum_std::Error::Send(
-                    reticulum_core::SendError::WindowFull
-                    | reticulum_core::SendError::PacingDelay { .. },
+                    reticulum_core::SendError::Busy | reticulum_core::SendError::PacingDelay { .. },
                 )) => {
                     tokio::time::sleep(Duration::from_millis(500)).await;
                 }

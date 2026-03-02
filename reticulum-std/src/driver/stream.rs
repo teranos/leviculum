@@ -3,7 +3,7 @@
 //! Locks the core directly and dispatches actions through the event loop,
 //! matching the pattern used by `PacketSender`. This ensures that
 //! `send()` returns the real result from `send_on_link()` — including
-//! `WindowFull` — instead of silently buffering through an mpsc channel.
+//! `Busy` — instead of silently buffering through an mpsc channel.
 
 use std::sync::{Arc, Mutex};
 
@@ -20,7 +20,7 @@ use crate::error::Error;
 ///
 /// `LinkHandle` provides async write operations for a link.
 /// It locks the core directly for each send, ensuring the caller sees
-/// the real result (including `WindowFull` mapped to `WouldBlock`).
+/// the real result (including `Busy` mapped to `WouldBlock`).
 ///
 /// Incoming data is delivered via `NodeEvent::LinkDataReceived` /
 /// `NodeEvent::MessageReceived` on the node's event channel.
@@ -81,8 +81,8 @@ impl LinkHandle {
     /// Try to send data on this link (non-blocking)
     ///
     /// Locks the core, calls `send_on_link()`, and dispatches the
-    /// resulting actions. Returns `SendError::WindowFull` or
-    /// `SendError::PacingDelay` if the channel cannot accept data right now.
+    /// resulting actions. Returns `SendError::Busy` if the send path is
+    /// occupied, or `SendError::PacingDelay` if the channel is pacing.
     pub async fn try_send(&self, data: &[u8]) -> Result<(), Error> {
         if self.closed {
             return Err(Error::NotRunning);
@@ -100,10 +100,10 @@ impl LinkHandle {
         Ok(())
     }
 
-    /// Send data on this link, absorbing pacing delays and window-full
+    /// Send data on this link, absorbing pacing delays and busy conditions
     ///
     /// Unlike `try_send()`, this method retries automatically when the channel
-    /// reports a pacing delay or window-full condition, sleeping until ready.
+    /// reports a pacing delay or busy condition, sleeping until ready.
     /// Only returns an error on fatal conditions (link lost, handle closed).
     pub async fn send(&self, data: &[u8]) -> Result<(), Error> {
         loop {
@@ -131,7 +131,7 @@ impl LinkHandle {
                         tokio::time::sleep(std::time::Duration::from_millis(delay)).await;
                     }
                 }
-                Err(SendError::WindowFull) => {
+                Err(SendError::Busy) => {
                     tokio::time::sleep(std::time::Duration::from_millis(50)).await;
                 }
                 Err(other) => {

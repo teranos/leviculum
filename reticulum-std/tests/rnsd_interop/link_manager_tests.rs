@@ -1155,7 +1155,7 @@ async fn test_rust_to_rust_multiple_messages() {
 
     // Exchange messages in both directions.
     // send_on_link() uses Channel (windowed, reliable) so we must handle
-    // WindowFull/PacingDelay by processing incoming packets between sends.
+    // Busy/PacingDelay by processing incoming packets between sends.
     let total = 5;
     let mut sent_by_b = 0;
     let mut sent_by_a = 0;
@@ -1198,7 +1198,7 @@ async fn test_rust_to_rust_multiple_messages() {
     }
 
     for i in 0..total {
-        // B -> A (with retry on WindowFull)
+        // B -> A (with retry on Busy)
         let msg = format!("Message {} from B", i);
         for _attempt in 0..5 {
             match node_b.send_on_link(&link_id_b, msg.as_bytes()) {
@@ -1232,7 +1232,7 @@ async fn test_rust_to_rust_multiple_messages() {
             }
         }
 
-        // A -> B (with retry on WindowFull)
+        // A -> B (with retry on Busy)
         let msg = format!("Message {} from A", i);
         for _attempt in 0..5 {
             match node_a.send_on_link(&link_id_a, msg.as_bytes()) {
@@ -1685,7 +1685,7 @@ async fn test_manager_large_payloads() {
 
     // Test various payload sizes.
     // send_on_link() uses Channel (windowed, reliable delivery) so we must
-    // handle WindowFull/PacingDelay between sends.
+    // handle Busy/PacingDelay between sends.
     let sizes = [100, 250, 400];
     let mut buf = [0u8; 2048];
 
