@@ -9,6 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 - **Per-hop link establishment timeout** — link pending timeout now scales with hop count, matching Python's formula: initiator = `6s × (max(1, hops) + 1)`, responder = `6s × max(1, hops) + 360s` (KEEPALIVE bonus for RTT packet travel). Replaces the fixed 30s `LINK_PENDING_TIMEOUT_MS`. Prevents premature link timeout on multi-hop LoRa paths where round-trip can exceed 30s. 4 unit tests.
+- **10-node dual-cluster LoRa integration tests** — two new LoRa integration tests (`lora_dual_cluster_rust`, `lora_dual_cluster_mixed`) exercise a realistic 10-node dual-cluster topology where LoRa is the sole inter-cluster link. Each test spins up 4 Rust + 4 Python leaf nodes connected via TCP to two hub nodes bridged by LoRa. Tests verify: cross-cluster announce propagation (6 `wait_for_path` checks), cross-cluster data delivery + proof return (4 `rnprobe` round-trips through LoRa), and intra-cluster connectivity (2 `rnprobe` sanity checks). The "rust" variant uses two Rust hubs; the "mixed" variant uses a Rust hub_a and Python hub_b. Requires two RNode devices.
 
 ### Fixed
 - **Docker integration tests serialized** — all 17 Docker-based integration tests now use `#[serial(docker)]` to prevent concurrent container execution. Under load, parallel Docker tests competed for CPU/Docker resources, causing flaky `ReadinessTimeout` failures. Unit tests (parse helpers, display tests) remain parallel.

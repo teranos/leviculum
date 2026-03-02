@@ -1121,6 +1121,48 @@ Reticulum Transport Instance running
     }
 
     #[test]
+    #[ignore] // Requires RNode hardware
+    #[serial(lora)]
+    fn lora_dual_cluster_rust() {
+        let toml_str = std::fs::read_to_string(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/tests/lora_dual_cluster_rust.toml"
+        ))
+        .expect("lora_dual_cluster_rust.toml not found");
+        let scenario = crate::topology::parse_scenario(&toml_str).expect("parse failed");
+
+        let mut runner = TestRunner::new(scenario).expect("TestRunner::new failed");
+
+        runner.up().expect("up failed");
+        runner.wait_ready(120).expect("wait_ready failed");
+
+        let result = execute_steps(&runner);
+        runner.down().expect("down failed");
+        result.expect("execute_steps should succeed");
+    }
+
+    #[test]
+    #[ignore] // Requires RNode hardware
+    #[serial(lora)]
+    fn lora_dual_cluster_mixed() {
+        let toml_str = std::fs::read_to_string(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/tests/lora_dual_cluster_mixed.toml"
+        ))
+        .expect("lora_dual_cluster_mixed.toml not found");
+        let scenario = crate::topology::parse_scenario(&toml_str).expect("parse failed");
+
+        let mut runner = TestRunner::new(scenario).expect("TestRunner::new failed");
+
+        runner.up().expect("up failed");
+        runner.wait_ready(120).expect("wait_ready failed");
+
+        let result = execute_steps(&runner);
+        runner.down().expect("down failed");
+        result.expect("execute_steps should succeed");
+    }
+
+    #[test]
     #[serial(docker)]
     fn selftest_bulk() {
         let toml_str = std::fs::read_to_string(concat!(
