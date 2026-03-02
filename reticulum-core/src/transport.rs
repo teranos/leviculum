@@ -3091,16 +3091,48 @@ impl<C: Clock, S: Storage> Transport<C, S> {
                 return Ok(());
             }
 
-            // 3. Unknown destination from network → forward path request
+            // 3. Unknown destination from network → re-originate path request
+            //    Python Transport.py:2792-2806: create fresh packets with hops=0
+            //    on all interfaces except the requester, reusing the same tag.
             if !from_local {
-                let mut buf = [0u8; crate::constants::MTU];
-                let len = packet.pack(&mut buf)?;
-
                 tracing::debug!(
-                    "Path request for <{}> on {}, no path known, forwarding to all interfaces",
+                    "Attempting to discover unknown path to <{}> on behalf of path request on {}",
                     HexShort(&requested_hash),
                     self.iface_name(interface_index)
                 );
+
+                // Build a fresh path request packet with hops=0 (Python Transport.py:2555-2561)
+                let pr_data = if self.config.enable_transport {
+                    let mut d = Vec::with_capacity(48);
+                    d.extend_from_slice(&requested_hash);
+                    d.extend_from_slice(self.identity.hash());
+                    d.extend_from_slice(&tag);
+                    d
+                } else {
+                    let mut d = Vec::with_capacity(32);
+                    d.extend_from_slice(&requested_hash);
+                    d.extend_from_slice(&tag);
+                    d
+                };
+
+                let fresh_packet = Packet {
+                    flags: PacketFlags {
+                        ifac_flag: false,
+                        header_type: HeaderType::Type1,
+                        context_flag: false,
+                        transport_type: TransportType::Broadcast,
+                        dest_type: crate::destination::DestinationType::Plain,
+                        packet_type: PacketType::Data,
+                    },
+                    hops: 0,
+                    transport_id: None,
+                    destination_hash: self.path_request_hash,
+                    context: PacketContext::None,
+                    data: PacketData::Owned(pr_data),
+                };
+
+                let mut buf = [0u8; crate::constants::MTU];
+                let len = fresh_packet.pack(&mut buf)?;
                 self.send_on_all_interfaces_except(interface_index, &buf[..len]);
 
                 // Also forward to local clients (Python Transport.py:2808-2813)
@@ -5296,6 +5328,7 @@ mod tests {
 
             let dest_hash = [0x99; TRUNCATED_HASHBYTES]; // Unknown destination
             let path_req_hash = transport.path_request_hash;
+            let local_transport_id = *transport.identity.hash();
 
             let mut data = Vec::new();
             data.extend_from_slice(&dest_hash);
@@ -5321,10 +5354,111 @@ mod tests {
             let mut buf = [0u8; 500];
             let len = packet.pack(&mut buf).unwrap();
 
-            // Should not panic, just forward
+            // Process path request from if0 for unknown dest
+            // Wire hops=0, process_incoming increments to hops=1 (direct neighbor)
             transport.process_incoming(0, &buf[..len]).unwrap();
             // Tag should be stored
             assert_eq!(transport.storage().path_request_tag_count(), 1);
+
+            // Verify the re-originated packet has hops=0 and local transport_id
+            // send_on_all_interfaces_except produces Action::Broadcast
+            let actions = transport.drain_actions();
+            let broadcasts: Vec<_> = actions
+                .iter()
+                .filter_map(|a| match a {
+                    Action::Broadcast { data, .. } => Some(data.as_slice()),
+                    _ => None,
+                })
+                .collect();
+            assert!(
+                !broadcasts.is_empty(),
+                "Should re-originate path request to if1"
+            );
+            for raw in &broadcasts {
+                // Type1 header: flags(1) + hops(1) + dest_hash(16) + context(1)
+                assert_eq!(raw[1], 0, "Re-originated path request must have hops=0");
+                // Data starts at byte 19: dest_hash(16) + transport_id(16) + tag(16)
+                assert_eq!(
+                    &raw[19..19 + TRUNCATED_HASHBYTES],
+                    &dest_hash,
+                    "Payload must contain the requested dest hash"
+                );
+                assert_eq!(
+                    &raw[19 + TRUNCATED_HASHBYTES..19 + 2 * TRUNCATED_HASHBYTES],
+                    &local_transport_id,
+                    "Re-originated request must contain local transport_id"
+                );
+            }
+        }
+
+        #[test]
+        fn test_path_request_reoriginated_has_zero_hops() {
+            // A path request arriving with hops=3 for an unknown destination
+            // must be re-originated with hops=0 (not forwarded with hops=3).
+            // Python Transport.py:2802-2806: each hop creates a fresh packet.
+            // Uses handle_path_request() directly to bypass process_incoming's
+            // PLAIN filter (which drops hops > 1).
+            let mut transport = make_transport_enabled();
+            let _idx0 = transport.register_interface(Box::new(MockInterface::new("if0", 1)));
+            let _idx1 = transport.register_interface(Box::new(MockInterface::new("if1", 2)));
+
+            let dest_hash = [0x42; TRUNCATED_HASHBYTES];
+            let local_transport_id = *transport.identity.hash();
+            let tag = [0xAA; TRUNCATED_HASHBYTES];
+
+            // Incoming path request has hops=3 (as if it already traversed 3 nodes)
+            let mut data = Vec::new();
+            data.extend_from_slice(&dest_hash);
+            data.extend_from_slice(&[0xBB; TRUNCATED_HASHBYTES]); // remote transport_id
+            data.extend_from_slice(&tag);
+
+            let packet = Packet {
+                flags: PacketFlags {
+                    ifac_flag: false,
+                    header_type: HeaderType::Type1,
+                    context_flag: false,
+                    transport_type: TransportType::Broadcast,
+                    dest_type: crate::destination::DestinationType::Plain,
+                    packet_type: PacketType::Data,
+                },
+                hops: 3,
+                transport_id: None,
+                destination_hash: transport.path_request_hash,
+                context: PacketContext::None,
+                data: PacketData::Owned(data),
+            };
+
+            let result = transport.handle_path_request(packet, 0);
+            assert!(result.is_ok());
+
+            // send_on_all_interfaces_except produces Action::Broadcast
+            let actions = transport.drain_actions();
+            let broadcasts: Vec<_> = actions
+                .iter()
+                .filter_map(|a| match a {
+                    Action::Broadcast { data, .. } => Some(data.as_slice()),
+                    _ => None,
+                })
+                .collect();
+            assert!(!broadcasts.is_empty(), "Should re-originate path request");
+            for raw in &broadcasts {
+                assert_eq!(
+                    raw[1], 0,
+                    "Re-originated path request must have hops=0, not the original hops=3"
+                );
+                // Verify the re-originated packet uses the local transport_id
+                assert_eq!(
+                    &raw[19 + TRUNCATED_HASHBYTES..19 + 2 * TRUNCATED_HASHBYTES],
+                    &local_transport_id,
+                    "Re-originated request must use local transport_id, not the remote one"
+                );
+                // Verify the same tag is preserved for dedup
+                assert_eq!(
+                    &raw[19 + 2 * TRUNCATED_HASHBYTES..19 + 3 * TRUNCATED_HASHBYTES],
+                    &tag,
+                    "Tag must be preserved from original request"
+                );
+            }
         }
 
         #[test]
@@ -11947,8 +12081,9 @@ mod tests {
         #[test]
         fn test_path_request_from_network_forwarded_to_local_clients() {
             let mut transport = make_transport_with_local_client();
+            let local_transport_id = *transport.identity.hash();
 
-            // Build a path request packet
+            // Build a path request packet (from a non-transport node: no transport_id)
             let target_dest = [0xCCu8; TRUNCATED_HASHBYTES];
             let tag = [0xDDu8; TRUNCATED_HASHBYTES];
 
@@ -11965,7 +12100,7 @@ mod tests {
                     dest_type: DestinationType::Plain,
                     packet_type: PacketType::Data,
                 },
-                hops: 0,
+                hops: 1,
                 transport_id: None,
                 destination_hash: transport.path_request_hash,
                 context: PacketContext::None,
@@ -11979,12 +12114,32 @@ mod tests {
             // Should have a SendPacket to the local client
             let local_sends: Vec<_> = actions
                 .iter()
-                .filter(|a| matches!(a, Action::SendPacket { iface, .. } if iface.0 == LOCAL_CLIENT_IFACE))
+                .filter_map(|a| match a {
+                    Action::SendPacket { iface, data, .. } if iface.0 == LOCAL_CLIENT_IFACE => {
+                        Some(data.as_slice())
+                    }
+                    _ => None,
+                })
                 .collect();
             assert!(
                 !local_sends.is_empty(),
-                "Path request from network should be forwarded to local clients"
+                "Path request from network should be re-originated to local clients"
             );
+            for raw in &local_sends {
+                // Re-originated packet must have hops=0
+                assert_eq!(raw[1], 0, "Re-originated path request must have hops=0");
+                // Data: dest_hash(16) + transport_id(16) + tag(16) (transport enabled)
+                assert_eq!(
+                    &raw[19..19 + TRUNCATED_HASHBYTES],
+                    &target_dest,
+                    "Payload must contain the requested dest hash"
+                );
+                assert_eq!(
+                    &raw[19 + TRUNCATED_HASHBYTES..19 + 2 * TRUNCATED_HASHBYTES],
+                    &local_transport_id,
+                    "Re-originated request must contain local transport_id"
+                );
+            }
         }
 
         // ─── Block B: Shared Instance Registration ───────────────────────
