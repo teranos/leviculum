@@ -8,6 +8,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- **RTT packet retry for LoRa link reliability** — the initiator's RTT packet (sent after link proof receipt) now retries up to 5 times at `max(rtt*3, 10s)` intervals if unconfirmed. Any inbound link traffic (data packet or proof) confirms delivery and stops retries. Links that exhaust retries are torn down with `LinkClosed::Timeout`. New `Link` methods: `needs_rtt_retry()`, `rtt_retry_interval_ms()`, `record_rtt_sent()`, `confirm_rtt()`. 6 unit tests. Fixes LoRa `lora_link_rust` flakiness (was 2/3 pass rate, now 5/5).
+- **Reduced responder handshake timeout** — responder establishment bonus reduced from 360s (Python's `KEEPALIVE`) to 54s. With RTT retry, the responder no longer needs to wait 6 minutes for a single fire-and-forget RTT packet. Formula: `6s × max(1, hops) + 54s` (e.g., 60s for 0 hops, 72s for 3 hops).
+
+### Added
 - **Interface backpressure with retry queue and congestion flag** — when `try_send()` returns `BufferFull`, SendPacket actions are queued in a per-interface retry queue (cap 64, drop oldest on overflow) and retried on the next event loop tick. Broadcast actions are dropped (by design — they have built-in recovery). When the retry queue is non-empty, the interface is marked congested; app-originated sends (`send_on_link`, `send_to_destination`) return `Err(Busy)` before building/encrypting the packet. Internal sends (retransmits, proofs, keepalives) bypass the congestion check and use the retry queue instead. On LoRa, this prevents: channel data loss from buffer overflow, wasted retransmit tries from dropped proofs, and link teardowns from exhausted try counts. See `doc/BACKPRESSURE_DESIGN.md`.
 - `SendRetry` and `DispatchResult` types — `dispatch_actions()` now returns failed SendPacket data for the driver to queue, instead of discarding it
 - `Transport::set_interface_congested()` / `is_interface_congested()` — driver-written flag, same pattern as `is_online()`

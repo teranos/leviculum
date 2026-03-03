@@ -7,7 +7,8 @@
 use alloc::vec::Vec;
 
 use crate::constants::{
-    DATA_RECEIPT_TIMEOUT_MS, MODE_AES256_CBC, MS_PER_SECOND, PROOF_DATA_SIZE, TRUNCATED_HASHBYTES,
+    DATA_RECEIPT_TIMEOUT_MS, MODE_AES256_CBC, MS_PER_SECOND, PROOF_DATA_SIZE,
+    RTT_RETRY_MAX_ATTEMPTS, TRUNCATED_HASHBYTES,
 };
 use crate::destination::{DestinationHash, ProofStrategy};
 use crate::hex_fmt::{HexFmt, HexShort};
@@ -650,6 +651,7 @@ impl<R: CryptoRngCore, C: Clock, S: Storage> NodeCore<R, C, S> {
         // Build RTT packet and route via attached interface
         match link.build_rtt_packet(rtt_seconds, &mut self.rng) {
             Ok(rtt_packet) => {
+                link.record_rtt_sent(now_ms);
                 self.events.push(NodeEvent::LinkEstablished {
                     link_id,
                     is_initiator: true,
@@ -721,6 +723,8 @@ impl<R: CryptoRngCore, C: Clock, S: Storage> NodeCore<R, C, S> {
             .unwrap_or(false);
 
         if is_valid {
+            self.try_confirm_rtt(link_id);
+
             // confirm_delivery removes the entry entirely (fixes orphan path #1).
             // Event only fires when the receipt still exists — a valid proof for
             // an already-expired/removed receipt is silently dropped.
@@ -765,6 +769,8 @@ impl<R: CryptoRngCore, C: Clock, S: Storage> NodeCore<R, C, S> {
             );
             return;
         }
+
+        self.try_confirm_rtt(&link_id);
 
         match packet.context {
             PacketContext::Lrrtt => self.handle_rtt_packet(link_id, packet, now_secs),
@@ -1150,6 +1156,104 @@ impl<R: CryptoRngCore, C: Clock, S: Storage> NodeCore<R, C, S> {
         self.receipt_tracker.expire(now_ms);
     }
 
+    /// Confirm RTT delivery on an initiator link if not yet confirmed.
+    ///
+    /// Any inbound link traffic (data packet, proof, keepalive) proves the
+    /// responder is alive, stopping unnecessary RTT retries.
+    fn try_confirm_rtt(&mut self, link_id: &LinkId) {
+        if let Some(link) = self.links.get_mut(link_id) {
+            if link.is_initiator() && !link.rtt_confirmed() {
+                link.confirm_rtt();
+                tracing::debug!(
+                    "Link <{}> RTT confirmed by inbound traffic",
+                    HexShort(link_id.as_bytes())
+                );
+            }
+        }
+    }
+
+    /// Resend RTT packet on initiator links where delivery is unconfirmed.
+    ///
+    /// The initiator sends the RTT packet once in `handle_link_proof()`. If the
+    /// packet is lost (common on LoRa), this method retransmits at intervals of
+    /// `max(rtt_ms * 3, 10s)` up to [`RTT_RETRY_MAX_ATTEMPTS`] retries. Any
+    /// inbound link packet sets `rtt_confirmed`, stopping retries. Links that
+    /// exhaust retries without confirmation are torn down.
+    pub(super) fn check_rtt_retry(&mut self, now_ms: u64) {
+        // Phase 1: Collect link_ids needing an RTT retry
+        let need_retry: Vec<LinkId> = self
+            .links
+            .iter()
+            .filter(|(_, link)| {
+                link.needs_rtt_retry()
+                    && link.rtt_sent_at_ms().is_some_and(|sent| {
+                        now_ms.saturating_sub(sent) >= link.rtt_retry_interval_ms()
+                    })
+            })
+            .map(|(id, _)| *id)
+            .collect();
+
+        // Phase 2: Resend RTT for each qualifying link
+        for link_id in need_retry {
+            if let Some(link) = self.links.get_mut(&link_id) {
+                let rtt_secs = link.rtt_secs().unwrap_or(0.0);
+                match link.build_rtt_packet(rtt_secs, &mut self.rng) {
+                    Ok(packet) => {
+                        link.record_rtt_sent(now_ms);
+                        tracing::debug!(
+                            "Resending RTT on link <{}> (attempt {}/{})",
+                            HexShort(link_id.as_bytes()),
+                            link.rtt_send_count(),
+                            RTT_RETRY_MAX_ATTEMPTS + 1,
+                        );
+                        self.route_link_packet(&link_id, &packet);
+                    }
+                    Err(e) => {
+                        tracing::warn!("RTT retry build failed: {:?}", e);
+                    }
+                }
+            }
+        }
+
+        // Phase 3: Tear down links that exhausted retries without confirmation.
+        // Wait one interval after the last send so the final retry has time
+        // to be delivered and confirmed before we give up.
+        let exhausted: Vec<LinkId> = self
+            .links
+            .iter()
+            .filter(|(_, link)| {
+                link.is_initiator()
+                    && link.state() == LinkState::Active
+                    && !link.rtt_confirmed()
+                    && link.rtt_send_count() > RTT_RETRY_MAX_ATTEMPTS
+                    && link.rtt_sent_at_ms().is_some_and(|sent| {
+                        now_ms.saturating_sub(sent) >= link.rtt_retry_interval_ms()
+                    })
+            })
+            .map(|(id, _)| *id)
+            .collect();
+
+        for link_id in exhausted {
+            tracing::warn!(
+                "RTT delivery failed after {} attempts on link <{}>",
+                RTT_RETRY_MAX_ATTEMPTS + 1,
+                HexShort(link_id.as_bytes()),
+            );
+            let (is_initiator, destination_hash) = self
+                .links
+                .get(&link_id)
+                .map(|l| (l.is_initiator(), *l.destination_hash()))
+                .unwrap_or((true, DestinationHash::new([0; 16])));
+            self.remove_link(&link_id);
+            self.emit_link_closed(
+                link_id,
+                LinkCloseReason::Timeout,
+                is_initiator,
+                destination_hash,
+            );
+        }
+    }
+
     /// Check if any active links need to send keepalives (initiator only)
     pub(super) fn check_keepalives(&mut self, now_secs: u64) {
         let need_keepalive: Vec<LinkId> = self
@@ -1344,6 +1448,15 @@ impl<R: CryptoRngCore, C: Clock, S: Storage> NodeCore<R, C, S> {
                     update(proof_sent_at_ms.saturating_add(link.establishment_timeout_ms()));
                 }
                 LinkPhase::Established => {}
+            }
+        }
+
+        // RTT retry deadlines (initiator, unconfirmed)
+        for link in self.links.values() {
+            if link.needs_rtt_retry() {
+                if let Some(sent_at) = link.rtt_sent_at_ms() {
+                    update(sent_at.saturating_add(link.rtt_retry_interval_ms()));
+                }
             }
         }
 

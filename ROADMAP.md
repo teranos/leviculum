@@ -98,6 +98,7 @@ Vollständige Interoperabilität auf Paket-Ebene mit der Python-Referenzimplemen
 - [x] Link-State-Machine: Pending → Handshake → Active
 - [x] Bidirektionale verschlüsselte Datenkommunikation mit Python rnsd
 - [x] Keepalive-Mechanismus und Link-Teardown
+- [x] RTT-Paket-Retry (5 Versuche, Bestätigung durch eingehenden Traffic)
 
 ---
 

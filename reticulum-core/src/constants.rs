@@ -163,9 +163,20 @@ pub const LINK_PENDING_TIMEOUT_MS: u64 = 30_000;
 pub const ESTABLISHMENT_TIMEOUT_PER_HOP_MS: u64 = DEFAULT_PER_HOP_TIMEOUT * 1000;
 
 /// Responder establishment bonus (milliseconds).
-/// Python adds KEEPALIVE (360s) to the responder's timeout because it must
-/// wait for the RTT packet to travel back through all hops.
-pub const ESTABLISHMENT_RESPONDER_BONUS_MS: u64 = LINK_KEEPALIVE_SECS * 1000;
+/// With RTT retry (5 attempts at 10s intervals = ~50s budget), the
+/// responder no longer needs Python's 360s bonus. 54s gives 4s margin
+/// above the initiator's retry budget.
+pub const ESTABLISHMENT_RESPONDER_BONUS_MS: u64 = 54_000;
+
+/// RTT packet retry: max additional attempts after the initial send.
+pub const RTT_RETRY_MAX_ATTEMPTS: u8 = 5;
+
+/// RTT packet retry: minimum interval between attempts (milliseconds).
+/// Actual interval is max(rtt_ms * RTT_RETRY_INTERVAL_MULTIPLIER, this).
+pub const RTT_RETRY_MIN_INTERVAL_MS: u64 = 10_000;
+
+/// RTT packet retry: interval = rtt_ms * this multiplier (floored by min).
+pub const RTT_RETRY_INTERVAL_MULTIPLIER: u64 = 3;
 
 /// Timeout for data receipts awaiting proofs (milliseconds)
 pub const DATA_RECEIPT_TIMEOUT_MS: u64 = 30_000;

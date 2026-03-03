@@ -44,6 +44,7 @@ use crate::constants::{
     KEEPALIVE_INITIATOR_BYTE, KEEPALIVE_PAYLOAD_SIZE, KEEPALIVE_RESPONDER_BYTE,
     LINK_KEEPALIVE_MAX_RTT, LINK_KEEPALIVE_MIN_SECS, LINK_KEEPALIVE_SECS,
     LINK_KEEPALIVE_TIMEOUT_FACTOR, LINK_STALE_FACTOR, LINK_STALE_GRACE_SECS, MTU, PROOF_DATA_SIZE,
+    RTT_RETRY_INTERVAL_MULTIPLIER, RTT_RETRY_MAX_ATTEMPTS, RTT_RETRY_MIN_INTERVAL_MS,
     SIGNALING_MODE_MASK, SIGNALING_MODE_SHIFT, SIGNALING_MTU_MASK, TRUNCATED_HASHBYTES,
     X25519_KEY_SIZE,
 };
@@ -395,6 +396,14 @@ pub struct Link {
     phase: LinkPhase,
     /// Channel for multiplexed message delivery (created lazily on first send/receive)
     channel: Option<Channel>,
+    /// Timestamp (ms) of last RTT packet send (initiator only).
+    /// Cleared when rtt_confirmed becomes true (no further retries needed).
+    rtt_sent_at_ms: Option<u64>,
+    /// Number of RTT packets sent (initial + retries, initiator only).
+    rtt_send_count: u8,
+    /// True once any inbound link packet confirms the responder is alive.
+    /// Stops RTT retry on the initiator side.
+    rtt_confirmed: bool,
 }
 
 impl Link {
@@ -443,6 +452,9 @@ impl Link {
             negotiated_mtu: MTU as u32,
             phase: LinkPhase::Established,
             channel: None,
+            rtt_sent_at_ms: None,
+            rtt_send_count: 0,
+            rtt_confirmed: false,
         }
     }
 
@@ -539,6 +551,9 @@ impl Link {
             negotiated_mtu,
             phase: LinkPhase::Established,
             channel: None,
+            rtt_sent_at_ms: None,
+            rtt_send_count: 0,
+            rtt_confirmed: false,
         })
     }
 
@@ -995,6 +1010,54 @@ impl Link {
     pub fn update_keepalive_from_rtt(&mut self, rtt_secs: f64) {
         self.keepalive_secs = Self::calculate_keepalive_from_rtt(rtt_secs);
         self.stale_time_secs = self.keepalive_secs * LINK_STALE_FACTOR;
+    }
+
+    // ─── RTT retry state (initiator only) ─────────────────────────────
+
+    /// Timestamp of the last RTT packet send (milliseconds)
+    pub(crate) fn rtt_sent_at_ms(&self) -> Option<u64> {
+        self.rtt_sent_at_ms
+    }
+
+    /// Number of RTT packets sent (initial + retries)
+    pub(crate) fn rtt_send_count(&self) -> u8 {
+        self.rtt_send_count
+    }
+
+    /// Whether an inbound packet has confirmed RTT delivery
+    pub(crate) fn rtt_confirmed(&self) -> bool {
+        self.rtt_confirmed
+    }
+
+    /// Retry interval for RTT packets: `max(rtt_ms * 3, 10s)`
+    pub(crate) fn rtt_retry_interval_ms(&self) -> u64 {
+        core::cmp::max(
+            self.rtt_ms() * RTT_RETRY_INTERVAL_MULTIPLIER,
+            RTT_RETRY_MIN_INTERVAL_MS,
+        )
+    }
+
+    /// Whether this link is eligible for an RTT retry (initiator, active,
+    /// unconfirmed, has sent at least once, hasn't exhausted retries).
+    pub(crate) fn needs_rtt_retry(&self) -> bool {
+        self.initiator
+            && self.state() == LinkState::Active
+            && !self.rtt_confirmed
+            && self.rtt_send_count > 0
+            && self.rtt_send_count <= RTT_RETRY_MAX_ATTEMPTS
+    }
+
+    /// Record that an RTT packet was sent (initial or retry)
+    pub(crate) fn record_rtt_sent(&mut self, now_ms: u64) {
+        self.rtt_sent_at_ms = Some(now_ms);
+        self.rtt_send_count += 1;
+    }
+
+    /// Mark RTT delivery as confirmed (any inbound link packet or proof).
+    /// Clears `rtt_sent_at_ms` since no further retries are needed.
+    pub(crate) fn confirm_rtt(&mut self) {
+        self.rtt_confirmed = true;
+        self.rtt_sent_at_ms = None;
     }
 
     /// Check if we should send a keepalive now (initiator only)
@@ -3118,8 +3181,8 @@ mod tests {
         let link = Link::new_incoming(&request_data, link_id, dest_hash, &mut OsRng, None).unwrap();
         assert!(!link.is_initiator());
         assert_eq!(link.hops(), 0);
-        // max(1,0)*6000 + 360000 = 366000
-        assert_eq!(link.establishment_timeout_ms(), 366_000);
+        // max(1,0)*6000 + 54000 = 60000
+        assert_eq!(link.establishment_timeout_ms(), 60_000);
     }
 
     #[test]
@@ -3131,7 +3194,7 @@ mod tests {
         let mut link =
             Link::new_incoming(&request_data, link_id, dest_hash, &mut OsRng, None).unwrap();
         link.set_hops(3);
-        // 3*6000 + 360000 = 378000
-        assert_eq!(link.establishment_timeout_ms(), 378_000);
+        // 3*6000 + 54000 = 72000
+        assert_eq!(link.establishment_timeout_ms(), 72_000);
     }
 }

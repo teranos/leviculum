@@ -35,7 +35,7 @@ leviculum/
 │   │   └── node/            # High-level unified API
 │   │       ├── mod.rs       # NodeCore: ties everything together
 │   │       ├── send.rs      # Outbound message routing decisions
-│   │       ├── link_management.rs # Link lifecycle (accept, close, keepalive, cleanup)
+│   │       ├── link_management.rs # Link lifecycle (accept, close, keepalive, RTT retry, cleanup)
 │   │       └── event.rs     # NodeEvent enum and helpers
 │   └── Cargo.toml
 │
@@ -666,7 +666,7 @@ exceeded) is logged at trace so a developer can understand why packets disappear
 | `transport.rs` handle_announce | Rebroadcast suppression (passed on) | `trace!` |
 | `transport.rs` handle_path_request | Request received, response type | `debug!` |
 | `transport.rs` forward_packet | Forwarding decision | `debug!` |
-| `node/link_management.rs` | Link accepted, established, closed, stale | `debug!` |
+| `node/link_management.rs` | Link accepted, established, closed, stale, RTT retry | `debug!` |
 | `node/link_management.rs` | Keepalive sent | `trace!` |
 | `driver/mod.rs` | Startup summary, interface registration | `info!` |
 | `interfaces/*.rs` | Connection events, I/O errors | `info!`/`warn!` |
