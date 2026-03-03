@@ -52,9 +52,9 @@ use alloc::vec::Vec;
 
 use crate::constants::{
     CHANNEL_BACKOFF_BASE, CHANNEL_ENVELOPE_HEADER_SIZE, CHANNEL_MAX_TRIES,
-    CHANNEL_MIN_TIMEOUT_BASE_MS, CHANNEL_MSGTYPE_RESERVED, CHANNEL_QUEUE_LEN_ADJUSTMENT,
-    CHANNEL_RTT_FAST_MS, CHANNEL_RTT_MEDIUM_MS, CHANNEL_RTT_TIMEOUT_MULTIPLIER,
-    CHANNEL_RX_RING_MAX, CHANNEL_SEQ_MODULUS, CHANNEL_WINDOW_INITIAL, CHANNEL_WINDOW_MAX_FAST,
+    CHANNEL_MIN_TIMEOUT_BASE_MS, CHANNEL_MSGTYPE_RESERVED, CHANNEL_RTT_FAST_MS,
+    CHANNEL_RTT_MEDIUM_MS, CHANNEL_RTT_TIMEOUT_MULTIPLIER, CHANNEL_RX_RING_MAX,
+    CHANNEL_SEQ_MODULUS, CHANNEL_WINDOW_INITIAL, CHANNEL_WINDOW_MAX_FAST,
     CHANNEL_WINDOW_MAX_MEDIUM, CHANNEL_WINDOW_MAX_SLOW, CHANNEL_WINDOW_MIN_FAST,
     CHANNEL_WINDOW_MIN_SLOW,
 };
@@ -87,16 +87,22 @@ fn pow_f64(base: f64, exp: u32) -> f64 {
     result
 }
 
-/// Calculate timeout using Python Reticulum formula (free function).
+/// Calculate retransmit timeout with additive queue delay.
 ///
-/// Formula: BACKOFF_BASE^(tries-1) * max(rtt*RTT_MULTIPLIER, MIN_TIMEOUT) * (queue_len+QUEUE_ADJ)
-fn calculate_timeout(tries: u8, rtt_ms: u64, queue_len: usize) -> u64 {
-    let base_timeout =
+/// Formula: (base_rto + queue_delay) * BACKOFF_BASE^(tries-1)
+///   where base_rto = max(rtt * RTT_MULTIPLIER, MIN_TIMEOUT)
+///         queue_delay = queue_len * (rtt / window)
+///
+/// The queue delay estimates how long this packet must wait behind
+/// earlier packets in the tx_ring, using SRTT/window as inter-delivery time.
+fn calculate_timeout(tries: u8, rtt_ms: u64, queue_len: usize, window: usize) -> u64 {
+    let base_rto =
         (rtt_ms as f64 * CHANNEL_RTT_TIMEOUT_MULTIPLIER).max(CHANNEL_MIN_TIMEOUT_BASE_MS);
     let retry_factor = pow_f64(CHANNEL_BACKOFF_BASE, tries.saturating_sub(1) as u32);
-    let queue_factor = queue_len as f64 + CHANNEL_QUEUE_LEN_ADJUSTMENT;
+    let w = (window as f64).max(1.0);
+    let queue_delay = queue_len as f64 * (rtt_ms as f64 / w);
 
-    (base_timeout * retry_factor * queue_factor) as u64
+    ((base_rto + queue_delay) * retry_factor) as u64
 }
 
 /// Message trait - all channel messages must implement this
@@ -499,7 +505,7 @@ impl Channel {
         self.next_send_at_ms = now_ms.saturating_add(self.pacing_interval_ms);
 
         let queue_len = self.tx_ring.len();
-        let timeout_ms = calculate_timeout(1, rtt_ms, queue_len); // for logging only
+        let timeout_ms = calculate_timeout(1, rtt_ms, queue_len, self.window); // for logging only
         tracing::debug!(
             seq = sequence,
             tx_ring = queue_len,
@@ -757,8 +763,12 @@ impl Channel {
             if outbound.state == MessageState::Sent {
                 // Use queue_len from when message was sent, not current tx_ring size.
                 // Prevents death spiral: growing queue → inflated timeout → no retransmit → queue stays.
-                let timeout =
-                    calculate_timeout(outbound.tries, eff_rtt, outbound.queue_len_at_send);
+                let timeout = calculate_timeout(
+                    outbound.tries,
+                    eff_rtt,
+                    outbound.queue_len_at_send,
+                    self.window,
+                );
                 if now_ms >= outbound.sent_at_ms.saturating_add(timeout) {
                     timed_out.push((i, outbound.tries));
                 }
@@ -1116,13 +1126,76 @@ mod tests {
 
     #[test]
     fn test_timeout_formula() {
-        // Basic timeout: max(100*2.5, 25) * 1.5^0 * (0+1.5) = 250 * 1 * 1.5 = 375
-        let timeout = calculate_timeout(1, 100, 0);
-        assert_eq!(timeout, 375);
+        // Basic timeout: (max(100*2.5, 25) + 0) * 1.5^0 = 250
+        let timeout = calculate_timeout(1, 100, 0, 2);
+        assert_eq!(timeout, 250);
 
-        // With retries: 250 * 1.5^1 * 1.5 = 562.5
-        let timeout = calculate_timeout(2, 100, 0);
-        assert_eq!(timeout, 562);
+        // With retries: (250 + 0) * 1.5^1 = 375
+        let timeout = calculate_timeout(2, 100, 0, 2);
+        assert_eq!(timeout, 375);
+    }
+
+    #[test]
+    fn test_timeout_additive_queue_delay() {
+        // Verify additive formula at key operating points
+        // (base_rto + queue_delay) * backoff where queue_delay = qlen * (rtt / window)
+
+        // LoRa failure scenario: SRTT=6421, queue=12, window=12
+        let t = calculate_timeout(1, 6421, 12, 12);
+        // base_rto = 6421*2.5 = 16052.5, queue_delay = 12*(6421/12) = 6421
+        assert_eq!(t, 22473);
+
+        // Same SRTT, smaller window (AIMD reduced)
+        let t = calculate_timeout(1, 6421, 12, 5);
+        // queue_delay = 12*(6421/5) = 15410.4
+        assert_eq!(t, 31462);
+
+        // Fast link: rtt=500, queue=1, window=2
+        let t = calculate_timeout(1, 500, 1, 2);
+        // base_rto=1250, queue_delay=250
+        assert_eq!(t, 1500);
+
+        // Empty queue: pure base_rto
+        let t = calculate_timeout(1, 500, 0, 2);
+        assert_eq!(t, 1250);
+    }
+
+    #[test]
+    fn test_timeout_window_floor() {
+        // window=0 must not panic or produce infinity — clamped to 1
+        let t = calculate_timeout(1, 1000, 5, 0);
+        // base_rto=2500, queue_delay=5*1000=5000
+        assert_eq!(t, 7500);
+    }
+
+    #[test]
+    fn test_timeout_backoff_on_full_sum() {
+        // Backoff applies to (base_rto + queue_delay), not just base_rto
+        let t1 = calculate_timeout(1, 6421, 12, 12);
+        let t2 = calculate_timeout(2, 6421, 12, 12);
+        let t3 = calculate_timeout(3, 6421, 12, 12);
+
+        // t2 ≈ t1 * 1.5, t3 ≈ t1 * 2.25 (allow ±1 for f64 truncation)
+        assert!((t2 as i64 - (t1 as f64 * 1.5) as i64).abs() <= 1);
+        assert!((t3 as i64 - (t1 as f64 * 2.25) as i64).abs() <= 1);
+    }
+
+    #[test]
+    fn test_timeout_vs_old_formula_regression() {
+        // At the operating point that caused lora_link_rust failure:
+        // Old multiplicative: 16053 * 1.0 * 13.5 = 216,716ms (217s!)
+        // New additive: (16053 + 6421) * 1.0 = 22,474ms
+        let timeout = calculate_timeout(1, 6421, 12, 12);
+        assert!(
+            timeout < 30_000,
+            "timeout {} must be well under 30s (old formula gave 217s)",
+            timeout
+        );
+        assert!(
+            timeout > 15_000,
+            "timeout {} must include meaningful queue delay",
+            timeout
+        );
     }
 
     #[test]
@@ -1588,7 +1661,8 @@ mod tests {
         // speed up retransmit for messages sent when queue was large.
         let mut channel = Channel::new();
         channel.set_window_for_test(10);
-        let rtt_ms = 100;
+        // Use slow RTT (>750ms) so window stays at max=5 after adjust_window
+        let rtt_ms = 1000;
 
         // Send 5 messages at t=0. queue_len_at_send: 1,2,3,4,5
         for i in 0..5u8 {
@@ -1597,24 +1671,25 @@ mod tests {
         }
         assert_eq!(channel.outstanding(), 5);
 
-        // Mark seq=0,1,2 delivered. Remaining: seq 3 (qlen=4), seq 4 (qlen=5).
+        // Mark seq=0,1,2 delivered. Window clamped to max=5.
+        // Remaining: seq 3 (qlen=4), seq 4 (qlen=5).
         channel.mark_delivered(0, 0, rtt_ms);
         channel.mark_delivered(1, 0, rtt_ms);
         channel.mark_delivered(2, 0, rtt_ms);
         assert_eq!(channel.outstanding(), 2);
 
-        // Timeout for seq 3: 250 * 1.0 * (4+1.5) = 1375ms
-        // Timeout for seq 4: 250 * 1.0 * (5+1.5) = 1625ms
-        // Poll at t=900: neither triggers (send-time queue_len is preserved)
-        let actions = channel.poll(900, rtt_ms);
+        // Timeout for seq 3: (2500 + 4*(1000/5)) = 3300ms
+        // Timeout for seq 4: (2500 + 5*(1000/5)) = 3500ms
+        // Poll at t=2600: neither triggers (send-time queue_len is preserved)
+        let actions = channel.poll(2600, rtt_ms);
         assert!(
             actions.is_empty(),
-            "send-time queue_len preserved: seq3 timeout=1375, seq4 timeout=1625"
+            "send-time queue_len preserved: seq3 timeout=3300, seq4 timeout=3500"
         );
 
-        // Poll at t=1376: seq 3 triggers (1375 < 1376), seq 4 does not (1625 > 1376)
-        let actions = channel.poll(1376, rtt_ms);
-        assert_eq!(actions.len(), 1, "only seq 3 should retransmit at t=1376");
+        // Poll at t=3301: seq 3 triggers (3300 < 3301), seq 4 does not (3500 > 3301)
+        let actions = channel.poll(3301, rtt_ms);
+        assert_eq!(actions.len(), 1, "only seq 3 should retransmit at t=3301");
         assert!(matches!(
             &actions[0],
             ChannelAction::Retransmit { sequence: 3, .. }
@@ -1627,7 +1702,8 @@ mod tests {
         // First message's timeout stays based on queue_len=1, not 5.
         let mut channel = Channel::new();
         channel.set_window_for_test(10);
-        let rtt_ms = 100;
+        // Use slow RTT (>750ms) so window stays at max=5
+        let rtt_ms = 1000;
 
         // Send 1 message at t=0 → queue_len_at_send=1
         let msg = TestMessage { data: vec![0] };
@@ -1640,13 +1716,15 @@ mod tests {
         }
         assert_eq!(channel.outstanding(), 5);
 
-        // Timeout for seq 0 with send-time queue_len=1: 250 * (1+1.5) = 625ms
-        // Poll at t=700: seq 0 SHOULD trigger (625 < 700)
-        let actions = channel.poll(700, rtt_ms);
+        // Window is still 10 (no mark_delivered, so no adjust_window call).
+        // Timeout for seq 0: (2500 + 1*(1000/10)) = 2600ms
+        // Timeout for seq 1: (2500 + 2*(1000/10)) = 2700ms
+        // Poll at t=2601: seq 0 triggers (2600 < 2601), but not seq 1 (2700 > 2601)
+        let actions = channel.poll(2601, rtt_ms);
         assert_eq!(
             actions.len(),
             1,
-            "seq 0 should retransmit: send-time queue_len=1 → timeout=625ms"
+            "seq 0 should retransmit: send-time queue_len=1 → timeout=2600ms"
         );
         assert!(matches!(
             &actions[0],

@@ -544,7 +544,7 @@ pub fn compute_bitrate(sf: u8, cr: u8, bandwidth: u32) -> u32 {
     let sf_f = sf as f64;
     let cr_f = cr as f64;
     let bw_f = bandwidth as f64;
-    let bitrate = sf_f * (4.0 / cr_f) / ((2.0_f64).powi(sf as i32) / (bw_f / 1000.0)) * 1000.0;
+    let bitrate = sf_f * (4.0 / cr_f) / ((1u64 << sf) as f64 / (bw_f / 1000.0)) * 1000.0;
     bitrate as u32
 }
 

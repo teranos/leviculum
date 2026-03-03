@@ -287,9 +287,6 @@ pub const CHANNEL_RTT_TIMEOUT_MULTIPLIER: f64 = 2.5;
 /// Exponential backoff base for channel retries
 pub const CHANNEL_BACKOFF_BASE: f64 = 1.5;
 
-/// Queue length adjustment factor for timeout calculation
-pub const CHANNEL_QUEUE_LEN_ADJUSTMENT: f64 = 1.5;
-
 /// Microseconds per millisecond (for time conversion)
 pub const US_PER_MS: u64 = 1000;
 
