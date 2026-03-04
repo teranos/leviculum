@@ -53,10 +53,10 @@ use alloc::vec::Vec;
 use crate::constants::{
     CHANNEL_BACKOFF_BASE, CHANNEL_ENVELOPE_HEADER_SIZE, CHANNEL_MAX_TRIES,
     CHANNEL_MIN_TIMEOUT_BASE_MS, CHANNEL_MSGTYPE_RESERVED, CHANNEL_RTT_FAST_MS,
-    CHANNEL_RTT_MEDIUM_MS, CHANNEL_RTT_TIMEOUT_MULTIPLIER, CHANNEL_RX_RING_MAX,
-    CHANNEL_SEQ_MODULUS, CHANNEL_WINDOW_INITIAL, CHANNEL_WINDOW_MAX_FAST,
-    CHANNEL_WINDOW_MAX_MEDIUM, CHANNEL_WINDOW_MAX_SLOW, CHANNEL_WINDOW_MIN_FAST,
-    CHANNEL_WINDOW_MIN_SLOW,
+    CHANNEL_RTT_MEDIUM_MS, CHANNEL_RTT_TIMEOUT_MULTIPLIER, CHANNEL_RTT_VERY_SLOW_MS,
+    CHANNEL_RX_RING_MAX, CHANNEL_SEQ_MODULUS, CHANNEL_WINDOW_INITIAL, CHANNEL_WINDOW_MAX_FAST,
+    CHANNEL_WINDOW_MAX_MEDIUM, CHANNEL_WINDOW_MAX_SLOW, CHANNEL_WINDOW_MAX_VERY_SLOW,
+    CHANNEL_WINDOW_MIN_FAST, CHANNEL_WINDOW_MIN_SLOW, CHANNEL_WINDOW_MIN_VERY_SLOW,
 };
 
 /// Calculate f64 power for small non-negative integer exponents
@@ -350,6 +350,19 @@ impl Channel {
         self.next_rx_sequence = seq;
     }
 
+    /// Seed SRTT from the handshake RTT (RFC 6298 §2.2).
+    ///
+    /// Treats the handshake measurement as the first RTT sample so that
+    /// the very first channel timeout uses `handshake_rtt * 2.5` instead
+    /// of falling back to the raw handshake value. Subsequent ACK samples
+    /// refine through the normal EWMA path in `update_srtt`.
+    pub fn seed_srtt(&mut self, rtt_ms: u64) {
+        if rtt_ms > 0 {
+            self.srtt_ms = rtt_ms as f64;
+            self.rttvar_ms = rtt_ms as f64 / 2.0;
+        }
+    }
+
     /// Update SRTT from a sample RTT measurement (RFC 6298).
     fn update_srtt(&mut self, sample_ms: u64) {
         let sample = sample_ms as f64;
@@ -363,6 +376,12 @@ impl Channel {
             // SRTT = (1-alpha)*SRTT + alpha*R, alpha = 1/8
             self.srtt_ms = 0.875 * self.srtt_ms + 0.125 * sample;
         }
+        tracing::debug!(
+            sample_ms,
+            srtt = self.srtt_ms,
+            rttvar = self.rttvar_ms,
+            "channel: srtt updated"
+        );
     }
 
     /// Return the effective RTT: SRTT if measured, else fallback.
@@ -384,9 +403,13 @@ impl Channel {
         } else if rtt_ms < CHANNEL_RTT_MEDIUM_MS {
             self.window_min = CHANNEL_WINDOW_MIN_SLOW;
             self.window_max = CHANNEL_WINDOW_MAX_MEDIUM;
-        } else {
+        } else if rtt_ms < CHANNEL_RTT_VERY_SLOW_MS {
             self.window_min = CHANNEL_WINDOW_MIN_SLOW;
             self.window_max = CHANNEL_WINDOW_MAX_SLOW;
+        } else {
+            self.window_min = CHANNEL_WINDOW_MIN_VERY_SLOW;
+            self.window_max = CHANNEL_WINDOW_MAX_VERY_SLOW;
+            tracing::debug!(rtt_ms, "channel: VERY_SLOW tier (RTT >= 2s), window_max=3");
         }
         // Clamp current window to new limits
         self.window = self.window.clamp(self.window_min, self.window_max);
@@ -793,17 +816,28 @@ impl Channel {
             }
 
             let new_tries = tries + 1;
+            let tx_ring_len = self.tx_ring.len(); // snapshot before mutation
 
             // Mutate the outbound envelope
             let outbound = &mut self.tx_ring[i];
             outbound.tries = new_tries;
             outbound.sent_at_ms = now_ms;
 
+            let seq = outbound.envelope.sequence;
             actions.push(ChannelAction::Retransmit {
-                sequence: outbound.envelope.sequence,
+                sequence: seq,
                 data: outbound.envelope.pack(),
                 tries: new_tries,
             });
+
+            tracing::debug!(
+                seq,
+                tries = new_tries,
+                tx_ring = tx_ring_len,
+                timeout_ms = calculate_timeout(new_tries, rtt_ms, tx_ring_len, self.window),
+                pacing_ms = self.pacing_interval_ms,
+                "channel: retransmit"
+            );
 
             window_decrements += 1; // always — matches Python
             if tries >= 2 {
@@ -831,6 +865,12 @@ impl Channel {
                 .pacing_interval_ms
                 .saturating_mul(1u64 << doublings)
                 .min(eff_rtt.max(1));
+            tracing::debug!(
+                pacing_ms = self.pacing_interval_ms,
+                doublings,
+                eff_rtt,
+                "channel: pacing backoff"
+            );
         }
 
         actions
@@ -1119,9 +1159,13 @@ mod tests {
         channel.update_window_for_rtt(500);
         assert_eq!(channel.window_max(), CHANNEL_WINDOW_MAX_MEDIUM);
 
-        // Slow RTT
-        channel.update_window_for_rtt(2000);
+        // Slow RTT (just below VERY_SLOW threshold)
+        channel.update_window_for_rtt(1999);
         assert_eq!(channel.window_max(), CHANNEL_WINDOW_MAX_SLOW);
+
+        // Very slow RTT (>= 2000ms, LoRa-class)
+        channel.update_window_for_rtt(2000);
+        assert_eq!(channel.window_max(), CHANNEL_WINDOW_MAX_VERY_SLOW);
     }
 
     #[test]
@@ -1519,8 +1563,8 @@ mod tests {
     #[test]
     fn test_retransmit_doubles_pacing() {
         let mut channel = Channel::new();
-        // Use slow RTT to avoid window_min clamping overriding pacing
-        let rtt_ms = 2000u64;
+        // Use slow RTT (below VERY_SLOW threshold) to avoid window_min clamping overriding pacing
+        let rtt_ms = 1999u64;
         let msg = TestMessage { data: vec![1] };
 
         channel.send(&msg, MDU, 0, rtt_ms).unwrap();
@@ -1888,7 +1932,7 @@ mod tests {
         // double. Second retransmit (tries=2→3): window decreases AND pacing
         // doubles.
         let mut channel = Channel::new();
-        let rtt_ms = 2000u64; // slow RTT for manageable window
+        let rtt_ms = 1999u64; // slow RTT (below VERY_SLOW threshold) for manageable window
         let msg = TestMessage { data: vec![1] };
 
         channel.send(&msg, MDU, 0, rtt_ms).unwrap();
@@ -1994,12 +2038,12 @@ mod tests {
         let mut channel = Channel::new();
         channel.set_window_bounds_for_test(3, 2, 5);
 
-        // Decrement window: 3 → 2
-        channel.adjust_window(false, 2000);
+        // Decrement window: 3 → 2 (use rtt < 2000 to stay in SLOW tier)
+        channel.adjust_window(false, 1999);
         assert_eq!(channel.window(), 2);
 
         // Decrement again: should stay at 2 (floor = window_min)
-        channel.adjust_window(false, 2000);
+        channel.adjust_window(false, 1999);
         assert_eq!(channel.window(), 2, "window should not go below window_min");
     }
 
@@ -2008,14 +2052,14 @@ mod tests {
         let mut channel = Channel::new();
         channel.set_window_bounds_for_test(3, 2, 5);
 
-        // Increment: 3 → 4 → 5
-        channel.adjust_window(true, 2000);
+        // Increment: 3 → 4 → 5 (use rtt < 2000 to stay in SLOW tier)
+        channel.adjust_window(true, 1999);
         assert_eq!(channel.window(), 4);
-        channel.adjust_window(true, 2000);
+        channel.adjust_window(true, 1999);
         assert_eq!(channel.window(), 5);
 
         // At max — should not go higher
-        channel.adjust_window(true, 2000);
+        channel.adjust_window(true, 1999);
         assert_eq!(channel.window(), 5, "window should not exceed window_max");
     }
 

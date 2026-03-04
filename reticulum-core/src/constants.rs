@@ -276,6 +276,12 @@ pub const CHANNEL_WINDOW_MIN_FAST: usize = 16;
 /// Maximum window size for slow links
 pub const CHANNEL_WINDOW_MAX_SLOW: usize = 5;
 
+/// Minimum window size for very slow links (LoRa-class, RTT >= 2s)
+pub const CHANNEL_WINDOW_MIN_VERY_SLOW: usize = 1;
+
+/// Maximum window size for very slow links (LoRa-class, RTT >= 2s)
+pub const CHANNEL_WINDOW_MAX_VERY_SLOW: usize = 3;
+
 /// Maximum window size for medium-speed links
 pub const CHANNEL_WINDOW_MAX_MEDIUM: usize = 12;
 
@@ -295,11 +301,17 @@ pub const CHANNEL_RTT_FAST_MS: u64 = 180;
 /// RTT threshold for medium-speed links (750ms)
 pub const CHANNEL_RTT_MEDIUM_MS: u64 = 750;
 
+/// RTT threshold for very slow links (2000ms, LoRa-class)
+pub const CHANNEL_RTT_VERY_SLOW_MS: u64 = 2000;
+
 /// Default RTT when no measurement available (milliseconds)
 pub const CHANNEL_DEFAULT_RTT_MS: u64 = 500;
 
-/// Minimum timeout base for channel retransmission (milliseconds)
-pub const CHANNEL_MIN_TIMEOUT_BASE_MS: f64 = 25.0;
+/// Minimum base RTO. 25ms was unreachably low for any
+/// real Reticulum link (LoRa: ~365ms/frame, BLE: ~20ms, LAN: ~1ms).
+/// 100ms is defense-in-depth — the measured RTT * 2.5 always
+/// dominates on any non-loopback link.
+pub const CHANNEL_MIN_TIMEOUT_BASE_MS: f64 = 100.0;
 
 /// RTT multiplier for channel timeout calculation
 pub const CHANNEL_RTT_TIMEOUT_MULTIPLIER: f64 = 2.5;

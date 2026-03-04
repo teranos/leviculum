@@ -7,8 +7,8 @@
 use alloc::vec::Vec;
 
 use crate::constants::{
-    DATA_RECEIPT_TIMEOUT_MS, MODE_AES256_CBC, MS_PER_SECOND, PROOF_DATA_SIZE,
-    RTT_RETRY_MAX_ATTEMPTS, TRUNCATED_HASHBYTES,
+    CHANNEL_DEFAULT_RTT_MS, DATA_RECEIPT_TIMEOUT_MS, MODE_AES256_CBC, MS_PER_SECOND,
+    PROOF_DATA_SIZE, RTT_RETRY_MAX_ATTEMPTS, TRUNCATED_HASHBYTES,
 };
 use crate::destination::{DestinationHash, ProofStrategy};
 use crate::hex_fmt::{HexFmt, HexShort};
@@ -632,24 +632,38 @@ impl<R: CryptoRngCore, C: Clock, S: Storage> NodeCore<R, C, S> {
 
         // Proof verified! Calculate RTT and transition to established
         let now_secs = now_ms / MS_PER_SECOND;
-        let rtt_ms = match link.phase() {
+        let measured_rtt_ms = match link.phase() {
             LinkPhase::PendingOutgoing { created_at_ms } => now_ms.saturating_sub(created_at_ms),
             _ => 0,
         };
-        link.set_phase(LinkPhase::Established);
-        let rtt_seconds = rtt_ms as f64 / MS_PER_SECOND as f64;
 
-        link.update_keepalive_from_rtt(rtt_seconds);
+        // Store measured RTT on initiator so RTT retry packets carry the
+        // correct value instead of defaulting to 0.0.
+        if measured_rtt_ms > 0 {
+            link.set_rtt_ms(measured_rtt_ms);
+        }
+
+        link.set_phase(LinkPhase::Established);
+
+        // Keepalive timing uses the actual measurement (even 0 for localhost).
+        let rtt_seconds_actual = measured_rtt_ms as f64 / MS_PER_SECOND as f64;
+        link.update_keepalive_from_rtt(rtt_seconds_actual);
         link.mark_established(now_secs);
 
         tracing::debug!(
             "Link <{}> established with RTT {}ms",
             HexShort(link_id.as_bytes()),
-            rtt_ms
+            measured_rtt_ms
         );
 
+        // For the RTT packet, use at least the default to avoid sending
+        // 0.0 which would corrupt the responder's channel window tier and
+        // timeout math (FAST tier + 100ms timeout on LoRa = retransmit storm).
+        let rtt_for_wire_ms = measured_rtt_ms.max(CHANNEL_DEFAULT_RTT_MS);
+        let rtt_seconds_wire = rtt_for_wire_ms as f64 / MS_PER_SECOND as f64;
+
         // Build RTT packet and route via attached interface
-        match link.build_rtt_packet(rtt_seconds, &mut self.rng) {
+        match link.build_rtt_packet(rtt_seconds_wire, &mut self.rng) {
             Ok(rtt_packet) => {
                 link.record_rtt_sent(now_ms);
                 self.events.push(NodeEvent::LinkEstablished {
@@ -1196,7 +1210,13 @@ impl<R: CryptoRngCore, C: Clock, S: Storage> NodeCore<R, C, S> {
         // Phase 2: Resend RTT for each qualifying link
         for link_id in need_retry {
             if let Some(link) = self.links.get_mut(&link_id) {
-                let rtt_secs = link.rtt_secs().unwrap_or(0.0);
+                // Use stored RTT if available, otherwise conservative default.
+                // The initiator stores rtt_us in handle_link_proof(); if it's
+                // None (e.g., sub-ms link), fall back to CHANNEL_DEFAULT_RTT_MS
+                // to avoid sending 0.0 which corrupts responder timeouts.
+                let rtt_secs = link
+                    .rtt_secs()
+                    .unwrap_or(CHANNEL_DEFAULT_RTT_MS as f64 / MS_PER_SECOND as f64);
                 match link.build_rtt_packet(rtt_secs, &mut self.rng) {
                     Ok(packet) => {
                         link.record_rtt_sent(now_ms);

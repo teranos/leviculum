@@ -45,7 +45,7 @@ use crate::constants::{
     LINK_KEEPALIVE_MAX_RTT, LINK_KEEPALIVE_MIN_SECS, LINK_KEEPALIVE_SECS,
     LINK_KEEPALIVE_TIMEOUT_FACTOR, LINK_STALE_FACTOR, LINK_STALE_GRACE_SECS, MTU, PROOF_DATA_SIZE,
     RTT_RETRY_INTERVAL_MULTIPLIER, RTT_RETRY_MAX_ATTEMPTS, RTT_RETRY_MIN_INTERVAL_MS,
-    SIGNALING_MODE_MASK, SIGNALING_MODE_SHIFT, SIGNALING_MTU_MASK, TRUNCATED_HASHBYTES,
+    SIGNALING_MODE_MASK, SIGNALING_MODE_SHIFT, SIGNALING_MTU_MASK, TRUNCATED_HASHBYTES, US_PER_MS,
     X25519_KEY_SIZE,
 };
 use crate::crypto::{derive_key, truncated_hash};
@@ -676,6 +676,10 @@ impl Link {
 
         // Store RTT (convert to microseconds for internal storage)
         self.rtt_us = Some((rtt_seconds * 1_000_000.0) as u64);
+        tracing::debug!(
+            rtt_ms = (rtt_seconds * 1000.0) as u64,
+            "link: handshake RTT measured"
+        );
 
         // Link is now active
         self.state = LinkState::Active;
@@ -781,6 +785,15 @@ impl Link {
         }
     }
 
+    /// Store a handshake RTT measurement (milliseconds → microseconds).
+    ///
+    /// Called on the **initiator** side after computing RTT in
+    /// `handle_link_proof()`, so that `rtt_secs()` returns a meaningful
+    /// value for RTT-retry packets instead of `None`.
+    pub(crate) fn set_rtt_ms(&mut self, rtt_ms: u64) {
+        self.rtt_us = Some(rtt_ms.saturating_mul(US_PER_MS));
+    }
+
     /// Get the RTT estimate in microseconds
     pub fn rtt_us(&self) -> Option<u64> {
         self.rtt_us
@@ -802,7 +815,7 @@ impl Link {
     pub fn rtt_ms(&self) -> u64 {
         use crate::constants::{CHANNEL_DEFAULT_RTT_MS, US_PER_MS};
         self.rtt_us
-            .map(|us| us / US_PER_MS)
+            .map(|us| (us / US_PER_MS).max(1))
             .unwrap_or(CHANNEL_DEFAULT_RTT_MS)
     }
 
@@ -1162,6 +1175,7 @@ impl Link {
         if self.channel.is_none() {
             let mut ch = Channel::new();
             ch.update_window_for_rtt(rtt_ms);
+            ch.seed_srtt(rtt_ms);
             self.channel = Some(ch);
         }
         // Safe: we just ensured Some above
