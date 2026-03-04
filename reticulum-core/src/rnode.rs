@@ -44,8 +44,6 @@ pub const CMD_SF: u8 = 0x04;
 pub const CMD_CR: u8 = 0x05;
 /// Set/report radio on/off state
 pub const CMD_RADIO_STATE: u8 = 0x06;
-/// Report radio lock state
-pub const CMD_RADIO_LOCK: u8 = 0x07;
 /// Device presence detection handshake
 pub const CMD_DETECT: u8 = 0x08;
 /// Host disconnecting (shutdown notification)
@@ -56,11 +54,12 @@ pub const CMD_ST_ALOCK: u8 = 0x0B;
 pub const CMD_LT_ALOCK: u8 = 0x0C;
 /// Device ready for next TX packet
 pub const CMD_READY: u8 = 0x0F;
-/// Select subinterface for next command (multi-interface)
+/// Select subinterface for next command
+/// (multi-interface support — see ROADMAP and doc/RNODE_PROTOCOL_RESEARCH.md)
 pub const CMD_SEL_INT: u8 = 0x1F;
 
 // ---------------------------------------------------------------------------
-// Statistics commands
+// Statistics commands (see ROADMAP "RNode Stats Parsing")
 // ---------------------------------------------------------------------------
 
 /// Total RX packet count (4 bytes BE)
@@ -77,7 +76,7 @@ pub const CMD_STAT_CHTM: u8 = 0x25;
 pub const CMD_STAT_PHYPRM: u8 = 0x26;
 /// Battery status (2 bytes: state, percent)
 pub const CMD_STAT_BAT: u8 = 0x27;
-/// CSMA contention window params (3 bytes)
+/// CSMA contention window params (3 bytes) — see ROADMAP "RNode Stats Parsing"
 pub const CMD_STAT_CSMA: u8 = 0x28;
 /// CPU temperature (1 byte, value - 120 = Celsius)
 pub const CMD_STAT_TEMP: u8 = 0x29;
@@ -86,33 +85,18 @@ pub const CMD_STAT_TEMP: u8 = 0x29;
 // System commands
 // ---------------------------------------------------------------------------
 
-/// Blink LED for identification
-pub const CMD_BLINK: u8 = 0x30;
-/// Hardware random byte
-pub const CMD_RANDOM: u8 = 0x40;
-/// External framebuffer control
-pub const CMD_FB_EXT: u8 = 0x41;
-/// Read framebuffer
-pub const CMD_FB_READ: u8 = 0x42;
-/// Write framebuffer line
-pub const CMD_FB_WRITE: u8 = 0x43;
-/// Bluetooth control
-pub const CMD_BT_CTRL: u8 = 0x46;
 /// Query/report platform
 pub const CMD_PLATFORM: u8 = 0x48;
 /// Query/report MCU type
 pub const CMD_MCU: u8 = 0x49;
 /// Query/report firmware version (2 bytes: major, minor)
 pub const CMD_FW_VERSION: u8 = 0x50;
-/// Read ROM data
-pub const CMD_ROM_READ: u8 = 0x51;
 /// Hard reset / reset notification
 pub const CMD_RESET: u8 = 0x55;
-/// Read display buffer
-pub const CMD_DISP_READ: u8 = 0x66;
 
 // ---------------------------------------------------------------------------
 // Multi-interface data commands
+// (multi-interface support — see ROADMAP and doc/RNODE_PROTOCOL_RESEARCH.md)
 // ---------------------------------------------------------------------------
 
 /// List available radio interfaces
@@ -125,7 +109,7 @@ pub const CMD_INT_DATA: [u8; 12] = [
     0x20, // INT2
     0x70, // INT3
     0x75, // INT4
-    0x90, // INT5
+    0x90, // INT5 — NOTE: collides with CMD_ERROR (0x90); context disambiguates
     0xA0, // INT6
     0xB0, // INT7
     0xC0, // INT8 (collides with FEND — see research doc)
@@ -138,7 +122,8 @@ pub const CMD_INT_DATA: [u8; 12] = [
 // Error command and codes
 // ---------------------------------------------------------------------------
 
-/// Error report from device
+/// Error report from device (0x90 — same value as CMD_INT_DATA[5] and PLATFORM_AVR;
+/// disambiguated by protocol context: command byte vs payload byte)
 pub const CMD_ERROR: u8 = 0x90;
 
 /// Radio initialization failed
@@ -166,8 +151,6 @@ pub const DETECT_RESP: u8 = 0x46;
 pub const RADIO_STATE_OFF: u8 = 0x00;
 /// Radio on
 pub const RADIO_STATE_ON: u8 = 0x01;
-/// Query radio state
-pub const RADIO_STATE_ASK: u8 = 0xFF;
 
 // ---------------------------------------------------------------------------
 // Platform constants
@@ -179,25 +162,6 @@ pub const PLATFORM_AVR: u8 = 0x90;
 pub const PLATFORM_ESP32: u8 = 0x80;
 /// nRF52-based RNode
 pub const PLATFORM_NRF52: u8 = 0x70;
-
-// ---------------------------------------------------------------------------
-// Radio chip types (multi-interface)
-// ---------------------------------------------------------------------------
-
-/// SX127X family (sub-GHz)
-pub const SX127X: u8 = 0x00;
-/// SX1276 (sub-GHz)
-pub const SX1276: u8 = 0x01;
-/// SX1278 (sub-GHz)
-pub const SX1278: u8 = 0x02;
-/// SX126X family (sub-GHz)
-pub const SX126X: u8 = 0x10;
-/// SX1262 (sub-GHz)
-pub const SX1262: u8 = 0x11;
-/// SX128X family (2.4 GHz)
-pub const SX128X: u8 = 0x20;
-/// SX1280 (2.4 GHz)
-pub const SX1280: u8 = 0x21;
 
 // ---------------------------------------------------------------------------
 // Firmware requirements
@@ -223,6 +187,21 @@ pub const FREQ_MAX: u32 = 3_000_000_000;
 
 /// Hardware MTU for all RNode variants (bytes)
 pub const HW_MTU: usize = 508;
+
+// ---------------------------------------------------------------------------
+// Decode/encode constants
+// ---------------------------------------------------------------------------
+
+/// RSSI raw-to-dBm offset (subtract from raw byte)
+const RSSI_OFFSET: i16 = 157;
+/// Temperature raw-to-Celsius offset (subtract from raw byte)
+const TEMP_OFFSET: i16 = 120;
+/// Interference sentinel (0xFF = no interference data)
+const INTERFERENCE_NONE: u8 = 0xFF;
+/// Maximum TX power (dBm)
+pub const MAX_TX_POWER: u8 = 37;
+/// Leave command payload
+const LEAVE_PAYLOAD: u8 = 0xFF;
 
 // ---------------------------------------------------------------------------
 // Types
@@ -368,7 +347,7 @@ pub fn build_data_frame(data: &[u8]) -> Vec<u8> {
 
 /// Build a CMD_LEAVE frame (0xFF payload)
 pub fn build_leave() -> Vec<u8> {
-    build_single_frame(CMD_LEAVE, &[0xFF])
+    build_single_frame(CMD_LEAVE, &[LEAVE_PAYLOAD])
 }
 
 // ---------------------------------------------------------------------------
@@ -380,7 +359,7 @@ pub fn build_leave() -> Vec<u8> {
 /// Returns RSSI in dBm: `raw_byte as i16 - 157`.
 pub fn decode_rssi(payload: &[u8]) -> Option<i16> {
     let &byte = payload.first()?;
-    Some(byte as i16 - 157)
+    Some(byte as i16 - RSSI_OFFSET)
 }
 
 /// Decode SNR from CMD_STAT_SNR payload
@@ -412,7 +391,7 @@ pub fn decode_battery(payload: &[u8]) -> Option<(BatteryState, u8)> {
 /// Returns temperature in Celsius: `raw_byte as i16 - 120`.
 pub fn decode_temperature(payload: &[u8]) -> Option<i16> {
     let &byte = payload.first()?;
-    Some(byte as i16 - 120)
+    Some(byte as i16 - TEMP_OFFSET)
 }
 
 /// Decode firmware version from CMD_FW_VERSION payload
@@ -449,12 +428,12 @@ pub fn decode_channel_stats(payload: &[u8]) -> Option<ChannelStats> {
     let channel_load_long = read_be_u16(payload, 6)?;
 
     let (current_rssi, noise_floor, interference) = if payload.len() >= 11 {
-        let rssi = payload[8] as i16 - 157;
-        let noise = payload[9] as i16 - 157;
-        let interf = if payload[10] == 0xFF {
+        let rssi = payload[8] as i16 - RSSI_OFFSET;
+        let noise = payload[9] as i16 - RSSI_OFFSET;
+        let interf = if payload[10] == INTERFERENCE_NONE {
             None
         } else {
-            Some(payload[10] as i16 - 157)
+            Some(payload[10] as i16 - RSSI_OFFSET)
         };
         (Some(rssi), Some(noise), interf)
     } else {
@@ -507,6 +486,30 @@ pub fn decode_phy_params(payload: &[u8]) -> Option<PhyParams> {
 // Validation
 // ---------------------------------------------------------------------------
 
+/// Error returned by [`validate_config`] when a radio parameter is out of range
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ConfigError {
+    FrequencyOutOfRange,
+    InvalidBandwidth,
+    TxPowerOutOfRange,
+    SpreadingFactorOutOfRange,
+    CodingRateOutOfRange,
+}
+
+impl core::fmt::Display for ConfigError {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        match self {
+            Self::FrequencyOutOfRange => write!(f, "frequency out of range (137 MHz - 3 GHz)"),
+            Self::InvalidBandwidth => write!(f, "invalid bandwidth"),
+            Self::TxPowerOutOfRange => write!(f, "TX power out of range (0-{MAX_TX_POWER} dBm)"),
+            Self::SpreadingFactorOutOfRange => {
+                write!(f, "spreading factor out of range (5-12)")
+            }
+            Self::CodingRateOutOfRange => write!(f, "coding rate out of range (5-8)"),
+        }
+    }
+}
+
 /// Check whether the firmware version meets the minimum requirement
 pub fn validate_firmware(major: u8, minor: u8) -> bool {
     (major, minor) >= (REQUIRED_FW_MAJ, REQUIRED_FW_MIN)
@@ -515,37 +518,41 @@ pub fn validate_firmware(major: u8, minor: u8) -> bool {
 /// Validate radio configuration parameters
 ///
 /// Returns `Ok(())` if all parameters are within valid ranges,
-/// or `Err` with a description of the first invalid parameter.
-pub fn validate_config(freq: u32, bw: u32, txp: u8, sf: u8, cr: u8) -> Result<(), &'static str> {
+/// or `Err(ConfigError)` for the first invalid parameter.
+pub fn validate_config(freq: u32, bw: u32, txp: u8, sf: u8, cr: u8) -> Result<(), ConfigError> {
     if !(FREQ_MIN..=FREQ_MAX).contains(&freq) {
-        return Err("frequency out of range (137 MHz - 3 GHz)");
+        return Err(ConfigError::FrequencyOutOfRange);
     }
     // Valid LoRa bandwidths (Hz)
     match bw {
         7800 | 10400 | 15600 | 20800 | 31250 | 41700 | 62500 | 125000 | 250000 | 500000 => {}
-        _ => return Err("invalid bandwidth"),
+        _ => return Err(ConfigError::InvalidBandwidth),
     }
-    if txp > 37 {
-        return Err("TX power out of range (0-37 dBm)");
+    if txp > MAX_TX_POWER {
+        return Err(ConfigError::TxPowerOutOfRange);
     }
     if !(5..=12).contains(&sf) {
-        return Err("spreading factor out of range (5-12)");
+        return Err(ConfigError::SpreadingFactorOutOfRange);
     }
     if !(5..=8).contains(&cr) {
-        return Err("coding rate out of range (5-8)");
+        return Err(ConfigError::CodingRateOutOfRange);
     }
     Ok(())
 }
 
 /// Compute the on-air bitrate for a LoRa configuration
 ///
-/// Formula matches Python: `sf * (4.0 / cr) / (2^sf / (bw/1000)) * 1000`
+/// Formula: `sf * 4 * bandwidth / (cr * 2^sf)` (integer arithmetic,
+/// algebraically equivalent to Python's `sf * (4.0/cr) / (2^sf / (bw/1000)) * 1000`).
+/// Returns 0 for invalid inputs (sf=0, cr=0, bandwidth=0, sf>63).
 pub fn compute_bitrate(sf: u8, cr: u8, bandwidth: u32) -> u32 {
-    let sf_f = sf as f64;
-    let cr_f = cr as f64;
-    let bw_f = bandwidth as f64;
-    let bitrate = sf_f * (4.0 / cr_f) / ((1u64 << sf) as f64 / (bw_f / 1000.0)) * 1000.0;
-    bitrate as u32
+    if cr == 0 || bandwidth == 0 || sf == 0 || sf > 63 {
+        return 0;
+    }
+    // Use u64 to avoid overflow for large bandwidth * sf * 4
+    let numerator = sf as u64 * 4 * bandwidth as u64;
+    let denominator = cr as u64 * (1u64 << sf);
+    (numerator / denominator) as u32
 }
 
 /// Maximum random jitter (ms) for the first packet after idle.
@@ -567,6 +574,20 @@ mod tests {
     use crate::framing::kiss::{KissDeframeResult, KissDeframer};
     use alloc::vec;
 
+    /// Deframe a single KISS frame and assert it matches the expected command and payload.
+    fn assert_single_frame(frame: &[u8], expected_cmd: u8, expected_payload: &[u8]) {
+        let mut deframer = KissDeframer::with_max_payload(HW_MTU);
+        let results = deframer.process(frame);
+        assert_eq!(results.len(), 1, "expected exactly 1 frame");
+        match &results[0] {
+            KissDeframeResult::Frame { command, payload } => {
+                assert_eq!(*command, expected_cmd);
+                assert_eq!(payload.as_slice(), expected_payload);
+            }
+            other => panic!("expected Frame, got {other:?}"),
+        }
+    }
+
     // --- Encoding tests ---
 
     #[test]
@@ -582,155 +603,66 @@ mod tests {
     #[test]
     fn test_build_set_frequency() {
         // 868.0 MHz = 868_000_000 Hz = 0x33BCA100
-        let frame = build_set_frequency(868_000_000);
-        let mut deframer = KissDeframer::with_max_payload(HW_MTU);
-        let results = deframer.process(&frame);
-        assert_eq!(results.len(), 1);
-        match &results[0] {
-            KissDeframeResult::Frame { command, payload } => {
-                assert_eq!(*command, CMD_FREQUENCY);
-                assert_eq!(payload.as_slice(), &[0x33, 0xBC, 0xA1, 0x00]);
-            }
-            _ => panic!("Expected frame"),
-        }
+        assert_single_frame(
+            &build_set_frequency(868_000_000),
+            CMD_FREQUENCY,
+            &[0x33, 0xBC, 0xA1, 0x00],
+        );
     }
 
     #[test]
     fn test_build_set_bandwidth() {
         // 125 kHz = 125_000 Hz = 0x0001E848
-        let frame = build_set_bandwidth(125_000);
-        let mut deframer = KissDeframer::with_max_payload(HW_MTU);
-        let results = deframer.process(&frame);
-        assert_eq!(results.len(), 1);
-        match &results[0] {
-            KissDeframeResult::Frame { command, payload } => {
-                assert_eq!(*command, CMD_BANDWIDTH);
-                assert_eq!(payload.as_slice(), &[0x00, 0x01, 0xE8, 0x48]);
-            }
-            _ => panic!("Expected frame"),
-        }
+        assert_single_frame(
+            &build_set_bandwidth(125_000),
+            CMD_BANDWIDTH,
+            &[0x00, 0x01, 0xE8, 0x48],
+        );
     }
 
     #[test]
     fn test_build_set_txpower() {
-        let frame = build_set_txpower(17);
-        let mut deframer = KissDeframer::with_max_payload(HW_MTU);
-        let results = deframer.process(&frame);
-        assert_eq!(results.len(), 1);
-        match &results[0] {
-            KissDeframeResult::Frame { command, payload } => {
-                assert_eq!(*command, CMD_TXPOWER);
-                assert_eq!(payload.as_slice(), &[17]);
-            }
-            _ => panic!("Expected frame"),
-        }
+        assert_single_frame(&build_set_txpower(17), CMD_TXPOWER, &[17]);
     }
 
     #[test]
     fn test_build_set_sf() {
-        let frame = build_set_sf(7);
-        let mut deframer = KissDeframer::with_max_payload(HW_MTU);
-        let results = deframer.process(&frame);
-        assert_eq!(results.len(), 1);
-        match &results[0] {
-            KissDeframeResult::Frame { command, payload } => {
-                assert_eq!(*command, CMD_SF);
-                assert_eq!(payload.as_slice(), &[7]);
-            }
-            _ => panic!("Expected frame"),
-        }
+        assert_single_frame(&build_set_sf(7), CMD_SF, &[7]);
     }
 
     #[test]
     fn test_build_set_cr() {
-        let frame = build_set_cr(5);
-        let mut deframer = KissDeframer::with_max_payload(HW_MTU);
-        let results = deframer.process(&frame);
-        assert_eq!(results.len(), 1);
-        match &results[0] {
-            KissDeframeResult::Frame { command, payload } => {
-                assert_eq!(*command, CMD_CR);
-                assert_eq!(payload.as_slice(), &[5]);
-            }
-            _ => panic!("Expected frame"),
-        }
+        assert_single_frame(&build_set_cr(5), CMD_CR, &[5]);
     }
 
     #[test]
     fn test_build_set_radio_state_on() {
-        let frame = build_set_radio_state(RADIO_STATE_ON);
-        let mut deframer = KissDeframer::with_max_payload(HW_MTU);
-        let results = deframer.process(&frame);
-        assert_eq!(results.len(), 1);
-        match &results[0] {
-            KissDeframeResult::Frame { command, payload } => {
-                assert_eq!(*command, CMD_RADIO_STATE);
-                assert_eq!(payload.as_slice(), &[0x01]);
-            }
-            _ => panic!("Expected frame"),
-        }
+        assert_single_frame(
+            &build_set_radio_state(RADIO_STATE_ON),
+            CMD_RADIO_STATE,
+            &[0x01],
+        );
     }
 
     #[test]
     fn test_build_set_st_alock() {
         // 50.0% -> 5000
-        let frame = build_set_st_alock(5000);
-        let mut deframer = KissDeframer::with_max_payload(HW_MTU);
-        let results = deframer.process(&frame);
-        assert_eq!(results.len(), 1);
-        match &results[0] {
-            KissDeframeResult::Frame { command, payload } => {
-                assert_eq!(*command, CMD_ST_ALOCK);
-                assert_eq!(payload.as_slice(), &[0x13, 0x88]);
-            }
-            _ => panic!("Expected frame"),
-        }
+        assert_single_frame(&build_set_st_alock(5000), CMD_ST_ALOCK, &[0x13, 0x88]);
     }
 
     #[test]
     fn test_build_set_lt_alock() {
-        let frame = build_set_lt_alock(1000);
-        let mut deframer = KissDeframer::with_max_payload(HW_MTU);
-        let results = deframer.process(&frame);
-        assert_eq!(results.len(), 1);
-        match &results[0] {
-            KissDeframeResult::Frame { command, payload } => {
-                assert_eq!(*command, CMD_LT_ALOCK);
-                assert_eq!(payload.as_slice(), &[0x03, 0xE8]);
-            }
-            _ => panic!("Expected frame"),
-        }
+        assert_single_frame(&build_set_lt_alock(1000), CMD_LT_ALOCK, &[0x03, 0xE8]);
     }
 
     #[test]
     fn test_build_data_frame() {
-        let data = b"Hello RNode";
-        let frame = build_data_frame(data);
-        let mut deframer = KissDeframer::with_max_payload(HW_MTU);
-        let results = deframer.process(&frame);
-        assert_eq!(results.len(), 1);
-        match &results[0] {
-            KissDeframeResult::Frame { command, payload } => {
-                assert_eq!(*command, CMD_DATA);
-                assert_eq!(payload.as_slice(), data);
-            }
-            _ => panic!("Expected frame"),
-        }
+        assert_single_frame(&build_data_frame(b"Hello RNode"), CMD_DATA, b"Hello RNode");
     }
 
     #[test]
     fn test_build_leave() {
-        let frame = build_leave();
-        let mut deframer = KissDeframer::with_max_payload(HW_MTU);
-        let results = deframer.process(&frame);
-        assert_eq!(results.len(), 1);
-        match &results[0] {
-            KissDeframeResult::Frame { command, payload } => {
-                assert_eq!(*command, CMD_LEAVE);
-                assert_eq!(payload.as_slice(), &[0xFF]);
-            }
-            _ => panic!("Expected frame"),
-        }
+        assert_single_frame(&build_leave(), CMD_LEAVE, &[LEAVE_PAYLOAD]);
     }
 
     // --- Decoding tests ---
@@ -1039,31 +971,55 @@ mod tests {
 
     #[test]
     fn test_validate_config_bad_frequency() {
-        assert!(validate_config(100_000_000, 125_000, 17, 7, 5).is_err());
+        assert_eq!(
+            validate_config(100_000_000, 125_000, 17, 7, 5),
+            Err(ConfigError::FrequencyOutOfRange)
+        );
         // u32 max is ~4.29 GHz, over the 3 GHz limit
-        assert!(validate_config(3_500_000_000, 125_000, 17, 7, 5).is_err());
+        assert_eq!(
+            validate_config(3_500_000_000, 125_000, 17, 7, 5),
+            Err(ConfigError::FrequencyOutOfRange)
+        );
     }
 
     #[test]
     fn test_validate_config_bad_bandwidth() {
-        assert!(validate_config(868_000_000, 100_000, 17, 7, 5).is_err());
+        assert_eq!(
+            validate_config(868_000_000, 100_000, 17, 7, 5),
+            Err(ConfigError::InvalidBandwidth)
+        );
     }
 
     #[test]
     fn test_validate_config_bad_txpower() {
-        assert!(validate_config(868_000_000, 125_000, 38, 7, 5).is_err());
+        assert_eq!(
+            validate_config(868_000_000, 125_000, 38, 7, 5),
+            Err(ConfigError::TxPowerOutOfRange)
+        );
     }
 
     #[test]
     fn test_validate_config_bad_sf() {
-        assert!(validate_config(868_000_000, 125_000, 17, 4, 5).is_err());
-        assert!(validate_config(868_000_000, 125_000, 17, 13, 5).is_err());
+        assert_eq!(
+            validate_config(868_000_000, 125_000, 17, 4, 5),
+            Err(ConfigError::SpreadingFactorOutOfRange)
+        );
+        assert_eq!(
+            validate_config(868_000_000, 125_000, 17, 13, 5),
+            Err(ConfigError::SpreadingFactorOutOfRange)
+        );
     }
 
     #[test]
     fn test_validate_config_bad_cr() {
-        assert!(validate_config(868_000_000, 125_000, 17, 7, 4).is_err());
-        assert!(validate_config(868_000_000, 125_000, 17, 7, 9).is_err());
+        assert_eq!(
+            validate_config(868_000_000, 125_000, 17, 7, 4),
+            Err(ConfigError::CodingRateOutOfRange)
+        );
+        assert_eq!(
+            validate_config(868_000_000, 125_000, 17, 7, 9),
+            Err(ConfigError::CodingRateOutOfRange)
+        );
     }
 
     #[test]

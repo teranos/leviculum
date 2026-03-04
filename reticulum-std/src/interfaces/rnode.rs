@@ -19,6 +19,33 @@ use tokio::sync::mpsc;
 
 use super::{IncomingPacket, InterfaceCounters, InterfaceHandle, InterfaceInfo, OutgoingPacket};
 
+// ---------------------------------------------------------------------------
+// Named constants for serial protocol timing and buffers
+// ---------------------------------------------------------------------------
+
+/// Serial baud rate for all RNode devices
+const SERIAL_BAUD_RATE: u32 = 115_200;
+/// Device settle time after opening serial port
+const DEVICE_SETTLE: Duration = Duration::from_secs(2);
+/// Wait for device to process configuration
+const CONFIG_PROCESS_WAIT: Duration = Duration::from_millis(250);
+/// Final settle before starting I/O
+const FINAL_SETTLE: Duration = Duration::from_millis(300);
+/// Detection phase read timeout
+const DETECT_TIMEOUT: Duration = Duration::from_millis(200);
+/// Configuration validation read timeout
+const VALIDATE_TIMEOUT: Duration = Duration::from_millis(250);
+/// Reconnect retry interval
+const RECONNECT_INTERVAL: Duration = Duration::from_secs(5);
+/// Serial read buffer size (detection + validation phases)
+const SERIAL_READ_BUF: usize = 256;
+/// Serial read buffer size (I/O phase, larger for sustained throughput)
+const IO_READ_BUF: usize = 1024;
+/// Frequency confirmation tolerance (Hz)
+const FREQ_TOLERANCE_HZ: u32 = 100;
+/// Device reset notification marker
+const DEVICE_RESET_MARKER: u8 = 0xF8;
+
 /// Result of an RNode detection probe
 #[derive(Debug)]
 struct RNodeDetectResult {
@@ -39,6 +66,18 @@ pub(crate) enum RNodeError {
     FirmwareTooOld(u8, u8, u8, u8),
     #[error("radio config mismatch: {0}")]
     RadioMismatch(String),
+}
+
+impl From<tokio_serial::Error> for RNodeError {
+    fn from(e: tokio_serial::Error) -> Self {
+        RNodeError::SerialPort(e.to_string())
+    }
+}
+
+impl From<std::io::Error> for RNodeError {
+    fn from(e: std::io::Error) -> Self {
+        RNodeError::SerialPort(e.to_string())
+    }
 }
 
 /// Radio parameters for RNode configuration
@@ -83,6 +122,12 @@ impl RNodeInterfaceConfig {
     }
 }
 
+/// A framed packet queued for serial transmission
+struct QueuedFrame {
+    data: Vec<u8>,
+    payload_len: u64,
+}
+
 /// Default channel buffer size for RNode interfaces.
 /// Smaller than TCP because LoRa bitrates are orders of magnitude lower.
 pub(crate) const RNODE_DEFAULT_BUFFER_SIZE: usize = 64;
@@ -110,17 +155,16 @@ async fn configure_rnode(
     port_path: &str,
     radio: &RadioParams,
 ) -> Result<(tokio_serial::SerialStream, RNodeDetectResult), RNodeError> {
-    let builder = tokio_serial::new(port_path, 115_200)
+    let builder = tokio_serial::new(port_path, SERIAL_BAUD_RATE)
         .data_bits(tokio_serial::DataBits::Eight)
         .stop_bits(tokio_serial::StopBits::One)
         .parity(tokio_serial::Parity::None)
         .flow_control(tokio_serial::FlowControl::None);
 
-    let mut port = tokio_serial::SerialStream::open(&builder)
-        .map_err(|e| RNodeError::SerialPort(e.to_string()))?;
+    let mut port = tokio_serial::SerialStream::open(&builder)?;
 
     // Wait for device to settle
-    tokio::time::sleep(Duration::from_secs(2)).await;
+    tokio::time::sleep(DEVICE_SETTLE).await;
 
     // --- Detection phase ---
     let detect_result = detect_on_port(&mut port).await?;
@@ -140,39 +184,39 @@ async fn configure_rnode(
     }
 
     // --- Configuration phase ---
+    rnode::validate_config(
+        radio.frequency,
+        radio.bandwidth,
+        radio.tx_power,
+        radio.sf,
+        radio.cr,
+    )
+    .map_err(|e| RNodeError::RadioMismatch(e.to_string()))?;
     send_radio_config(&mut port, radio).await?;
 
     // Wait for device to process configuration
-    tokio::time::sleep(Duration::from_millis(250)).await;
+    tokio::time::sleep(CONFIG_PROCESS_WAIT).await;
 
     // Read and validate confirmation frames
     validate_radio_config(&mut port, radio, port_path).await?;
 
     // Final settle
-    tokio::time::sleep(Duration::from_millis(300)).await;
+    tokio::time::sleep(FINAL_SETTLE).await;
 
     Ok((port, detect_result))
 }
 
-/// Send detect query and parse response frames from an open port.
-async fn detect_on_port(
+/// Read KISS frames from the serial port until the deadline, calling `handler`
+/// for each successfully deframed frame.
+async fn read_frames_until_deadline(
     port: &mut tokio_serial::SerialStream,
-) -> Result<RNodeDetectResult, RNodeError> {
-    let query = rnode::build_detect_query();
-    port.write_all(&query)
-        .await
-        .map_err(|e| RNodeError::SerialPort(e.to_string()))?;
-
+    timeout: Duration,
+    mut handler: impl FnMut(u8, &[u8]),
+) -> Result<(), RNodeError> {
     let mut deframer = KissDeframer::with_max_payload(rnode::HW_MTU);
-    let mut buf = [0u8; 256];
-    let mut result = RNodeDetectResult {
-        detected: false,
-        firmware_version: None,
-        platform: None,
-        mcu: None,
-    };
+    let mut buf = [0u8; SERIAL_READ_BUF];
+    let deadline = tokio::time::Instant::now() + timeout;
 
-    let deadline = tokio::time::Instant::now() + Duration::from_millis(200);
     loop {
         let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
         if remaining.is_zero() {
@@ -183,30 +227,49 @@ async fn detect_on_port(
             Ok(Ok(n)) => {
                 for frame in deframer.process(&buf[..n]) {
                     if let KissDeframeResult::Frame { command, payload } = frame {
-                        match command {
-                            rnode::CMD_DETECT => {
-                                if payload.first() == Some(&rnode::DETECT_RESP) {
-                                    result.detected = true;
-                                }
-                            }
-                            rnode::CMD_FW_VERSION => {
-                                result.firmware_version = rnode::decode_firmware_version(&payload);
-                            }
-                            rnode::CMD_PLATFORM => {
-                                result.platform = payload.first().copied();
-                            }
-                            rnode::CMD_MCU => {
-                                result.mcu = payload.first().copied();
-                            }
-                            _ => {}
-                        }
+                        handler(command, &payload);
                     }
                 }
             }
-            Ok(Err(e)) => return Err(RNodeError::SerialPort(e.to_string())),
+            Ok(Err(e)) => return Err(e.into()),
             Err(_) => break,
         }
     }
+    Ok(())
+}
+
+/// Send detect query and parse response frames from an open port.
+async fn detect_on_port(
+    port: &mut tokio_serial::SerialStream,
+) -> Result<RNodeDetectResult, RNodeError> {
+    let query = rnode::build_detect_query();
+    port.write_all(&query).await?;
+
+    let mut result = RNodeDetectResult {
+        detected: false,
+        firmware_version: None,
+        platform: None,
+        mcu: None,
+    };
+
+    read_frames_until_deadline(port, DETECT_TIMEOUT, |command, payload| match command {
+        rnode::CMD_DETECT => {
+            if payload.first() == Some(&rnode::DETECT_RESP) {
+                result.detected = true;
+            }
+        }
+        rnode::CMD_FW_VERSION => {
+            result.firmware_version = rnode::decode_firmware_version(payload);
+        }
+        rnode::CMD_PLATFORM => {
+            result.platform = payload.first().copied();
+        }
+        rnode::CMD_MCU => {
+            result.mcu = payload.first().copied();
+        }
+        _ => {}
+    })
+    .await?;
 
     if !result.detected {
         return Err(RNodeError::NotDetected);
@@ -234,9 +297,8 @@ async fn send_radio_config(
     }
     config_bytes.extend_from_slice(&rnode::build_set_radio_state(rnode::RADIO_STATE_ON));
 
-    port.write_all(&config_bytes)
-        .await
-        .map_err(|e| RNodeError::SerialPort(e.to_string()))
+    port.write_all(&config_bytes).await?;
+    Ok(())
 }
 
 /// Read confirmation frames and validate they match the requested config.
@@ -252,51 +314,32 @@ async fn validate_radio_config(
     let mut confirmed_cr: Option<u8> = None;
     let mut confirmed_radio_state: Option<u8> = None;
 
-    let mut deframer = KissDeframer::with_max_payload(rnode::HW_MTU);
-    let mut buf = [0u8; 256];
-    let deadline = tokio::time::Instant::now() + Duration::from_millis(250);
-    loop {
-        let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
-        if remaining.is_zero() {
-            break;
+    read_frames_until_deadline(port, VALIDATE_TIMEOUT, |command, payload| match command {
+        rnode::CMD_FREQUENCY if payload.len() >= 4 => {
+            confirmed_freq = Some(u32::from_be_bytes([
+                payload[0], payload[1], payload[2], payload[3],
+            ]));
         }
-        match tokio::time::timeout(remaining, port.read(&mut buf)).await {
-            Ok(Ok(0)) => break,
-            Ok(Ok(n)) => {
-                for frame in deframer.process(&buf[..n]) {
-                    if let KissDeframeResult::Frame { command, payload } = frame {
-                        match command {
-                            rnode::CMD_FREQUENCY if payload.len() >= 4 => {
-                                confirmed_freq = Some(u32::from_be_bytes([
-                                    payload[0], payload[1], payload[2], payload[3],
-                                ]));
-                            }
-                            rnode::CMD_BANDWIDTH if payload.len() >= 4 => {
-                                confirmed_bw = Some(u32::from_be_bytes([
-                                    payload[0], payload[1], payload[2], payload[3],
-                                ]));
-                            }
-                            rnode::CMD_TXPOWER if !payload.is_empty() => {
-                                confirmed_txp = Some(payload[0]);
-                            }
-                            rnode::CMD_SF if !payload.is_empty() => {
-                                confirmed_sf = Some(payload[0]);
-                            }
-                            rnode::CMD_CR if !payload.is_empty() => {
-                                confirmed_cr = Some(payload[0]);
-                            }
-                            rnode::CMD_RADIO_STATE if !payload.is_empty() => {
-                                confirmed_radio_state = Some(payload[0]);
-                            }
-                            _ => {}
-                        }
-                    }
-                }
-            }
-            Ok(Err(e)) => return Err(RNodeError::SerialPort(e.to_string())),
-            Err(_) => break,
+        rnode::CMD_BANDWIDTH if payload.len() >= 4 => {
+            confirmed_bw = Some(u32::from_be_bytes([
+                payload[0], payload[1], payload[2], payload[3],
+            ]));
         }
-    }
+        rnode::CMD_TXPOWER if !payload.is_empty() => {
+            confirmed_txp = Some(payload[0]);
+        }
+        rnode::CMD_SF if !payload.is_empty() => {
+            confirmed_sf = Some(payload[0]);
+        }
+        rnode::CMD_CR if !payload.is_empty() => {
+            confirmed_cr = Some(payload[0]);
+        }
+        rnode::CMD_RADIO_STATE if !payload.is_empty() => {
+            confirmed_radio_state = Some(payload[0]);
+        }
+        _ => {}
+    })
+    .await?;
 
     // Log warnings for missing confirmations to aid debugging
     if confirmed_freq.is_none() {
@@ -319,7 +362,7 @@ async fn validate_radio_config(
     }
 
     if let Some(cf) = confirmed_freq {
-        if cf.abs_diff(radio.frequency) > 100 {
+        if cf.abs_diff(radio.frequency) > FREQ_TOLERANCE_HZ {
             return Err(RNodeError::RadioMismatch(format!(
                 "frequency: requested {} Hz, got {} Hz",
                 radio.frequency, cf
@@ -387,22 +430,13 @@ async fn rnode_io_task(
     mut outgoing_rx: mpsc::Receiver<OutgoingPacket>,
     counters: Arc<InterfaceCounters>,
     flow_control: bool,
-    bitrate_bps: u32,
 ) -> mpsc::Receiver<OutgoingPacket> {
     let mut deframer = KissDeframer::with_max_payload(rnode::HW_MTU);
-    let mut buf = [0u8; 1024];
+    let mut buf = [0u8; IO_READ_BUF];
     let mut interface_ready = !flow_control; // If no flow control, always ready
-    let mut send_queue: VecDeque<(Vec<u8>, u64)> = VecDeque::new();
+    let mut send_queue: VecDeque<QueuedFrame> = VecDeque::new();
     let mut send_timer: Option<Pin<Box<tokio::time::Sleep>>> = None;
     let mut timer_ready = false;
-
-    tracing::debug!(
-        "{}: jitter: bitrate={} bps, min_spacing={}ms, jitter_max={}ms",
-        name,
-        bitrate_bps,
-        rnode::MIN_SPACING_MS,
-        rnode::JITTER_MAX_MS
-    );
 
     loop {
         tokio::select! {
@@ -426,7 +460,7 @@ async fn rnode_io_task(
                                         let pkt = IncomingPacket { data: payload.to_vec() };
                                         if incoming_tx.send(pkt).await.is_err() {
                                             // Event loop shut down
-                                            send_goodbye(&mut port).await;
+                                            send_goodbye(&mut port, &name).await;
                                             return outgoing_rx;
                                         }
                                     }
@@ -436,25 +470,41 @@ async fn rnode_io_task(
                                         }
                                     }
                                     rnode::CMD_RESET => {
-                                        if payload.first() == Some(&0xF8) {
+                                        if payload.first() == Some(&DEVICE_RESET_MARKER) {
                                             tracing::warn!("{}: device reset (0xF8)", name);
                                             return outgoing_rx;
                                         }
                                     }
                                     rnode::CMD_ERROR => {
-                                        let code = payload.first().copied().unwrap_or(0);
+                                        let Some(code) = payload.first().copied() else {
+                                            tracing::warn!("{}: CMD_ERROR with empty payload", name);
+                                            continue;
+                                        };
                                         match code {
                                             rnode::ERROR_INITRADIO => {
-                                                tracing::error!("{}: INITRADIO error", name);
+                                                tracing::error!("{}: radio init failed", name);
                                                 return outgoing_rx;
                                             }
                                             rnode::ERROR_TXFAILED => {
-                                                tracing::error!("{}: TXFAILED error", name);
+                                                tracing::error!("{}: TX failed", name);
+                                                return outgoing_rx;
+                                            }
+                                            rnode::ERROR_EEPROM_LOCKED => {
+                                                tracing::error!("{}: EEPROM locked", name);
+                                            }
+                                            rnode::ERROR_QUEUE_FULL => {
+                                                tracing::warn!("{}: device TX queue full", name);
+                                            }
+                                            rnode::ERROR_MEMORY_LOW => {
+                                                tracing::warn!("{}: device memory low", name);
+                                            }
+                                            rnode::ERROR_MODEM_TIMEOUT => {
+                                                tracing::error!("{}: modem timeout", name);
                                                 return outgoing_rx;
                                             }
                                             _ => {
                                                 tracing::warn!(
-                                                    "{}: device error code 0x{:02X}",
+                                                    "{}: unknown device error 0x{:02X}",
                                                     name, code
                                                 );
                                             }
@@ -501,7 +551,10 @@ async fn rnode_io_task(
                             tracing::warn!("{}: send queue full, dropping oldest", name);
                             send_queue.pop_front();
                         }
-                        send_queue.push_back((frame, pkt.data.len() as u64));
+                        send_queue.push_back(QueuedFrame {
+                            data: frame,
+                            payload_len: pkt.data.len() as u64,
+                        });
                         // Start jitter timer if idle (no active timer, no pending send)
                         if send_timer.is_none() && !timer_ready {
                             let delay = rand_core::OsRng.next_u64() % rnode::JITTER_MAX_MS;
@@ -516,15 +569,18 @@ async fn rnode_io_task(
                     }
                     None => {
                         // Event loop shut down
-                        send_goodbye(&mut port).await;
+                        send_goodbye(&mut port, &name).await;
                         return outgoing_rx;
                     }
                 }
             }
 
             // Branch 3: Send timer fires
-            _ = async { send_timer.as_mut().unwrap().await },
-                if send_timer.is_some() => {
+            _ = async {
+                if let Some(ref mut timer) = send_timer {
+                    timer.await;
+                }
+            }, if send_timer.is_some() => {
                 send_timer = None;
                 timer_ready = true;
             }
@@ -534,15 +590,15 @@ async fn rnode_io_task(
         //   Gate 1: timer_ready (jitter/spacing delay elapsed)
         //   Gate 2: interface_ready || !flow_control
         if timer_ready && (interface_ready || !flow_control) {
-            if let Some((frame, payload_len)) = send_queue.pop_front() {
-                if let Err(e) = port.write_all(&frame).await {
+            if let Some(queued) = send_queue.pop_front() {
+                if let Err(e) = port.write_all(&queued.data).await {
                     tracing::warn!("{}: write error: {}", name, e);
                     return outgoing_rx;
                 }
                 counters
                     .tx_bytes
-                    .fetch_add(payload_len, std::sync::atomic::Ordering::Relaxed);
-                tracing::trace!("{}: TX {} bytes", name, payload_len);
+                    .fetch_add(queued.payload_len, std::sync::atomic::Ordering::Relaxed);
+                tracing::trace!("{}: TX {} bytes", name, queued.payload_len);
 
                 timer_ready = false;
                 if flow_control {
@@ -563,10 +619,12 @@ async fn rnode_io_task(
 }
 
 /// Best-effort send radio-off + leave commands on shutdown
-async fn send_goodbye(port: &mut tokio_serial::SerialStream) {
+async fn send_goodbye(port: &mut tokio_serial::SerialStream, name: &str) {
     let mut goodbye = rnode::build_set_radio_state(rnode::RADIO_STATE_OFF);
     goodbye.extend_from_slice(&rnode::build_leave());
-    let _ = port.write_all(&goodbye).await;
+    if let Err(e) = port.write_all(&goodbye).await {
+        tracing::debug!("{name}: goodbye write failed (expected on disconnect): {e}");
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -582,6 +640,13 @@ async fn rnode_reconnect_task(
 ) {
     let radio = config.radio_params();
     let bitrate_bps = rnode::compute_bitrate(radio.sf, radio.cr, radio.bandwidth);
+    tracing::debug!(
+        "{}: bitrate={} bps, min_spacing={}ms, jitter_max={}ms",
+        config.name,
+        bitrate_bps,
+        rnode::MIN_SPACING_MS,
+        rnode::JITTER_MAX_MS
+    );
     let mut has_connected_before = false;
 
     loop {
@@ -607,7 +672,9 @@ async fn rnode_reconnect_task(
                 // Notify driver about reconnection so it can re-announce
                 if is_reconnect {
                     if let Some(ref notify) = config.reconnect_notify {
-                        let _ = notify.try_send(config.id);
+                        if let Err(e) = notify.try_send(config.id) {
+                            tracing::warn!("{}: reconnect notify failed: {}", config.name, e);
+                        }
                     }
                 }
 
@@ -618,7 +685,6 @@ async fn rnode_reconnect_task(
                     outgoing_rx,
                     Arc::clone(&counters),
                     config.flow_control,
-                    bitrate_bps,
                 )
                 .await;
 
@@ -635,7 +701,7 @@ async fn rnode_reconnect_task(
             return;
         }
 
-        tokio::time::sleep(Duration::from_secs(5)).await;
+        tokio::time::sleep(RECONNECT_INTERVAL).await;
     }
 }
 
@@ -716,7 +782,7 @@ mod tests {
                     println!("  MCU: 0x{mcu:02X}");
                 }
                 // Turn radio off and send leave
-                send_goodbye(&mut port).await;
+                send_goodbye(&mut port, "test_rnode").await;
                 println!("  Radio off, leave sent");
             }
             Err(e) => {
