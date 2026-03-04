@@ -8,6 +8,7 @@
 name = "lora_tcp_bridge_python_relay"
 description = "LoRa-to-TCP bridge via Python relay, bidirectional probe"
 timeout_secs = 240
+rust_log = "reticulum_core::link::channel=debug,reticulum_core::link=debug,reticulum_core::transport=debug,reticulum_std::interfaces=debug,info"
 
 [radio]
 frequency = 869525000

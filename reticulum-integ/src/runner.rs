@@ -227,12 +227,17 @@ impl TestRunner {
         }
     }
 
+    /// Return the path to the shared logs directory.
+    fn logs_dir() -> PathBuf {
+        PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("logs")
+    }
+
     /// Collect container logs and write to `reticulum-integ/logs/{test_name}_failure.log`.
     ///
     /// Creates the logs directory if it doesn't exist. Returns the path to
     /// the written log file.
     pub fn collect_logs(&self) -> Result<PathBuf, RunnerError> {
-        let logs_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("logs");
+        let logs_dir = Self::logs_dir();
         fs::create_dir_all(&logs_dir)?;
 
         let output = self
@@ -288,6 +293,25 @@ impl TestRunner {
         Ok(())
     }
 
+    /// Save exec step stdout/stderr to `reticulum-integ/logs/{test_name}_{label}.log`.
+    pub fn save_exec_output(
+        &self,
+        step_label: &str,
+        stdout: &[u8],
+        stderr: &[u8],
+    ) -> Result<PathBuf, RunnerError> {
+        let logs_dir = Self::logs_dir();
+        fs::create_dir_all(&logs_dir)?;
+        let log_file = logs_dir.join(format!("{}_{}.log", self.scenario.test.name, step_label));
+        let mut content = Vec::new();
+        content.extend_from_slice(b"=== STDOUT ===\n");
+        content.extend_from_slice(stdout);
+        content.extend_from_slice(b"\n=== STDERR ===\n");
+        content.extend_from_slice(stderr);
+        fs::write(&log_file, &content)?;
+        Ok(log_file)
+    }
+
     /// Execute a command inside a node's container.
     ///
     /// Returns raw `Output` — the caller interprets success/failure.
@@ -295,6 +319,27 @@ impl TestRunner {
         let container = self.container_name(node);
         let mut cmd = Command::new("docker");
         cmd.arg("exec").arg(&container);
+        cmd.args(args);
+        let output = cmd.output()?;
+        Ok(output)
+    }
+
+    /// Execute a command inside a node's container with extra environment variables.
+    ///
+    /// Returns raw `Output` — the caller interprets success/failure.
+    pub fn docker_exec_with_env(
+        &self,
+        node: &str,
+        args: &[&str],
+        env: &[(&str, &str)],
+    ) -> Result<Output, RunnerError> {
+        let container = self.container_name(node);
+        let mut cmd = Command::new("docker");
+        cmd.arg("exec");
+        for (k, v) in env {
+            cmd.arg("-e").arg(format!("{k}={v}"));
+        }
+        cmd.arg(&container);
         cmd.args(args);
         let output = cmd.output()?;
         Ok(output)

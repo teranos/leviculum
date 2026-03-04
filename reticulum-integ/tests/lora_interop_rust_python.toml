@@ -7,6 +7,7 @@
 name = "lora_interop_rust_python"
 description = "Rust and Python nodes, direct LoRa link, bidirectional probes"
 timeout_secs = 180
+rust_log = "reticulum_core::link::channel=debug,reticulum_core::link=debug,reticulum_core::transport=debug,reticulum_std::interfaces=debug,info"
 
 [radio]
 frequency = 869525000

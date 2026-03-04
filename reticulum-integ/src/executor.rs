@@ -145,6 +145,9 @@ pub fn execute_steps(runner: &TestRunner) -> Result<(), StepError> {
         }
     }
 
+    // Always collect container logs — useful for post-mortem even on success.
+    let _ = runner.collect_logs();
+
     Ok(())
 }
 
@@ -247,10 +250,22 @@ fn execute_step(
             command,
             expect_exit_code,
             expect_stdout_contains,
+            env,
         } => {
             println!("[{step_num}/{total}] exec on {on}: {command}...");
             let args: Vec<&str> = command.split_whitespace().collect();
-            let output = runner.docker_exec(on, &args)?;
+            let env_pairs: Vec<(&str, &str)> =
+                env.iter().map(|(k, v)| (k.as_str(), v.as_str())).collect();
+            let output = if env_pairs.is_empty() {
+                runner.docker_exec(on, &args)?
+            } else {
+                runner.docker_exec_with_env(on, &args, &env_pairs)?
+            };
+
+            // Always persist exec output for post-mortem analysis.
+            let label = format!("exec_{on}_{step_num}");
+            let _ = runner.save_exec_output(&label, &output.stdout, &output.stderr);
+
             let stdout = String::from_utf8_lossy(&output.stdout);
             let code = output.status.code().unwrap_or(-1);
 

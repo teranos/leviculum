@@ -36,9 +36,10 @@ pub fn generate_compose(
         writeln!(out, "      context: {}", integ_dir.display()).ok();
         writeln!(out, "    image: reticulum-test").ok();
         writeln!(out, "    container_name: integ-{test_name}-{run_id}-{name}").ok();
+        let rust_log = scenario.test.rust_log.as_deref().unwrap_or("debug");
         writeln!(out, "    environment:").ok();
         writeln!(out, "      NODE_TYPE: {}", node.node_type).ok();
-        writeln!(out, "      RUST_LOG: debug").ok();
+        writeln!(out, "      RUST_LOG: {rust_log}").ok();
         writeln!(out, "    cap_add:").ok();
         writeln!(out, "      - NET_ADMIN").ok();
         writeln!(out, "    volumes:").ok();

@@ -31,6 +31,9 @@ pub struct TestMeta {
     pub description: String,
     #[serde(default = "default_timeout")]
     pub timeout_secs: u64,
+    /// RUST_LOG filter for daemon containers. Defaults to "debug" if unset.
+    #[serde(default)]
+    pub rust_log: Option<String>,
 }
 
 fn default_timeout() -> u64 {
@@ -119,6 +122,9 @@ pub enum Step {
         expect_exit_code: Option<i32>,
         #[serde(default)]
         expect_stdout_contains: Option<String>,
+        /// Extra environment variables passed to `docker exec -e`.
+        #[serde(default)]
+        env: BTreeMap<String, String>,
     },
     #[serde(rename = "sleep")]
     Sleep { duration_secs: u64 },

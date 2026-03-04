@@ -9,6 +9,7 @@
 name = "lora_tcp_bridge_python_selftest"
 description = "Diagnostic: selftest through Python LoRa relay with long timeout"
 timeout_secs = 600
+rust_log = "reticulum_core::link::channel=debug,reticulum_core::link=debug,reticulum_core::transport=debug,reticulum_std::interfaces=debug,info"
 
 [radio]
 frequency = 869525000
@@ -64,3 +65,4 @@ action = "exec"
 on = "alpha"
 command = "lrns selftest 127.0.0.1:4242 charlie:4242 --mode link --rate 1 --duration 3 --discovery-timeout 300"
 expect_exit_code = 0
+env = { RUST_LOG = "reticulum_core::link::channel=debug,reticulum_core::link=debug,reticulum_core::transport=debug,reticulum_std::interfaces=debug,info" }
