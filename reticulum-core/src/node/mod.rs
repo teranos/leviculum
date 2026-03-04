@@ -621,6 +621,7 @@ impl<R: CryptoRngCore, C: Clock, S: Storage> NodeCore<R, C, S> {
 
         // Run transport periodic tasks
         self.transport.poll();
+        self.transport.retry_pending_discoveries(&mut self.rng);
 
         // Run link-layer periodic tasks
         self.check_timeouts(now_ms);

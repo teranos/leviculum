@@ -42,11 +42,12 @@ use alloc::vec::Vec;
 
 use crate::constants::{
     ANNOUNCE_RATE_GRACE, ANNOUNCE_RATE_LIMIT_MS, ANNOUNCE_RATE_PENALTY_MS,
-    DEFAULT_ANNOUNCE_CAP_PERCENT, LINK_TIMEOUT_MS, LOCAL_CLIENT_ANNOUNCE_DELAY_MS,
-    LOCAL_CLIENT_DEST_EXPIRY_MS, LOCAL_REBROADCASTS_MAX, MAX_QUEUED_ANNOUNCES_PER_INTERFACE,
-    MAX_RANDOM_BLOBS, MS_PER_SECOND, MTU, PATHFINDER_EXPIRY_SECS, PATHFINDER_G_MS,
-    PATHFINDER_MAX_HOPS, PATHFINDER_RETRIES, PATH_REQUEST_GRACE_MS, PATH_REQUEST_MIN_INTERVAL_MS,
-    RATCHET_SIZE, REVERSE_TABLE_EXPIRY_MS, TRUNCATED_HASHBYTES,
+    DEFAULT_ANNOUNCE_CAP_PERCENT, DISCOVERY_RETRY_INTERVAL_MS, DISCOVERY_TIMEOUT_MS,
+    LINK_TIMEOUT_MS, LOCAL_CLIENT_ANNOUNCE_DELAY_MS, LOCAL_CLIENT_DEST_EXPIRY_MS,
+    LOCAL_REBROADCASTS_MAX, MAX_QUEUED_ANNOUNCES_PER_INTERFACE, MAX_RANDOM_BLOBS, MS_PER_SECOND,
+    MTU, PATHFINDER_EXPIRY_SECS, PATHFINDER_G_MS, PATHFINDER_MAX_HOPS, PATHFINDER_RETRIES,
+    PATH_REQUEST_GRACE_MS, PATH_REQUEST_MIN_INTERVAL_MS, RATCHET_SIZE, REVERSE_TABLE_EXPIRY_MS,
+    TRUNCATED_HASHBYTES,
 };
 
 use crate::announce::{emission_from_random_hash, max_emission_from_blobs, ReceivedAnnounce};
@@ -587,6 +588,11 @@ pub struct Transport<C: Clock, S: Storage> {
     /// Pending I/O actions for the driver (sans-I/O buffer)
     pending_actions: Vec<Action>,
 
+    /// Timestamp of the last discovery path request retry cycle.
+    /// Used to throttle retries to one cycle per DISCOVERY_RETRY_INTERVAL_MS.
+    /// Reset to 0 on construction; not a persistent field.
+    last_discovery_retry_ms: u64,
+
     /// Interfaces for test use only (not used in production sans-I/O path)
     #[cfg(test)]
     interfaces: Vec<Option<Box<dyn crate::traits::Interface + Send>>>,
@@ -621,6 +627,7 @@ impl<C: Clock, S: Storage> Transport<C, S> {
             interface_outgoing_announce_times: BTreeMap::new(),
             interface_congested: BTreeSet::new(),
             pending_actions: Vec::new(),
+            last_discovery_retry_ms: 0,
             #[cfg(test)]
             interfaces: Vec::new(),
         }
@@ -1218,6 +1225,11 @@ impl<C: Clock, S: Storage> Transport<C, S> {
             }
         }
 
+        // Discovery path request retry deadline
+        if !self.storage.discovery_path_request_dest_hashes().is_empty() {
+            update(self.last_discovery_retry_ms + DISCOVERY_RETRY_INTERVAL_MS);
+        }
+
         // Packet cache rotation and reverse table cleanup are background —
         // use a fixed interval rather than scanning every entry
         if self.config.enable_transport {
@@ -1594,6 +1606,13 @@ impl<C: Clock, S: Storage> Transport<C, S> {
                     packet.hops,
                     self.iface_name(interface_index)
                 );
+            }
+
+            // Check for pending discovery path requests (Python Transport.py:1838-1865).
+            // If a transport node forwarded a path request for this destination,
+            // send a targeted PATH_RESPONSE to the requesting interface.
+            if self.config.enable_transport {
+                self.send_discovery_path_response(&dest_hash, packet.hops, raw);
             }
 
             // Per-destination announce rate limiting (Python Transport.py:1692-1719)
@@ -3149,6 +3168,29 @@ impl<C: Clock, S: Storage> Transport<C, S> {
             //    Python Transport.py:2792-2806: create fresh packets with hops=0
             //    on all interfaces except the requester, reusing the same tag.
             if !from_local {
+                // Python checks attached_interface.mode in DISCOVER_PATHS_FOR here,
+                // which gates discovery on the interface's operational mode. We skip
+                // this check until per-interface modes are implemented (see E24).
+                // Currently all our interfaces support path discovery, so this is
+                // functionally equivalent.
+                let now = self.clock.now_ms();
+                if self
+                    .storage
+                    .get_discovery_path_request(&requested_hash)
+                    .is_some()
+                {
+                    tracing::debug!(
+                        "Already have a pending discovery path request for <{}>",
+                        HexShort(&requested_hash)
+                    );
+                } else {
+                    self.storage.set_discovery_path_request(
+                        requested_hash,
+                        interface_index,
+                        now + DISCOVERY_TIMEOUT_MS,
+                    );
+                }
+
                 tracing::debug!(
                     "Attempting to discover unknown path to <{}> on behalf of path request on {}",
                     HexShort(&requested_hash),
@@ -3550,6 +3592,9 @@ impl<C: Clock, S: Storage> Transport<C, S> {
         self.storage
             .expire_known_ratchets(now, crate::ratchet::EXPIRY_MS);
 
+        // Expire discovery path requests past their 15s timeout.
+        self.storage.expire_discovery_path_requests(now);
+
         // Preserve announce_cache entries for both daemon-owned destinations
         // AND surviving local client destinations (Block C: reconnect
         // needs cached bytes to respond to path requests during client downtime).
@@ -3558,6 +3603,136 @@ impl<C: Clock, S: Storage> Transport<C, S> {
             preserved.insert(hash);
         }
         self.storage.clean_announce_cache(&preserved);
+    }
+
+    /// Re-send path requests for pending discovery entries.
+    ///
+    /// Called from `NodeCore::handle_timeout()` on every tick. Throttled to
+    /// one cycle per `DISCOVERY_RETRY_INTERVAL_MS`. Each retry uses a fresh
+    /// random tag so receivers don't dedup it as a duplicate path request.
+    ///
+    /// With a 30s discovery timeout and 5s retry interval, each destination
+    /// gets up to 6 attempts (original + 5 retries). At 40% per-packet LoRa
+    /// loss, P(all 6 fail) = 0.4^6 = 0.4%.
+    pub fn retry_pending_discoveries<R: rand_core::CryptoRngCore>(&mut self, rng: &mut R) {
+        let now = self.clock.now_ms();
+        if now < self.last_discovery_retry_ms + DISCOVERY_RETRY_INTERVAL_MS {
+            return;
+        }
+
+        let dest_hashes = self.storage.discovery_path_request_dest_hashes();
+        if dest_hashes.is_empty() {
+            return;
+        }
+
+        for dest_hash in dest_hashes {
+            let (requesting_iface, timeout_ms) =
+                match self.storage.get_discovery_path_request(&dest_hash) {
+                    Some(entry) => entry,
+                    None => continue,
+                };
+
+            if now >= timeout_ms {
+                continue; // expired, will be cleaned up by expire_discovery_path_requests
+            }
+
+            // Generate new random tag to avoid dedup at receiver
+            let mut tag = [0u8; TRUNCATED_HASHBYTES];
+            rng.fill_bytes(&mut tag);
+
+            // Build fresh path request packet (same construction as Stage 3)
+            let pr_data = if self.config.enable_transport {
+                let mut d = Vec::with_capacity(48);
+                d.extend_from_slice(&dest_hash);
+                d.extend_from_slice(self.identity.hash());
+                d.extend_from_slice(&tag);
+                d
+            } else {
+                let mut d = Vec::with_capacity(32);
+                d.extend_from_slice(&dest_hash);
+                d.extend_from_slice(&tag);
+                d
+            };
+
+            let fresh_packet = Packet {
+                flags: PacketFlags {
+                    ifac_flag: false,
+                    header_type: HeaderType::Type1,
+                    context_flag: false,
+                    transport_type: TransportType::Broadcast,
+                    dest_type: DestinationType::Plain,
+                    packet_type: PacketType::Data,
+                },
+                hops: 0,
+                transport_id: None,
+                destination_hash: self.path_request_hash,
+                context: PacketContext::None,
+                data: PacketData::Owned(pr_data),
+            };
+
+            let mut buf = [0u8; MTU];
+            if let Ok(len) = fresh_packet.pack(&mut buf) {
+                tracing::debug!(
+                    "Retrying discovery path request for <{}>",
+                    HexShort(&dest_hash)
+                );
+                self.send_on_all_interfaces_except(requesting_iface, &buf[..len]);
+            }
+        }
+
+        self.last_discovery_retry_ms = now;
+    }
+
+    /// If a discovery path request is pending for this destination, send a
+    /// targeted PATH_RESPONSE to the requesting interface.
+    ///
+    /// Called from `handle_announce()` when `should_update` is true and the path
+    /// table has been refreshed. This is the Rust equivalent of Python
+    /// Transport.py:1838-1865.
+    fn send_discovery_path_response(
+        &mut self,
+        dest_hash: &[u8; TRUNCATED_HASHBYTES],
+        hops: u8,
+        raw: &[u8],
+    ) {
+        let now = self.clock.now_ms();
+        let (requesting_iface, timeout) = match self.storage.get_discovery_path_request(dest_hash) {
+            Some(entry) => entry,
+            None => return,
+        };
+
+        if now >= timeout {
+            // Expired — clean up
+            self.storage.remove_discovery_path_request(dest_hash);
+            return;
+        }
+
+        tracing::debug!(
+            "Answering discovery path request for <{}> on {}",
+            HexShort(dest_hash),
+            self.iface_name(requesting_iface)
+        );
+
+        if let Ok(mut response) = Packet::unpack(raw) {
+            response.hops = hops;
+            response.flags.header_type = HeaderType::Type2;
+            response.flags.transport_type = TransportType::Transport;
+            response.transport_id = Some(*self.identity.hash());
+            response.context = PacketContext::PathResponse;
+            // context_flag preserved from original packet (ratchet flag)
+
+            let size = response.packed_size();
+            let mut buf = alloc::vec![0u8; size];
+            if let Ok(len) = response.pack(&mut buf) {
+                let _ = self.send_on_interface(requesting_iface, &buf[..len]);
+            }
+        }
+
+        self.storage.remove_discovery_path_request(dest_hash);
+        // Deliberate deviation from Python: Python lets entries expire after
+        // 15s (no removal on delivery), which can cause duplicate PATH_RESPONSE
+        // packets if a second matching announce arrives within the timeout.
+        // We remove immediately to avoid wasting airtime on constrained LoRa links.
     }
 
     /// Check announce rate for a destination, returning true if rebroadcast should be blocked.
@@ -13057,6 +13232,392 @@ mod tests {
                 transport.storage.known_ratchet_count(),
                 0,
                 "Expired ratchets should be cleaned up"
+            );
+        }
+    }
+
+    mod discovery_path_requests_tests {
+        use super::*;
+        use crate::constants::PATH_REQUEST_TIMEOUT_MS;
+        use crate::destination::{Destination, DestinationType, Direction};
+        use crate::identity::Identity;
+        use crate::memory_storage::MemoryStorage;
+        use crate::packet::{HeaderType, PacketContext, PacketData, PacketFlags, TransportType};
+        use crate::test_utils::MockClock;
+        use crate::test_utils::MockInterface;
+        use rand_core::OsRng;
+        extern crate alloc;
+        use alloc::vec::Vec;
+
+        const TEST_TIME_MS: u64 = 1_000_000;
+        const IFACE_A: usize = 0;
+        const IFACE_B: usize = 1;
+
+        fn make_transport() -> Transport<MockClock, MemoryStorage> {
+            let clock = MockClock::new(TEST_TIME_MS);
+            let identity = Identity::generate(&mut OsRng);
+            let config = TransportConfig {
+                enable_transport: true,
+                ..TransportConfig::default()
+            };
+            let mut transport =
+                Transport::new(config, clock, MemoryStorage::with_defaults(), identity);
+            transport.set_interface_name(IFACE_A, "iface_a".into());
+            transport.set_interface_name(IFACE_B, "iface_b".into());
+            transport
+        }
+
+        /// Build a valid announce as raw bytes. Returns (raw_bytes, dest_hash).
+        fn make_announce_raw(
+            hops: u8,
+            context: PacketContext,
+        ) -> (Vec<u8>, [u8; TRUNCATED_HASHBYTES]) {
+            let identity = Identity::generate(&mut OsRng);
+            let dest = Destination::new(
+                Some(identity),
+                Direction::In,
+                DestinationType::Single,
+                "testapp",
+                &["discovery"],
+            )
+            .unwrap();
+
+            let id = dest.identity().unwrap();
+            let random_hash = [0x42u8; crate::constants::RANDOM_HASHBYTES];
+
+            let mut payload = Vec::new();
+            payload.extend_from_slice(&id.public_key_bytes());
+            payload.extend_from_slice(dest.name_hash());
+            payload.extend_from_slice(&random_hash);
+
+            let app_data = b"test";
+            let mut signed_data = Vec::new();
+            signed_data.extend_from_slice(dest.hash().as_bytes());
+            signed_data.extend_from_slice(&id.public_key_bytes());
+            signed_data.extend_from_slice(dest.name_hash());
+            signed_data.extend_from_slice(&random_hash);
+            signed_data.extend_from_slice(app_data);
+
+            let signature = id.sign(&signed_data).unwrap();
+            payload.extend_from_slice(&signature);
+            payload.extend_from_slice(app_data);
+
+            let packet = Packet {
+                flags: PacketFlags {
+                    ifac_flag: false,
+                    header_type: HeaderType::Type1,
+                    context_flag: false,
+                    transport_type: TransportType::Broadcast,
+                    dest_type: DestinationType::Single,
+                    packet_type: PacketType::Announce,
+                },
+                hops,
+                transport_id: None,
+                destination_hash: dest.hash().into_bytes(),
+                context,
+                data: PacketData::Owned(payload),
+            };
+
+            let mut buf = [0u8; 500];
+            let len = packet.pack(&mut buf).unwrap();
+            (buf[..len].to_vec(), dest.hash().into_bytes())
+        }
+
+        #[test]
+        fn test_discovery_records_and_responds() {
+            let mut transport = make_transport();
+            let (raw, dest_hash) = make_announce_raw(1, PacketContext::None);
+
+            // Manually record a discovery path request (simulating what
+            // handle_path_request Stage 3 does)
+            let now = transport.clock.now_ms();
+            transport.storage.set_discovery_path_request(
+                dest_hash,
+                IFACE_A,
+                now + PATH_REQUEST_TIMEOUT_MS,
+            );
+
+            // Verify the entry is stored
+            assert!(transport
+                .storage
+                .get_discovery_path_request(&dest_hash)
+                .is_some());
+
+            // Process an announce matching the destination from iface_b
+            let packet = Packet::unpack(&raw).unwrap();
+            let result = transport.handle_announce(packet, IFACE_B, &raw);
+            assert!(result.is_ok());
+
+            // The discovery response should have been sent as a SendPacket
+            // targeting iface_a (the requesting interface)
+            let actions = transport.drain_actions();
+            let discovery_sends: Vec<_> = actions
+                .iter()
+                .filter(|a| matches!(a, Action::SendPacket { iface, .. } if iface.0 == IFACE_A))
+                .collect();
+            assert!(
+                !discovery_sends.is_empty(),
+                "Expected a targeted PATH_RESPONSE to iface_a"
+            );
+
+            // The discovery entry should be removed after delivery
+            assert!(
+                transport
+                    .storage
+                    .get_discovery_path_request(&dest_hash)
+                    .is_none(),
+                "Discovery entry should be removed after delivery"
+            );
+        }
+
+        #[test]
+        fn test_discovery_first_wins() {
+            let mut transport = make_transport();
+            let dest_hash = [0xAA; TRUNCATED_HASHBYTES];
+            let now = transport.clock.now_ms();
+
+            // First request from iface_a
+            transport.storage.set_discovery_path_request(
+                dest_hash,
+                IFACE_A,
+                now + PATH_REQUEST_TIMEOUT_MS,
+            );
+
+            // Second request from iface_b — should be ignored
+            transport.storage.set_discovery_path_request(
+                dest_hash,
+                IFACE_B,
+                now + PATH_REQUEST_TIMEOUT_MS,
+            );
+
+            // Verify first requester wins
+            let (iface, _timeout) = transport
+                .storage
+                .get_discovery_path_request(&dest_hash)
+                .unwrap();
+            assert_eq!(
+                iface, IFACE_A,
+                "First requesting interface should be preserved"
+            );
+        }
+
+        #[test]
+        fn test_discovery_expires() {
+            let mut transport = make_transport();
+            let dest_hash = [0xBB; TRUNCATED_HASHBYTES];
+            let now = transport.clock.now_ms();
+
+            transport.storage.set_discovery_path_request(
+                dest_hash,
+                IFACE_A,
+                now + PATH_REQUEST_TIMEOUT_MS,
+            );
+
+            // Advance past timeout
+            transport.clock.advance(PATH_REQUEST_TIMEOUT_MS + 1);
+
+            // Expire
+            let removed = transport
+                .storage
+                .expire_discovery_path_requests(transport.clock.now_ms());
+            assert_eq!(removed, 1);
+
+            // Verify gone
+            assert!(transport
+                .storage
+                .get_discovery_path_request(&dest_hash)
+                .is_none());
+        }
+
+        #[test]
+        fn test_discovery_no_response_after_expiry() {
+            let mut transport = make_transport();
+            let (raw, dest_hash) = make_announce_raw(1, PacketContext::None);
+
+            let now = transport.clock.now_ms();
+            transport.storage.set_discovery_path_request(
+                dest_hash,
+                IFACE_A,
+                now + PATH_REQUEST_TIMEOUT_MS,
+            );
+
+            // Advance past timeout
+            transport.clock.advance(PATH_REQUEST_TIMEOUT_MS + 1);
+
+            // Process a matching announce — should NOT trigger a discovery response
+            let packet = Packet::unpack(&raw).unwrap();
+            let result = transport.handle_announce(packet, IFACE_B, &raw);
+            assert!(result.is_ok());
+
+            // No targeted SendPacket to iface_a
+            let actions = transport.drain_actions();
+            let discovery_sends: Vec<_> = actions
+                .iter()
+                .filter(|a| matches!(a, Action::SendPacket { iface, .. } if iface.0 == IFACE_A))
+                .collect();
+            assert!(
+                discovery_sends.is_empty(),
+                "Expired discovery entry should not produce a response"
+            );
+
+            // Expired entry should be cleaned up
+            assert!(transport
+                .storage
+                .get_discovery_path_request(&dest_hash)
+                .is_none());
+        }
+    }
+
+    mod discovery_retry_tests {
+        use super::*;
+        use crate::constants::{DISCOVERY_RETRY_INTERVAL_MS, DISCOVERY_TIMEOUT_MS};
+        use crate::identity::Identity;
+        use crate::memory_storage::MemoryStorage;
+        use crate::test_utils::MockClock;
+        use rand_core::OsRng;
+        extern crate alloc;
+        use alloc::vec::Vec;
+
+        const TEST_TIME_MS: u64 = 1_000_000;
+        const IFACE_A: usize = 0;
+        const IFACE_B: usize = 1;
+
+        fn make_transport() -> Transport<MockClock, MemoryStorage> {
+            let clock = MockClock::new(TEST_TIME_MS);
+            let identity = Identity::generate(&mut OsRng);
+            let config = TransportConfig {
+                enable_transport: true,
+                ..TransportConfig::default()
+            };
+            let mut transport =
+                Transport::new(config, clock, MemoryStorage::with_defaults(), identity);
+            transport.set_interface_name(IFACE_A, "iface_a".into());
+            transport.set_interface_name(IFACE_B, "iface_b".into());
+            transport
+        }
+
+        #[test]
+        fn test_discovery_retry_fires_after_interval() {
+            let mut transport = make_transport();
+            let dest_hash = [0xCC; TRUNCATED_HASHBYTES];
+            let now = transport.clock.now_ms();
+
+            // Record a pending discovery
+            transport.storage.set_discovery_path_request(
+                dest_hash,
+                IFACE_A,
+                now + DISCOVERY_TIMEOUT_MS,
+            );
+
+            // Drain any existing actions
+            transport.drain_actions();
+
+            // Advance past the retry interval
+            transport.clock.advance(DISCOVERY_RETRY_INTERVAL_MS + 1);
+
+            // Trigger retry
+            transport.retry_pending_discoveries(&mut OsRng);
+
+            // Should have produced a Broadcast action (the retried path request)
+            let actions = transport.drain_actions();
+            let broadcasts: Vec<_> = actions
+                .iter()
+                .filter(|a| matches!(a, Action::Broadcast { .. }))
+                .collect();
+            assert_eq!(
+                broadcasts.len(),
+                1,
+                "Should broadcast one retried path request"
+            );
+
+            // Verify it's a Broadcast excluding iface_a (the requesting interface)
+            if let Action::Broadcast { exclude_iface, .. } = &broadcasts[0] {
+                assert_eq!(
+                    exclude_iface.unwrap().0,
+                    IFACE_A,
+                    "Retry should exclude the requesting interface"
+                );
+            }
+
+            // Discovery entry should still be pending (not removed by retry)
+            assert!(
+                transport
+                    .storage
+                    .get_discovery_path_request(&dest_hash)
+                    .is_some(),
+                "Discovery entry should remain pending after retry"
+            );
+        }
+
+        #[test]
+        fn test_discovery_retry_stops_after_timeout() {
+            let mut transport = make_transport();
+            let dest_hash = [0xDD; TRUNCATED_HASHBYTES];
+            let now = transport.clock.now_ms();
+
+            transport.storage.set_discovery_path_request(
+                dest_hash,
+                IFACE_A,
+                now + DISCOVERY_TIMEOUT_MS,
+            );
+            transport.drain_actions();
+
+            // Advance past the discovery timeout (30s)
+            transport.clock.advance(DISCOVERY_TIMEOUT_MS + 1);
+
+            transport.retry_pending_discoveries(&mut OsRng);
+
+            // Should NOT produce any Broadcast actions
+            let actions = transport.drain_actions();
+            let broadcasts: Vec<_> = actions
+                .iter()
+                .filter(|a| matches!(a, Action::Broadcast { .. }))
+                .collect();
+            assert!(
+                broadcasts.is_empty(),
+                "Expired discovery should not trigger retry"
+            );
+        }
+
+        #[test]
+        fn test_discovery_retry_uses_fresh_tag() {
+            let mut transport = make_transport();
+            let dest_hash = [0xEE; TRUNCATED_HASHBYTES];
+            let now = transport.clock.now_ms();
+
+            transport.storage.set_discovery_path_request(
+                dest_hash,
+                IFACE_A,
+                now + DISCOVERY_TIMEOUT_MS,
+            );
+            transport.drain_actions();
+
+            // First retry
+            transport.clock.advance(DISCOVERY_RETRY_INTERVAL_MS + 1);
+            transport.retry_pending_discoveries(&mut OsRng);
+            let actions1 = transport.drain_actions();
+            let raw1 = match &actions1[0] {
+                Action::Broadcast { data, .. } => data.clone(),
+                _ => panic!("Expected Broadcast"),
+            };
+
+            // Second retry
+            transport.clock.advance(DISCOVERY_RETRY_INTERVAL_MS + 1);
+            transport.retry_pending_discoveries(&mut OsRng);
+            let actions2 = transport.drain_actions();
+            let raw2 = match &actions2[0] {
+                Action::Broadcast { data, .. } => data.clone(),
+                _ => panic!("Expected Broadcast"),
+            };
+
+            // The two packets should differ (fresh tag means different bytes)
+            assert_ne!(raw1, raw2, "Each retry must use a fresh random tag");
+
+            // But both should be the same length (same packet structure)
+            assert_eq!(
+                raw1.len(),
+                raw2.len(),
+                "Retry packets should have the same structure"
             );
         }
     }

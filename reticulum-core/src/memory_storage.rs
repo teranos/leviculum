@@ -83,6 +83,11 @@ pub struct MemoryStorage {
     // ─── Local client known destinations (persist across disconnects) ────
     local_client_known_dests: BTreeMap<[u8; TRUNCATED_HASHBYTES], u64>,
 
+    // ─── Discovery path requests ─────────────────────────────────────────
+    /// Pending discovery path requests: dest_hash → (requesting_interface, timeout_ms)
+    /// Removal: expire_discovery_path_requests() or remove_discovery_path_request()
+    discovery_path_requests: BTreeMap<[u8; TRUNCATED_HASHBYTES], (usize, u64)>,
+
     // ─── Sender-side ratchet keys (destination private keys) ─────────────
     dest_ratchet_keys: BTreeMap<[u8; TRUNCATED_HASHBYTES], Vec<u8>>,
 }
@@ -110,6 +115,7 @@ impl MemoryStorage {
             known_ratchets: BTreeMap::new(),
             local_client_dest_map: BTreeMap::new(),
             local_client_known_dests: BTreeMap::new(),
+            discovery_path_requests: BTreeMap::new(),
             dest_ratchet_keys: BTreeMap::new(),
         }
     }
@@ -170,6 +176,7 @@ impl MemoryStorage {
         self.known_ratchets.clear();
         self.local_client_dest_map.clear();
         self.local_client_known_dests.clear();
+        self.discovery_path_requests.clear();
         self.dest_ratchet_keys.clear();
     }
 
@@ -424,6 +431,17 @@ impl MemoryStorage {
         let _ = writeln!(
             s,
             "local_client_known_dests: {} entries, raw {} bytes, estimated {} bytes (BTreeMap 3x)",
+            n, raw, est
+        );
+
+        // discovery_path_requests: BTreeMap<[u8; 16], (usize, u64)> — 3x
+        let n = self.discovery_path_requests.len();
+        let raw = (n * (TRUNCATED_HASHBYTES + 8 + 8)) as u64;
+        let est = raw * 3;
+        total += est;
+        let _ = writeln!(
+            s,
+            "discovery_path_requests: {} entries, raw {} bytes, estimated {} bytes (BTreeMap 3x)",
             n, raw, est
         );
 
@@ -871,6 +889,42 @@ impl Storage for MemoryStorage {
         self.local_client_known_dests
             .retain(|_, last_seen| now_ms.saturating_sub(*last_seen) < expiry_ms);
         before - self.local_client_known_dests.len()
+    }
+
+    // ─── Discovery Path Requests ───────────────────────────────────────
+
+    fn set_discovery_path_request(
+        &mut self,
+        dest_hash: [u8; TRUNCATED_HASHBYTES],
+        requesting_interface: usize,
+        timeout_ms: u64,
+    ) {
+        // Only store first request (Python behavior at Transport.py:2793-2794)
+        self.discovery_path_requests
+            .entry(dest_hash)
+            .or_insert((requesting_interface, timeout_ms));
+    }
+
+    fn get_discovery_path_request(
+        &self,
+        dest_hash: &[u8; TRUNCATED_HASHBYTES],
+    ) -> Option<(usize, u64)> {
+        self.discovery_path_requests.get(dest_hash).copied()
+    }
+
+    fn remove_discovery_path_request(&mut self, dest_hash: &[u8; TRUNCATED_HASHBYTES]) {
+        self.discovery_path_requests.remove(dest_hash);
+    }
+
+    fn expire_discovery_path_requests(&mut self, now_ms: u64) -> usize {
+        let before = self.discovery_path_requests.len();
+        self.discovery_path_requests
+            .retain(|_, (_, timeout)| *timeout > now_ms);
+        before - self.discovery_path_requests.len()
+    }
+
+    fn discovery_path_request_dest_hashes(&self) -> Vec<[u8; TRUNCATED_HASHBYTES]> {
+        self.discovery_path_requests.keys().copied().collect()
     }
 
     // ─── Sender-Side Ratchet Keys ───────────────────────────────────────

@@ -380,6 +380,44 @@ pub trait Storage {
     /// Remove entries older than `expiry_ms`. Returns count removed.
     fn expire_local_client_known_dests(&mut self, now_ms: u64, expiry_ms: u64) -> usize;
 
+    // ─── Discovery Path Requests ───────────────────────────────────────
+
+    /// Record a pending discovery path request.
+    ///
+    /// When a transport node forwards a path request for an unknown
+    /// destination, it records the requesting interface. When a matching
+    /// announce arrives, a targeted PATH_RESPONSE is sent to that interface.
+    ///
+    /// Only the first request is stored (Python behavior). Subsequent
+    /// requests for the same destination within the timeout are ignored.
+    ///
+    /// Removal: `expire_discovery_path_requests()` in `clean_path_states()`,
+    /// or `remove_discovery_path_request()` after successful delivery.
+    fn set_discovery_path_request(
+        &mut self,
+        dest_hash: [u8; TRUNCATED_HASHBYTES],
+        requesting_interface: usize,
+        timeout_ms: u64,
+    );
+
+    /// Get the requesting interface for a pending discovery path request.
+    /// Returns `(requesting_interface, timeout_ms)` if present.
+    fn get_discovery_path_request(
+        &self,
+        dest_hash: &[u8; TRUNCATED_HASHBYTES],
+    ) -> Option<(usize, u64)>;
+
+    /// Remove a discovery path request (after delivery or invalidation).
+    fn remove_discovery_path_request(&mut self, dest_hash: &[u8; TRUNCATED_HASHBYTES]);
+
+    /// Remove expired discovery path requests. Returns count removed.
+    fn expire_discovery_path_requests(&mut self, now_ms: u64) -> usize;
+
+    /// Return destination hashes for all pending discovery path requests.
+    /// Used by the retry mechanism to iterate entries without exposing
+    /// the internal collection.
+    fn discovery_path_request_dest_hashes(&self) -> Vec<[u8; TRUNCATED_HASHBYTES]>;
+
     // ─── Sender-Side Ratchet Keys (Destination private keys) ─────────
 
     /// Persist serialized ratchet private keys for a destination.
@@ -650,6 +688,28 @@ impl Storage for NoStorage {
     }
     fn expire_local_client_known_dests(&mut self, _now_ms: u64, _expiry_ms: u64) -> usize {
         0
+    }
+
+    // ─── Discovery Path Requests ───────────────────────────────────────
+    fn set_discovery_path_request(
+        &mut self,
+        _dest_hash: [u8; TRUNCATED_HASHBYTES],
+        _requesting_interface: usize,
+        _timeout_ms: u64,
+    ) {
+    }
+    fn get_discovery_path_request(
+        &self,
+        _dest_hash: &[u8; TRUNCATED_HASHBYTES],
+    ) -> Option<(usize, u64)> {
+        None
+    }
+    fn remove_discovery_path_request(&mut self, _dest_hash: &[u8; TRUNCATED_HASHBYTES]) {}
+    fn expire_discovery_path_requests(&mut self, _now_ms: u64) -> usize {
+        0
+    }
+    fn discovery_path_request_dest_hashes(&self) -> Vec<[u8; TRUNCATED_HASHBYTES]> {
+        Vec::new()
     }
 
     // ─── Sender-Side Ratchet Keys ───────────────────────────────────────

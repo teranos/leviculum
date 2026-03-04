@@ -140,6 +140,15 @@ pub const LOCAL_CLIENT_DEST_EXPIRY_MS: u64 = 3 * MGMT_ANNOUNCE_INTERVAL_MS;
 /// Timeout for path request round-trip (milliseconds)
 pub const PATH_REQUEST_TIMEOUT_MS: u64 = 15_000;
 
+/// Timeout for discovery path request entries (milliseconds).
+/// Longer than PATH_REQUEST_TIMEOUT_MS to allow multiple retries over slow
+/// links (LoRa). With 5s retry interval: 6 attempts in 30s window.
+pub const DISCOVERY_TIMEOUT_MS: u64 = 30_000;
+
+/// Interval between discovery path request retries (milliseconds).
+/// Each retry sends a fresh path request with a new random tag.
+pub const DISCOVERY_RETRY_INTERVAL_MS: u64 = 5_000;
+
 /// Maximum number of path request dedup tags to retain
 pub const MAX_PATH_REQUEST_TAGS: usize = 32_000;
 

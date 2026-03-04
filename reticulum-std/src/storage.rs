@@ -938,6 +938,36 @@ impl reticulum_core::traits::Storage for Storage {
             .expire_local_client_known_dests(now_ms, expiry_ms)
     }
 
+    // ─── Discovery Path Requests ───────────────────────────────────────
+    fn set_discovery_path_request(
+        &mut self,
+        dest_hash: [u8; TRUNCATED_HASHBYTES],
+        requesting_interface: usize,
+        timeout_ms: u64,
+    ) {
+        self.inner
+            .set_discovery_path_request(dest_hash, requesting_interface, timeout_ms);
+    }
+
+    fn get_discovery_path_request(
+        &self,
+        dest_hash: &[u8; TRUNCATED_HASHBYTES],
+    ) -> Option<(usize, u64)> {
+        self.inner.get_discovery_path_request(dest_hash)
+    }
+
+    fn remove_discovery_path_request(&mut self, dest_hash: &[u8; TRUNCATED_HASHBYTES]) {
+        self.inner.remove_discovery_path_request(dest_hash);
+    }
+
+    fn expire_discovery_path_requests(&mut self, now_ms: u64) -> usize {
+        self.inner.expire_discovery_path_requests(now_ms)
+    }
+
+    fn discovery_path_request_dest_hashes(&self) -> Vec<[u8; TRUNCATED_HASHBYTES]> {
+        self.inner.discovery_path_request_dest_hashes()
+    }
+
     // ─── Sender-Side Ratchet Keys (write-through to disk) ──────────────
     fn store_dest_ratchet_keys(
         &mut self,

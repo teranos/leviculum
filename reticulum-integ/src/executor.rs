@@ -1221,6 +1221,8 @@ Reticulum Transport Instance running
         runner.wait_ready(120).expect("wait_ready failed");
 
         let result = execute_steps(&runner);
+        // Collect logs before teardown (even on success) for LoRa analysis
+        let _ = runner.collect_logs();
         runner.down().expect("down failed");
         result.expect("execute_steps should succeed");
     }
