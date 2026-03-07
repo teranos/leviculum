@@ -1029,6 +1029,7 @@ dependencies = [
 name = "reticulum-integ"
 version = "0.5.19"
 dependencies = [
+ "libc",
  "rand 0.8.5",
  "serde",
  "serial_test",

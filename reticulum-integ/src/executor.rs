@@ -4,7 +4,7 @@ use std::thread;
 use std::time::Duration;
 
 use crate::runner::{RunnerError, TestRunner};
-use crate::topology::Step;
+use crate::topology::{scale_timeout, timeout_scale, Step};
 
 // ---------------------------------------------------------------------------
 // Error type
@@ -128,6 +128,47 @@ fn resolve_destination(
 }
 
 // ---------------------------------------------------------------------------
+// Command timeout scaling
+// ---------------------------------------------------------------------------
+
+/// Scale `--discovery-timeout` and `--duration` values in a command string
+/// by the `LORA_TIMEOUT_SCALE` factor. Only active when the scale != 1.0.
+fn scale_command_timeouts(command: &str) -> String {
+    let scale = timeout_scale();
+    if (scale - 1.0).abs() < f64::EPSILON {
+        return command.to_string();
+    }
+    let mut result = command.to_string();
+    for flag in &["--discovery-timeout", "--duration"] {
+        if let Some(pos) = result.find(flag) {
+            let after_flag = pos + flag.len();
+            let rest = &result[after_flag..];
+            // Skip whitespace between flag and value
+            let trimmed = rest.trim_start();
+            let ws_len = rest.len() - trimmed.len();
+            // Parse the numeric value
+            let num_end = trimmed
+                .find(|c: char| !c.is_ascii_digit())
+                .unwrap_or(trimmed.len());
+            if num_end > 0 {
+                if let Ok(val) = trimmed[..num_end].parse::<u64>() {
+                    let scaled = (val as f64 * scale).ceil() as u64;
+                    let value_start = after_flag + ws_len;
+                    let value_end = value_start + num_end;
+                    result = format!(
+                        "{}{}{}",
+                        &result[..value_start],
+                        scaled,
+                        &result[value_end..]
+                    );
+                }
+            }
+        }
+    }
+    result
+}
+
+// ---------------------------------------------------------------------------
 // Step execution
 // ---------------------------------------------------------------------------
 
@@ -210,7 +251,7 @@ fn execute_step(
                 index,
                 on,
                 destination,
-                *timeout_secs,
+                scale_timeout(*timeout_secs),
                 expect_result,
                 cache,
             )
@@ -230,13 +271,14 @@ fn execute_step(
                 to,
                 expect_hops.as_ref().copied(),
                 expect_result,
-                *timeout_secs,
+                scale_timeout(*timeout_secs),
                 cache,
             )
         }
         Step::Sleep { duration_secs } => {
-            println!("[{step_num}/{total}] sleep {duration_secs}s...");
-            thread::sleep(Duration::from_secs(*duration_secs));
+            let scaled = scale_timeout(*duration_secs);
+            println!("[{step_num}/{total}] sleep {scaled}s...");
+            thread::sleep(Duration::from_secs(scaled));
             Ok(())
         }
         Step::RnPath { .. } => {
@@ -252,8 +294,11 @@ fn execute_step(
             expect_stdout_contains,
             env,
         } => {
-            println!("[{step_num}/{total}] exec on {on}: {command}...");
-            let args: Vec<&str> = command.split_whitespace().collect();
+            // Scale --discovery-timeout and --duration values in command strings
+            // when LORA_TIMEOUT_SCALE is set (for running tests at different bitrates).
+            let scaled_command = scale_command_timeouts(command);
+            println!("[{step_num}/{total}] exec on {on}: {scaled_command}...");
+            let args: Vec<&str> = scaled_command.split_whitespace().collect();
             let env_pairs: Vec<(&str, &str)> =
                 env.iter().map(|(k, v)| (k.as_str(), v.as_str())).collect();
             let output = if env_pairs.is_empty() {
@@ -524,6 +569,37 @@ fn parse_hops_from_output(output: &str) -> Option<u32> {
 mod tests {
     use super::*;
     use serial_test::serial;
+
+    /// Acquire an exclusive file lock to prevent parallel LoRa test execution.
+    ///
+    /// `serial_test`'s `#[serial]` only works within a single cargo-test process
+    /// and may not serialize `#[ignore]` tests reliably. This file lock works
+    /// across processes and threads: any second test trying to acquire it will
+    /// block until the first one finishes.
+    ///
+    /// The returned `File` holds the lock — it is released when dropped at test end.
+    fn acquire_lora_lock() -> std::fs::File {
+        use std::os::unix::io::AsRawFd;
+
+        let lock_path = "/tmp/leviculum-lora-test.lock";
+        let file = std::fs::OpenOptions::new()
+            .create(true)
+            .write(true)
+            .truncate(false)
+            .open(lock_path)
+            .unwrap_or_else(|e| panic!("cannot open lock file {lock_path}: {e}"));
+
+        // LOCK_EX = exclusive lock, blocks until acquired
+        let rc = unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_EX) };
+        if rc != 0 {
+            panic!(
+                "flock({lock_path}) failed: {}",
+                std::io::Error::last_os_error()
+            );
+        }
+        eprintln!("[lora-lock] acquired exclusive lock on {lock_path}");
+        file
+    }
 
     #[test]
     fn parse_dest_spec_valid() {
@@ -981,6 +1057,7 @@ Reticulum Transport Instance running
     // even if the RNode device is not detected (reconnect runs in background).
     #[serial(lora)]
     fn lora_direct_rust() {
+        let _lock = acquire_lora_lock();
         let toml_str = std::fs::read_to_string(concat!(
             env!("CARGO_MANIFEST_DIR"),
             "/tests/lora_direct_rust.toml"
@@ -1007,6 +1084,7 @@ Reticulum Transport Instance running
     // "configured"/"configuration failed" (Rust) or RNodeInterface errors (Python).
     #[serial(lora)]
     fn lora_interop_rust_python() {
+        let _lock = acquire_lora_lock();
         let toml_str = std::fs::read_to_string(concat!(
             env!("CARGO_MANIFEST_DIR"),
             "/tests/lora_interop_rust_python.toml"
@@ -1031,6 +1109,7 @@ Reticulum Transport Instance running
     // Build lrns with: cargo build --release --bin lrns
     #[serial(lora)]
     fn lora_link_rust() {
+        let _lock = acquire_lora_lock();
         let toml_str = std::fs::read_to_string(concat!(
             env!("CARGO_MANIFEST_DIR"),
             "/tests/lora_link_rust.toml"
@@ -1055,6 +1134,7 @@ Reticulum Transport Instance running
     // Build lrns with: cargo build --release --bin lrns
     #[serial(lora)]
     fn lora_link_interop() {
+        let _lock = acquire_lora_lock();
         let toml_str = std::fs::read_to_string(concat!(
             env!("CARGO_MANIFEST_DIR"),
             "/tests/lora_link_interop.toml"
@@ -1076,6 +1156,7 @@ Reticulum Transport Instance running
     #[ignore] // Requires RNode hardware
     #[serial(lora)]
     fn lora_tcp_bridge_rust_relay() {
+        let _lock = acquire_lora_lock();
         let toml_str = std::fs::read_to_string(concat!(
             env!("CARGO_MANIFEST_DIR"),
             "/tests/lora_tcp_bridge_rust_relay.toml"
@@ -1097,6 +1178,7 @@ Reticulum Transport Instance running
     #[ignore] // Requires RNode hardware
     #[serial(lora)]
     fn lora_tcp_bridge_python_relay() {
+        let _lock = acquire_lora_lock();
         let toml_str = std::fs::read_to_string(concat!(
             env!("CARGO_MANIFEST_DIR"),
             "/tests/lora_tcp_bridge_python_relay.toml"
@@ -1118,6 +1200,7 @@ Reticulum Transport Instance running
     #[ignore] // Requires RNode hardware
     #[serial(lora)]
     fn lora_tcp_bridge_python_selftest() {
+        let _lock = acquire_lora_lock();
         let toml_str = std::fs::read_to_string(concat!(
             env!("CARGO_MANIFEST_DIR"),
             "/tests/lora_tcp_bridge_python_selftest.toml"
@@ -1139,6 +1222,7 @@ Reticulum Transport Instance running
     #[ignore] // Requires RNode hardware
     #[serial(lora)]
     fn lora_late_announce_2node() {
+        let _lock = acquire_lora_lock();
         let toml_str = std::fs::read_to_string(concat!(
             env!("CARGO_MANIFEST_DIR"),
             "/tests/lora_late_announce_2node.toml"
@@ -1160,6 +1244,7 @@ Reticulum Transport Instance running
     #[ignore] // Requires RNode hardware
     #[serial(lora)]
     fn lora_late_announce_4node() {
+        let _lock = acquire_lora_lock();
         let toml_str = std::fs::read_to_string(concat!(
             env!("CARGO_MANIFEST_DIR"),
             "/tests/lora_late_announce_4node.toml"
@@ -1181,6 +1266,7 @@ Reticulum Transport Instance running
     #[ignore] // Requires RNode hardware
     #[serial(lora)]
     fn lora_late_announce_6node() {
+        let _lock = acquire_lora_lock();
         let toml_str = std::fs::read_to_string(concat!(
             env!("CARGO_MANIFEST_DIR"),
             "/tests/lora_late_announce_6node.toml"
@@ -1202,6 +1288,7 @@ Reticulum Transport Instance running
     #[ignore] // Requires RNode hardware
     #[serial(lora)]
     fn lora_late_announce_8node() {
+        let _lock = acquire_lora_lock();
         let toml_str = std::fs::read_to_string(concat!(
             env!("CARGO_MANIFEST_DIR"),
             "/tests/lora_late_announce_8node.toml"
@@ -1223,6 +1310,7 @@ Reticulum Transport Instance running
     #[ignore] // Requires RNode hardware
     #[serial(lora)]
     fn lora_late_announce_10node() {
+        let _lock = acquire_lora_lock();
         let toml_str = std::fs::read_to_string(concat!(
             env!("CARGO_MANIFEST_DIR"),
             "/tests/lora_late_announce_10node.toml"
@@ -1246,6 +1334,7 @@ Reticulum Transport Instance running
     #[ignore] // Requires RNode hardware
     #[serial(lora)]
     fn lora_rpc_after_selftest() {
+        let _lock = acquire_lora_lock();
         let toml_str = std::fs::read_to_string(concat!(
             env!("CARGO_MANIFEST_DIR"),
             "/tests/lora_rpc_after_selftest.toml"
@@ -1267,6 +1356,7 @@ Reticulum Transport Instance running
     #[ignore] // Requires RNode hardware
     #[serial(lora)]
     fn lora_dual_cluster_rust() {
+        let _lock = acquire_lora_lock();
         let toml_str = std::fs::read_to_string(concat!(
             env!("CARGO_MANIFEST_DIR"),
             "/tests/lora_dual_cluster_rust.toml"
@@ -1288,6 +1378,7 @@ Reticulum Transport Instance running
     #[ignore] // Requires RNode hardware
     #[serial(lora)]
     fn lora_dual_cluster_mixed() {
+        let _lock = acquire_lora_lock();
         let toml_str = std::fs::read_to_string(concat!(
             env!("CARGO_MANIFEST_DIR"),
             "/tests/lora_dual_cluster_mixed.toml"

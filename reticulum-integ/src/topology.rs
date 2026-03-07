@@ -156,6 +156,73 @@ pub fn parse_scenario(toml_str: &str) -> Result<TestScenario, toml::de::Error> {
 }
 
 // ---------------------------------------------------------------------------
+// Environment-variable radio overrides
+// ---------------------------------------------------------------------------
+
+/// Return the timeout scale factor from `LORA_TIMEOUT_SCALE` env var (default 1.0).
+///
+/// When running tests at slower bitrates, all step timeouts and sleep durations
+/// need to be scaled proportionally. Set `LORA_TIMEOUT_SCALE=3` for ~3x slower
+/// radio settings (e.g., SF10 vs SF7).
+pub fn timeout_scale() -> f64 {
+    std::env::var("LORA_TIMEOUT_SCALE")
+        .ok()
+        .and_then(|v| v.parse::<f64>().ok())
+        .unwrap_or(1.0)
+}
+
+/// Scale a timeout value by the `LORA_TIMEOUT_SCALE` factor.
+pub fn scale_timeout(secs: u64) -> u64 {
+    let scaled = secs as f64 * timeout_scale();
+    scaled.ceil() as u64
+}
+
+/// Override radio parameters from environment variables.
+///
+/// If the scenario has a `[radio]` section, any of these env vars override
+/// the corresponding field:
+///   - `LORA_FREQUENCY` (u64, Hz)
+///   - `LORA_BANDWIDTH` (u32, Hz)
+///   - `LORA_SF` (u8, spreading factor)
+///   - `LORA_CR` (u8, coding rate)
+///   - `LORA_TXPOWER` (u8, dBm)
+///
+/// This allows running the same TOML test files with different radio settings
+/// without modifying them.
+pub fn apply_radio_overrides(scenario: &mut TestScenario) {
+    let radio = match scenario.radio.as_mut() {
+        Some(r) => r,
+        None => return,
+    };
+
+    if let Ok(val) = std::env::var("LORA_FREQUENCY") {
+        if let Ok(v) = val.parse::<u64>() {
+            radio.frequency = v;
+        }
+    }
+    if let Ok(val) = std::env::var("LORA_BANDWIDTH") {
+        if let Ok(v) = val.parse::<u32>() {
+            radio.bandwidth = v;
+        }
+    }
+    if let Ok(val) = std::env::var("LORA_SF") {
+        if let Ok(v) = val.parse::<u8>() {
+            radio.spreading_factor = v;
+        }
+    }
+    if let Ok(val) = std::env::var("LORA_CR") {
+        if let Ok(v) = val.parse::<u8>() {
+            radio.coding_rate = v;
+        }
+    }
+    if let Ok(val) = std::env::var("LORA_TXPOWER") {
+        if let Ok(v) = val.parse::<u8>() {
+            radio.tx_power = v;
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Interface assignment from links
 // ---------------------------------------------------------------------------
 

@@ -10,7 +10,7 @@ use std::time::{Duration, Instant};
 use tempfile::TempDir;
 
 use crate::compose::generate_compose;
-use crate::topology::{generate_node_configs, TestScenario};
+use crate::topology::{apply_radio_overrides, generate_node_configs, TestScenario};
 
 /// Monotonic counter for generating unique run IDs within a process.
 static RUN_COUNTER: AtomicU32 = AtomicU32::new(0);
@@ -102,7 +102,7 @@ impl TestRunner {
     ///
     /// Resolves repo root from `CARGO_MANIFEST_DIR`, checks that lrnsd exists,
     /// creates a tempdir, generates node configs and the compose file.
-    pub fn new(scenario: TestScenario) -> Result<Self, RunnerError> {
+    pub fn new(mut scenario: TestScenario) -> Result<Self, RunnerError> {
         let manifest_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
         let repo_root = manifest_dir
             .parent()
@@ -118,6 +118,11 @@ impl TestRunner {
         if !lrns_path.exists() {
             return Err(RunnerError::LrnsdNotFound(lrns_path));
         }
+
+        // Apply env-var overrides (LORA_BANDWIDTH, LORA_SF, etc.) before
+        // generating configs, so the same TOML can be run with different
+        // radio settings.
+        apply_radio_overrides(&mut scenario);
 
         let tempdir = TempDir::new()?;
         let base_dir = tempdir.path().join("nodes");
