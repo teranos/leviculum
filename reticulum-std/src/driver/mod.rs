@@ -1123,7 +1123,9 @@ fn dispatch_output(
                 h.id() == iface_id
             }) {
                 use reticulum_core::traits::Interface;
-                match handle.try_send(data) {
+                // Retry queue only holds SendPacket data (directed traffic),
+                // which is always high priority.
+                match handle.try_send_prioritized(data, true) {
                     Ok(()) => {
                         queue.pop_front();
                     }

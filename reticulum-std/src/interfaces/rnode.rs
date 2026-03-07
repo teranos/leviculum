@@ -590,8 +590,19 @@ async fn rnode_io_task(
                         } else {
                             send_queue.push_back(queued);
                         }
-                        // Start jitter timer if idle (no active timer, no pending send)
-                        if send_timer.is_none() && !timer_ready {
+                        // High-priority packet at front of queue: bypass jitter entirely.
+                        // Jitter desynchronizes announce rebroadcasts — directed traffic
+                        // (proofs, link requests, data) must not be delayed.
+                        if high_priority
+                            && send_queue.front().map(|f| f.high_priority).unwrap_or(false)
+                        {
+                            send_timer = None;
+                            timer_ready = true;
+                            tracing::debug!(
+                                "{}: send queue: {} packets (priority bypass jitter)",
+                                name, send_queue.len()
+                            );
+                        } else if send_timer.is_none() && !timer_ready {
                             let delay = rand_core::OsRng.next_u64() % jitter_max_ms;
                             tracing::debug!(
                                 "{}: send queue: {} packets, jitter {}ms",
