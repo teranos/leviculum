@@ -121,6 +121,10 @@ pub(crate) struct IncomingPacket {
 /// Packet to send out through an interface
 pub(crate) struct OutgoingPacket {
     pub data: Vec<u8>,
+    /// High-priority packets (link requests, proofs, channel data) are sent
+    /// before normal-priority packets (announce rebroadcasts) on constrained
+    /// interfaces like LoRa.
+    pub high_priority: bool,
 }
 
 /// Metadata describing a registered interface
@@ -163,8 +167,16 @@ impl reticulum_core::traits::Interface for InterfaceHandle {
         !self.outgoing.is_closed()
     }
     fn try_send(&mut self, data: &[u8]) -> Result<(), InterfaceError> {
+        self.try_send_prioritized(data, false)
+    }
+    fn try_send_prioritized(
+        &mut self,
+        data: &[u8],
+        high_priority: bool,
+    ) -> Result<(), InterfaceError> {
         match self.outgoing.try_send(OutgoingPacket {
             data: data.to_vec(),
+            high_priority,
         }) {
             Ok(()) => Ok(()),
             Err(tokio::sync::mpsc::error::TrySendError::Full(_)) => Err(InterfaceError::BufferFull),

@@ -126,6 +126,7 @@ impl RNodeInterfaceConfig {
 struct QueuedFrame {
     data: Vec<u8>,
     payload_len: u64,
+    high_priority: bool,
 }
 
 /// Compute jitter ceiling from LoRa radio parameters.
@@ -565,14 +566,30 @@ async fn rnode_io_task(
                 match recv {
                     Some(pkt) => {
                         let frame = rnode::build_data_frame(&pkt.data);
+                        let high_priority = pkt.high_priority;
                         if send_queue.len() >= FLOW_CONTROL_QUEUE_LIMIT {
                             tracing::warn!("{}: send queue full, dropping oldest", name);
                             send_queue.pop_front();
                         }
-                        send_queue.push_back(QueuedFrame {
+                        let queued = QueuedFrame {
                             data: frame,
                             payload_len: pkt.data.len() as u64,
-                        });
+                            high_priority,
+                        };
+                        if high_priority {
+                            // Insert before the first non-high-priority packet
+                            let pos = send_queue
+                                .iter()
+                                .position(|f| !f.high_priority)
+                                .unwrap_or(send_queue.len());
+                            send_queue.insert(pos, queued);
+                            tracing::debug!(
+                                "{}: send queue: {} packets (priority insert at {})",
+                                name, send_queue.len(), pos
+                            );
+                        } else {
+                            send_queue.push_back(queued);
+                        }
                         // Start jitter timer if idle (no active timer, no pending send)
                         if send_timer.is_none() && !timer_ready {
                             let delay = rand_core::OsRng.next_u64() % jitter_max_ms;
@@ -848,6 +865,7 @@ mod tests {
             .outgoing
             .send(OutgoingPacket {
                 data: test_data.to_vec(),
+                high_priority: false,
             })
             .await
             .expect("send should succeed");

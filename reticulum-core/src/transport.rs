@@ -216,7 +216,9 @@ pub fn dispatch_actions(
         match action {
             Action::SendPacket { iface, data } => {
                 if let Some(iface_obj) = interfaces.iter_mut().find(|i| i.id() == iface) {
-                    if let Err(e) = iface_obj.try_send(&data) {
+                    // SendPacket = directed traffic (link requests, proofs, channel data)
+                    // → high priority on constrained interfaces like LoRa
+                    if let Err(e) = iface_obj.try_send_prioritized(&data, true) {
                         errors.push((iface, e));
                         if matches!(e, crate::traits::InterfaceError::BufferFull) {
                             retries.push(SendRetry {
@@ -235,7 +237,8 @@ pub fn dispatch_actions(
                     if Some(iface_obj.id()) == exclude_iface {
                         continue;
                     }
-                    if let Err(e) = iface_obj.try_send(&data) {
+                    // Broadcast = announce rebroadcasts → normal priority
+                    if let Err(e) = iface_obj.try_send_prioritized(&data, false) {
                         errors.push((iface_obj.id(), e));
                     }
                 }

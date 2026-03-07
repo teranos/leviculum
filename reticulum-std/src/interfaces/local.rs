@@ -285,6 +285,7 @@ mod tests {
             .outgoing
             .send(OutgoingPacket {
                 data: response.to_vec(),
+                high_priority: false,
             })
             .await
             .unwrap();

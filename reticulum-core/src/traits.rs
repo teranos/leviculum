@@ -120,6 +120,21 @@ pub trait Interface {
     ///
     /// The implementation handles framing internally (e.g., HDLC for TCP).
     fn try_send(&mut self, data: &[u8]) -> Result<(), InterfaceError>;
+
+    /// Try to send a packet with priority hint (non-blocking)
+    ///
+    /// `high_priority` signals that this packet should be sent before lower-priority
+    /// queued packets (e.g., link requests/proofs vs announce rebroadcasts).
+    /// Interfaces that don't support priority queuing ignore the hint via the
+    /// default implementation.
+    fn try_send_prioritized(
+        &mut self,
+        data: &[u8],
+        high_priority: bool,
+    ) -> Result<(), InterfaceError> {
+        let _ = high_priority;
+        self.try_send(data)
+    }
 }
 
 /// Clock for timestamps and timeouts

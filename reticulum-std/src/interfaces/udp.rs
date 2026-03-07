@@ -181,6 +181,7 @@ mod tests {
             .outgoing
             .send(OutgoingPacket {
                 data: payload.to_vec(),
+                high_priority: false,
             })
             .await
             .unwrap();
@@ -197,6 +198,7 @@ mod tests {
             .outgoing
             .send(OutgoingPacket {
                 data: payload2.to_vec(),
+                high_priority: false,
             })
             .await
             .unwrap();
@@ -228,6 +230,7 @@ mod tests {
             .outgoing
             .send(OutgoingPacket {
                 data: b"test".to_vec(),
+                high_priority: false,
             })
             .await
             .unwrap();

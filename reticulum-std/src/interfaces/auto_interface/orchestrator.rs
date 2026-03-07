@@ -894,6 +894,7 @@ mod tests {
         outgoing_tx
             .send(OutgoingPacket {
                 data: b"test data".to_vec(),
+                high_priority: false,
             })
             .await
             .unwrap();
