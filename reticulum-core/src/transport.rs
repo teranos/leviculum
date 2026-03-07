@@ -46,8 +46,8 @@ use crate::constants::{
     LINK_TIMEOUT_MS, LOCAL_CLIENT_ANNOUNCE_DELAY_MS, LOCAL_CLIENT_DEST_EXPIRY_MS,
     LOCAL_REBROADCASTS_MAX, MAX_QUEUED_ANNOUNCES_PER_INTERFACE, MAX_RANDOM_BLOBS, MS_PER_SECOND,
     MTU, PATHFINDER_EXPIRY_SECS, PATHFINDER_G_MS, PATHFINDER_MAX_HOPS, PATHFINDER_RETRIES,
-    PATH_REQUEST_GRACE_MS, PATH_REQUEST_MIN_INTERVAL_MS, RATCHET_SIZE, REVERSE_TABLE_EXPIRY_MS,
-    TRUNCATED_HASHBYTES,
+    PATHFINDER_RW_MS, PATH_REQUEST_GRACE_MS, PATH_REQUEST_MIN_INTERVAL_MS, RATCHET_SIZE,
+    REVERSE_TABLE_EXPIRY_MS, TRUNCATED_HASHBYTES,
 };
 
 use crate::announce::{emission_from_random_hash, max_emission_from_blobs, ReceivedAnnounce};
@@ -1085,6 +1085,34 @@ impl<C: Clock, S: Storage> Transport<C, S> {
             data: data.to_vec(),
             exclude_iface: None,
         });
+
+        // Schedule retries for locally-originated announces. Without this,
+        // the probe announce gets ONE LoRa transmission with no retries —
+        // if that single TX is lost to collision or noise, the node is
+        // unreachable until the next mgmt announce (2 hours later).
+        if let Ok(packet) = Packet::unpack(data) {
+            if packet.flags.packet_type == PacketType::Announce {
+                let dest_hash = packet.destination_hash;
+                let now = self.clock.now_ms();
+                let jitter = self.deterministic_jitter_ms(&dest_hash, PATHFINDER_RW_MS);
+                self.storage.set_announce(
+                    dest_hash,
+                    AnnounceEntry {
+                        timestamp_ms: now,
+                        hops: 0,
+                        retries: 1,
+                        retransmit_at_ms: Some(now + PATHFINDER_G_MS + jitter),
+                        raw_packet: data.to_vec(),
+                        // Use usize::MAX as sentinel — retries for locally-originated
+                        // announces should broadcast to ALL interfaces (no exclusion).
+                        receiving_interface_index: usize::MAX,
+                        target_interface: None,
+                        local_rebroadcasts: 0,
+                        block_rebroadcasts: false,
+                    },
+                );
+            }
+        }
     }
 
     /// Send a packet to a destination via its known path
@@ -1708,8 +1736,14 @@ impl<C: Clock, S: Storage> Transport<C, S> {
                             // Deferred first broadcast for local client registration
                             Some(now + LOCAL_CLIENT_ANNOUNCE_DELAY_MS)
                         } else if should_rebroadcast {
-                            // Next retransmit scheduled at PATHFINDER_G_MS (no jitter)
-                            Some(now + PATHFINDER_G_MS)
+                            // Retry after grace period + per-node jitter to desync
+                            // simultaneous rebroadcasts on slow links (Python:
+                            // PATHFINDER_G + rand() * PATHFINDER_RW). Uses
+                            // deterministic jitter from identity XOR dest_hash so
+                            // different nodes pick different delays for the same
+                            // announce, without requiring an rng parameter.
+                            let jitter = self.deterministic_jitter_ms(&dest_hash, PATHFINDER_RW_MS);
+                            Some(now + PATHFINDER_G_MS + jitter)
                         } else {
                             None
                         },
@@ -1720,6 +1754,19 @@ impl<C: Clock, S: Storage> Transport<C, S> {
                         block_rebroadcasts: is_path_response,
                     },
                 );
+
+                // Log when an announce is queued for rebroadcast (aids collision diagnosis)
+                if let Some(entry) = self.storage.get_announce(&dest_hash) {
+                    if entry.retransmit_at_ms.is_some() {
+                        tracing::debug!(
+                            "announce queued for rebroadcast dest=<{}> hops={} retransmit_at_ms={:?} retries={}",
+                            HexShort(&dest_hash),
+                            entry.hops,
+                            entry.retransmit_at_ms,
+                            entry.retries,
+                        );
+                    }
+                }
 
                 // Track incoming announce frequency on receiving interface
                 self.record_incoming_announce(interface_index);
@@ -2795,6 +2842,19 @@ impl<C: Clock, S: Storage> Transport<C, S> {
         self.interface_hw_mtus.get(&path.interface_index).copied()
     }
 
+    /// Get the bitrate (bps) of the next-hop interface for a destination.
+    /// Returns `None` if no path exists or the interface has no bitrate cap.
+    /// Matches Python `Transport.next_hop_interface_bitrate()`.
+    pub(crate) fn next_hop_interface_bitrate(
+        &self,
+        dest_hash: &[u8; TRUNCATED_HASHBYTES],
+    ) -> Option<u32> {
+        let path = self.storage.get_path(dest_hash)?;
+        self.interface_announce_caps
+            .get(&path.interface_index)
+            .map(|cap| cap.bitrate_bps)
+    }
+
     // ─── Public: Local Client Interface API ────────────────────────────
 
     /// Mark or unmark an interface as a local IPC client (shared instance).
@@ -2919,6 +2979,24 @@ impl<C: Clock, S: Storage> Transport<C, S> {
             }
             deque.push_back(now);
         }
+    }
+
+    /// Compute deterministic jitter in 0..max_ms from this node's identity and a seed hash.
+    ///
+    /// Different nodes produce different jitter for the same announce because
+    /// each node XORs its own transport identity hash into the seed. This
+    /// desynchronises announce retries without requiring an RNG.
+    fn deterministic_jitter_ms(&self, seed: &[u8; TRUNCATED_HASHBYTES], max_ms: u64) -> u64 {
+        if max_ms == 0 {
+            return 0;
+        }
+        let id_hash = self.identity.hash();
+        // XOR first 8 bytes of (identity_hash XOR seed) to get a u64
+        let mut buf = [0u8; 8];
+        for i in 0..8 {
+            buf[i] = id_hash[i] ^ seed[i % seed.len()];
+        }
+        u64::from_le_bytes(buf) % max_ms
     }
 
     /// Compute announce frequency from a timestamp deque (matches Python Interface.py).
@@ -3336,16 +3414,32 @@ impl<C: Clock, S: Storage> Transport<C, S> {
         let transport_id = *self.identity.hash();
 
         for (dest_hash, raw, except_iface, original_hops, block, target) in to_rebroadcast {
-            // Rebuild packet as Header Type 2 with our transport ID
+            let retry_num = self
+                .storage
+                .get_announce(&dest_hash)
+                .map(|e| e.retries)
+                .unwrap_or(0);
+            tracing::debug!(
+                "announce retry firing dest=<{}> retries={} target={:?}",
+                HexShort(&dest_hash),
+                retry_num,
+                target,
+            );
+
+            // Rebuild packet for retransmission
             if let Ok(mut parsed) = Packet::unpack(&raw) {
                 // Raw bytes have original wire hops; set to receipt-incremented value
                 // stored in announce entry, since forwarding no longer increments.
                 parsed.hops = original_hops;
 
-                // Set as Header Type 2 (transport-routed)
-                parsed.flags.header_type = HeaderType::Type2;
-                parsed.flags.transport_type = TransportType::Transport;
-                parsed.transport_id = Some(transport_id);
+                // Locally-originated announces (hops=0) keep their original
+                // Header Type 1 format. Received announces are converted to
+                // Header Type 2 (transport-routed) with our transport ID.
+                if original_hops > 0 {
+                    parsed.flags.header_type = HeaderType::Type2;
+                    parsed.flags.transport_type = TransportType::Transport;
+                    parsed.transport_id = Some(transport_id);
+                }
 
                 // If block_rebroadcasts, set PathResponse context
                 if block {
@@ -3369,14 +3463,12 @@ impl<C: Clock, S: Storage> Transport<C, S> {
                         });
                     }
                 } else {
-                    // Normal rebroadcast: send to all except source
-                    // Locally-originated announces (hops == 0) bypass caps
-                    // (Python Transport.py:1086-1089: `if packet.hops > 0:`)
-                    if original_hops == 0 || self.interface_announce_caps.is_empty() {
-                        self.forward_on_all_except(except_iface, &mut parsed);
-                    } else {
-                        self.broadcast_announce_with_caps(except_iface, &mut parsed);
-                    }
+                    // Retries bypass announce bandwidth caps — the initial
+                    // broadcast (in handle_announce) already accounted for
+                    // bandwidth. Retries exist for reliability on lossy links;
+                    // blocking them behind a 77s holdoff (at 976 bps / 2% cap)
+                    // defeats their entire purpose.
+                    self.forward_on_all_except(except_iface, &mut parsed);
                     self.record_outgoing_announce_broadcast(except_iface);
                 }
 
@@ -3387,10 +3479,28 @@ impl<C: Clock, S: Storage> Transport<C, S> {
                 }
             }
 
-            // Update announce table entry — schedule next retransmit
+            // Update announce table entry — schedule next retransmit with
+            // exponential backoff: retry 1 → 0-500ms, retry 2 → 0-1000ms,
+            // retry 3 → 0-2000ms jitter window. Wider windows on later retries
+            // break deterministic collision patterns between nodes.
+            let retries = self
+                .storage
+                .get_announce(&dest_hash)
+                .map(|e| e.retries)
+                .unwrap_or(0);
+            let backoff_factor = 1u64 << (retries.min(4) as u64);
+            let jitter =
+                self.deterministic_jitter_ms(&dest_hash, PATHFINDER_RW_MS * backoff_factor);
             if let Some(entry) = self.storage.get_announce_mut(&dest_hash) {
-                entry.retransmit_at_ms = Some(now + PATHFINDER_G_MS);
+                let next_at = now + PATHFINDER_G_MS + jitter;
+                entry.retransmit_at_ms = Some(next_at);
                 entry.retries += 1;
+                tracing::debug!(
+                    "announce retry scheduled dest=<{}> retries={} next_at_ms={}",
+                    HexShort(&dest_hash),
+                    entry.retries,
+                    next_at,
+                );
             }
         }
     }
@@ -3455,8 +3565,18 @@ impl<C: Clock, S: Storage> Transport<C, S> {
             // else: queue full, drop silently
         }
 
-        // Broadcast to all uncapped interfaces via normal Broadcast action.
-        self.send_on_all_interfaces_except(except_index, &raw);
+        // Send to uncapped interfaces individually — capped ones were handled
+        // above (either sent immediately or queued). A plain Broadcast would
+        // double-send to capped interfaces that already got a SendPacket.
+        for &iface_idx in self.interface_names.keys() {
+            if iface_idx == except_index || self.interface_announce_caps.contains_key(&iface_idx) {
+                continue;
+            }
+            self.pending_actions.push(Action::SendPacket {
+                iface: InterfaceId(iface_idx),
+                data: raw.clone(),
+            });
+        }
         self.stats.packets_forwarded += 1;
     }
 
@@ -4838,14 +4958,20 @@ mod tests {
             let entry = transport.storage().get_announce(&dest_hash).unwrap();
             assert_eq!(entry.retries, 1);
 
-            // Second retransmit via poll: retries goes 1 -> 2
-            transport.clock.advance(PATHFINDER_G_MS + 1000);
-            transport.poll();
+            // Each poll fires retransmit and bumps retries: 1→2, 2→3, 3→4
+            for expected_retries in 2..=PATHFINDER_RETRIES + 1 {
+                transport.clock.advance(PATHFINDER_G_MS + 5000);
+                transport.poll();
+                let entry = transport
+                    .storage()
+                    .get_announce(&dest_hash)
+                    .expect("entry should still exist");
+                assert_eq!(entry.retries, expected_retries);
+            }
 
-            // Next poll: retries=2 > PATHFINDER_RETRIES(1) → removed
-            transport.clock.advance(PATHFINDER_G_MS + 1000);
+            // One more poll: retries=4 > PATHFINDER_RETRIES(3) → removed
+            transport.clock.advance(PATHFINDER_G_MS + 5000);
             transport.poll();
-
             assert!(
                 transport.storage().get_announce(&dest_hash).is_none(),
                 "Entry should be removed after exceeding PATHFINDER_RETRIES"
