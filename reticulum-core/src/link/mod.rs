@@ -404,6 +404,11 @@ pub struct Link {
     /// True once any inbound link packet confirms the responder is alive.
     /// Stops RTT retry on the initiator side.
     rtt_confirmed: bool,
+    /// Extra establishment timeout from first-hop interface latency (ms).
+    /// Matches Python's `get_first_hop_timeout()`: MTU × 8 × 1000 / bitrate.
+    /// Set at link creation from the next-hop interface bitrate.
+    /// Zero for fast interfaces (TCP, etc).
+    first_hop_timeout_extra_ms: u64,
 }
 
 impl Link {
@@ -455,6 +460,7 @@ impl Link {
             rtt_sent_at_ms: None,
             rtt_send_count: 0,
             rtt_confirmed: false,
+            first_hop_timeout_extra_ms: 0,
         }
     }
 
@@ -554,6 +560,7 @@ impl Link {
             rtt_sent_at_ms: None,
             rtt_send_count: 0,
             rtt_confirmed: false,
+            first_hop_timeout_extra_ms: 0,
         })
     }
 
@@ -770,8 +777,9 @@ impl Link {
     /// Compute the establishment timeout for this link, matching Python's formula.
     ///
     /// Initiator (PendingOutgoing):
-    ///   `ESTABLISHMENT_TIMEOUT_PER_HOP × (max(1, hops) + 1)`
-    ///   Without per-byte latency info, first_hop_timeout = per_hop_timeout.
+    ///   `first_hop_timeout + ESTABLISHMENT_TIMEOUT_PER_HOP × max(1, hops)`
+    ///   where first_hop_timeout = MTU × 8 × 1000 / bitrate + per_hop_timeout
+    ///   (falls back to per_hop_timeout when bitrate is unknown).
     ///
     /// Responder (PendingIncoming):
     ///   `ESTABLISHMENT_TIMEOUT_PER_HOP × max(1, hops) + KEEPALIVE`
@@ -779,9 +787,21 @@ impl Link {
     pub fn establishment_timeout_ms(&self) -> u64 {
         let hops = core::cmp::max(1, self.hops as u64);
         if self.initiator {
-            ESTABLISHMENT_TIMEOUT_PER_HOP_MS * (hops + 1)
+            // Python: first_hop_timeout(dest) + ESTABLISHMENT_TIMEOUT_PER_HOP * max(1, hops)
+            // first_hop_timeout = MTU * per_byte_latency + DEFAULT_PER_HOP_TIMEOUT
+            // We split it: first_hop_timeout_extra_ms carries the MTU*latency part,
+            // and the base per_hop_timeout is folded into the hops term.
+            self.first_hop_timeout_extra_ms + ESTABLISHMENT_TIMEOUT_PER_HOP_MS * (hops + 1)
         } else {
             ESTABLISHMENT_TIMEOUT_PER_HOP_MS * hops + ESTABLISHMENT_RESPONDER_BONUS_MS
+        }
+    }
+
+    /// Set the first-hop timeout extra from interface bitrate.
+    /// Computes MTU × 8 × 1000 / bitrate_bps (milliseconds).
+    pub(crate) fn set_first_hop_timeout_from_bitrate(&mut self, bitrate_bps: u32) {
+        if bitrate_bps > 0 {
+            self.first_hop_timeout_extra_ms = (MTU as u64) * 8 * 1000 / (bitrate_bps as u64);
         }
     }
 
@@ -3210,5 +3230,35 @@ mod tests {
         link.set_hops(3);
         // 3*6000 + 54000 = 72000
         assert_eq!(link.establishment_timeout_ms(), 72_000);
+    }
+
+    #[test]
+    fn establishment_timeout_initiator_with_lora_bitrate() {
+        let dest_hash = DestinationHash::new([0x42; TRUNCATED_HASHBYTES]);
+        let mut link = Link::new_outgoing(dest_hash, &mut OsRng);
+        // SF10/BW125k ≈ 976 bps
+        link.set_first_hop_timeout_from_bitrate(976);
+        // first_hop_extra = 500 * 8 * 1000 / 976 = 4098 ms
+        // total = 4098 + 6000 * (max(1,0) + 1) = 4098 + 12000 = 16098
+        assert_eq!(link.establishment_timeout_ms(), 16_098);
+    }
+
+    #[test]
+    fn establishment_timeout_initiator_lora_3_hops() {
+        let dest_hash = DestinationHash::new([0x42; TRUNCATED_HASHBYTES]);
+        let mut link = Link::new_outgoing(dest_hash, &mut OsRng);
+        link.set_hops(3);
+        link.set_first_hop_timeout_from_bitrate(976);
+        // 4098 + 6000 * (3+1) = 4098 + 24000 = 28098
+        assert_eq!(link.establishment_timeout_ms(), 28_098);
+    }
+
+    #[test]
+    fn first_hop_timeout_zero_bitrate_is_noop() {
+        let dest_hash = DestinationHash::new([0x42; TRUNCATED_HASHBYTES]);
+        let mut link = Link::new_outgoing(dest_hash, &mut OsRng);
+        link.set_first_hop_timeout_from_bitrate(0);
+        // No extra timeout added
+        assert_eq!(link.establishment_timeout_ms(), 12_000);
     }
 }

@@ -200,6 +200,14 @@ impl<R: CryptoRngCore, C: Clock, S: Storage> NodeCore<R, C, S> {
         let mut link = Link::new_outgoing(dest_hash, &mut self.rng);
         let packet = link.build_link_request_packet_with_transport(next_hop, hops, hw_mtu);
         link.set_hops(hops);
+
+        // Scale establishment timeout for slow first-hop interfaces (LoRa, etc.)
+        if let Some(bitrate) = self
+            .transport
+            .next_hop_interface_bitrate(dest_hash.as_bytes())
+        {
+            link.set_first_hop_timeout_from_bitrate(bitrate);
+        }
         let link_id = *link.id();
         if let Err(e) = link.set_destination_keys(dest_signing_key) {
             tracing::debug!(%e, "set_destination_keys failed");
