@@ -128,6 +128,23 @@ struct QueuedFrame {
     payload_len: u64,
 }
 
+/// Compute jitter ceiling from LoRa radio parameters.
+///
+/// The jitter window must exceed the maximum packet airtime so that two nodes
+/// transmitting simultaneously have a chance to desynchronize. Uses 2x the
+/// worst-case airtime (500-byte packet, CR=5), minimum 500ms for fast links.
+/// No upper cap — slow links (SF10+) need wide jitter to avoid collisions
+/// when airtime exceeds several seconds.
+fn compute_jitter_max_ms(sf: u8, bandwidth_hz: u32) -> u64 {
+    let bitrate = rnode::compute_bitrate(sf, 5, bandwidth_hz);
+    if bitrate == 0 {
+        return 500;
+    }
+    // 500 bytes * 8 bits = 4000 bits max Reticulum packet
+    let airtime_ms = 4000u64 * 1000 / bitrate as u64;
+    (airtime_ms * 2).max(500)
+}
+
 /// Default channel buffer size for RNode interfaces.
 /// Smaller than TCP because LoRa bitrates are orders of magnitude lower.
 pub(crate) const RNODE_DEFAULT_BUFFER_SIZE: usize = 64;
@@ -430,6 +447,7 @@ async fn rnode_io_task(
     mut outgoing_rx: mpsc::Receiver<OutgoingPacket>,
     counters: Arc<InterfaceCounters>,
     flow_control: bool,
+    jitter_max_ms: u64,
 ) -> mpsc::Receiver<OutgoingPacket> {
     let mut deframer = KissDeframer::with_max_payload(rnode::HW_MTU);
     let mut buf = [0u8; IO_READ_BUF];
@@ -557,7 +575,7 @@ async fn rnode_io_task(
                         });
                         // Start jitter timer if idle (no active timer, no pending send)
                         if send_timer.is_none() && !timer_ready {
-                            let delay = rand_core::OsRng.next_u64() % rnode::JITTER_MAX_MS;
+                            let delay = rand_core::OsRng.next_u64() % jitter_max_ms;
                             tracing::debug!(
                                 "{}: send queue: {} packets, jitter {}ms",
                                 name, send_queue.len(), delay
@@ -640,12 +658,13 @@ async fn rnode_reconnect_task(
 ) {
     let radio = config.radio_params();
     let bitrate_bps = rnode::compute_bitrate(radio.sf, radio.cr, radio.bandwidth);
+    let jitter_max_ms = compute_jitter_max_ms(radio.sf, radio.bandwidth);
     tracing::debug!(
-        "{}: bitrate={} bps, min_spacing={}ms, jitter_max={}ms",
+        "{}: bitrate={} bps, min_spacing={}ms, jitter_max={}ms (airtime-based)",
         config.name,
         bitrate_bps,
         rnode::MIN_SPACING_MS,
-        rnode::JITTER_MAX_MS
+        jitter_max_ms,
     );
     let mut has_connected_before = false;
 
@@ -685,6 +704,7 @@ async fn rnode_reconnect_task(
                     outgoing_rx,
                     Arc::clone(&counters),
                     config.flow_control,
+                    jitter_max_ms,
                 )
                 .await;
 
