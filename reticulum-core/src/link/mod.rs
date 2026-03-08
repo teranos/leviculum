@@ -3261,4 +3261,20 @@ mod tests {
         // No extra timeout added
         assert_eq!(link.establishment_timeout_ms(), 12_000);
     }
+
+    #[test]
+    fn establishment_timeout_unknown_bitrate_2_hops() {
+        // Simulates a client connecting via TCP to a transport daemon that
+        // routes through LoRa. The client doesn't know the next-hop bitrate,
+        // so connect() uses UNKNOWN_BITRATE_ASSUMPTION_BPS (300 bps).
+        let dest_hash = DestinationHash::new([0x42; TRUNCATED_HASHBYTES]);
+        let mut link = Link::new_outgoing(dest_hash, &mut OsRng);
+        link.set_hops(2);
+        link.set_first_hop_timeout_from_bitrate(
+            crate::constants::UNKNOWN_BITRATE_ASSUMPTION_BPS,
+        );
+        // first_hop_extra = 500 * 8 * 1000 / 300 = 13333 ms
+        // total = 13333 + 6000 * (2+1) = 13333 + 18000 = 31333
+        assert_eq!(link.establishment_timeout_ms(), 31_333);
+    }
 }

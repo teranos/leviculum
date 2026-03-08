@@ -202,11 +202,22 @@ impl<R: CryptoRngCore, C: Clock, S: Storage> NodeCore<R, C, S> {
         link.set_hops(hops);
 
         // Scale establishment timeout for slow first-hop interfaces (LoRa, etc.)
+        //
+        // When the next-hop bitrate is known (e.g., directly on LoRa), use it.
+        // When unknown and hops > 1 (path traverses relay nodes whose interfaces
+        // we can't see), use a conservative estimate. This covers clients that
+        // connect via TCP to a transport daemon which routes through LoRa — the
+        // client sees TCP (no bitrate) but the actual path includes slow links.
+        // Python handles this via an RPC call to `get_first_hop_timeout()`.
         if let Some(bitrate) = self
             .transport
             .next_hop_interface_bitrate(dest_hash.as_bytes())
         {
             link.set_first_hop_timeout_from_bitrate(bitrate);
+        } else if hops > 1 {
+            link.set_first_hop_timeout_from_bitrate(
+                crate::constants::UNKNOWN_BITRATE_ASSUMPTION_BPS,
+            );
         }
         let link_id = *link.id();
         if let Err(e) = link.set_destination_keys(dest_signing_key) {

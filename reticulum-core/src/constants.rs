@@ -175,6 +175,15 @@ pub const LINK_PENDING_TIMEOUT_MS: u64 = 30_000;
 /// Python: ESTABLISHMENT_TIMEOUT_PER_HOP = DEFAULT_PER_HOP_TIMEOUT = 6s
 pub const ESTABLISHMENT_TIMEOUT_PER_HOP_MS: u64 = DEFAULT_PER_HOP_TIMEOUT * 1000;
 
+/// Conservative bitrate assumption (bps) for multi-hop paths when the actual
+/// next-hop bitrate is unknown. Covers LoRa SF12/BW125kHz (~293 bps).
+///
+/// Python solves this via `get_first_hop_timeout()` RPC to the transport daemon.
+/// Rust clients that connect via TCP to a transport daemon don't have this RPC,
+/// so they use this conservative estimate to avoid premature link timeout on
+/// paths that traverse slow links (LoRa, etc.).
+pub const UNKNOWN_BITRATE_ASSUMPTION_BPS: u32 = 300;
+
 /// Responder establishment bonus (milliseconds).
 /// With RTT retry (5 attempts at 10s intervals = ~50s budget), the
 /// responder no longer needs Python's 360s bonus. 54s gives 4s margin
