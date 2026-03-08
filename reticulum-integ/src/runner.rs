@@ -197,7 +197,12 @@ impl TestRunner {
         Ok(())
     }
 
-    /// Poll a single node until `rnstatus` exits successfully, or timeout.
+    /// Poll a single node until it is ready, or timeout.
+    ///
+    /// Probes the abstract Unix socket `\0rns/default` that both lrnsd
+    /// (Rust) and rnsd (Python) listen on. Using a raw socket connect
+    /// instead of `rnstatus` avoids a race condition where rnstatus
+    /// accidentally becomes the shared-instance server before rnsd starts.
     ///
     /// Polls every 500ms. On timeout, collects logs and returns
     /// `ReadinessTimeout`.
@@ -210,9 +215,9 @@ impl TestRunner {
                 .args([
                     "exec",
                     &container,
-                    "rnstatus",
-                    "--config",
-                    "/root/.reticulum",
+                    "python3",
+                    "-c",
+                    "import socket; s=socket.socket(socket.AF_UNIX,socket.SOCK_STREAM); s.connect(b'\\x00rns/default'); s.close()",
                 ])
                 .output()?;
 
