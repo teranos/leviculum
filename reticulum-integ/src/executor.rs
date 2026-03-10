@@ -477,50 +477,80 @@ fn execute_rnprobe(
 ) -> Result<(), StepError> {
     let hash = resolve_destination(runner, to, cache)?;
     let timeout_str = timeout_secs.to_string();
-
-    let output = runner.docker_exec(
-        from,
-        &[
-            "rnprobe",
-            "rnstransport.probe",
-            &hash,
-            "--config",
-            "/root/.reticulum",
-            "-t",
-            &timeout_str,
-        ],
-    )?;
-
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    let stderr = String::from_utf8_lossy(&output.stderr);
-
-    // Check expected result.
     let expect_fail = expect_result == "failure" || expect_result == "fail";
-    if expect_result == "success" && !output.status.success() {
-        return Err(StepError::StepFailed {
-            step_index: index,
-            action: "rnprobe".into(),
-            detail: format!(
-                "expected success but rnprobe exited {}: {stdout} {stderr}",
-                output.status
-            ),
-        });
+
+    // For expected-success probes: retry up to 3 times with 2s delay.
+    // LoRa probes are fire-and-forget (no transport-level retry), so a
+    // single lost packet due to half-duplex collision causes failure.
+    let max_attempts = if expect_fail { 1 } else { 3 };
+
+    let mut last_stdout = String::new();
+    let mut last_stderr = String::new();
+    let mut last_status = None;
+
+    for attempt in 1..=max_attempts {
+        if attempt > 1 {
+            println!("  probe attempt {attempt}/{max_attempts}...");
+            thread::sleep(Duration::from_secs(2));
+        }
+
+        let output = runner.docker_exec(
+            from,
+            &[
+                "rnprobe",
+                "rnstransport.probe",
+                &hash,
+                "--config",
+                "/root/.reticulum",
+                "-t",
+                &timeout_str,
+            ],
+        )?;
+
+        last_stdout = String::from_utf8_lossy(&output.stdout).into_owned();
+        last_stderr = String::from_utf8_lossy(&output.stderr).into_owned();
+        last_status = output.status.code();
+
+        if output.status.success() {
+            // Success — check hops and return
+            return check_probe_hops(index, expect_hops, &last_stdout, &hash);
+        }
+
+        if attempt < max_attempts {
+            println!("  probe attempt {attempt}/{max_attempts} failed, retrying...");
+        }
     }
-    if expect_fail && output.status.success() {
+
+    // All attempts exhausted (or single attempt for expect_fail)
+    if expect_fail {
+        if last_status.map_or(true, |c| c != 0) {
+            println!("  probe failed (expected): {hash}");
+            return Ok(());
+        }
         return Err(StepError::StepFailed {
             step_index: index,
             action: "rnprobe".into(),
             detail: "expected failure but rnprobe exited successfully".into(),
         });
     }
-    if expect_fail && !output.status.success() {
-        println!("  probe failed (expected): {hash}");
-        return Ok(());
-    }
 
-    // Check expected hops.
+    Err(StepError::StepFailed {
+        step_index: index,
+        action: "rnprobe".into(),
+        detail: format!(
+            "expected success but rnprobe failed after {max_attempts} attempts: {last_stdout} {last_stderr}",
+        ),
+    })
+}
+
+fn check_probe_hops(
+    index: usize,
+    expect_hops: Option<u32>,
+    stdout: &str,
+    hash: &str,
+) -> Result<(), StepError> {
     if let Some(expected) = expect_hops {
-        let actual = parse_hops_from_output(&stdout);
+        let actual = parse_hops_from_output(stdout);
         match actual {
             Some(hops) if hops == expected => {
                 println!("  probe ok: {hops} hop(s) to {hash}");
@@ -543,7 +573,6 @@ fn execute_rnprobe(
     } else {
         println!("  probe ok: {hash}");
     }
-
     Ok(())
 }
 
