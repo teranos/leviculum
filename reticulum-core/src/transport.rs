@@ -43,11 +43,12 @@ use alloc::vec::Vec;
 use crate::constants::{
     ANNOUNCE_RATE_GRACE, ANNOUNCE_RATE_LIMIT_MS, ANNOUNCE_RATE_PENALTY_MS,
     DEFAULT_ANNOUNCE_CAP_PERCENT, DISCOVERY_RETRY_INTERVAL_MS, DISCOVERY_TIMEOUT_MS,
-    LINK_TIMEOUT_MS, LOCAL_CLIENT_ANNOUNCE_DELAY_MS, LOCAL_CLIENT_DEST_EXPIRY_MS,
-    LOCAL_REBROADCASTS_MAX, MAX_QUEUED_ANNOUNCES_PER_INTERFACE, MAX_RANDOM_BLOBS, MS_PER_SECOND,
-    MTU, PATHFINDER_EXPIRY_SECS, PATHFINDER_G_MS, PATHFINDER_MAX_HOPS, PATHFINDER_RETRIES,
-    PATHFINDER_RW_MS, PATH_REQUEST_GRACE_MS, PATH_REQUEST_MIN_INTERVAL_MS, RATCHET_SIZE,
-    REVERSE_TABLE_EXPIRY_MS, TRUNCATED_HASHBYTES,
+    ESTABLISHMENT_TIMEOUT_PER_HOP_MS, LINK_TIMEOUT_MS, LOCAL_CLIENT_ANNOUNCE_DELAY_MS,
+    LOCAL_CLIENT_DEST_EXPIRY_MS, LOCAL_REBROADCASTS_MAX, MAX_QUEUED_ANNOUNCES_PER_INTERFACE,
+    MAX_RANDOM_BLOBS, MS_PER_SECOND, MTU, PATHFINDER_EXPIRY_SECS, PATHFINDER_G_MS,
+    PATHFINDER_MAX_HOPS, PATHFINDER_RETRIES, PATHFINDER_RW_MS, PATH_REQUEST_GRACE_MS,
+    PATH_REQUEST_MIN_INTERVAL_MS, RATCHET_SIZE, RECEIPT_TIMEOUT_DEFAULT_MS,
+    REVERSE_TABLE_EXPIRY_MS, TRUNCATED_HASHBYTES, UNKNOWN_BITRATE_ASSUMPTION_BPS,
 };
 
 use crate::announce::{emission_from_random_hash, max_emission_from_blobs, ReceivedAnnounce};
@@ -828,9 +829,11 @@ impl<C: Clock, S: Storage> Transport<C, S> {
         raw_packet: &[u8],
         destination_hash: [u8; TRUNCATED_HASHBYTES],
     ) -> [u8; TRUNCATED_HASHBYTES] {
+        let timeout = self.compute_receipt_timeout(&destination_hash);
         let hash = packet_hash(raw_packet);
         let now = self.clock.now_ms();
-        let receipt = PacketReceipt::new(hash, DestinationHash::new(destination_hash), now);
+        let receipt =
+            PacketReceipt::with_timeout(hash, DestinationHash::new(destination_hash), now, timeout);
         let truncated = receipt.truncated_hash;
         self.storage.set_receipt(truncated, receipt);
         truncated
@@ -2856,6 +2859,42 @@ impl<C: Clock, S: Storage> Transport<C, S> {
         self.interface_announce_caps
             .get(&path.interface_index)
             .map(|cap| cap.bitrate_bps)
+    }
+
+    /// Compute the receipt timeout for a packet sent to a destination.
+    ///
+    /// Matches Python's `PacketReceipt.__init__()` (Packet.py:432-433):
+    ///   `timeout = first_hop_timeout(dest) + TIMEOUT_PER_HOP * hops`
+    ///
+    /// Where `first_hop_timeout = MTU * per_byte_latency + DEFAULT_PER_HOP_TIMEOUT`
+    /// when the next-hop bitrate is known.
+    ///
+    /// Falls back to `RECEIPT_TIMEOUT_DEFAULT_MS` if no path is known.
+    fn compute_receipt_timeout(&self, dest_hash: &[u8; TRUNCATED_HASHBYTES]) -> u64 {
+        let path = match self.storage.get_path(dest_hash) {
+            Some(p) => p,
+            None => return RECEIPT_TIMEOUT_DEFAULT_MS,
+        };
+        let hops = path.hops;
+
+        // first_hop_timeout: MTU * 8 * 1000 / bitrate + per_hop_timeout
+        // (Python: MTU * per_byte_latency + DEFAULT_PER_HOP_TIMEOUT)
+        let first_hop_extra = if let Some(bitrate) = self
+            .interface_announce_caps
+            .get(&path.interface_index)
+            .map(|cap| cap.bitrate_bps)
+        {
+            (MTU as u64) * 8 * 1000 / (bitrate as u64)
+        } else if hops > 1 {
+            // Multi-hop through unknown bitrate: assume slow link
+            (MTU as u64) * 8 * 1000 / (UNKNOWN_BITRATE_ASSUMPTION_BPS as u64)
+        } else {
+            0
+        };
+
+        first_hop_extra
+            + ESTABLISHMENT_TIMEOUT_PER_HOP_MS
+            + ESTABLISHMENT_TIMEOUT_PER_HOP_MS * (hops as u64)
     }
 
     // ─── Public: Local Client Interface API ────────────────────────────
@@ -11435,6 +11474,120 @@ mod tests {
                 crate::destination::DestinationHash::new(dest_hash),
                 "Receipt should contain correct destination hash"
             );
+        }
+
+        #[test]
+        fn test_receipt_timeout_no_path_uses_default() {
+            let transport = test_transport();
+            let dest_hash = [0xAA; TRUNCATED_HASHBYTES];
+            // No path registered — should fall back to default
+            assert_eq!(
+                transport.compute_receipt_timeout(&dest_hash),
+                RECEIPT_TIMEOUT_DEFAULT_MS,
+            );
+        }
+
+        #[test]
+        fn test_receipt_timeout_direct_neighbor_no_bitrate() {
+            let mut transport = test_transport();
+            let dest_hash = [0xBB; TRUNCATED_HASHBYTES];
+            // Direct neighbor (0 hops), no bitrate registered
+            transport.storage.set_path(
+                dest_hash,
+                crate::storage_types::PathEntry {
+                    hops: 0,
+                    next_hop: None,
+                    interface_index: 0,
+                    expires_ms: u64::MAX,
+                    random_blobs: alloc::vec::Vec::new(),
+                },
+            );
+            // first_hop_extra = 0 (no bitrate, single hop)
+            // total = 0 + 6000 + 6000 * 0 = 6000
+            assert_eq!(transport.compute_receipt_timeout(&dest_hash), 6_000);
+        }
+
+        #[test]
+        fn test_receipt_timeout_multihop_with_bitrate() {
+            let mut transport = test_transport();
+            let dest_hash = [0xCC; TRUNCATED_HASHBYTES];
+            let iface_idx = transport.register_interface(Box::new(MockInterface::new("rnode", 1)));
+            transport.register_interface_bitrate(iface_idx, 976);
+            transport.storage.set_path(
+                dest_hash,
+                crate::storage_types::PathEntry {
+                    hops: 2,
+                    next_hop: Some([0x11; TRUNCATED_HASHBYTES]),
+                    interface_index: iface_idx,
+                    expires_ms: u64::MAX,
+                    random_blobs: alloc::vec::Vec::new(),
+                },
+            );
+            // first_hop_extra = 500 * 8 * 1000 / 976 = 4098 ms
+            // total = 4098 + 6000 + 6000 * 2 = 22098
+            assert_eq!(transport.compute_receipt_timeout(&dest_hash), 22_098);
+        }
+
+        #[test]
+        fn test_receipt_timeout_multihop_unknown_bitrate() {
+            let mut transport = test_transport();
+            let dest_hash = [0xDD; TRUNCATED_HASHBYTES];
+            // Multi-hop but no bitrate registered — uses UNKNOWN_BITRATE_ASSUMPTION
+            transport.storage.set_path(
+                dest_hash,
+                crate::storage_types::PathEntry {
+                    hops: 3,
+                    next_hop: Some([0x22; TRUNCATED_HASHBYTES]),
+                    interface_index: 0,
+                    expires_ms: u64::MAX,
+                    random_blobs: alloc::vec::Vec::new(),
+                },
+            );
+            // first_hop_extra = 500 * 8 * 1000 / 300 = 13333 ms
+            // total = 13333 + 6000 + 6000 * 3 = 37333
+            assert_eq!(transport.compute_receipt_timeout(&dest_hash), 37_333);
+        }
+
+        #[test]
+        fn test_receipt_uses_path_aware_timeout() {
+            let mut transport = test_transport();
+            let dest_hash = [0xEE; TRUNCATED_HASHBYTES];
+            let iface_idx = transport.register_interface(Box::new(MockInterface::new("rnode", 1)));
+            transport.register_interface_bitrate(iface_idx, 976);
+            transport.storage.set_path(
+                dest_hash,
+                crate::storage_types::PathEntry {
+                    hops: 2,
+                    next_hop: Some([0x33; TRUNCATED_HASHBYTES]),
+                    interface_index: iface_idx,
+                    expires_ms: u64::MAX,
+                    random_blobs: alloc::vec::Vec::new(),
+                },
+            );
+
+            // Build a minimal packet and create a receipt
+            let pkt = Packet {
+                flags: PacketFlags {
+                    ifac_flag: false,
+                    header_type: HeaderType::Type1,
+                    context_flag: false,
+                    transport_type: TransportType::Broadcast,
+                    dest_type: crate::destination::DestinationType::Single,
+                    packet_type: PacketType::Data,
+                },
+                hops: 0,
+                transport_id: None,
+                destination_hash: dest_hash,
+                context: PacketContext::None,
+                data: PacketData::Owned(b"timeout test".to_vec()),
+            };
+            let mut buf = [0u8; 500];
+            let len = pkt.pack(&mut buf).unwrap();
+            let truncated = transport.create_receipt(&buf[..len], dest_hash);
+
+            let receipt = transport.get_receipt(&truncated).unwrap();
+            // Should use path-aware timeout, not the default 30s
+            assert_eq!(receipt.timeout_ms, 22_098);
         }
     }
 
