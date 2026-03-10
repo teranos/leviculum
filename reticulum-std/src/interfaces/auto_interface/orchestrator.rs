@@ -632,6 +632,7 @@ fn handle_discovery_packet(
             hw_mtu: Some(AUTO_HW_MTU),
             is_local_client: false,
             bitrate: None,
+            ifac: None,
         },
         incoming: incoming_rx,
         outgoing: outgoing_tx,

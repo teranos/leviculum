@@ -125,6 +125,7 @@ pub(crate) fn spawn_tcp_interface_from_stream(
             hw_mtu: Some(262_144),
             is_local_client: false,
             bitrate: None,
+            ifac: None,
         },
         incoming: incoming_rx,
         outgoing: outgoing_tx,
@@ -182,6 +183,7 @@ pub(crate) fn spawn_tcp_server(
     new_interface_tx: mpsc::Sender<InterfaceHandle>,
     buffer_size: usize,
     corrupt_every: Option<u64>,
+    ifac: Option<reticulum_core::ifac::IfacConfig>,
 ) -> Result<(), io::Error> {
     // Bind synchronously so errors propagate to the caller immediately
     let std_listener = std::net::TcpListener::bind(bind_addr)?;
@@ -199,9 +201,11 @@ pub(crate) fn spawn_tcp_server(
                             let id = InterfaceId(next_id.fetch_add(1, Ordering::Relaxed));
                             let name = format!("tcp_server/{}", peer_addr);
                             stream.set_nodelay(true).ok();
-                            let handle = spawn_tcp_interface_from_stream(
+                            let mut handle = spawn_tcp_interface_from_stream(
                                 id, name.clone(), stream, buffer_size, corrupt_every,
                             );
+                            // Inherit IFAC config from parent TCP server listener.
+                            handle.info.ifac = ifac.clone();
                             tracing::info!("Accepted connection: {} ({})", name, id);
                             if new_interface_tx.send(handle).await.is_err() {
                                 break; // event loop shut down
@@ -265,6 +269,7 @@ pub(crate) fn spawn_tcp_client_with_reconnect(config: TcpClientConfig) -> Interf
             hw_mtu: Some(262_144),
             is_local_client: false,
             bitrate: None,
+            ifac: None,
         },
         incoming: incoming_rx,
         outgoing: outgoing_tx,
@@ -552,7 +557,7 @@ mod tests {
         let bound_addr = std_listener.local_addr().unwrap();
         drop(std_listener); // free the port for spawn_tcp_server
 
-        spawn_tcp_server(bound_addr, next_id.clone(), tx, 16, None).unwrap();
+        spawn_tcp_server(bound_addr, next_id.clone(), tx, 16, None, None).unwrap();
 
         // Connect a raw TCP client
         let _client = tokio::net::TcpStream::connect(bound_addr).await.unwrap();

@@ -140,6 +140,11 @@ pub(crate) struct InterfaceInfo {
     /// On-air bitrate in bits/sec (e.g., LoRa ~5468 bps for SF7/CR5/BW125kHz).
     /// `None` for interfaces without a fixed bitrate (TCP, UDP).
     pub bitrate: Option<u32>,
+    /// IFAC config inherited from the parent interface (e.g., TCP server listener).
+    /// When a TCP server accepts a connection, the child interface inherits the
+    /// parent's IFAC config so that IFAC verification/application works on the
+    /// dynamically-created interface.
+    pub ifac: Option<reticulum_core::ifac::IfacConfig>,
 }
 
 /// Event loop's handle to a spawned interface task

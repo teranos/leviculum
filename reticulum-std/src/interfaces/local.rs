@@ -124,6 +124,7 @@ fn spawn_local_interface_from_stream(
             hw_mtu: Some(LOCAL_HW_MTU),
             is_local_client: true,
             bitrate: None,
+            ifac: None,
         },
         incoming: incoming_rx,
         outgoing: outgoing_tx,

@@ -103,6 +103,29 @@ const FLUSH_INTERVAL_SECS: u64 = 3600;
 /// Covers ~47s of LoRa traffic at 2734 bps. When full, oldest is dropped.
 const RETRY_QUEUE_CAP: usize = 64;
 
+/// Build an IfacConfig from interface configuration, if IFAC params are present.
+fn build_ifac_config(config: &InterfaceConfig) -> Option<reticulum_core::ifac::IfacConfig> {
+    if config.networkname.is_none() && config.passphrase.is_none() {
+        return None;
+    }
+    let default_size = match config.interface_type.as_str() {
+        "RNodeInterface" => reticulum_core::constants::IFAC_DEFAULT_SIZE_SERIAL,
+        _ => reticulum_core::constants::IFAC_DEFAULT_SIZE_NETWORK,
+    };
+    let size = config.ifac_size.unwrap_or(default_size);
+    match reticulum_core::ifac::IfacConfig::new(
+        config.networkname.as_deref(),
+        config.passphrase.as_deref(),
+        size,
+    ) {
+        Ok(ifac) => Some(ifac),
+        Err(e) => {
+            tracing::warn!("Failed to create IFAC config: {:?}", e);
+            None
+        }
+    }
+}
+
 /// Channels consumed by the event loop.
 struct EventLoopChannels {
     event_tx: mpsc::Sender<NodeEvent>,
@@ -224,34 +247,26 @@ impl ReticulumNode {
                 }
             }
 
-            // Register IFAC configurations for interfaces with networkname/passphrase
+            // Register IFAC configurations for static interfaces (TCP client, UDP, RNode).
+            // TCPServerInterface IFAC is handled via spawn_tcp_server → InterfaceInfo.ifac,
+            // because the server listener itself doesn't register as an interface — only
+            // accepted connections do, and they get dynamic interface IDs.
             for (idx, iface_config) in self.interfaces.iter().enumerate() {
                 if !iface_config.enabled {
                     continue;
                 }
-                if iface_config.networkname.is_some() || iface_config.passphrase.is_some() {
-                    let default_size = match iface_config.interface_type.as_str() {
-                        "RNodeInterface" => reticulum_core::constants::IFAC_DEFAULT_SIZE_SERIAL,
-                        _ => reticulum_core::constants::IFAC_DEFAULT_SIZE_NETWORK,
-                    };
-                    let size = iface_config.ifac_size.unwrap_or(default_size);
-                    match reticulum_core::ifac::IfacConfig::new(
-                        iface_config.networkname.as_deref(),
-                        iface_config.passphrase.as_deref(),
-                        size,
-                    ) {
-                        Ok(ifac) => {
-                            core.set_ifac_config(idx, ifac);
-                            tracing::info!("IFAC enabled on interface {} (size={})", idx, size);
-                        }
-                        Err(e) => {
-                            tracing::warn!(
-                                "Failed to create IFAC config for iface {}: {:?}",
-                                idx,
-                                e
-                            );
-                        }
-                    }
+                if iface_config.interface_type == "TCPServerInterface" {
+                    continue; // IFAC passed to spawn_tcp_server in initialize_interfaces
+                }
+                if let Some(ifac) = build_ifac_config(iface_config) {
+                    core.set_ifac_config(idx, ifac);
+                    tracing::info!(
+                        "IFAC enabled on interface {} (size={})",
+                        idx,
+                        iface_config
+                            .ifac_size
+                            .unwrap_or(reticulum_core::constants::IFAC_DEFAULT_SIZE_NETWORK)
+                    );
                 }
             }
 
@@ -376,12 +391,14 @@ impl ReticulumNode {
                         .map_err(|e| Error::Config(format!("invalid listen address: {}", e)))?;
 
                     let buffer_size = config.buffer_size.unwrap_or(TCP_DEFAULT_BUFFER_SIZE);
+                    let ifac = build_ifac_config(config);
                     spawn_tcp_server(
                         addr,
                         next_id.clone(),
                         new_iface_tx.clone(),
                         buffer_size,
                         self.corrupt_every,
+                        ifac,
                     )?;
                 }
                 "UDPInterface" => {
@@ -962,7 +979,7 @@ async fn run_event_loop(
     // Clone IFAC configs from core so dispatch_output can apply IFAC outside the lock.
     // This is the canonical source of truth for "what IFAC config does interface N have
     // according to the INI config". On reconnect, we re-apply from this map.
-    let ifac_configs: BTreeMap<usize, reticulum_core::ifac::IfacConfig> = {
+    let mut ifac_configs: BTreeMap<usize, reticulum_core::ifac::IfacConfig> = {
         let core = inner.lock().unwrap();
         core.clone_ifac_configs()
     };
@@ -1093,6 +1110,7 @@ async fn run_event_loop(
                 tracing::info!("New connection: {} ({})", handle.info.name, handle.info.id);
                 let is_local = handle.info.is_local_client;
                 let iface_idx = handle.info.id.0;
+                let inherited_ifac = handle.info.ifac.clone();
                 {
                     let mut core = inner.lock().unwrap();
                     core.set_interface_name(iface_idx, handle.info.name.clone());
@@ -1102,6 +1120,15 @@ async fn run_event_loop(
                     if is_local {
                         core.set_interface_local_client(iface_idx, true);
                     }
+                    // Inherit IFAC config from parent interface (e.g., TCP server listener).
+                    // Removal path: handle_interface_down removes ifac_config when connection drops.
+                    if let Some(ifac) = &inherited_ifac {
+                        core.set_ifac_config(iface_idx, ifac.clone());
+                    }
+                }
+                // Mirror inherited IFAC in driver-local ifac_configs for dispatch_actions.
+                if let Some(ifac) = inherited_ifac {
+                    ifac_configs.insert(iface_idx, ifac);
                 }
                 {
                     let mut stats = iface_stats_map.lock().unwrap();

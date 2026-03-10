@@ -811,6 +811,7 @@ pub(crate) fn spawn_rnode_interface(config: RNodeInterfaceConfig) -> InterfaceHa
             hw_mtu: Some(rnode::HW_MTU as u32),
             is_local_client: false,
             bitrate: Some(bitrate),
+            ifac: None,
         },
         incoming: incoming_rx,
         outgoing: outgoing_tx,

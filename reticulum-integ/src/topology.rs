@@ -15,11 +15,62 @@ pub struct TestScenario {
     pub test: TestMeta,
     pub nodes: BTreeMap<String, NodeDef>,
     #[serde(default)]
-    pub links: BTreeMap<String, String>,
+    pub links: BTreeMap<String, LinkDef>,
     #[serde(default)]
     pub radio: Option<RadioConfig>,
     #[serde(default)]
     pub steps: Vec<Step>,
+}
+
+/// Link definition: either a simple type string or a detailed table with IFAC config.
+///
+/// Simple form (backward compatible): `alice-bob = "tcp"`
+/// Detailed form: `[links.alice-bob]` with `type`, `networkname`, `passphrase`, `ifac_size`.
+#[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
+#[serde(untagged)]
+pub enum LinkDef {
+    Simple(String),
+    Detailed {
+        #[serde(rename = "type")]
+        link_type: String,
+        #[serde(default)]
+        networkname: Option<String>,
+        #[serde(default)]
+        passphrase: Option<String>,
+        /// IFAC size in bits (divided by 8 for bytes, matching Python convention).
+        #[serde(default)]
+        ifac_size: Option<usize>,
+    },
+}
+
+impl LinkDef {
+    pub fn link_type(&self) -> &str {
+        match self {
+            LinkDef::Simple(t) => t,
+            LinkDef::Detailed { link_type, .. } => link_type,
+        }
+    }
+
+    pub fn networkname(&self) -> Option<&str> {
+        match self {
+            LinkDef::Simple(_) => None,
+            LinkDef::Detailed { networkname, .. } => networkname.as_deref(),
+        }
+    }
+
+    pub fn passphrase(&self) -> Option<&str> {
+        match self {
+            LinkDef::Simple(_) => None,
+            LinkDef::Detailed { passphrase, .. } => passphrase.as_deref(),
+        }
+    }
+
+    pub fn ifac_size(&self) -> Option<usize> {
+        match self {
+            LinkDef::Simple(_) => None,
+            LinkDef::Detailed { ifac_size, .. } => *ifac_size,
+        }
+    }
 }
 
 // Fields populated by serde deserialization appear unused to the compiler.
@@ -245,17 +296,28 @@ pub fn apply_radio_overrides(scenario: &mut TestScenario) {
 // Interface assignment from links
 // ---------------------------------------------------------------------------
 
+/// IFAC parameters resolved from a LinkDef for a specific interface.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct IfacParams {
+    pub networkname: Option<String>,
+    pub passphrase: Option<String>,
+    /// IFAC size in bits (matching Python convention).
+    pub ifac_size: Option<usize>,
+}
+
 /// A single interface entry for a node's config.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum InterfaceEntry {
     TcpServer {
         peer: String,
         port: u16,
+        ifac: IfacParams,
     },
     TcpClient {
         peer: String,
         target_host: String,
         port: u16,
+        ifac: IfacParams,
     },
 }
 
@@ -265,15 +327,15 @@ pub enum InterfaceEntry {
 /// server role and Y gets the client role. Each server node gets a unique port
 /// starting from 4242, incrementing per additional link.
 pub fn assign_interfaces(
-    links: &BTreeMap<String, String>,
+    links: &BTreeMap<String, LinkDef>,
 ) -> Result<BTreeMap<String, Vec<InterfaceEntry>>, String> {
     let mut interfaces: BTreeMap<String, Vec<InterfaceEntry>> = BTreeMap::new();
     // Track next port per server node.
     let mut server_ports: BTreeMap<String, u16> = BTreeMap::new();
 
-    for (link_key, link_type) in links {
-        if link_type != "tcp" {
-            return Err(format!("unsupported link type: {link_type}"));
+    for (link_key, link_def) in links {
+        if link_def.link_type() != "tcp" {
+            return Err(format!("unsupported link type: {}", link_def.link_type()));
         }
 
         let parts: Vec<&str> = link_key.split('-').collect();
@@ -288,6 +350,12 @@ pub fn assign_interfaces(
             (parts[1].to_string(), parts[0].to_string())
         };
 
+        let ifac = IfacParams {
+            networkname: link_def.networkname().map(String::from),
+            passphrase: link_def.passphrase().map(String::from),
+            ifac_size: link_def.ifac_size(),
+        };
+
         let port = server_ports.entry(server.clone()).or_insert(4242);
         let current_port = *port;
         *port += 1;
@@ -298,6 +366,7 @@ pub fn assign_interfaces(
             .push(InterfaceEntry::TcpServer {
                 peer: client.clone(),
                 port: current_port,
+                ifac: ifac.clone(),
             });
 
         interfaces
@@ -307,6 +376,7 @@ pub fn assign_interfaces(
                 peer: server.clone(),
                 target_host: server.clone(),
                 port: current_port,
+                ifac,
             });
     }
 
@@ -316,6 +386,19 @@ pub fn assign_interfaces(
 // ---------------------------------------------------------------------------
 // Config generation
 // ---------------------------------------------------------------------------
+
+/// Emit IFAC config keys (networkname, passphrase, ifac_size) into an INI interface section.
+fn render_ifac_params(out: &mut String, ifac: &IfacParams) {
+    if let Some(nn) = &ifac.networkname {
+        writeln!(out, "    networkname = {nn}").ok();
+    }
+    if let Some(pp) = &ifac.passphrase {
+        writeln!(out, "    passphrase = {pp}").ok();
+    }
+    if let Some(sz) = ifac.ifac_size {
+        writeln!(out, "    ifac_size = {sz}").ok();
+    }
+}
 
 /// Generate the Reticulum INI config string for a node.
 pub fn render_config(
@@ -340,7 +423,7 @@ pub fn render_config(
 
     for iface in ifaces {
         match iface {
-            InterfaceEntry::TcpServer { peer, port } => {
+            InterfaceEntry::TcpServer { peer, port, ifac } => {
                 writeln!(out, "  [[TCPServerInterface-{peer}]]").ok();
                 writeln!(out, "    type = TCPServerInterface").ok();
                 writeln!(out, "    enabled = yes").ok();
@@ -349,11 +432,13 @@ pub fn render_config(
                 // Disable ingress control in integration tests to avoid
                 // non-deterministic announce suppression during rapid startup.
                 writeln!(out, "    ingress_control = false").ok();
+                render_ifac_params(&mut out, ifac);
             }
             InterfaceEntry::TcpClient {
                 peer,
                 target_host,
                 port,
+                ifac,
             } => {
                 writeln!(out, "  [[TCPClientInterface-{peer}]]").ok();
                 writeln!(out, "    type = TCPClientInterface").ok();
@@ -361,6 +446,7 @@ pub fn render_config(
                 writeln!(out, "    target_host = {target_host}").ok();
                 writeln!(out, "    target_port = {port}").ok();
                 writeln!(out, "    ingress_control = false").ok();
+                render_ifac_params(&mut out, ifac);
             }
         }
     }
@@ -493,7 +579,7 @@ mod tests {
         assert!(scenario.nodes["bob"].respond_to_probes);
         assert!(scenario.nodes["alice"].enable_transport);
         assert_eq!(scenario.links.len(), 1);
-        assert_eq!(scenario.links["alice-bob"], "tcp");
+        assert_eq!(scenario.links["alice-bob"].link_type(), "tcp");
         assert_eq!(scenario.steps.len(), 2);
     }
 
@@ -728,7 +814,7 @@ hub-spoke2 = "tcp"
     #[test]
     fn unsupported_link_type_errors() {
         let mut links = BTreeMap::new();
-        links.insert("alice-bob".to_string(), "udp".to_string());
+        links.insert("alice-bob".to_string(), LinkDef::Simple("udp".into()));
         let result = assign_interfaces(&links);
         assert!(result.is_err());
         assert!(result.unwrap_err().contains("unsupported link type"));
@@ -737,7 +823,7 @@ hub-spoke2 = "tcp"
     #[test]
     fn malformed_link_key_errors() {
         let mut links = BTreeMap::new();
-        links.insert("alice".to_string(), "tcp".to_string());
+        links.insert("alice".to_string(), LinkDef::Simple("tcp".into()));
         let result = assign_interfaces(&links);
         assert!(result.is_err());
         assert!(result.unwrap_err().contains("nodeA-nodeB"));
@@ -965,6 +1051,247 @@ alpha-beta = "tcp"
         assert!(
             !config.contains("Selftest TCP Server"),
             "should not have Selftest TCP Server section"
+        );
+    }
+
+    #[test]
+    fn parse_link_simple_string() {
+        let toml_str = r#"
+[test]
+name = "simple_link"
+
+[nodes.alice]
+type = "rust"
+respond_to_probes = true
+
+[nodes.bob]
+type = "python"
+respond_to_probes = true
+
+[links]
+alice-bob = "tcp"
+"#;
+        let scenario = parse_scenario(toml_str).unwrap();
+        assert_eq!(scenario.links["alice-bob"], LinkDef::Simple("tcp".into()));
+        assert_eq!(scenario.links["alice-bob"].link_type(), "tcp");
+        assert!(scenario.links["alice-bob"].networkname().is_none());
+        assert!(scenario.links["alice-bob"].passphrase().is_none());
+    }
+
+    #[test]
+    fn parse_link_detailed_with_ifac() {
+        let toml_str = r#"
+[test]
+name = "ifac_link"
+
+[nodes.alice]
+type = "rust"
+respond_to_probes = true
+
+[nodes.bob]
+type = "python"
+respond_to_probes = true
+
+[links.alice-bob]
+type = "tcp"
+networkname = "testnet"
+passphrase = "secret123"
+ifac_size = 128
+"#;
+        let scenario = parse_scenario(toml_str).unwrap();
+        let link = &scenario.links["alice-bob"];
+        assert_eq!(link.link_type(), "tcp");
+        assert_eq!(link.networkname(), Some("testnet"));
+        assert_eq!(link.passphrase(), Some("secret123"));
+        assert_eq!(link.ifac_size(), Some(128));
+    }
+
+    #[test]
+    fn parse_link_detailed_without_ifac() {
+        let toml_str = r#"
+[test]
+name = "no_ifac_link"
+
+[nodes.alice]
+type = "rust"
+respond_to_probes = true
+
+[nodes.bob]
+type = "python"
+respond_to_probes = true
+
+[links.alice-bob]
+type = "tcp"
+"#;
+        let scenario = parse_scenario(toml_str).unwrap();
+        let link = &scenario.links["alice-bob"];
+        assert_eq!(link.link_type(), "tcp");
+        assert!(link.networkname().is_none());
+        assert!(link.passphrase().is_none());
+    }
+
+    #[test]
+    fn mixed_simple_and_detailed_links() {
+        let toml_str = r#"
+[test]
+name = "mixed_links"
+
+[nodes.alice]
+type = "rust"
+respond_to_probes = true
+
+[nodes.bob]
+type = "python"
+respond_to_probes = true
+
+[nodes.relay]
+type = "python"
+respond_to_probes = false
+
+[links]
+alice-relay = "tcp"
+
+[links.bob-relay]
+type = "tcp"
+networkname = "securenet"
+passphrase = "secret456"
+"#;
+        let scenario = parse_scenario(toml_str).unwrap();
+        assert_eq!(scenario.links.len(), 2);
+        assert_eq!(scenario.links["alice-relay"].link_type(), "tcp");
+        assert!(scenario.links["alice-relay"].networkname().is_none());
+        assert_eq!(scenario.links["bob-relay"].networkname(), Some("securenet"));
+        assert_eq!(scenario.links["bob-relay"].passphrase(), Some("secret456"));
+    }
+
+    #[test]
+    fn ifac_config_in_rendered_ini() {
+        let node = NodeDef {
+            node_type: "rust".into(),
+            respond_to_probes: true,
+            enable_transport: true,
+            rnode: None,
+            rnode_proxy: false,
+            listen_port: None,
+        };
+        let ifaces = vec![InterfaceEntry::TcpServer {
+            peer: "bob".into(),
+            port: 4242,
+            ifac: IfacParams {
+                networkname: Some("testnet".into()),
+                passphrase: Some("secret".into()),
+                ifac_size: Some(128),
+            },
+        }];
+        let config = render_config(&node, &ifaces, None);
+        assert!(
+            config.contains("networkname = testnet"),
+            "missing networkname"
+        );
+        assert!(config.contains("passphrase = secret"), "missing passphrase");
+        assert!(config.contains("ifac_size = 128"), "missing ifac_size");
+    }
+
+    #[test]
+    fn no_ifac_config_in_rendered_ini() {
+        let node = NodeDef {
+            node_type: "rust".into(),
+            respond_to_probes: true,
+            enable_transport: true,
+            rnode: None,
+            rnode_proxy: false,
+            listen_port: None,
+        };
+        let ifaces = vec![InterfaceEntry::TcpServer {
+            peer: "bob".into(),
+            port: 4242,
+            ifac: IfacParams::default(),
+        }];
+        let config = render_config(&node, &ifaces, None);
+        assert!(
+            !config.contains("networkname"),
+            "should not have networkname"
+        );
+        assert!(!config.contains("passphrase"), "should not have passphrase");
+        assert!(!config.contains("ifac_size"), "should not have ifac_size");
+    }
+
+    #[test]
+    fn assign_interfaces_propagates_ifac() {
+        let mut links = BTreeMap::new();
+        links.insert(
+            "alice-bob".to_string(),
+            LinkDef::Detailed {
+                link_type: "tcp".into(),
+                networkname: Some("net1".into()),
+                passphrase: Some("pass1".into()),
+                ifac_size: Some(64),
+            },
+        );
+        let interfaces = assign_interfaces(&links).unwrap();
+        let alice_ifaces = &interfaces["alice"];
+        let bob_ifaces = &interfaces["bob"];
+
+        match &alice_ifaces[0] {
+            InterfaceEntry::TcpServer { ifac, .. } => {
+                assert_eq!(ifac.networkname.as_deref(), Some("net1"));
+                assert_eq!(ifac.passphrase.as_deref(), Some("pass1"));
+                assert_eq!(ifac.ifac_size, Some(64));
+            }
+            other => panic!("expected TcpServer, got: {other:?}"),
+        }
+
+        match &bob_ifaces[0] {
+            InterfaceEntry::TcpClient { ifac, .. } => {
+                assert_eq!(ifac.networkname.as_deref(), Some("net1"));
+                assert_eq!(ifac.passphrase.as_deref(), Some("pass1"));
+                assert_eq!(ifac.ifac_size, Some(64));
+            }
+            other => panic!("expected TcpClient, got: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn ifac_end_to_end_config_generation() {
+        let toml_str = r#"
+[test]
+name = "ifac_e2e"
+
+[nodes.alice]
+type = "rust"
+respond_to_probes = true
+
+[nodes.bob]
+type = "python"
+respond_to_probes = true
+
+[links.alice-bob]
+type = "tcp"
+networkname = "mynet"
+passphrase = "mypass"
+"#;
+        let scenario = parse_scenario(toml_str).unwrap();
+        let tmp = TempDir::new().unwrap();
+        generate_node_configs(&scenario, tmp.path()).unwrap();
+
+        let alice_cfg = fs::read_to_string(tmp.path().join("alice/config")).unwrap();
+        assert!(
+            alice_cfg.contains("networkname = mynet"),
+            "alice missing networkname"
+        );
+        assert!(
+            alice_cfg.contains("passphrase = mypass"),
+            "alice missing passphrase"
+        );
+
+        let bob_cfg = fs::read_to_string(tmp.path().join("bob/config")).unwrap();
+        assert!(
+            bob_cfg.contains("networkname = mynet"),
+            "bob missing networkname"
+        );
+        assert!(
+            bob_cfg.contains("passphrase = mypass"),
+            "bob missing passphrase"
         );
     }
 }
