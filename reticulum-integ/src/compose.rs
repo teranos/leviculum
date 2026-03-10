@@ -1,5 +1,6 @@
+use std::collections::BTreeMap;
 use std::fmt::Write as FmtWrite;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use crate::topology::TestScenario;
 
@@ -10,13 +11,17 @@ use crate::topology::TestScenario;
 /// # Arguments
 ///
 /// * `scenario` — parsed test scenario
+/// * `run_id` — unique run identifier for container naming
 /// * `base_dir` — absolute path to tempdir containing per-node config/storage
 /// * `repo_root` — absolute path to the leviculum repository root
+/// * `proxy_devices` — for nodes with `rnode_proxy`, maps node name to the PTY
+///   slave device path that should be mounted instead of the raw serial device
 pub fn generate_compose(
     scenario: &TestScenario,
     run_id: u32,
     base_dir: &Path,
     repo_root: &Path,
+    proxy_devices: &BTreeMap<String, PathBuf>,
 ) -> String {
     let test_name = &scenario.test.name;
     let lrnsd_path = repo_root.join("target/release/lrnsd");
@@ -70,7 +75,12 @@ pub fn generate_compose(
         if let Some(device) = &node.rnode {
             writeln!(out, "    privileged: true").ok();
             writeln!(out, "    devices:").ok();
-            writeln!(out, "      - \"{device}:{device}\"").ok();
+            if let Some(pty_path) = proxy_devices.get(name) {
+                // Proxy PTY slave mapped to the original device path inside the container.
+                writeln!(out, "      - \"{}:{device}\"", pty_path.display()).ok();
+            } else {
+                writeln!(out, "      - \"{device}:{device}\"").ok();
+            }
         }
     }
 
@@ -105,7 +115,7 @@ mod tests {
     fn basic_probe_has_both_services() {
         let scenario = load_basic_probe();
         let (base_dir, repo_root) = sample_paths();
-        let yaml = generate_compose(&scenario, 0, &base_dir, &repo_root);
+        let yaml = generate_compose(&scenario, 0, &base_dir, &repo_root, &BTreeMap::new());
 
         assert!(yaml.contains("\n  alice:\n"), "missing alice service block");
         assert!(yaml.contains("\n  bob:\n"), "missing bob service block");
@@ -115,7 +125,7 @@ mod tests {
     fn node_type_environment_correct() {
         let scenario = load_basic_probe();
         let (base_dir, repo_root) = sample_paths();
-        let yaml = generate_compose(&scenario, 0, &base_dir, &repo_root);
+        let yaml = generate_compose(&scenario, 0, &base_dir, &repo_root, &BTreeMap::new());
 
         // Split into per-service blocks to check each independently.
         let alice_idx = yaml.find("  alice:").expect("no alice");
@@ -141,7 +151,7 @@ mod tests {
     fn volume_mounts_present() {
         let scenario = load_basic_probe();
         let (base_dir, repo_root) = sample_paths();
-        let yaml = generate_compose(&scenario, 0, &base_dir, &repo_root);
+        let yaml = generate_compose(&scenario, 0, &base_dir, &repo_root, &BTreeMap::new());
 
         for node in ["alice", "bob"] {
             let node_dir = base_dir.join(node);
@@ -180,7 +190,7 @@ mod tests {
     fn build_context_points_to_repo_root() {
         let scenario = load_basic_probe();
         let (base_dir, repo_root) = sample_paths();
-        let yaml = generate_compose(&scenario, 0, &base_dir, &repo_root);
+        let yaml = generate_compose(&scenario, 0, &base_dir, &repo_root, &BTreeMap::new());
 
         let expected = format!("context: {}", repo_root.display());
         assert!(
@@ -197,7 +207,7 @@ mod tests {
     fn container_names_include_test_name() {
         let scenario = load_basic_probe();
         let (base_dir, repo_root) = sample_paths();
-        let yaml = generate_compose(&scenario, 0, &base_dir, &repo_root);
+        let yaml = generate_compose(&scenario, 0, &base_dir, &repo_root, &BTreeMap::new());
 
         assert!(
             yaml.contains("container_name: integ-basic_probe-0-alice"),
@@ -237,7 +247,7 @@ duration_secs = 5
 "#;
         let scenario = parse_scenario(toml_str).expect("parse failed");
         let (base_dir, repo_root) = sample_paths();
-        let yaml = generate_compose(&scenario, 0, &base_dir, &repo_root);
+        let yaml = generate_compose(&scenario, 0, &base_dir, &repo_root, &BTreeMap::new());
 
         assert!(yaml.contains("\n  alice:\n"), "missing alice");
         assert!(yaml.contains("\n  bob:\n"), "missing bob");
@@ -268,7 +278,7 @@ respond_to_probes = true
 "#;
         let scenario = parse_scenario(toml_str).expect("parse failed");
         let (base_dir, repo_root) = sample_paths();
-        let yaml = generate_compose(&scenario, 0, &base_dir, &repo_root);
+        let yaml = generate_compose(&scenario, 0, &base_dir, &repo_root, &BTreeMap::new());
 
         // alpha has rnode — should have privileged and devices
         let alpha_idx = yaml.find("  alpha:").expect("no alpha");
@@ -307,7 +317,7 @@ respond_to_probes = true
     fn no_ports_or_networks_sections() {
         let scenario = load_basic_probe();
         let (base_dir, repo_root) = sample_paths();
-        let yaml = generate_compose(&scenario, 0, &base_dir, &repo_root);
+        let yaml = generate_compose(&scenario, 0, &base_dir, &repo_root, &BTreeMap::new());
 
         assert!(!yaml.contains("ports:"), "should not contain ports:");
         assert!(!yaml.contains("networks:"), "should not contain networks:");
@@ -326,7 +336,7 @@ respond_to_probes = true
             .expect("no parent")
             .to_path_buf();
 
-        let yaml = generate_compose(&scenario, 0, &base_dir, &repo_root);
+        let yaml = generate_compose(&scenario, 0, &base_dir, &repo_root, &BTreeMap::new());
         let compose_file = tmp.path().join("docker-compose.yml");
         fs::write(&compose_file, &yaml).unwrap();
 

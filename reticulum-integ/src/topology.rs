@@ -51,6 +51,10 @@ pub struct NodeDef {
     /// Host device path for RNode serial (e.g., "/dev/ttyACM0").
     #[serde(default)]
     pub rnode: Option<String>,
+    /// When true, a lora-proxy process sits between the host device and the
+    /// container, enabling fault-injection steps (proxy_rule, proxy_stats).
+    #[serde(default)]
+    pub rnode_proxy: bool,
     /// TCP server port for local tool access (e.g., selftest).
     /// Generates a standalone TCPServerInterface, independent of [links].
     #[serde(default)]
@@ -137,6 +141,21 @@ pub enum Step {
     /// Restore traffic between two containers by removing iptables DROP rules.
     #[serde(rename = "restore_link")]
     RestoreLink { from: String, to: String },
+    /// Add a fault-injection rule to a node's lora-proxy.
+    #[serde(rename = "proxy_rule")]
+    ProxyRule { node: String, rule: String },
+    /// Clear proxy rules: `id` can be a numeric rule ID or "all".
+    #[serde(rename = "proxy_rule_clear")]
+    ProxyRuleClear { node: String, id: String },
+    /// Query proxy stats and optionally assert on counters.
+    #[serde(rename = "proxy_stats")]
+    ProxyStats {
+        node: String,
+        #[serde(default)]
+        expect_dropped: Option<u64>,
+        #[serde(default)]
+        expect_forwarded: Option<u64>,
+    },
 }
 
 fn default_step_timeout() -> u64 {
@@ -387,6 +406,16 @@ pub fn generate_node_configs(scenario: &TestScenario, base_dir: &Path) -> io::Re
             io::ErrorKind::InvalidData,
             "nodes with rnode require a [radio] section",
         ));
+    }
+
+    // Validate: rnode_proxy requires rnode.
+    for (name, node) in &scenario.nodes {
+        if node.rnode_proxy && node.rnode.is_none() {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!("node '{name}': rnode_proxy requires rnode"),
+            ));
+        }
     }
 
     // Validate: listen_port must not collide with link-based TCP server ports.
@@ -752,6 +781,7 @@ rnode = "/dev/ttyACM0"
             respond_to_probes: true,
             enable_transport: true,
             rnode: Some("/dev/ttyACM0".into()),
+            rnode_proxy: false,
             listen_port: None,
         };
         let radio = RadioConfig {
@@ -825,6 +855,7 @@ rnode = "/dev/ttyACM0"
             respond_to_probes: true,
             enable_transport: true,
             rnode: None,
+            rnode_proxy: false,
             listen_port: Some(4242),
         };
         let config = render_config(&node, &[], None);
@@ -846,6 +877,7 @@ rnode = "/dev/ttyACM0"
             respond_to_probes: true,
             enable_transport: true,
             rnode: Some("/dev/ttyACM0".into()),
+            rnode_proxy: false,
             listen_port: Some(4242),
         };
         let radio = RadioConfig {
@@ -926,6 +958,7 @@ alpha-beta = "tcp"
             respond_to_probes: true,
             enable_transport: true,
             rnode: None,
+            rnode_proxy: false,
             listen_port: None,
         };
         let config = render_config(&node, &[], None);

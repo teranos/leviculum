@@ -1,5 +1,6 @@
 use std::collections::BTreeMap;
 use std::fmt;
+use std::io::{BufRead, Write};
 use std::thread;
 use std::time::Duration;
 
@@ -369,6 +370,22 @@ fn execute_step(
             println!("[{step_num}/{total}] restore_link {from} -> {to}...");
             execute_iptables_rule(runner, index, from, to, "-D")
         }
+        Step::ProxyRule { node, rule } => {
+            println!("[{step_num}/{total}] proxy_rule on {node}: {rule}...");
+            execute_proxy_cmd(runner, index, node, &format!("rule add {rule}"))
+        }
+        Step::ProxyRuleClear { node, id } => {
+            println!("[{step_num}/{total}] proxy_rule_clear on {node}: {id}...");
+            execute_proxy_cmd(runner, index, node, &format!("rule clear {id}"))
+        }
+        Step::ProxyStats {
+            node,
+            expect_dropped,
+            expect_forwarded,
+        } => {
+            println!("[{step_num}/{total}] proxy_stats on {node}...");
+            execute_proxy_stats(runner, index, node, *expect_dropped, *expect_forwarded)
+        }
     }
 }
 
@@ -523,7 +540,7 @@ fn execute_rnprobe(
 
     // All attempts exhausted (or single attempt for expect_fail)
     if expect_fail {
-        if last_status.map_or(true, |c| c != 0) {
+        if last_status != Some(0) {
             println!("  probe failed (expected): {hash}");
             return Ok(());
         }
@@ -574,6 +591,121 @@ fn check_probe_hops(
         println!("  probe ok: {hash}");
     }
     Ok(())
+}
+
+/// Send a command to a node's lora-proxy control socket and return the response.
+fn proxy_control_cmd(runner: &TestRunner, node: &str, cmd: &str) -> Result<String, StepError> {
+    let sock_path = runner
+        .proxy_socket(node)
+        .ok_or_else(|| StepError::StepFailed {
+            step_index: 0,
+            action: "proxy_cmd".into(),
+            detail: format!("node '{node}' has no proxy control socket"),
+        })?;
+
+    let stream = std::os::unix::net::UnixStream::connect(sock_path).map_err(|e| {
+        StepError::Runner(RunnerError::ProxyError(format!(
+            "connect to proxy socket for '{node}': {e}"
+        )))
+    })?;
+
+    stream
+        .set_read_timeout(Some(Duration::from_secs(5)))
+        .map_err(|e| StepError::Runner(RunnerError::Io(e)))?;
+
+    let mut writer = std::io::BufWriter::new(&stream);
+    writer
+        .write_all(format!("{cmd}\n").as_bytes())
+        .map_err(|e| StepError::Runner(RunnerError::Io(e)))?;
+    writer
+        .flush()
+        .map_err(|e| StepError::Runner(RunnerError::Io(e)))?;
+    // Shut down write half so the proxy knows we're done sending.
+    stream
+        .shutdown(std::net::Shutdown::Write)
+        .map_err(|e| StepError::Runner(RunnerError::Io(e)))?;
+
+    let mut reader = std::io::BufReader::new(&stream);
+    let mut line = String::new();
+    reader
+        .read_line(&mut line)
+        .map_err(|e| StepError::Runner(RunnerError::Io(e)))?;
+    Ok(line.trim().to_string())
+}
+
+/// Execute a proxy command and verify the response starts with "OK".
+fn execute_proxy_cmd(
+    runner: &TestRunner,
+    step_index: usize,
+    node: &str,
+    cmd: &str,
+) -> Result<(), StepError> {
+    let resp = proxy_control_cmd(runner, node, cmd)?;
+    if resp.starts_with("OK") {
+        println!("  proxy: {resp}");
+        Ok(())
+    } else {
+        Err(StepError::StepFailed {
+            step_index,
+            action: format!("proxy cmd on {node}"),
+            detail: format!("expected OK, got: {resp}"),
+        })
+    }
+}
+
+/// Query proxy stats and optionally assert on dropped/forwarded counters.
+fn execute_proxy_stats(
+    runner: &TestRunner,
+    step_index: usize,
+    node: &str,
+    expect_dropped: Option<u64>,
+    expect_forwarded: Option<u64>,
+) -> Result<(), StepError> {
+    let resp = proxy_control_cmd(runner, node, "stats")?;
+    if !resp.starts_with("OK ") {
+        return Err(StepError::StepFailed {
+            step_index,
+            action: format!("proxy stats on {node}"),
+            detail: format!("expected OK {{...}}, got: {resp}"),
+        });
+    }
+    let json = &resp[3..]; // strip "OK "
+    println!("  proxy stats: {json}");
+
+    if let Some(expected) = expect_dropped {
+        let actual = parse_json_u64(json, "dropped");
+        if actual != Some(expected) {
+            return Err(StepError::StepFailed {
+                step_index,
+                action: format!("proxy stats on {node}"),
+                detail: format!("expected dropped={expected}, got {:?} in {json}", actual),
+            });
+        }
+    }
+
+    if let Some(expected) = expect_forwarded {
+        let actual = parse_json_u64(json, "forwarded");
+        if actual != Some(expected) {
+            return Err(StepError::StepFailed {
+                step_index,
+                action: format!("proxy stats on {node}"),
+                detail: format!("expected forwarded={expected}, got {:?} in {json}", actual),
+            });
+        }
+    }
+
+    Ok(())
+}
+
+/// Simple JSON number extraction: find `"key":N` and parse N.
+fn parse_json_u64(json: &str, key: &str) -> Option<u64> {
+    let needle = format!("\"{}\":", key);
+    let pos = json.find(&needle)? + needle.len();
+    let rest = &json[pos..];
+    let end = rest
+        .find(|c: char| !c.is_ascii_digit())
+        .unwrap_or(rest.len());
+    rest[..end].parse().ok()
 }
 
 /// Parse hop count from rnprobe output. Looks for `over N hop` pattern.
@@ -1419,6 +1551,28 @@ Reticulum Transport Instance running
 
         runner.up().expect("up failed");
         runner.wait_ready(120).expect("wait_ready failed");
+
+        let result = execute_steps(&runner);
+        runner.down().expect("down failed");
+        result.expect("execute_steps should succeed");
+    }
+
+    #[test]
+    #[ignore] // Requires RNode hardware + lora-proxy binary
+    #[serial(lora)]
+    fn lora_proxy_loss() {
+        let _lock = acquire_lora_lock();
+        let toml_str = std::fs::read_to_string(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/tests/lora_proxy_loss.toml"
+        ))
+        .expect("lora_proxy_loss.toml not found");
+        let scenario = crate::topology::parse_scenario(&toml_str).expect("parse failed");
+
+        let mut runner = TestRunner::new(scenario).expect("TestRunner::new failed");
+
+        runner.up().expect("up failed");
+        runner.wait_ready(60).expect("wait_ready failed");
 
         let result = execute_steps(&runner);
         runner.down().expect("down failed");

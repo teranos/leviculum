@@ -1,8 +1,9 @@
+use std::collections::BTreeMap;
 use std::fmt;
 use std::fs;
 use std::io;
 use std::path::PathBuf;
-use std::process::{Command, Output};
+use std::process::{Child, Command, Output};
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::thread;
 use std::time::{Duration, Instant};
@@ -26,6 +27,7 @@ pub enum RunnerError {
     Io(io::Error),
     LrnsdNotFound(PathBuf),
     ConfigGeneration(String),
+    ProxyError(String),
 }
 
 impl fmt::Display for RunnerError {
@@ -47,6 +49,9 @@ impl fmt::Display for RunnerError {
             }
             RunnerError::ConfigGeneration(msg) => {
                 write!(f, "config generation failed: {msg}")
+            }
+            RunnerError::ProxyError(msg) => {
+                write!(f, "proxy error: {msg}")
             }
         }
     }
@@ -95,6 +100,10 @@ pub struct TestRunner {
     compose_file: PathBuf,
     project_name: String,
     is_up: bool,
+    /// lora-proxy child processes (killed on drop).
+    proxy_processes: Vec<Child>,
+    /// Node name -> control socket path for proxy commands.
+    proxy_sockets: BTreeMap<String, PathBuf>,
 }
 
 impl TestRunner {
@@ -102,6 +111,8 @@ impl TestRunner {
     ///
     /// Resolves repo root from `CARGO_MANIFEST_DIR`, checks that lrnsd exists,
     /// creates a tempdir, generates node configs and the compose file.
+    /// If any node has `rnode_proxy = true`, spawns lora-proxy processes and
+    /// waits for their PTYs to appear.
     pub fn new(mut scenario: TestScenario) -> Result<Self, RunnerError> {
         let manifest_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
         let repo_root = manifest_dir
@@ -119,6 +130,14 @@ impl TestRunner {
             return Err(RunnerError::LrnsdNotFound(lrns_path));
         }
 
+        let has_proxy = scenario.nodes.values().any(|n| n.rnode_proxy);
+        if has_proxy {
+            let proxy_path = repo_root.join("target/release/lora-proxy");
+            if !proxy_path.exists() {
+                return Err(RunnerError::LrnsdNotFound(proxy_path));
+            }
+        }
+
         // Apply env-var overrides (LORA_BANDWIDTH, LORA_SF, etc.) before
         // generating configs, so the same TOML can be run with different
         // radio settings.
@@ -126,13 +145,16 @@ impl TestRunner {
 
         let tempdir = TempDir::new()?;
         let base_dir = tempdir.path().join("nodes");
+        let run_id = RUN_COUNTER.fetch_add(1, Ordering::Relaxed);
+
+        // Spawn proxy processes before generating configs/compose.
+        let (proxy_processes, proxy_sockets, proxy_devices) =
+            spawn_proxies(&scenario, run_id, &repo_root)?;
 
         generate_node_configs(&scenario, &base_dir)
             .map_err(|e| RunnerError::ConfigGeneration(e.to_string()))?;
 
-        let run_id = RUN_COUNTER.fetch_add(1, Ordering::Relaxed);
-
-        let yaml = generate_compose(&scenario, run_id, &base_dir, &repo_root);
+        let yaml = generate_compose(&scenario, run_id, &base_dir, &repo_root, &proxy_devices);
         let compose_file = tempdir.path().join("docker-compose.yml");
         fs::write(&compose_file, &yaml)?;
 
@@ -145,6 +167,8 @@ impl TestRunner {
             compose_file,
             project_name,
             is_up: false,
+            proxy_processes,
+            proxy_sockets,
         })
     }
 
@@ -275,14 +299,21 @@ impl TestRunner {
         Ok(combined)
     }
 
+    /// Return the proxy control socket path for a node, if it has one.
+    pub fn proxy_socket(&self, node: &str) -> Option<&PathBuf> {
+        self.proxy_sockets.get(node)
+    }
+
     /// Return ordered node names from the scenario.
     pub fn node_names(&self) -> Vec<&str> {
         self.scenario.nodes.keys().map(|s| s.as_str()).collect()
     }
 
     /// Bring down containers with a 10-second timeout. No-op if not up.
+    /// Also kills any running proxy processes.
     pub fn down(&mut self) -> Result<(), RunnerError> {
         if !self.is_up {
+            self.kill_proxies();
             return Ok(());
         }
 
@@ -292,6 +323,7 @@ impl TestRunner {
             .output()?;
 
         self.is_up = false;
+        self.kill_proxies();
 
         if !output.status.success() {
             return Err(RunnerError::Compose {
@@ -301,6 +333,18 @@ impl TestRunner {
         }
 
         Ok(())
+    }
+
+    /// Kill all proxy child processes and clean up socket files.
+    fn kill_proxies(&mut self) {
+        for mut child in self.proxy_processes.drain(..) {
+            let _ = child.kill();
+            let _ = child.wait();
+        }
+        for sock_path in self.proxy_sockets.values() {
+            let _ = fs::remove_file(sock_path);
+        }
+        self.proxy_sockets.clear();
     }
 
     /// Save exec step stdout/stderr to `reticulum-integ/logs/{test_name}_{label}.log`.
@@ -356,12 +400,110 @@ impl TestRunner {
     }
 }
 
+/// Spawn lora-proxy processes for all nodes with `rnode_proxy = true`.
+///
+/// Returns:
+/// - Vec of child process handles
+/// - BTreeMap of node name -> control socket path
+/// - BTreeMap of node name -> PTY slave device path (for compose device mapping)
+type ProxySpawnResult = (
+    Vec<Child>,
+    BTreeMap<String, PathBuf>,
+    BTreeMap<String, PathBuf>,
+);
+
+fn spawn_proxies(
+    scenario: &TestScenario,
+    run_id: u32,
+    repo_root: &std::path::Path,
+) -> Result<ProxySpawnResult, RunnerError> {
+    let proxy_bin = repo_root.join("target/release/lora-proxy");
+    let mut children = Vec::new();
+    let mut sockets = BTreeMap::new();
+    let mut devices = BTreeMap::new();
+
+    for (name, node) in &scenario.nodes {
+        if !node.rnode_proxy {
+            continue;
+        }
+        let device = node.rnode.as_ref().ok_or_else(|| {
+            RunnerError::ProxyError(format!("node '{name}': rnode_proxy requires rnode"))
+        })?;
+
+        let pty_path = PathBuf::from(format!(
+            "/tmp/proxy-{}-{run_id}-{name}.pty",
+            scenario.test.name
+        ));
+        let sock_path = PathBuf::from(format!(
+            "/tmp/proxy-{}-{run_id}-{name}.sock",
+            scenario.test.name
+        ));
+
+        // Clean up stale files from previous runs.
+        let _ = fs::remove_file(&pty_path);
+        let _ = fs::remove_file(&sock_path);
+
+        let child = Command::new(&proxy_bin)
+            .args([
+                "hardware",
+                "--device",
+                device,
+                "--pty-out",
+                pty_path.to_str().expect("pty path not UTF-8"),
+                "--control",
+                sock_path.to_str().expect("sock path not UTF-8"),
+            ])
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::piped())
+            .spawn()
+            .map_err(|e| {
+                RunnerError::ProxyError(format!("failed to spawn lora-proxy for {name}: {e}"))
+            })?;
+
+        children.push(child);
+        sockets.insert(name.clone(), sock_path);
+
+        // Wait for the PTY symlink to appear (proxy creates it on startup).
+        let deadline = Instant::now() + Duration::from_secs(5);
+        loop {
+            if pty_path.exists() {
+                break;
+            }
+            if Instant::now() >= deadline {
+                // Kill all proxies we've started so far.
+                for mut c in children {
+                    let _ = c.kill();
+                    let _ = c.wait();
+                }
+                return Err(RunnerError::ProxyError(format!(
+                    "proxy for node '{name}' did not create PTY at {} within 5s",
+                    pty_path.display()
+                )));
+            }
+            thread::sleep(Duration::from_millis(50));
+        }
+
+        // Resolve the PTY symlink to get the actual /dev/pts/N path.
+        let real_pty = fs::read_link(&pty_path).map_err(|e| {
+            RunnerError::ProxyError(format!(
+                "cannot read PTY symlink {}: {e}",
+                pty_path.display()
+            ))
+        })?;
+        devices.insert(name.clone(), real_pty);
+    }
+
+    Ok((children, sockets, devices))
+}
+
 impl Drop for TestRunner {
     fn drop(&mut self) {
         if self.is_up {
             // Best-effort teardown on panic or early return.
             let _ = self.down();
         }
+        // Ensure proxies are killed even if down() wasn't called.
+        self.kill_proxies();
     }
 }
 

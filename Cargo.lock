@@ -1038,6 +1038,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "reticulum-proxy"
+version = "0.5.19"
+dependencies = [
+ "clap",
+ "nix 0.29.0",
+ "reticulum-core",
+ "tokio",
+ "tokio-serial",
+ "tracing",
+ "tracing-subscriber",
+]
+
+[[package]]
 name = "reticulum-std"
 version = "0.5.19"
 dependencies = [
