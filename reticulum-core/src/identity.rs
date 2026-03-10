@@ -43,6 +43,7 @@ impl core::fmt::Display for IdentityError {
 }
 
 /// A cryptographic identity with X25519 and Ed25519 key pairs
+#[derive(Clone)]
 pub struct Identity {
     /// X25519 private key for ECDH (None for public-only identities)
     x25519_private: Option<x25519_dalek::StaticSecret>,

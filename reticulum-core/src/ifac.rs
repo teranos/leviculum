@@ -73,6 +73,7 @@ impl core::fmt::Display for IfacError {
 const IFAC_FLAG: u8 = 0x80;
 
 /// Configuration for Interface Access Code authentication
+#[derive(Clone)]
 pub struct IfacConfig {
     /// Size of the IFAC in bytes (typically 8 or 16)
     ifac_size: usize,

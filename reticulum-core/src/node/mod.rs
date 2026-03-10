@@ -689,6 +689,26 @@ impl<R: CryptoRngCore, C: Clock, S: Storage> NodeCore<R, C, S> {
         self.transport.set_interface_congested(iface_idx, congested);
     }
 
+    /// Register an IFAC configuration for an interface.
+    ///
+    /// The driver should call this during interface setup for interfaces with
+    /// networkname/passphrase configured.
+    pub fn set_ifac_config(&mut self, id: usize, config: crate::ifac::IfacConfig) {
+        self.transport.set_ifac_config(id, config);
+    }
+
+    /// Remove IFAC configuration for an interface.
+    pub fn remove_ifac_config(&mut self, id: usize) {
+        self.transport.remove_ifac_config(id);
+    }
+
+    /// Clone all IFAC configurations (for passing to dispatch_actions outside the lock).
+    pub fn clone_ifac_configs(
+        &self,
+    ) -> alloc::collections::BTreeMap<usize, crate::ifac::IfacConfig> {
+        self.transport.clone_ifac_configs()
+    }
+
     /// Notify core that an interface has gone offline (sans-I/O)
     ///
     /// The driver should call this when it detects that an interface is no
@@ -729,6 +749,9 @@ impl<R: CryptoRngCore, C: Clock, S: Storage> NodeCore<R, C, S> {
 
         // Remove announce frequency tracking state for this interface
         self.transport.remove_announce_freq_tracking(iface_idx);
+
+        // Remove IFAC config for this interface
+        self.transport.remove_ifac_config(iface_idx);
 
         // Remove local client flag, interface name and HW_MTU
         // (after logging so the name is still available above)

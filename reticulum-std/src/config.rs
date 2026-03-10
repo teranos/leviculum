@@ -140,6 +140,14 @@ pub struct InterfaceConfig {
     /// Enable multicast loopback (for same-machine testing)
     pub multicast_loopback: Option<bool>,
 
+    // IFAC (Interface Access Code)
+    /// Network name for IFAC authentication
+    pub networkname: Option<String>,
+    /// Passphrase for IFAC authentication
+    pub passphrase: Option<String>,
+    /// IFAC size in bytes (Python config specifies bits, divided by 8 here)
+    pub ifac_size: Option<usize>,
+
     // RNode specific
     /// LoRa frequency in Hz
     pub frequency: Option<u64>,

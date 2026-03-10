@@ -66,6 +66,7 @@ fn build_interface_stats(
     let transport_enabled = core.transport_config().enable_transport;
     let uptime = start_time.elapsed().as_secs_f64();
     let counters_map = iface_stats_map.lock().unwrap();
+    let ifac_configs = core.clone_ifac_configs();
 
     // Count local clients for the "clients" field on LocalInterface
     let local_client_count = stats.iter().filter(|e| e.is_local_client).count();
@@ -152,7 +153,13 @@ fn build_interface_stats(
             (pickle_str_key("held_announces"), pickle_int(0)),
             (pickle_str_key("announce_queue"), pickle_none()),
             (pickle_str_key("ifac_signature"), pickle_none()),
-            (pickle_str_key("ifac_size"), pickle_none()),
+            (
+                pickle_str_key("ifac_size"),
+                match ifac_configs.get(&entry.id) {
+                    Some(cfg) => pickle_int((cfg.ifac_size() * 8) as i64),
+                    None => pickle_none(),
+                },
+            ),
             (pickle_str_key("ifac_netname"), pickle_none()),
         ]);
 

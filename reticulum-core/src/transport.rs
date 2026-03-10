@@ -33,6 +33,7 @@
 //! transport.poll();
 //! ```
 
+use alloc::borrow::Cow;
 use alloc::boxed::Box;
 use alloc::collections::BTreeMap;
 use alloc::collections::BTreeSet;
@@ -56,6 +57,7 @@ use crate::crypto::truncated_hash;
 use crate::destination::{Destination, DestinationHash, DestinationType};
 use crate::hex_fmt::HexShort;
 use crate::identity::Identity;
+use crate::ifac::IfacConfig;
 use crate::link::Link;
 use crate::packet::{
     build_proof_packet, packet_hash, HeaderType, Packet, PacketContext, PacketData, PacketError,
@@ -210,21 +212,32 @@ pub struct DispatchResult {
 pub fn dispatch_actions(
     interfaces: &mut [&mut dyn crate::traits::Interface],
     actions: Vec<Action>,
+    ifac_configs: &BTreeMap<usize, IfacConfig>,
 ) -> DispatchResult {
     let mut retries = Vec::new();
     let mut errors = Vec::new();
     for action in actions {
         match action {
             Action::SendPacket { iface, data } => {
+                let send_data = match ifac_configs.get(&iface.0) {
+                    Some(cfg) => match cfg.apply_ifac(&data) {
+                        Ok(wrapped) => wrapped,
+                        Err(e) => {
+                            tracing::warn!("IFAC apply failed on iface {}: {:?}", iface.0, e);
+                            continue;
+                        }
+                    },
+                    None => data,
+                };
                 if let Some(iface_obj) = interfaces.iter_mut().find(|i| i.id() == iface) {
                     // SendPacket = directed traffic (link requests, proofs, channel data)
                     // → high priority on constrained interfaces like LoRa
-                    if let Err(e) = iface_obj.try_send_prioritized(&data, true) {
+                    if let Err(e) = iface_obj.try_send_prioritized(&send_data, true) {
                         errors.push((iface, e));
                         if matches!(e, crate::traits::InterfaceError::BufferFull) {
                             retries.push(SendRetry {
                                 iface_idx: iface.0,
-                                data,
+                                data: send_data,
                             });
                         }
                     }
@@ -238,8 +251,19 @@ pub fn dispatch_actions(
                     if Some(iface_obj.id()) == exclude_iface {
                         continue;
                     }
+                    let iface_idx = iface_obj.id().0;
+                    let result = match ifac_configs.get(&iface_idx) {
+                        Some(cfg) => match cfg.apply_ifac(&data) {
+                            Ok(wrapped) => iface_obj.try_send_prioritized(&wrapped, false),
+                            Err(e) => {
+                                tracing::warn!("IFAC apply failed on iface {}: {:?}", iface_idx, e);
+                                continue;
+                            }
+                        },
+                        None => iface_obj.try_send_prioritized(&data, false),
+                    };
                     // Broadcast = announce rebroadcasts → normal priority
-                    if let Err(e) = iface_obj.try_send_prioritized(&data, false) {
+                    if let Err(e) = result {
                         errors.push((iface_obj.id(), e));
                     }
                 }
@@ -589,6 +613,11 @@ pub struct Transport<C: Clock, S: Storage> {
     /// Removal path: cleared by the driver when retry queue drains or interface disconnects.
     interface_congested: BTreeSet<usize>,
 
+    /// Per-interface IFAC (Interface Access Code) configurations.
+    /// Keyed by interface index. Only present for interfaces with networkname/passphrase configured.
+    /// Removal path: removed in handle_interface_down via remove_ifac_config().
+    ifac_configs: BTreeMap<usize, IfacConfig>,
+
     /// Pending I/O actions for the driver (sans-I/O buffer)
     pending_actions: Vec<Action>,
 
@@ -630,6 +659,7 @@ impl<C: Clock, S: Storage> Transport<C, S> {
             interface_incoming_announce_times: BTreeMap::new(),
             interface_outgoing_announce_times: BTreeMap::new(),
             interface_congested: BTreeSet::new(),
+            ifac_configs: BTreeMap::new(),
             pending_actions: Vec::new(),
             last_discovery_retry_ms: 0,
             #[cfg(test)]
@@ -937,7 +967,34 @@ impl<C: Clock, S: Storage> Transport<C, S> {
     ) -> Result<(), TransportError> {
         self.stats.packets_received += 1;
 
-        let mut packet = Packet::unpack(raw)?;
+        // IFAC verification: verify and strip IFAC on protected interfaces,
+        // drop IFAC-tagged packets on unprotected interfaces.
+        let raw: Cow<'_, [u8]> = match self.ifac_config(interface_index) {
+            Some(cfg) => match cfg.verify_ifac(raw) {
+                Ok(clean) => Cow::Owned(clean),
+                Err(_) => {
+                    tracing::trace!(
+                        "Dropping packet: IFAC verification failed on iface {}",
+                        self.iface_name(interface_index)
+                    );
+                    self.stats.packets_dropped += 1;
+                    return Ok(());
+                }
+            },
+            None => {
+                if IfacConfig::has_ifac_flag(raw) {
+                    tracing::trace!(
+                        "Dropping IFAC-tagged packet on non-IFAC iface {}",
+                        self.iface_name(interface_index)
+                    );
+                    self.stats.packets_dropped += 1;
+                    return Ok(());
+                }
+                Cow::Borrowed(raw)
+            }
+        };
+
+        let mut packet = Packet::unpack(&raw)?;
 
         // Increment hops on receipt, matching Python Transport.py:1319.
         // After this: hops=1 means direct neighbor, hops=0 means local client.
@@ -1005,7 +1062,7 @@ impl<C: Clock, S: Storage> Transport<C, S> {
         // Compute full packet hash (for deduplication and proofs) and truncated hash
         // (for reverse_table routing). Dedup uses full 32-byte SHA-256, matching
         // Python Transport.py:1227 which checks `packet.packet_hash` (full hash).
-        let full_packet_hash = packet_hash(raw);
+        let full_packet_hash = packet_hash(&raw);
         let mut truncated_hash = [0u8; TRUNCATED_HASHBYTES];
         truncated_hash.copy_from_slice(&full_packet_hash[..TRUNCATED_HASHBYTES]);
 
@@ -1053,9 +1110,9 @@ impl<C: Clock, S: Storage> Transport<C, S> {
         // handle_data link-table routing, handle_link_request) so they include the
         // outbound interface index needed for proof routing.
         match packet.flags.packet_type {
-            PacketType::Announce => self.handle_announce(packet, interface_index, raw),
+            PacketType::Announce => self.handle_announce(packet, interface_index, &raw),
             PacketType::LinkRequest => {
-                self.handle_link_request(packet, interface_index, raw, truncated_hash)
+                self.handle_link_request(packet, interface_index, &raw, truncated_hash)
             }
             PacketType::Proof => self.handle_proof(packet, interface_index, full_packet_hash),
             PacketType::Data => {
@@ -2833,6 +2890,28 @@ impl<C: Clock, S: Storage> Transport<C, S> {
     /// Get the registered HW_MTU for a specific interface index.
     pub(crate) fn interface_hw_mtu(&self, id: usize) -> Option<u32> {
         self.interface_hw_mtus.get(&id).copied()
+    }
+
+    // ─── Public: IFAC Config API ────────────────────────────────────────
+
+    /// Register an IFAC configuration for an interface (called by driver at setup).
+    pub fn set_ifac_config(&mut self, id: usize, config: IfacConfig) {
+        self.ifac_configs.insert(id, config);
+    }
+
+    /// Remove IFAC configuration for an interface (called during handle_interface_down cleanup).
+    pub fn remove_ifac_config(&mut self, id: usize) {
+        self.ifac_configs.remove(&id);
+    }
+
+    /// Get the IFAC configuration for a specific interface index.
+    pub(crate) fn ifac_config(&self, id: usize) -> Option<&IfacConfig> {
+        self.ifac_configs.get(&id)
+    }
+
+    /// Clone all IFAC configurations (for passing to dispatch_actions outside the lock).
+    pub fn clone_ifac_configs(&self) -> BTreeMap<usize, IfacConfig> {
+        self.ifac_configs.clone()
     }
 
     /// Get the HW_MTU for the next-hop interface toward a destination.
@@ -13976,7 +14055,8 @@ mod tests {
                 data: vec![1, 2, 3],
             }];
 
-            let result = dispatch_actions(&mut interfaces, actions);
+            let no_ifac = BTreeMap::new();
+            let result = dispatch_actions(&mut interfaces, actions, &no_ifac);
 
             // Should have a retry entry
             assert_eq!(result.retries.len(), 1);
@@ -13999,12 +14079,295 @@ mod tests {
                 exclude_iface: None,
             }];
 
-            let result = dispatch_actions(&mut interfaces, actions);
+            let no_ifac = BTreeMap::new();
+            let result = dispatch_actions(&mut interfaces, actions, &no_ifac);
 
             // Broadcast failures should NOT produce retries
             assert!(result.retries.is_empty());
             // But should still log the error
             assert_eq!(result.errors.len(), 1);
+        }
+    }
+
+    /// Tests for IFAC (Interface Access Code) integration with Transport
+    mod ifac_tests {
+        use super::*;
+        use crate::ifac::IfacConfig;
+        use crate::test_utils::{test_transport, MockInterface};
+        use alloc::vec;
+        use rand_core::OsRng;
+
+        extern crate std;
+
+        /// Build a valid announce packet raw bytes for testing.
+        /// Returns (raw_bytes, dest_hash).
+        fn make_test_announce() -> (Vec<u8>, [u8; TRUNCATED_HASHBYTES]) {
+            use crate::destination::{Destination, DestinationType, Direction};
+            use crate::identity::Identity;
+            use crate::packet::{HeaderType, PacketData, PacketFlags, TransportType};
+
+            let identity = Identity::generate(&mut OsRng);
+            let dest = Destination::new(
+                Some(identity),
+                Direction::In,
+                DestinationType::Single,
+                "testapp",
+                &["ifac"],
+            )
+            .unwrap();
+
+            let id = dest.identity().unwrap();
+            let random_hash = [0x42u8; crate::constants::RANDOM_HASHBYTES];
+
+            let mut payload = Vec::new();
+            payload.extend_from_slice(&id.public_key_bytes());
+            payload.extend_from_slice(dest.name_hash());
+            payload.extend_from_slice(&random_hash);
+
+            let app_data = b"ifac_test";
+            let mut signed_data = Vec::new();
+            signed_data.extend_from_slice(dest.hash().as_bytes());
+            signed_data.extend_from_slice(&id.public_key_bytes());
+            signed_data.extend_from_slice(dest.name_hash());
+            signed_data.extend_from_slice(&random_hash);
+            signed_data.extend_from_slice(app_data);
+
+            let signature = id.sign(&signed_data).unwrap();
+            payload.extend_from_slice(&signature);
+            payload.extend_from_slice(app_data);
+
+            let packet = Packet {
+                flags: PacketFlags {
+                    ifac_flag: false,
+                    header_type: HeaderType::Type1,
+                    context_flag: false,
+                    transport_type: TransportType::Broadcast,
+                    dest_type: DestinationType::Single,
+                    packet_type: PacketType::Announce,
+                },
+                hops: 0,
+                transport_id: None,
+                destination_hash: dest.hash().into_bytes(),
+                context: crate::packet::PacketContext::None,
+                data: PacketData::Owned(payload),
+            };
+
+            let mut buf = [0u8; MTU];
+            let len = packet.pack(&mut buf).unwrap();
+            let raw = buf[..len].to_vec();
+            (raw, dest.hash().into_bytes())
+        }
+
+        #[test]
+        fn test_ifac_inbound_valid_packet_accepted() {
+            let mut transport = test_transport();
+            let iface_idx = transport.register_interface(Box::new(MockInterface::new("ifac0", 0)));
+            transport.set_interface_name(iface_idx, "ifac0".into());
+
+            let cfg = IfacConfig::new(Some("testnet"), Some("secret"), 16).unwrap();
+            transport.set_ifac_config(iface_idx, cfg.clone());
+
+            let (raw, _dest_hash) = make_test_announce();
+            let wrapped = cfg.apply_ifac(&raw).unwrap();
+
+            let result = transport.process_incoming(iface_idx, &wrapped);
+            assert!(result.is_ok(), "IFAC-valid packet should be accepted");
+            // Should not be counted as dropped
+            assert_eq!(transport.stats().packets_dropped, 0);
+        }
+
+        #[test]
+        fn test_ifac_inbound_invalid_packet_dropped() {
+            let mut transport = test_transport();
+            let iface_idx = transport.register_interface(Box::new(MockInterface::new("ifac0", 0)));
+            transport.set_interface_name(iface_idx, "ifac0".into());
+
+            let cfg = IfacConfig::new(Some("testnet"), Some("secret"), 16).unwrap();
+            transport.set_ifac_config(iface_idx, cfg);
+
+            // Send raw packet without IFAC wrapping — should be dropped
+            let (raw, _dest_hash) = make_test_announce();
+            let result = transport.process_incoming(iface_idx, &raw);
+            assert!(result.is_ok(), "Silently drop, no error");
+            assert_eq!(transport.stats().packets_dropped, 1);
+        }
+
+        #[test]
+        fn test_ifac_inbound_non_ifac_iface_drops_ifac_tagged() {
+            let mut transport = test_transport();
+            let iface_idx = transport.register_interface(Box::new(MockInterface::new("plain0", 0)));
+            transport.set_interface_name(iface_idx, "plain0".into());
+            // No IFAC config set on this interface
+
+            let cfg = IfacConfig::new(Some("testnet"), Some("secret"), 16).unwrap();
+            let (raw, _dest_hash) = make_test_announce();
+            let wrapped = cfg.apply_ifac(&raw).unwrap();
+
+            // Feed IFAC-tagged packet to non-IFAC interface — should drop
+            let result = transport.process_incoming(iface_idx, &wrapped);
+            assert!(result.is_ok(), "Silently drop, no error");
+            assert_eq!(transport.stats().packets_dropped, 1);
+        }
+
+        #[test]
+        fn test_ifac_outbound_dispatch_applies_ifac() {
+            let mut iface = MockInterface::new("ifac0", 0);
+            let mut interfaces: Vec<&mut dyn crate::traits::Interface> = vec![&mut iface];
+
+            let cfg = IfacConfig::new(Some("testnet"), Some("secret"), 16).unwrap();
+            let mut ifac_configs = BTreeMap::new();
+            ifac_configs.insert(0, cfg);
+
+            let (raw, _) = make_test_announce();
+            let actions = vec![Action::SendPacket {
+                iface: InterfaceId(0),
+                data: raw.clone(),
+            }];
+
+            let result = dispatch_actions(&mut interfaces, actions, &ifac_configs);
+            assert!(result.errors.is_empty());
+
+            // The sent bytes should have IFAC flag set
+            let sent = iface
+                .sent
+                .last()
+                .expect("should have sent something")
+                .clone();
+            assert!(
+                IfacConfig::has_ifac_flag(&sent),
+                "Dispatched packet should have IFAC flag"
+            );
+            assert_eq!(
+                sent.len(),
+                raw.len() + 16,
+                "IFAC should add 16 bytes (ifac_size)"
+            );
+        }
+
+        #[test]
+        fn test_ifac_roundtrip_dispatch_then_process() {
+            let cfg = IfacConfig::new(Some("testnet"), Some("secret"), 16).unwrap();
+
+            // Outbound: dispatch_actions applies IFAC
+            let mut iface = MockInterface::new("ifac0", 0);
+            let (raw, _) = make_test_announce();
+            {
+                let mut interfaces: Vec<&mut dyn crate::traits::Interface> = vec![&mut iface];
+                let mut ifac_configs = BTreeMap::new();
+                ifac_configs.insert(0, cfg.clone());
+                let actions = vec![Action::SendPacket {
+                    iface: InterfaceId(0),
+                    data: raw.clone(),
+                }];
+                dispatch_actions(&mut interfaces, actions, &ifac_configs);
+            }
+
+            let sent = iface.sent.last().expect("should have sent").clone();
+
+            // Inbound: process_incoming verifies and strips IFAC
+            let mut transport = test_transport();
+            let iface_idx = transport.register_interface(Box::new(MockInterface::new("ifac0", 0)));
+            transport.set_interface_name(iface_idx, "ifac0".into());
+            transport.set_ifac_config(iface_idx, cfg);
+
+            let result = transport.process_incoming(iface_idx, &sent);
+            assert!(result.is_ok(), "Roundtrip IFAC should succeed");
+            assert_eq!(transport.stats().packets_dropped, 0);
+        }
+
+        #[test]
+        fn test_ifac_broadcast_mixed_interfaces() {
+            let mut iface0 = MockInterface::new("ifac0", 0);
+            let mut iface1 = MockInterface::new("plain1", 1);
+            let mut interfaces: Vec<&mut dyn crate::traits::Interface> =
+                vec![&mut iface0, &mut iface1];
+
+            let cfg = IfacConfig::new(Some("testnet"), Some("secret"), 8).unwrap();
+            let mut ifac_configs = BTreeMap::new();
+            ifac_configs.insert(0, cfg); // IFAC only on iface 0
+
+            let (raw, _) = make_test_announce();
+            let actions = vec![Action::Broadcast {
+                data: raw.clone(),
+                exclude_iface: None,
+            }];
+
+            let result = dispatch_actions(&mut interfaces, actions, &ifac_configs);
+            assert!(result.errors.is_empty());
+
+            // iface 0 should get IFAC-wrapped bytes
+            let sent0 = iface0.sent.last().expect("iface0 should have sent").clone();
+            assert!(
+                IfacConfig::has_ifac_flag(&sent0),
+                "IFAC interface should get IFAC-wrapped packet"
+            );
+            assert_eq!(sent0.len(), raw.len() + 8);
+
+            // iface 1 should get raw bytes (no IFAC)
+            let sent1 = iface1.sent.last().expect("iface1 should have sent").clone();
+            assert!(
+                !IfacConfig::has_ifac_flag(&sent1),
+                "Non-IFAC interface should get raw packet"
+            );
+            assert_eq!(sent1.len(), raw.len());
+        }
+
+        #[test]
+        fn test_ifac_wrong_key_dropped() {
+            let cfg1 = IfacConfig::new(Some("net1"), Some("key1"), 16).unwrap();
+            let cfg2 = IfacConfig::new(Some("net2"), Some("key2"), 16).unwrap();
+
+            let (raw, _) = make_test_announce();
+            let wrapped = cfg1.apply_ifac(&raw).unwrap();
+
+            // Try to verify with wrong key
+            let mut transport = test_transport();
+            let iface_idx = transport.register_interface(Box::new(MockInterface::new("ifac0", 0)));
+            transport.set_interface_name(iface_idx, "ifac0".into());
+            transport.set_ifac_config(iface_idx, cfg2);
+
+            let result = transport.process_incoming(iface_idx, &wrapped);
+            assert!(result.is_ok(), "Should silently drop");
+            assert_eq!(transport.stats().packets_dropped, 1);
+        }
+
+        #[test]
+        fn test_ifac_config_cleanup_on_remove() {
+            let mut transport = test_transport();
+            let cfg = IfacConfig::new(Some("testnet"), None, 8).unwrap();
+            transport.set_ifac_config(0, cfg);
+            assert!(transport.ifac_config(0).is_some());
+
+            transport.remove_ifac_config(0);
+            assert!(transport.ifac_config(0).is_none());
+        }
+
+        #[test]
+        fn test_ifac_config_restored_after_reconnect() {
+            let cfg = IfacConfig::new(Some("testnet"), Some("secret"), 16).unwrap();
+
+            let mut transport = test_transport();
+            let iface_idx = transport.register_interface(Box::new(MockInterface::new("ifac0", 0)));
+            transport.set_interface_name(iface_idx, "ifac0".into());
+            transport.set_ifac_config(iface_idx, cfg.clone());
+
+            // Simulate disconnect: remove_ifac_config (called by handle_interface_down)
+            transport.remove_ifac_config(iface_idx);
+            assert!(transport.ifac_config(iface_idx).is_none());
+
+            // Simulate reconnect: re-apply IFAC config
+            transport.set_ifac_config(iface_idx, cfg.clone());
+            assert!(transport.ifac_config(iface_idx).is_some());
+
+            // Verify IFAC-wrapped packet is accepted after re-apply
+            let (raw, _) = make_test_announce();
+            let wrapped = cfg.apply_ifac(&raw).unwrap();
+            let result = transport.process_incoming(iface_idx, &wrapped);
+            assert!(
+                result.is_ok(),
+                "IFAC packet should be accepted after config restore"
+            );
+            assert_eq!(transport.stats().packets_dropped, 0);
         }
     }
 }

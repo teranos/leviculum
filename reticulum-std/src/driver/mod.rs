@@ -224,6 +224,37 @@ impl ReticulumNode {
                 }
             }
 
+            // Register IFAC configurations for interfaces with networkname/passphrase
+            for (idx, iface_config) in self.interfaces.iter().enumerate() {
+                if !iface_config.enabled {
+                    continue;
+                }
+                if iface_config.networkname.is_some() || iface_config.passphrase.is_some() {
+                    let default_size = match iface_config.interface_type.as_str() {
+                        "RNodeInterface" => reticulum_core::constants::IFAC_DEFAULT_SIZE_SERIAL,
+                        _ => reticulum_core::constants::IFAC_DEFAULT_SIZE_NETWORK,
+                    };
+                    let size = iface_config.ifac_size.unwrap_or(default_size);
+                    match reticulum_core::ifac::IfacConfig::new(
+                        iface_config.networkname.as_deref(),
+                        iface_config.passphrase.as_deref(),
+                        size,
+                    ) {
+                        Ok(ifac) => {
+                            core.set_ifac_config(idx, ifac);
+                            tracing::info!("IFAC enabled on interface {} (size={})", idx, size);
+                        }
+                        Err(e) => {
+                            tracing::warn!(
+                                "Failed to create IFAC config for iface {}: {:?}",
+                                idx,
+                                e
+                            );
+                        }
+                    }
+                }
+            }
+
             let transport_enabled = core.transport_config().enable_transport;
             let iface_count = self.interfaces.iter().filter(|c| c.enabled).count();
             tracing::info!(
@@ -928,6 +959,14 @@ async fn run_event_loop(
     let mut next_flush = tokio::time::Instant::now() + Duration::from_secs(FLUSH_INTERVAL_SECS);
     let mut retry_queues: BTreeMap<usize, VecDeque<Vec<u8>>> = BTreeMap::new();
 
+    // Clone IFAC configs from core so dispatch_output can apply IFAC outside the lock.
+    // This is the canonical source of truth for "what IFAC config does interface N have
+    // according to the INI config". On reconnect, we re-apply from this map.
+    let ifac_configs: BTreeMap<usize, reticulum_core::ifac::IfacConfig> = {
+        let core = inner.lock().unwrap();
+        core.clone_ifac_configs()
+    };
+
     loop {
         tokio::select! {
             // Branch 1: Packet from any interface
@@ -967,6 +1006,7 @@ async fn run_event_loop(
                             &event_tx,
                             &inner,
                             &mut retry_queues,
+                            &ifac_configs,
                         );
                     }
                     RecvEvent::Disconnected(iface_id) => {
@@ -981,6 +1021,7 @@ async fn run_event_loop(
                             &event_tx,
                             &inner,
                             &mut retry_queues,
+                            &ifac_configs,
                         );
                         // Clear retry queue and congested flag for disconnected interface
                         retry_queues.remove(&iface_id.0);
@@ -1006,6 +1047,7 @@ async fn run_event_loop(
                     &event_tx,
                     &inner,
                     &mut retry_queues,
+                    &ifac_configs,
                 );
             }
 
@@ -1024,6 +1066,7 @@ async fn run_event_loop(
                     &event_tx,
                     &inner,
                     &mut retry_queues,
+                    &ifac_configs,
                 );
 
                 // Advance next_poll based on next_deadline_ms
@@ -1074,7 +1117,7 @@ async fn run_event_loop(
                         let mut core = inner.lock().unwrap();
                         core.handle_interface_up(iface_idx)
                     };
-                    dispatch_output(output, &mut registry, &event_tx, &inner, &mut retry_queues);
+                    dispatch_output(output, &mut registry, &event_tx, &inner, &mut retry_queues, &ifac_configs);
                 }
             }
 
@@ -1086,11 +1129,16 @@ async fn run_event_loop(
             // client-cached get rebroadcast) so the remote peer re-learns paths.
             Some(iface_id) = reconnect_rx.recv() => {
                 tracing::info!("Interface {} reconnected, re-announcing destinations", iface_id);
+                // Re-apply IFAC config to core (E29: handle_interface_down removed it)
+                if let Some(cfg) = ifac_configs.get(&iface_id.0) {
+                    let mut core = inner.lock().unwrap();
+                    core.set_ifac_config(iface_id.0, cfg.clone());
+                }
                 let output = {
                     let mut core = inner.lock().unwrap();
                     core.handle_interface_up(iface_id.0)
                 };
-                dispatch_output(output, &mut registry, &event_tx, &inner, &mut retry_queues);
+                dispatch_output(output, &mut registry, &event_tx, &inner, &mut retry_queues, &ifac_configs);
             }
 
             // Branch 7: Periodic storage flush (persist identities + packet hashes)
@@ -1113,6 +1161,7 @@ fn dispatch_output(
     event_tx: &mpsc::Sender<NodeEvent>,
     inner: &Arc<Mutex<StdNodeCore>>,
     retry_queues: &mut BTreeMap<usize, VecDeque<Vec<u8>>>,
+    ifac_configs: &BTreeMap<usize, reticulum_core::ifac::IfacConfig>,
 ) {
     // 1. Drain retry queues before dispatching new actions
     for (iface_idx, queue) in retry_queues.iter_mut() {
@@ -1149,7 +1198,8 @@ fn dispatch_output(
         .iter_mut()
         .map(|h| h as &mut dyn reticulum_core::traits::Interface)
         .collect();
-    let result = reticulum_core::transport::dispatch_actions(&mut ifaces, output.actions);
+    let result =
+        reticulum_core::transport::dispatch_actions(&mut ifaces, output.actions, ifac_configs);
 
     // 3. Log dispatch errors
     for (iface_id, error) in &result.errors {

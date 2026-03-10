@@ -67,6 +67,9 @@ pub(crate) fn parse_ini(content: &str) -> Result<Config, String> {
                     devices: None,
                     ignored_devices: None,
                     multicast_loopback: None,
+                    networkname: None,
+                    passphrase: None,
+                    ifac_size: None,
                     frequency: None,
                     bandwidth: None,
                     spreading_factor: None,
@@ -199,6 +202,9 @@ fn apply_interface_key(iface: &mut InterfaceConfig, key: &str, value: &str) {
         "flow_control" => iface.flow_control = Some(parse_bool(value)),
         "airtime_limit_short" => iface.airtime_limit_short = value.parse().ok(),
         "airtime_limit_long" => iface.airtime_limit_long = value.parse().ok(),
+        "networkname" | "network_name" => iface.networkname = Some(value.to_string()),
+        "passphrase" => iface.passphrase = Some(value.to_string()),
+        "ifac_size" => iface.ifac_size = value.parse::<usize>().ok().map(|bits| bits / 8),
         _ => {} // Ignore unknown keys (id_callsign, id_interval, modulation, etc.)
     }
 }
