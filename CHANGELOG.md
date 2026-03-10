@@ -7,6 +7,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+- **RNode serial heartbeat fixes idle-correlated LoRa failures** — after 12+ minutes of radio silence, the first TX packet was lost (the USB-serial link or RNode firmware appeared to enter an idle state). A CMD_DETECT heartbeat every 300s keeps the serial link exercised without touching the radio. Also adds debug-level RX/TX logging for radio diagnostics. `lora_late_announce_10node`: 0/3 → 3/3 at SF10/scale=4.
+
 ### Added
 - **Send queue priority for LoRa** — on constrained half-duplex interfaces like LoRa, announce rebroadcasts (Broadcast actions) could saturate the send queue, delaying link requests and proofs (SendPacket actions) past their establishment timeout. New `Interface::try_send_prioritized()` trait method carries a priority hint through the stack; `dispatch_actions()` marks SendPacket as high priority, Broadcast as normal. RNode send queue inserts high-priority packets before normal-priority ones. SF10 lora_link_rust pass rate: 3/5 → 5/5.
 - **First-hop timeout for link establishment on slow interfaces** — link establishment timeout now accounts for first-hop airtime on slow interfaces (LoRa). Matches Python's `get_first_hop_timeout()`: adds `MTU × 8 / bitrate` seconds to the establishment window. For LoRa at 976 bps, this adds ~4.1s to the base timeout. New method: `Link::set_first_hop_timeout_from_bitrate()`. 3 unit tests.

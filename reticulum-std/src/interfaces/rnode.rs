@@ -11,7 +11,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use rand_core::RngCore;
-use reticulum_core::framing::kiss::{KissDeframeResult, KissDeframer};
+use reticulum_core::framing::kiss::{self, KissDeframeResult, KissDeframer};
 use reticulum_core::rnode;
 use reticulum_core::transport::InterfaceId;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
@@ -457,6 +457,13 @@ async fn rnode_io_task(
     let mut send_timer: Option<Pin<Box<tokio::time::Sleep>>> = None;
     let mut timer_ready = false;
 
+    // Periodic heartbeat: send CMD_DETECT every 5 minutes to keep the
+    // serial link alive and verify the RNode firmware is responsive.
+    // This does NOT transmit over LoRa — it's a serial-only ping.
+    const HEARTBEAT_INTERVAL: Duration = Duration::from_secs(300);
+    let mut heartbeat_timer = Box::pin(tokio::time::sleep(HEARTBEAT_INTERVAL));
+    let mut heartbeat_pending = false;
+
     loop {
         tokio::select! {
             // Branch 1: Read from serial port
@@ -472,6 +479,7 @@ async fn rnode_io_task(
                             if let KissDeframeResult::Frame { command, payload } = frame {
                                 match command {
                                     rnode::CMD_DATA => {
+                                        tracing::debug!("{}: RX {} bytes from radio", name, payload.len());
                                         counters.rx_bytes.fetch_add(
                                             payload.len() as u64,
                                             std::sync::atomic::Ordering::Relaxed,
@@ -484,8 +492,17 @@ async fn rnode_io_task(
                                         }
                                     }
                                     rnode::CMD_READY => {
+                                        tracing::debug!("{}: CMD_READY received", name);
                                         if flow_control {
                                             interface_ready = true;
+                                        }
+                                    }
+                                    rnode::CMD_DETECT => {
+                                        if payload.first() == Some(&rnode::DETECT_RESP) {
+                                            if heartbeat_pending {
+                                                tracing::debug!("{}: heartbeat OK", name);
+                                                heartbeat_pending = false;
+                                            }
                                         }
                                     }
                                     rnode::CMD_RESET => {
@@ -630,6 +647,18 @@ async fn rnode_io_task(
                 send_timer = None;
                 timer_ready = true;
             }
+
+            // Branch 4: Periodic heartbeat — CMD_DETECT ping to verify firmware
+            _ = &mut heartbeat_timer => {
+                let detect_frame = [kiss::FEND, rnode::CMD_DETECT, rnode::DETECT_REQ, kiss::FEND];
+                if let Err(e) = port.write_all(&detect_frame).await {
+                    tracing::warn!("{}: heartbeat write error: {}", name, e);
+                    return outgoing_rx;
+                }
+                heartbeat_pending = true;
+                tracing::debug!("{}: heartbeat sent", name);
+                heartbeat_timer = Box::pin(tokio::time::sleep(HEARTBEAT_INTERVAL));
+            }
         }
 
         // After any branch: try to send if both gates are open
@@ -644,7 +673,7 @@ async fn rnode_io_task(
                 counters
                     .tx_bytes
                     .fetch_add(queued.payload_len, std::sync::atomic::Ordering::Relaxed);
-                tracing::trace!("{}: TX {} bytes", name, queued.payload_len);
+                tracing::debug!("{}: TX {} bytes to serial", name, queued.payload_len);
 
                 timer_ready = false;
                 if flow_control {
