@@ -409,6 +409,17 @@ pub struct Link {
     /// Set at link creation from the next-hop interface bitrate.
     /// Zero for fast interfaces (TCP, etc).
     first_hop_timeout_extra_ms: u64,
+    /// Outgoing resource transfer (sender side).
+    /// Removed when transfer completes or fails.
+    outgoing_resource: Option<crate::resource::outgoing::OutgoingResource>,
+    /// Incoming resource transfer (receiver side).
+    /// Removed when transfer completes or fails.
+    incoming_resource: Option<crate::resource::incoming::IncomingResource>,
+    /// Pending advertisement awaiting application accept/reject (AcceptApp strategy).
+    /// Removed when accept_resource() or reject_resource() is called.
+    pending_resource_adv: Option<crate::resource::ResourceAdvertisement>,
+    /// Resource acceptance strategy for this link.
+    resource_strategy: crate::resource::ResourceStrategy,
 }
 
 impl Link {
@@ -461,6 +472,10 @@ impl Link {
             rtt_send_count: 0,
             rtt_confirmed: false,
             first_hop_timeout_extra_ms: 0,
+            outgoing_resource: None,
+            incoming_resource: None,
+            pending_resource_adv: None,
+            resource_strategy: crate::resource::ResourceStrategy::AcceptNone,
         }
     }
 
@@ -561,6 +576,10 @@ impl Link {
             rtt_send_count: 0,
             rtt_confirmed: false,
             first_hop_timeout_extra_ms: 0,
+            outgoing_resource: None,
+            incoming_resource: None,
+            pending_resource_adv: None,
+            resource_strategy: crate::resource::ResourceStrategy::AcceptNone,
         })
     }
 
@@ -1202,6 +1221,134 @@ impl Link {
         self.channel.as_mut().unwrap()
     }
 
+    // ── Resource accessors ───────────────────────────────────────────────
+
+    /// Set the resource acceptance strategy.
+    pub fn set_resource_strategy(&mut self, strategy: crate::resource::ResourceStrategy) {
+        self.resource_strategy = strategy;
+    }
+
+    /// Get the resource acceptance strategy.
+    pub fn resource_strategy(&self) -> crate::resource::ResourceStrategy {
+        self.resource_strategy
+    }
+
+    /// Whether there is a pending resource advertisement awaiting accept/reject.
+    pub fn has_pending_resource(&self) -> bool {
+        self.pending_resource_adv.is_some()
+    }
+
+    /// Get the pending resource advertisement.
+    pub fn pending_resource_adv(&self) -> Option<&crate::resource::ResourceAdvertisement> {
+        self.pending_resource_adv.as_ref()
+    }
+
+    /// Set a pending resource advertisement.
+    pub(crate) fn set_pending_resource_adv(&mut self, adv: crate::resource::ResourceAdvertisement) {
+        self.pending_resource_adv = Some(adv);
+    }
+
+    /// Take the pending resource advertisement.
+    pub(crate) fn take_pending_resource_adv(
+        &mut self,
+    ) -> Option<crate::resource::ResourceAdvertisement> {
+        self.pending_resource_adv.take()
+    }
+
+    /// Whether an outgoing resource transfer is in progress.
+    pub fn has_outgoing_resource(&self) -> bool {
+        self.outgoing_resource.is_some()
+    }
+
+    /// Whether an incoming resource transfer is in progress.
+    pub fn has_incoming_resource(&self) -> bool {
+        self.incoming_resource.is_some()
+    }
+
+    /// Get outgoing resource status.
+    pub fn outgoing_resource_status(&self) -> Option<crate::resource::ResourceStatus> {
+        self.outgoing_resource.as_ref().map(|r| r.status())
+    }
+
+    /// Get incoming resource status.
+    pub fn incoming_resource_status(&self) -> Option<crate::resource::ResourceStatus> {
+        self.incoming_resource.as_ref().map(|r| r.status())
+    }
+
+    /// Get outgoing resource progress (0.0 to 1.0).
+    pub fn outgoing_resource_progress(&self) -> Option<f32> {
+        self.outgoing_resource.as_ref().map(|r| r.progress())
+    }
+
+    /// Get incoming resource progress (0.0 to 1.0).
+    pub fn incoming_resource_progress(&self) -> Option<f32> {
+        self.incoming_resource.as_ref().map(|r| r.progress())
+    }
+
+    /// Get a reference to the outgoing resource.
+    pub(crate) fn outgoing_resource(&self) -> Option<&crate::resource::outgoing::OutgoingResource> {
+        self.outgoing_resource.as_ref()
+    }
+
+    /// Get a mutable reference to the outgoing resource.
+    pub(crate) fn outgoing_resource_mut(
+        &mut self,
+    ) -> Option<&mut crate::resource::outgoing::OutgoingResource> {
+        self.outgoing_resource.as_mut()
+    }
+
+    /// Set the outgoing resource.
+    pub(crate) fn set_outgoing_resource(
+        &mut self,
+        res: crate::resource::outgoing::OutgoingResource,
+    ) {
+        self.outgoing_resource = Some(res);
+    }
+
+    /// Take the outgoing resource out of the link (leaving None).
+    pub(crate) fn take_outgoing_resource(
+        &mut self,
+    ) -> Option<crate::resource::outgoing::OutgoingResource> {
+        self.outgoing_resource.take()
+    }
+
+    /// Clear the outgoing resource.
+    pub(crate) fn clear_outgoing_resource(&mut self) {
+        self.outgoing_resource = None;
+    }
+
+    /// Get a reference to the incoming resource.
+    pub(crate) fn incoming_resource(&self) -> Option<&crate::resource::incoming::IncomingResource> {
+        self.incoming_resource.as_ref()
+    }
+
+    /// Get a mutable reference to the incoming resource.
+    pub(crate) fn incoming_resource_mut(
+        &mut self,
+    ) -> Option<&mut crate::resource::incoming::IncomingResource> {
+        self.incoming_resource.as_mut()
+    }
+
+    /// Set the incoming resource.
+    pub(crate) fn set_incoming_resource(
+        &mut self,
+        res: crate::resource::incoming::IncomingResource,
+    ) {
+        self.incoming_resource = Some(res);
+    }
+
+    /// Take the incoming resource out of the link (leaving None).
+    pub(crate) fn take_incoming_resource(
+        &mut self,
+    ) -> Option<crate::resource::incoming::IncomingResource> {
+        self.incoming_resource.take()
+    }
+
+    /// Clear the incoming resource.
+    pub(crate) fn clear_incoming_resource(&mut self) {
+        self.incoming_resource = None;
+    }
+
     #[cfg(test)]
     pub(crate) fn set_timing_for_test(
         &mut self,
@@ -1212,6 +1359,11 @@ impl Link {
         self.keepalive_secs = keepalive_secs;
         self.stale_time_secs = stale_time_secs;
         self.last_inbound = last_inbound;
+    }
+
+    #[cfg(test)]
+    pub(crate) fn set_link_key_for_test(&mut self, key: [u8; 64]) {
+        self.link_key = Some(key);
     }
 
     /// Close the link (transition to Closed state)
@@ -1640,6 +1792,79 @@ impl Link {
         packet.extend_from_slice(self.id.as_bytes());
         packet.push(packet_context as u8);
         packet.extend_from_slice(&encrypted[..enc_len]);
+
+        Ok(packet)
+    }
+
+    /// Build a data packet with pre-encrypted (raw) payload.
+    ///
+    /// Unlike `build_data_packet_with_context()`, this does NOT encrypt the data.
+    /// Used for Resource data parts (context=RESOURCE) where the entire data blob
+    /// is encrypted in bulk before segmentation.
+    ///
+    /// Python equivalent: `Packet(link, data, context=Packet.RESOURCE)` where
+    /// `Packet.pack()` skips encryption for `context == RESOURCE`.
+    pub fn build_raw_data_packet(
+        &self,
+        data: &[u8],
+        packet_context: PacketContext,
+    ) -> Result<alloc::vec::Vec<u8>, LinkError> {
+        use crate::destination::DestinationType;
+        use crate::packet::{HeaderType, PacketFlags, PacketType, TransportType};
+
+        self.require_state(LinkState::Active)?;
+
+        let flags = PacketFlags {
+            ifac_flag: false,
+            header_type: HeaderType::Type1,
+            context_flag: packet_context != PacketContext::None,
+            transport_type: TransportType::Broadcast,
+            dest_type: DestinationType::Link,
+            packet_type: PacketType::Data,
+        };
+
+        let mut packet =
+            alloc::vec::Vec::with_capacity(1 + 1 + TRUNCATED_HASHBYTES + 1 + data.len());
+        packet.push(flags.to_byte());
+        packet.push(0); // hops = 0
+        packet.extend_from_slice(self.id.as_bytes());
+        packet.push(packet_context as u8);
+        packet.extend_from_slice(data);
+
+        Ok(packet)
+    }
+
+    /// Build a PROOF packet with a specific context and raw payload.
+    ///
+    /// Used for Resource completion proofs (context=RESOURCE_PRF).
+    /// Unlike data proofs, resource proofs are NOT encrypted and carry
+    /// `resource_hash + proof_hash` (not an Ed25519 signature).
+    pub fn build_proof_packet_with_context(
+        &self,
+        data: &[u8],
+        packet_context: PacketContext,
+    ) -> Result<alloc::vec::Vec<u8>, LinkError> {
+        use crate::destination::DestinationType;
+        use crate::packet::{HeaderType, PacketFlags, PacketType, TransportType};
+
+        self.require_state(LinkState::Active)?;
+
+        let flags = PacketFlags {
+            ifac_flag: false,
+            header_type: HeaderType::Type1,
+            context_flag: packet_context != PacketContext::None,
+            transport_type: TransportType::Broadcast,
+            dest_type: DestinationType::Link,
+            packet_type: PacketType::Proof,
+        };
+
+        let mut packet =
+            alloc::vec::Vec::with_capacity(1 + 1 + TRUNCATED_HASHBYTES + 1 + data.len());
+        packet.push(flags.to_byte());
+        packet.push(0); // hops = 0
+        packet.extend_from_slice(self.id.as_bytes());
+        packet.push(packet_context as u8);
+        packet.extend_from_slice(data);
 
         Ok(packet)
     }
@@ -3274,5 +3499,104 @@ mod tests {
         // first_hop_extra = 500 * 8 * 1000 / 300 = 13333 ms
         // total = 13333 + 6000 * (2+1) = 13333 + 18000 = 31333
         assert_eq!(link.establishment_timeout_ms(), 31_333);
+    }
+
+    // ==================== RAW DATA PACKET TESTS ====================
+
+    #[test]
+    fn test_build_raw_data_packet() {
+        let (initiator, _responder) = setup_active_link_pair();
+
+        let payload = b"raw resource data";
+        let packet = initiator
+            .build_raw_data_packet(payload, PacketContext::Resource)
+            .unwrap();
+
+        // [flags (1)] [hops (1)] [link_id (16)] [context (1)] [raw_data]
+        assert_eq!(
+            packet.len(),
+            1 + 1 + TRUNCATED_HASHBYTES + 1 + payload.len()
+        );
+
+        // dest_type=Link=0b11, packet_type=Data=0b00 -> bits 3-0 = 0x0C
+        // context_flag=true -> bit 5 = 0x20
+        assert_eq!(packet[0] & 0x0F, 0x0C);
+        assert_ne!(packet[0] & 0x20, 0); // context flag set
+
+        // Hops = 0
+        assert_eq!(packet[1], 0x00);
+
+        // Link ID
+        assert_eq!(&packet[2..18], initiator.id().as_bytes());
+
+        // Context byte = RESOURCE = 0x01
+        assert_eq!(packet[18], PacketContext::Resource as u8);
+
+        // Payload is raw (NOT encrypted)
+        assert_eq!(&packet[19..], payload);
+    }
+
+    #[test]
+    fn test_build_raw_data_packet_not_active() {
+        let dest_hash = DestinationHash::new([0x42; TRUNCATED_HASHBYTES]);
+        let link = Link::new_outgoing(dest_hash, &mut OsRng);
+
+        let result = link.build_raw_data_packet(b"data", PacketContext::Resource);
+        assert!(matches!(result, Err(LinkError::InvalidState)));
+    }
+
+    #[test]
+    fn test_build_raw_data_packet_no_context() {
+        let (initiator, _responder) = setup_active_link_pair();
+
+        let packet = initiator
+            .build_raw_data_packet(b"data", PacketContext::None)
+            .unwrap();
+
+        // context_flag should be false when context is None
+        assert_eq!(packet[0] & 0x20, 0);
+        assert_eq!(packet[18], PacketContext::None as u8);
+    }
+
+    // ==================== PROOF PACKET WITH CONTEXT TESTS ====================
+
+    #[test]
+    fn test_build_proof_packet_with_context() {
+        let (initiator, _responder) = setup_active_link_pair();
+
+        let proof_data = b"resource_hash_plus_proof_hash____"; // 32 bytes
+        let packet = initiator
+            .build_proof_packet_with_context(proof_data, PacketContext::ResourcePrf)
+            .unwrap();
+
+        // [flags (1)] [hops (1)] [link_id (16)] [context (1)] [proof_data]
+        assert_eq!(
+            packet.len(),
+            1 + 1 + TRUNCATED_HASHBYTES + 1 + proof_data.len()
+        );
+
+        // dest_type=Link=0b11, packet_type=Proof=0b11 -> bits 3-0 = 0x0F
+        assert_eq!(packet[0] & 0x0F, 0x0F);
+
+        // context_flag should be set
+        assert_ne!(packet[0] & 0x20, 0);
+
+        // Link ID
+        assert_eq!(&packet[2..18], initiator.id().as_bytes());
+
+        // Context = ResourcePrf = 0x05
+        assert_eq!(packet[18], PacketContext::ResourcePrf as u8);
+
+        // Payload is raw
+        assert_eq!(&packet[19..], proof_data);
+    }
+
+    #[test]
+    fn test_build_proof_packet_with_context_not_active() {
+        let dest_hash = DestinationHash::new([0x42; TRUNCATED_HASHBYTES]);
+        let link = Link::new_outgoing(dest_hash, &mut OsRng);
+
+        let result = link.build_proof_packet_with_context(b"data", PacketContext::ResourcePrf);
+        assert!(matches!(result, Err(LinkError::InvalidState)));
     }
 }

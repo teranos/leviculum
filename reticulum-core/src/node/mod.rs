@@ -512,6 +512,167 @@ impl<R: CryptoRngCore, C: Clock, S: Storage> NodeCore<R, C, S> {
         Ok(self.process_events_and_actions())
     }
 
+    // ─── Resource Transfer API ────────────────────────────────────────────────
+
+    /// Initiate a resource transfer on an established link.
+    ///
+    /// Creates an `OutgoingResource`, sends the advertisement, and returns
+    /// the resource hash identifying this transfer. The actual data transfer
+    /// proceeds automatically via REQ/data packet exchanges.
+    ///
+    /// # Arguments
+    /// * `link_id` - The link to send the resource on (must be Active)
+    /// * `data` - The data to transfer
+    /// * `metadata` - Optional metadata bytes. Must be msgpack-encoded by the caller
+    ///   (e.g., via `rmpv::encode::write_value`). Python's Resource constructor
+    ///   calls `umsgpack.packb(metadata)` — the caller must do the equivalent.
+    pub fn send_resource(
+        &mut self,
+        link_id: &LinkId,
+        data: &[u8],
+        metadata: Option<&[u8]>,
+    ) -> Result<([u8; 32], crate::transport::TickOutput), crate::resource::ResourceError> {
+        use crate::packet::PacketContext;
+        use crate::resource::outgoing::OutgoingResource;
+        use crate::resource::ResourceError;
+
+        let now_ms = self.transport.clock().now_ms();
+
+        let link = self
+            .links
+            .get(link_id)
+            .ok_or(ResourceError::InvalidRequest)?;
+
+        if link.has_outgoing_resource() {
+            return Err(ResourceError::TransferInProgress);
+        }
+
+        let outgoing = OutgoingResource::new(data, metadata, None, link, &mut self.rng, now_ms)?;
+        let resource_hash = *outgoing.resource_hash();
+        let adv_bytes = outgoing.adv_packet().to_vec();
+
+        // Store the outgoing resource on the link
+        let link = self
+            .links
+            .get_mut(link_id)
+            .ok_or(ResourceError::InvalidRequest)?;
+        link.set_outgoing_resource(outgoing);
+
+        // Send the advertisement (encrypted)
+        match link.build_data_packet_with_context(
+            &adv_bytes,
+            PacketContext::ResourceAdv,
+            &mut self.rng,
+        ) {
+            Ok(pkt) => {
+                self.route_link_packet(link_id, &pkt);
+            }
+            Err(e) => {
+                // Failed to build ADV — clean up
+                if let Some(link) = self.links.get_mut(link_id) {
+                    link.clear_outgoing_resource();
+                }
+                tracing::debug!("Failed to build resource ADV packet: {e}");
+                return Err(ResourceError::InvalidRequest);
+            }
+        }
+
+        Ok((resource_hash, self.process_events_and_actions()))
+    }
+
+    /// Accept a pending resource advertisement on a link.
+    ///
+    /// Call this after receiving a `NodeEvent::ResourceAdvertised` event.
+    /// Creates an `IncomingResource` and sends the first REQ to start
+    /// the transfer.
+    pub fn accept_resource(
+        &mut self,
+        link_id: &LinkId,
+    ) -> Result<crate::transport::TickOutput, crate::resource::ResourceError> {
+        use crate::packet::PacketContext;
+        use crate::resource::incoming::IncomingResource;
+        use crate::resource::ResourceError;
+
+        let now_ms = self.transport.clock().now_ms();
+
+        let link = self
+            .links
+            .get_mut(link_id)
+            .ok_or(ResourceError::InvalidRequest)?;
+
+        let adv = link
+            .take_pending_resource_adv()
+            .ok_or(ResourceError::NoPendingResource)?;
+        let resource_hash = adv.resource_hash;
+        let link_mdu = link.mdu();
+        let sdu = crate::resource::resource_sdu(link.negotiated_mtu());
+
+        let (incoming, req_payload) =
+            IncomingResource::from_advertisement(&adv, link_mdu, sdu, now_ms)?;
+
+        let req_packet = link
+            .build_data_packet_with_context(&req_payload, PacketContext::ResourceReq, &mut self.rng)
+            .map_err(|_| ResourceError::InvalidRequest)?;
+
+        link.set_incoming_resource(incoming);
+        self.route_link_packet(link_id, &req_packet);
+
+        self.events.push(NodeEvent::ResourceTransferStarted {
+            link_id: *link_id,
+            resource_hash,
+            is_sender: false,
+        });
+
+        Ok(self.process_events_and_actions())
+    }
+
+    /// Reject a pending resource advertisement on a link.
+    ///
+    /// Call this after receiving a `NodeEvent::ResourceAdvertised` event
+    /// to decline the transfer.
+    pub fn reject_resource(
+        &mut self,
+        link_id: &LinkId,
+    ) -> Result<crate::transport::TickOutput, crate::resource::ResourceError> {
+        use crate::packet::PacketContext;
+        use crate::resource::ResourceError;
+
+        let link = self
+            .links
+            .get_mut(link_id)
+            .ok_or(ResourceError::InvalidRequest)?;
+
+        let adv = link
+            .take_pending_resource_adv()
+            .ok_or(ResourceError::NoPendingResource)?;
+
+        // Send cancel (ICL = initiator cancel)
+        let cancel_data = adv.resource_hash.to_vec();
+        if let Ok(pkt) = link.build_data_packet_with_context(
+            &cancel_data,
+            PacketContext::ResourceIcl,
+            &mut self.rng,
+        ) {
+            self.route_link_packet(link_id, &pkt);
+        }
+
+        Ok(self.process_events_and_actions())
+    }
+
+    /// Set the resource acceptance strategy for a link.
+    pub fn set_resource_strategy(
+        &mut self,
+        link_id: &LinkId,
+        strategy: crate::resource::ResourceStrategy,
+    ) -> Result<(), crate::resource::ResourceError> {
+        let link = self
+            .links
+            .get_mut(link_id)
+            .ok_or(crate::resource::ResourceError::InvalidRequest)?;
+        link.set_resource_strategy(strategy);
+        Ok(())
+    }
+
     // ─── Sans-I/O Entry Points ────────────────────────────────────────────────
 
     /// Process an incoming packet from an interface (sans-I/O)
@@ -630,6 +791,7 @@ impl<R: CryptoRngCore, C: Clock, S: Storage> NodeCore<R, C, S> {
         self.check_keepalives(now_secs);
         self.check_stale_links(now_secs);
         self.check_channel_timeouts(now_ms);
+        self.check_resource_timeouts(now_ms);
 
         // Send management announces (probe destination, etc.)
         self.check_mgmt_announces(now_ms);

@@ -122,6 +122,8 @@ class TestDaemon:
         self.received_single_packets = []  # [(timestamp, dest_hash, data_hex)]
         self.client_interfaces = {}  # name -> TCPClientInterface
         self.inbound_trace = []  # [(timestamp, flags, packet_type, dest_hash_hex, transport_id_hex)]
+        self.received_resources = []  # [{resource_hash, data, metadata, status}]
+        self.resource_strategies = {}  # dest_hash -> "accept_all" | "accept_none"
 
         # Create temp config directory
         self.config_dir = tempfile.mkdtemp(prefix="rns_test_")
@@ -390,6 +392,30 @@ class TestDaemon:
                 })
             return {"result": packets}
 
+        elif method == "set_resource_strategy":
+            dest_hash = params.get("dest_hash")
+            strategy = params.get("strategy", "accept_none")
+            self.resource_strategies[dest_hash] = strategy
+            return {"result": "ok"}
+
+        elif method == "send_resource":
+            link_hash = params.get("link_hash")
+            data_hex = params.get("data")
+            metadata_hex = params.get("metadata")
+
+            link = self.links.get(link_hash)
+            if not link:
+                return {"error": f"link {link_hash} not found"}
+
+            data = bytes.fromhex(data_hex)
+            metadata = bytes.fromhex(metadata_hex) if metadata_hex else None
+
+            resource = RNS.Resource(data, link, metadata=metadata, advertise=True)
+            return {"result": {"resource_hash": resource.hash.hex()}}
+
+        elif method == "get_received_resources":
+            return {"result": self.received_resources}
+
         elif method == "announce_destination":
             dest_hash = params.get("hash")
             app_data = params.get("app_data", b"")
@@ -520,6 +546,16 @@ class TestDaemon:
                 except Exception as e:
                     if self.verbose:
                         print(f"Failed to set up channel handler on initiator link: {e}")
+
+                # Resource callbacks for initiator-side links
+                if self.resource_strategies.get(dest_hash) == "accept_all":
+                    link.set_resource_strategy(RNS.Link.ACCEPT_ALL)
+                    link.set_resource_started_callback(
+                        lambda resource: self._on_resource_started(resource)
+                    )
+                    link.set_resource_concluded_callback(
+                        lambda resource: self._on_resource_concluded(resource)
+                    )
 
                 return {
                     "result": {
@@ -1142,6 +1178,53 @@ class TestDaemon:
         except Exception as e:
             if self.verbose:
                 print(f"Failed to set up channel handler: {e}")
+
+        # Resource callbacks: if this destination has accept_all strategy, set up
+        # ACCEPT_ALL and concluded callback on the link
+        dest_hash = dest.hash.hex()
+        if self.resource_strategies.get(dest_hash) == "accept_all":
+            link.set_resource_strategy(RNS.Link.ACCEPT_ALL)
+            link.set_resource_started_callback(
+                lambda resource: self._on_resource_started(resource)
+            )
+            link.set_resource_concluded_callback(
+                lambda resource: self._on_resource_concluded(resource)
+            )
+
+    def _on_resource_started(self, resource):
+        """Called when a resource transfer starts."""
+        if self.verbose:
+            print(f"Resource transfer started: {resource.hash.hex()}")
+
+    def _on_resource_concluded(self, resource):
+        """Called when a resource transfer concludes (complete or failed)."""
+        if self.verbose:
+            print(f"Resource concluded: {resource.hash.hex()}, status={resource.status}")
+        if resource.status == RNS.Resource.COMPLETE:
+            data = resource.data.read() if hasattr(resource.data, 'read') else bytes(resource.data)
+            # resource.metadata is the DECODED value (after umsgpack.unpackb).
+            # For bytes metadata, .hex() gives hex of the raw bytes.
+            meta = None
+            if resource.metadata is not None:
+                if isinstance(resource.metadata, bytes):
+                    meta = resource.metadata.hex()
+                else:
+                    # Non-bytes metadata (dict, string, etc) — encode back for RPC
+                    import umsgpack
+                    meta = umsgpack.packb(resource.metadata).hex()
+            self.received_resources.append({
+                "resource_hash": resource.hash.hex(),
+                "data": data.hex(),
+                "metadata": meta,
+                "status": "complete",
+            })
+        else:
+            self.received_resources.append({
+                "resource_hash": resource.hash.hex() if resource.hash else "unknown",
+                "data": "",
+                "metadata": None,
+                "status": str(resource.status),
+            })
 
     def _on_channel_message(self, link, message):
         """Called when a channel message is received over a link."""

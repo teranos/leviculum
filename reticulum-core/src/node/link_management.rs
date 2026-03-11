@@ -600,6 +600,11 @@ impl<R: CryptoRngCore, C: Clock, S: Storage> NodeCore<R, C, S> {
             return;
         }
 
+        if packet.context == PacketContext::ResourcePrf {
+            self.handle_resource_proof(link_id, proof_data);
+            return;
+        }
+
         let Some(link) = self.links.get_mut(&link_id) else {
             tracing::debug!(
                 "handle_link_proof: link <{}> not found in self.links ({} links tracked)",
@@ -811,6 +816,24 @@ impl<R: CryptoRngCore, C: Clock, S: Storage> NodeCore<R, C, S> {
             PacketContext::LinkClose => self.handle_close_packet(link_id, packet),
             PacketContext::Channel => {
                 self.handle_channel_packet(link_id, packet, raw_packet, now_ms, now_secs)
+            }
+            PacketContext::ResourceAdv => {
+                self.handle_resource_adv(link_id, packet, raw_packet, now_ms, now_secs);
+            }
+            PacketContext::ResourceReq => {
+                self.handle_resource_req(link_id, packet, now_ms, now_secs);
+            }
+            PacketContext::Resource => {
+                self.handle_resource_data(link_id, packet, now_ms, now_secs);
+            }
+            PacketContext::ResourceHmu => {
+                self.handle_resource_hmu(link_id, packet, raw_packet, now_ms, now_secs);
+            }
+            PacketContext::ResourceIcl => {
+                self.handle_resource_cancel(link_id, true);
+            }
+            PacketContext::ResourceRcl => {
+                self.handle_resource_cancel(link_id, false);
             }
             _ => self.handle_plain_data_packet(link_id, packet, raw_packet, now_secs),
         }
@@ -1148,6 +1171,431 @@ impl<R: CryptoRngCore, C: Clock, S: Storage> NodeCore<R, C, S> {
         }
     }
 
+    // ─── Internal: Resource Handlers ──────────────────────────────────────────
+
+    /// Handle a ResourceAdv packet (incoming advertisement).
+    fn handle_resource_adv(
+        &mut self,
+        link_id: LinkId,
+        packet: &Packet,
+        _raw_packet: &[u8],
+        now_ms: u64,
+        now_secs: u64,
+    ) {
+        use crate::resource::{
+            incoming::IncomingResource, ResourceAdvertisement, ResourceStrategy,
+        };
+
+        let Some(link) = self.links.get_mut(&link_id) else {
+            return;
+        };
+        if link.state() != LinkState::Active {
+            return;
+        }
+        link.record_inbound(now_secs);
+
+        // Already have an incoming resource or pending ADV — ignore
+        if link.has_incoming_resource() || link.has_pending_resource() {
+            tracing::debug!("Resource ADV on link with active resource, ignoring");
+            return;
+        }
+
+        // Decrypt the advertisement
+        let encrypted_data = packet.data.as_slice();
+        let mut plaintext = alloc::vec![0u8; encrypted_data.len()];
+        let len = match link.decrypt(encrypted_data, &mut plaintext) {
+            Ok(len) => len,
+            Err(_) => {
+                tracing::debug!("Resource ADV decryption failed");
+                return;
+            }
+        };
+        plaintext.truncate(len);
+
+        // Parse advertisement
+        let adv = match ResourceAdvertisement::unpack(&plaintext) {
+            Ok(adv) => adv,
+            Err(_) => {
+                tracing::debug!("Resource ADV parse failed");
+                return;
+            }
+        };
+
+        let strategy = link.resource_strategy();
+        let resource_hash = adv.resource_hash;
+        let transfer_size = adv.transfer_size;
+        let data_size = adv.data_size;
+        let link_mdu = link.mdu();
+        let sdu = crate::resource::resource_sdu(link.negotiated_mtu());
+
+        match strategy {
+            ResourceStrategy::AcceptAll => {
+                // Auto-accept: create IncomingResource and send first REQ
+                match IncomingResource::from_advertisement(&adv, link_mdu, sdu, now_ms) {
+                    Ok((incoming, req_payload)) => {
+                        // Encrypt and send REQ
+                        let req_packet = link.build_data_packet_with_context(
+                            &req_payload,
+                            PacketContext::ResourceReq,
+                            &mut self.rng,
+                        );
+                        match req_packet {
+                            Ok(pkt) => {
+                                link.set_incoming_resource(incoming);
+                                link.record_outbound(now_secs);
+                                self.route_link_packet(&link_id, &pkt);
+                                self.events.push(NodeEvent::ResourceTransferStarted {
+                                    link_id,
+                                    resource_hash,
+                                    is_sender: false,
+                                });
+                            }
+                            Err(e) => {
+                                tracing::debug!("Failed to build REQ packet: {e}");
+                            }
+                        }
+                    }
+                    Err(e) => {
+                        tracing::debug!("Failed to create IncomingResource: {e}");
+                    }
+                }
+            }
+            ResourceStrategy::AcceptApp => {
+                // Store for application to accept/reject
+                link.set_pending_resource_adv(adv);
+                self.events.push(NodeEvent::ResourceAdvertised {
+                    link_id,
+                    resource_hash,
+                    transfer_size,
+                    data_size,
+                });
+            }
+            ResourceStrategy::AcceptNone => {
+                tracing::trace!("Resource ADV rejected (strategy=AcceptNone)");
+            }
+        }
+    }
+
+    /// Handle a ResourceReq packet (sender receives receiver's request).
+    fn handle_resource_req(
+        &mut self,
+        link_id: LinkId,
+        packet: &Packet,
+        now_ms: u64,
+        now_secs: u64,
+    ) {
+        let Some(link) = self.links.get_mut(&link_id) else {
+            return;
+        };
+        if link.state() != LinkState::Active {
+            return;
+        }
+        link.record_inbound(now_secs);
+
+        // Decrypt REQ
+        let encrypted_data = packet.data.as_slice();
+        let mut plaintext = alloc::vec![0u8; encrypted_data.len()];
+        let len = match link.decrypt(encrypted_data, &mut plaintext) {
+            Ok(len) => len,
+            Err(_) => {
+                tracing::debug!("Resource REQ decryption failed");
+                return;
+            }
+        };
+        plaintext.truncate(len);
+
+        // Forward to outgoing resource
+        if link.outgoing_resource().is_none() {
+            tracing::debug!("Resource REQ but no outgoing resource");
+            return;
+        }
+
+        // Need immutable link ref for handle_request — extract what we need first
+        // Then call handle_request with a fresh borrow
+        let packets = {
+            let link_mut = self.links.get_mut(&link_id).unwrap();
+            let mut res = link_mut.take_outgoing_resource().unwrap();
+            let link_ref = &*link_mut; // immutable reborrow
+
+            let result = res.handle_request(&plaintext, link_ref, &mut self.rng, now_ms);
+
+            // Check status to decide what events to emit
+            let status = res.status();
+
+            // Put back
+            self.links
+                .get_mut(&link_id)
+                .unwrap()
+                .set_outgoing_resource(res);
+
+            match result {
+                Ok(pkts) => {
+                    if status == crate::resource::ResourceStatus::Transferring
+                        || status == crate::resource::ResourceStatus::AwaitingProof
+                    {
+                        // First REQ transitions to Transferring — emit start event
+                    }
+                    pkts
+                }
+                Err(e) => {
+                    tracing::debug!("Resource handle_request failed: {e}");
+                    return;
+                }
+            }
+        };
+
+        // Route all generated packets
+        for pkt in &packets {
+            self.route_link_packet(&link_id, pkt);
+        }
+
+        // Update outbound timestamp
+        if let Some(link) = self.links.get_mut(&link_id) {
+            link.record_outbound(now_secs);
+        }
+    }
+
+    /// Handle a Resource data part (receiver gets raw data).
+    fn handle_resource_data(
+        &mut self,
+        link_id: LinkId,
+        packet: &Packet,
+        now_ms: u64,
+        now_secs: u64,
+    ) {
+        use crate::resource::incoming::ResourcePartResult;
+
+        let Some(link) = self.links.get_mut(&link_id) else {
+            return;
+        };
+        if link.state() != LinkState::Active {
+            return;
+        }
+        link.record_inbound(now_secs);
+
+        // Resource data parts are NOT encrypted per-packet (context=RESOURCE skips encryption)
+        // The data is raw (pre-encrypted in bulk by the sender)
+        let part_data = packet.data.as_slice();
+        let rtt_ms = link.rtt_ms();
+
+        // Take incoming resource out for processing
+        let mut incoming = match link.take_incoming_resource() {
+            Some(r) => r,
+            None => {
+                tracing::debug!("Resource data but no incoming resource");
+                return;
+            }
+        };
+
+        let result = incoming.receive_part(part_data, now_ms, rtt_ms);
+        let resource_hash = *incoming.resource_hash();
+
+        match result {
+            ResourcePartResult::Continue => {
+                link.set_incoming_resource(incoming);
+            }
+            ResourcePartResult::SendRequest(req_payload) => {
+                // Encrypt and send REQ
+                let req_pkt = link.build_data_packet_with_context(
+                    &req_payload,
+                    PacketContext::ResourceReq,
+                    &mut self.rng,
+                );
+                link.set_incoming_resource(incoming);
+                if let Ok(pkt) = req_pkt {
+                    link.record_outbound(now_secs);
+                    self.route_link_packet(&link_id, &pkt);
+                }
+            }
+            ResourcePartResult::Assembling => {
+                // All parts received — assemble
+                let link_ref = &*link;
+                match incoming.assemble(link_ref) {
+                    Ok((data, metadata)) => {
+                        // Build and send proof
+                        let proof_data = incoming.build_proof();
+                        match proof_data {
+                            Ok(pd) => {
+                                let proof_pkt = link.build_proof_packet_with_context(
+                                    &pd,
+                                    PacketContext::ResourcePrf,
+                                );
+                                if let Ok(pkt) = proof_pkt {
+                                    link.record_outbound(now_secs);
+                                    self.route_link_packet(&link_id, &pkt);
+                                }
+                            }
+                            Err(e) => {
+                                tracing::debug!("Failed to build resource proof: {e}");
+                            }
+                        }
+
+                        // Clear incoming resource (transfer complete)
+                        // (incoming is consumed, not put back)
+
+                        self.events.push(NodeEvent::ResourceCompleted {
+                            link_id,
+                            resource_hash,
+                            data,
+                            metadata,
+                            is_sender: false,
+                        });
+                    }
+                    Err(e) => {
+                        tracing::debug!("Resource assembly failed: {e}");
+                        self.events.push(NodeEvent::ResourceFailed {
+                            link_id,
+                            resource_hash,
+                            error: e,
+                            is_sender: false,
+                        });
+                    }
+                }
+            }
+            ResourcePartResult::InvalidPart => {
+                link.set_incoming_resource(incoming);
+                tracing::trace!("Received resource part with no matching hash");
+            }
+        }
+    }
+
+    /// Handle a ResourceHmu packet (hashmap update).
+    fn handle_resource_hmu(
+        &mut self,
+        link_id: LinkId,
+        packet: &Packet,
+        _raw_packet: &[u8],
+        _now_ms: u64,
+        now_secs: u64,
+    ) {
+        let Some(link) = self.links.get_mut(&link_id) else {
+            return;
+        };
+        if link.state() != LinkState::Active {
+            return;
+        }
+        link.record_inbound(now_secs);
+
+        // Decrypt HMU
+        let encrypted_data = packet.data.as_slice();
+        let mut plaintext = alloc::vec![0u8; encrypted_data.len()];
+        let len = match link.decrypt(encrypted_data, &mut plaintext) {
+            Ok(len) => len,
+            Err(_) => {
+                tracing::debug!("Resource HMU decryption failed");
+                return;
+            }
+        };
+        plaintext.truncate(len);
+
+        // Forward to incoming resource
+        let mut incoming = match link.take_incoming_resource() {
+            Some(r) => r,
+            None => {
+                tracing::debug!("Resource HMU but no incoming resource");
+                return;
+            }
+        };
+
+        match incoming.handle_hashmap_update(&plaintext) {
+            Ok(Some(req_payload)) => {
+                // Send the new REQ
+                let req_pkt = link.build_data_packet_with_context(
+                    &req_payload,
+                    PacketContext::ResourceReq,
+                    &mut self.rng,
+                );
+                link.set_incoming_resource(incoming);
+                if let Ok(pkt) = req_pkt {
+                    link.record_outbound(now_secs);
+                    self.route_link_packet(&link_id, &pkt);
+                }
+            }
+            Ok(None) => {
+                link.set_incoming_resource(incoming);
+            }
+            Err(e) => {
+                tracing::debug!("Resource HMU processing failed: {e}");
+                link.set_incoming_resource(incoming);
+            }
+        }
+    }
+
+    /// Handle resource cancellation (ICL or RCL).
+    fn handle_resource_cancel(&mut self, link_id: LinkId, is_incoming_cancel: bool) {
+        let Some(link) = self.links.get_mut(&link_id) else {
+            return;
+        };
+
+        if is_incoming_cancel {
+            // ICL = initiator cancel → clear outgoing resource
+            if let Some(res) = link.outgoing_resource() {
+                let resource_hash = *res.resource_hash();
+                link.clear_outgoing_resource();
+                self.events.push(NodeEvent::ResourceFailed {
+                    link_id,
+                    resource_hash,
+                    error: crate::resource::ResourceError::Cancelled,
+                    is_sender: true,
+                });
+            }
+        } else {
+            // RCL = receiver cancel → clear incoming resource
+            if let Some(res) = link.incoming_resource() {
+                let resource_hash = *res.resource_hash();
+                link.clear_incoming_resource();
+                self.events.push(NodeEvent::ResourceFailed {
+                    link_id,
+                    resource_hash,
+                    error: crate::resource::ResourceError::Cancelled,
+                    is_sender: false,
+                });
+            }
+        }
+    }
+
+    /// Handle a resource proof (sender receives completion proof).
+    fn handle_resource_proof(&mut self, link_id: LinkId, proof_data: &[u8]) {
+        let Some(link) = self.links.get_mut(&link_id) else {
+            return;
+        };
+
+        let mut res = match link.take_outgoing_resource() {
+            Some(r) => r,
+            None => {
+                tracing::debug!("Resource proof but no outgoing resource");
+                return;
+            }
+        };
+
+        match res.handle_proof(proof_data) {
+            Ok(crate::resource::ResourceStatus::Complete) => {
+                let resource_hash = *res.resource_hash();
+                // Don't put back — transfer is complete
+                self.events.push(NodeEvent::ResourceCompleted {
+                    link_id,
+                    resource_hash,
+                    data: Vec::new(), // sender doesn't return data
+                    metadata: None,
+                    is_sender: true,
+                });
+            }
+            Ok(_) => {
+                link.set_outgoing_resource(res);
+            }
+            Err(e) => {
+                let resource_hash = *res.resource_hash();
+                tracing::debug!("Resource proof validation failed: {e}");
+                self.events.push(NodeEvent::ResourceFailed {
+                    link_id,
+                    resource_hash,
+                    error: e,
+                    is_sender: true,
+                });
+            }
+        }
+    }
+
     // ─── Internal: Timeout / Polling ──────────────────────────────────────────
 
     /// Check for handshake timeouts on pending links
@@ -1465,6 +1913,126 @@ impl<R: CryptoRngCore, C: Clock, S: Storage> NodeCore<R, C, S> {
         }
     }
 
+    /// Check for resource transfer timeouts.
+    pub(super) fn check_resource_timeouts(&mut self, now_ms: u64) {
+        use crate::resource::outgoing::ResourcePollResult;
+
+        let resource_link_ids: Vec<LinkId> = self
+            .links
+            .iter()
+            .filter(|(_, l)| l.has_outgoing_resource() || l.has_incoming_resource())
+            .map(|(id, _)| *id)
+            .collect();
+
+        let now_secs = now_ms / MS_PER_SECOND;
+
+        for link_id in resource_link_ids {
+            let rtt_ms = self.links.get(&link_id).map(|l| l.rtt_ms()).unwrap_or(5000);
+
+            // Poll outgoing resource — collect result into owned enum, release borrow
+            let out_result = match self.links.get_mut(&link_id) {
+                Some(link) => link
+                    .outgoing_resource_mut()
+                    .map(|res| res.poll(now_ms, rtt_ms)),
+                None => continue,
+            };
+
+            if let Some(result) = out_result {
+                match result {
+                    ResourcePollResult::RetransmitAdv(adv_bytes) => {
+                        // Re-send advertisement
+                        let pkt = if let Some(link) = self.links.get(&link_id) {
+                            link.build_data_packet_with_context(
+                                &adv_bytes,
+                                PacketContext::ResourceAdv,
+                                &mut self.rng,
+                            )
+                            .ok()
+                        } else {
+                            None
+                        };
+                        if let Some(pkt) = pkt {
+                            if let Some(link) = self.links.get_mut(&link_id) {
+                                link.record_outbound(now_secs);
+                            }
+                            self.route_link_packet(&link_id, &pkt);
+                        }
+                    }
+                    ResourcePollResult::TimedOut => {
+                        let resource_hash = self
+                            .links
+                            .get(&link_id)
+                            .and_then(|l| l.outgoing_resource())
+                            .map(|r| *r.resource_hash());
+                        if let Some(link) = self.links.get_mut(&link_id) {
+                            link.clear_outgoing_resource();
+                        }
+                        if let Some(resource_hash) = resource_hash {
+                            self.events.push(NodeEvent::ResourceFailed {
+                                link_id,
+                                resource_hash,
+                                error: crate::resource::ResourceError::Timeout,
+                                is_sender: true,
+                            });
+                        }
+                    }
+                    ResourcePollResult::Nothing => {}
+                }
+            }
+
+            // Poll incoming resource — same pattern
+            let in_result = match self.links.get_mut(&link_id) {
+                Some(link) => link
+                    .incoming_resource_mut()
+                    .map(|res| res.poll(now_ms, rtt_ms)),
+                None => continue,
+            };
+
+            if let Some(result) = in_result {
+                match result {
+                    ResourcePollResult::RetransmitAdv(req_bytes) => {
+                        // Re-send last REQ
+                        let pkt = if let Some(link) = self.links.get(&link_id) {
+                            link.build_data_packet_with_context(
+                                &req_bytes,
+                                PacketContext::ResourceReq,
+                                &mut self.rng,
+                            )
+                            .ok()
+                        } else {
+                            None
+                        };
+                        if let Some(pkt) = pkt {
+                            if let Some(link) = self.links.get_mut(&link_id) {
+                                link.record_outbound(now_secs);
+                            }
+                            self.route_link_packet(&link_id, &pkt);
+                        }
+                    }
+                    ResourcePollResult::TimedOut => {
+                        let resource_hash = self
+                            .links
+                            .get(&link_id)
+                            .and_then(|l| l.incoming_resource())
+                            .map(|r| *r.resource_hash());
+                        if let Some(link) = self.links.get_mut(&link_id) {
+                            link.clear_incoming_resource();
+                        }
+                        if let Some(resource_hash) = resource_hash {
+                            self.events.push(NodeEvent::ResourceFailed {
+                                link_id,
+                                resource_hash,
+                                error: crate::resource::ResourceError::Timeout,
+                                is_sender: false,
+                            });
+                        }
+                    }
+                    ResourcePollResult::Nothing => {}
+                }
+            }
+        }
+    }
+
     /// Compute the earliest deadline across all link-layer timers
     pub(super) fn link_next_deadline(&self, now_ms: u64) -> Option<u64> {
         let now_secs = now_ms / MS_PER_SECOND;
@@ -1536,13 +2104,28 @@ impl<R: CryptoRngCore, C: Clock, S: Storage> NodeCore<R, C, S> {
             update(now_ms.saturating_add(MS_PER_SECOND));
         }
 
+        // Resource transfer deadlines
+        for link in self.links.values() {
+            let rtt_ms = link.rtt_ms();
+            if let Some(res) = link.outgoing_resource() {
+                if let Some(deadline) = res.next_deadline(rtt_ms) {
+                    update(deadline);
+                }
+            }
+            if let Some(res) = link.incoming_resource() {
+                if let Some(deadline) = res.next_deadline(rtt_ms) {
+                    update(deadline);
+                }
+            }
+        }
+
         earliest
     }
 
     // ─── Internal: Helpers ────────────────────────────────────────────────────
 
     /// Route a link packet via attached interface, with path lookup fallback.
-    fn route_link_packet(&mut self, link_id: &LinkId, data: &[u8]) {
+    pub(super) fn route_link_packet(&mut self, link_id: &LinkId, data: &[u8]) {
         if let Some(link) = self.links.get(link_id) {
             if let Some(iface_idx) = link.attached_interface() {
                 if let Err(e) = self.transport.send_on_interface(iface_idx, data) {

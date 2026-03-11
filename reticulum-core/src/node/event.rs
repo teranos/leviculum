@@ -195,6 +195,58 @@ pub enum NodeEvent {
         packet_hash: [u8; 32],
     },
 
+    // ─── Resource Events ──────────────────────────────────────────────────────
+    /// Resource advertisement received (for AcceptApp strategy).
+    /// Application should call `accept_resource()` or `reject_resource()`.
+    ResourceAdvertised {
+        /// The link that received the advertisement
+        link_id: LinkId,
+        /// Hash identifying this resource
+        resource_hash: [u8; 32],
+        /// Total encrypted transfer size
+        transfer_size: u64,
+        /// Original uncompressed data size
+        data_size: u64,
+    },
+
+    /// Resource transfer started (receiver accepted, first REQ sent).
+    ResourceTransferStarted {
+        /// The link carrying the transfer
+        link_id: LinkId,
+        /// Hash identifying this resource
+        resource_hash: [u8; 32],
+        /// True if we are the sender, false if receiver
+        is_sender: bool,
+    },
+
+    /// Resource transfer completed successfully.
+    ResourceCompleted {
+        /// The link that carried the transfer
+        link_id: LinkId,
+        /// Hash identifying this resource
+        resource_hash: [u8; 32],
+        /// Assembled data (receiver only; empty Vec for sender)
+        data: Vec<u8>,
+        /// Extracted metadata (receiver only; None for sender).
+        /// Contains raw msgpack-encoded bytes as received on the wire.
+        /// Decode with a msgpack library to obtain the original value.
+        metadata: Option<Vec<u8>>,
+        /// True if we were the sender
+        is_sender: bool,
+    },
+
+    /// Resource transfer failed.
+    ResourceFailed {
+        /// The link that carried the transfer
+        link_id: LinkId,
+        /// Hash identifying this resource
+        resource_hash: [u8; 32],
+        /// The error that caused the failure
+        error: crate::resource::ResourceError,
+        /// True if we were the sender
+        is_sender: bool,
+    },
+
     // ─── Interface Events ──────────────────────────────────────────────────────
     /// An interface went offline
     InterfaceDown(usize),

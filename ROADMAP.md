@@ -302,7 +302,7 @@ Sicherheitsfeatures verdrahten, Daemon-Zustand persistieren, Release-Qualität e
 | Shared Instance (LocalInterface Unix Socket IPC, HDLC-Framing, Announce Rx+Tx) | ✅ |
 | RPC (rnstatus, rnpath, rnprobe gegen Rust-Daemon, HMAC-MD5/SHA256 Auth) | ✅ |
 | Docker-Integrationstest-Framework (`reticulum-integ`, TOML-Szenarien) | ✅ |
-| Resource Transfer | ⬜ (v1.1) |
+| Resource Transfer (Rust↔Python, metadata, large transfers) | ✅ |
 
 ### Testumgebung
 ```
@@ -319,13 +319,14 @@ Sicherheitsfeatures verdrahten, Daemon-Zustand persistieren, Release-Qualität e
 ---
 
 ## Resource Transfer
-- Resource-Segmentierung und Advertisement-Protokoll
-- Sliding-Window-Management
-- Bandbreitenanpassung und Kompression (bz2)
-- Hashmap-Berechnung und Fortschritts-Callbacks
-- Request/Response-Pattern
-- `lrns cp` — Dateitransfer über CLI
-- Interop-Tests: Dateitransfer zwischen Rust und Python
+- ✅ Resource-Segmentierung und Advertisement-Protokoll (OutgoingResource/IncomingResource State Machines)
+- ✅ Sliding-Window-Management
+- ✅ Hashmap-Berechnung und Fortschritts-Callbacks
+- ✅ Interop-Tests: Dateitransfer zwischen Rust und Python (6 Tests: bidirektional, mit/ohne Metadata, Large Transfer bis 300KB)
+- ✅ ReticulumNode API: `send_resource()`, `set_resource_strategy()`, `accept_resource()`, `reject_resource()`
+- [ ] Bandbreitenanpassung und Kompression (bz2)
+- [ ] Request/Response-Pattern
+- [ ] `lrns cp` — Dateitransfer über CLI
 
 ## IPC (Shared Instance)
 - ✅ LocalInterface: Unix-Domain-Socket-basierte IPC-Kommunikation zwischen `lrnsd` und Client-Programmen (wie Python's `LocalClientInterface` / `LocalServerInterface`) — Abstract Unix Socket (`\0rns/{instance_name}`), HDLC-Framing, `spawn_local_server()`, Config-Integration (`share_instance`/`instance_name`), 2 Python-Interop-Tests
@@ -372,6 +373,6 @@ Sicherheitsfeatures verdrahten, Daemon-Zustand persistieren, Release-Qualität e
 
 ---
 
-*Stand: 27. Februar 2026*
+*Stand: 11. März 2026*
 *Projekt: leviculum*
 *Lizenz: MIT*

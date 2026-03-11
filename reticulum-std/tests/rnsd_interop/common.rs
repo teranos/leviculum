@@ -1053,6 +1053,47 @@ pub async fn wait_for_delivery_confirmations(
     count
 }
 
+/// Wait for a `ResourceCompleted` event on the receiver side.
+/// Returns `(data, metadata)` on success, or `None` on timeout.
+pub async fn wait_for_resource_completed(
+    event_rx: &mut mpsc::Receiver<NodeEvent>,
+    link_id: &LinkId,
+    timeout: Duration,
+) -> Option<(Vec<u8>, Option<Vec<u8>>)> {
+    let link_id = *link_id;
+    wait_for_event(event_rx, timeout, move |event| match event {
+        NodeEvent::ResourceCompleted {
+            link_id: id,
+            data,
+            metadata,
+            is_sender,
+            ..
+        } if id == link_id && !is_sender => Some((data, metadata)),
+        _ => None,
+    })
+    .await
+}
+
+/// Wait for a `ResourceCompleted` event on the sender side.
+/// Returns `true` if the sender-side completion was received before timeout.
+pub async fn wait_for_resource_sender_completed(
+    event_rx: &mut mpsc::Receiver<NodeEvent>,
+    link_id: &LinkId,
+    timeout: Duration,
+) -> bool {
+    let link_id = *link_id;
+    wait_for_event(event_rx, timeout, move |event| match event {
+        NodeEvent::ResourceCompleted {
+            link_id: id,
+            is_sender,
+            ..
+        } if id == link_id && is_sender => Some(()),
+        _ => None,
+    })
+    .await
+    .is_some()
+}
+
 // =========================================================================
 // Non-event helpers consolidated from test files
 // =========================================================================

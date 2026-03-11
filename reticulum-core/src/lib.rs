@@ -77,7 +77,7 @@ pub mod node;
 pub mod packet;
 pub(crate) mod ratchet;
 pub(crate) mod receipt;
-mod resource;
+pub mod resource;
 pub mod rnode;
 pub mod storage_types;
 #[cfg(test)]
@@ -93,6 +93,9 @@ pub use destination::{
 pub use identity::Identity;
 pub use link::{LinkCloseReason, LinkError, LinkId, PeerKeys};
 pub use node::{DeliveryError, LinkStats, NodeCore, NodeCoreBuilder, NodeEvent, SendError};
+pub use resource::{
+    ResourceAdvertisement, ResourceError, ResourceFlags, ResourceStatus, ResourceStrategy,
+};
 pub use transport::{Action, InterfaceId, TickOutput, TransportStats};
 
 // Re-export traits

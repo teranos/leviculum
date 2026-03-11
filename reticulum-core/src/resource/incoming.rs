@@ -1,0 +1,718 @@
+//! Incoming resource state machine (receiver side).
+//!
+//! Sans-I/O: receives packets via methods, returns raw packet bytes to send.
+//! Owned by Link (same pattern as Channel).
+
+use alloc::vec;
+use alloc::vec::Vec;
+
+use crate::constants::{
+    RESOURCE_HASHMAP_LEN, RESOURCE_WINDOW_INITIAL, RESOURCE_WINDOW_MAX_FAST,
+    RESOURCE_WINDOW_MAX_SLOW,
+};
+use crate::crypto::full_hash;
+use crate::link::Link;
+use crate::resource::hashmap::map_hash;
+use crate::resource::msgpack;
+use crate::resource::{
+    hashmap_max_len, ResourceAdvertisement, ResourceError, ResourceFlags, ResourceStatus,
+    FAST_RATE_THRESHOLD, HASHMAP_IS_EXHAUSTED, HASHMAP_IS_NOT_EXHAUSTED, RESOURCE_MAX_RETRIES,
+    RESOURCE_RANDOM_HASH_SIZE, RESOURCE_WINDOW_FLEXIBILITY, RESOURCE_WINDOW_MAX_VERY_SLOW,
+    SLOW_RATE_THRESHOLD, VERY_SLOW_RATE_THRESHOLD,
+};
+
+use super::outgoing::ResourcePollResult;
+
+/// Result of receiving a data part.
+#[derive(Debug)]
+pub(crate) enum ResourcePartResult {
+    /// More parts needed, no immediate action.
+    Continue,
+    /// Send this REQ packet (encrypted by caller).
+    SendRequest(Vec<u8>),
+    /// All parts received — caller should call `assemble()`.
+    Assembling,
+    /// Part did not match any expected hash.
+    InvalidPart,
+}
+
+/// Incoming resource transfer state machine.
+///
+/// Fields like `original_hash`, `data_size`, `total_segments`, and `request_id`
+/// are stored from the resource advertisement and needed for protocol correctness
+/// (hash verification, proof generation, multi-segment reassembly). Accessors are
+/// provided and exercised in tests; production callers arrive with ROADMAP v1.1
+/// (Resource Transfer).
+#[allow(dead_code)] // Protocol state fields — see ROADMAP v1.1 (Resource Transfer)
+pub(crate) struct IncomingResource {
+    status: ResourceStatus,
+    flags: ResourceFlags,
+    resource_hash: [u8; 32],
+    original_hash: [u8; 32],
+    random_hash: [u8; RESOURCE_RANDOM_HASH_SIZE],
+    transfer_size: u64,
+    data_size: u64,
+    num_parts: u32,
+    total_segments: u32,
+    request_id: Option<Vec<u8>>,
+    // Parts storage
+    parts: Vec<Option<Vec<u8>>>,
+    hashmap: Vec<Option<[u8; RESOURCE_HASHMAP_LEN]>>,
+    hashmap_height: usize,
+    consecutive_completed_height: usize,
+    // Window
+    window: usize,
+    window_max: usize,
+    outstanding_parts: usize,
+    // Timing
+    last_activity_ms: u64,
+    req_sent_ms: Option<u64>,
+    // Rate tracking
+    parts_received_this_window: usize,
+    consecutive_completed_windows: usize,
+    // Transfer metrics
+    eifr: u64,
+    retries: usize,
+    waiting_for_hmu: bool,
+    link_mdu: usize,
+    sdu: usize,
+    // For proof computation
+    assembled_with_metadata: Option<Vec<u8>>,
+    // Last REQ payload (for retransmission on timeout)
+    last_req: Option<Vec<u8>>,
+}
+
+impl IncomingResource {
+    /// Create from a received advertisement.
+    ///
+    /// Returns `(incoming_resource, first_req_payload)`.
+    /// The caller must encrypt and send the REQ payload.
+    pub(crate) fn from_advertisement(
+        adv: &ResourceAdvertisement,
+        link_mdu: usize,
+        sdu: usize,
+        now_ms: u64,
+    ) -> Result<(Self, Vec<u8>), ResourceError> {
+        let num_parts = adv.num_parts;
+
+        // Initialize hashmap from advertisement's hashmap_data
+        let initial_entries = adv.hashmap_data.len() / RESOURCE_HASHMAP_LEN;
+        let mut hashmap = vec![None; num_parts as usize];
+        let mut hashmap_height = 0;
+
+        for (i, slot) in hashmap
+            .iter_mut()
+            .enumerate()
+            .take(initial_entries.min(num_parts as usize))
+        {
+            let start = i * RESOURCE_HASHMAP_LEN;
+            let mut entry = [0u8; RESOURCE_HASHMAP_LEN];
+            entry.copy_from_slice(&adv.hashmap_data[start..start + RESOURCE_HASHMAP_LEN]);
+            *slot = Some(entry);
+            hashmap_height += 1;
+        }
+
+        let mut incoming = Self {
+            status: ResourceStatus::Transferring,
+            flags: adv.flags,
+            resource_hash: adv.resource_hash,
+            original_hash: adv.original_hash,
+            random_hash: adv.random_hash,
+            transfer_size: adv.transfer_size,
+            data_size: adv.data_size,
+            num_parts,
+            total_segments: adv.total_segments,
+            request_id: adv.request_id.clone(),
+            parts: vec![None; num_parts as usize],
+            hashmap,
+            hashmap_height,
+            consecutive_completed_height: 0,
+            window: RESOURCE_WINDOW_INITIAL,
+            window_max: RESOURCE_WINDOW_MAX_SLOW,
+            outstanding_parts: 0,
+            last_activity_ms: now_ms,
+            req_sent_ms: None,
+            parts_received_this_window: 0,
+            consecutive_completed_windows: 0,
+            eifr: 0,
+            retries: 0,
+            waiting_for_hmu: false,
+            link_mdu,
+            sdu,
+            assembled_with_metadata: None,
+            last_req: None,
+        };
+
+        // Build first request
+        let req = incoming.build_request();
+        incoming.last_activity_ms = now_ms;
+        incoming.req_sent_ms = Some(now_ms);
+
+        Ok((incoming, req))
+    }
+
+    /// Build a REQ packet payload for the next window of parts.
+    ///
+    /// Wire format: `[1:exhausted_flag][4?:last_map_hash][32:resource_hash][N*4:requested_hashes]`
+    fn build_request(&mut self) -> Vec<u8> {
+        self.outstanding_parts = 0;
+        let mut hashmap_exhausted = HASHMAP_IS_NOT_EXHAUSTED;
+        let mut requested_hashes = Vec::new();
+
+        // Update consecutive_completed_height
+        while self.consecutive_completed_height < self.num_parts as usize
+            && self.parts[self.consecutive_completed_height].is_some()
+        {
+            self.consecutive_completed_height += 1;
+        }
+
+        let search_start = self.consecutive_completed_height;
+        let search_end = core::cmp::min(search_start + self.window, self.num_parts as usize);
+
+        for pn in search_start..search_end {
+            if self.parts[pn].is_none() {
+                if let Some(hash) = self.hashmap[pn] {
+                    requested_hashes.extend_from_slice(&hash);
+                    self.outstanding_parts += 1;
+                } else {
+                    hashmap_exhausted = HASHMAP_IS_EXHAUSTED;
+                    break;
+                }
+            }
+        }
+
+        let mut req = Vec::with_capacity(
+            1 + if hashmap_exhausted == HASHMAP_IS_EXHAUSTED {
+                RESOURCE_HASHMAP_LEN
+            } else {
+                0
+            } + 32
+                + requested_hashes.len(),
+        );
+
+        req.push(hashmap_exhausted);
+        if hashmap_exhausted == HASHMAP_IS_EXHAUSTED {
+            // Append last known map hash
+            if self.hashmap_height > 0 {
+                if let Some(last_hash) = self.hashmap[self.hashmap_height - 1] {
+                    req.extend_from_slice(&last_hash);
+                } else {
+                    req.extend_from_slice(&[0u8; RESOURCE_HASHMAP_LEN]);
+                }
+            } else {
+                req.extend_from_slice(&[0u8; RESOURCE_HASHMAP_LEN]);
+            }
+            self.waiting_for_hmu = true;
+        }
+
+        req.extend_from_slice(&self.resource_hash);
+        req.extend_from_slice(&requested_hashes);
+
+        self.parts_received_this_window = 0;
+        self.last_req = Some(req.clone());
+        req
+    }
+
+    /// Receive a data part (RESOURCE context packet).
+    pub(crate) fn receive_part(
+        &mut self,
+        part_data: &[u8],
+        now_ms: u64,
+        _rtt_ms: u64,
+    ) -> ResourcePartResult {
+        if self.status != ResourceStatus::Transferring {
+            return ResourcePartResult::InvalidPart;
+        }
+
+        // Compute map hash and find matching part
+        let mh = map_hash(part_data, &self.random_hash);
+
+        // Search within window scope for matching hashmap entry
+        let search_start = self.consecutive_completed_height;
+        let search_end = core::cmp::min(
+            search_start + self.window + RESOURCE_WINDOW_FLEXIBILITY,
+            self.num_parts as usize,
+        );
+
+        let mut matched_index = None;
+        for i in search_start..search_end {
+            if self.parts[i].is_none() {
+                if let Some(entry) = self.hashmap[i] {
+                    if entry == mh {
+                        matched_index = Some(i);
+                        break;
+                    }
+                }
+            }
+        }
+
+        let Some(index) = matched_index else {
+            return ResourcePartResult::InvalidPart;
+        };
+
+        // Store the part
+        self.parts[index] = Some(part_data.to_vec());
+        self.outstanding_parts = self.outstanding_parts.saturating_sub(1);
+        self.parts_received_this_window += 1;
+        self.last_activity_ms = now_ms;
+        self.retries = 0;
+
+        // Update EIFR based on RTT
+        if let Some(req_sent) = self.req_sent_ms {
+            let elapsed = now_ms.saturating_sub(req_sent);
+            if elapsed > 0 && self.parts_received_this_window == 1 {
+                // First part of this window — measure data RTT rate
+                let bytes_per_part = if self.num_parts > 0 {
+                    self.transfer_size / self.num_parts as u64
+                } else {
+                    self.sdu as u64
+                };
+                self.eifr = bytes_per_part.saturating_mul(1000) / elapsed;
+            }
+        }
+
+        // Check if all outstanding parts are received
+        if self.outstanding_parts == 0 {
+            // Window promotion logic
+            self.consecutive_completed_windows += 1;
+
+            if self.consecutive_completed_windows >= self.window + RESOURCE_WINDOW_FLEXIBILITY {
+                if self.window < self.window_max {
+                    self.window += 1;
+                }
+                self.consecutive_completed_windows = 0;
+            }
+
+            // Rate-based window tier adjustment
+            if self.eifr > FAST_RATE_THRESHOLD {
+                self.window_max = RESOURCE_WINDOW_MAX_FAST;
+            } else if self.eifr < VERY_SLOW_RATE_THRESHOLD {
+                self.window_max = RESOURCE_WINDOW_MAX_VERY_SLOW;
+                if self.window > self.window_max {
+                    self.window = self.window_max;
+                }
+            } else if self.eifr < SLOW_RATE_THRESHOLD {
+                self.window_max = RESOURCE_WINDOW_MAX_SLOW;
+                if self.window > self.window_max {
+                    self.window = self.window_max;
+                }
+            }
+
+            // Check if ALL parts received
+            let all_received = self.parts.iter().all(|p| p.is_some());
+            if all_received {
+                self.status = ResourceStatus::Assembling;
+                return ResourcePartResult::Assembling;
+            }
+
+            // Not done yet — build next request
+            if !self.waiting_for_hmu {
+                let req = self.build_request();
+                self.req_sent_ms = Some(now_ms);
+                return ResourcePartResult::SendRequest(req);
+            }
+        }
+
+        ResourcePartResult::Continue
+    }
+
+    /// Process a hashmap update (HMU) packet.
+    pub(crate) fn handle_hashmap_update(
+        &mut self,
+        hmu_data: &[u8],
+    ) -> Result<Option<Vec<u8>>, ResourceError> {
+        if self.status == ResourceStatus::Failed {
+            return Err(ResourceError::Cancelled);
+        }
+
+        // HMU format: [32: resource_hash] [msgpack: [segment_number, hashmap_bytes]]
+        if hmu_data.len() < 32 {
+            return Err(ResourceError::InvalidHashmap);
+        }
+
+        let hmu_resource_hash = &hmu_data[..32];
+        if hmu_resource_hash != self.resource_hash {
+            return Err(ResourceError::InvalidHashmap);
+        }
+
+        // Parse msgpack fixarray(2): [segment_number, hashmap_bytes]
+        let msgpack_data = &hmu_data[32..];
+        let mut pos = 0;
+
+        let array_len = msgpack::read_fixarray_len(msgpack_data, &mut pos)
+            .ok_or(ResourceError::InvalidHashmap)?;
+        if array_len != 2 {
+            return Err(ResourceError::InvalidHashmap);
+        }
+
+        let segment = msgpack::read_msgpack_uint(msgpack_data, &mut pos)
+            .ok_or(ResourceError::InvalidHashmap)? as usize;
+        let hashmap_bytes = msgpack::read_msgpack_bin(msgpack_data, &mut pos)
+            .ok_or(ResourceError::InvalidHashmap)?;
+
+        // Parse hashmap entries
+        let seg_len = hashmap_max_len(self.link_mdu);
+        let num_entries = hashmap_bytes.len() / RESOURCE_HASHMAP_LEN;
+
+        for i in 0..num_entries {
+            let idx = i + segment * seg_len;
+            if idx >= self.hashmap.len() {
+                break;
+            }
+            let start = i * RESOURCE_HASHMAP_LEN;
+            let mut entry = [0u8; RESOURCE_HASHMAP_LEN];
+            entry.copy_from_slice(&hashmap_bytes[start..start + RESOURCE_HASHMAP_LEN]);
+            if self.hashmap[idx].is_none() {
+                self.hashmap_height += 1;
+            }
+            self.hashmap[idx] = Some(entry);
+        }
+
+        self.waiting_for_hmu = false;
+        // last_activity_ms intentionally not updated — HMU is a control message,
+        // not data progress, so the timeout should continue from the last data part.
+        self.retries = 0;
+
+        // Now that we have more hashmap entries, build next request
+        let req = self.build_request();
+        Ok(Some(req))
+    }
+
+    /// Assemble the complete data from all received parts.
+    ///
+    /// Returns `(application_data, optional_metadata)`.
+    pub(crate) fn assemble(
+        &mut self,
+        link: &Link,
+    ) -> Result<(Vec<u8>, Option<Vec<u8>>), ResourceError> {
+        if self.status != ResourceStatus::Assembling {
+            return Err(ResourceError::InvalidRequest);
+        }
+
+        // 1. Concatenate all parts
+        let mut stream = Vec::with_capacity(self.transfer_size as usize);
+        for part in &self.parts {
+            match part {
+                Some(data) => stream.extend_from_slice(data),
+                None => return Err(ResourceError::HashMismatch),
+            }
+        }
+
+        // 2. Decrypt
+        let mut decrypted = vec![0u8; stream.len()];
+        let plaintext_len = link
+            .decrypt(&stream, &mut decrypted)
+            .map_err(|_| ResourceError::CryptoError)?;
+        decrypted.truncate(plaintext_len);
+
+        // 3. Strip LEADING wire_random bytes
+        if decrypted.len() < RESOURCE_RANDOM_HASH_SIZE {
+            return Err(ResourceError::HashMismatch);
+        }
+        let stripped = &decrypted[RESOURCE_RANDOM_HASH_SIZE..];
+
+        // 4. Decompress if needed
+        let assembled = if self.flags.compressed {
+            #[cfg(feature = "compression")]
+            {
+                super::compression::bz2_decompress(stripped, self.data_size as usize)?
+            }
+            #[cfg(not(feature = "compression"))]
+            {
+                return Err(ResourceError::CompressionUnsupported);
+            }
+        } else {
+            stripped.to_vec()
+        };
+
+        // 5. Verify hash: full_hash(assembled + random_hash) == resource_hash
+        let mut hash_input = Vec::with_capacity(assembled.len() + RESOURCE_RANDOM_HASH_SIZE);
+        hash_input.extend_from_slice(&assembled);
+        hash_input.extend_from_slice(&self.random_hash);
+        let calculated = full_hash(&hash_input);
+        if calculated != self.resource_hash {
+            self.status = ResourceStatus::Corrupt;
+            return Err(ResourceError::HashMismatch);
+        }
+
+        // Store assembled data (including metadata prefix) for proof computation
+        self.assembled_with_metadata = Some(assembled.clone());
+
+        // 6. Extract metadata if present
+        let (app_data, metadata) = if self.flags.has_metadata {
+            if assembled.len() < 3 {
+                return Err(ResourceError::HashMismatch);
+            }
+            let meta_len = ((assembled[0] as usize) << 16)
+                | ((assembled[1] as usize) << 8)
+                | (assembled[2] as usize);
+            if assembled.len() < 3 + meta_len {
+                return Err(ResourceError::HashMismatch);
+            }
+            let metadata = assembled[3..3 + meta_len].to_vec();
+            let data = assembled[3 + meta_len..].to_vec();
+            (data, Some(metadata))
+        } else {
+            (assembled, None)
+        };
+
+        self.status = ResourceStatus::Complete;
+        Ok((app_data, metadata))
+    }
+
+    /// Build the completion proof.
+    ///
+    /// Must be called AFTER `assemble()` succeeds.
+    /// Returns the proof payload: `[32: resource_hash][32: proof_hash]`.
+    pub(crate) fn build_proof(&self) -> Result<Vec<u8>, ResourceError> {
+        let assembled = self
+            .assembled_with_metadata
+            .as_ref()
+            .ok_or(ResourceError::InvalidRequest)?;
+
+        // proof = full_hash(assembled_with_metadata + resource_hash)
+        let mut proof_input = Vec::with_capacity(assembled.len() + 32);
+        proof_input.extend_from_slice(assembled);
+        proof_input.extend_from_slice(&self.resource_hash);
+        let proof_hash = full_hash(&proof_input);
+
+        let mut proof_data = Vec::with_capacity(64);
+        proof_data.extend_from_slice(&self.resource_hash);
+        proof_data.extend_from_slice(&proof_hash);
+        Ok(proof_data)
+    }
+
+    /// Poll for timeout.
+    pub(crate) fn poll(&mut self, now_ms: u64, rtt_ms: u64) -> ResourcePollResult {
+        let rtt_ms = core::cmp::max(rtt_ms, 1);
+
+        match self.status {
+            ResourceStatus::Transferring => {
+                // timeout = max(rtt * 2.5, per_part_timeout * window)
+                let rtt_timeout = rtt_ms * 5 / 2;
+                let per_part_timeout = if self.num_parts > 0 && self.eifr > 0 {
+                    (self.transfer_size).saturating_mul(1000) / self.num_parts as u64 / self.eifr
+                } else {
+                    rtt_ms
+                };
+                let window_timeout = per_part_timeout * self.window as u64;
+                let timeout = core::cmp::max(rtt_timeout, window_timeout);
+
+                if now_ms.saturating_sub(self.last_activity_ms) >= timeout {
+                    self.retries += 1;
+                    if self.retries >= RESOURCE_MAX_RETRIES {
+                        self.status = ResourceStatus::Failed;
+                        ResourcePollResult::TimedOut
+                    } else {
+                        self.last_activity_ms = now_ms;
+                        // Retransmit last request
+                        if let Some(ref req) = self.last_req {
+                            ResourcePollResult::RetransmitAdv(req.clone())
+                        } else {
+                            ResourcePollResult::Nothing
+                        }
+                    }
+                } else {
+                    ResourcePollResult::Nothing
+                }
+            }
+            _ => ResourcePollResult::Nothing,
+        }
+    }
+
+    /// Compute the next deadline (absolute ms).
+    pub(crate) fn next_deadline(&self, rtt_ms: u64) -> Option<u64> {
+        let rtt_ms = core::cmp::max(rtt_ms, 1);
+        match self.status {
+            ResourceStatus::Transferring => {
+                let rtt_timeout = rtt_ms * 5 / 2;
+                let per_part_timeout = if self.num_parts > 0 && self.eifr > 0 {
+                    self.transfer_size.saturating_mul(1000) / self.num_parts as u64 / self.eifr
+                } else {
+                    rtt_ms
+                };
+                let window_timeout = per_part_timeout * self.window as u64;
+                let timeout = core::cmp::max(rtt_timeout, window_timeout);
+                Some(self.last_activity_ms.saturating_add(timeout))
+            }
+            _ => None,
+        }
+    }
+
+    /// Mark as failed/cancelled.
+    #[allow(dead_code)] // Resource cancel API — see ROADMAP v1.1 (Resource Transfer)
+    pub(crate) fn cancel(&mut self) {
+        self.status = ResourceStatus::Failed;
+    }
+
+    // ── Accessors ──────────────────────────────────────────────────────────
+
+    pub(crate) fn status(&self) -> ResourceStatus {
+        self.status
+    }
+
+    pub(crate) fn resource_hash(&self) -> &[u8; 32] {
+        &self.resource_hash
+    }
+
+    pub(crate) fn progress(&self) -> f32 {
+        if self.num_parts == 0 {
+            return 1.0;
+        }
+        let received = self.parts.iter().filter(|p| p.is_some()).count();
+        received as f32 / self.num_parts as f32
+    }
+
+    #[allow(dead_code)] // Resource accessor API — see ROADMAP v1.1 (Resource Transfer)
+    pub(crate) fn transfer_size(&self) -> u64 {
+        self.transfer_size
+    }
+
+    #[allow(dead_code)] // Resource accessor API — see ROADMAP v1.1 (Resource Transfer)
+    pub(crate) fn data_size(&self) -> u64 {
+        self.data_size
+    }
+
+    #[allow(dead_code)] // Resource accessor API — see ROADMAP v1.1 (Resource Transfer)
+    pub(crate) fn original_hash(&self) -> &[u8; 32] {
+        &self.original_hash
+    }
+
+    #[allow(dead_code)] // Resource accessor API — see ROADMAP v1.1 (Resource Transfer)
+    pub(crate) fn total_segments(&self) -> u32 {
+        self.total_segments
+    }
+
+    #[allow(dead_code)] // Resource accessor API — see ROADMAP v1.1 (Resource Transfer)
+    pub(crate) fn request_id(&self) -> Option<&[u8]> {
+        self.request_id.as_deref()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::resource::ResourceAdvertisement;
+
+    fn make_test_adv(num_parts: u32, hashmap_data: Vec<u8>) -> ResourceAdvertisement {
+        use alloc::vec;
+        ResourceAdvertisement {
+            transfer_size: 464,
+            data_size: 100,
+            num_parts,
+            resource_hash: [0xAA; 32],
+            random_hash: [0xBB; RESOURCE_RANDOM_HASH_SIZE],
+            original_hash: [0xCC; 32],
+            segment_index: 1,
+            total_segments: 1,
+            request_id: None,
+            flags: ResourceFlags {
+                encrypted: true,
+                ..Default::default()
+            },
+            hashmap_data,
+        }
+    }
+
+    #[test]
+    fn test_incoming_from_advertisement() {
+        // 1 part with a known map hash
+        let hashmap_data = vec![0x11, 0x22, 0x33, 0x44];
+        let adv = make_test_adv(1, hashmap_data);
+
+        let (incoming, req) = IncomingResource::from_advertisement(&adv, 431, 464, 1000).unwrap();
+
+        assert_eq!(incoming.status(), ResourceStatus::Transferring);
+        assert_eq!(incoming.num_parts, 1);
+        assert_eq!(incoming.hashmap_height, 1);
+        assert!(!req.is_empty());
+    }
+
+    #[test]
+    fn test_incoming_req_wire_format() {
+        let hashmap_data = vec![0x11, 0x22, 0x33, 0x44];
+        let adv = make_test_adv(1, hashmap_data);
+
+        let (_, req) = IncomingResource::from_advertisement(&adv, 431, 464, 1000).unwrap();
+
+        // REQ: [0x00 (not exhausted)] [32: resource_hash] [4: requested_hash]
+        assert_eq!(req[0], HASHMAP_IS_NOT_EXHAUSTED);
+        assert_eq!(&req[1..33], &[0xAA; 32]);
+        assert_eq!(&req[33..37], &[0x11, 0x22, 0x33, 0x44]);
+    }
+
+    #[test]
+    fn test_incoming_req_exhausted_format() {
+        // 2 parts but only 1 hashmap entry
+        let hashmap_data = vec![0x11, 0x22, 0x33, 0x44];
+        let adv = make_test_adv(2, hashmap_data);
+
+        let (_, req) = IncomingResource::from_advertisement(&adv, 431, 464, 1000).unwrap();
+
+        // Should be exhausted since we only have 1 hash but need 2+ parts
+        // Window is 4 (initial), so parts 0 and 1 will be scanned
+        // Part 0 has hash, part 1 doesn't → exhausted
+        assert_eq!(req[0], HASHMAP_IS_EXHAUSTED);
+        // Last known hash follows
+        assert_eq!(&req[1..5], &[0x11, 0x22, 0x33, 0x44]);
+        // Then resource_hash
+        assert_eq!(&req[5..37], &[0xAA; 32]);
+    }
+
+    #[test]
+    fn test_incoming_progress() {
+        let hashmap_data = vec![0x11, 0x22, 0x33, 0x44, 0x55, 0x66, 0x77, 0x88];
+        let adv = make_test_adv(2, hashmap_data);
+
+        let (incoming, _) = IncomingResource::from_advertisement(&adv, 431, 464, 1000).unwrap();
+
+        assert_eq!(incoming.progress(), 0.0);
+    }
+
+    #[test]
+    fn test_incoming_hmu_parsing() {
+        let hashmap_data = vec![0x11, 0x22, 0x33, 0x44];
+        let adv = make_test_adv(3, hashmap_data);
+
+        let (mut incoming, _) = IncomingResource::from_advertisement(&adv, 431, 464, 1000).unwrap();
+
+        assert_eq!(incoming.hashmap_height, 1);
+
+        // Build HMU: resource_hash + msgpack([1, bin([0xAA, 0xBB, 0xCC, 0xDD, 0xEE, 0xFF, 0x00, 0x11])])
+        let mut hmu = Vec::new();
+        hmu.extend_from_slice(&[0xAA; 32]); // resource_hash
+        msgpack::write_fixarray_header(&mut hmu, 2);
+        msgpack::write_uint(&mut hmu, 1); // segment 1
+        let hmu_hashes = [0xAA, 0xBB, 0xCC, 0xDD, 0xEE, 0xFF, 0x00, 0x11];
+        msgpack::write_bin(&mut hmu, &hmu_hashes);
+
+        let result = incoming.handle_hashmap_update(&hmu);
+        assert!(result.is_ok());
+
+        // Should have added 2 more hashmap entries at positions seg_len*1..
+        // hashmap_max_len(431) = 74, so entries go at indices 74 and 75
+        // But we only have 3 parts, so index 74 and 75 are out of range
+        // The entries are at segment*seg_len + i = 74 + 0 = 74, 74 + 1 = 75
+        // Both are >= 3 (num_parts), so they won't be stored
+        // This test mainly verifies parsing doesn't crash
+    }
+
+    #[test]
+    fn test_incoming_resource_accessors_and_cancel() {
+        let hashmap_data = vec![0x11, 0x22, 0x33, 0x44];
+        let adv = make_test_adv(1, hashmap_data);
+
+        let (mut incoming, _) = IncomingResource::from_advertisement(&adv, 431, 464, 1000).unwrap();
+
+        // State machine fields accessible via accessors
+        assert_eq!(incoming.original_hash(), &[0xCC; 32]);
+        assert_eq!(incoming.total_segments(), 1);
+        assert!(incoming.request_id().is_none());
+        assert_eq!(incoming.transfer_size(), 464);
+        assert_eq!(incoming.data_size(), 100);
+
+        // cancel() transitions to Failed
+        incoming.cancel();
+        assert_eq!(incoming.status(), ResourceStatus::Failed);
+    }
+}

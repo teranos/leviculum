@@ -12,7 +12,7 @@ A Rust implementation of the [Reticulum](https://reticulum.network/) network sta
 
 ## Status
 
-Version 0.3.0. The core uses a sans-I/O architecture — `reticulum-core` is a pure state machine that never performs I/O directly, making it suitable for embedded targets (`no_std + alloc`). The transport layer is fully functional with routing, path discovery, announce relay, and multi-hop support. 166 interop tests pass against the Python Reticulum reference implementation.
+Version 0.5.19. The core uses a sans-I/O architecture — `reticulum-core` is a pure state machine that never performs I/O directly, making it suitable for embedded targets (`no_std + alloc`). The transport layer is fully functional with routing, path discovery, announce relay, and multi-hop support. 242 interop tests pass against the Python Reticulum reference implementation.
 
 **What works:**
 
@@ -24,29 +24,33 @@ Version 0.3.0. The core uses a sans-I/O architecture — `reticulum-core` is a p
 - Link encryption, keepalive, stale detection, graceful close
 - Transport layer (routing, path discovery, announce relay, multi-hop)
 - Transport relay (Rust node relays between Python daemons)
-- Ratchets (forward secrecy)
-- IFAC (Interface Access Codes)
+- Ratchets (forward secrecy) with disk persistence
+- IFAC (Interface Access Codes) — end-to-end (inbound verification, outbound application)
 - Channel system (reliable streams, message envelopes)
 - Buffer system (RawChannelReader/Writer, StreamDataMessage)
 - BZ2 compression
+- Resource transfer (segmented data over links, metadata, sliding window)
 - Sans-I/O architecture (core returns Action values, driver dispatches I/O)
 - High-level Node API (NodeCore for no_std, ReticulumNode for async)
-- TCP client interface
+- TCP server + client interfaces (with reconnection)
+- UDP interface
+- AutoInterface (IPv6 multicast LAN discovery)
+- LocalInterface (Unix socket IPC for shared instance)
+- RNode/LoRa interface
 - HDLC framing (no_std)
-- Config and storage system
-- `lrns identity` CLI (generate/show)
+- Config and storage system (persistent, Python-compatible)
+- RPC server (rnstatus, rnpath, rnprobe compatibility)
+- `lrnsd` daemon (drop-in replacement for rnsd)
+- `lrns` CLI (identity, connect, selftest, probe)
 - C-API basics (identity, sign, verify)
 
 **What's missing:**
 
-- TCP server interface (incoming connections)
-- Resource transfers (file transfer)
 - Request/Response pattern
-- `lrnsd` daemon (standalone)
-- `lrns` remaining subcommands (status, path, probe, interfaces)
-- UDP, Serial, Local interfaces
+- `lrns` remaining subcommands (status, path, interfaces)
+- Resource compression (bz2 over links)
 
-**Test coverage:** ~787 tests (515 unit + 18 proptest + 31 test vectors + 29 doctests + 166 interop against rnsd + more).
+**Test coverage:** ~1350 tests (935 unit + 173 std + 242 interop against rnsd).
 
 ## Building
 

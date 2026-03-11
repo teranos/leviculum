@@ -853,6 +853,82 @@ impl ReticulumNode {
         Ok(())
     }
 
+    /// Initiate a resource transfer on an established link.
+    ///
+    /// Returns the resource hash identifying this transfer. The ADV packet is
+    /// queued and dispatched by the event loop immediately.
+    ///
+    /// # Arguments
+    /// * `link_id` - The link to send over (must be Active)
+    /// * `data` - The application data to transfer
+    /// * `metadata` - Optional metadata bytes, must be msgpack-encoded by the
+    ///   caller (Python's Resource constructor calls `umsgpack.packb(metadata)`)
+    pub async fn send_resource(
+        &self,
+        link_id: &LinkId,
+        data: &[u8],
+        metadata: Option<&[u8]>,
+    ) -> Result<[u8; 32], Error> {
+        let (resource_hash, output) = {
+            let mut inner = self.inner.lock().unwrap();
+            inner
+                .send_resource(link_id, data, metadata)
+                .map_err(Error::Resource)?
+        };
+        self.action_dispatch_tx
+            .send(output)
+            .await
+            .map_err(|_| Error::NotRunning)?;
+        Ok(resource_hash)
+    }
+
+    /// Set the resource acceptance strategy for a link.
+    ///
+    /// # Arguments
+    /// * `link_id` - The link to configure
+    /// * `strategy` - The acceptance strategy (AcceptNone, AcceptAll, AcceptApp)
+    pub fn set_resource_strategy(
+        &self,
+        link_id: &LinkId,
+        strategy: reticulum_core::resource::ResourceStrategy,
+    ) -> Result<(), Error> {
+        self.inner
+            .lock()
+            .unwrap()
+            .set_resource_strategy(link_id, strategy)
+            .map_err(Error::Resource)
+    }
+
+    /// Accept a pending resource advertisement on a link.
+    ///
+    /// Call this after receiving a `NodeEvent::ResourceAdvertised` event.
+    pub async fn accept_resource(&self, link_id: &LinkId) -> Result<(), Error> {
+        let output = {
+            let mut inner = self.inner.lock().unwrap();
+            inner.accept_resource(link_id).map_err(Error::Resource)?
+        };
+        self.action_dispatch_tx
+            .send(output)
+            .await
+            .map_err(|_| Error::NotRunning)?;
+        Ok(())
+    }
+
+    /// Reject a pending resource advertisement on a link.
+    ///
+    /// Call this after receiving a `NodeEvent::ResourceAdvertised` event.
+    pub async fn reject_resource(&self, link_id: &LinkId) -> Result<(), Error> {
+        let output = {
+            let mut inner = self.inner.lock().unwrap();
+            inner.reject_resource(link_id).map_err(Error::Resource)?
+        };
+        self.action_dispatch_tx
+            .send(output)
+            .await
+            .map_err(|_| Error::NotRunning)?;
+        Ok(())
+    }
+
     /// Send a single (fire-and-forget) packet to a destination
     ///
     /// Builds an unreliable data packet addressed to `dest_hash` and queues it

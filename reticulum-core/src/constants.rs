@@ -268,6 +268,9 @@ pub const RESOURCE_WINDOW_MAX_SLOW: usize = 10;
 pub const RESOURCE_WINDOW_MAX_FAST: usize = 75;
 pub const RESOURCE_HASHMAP_LEN: usize = 4;
 pub const RESOURCE_AUTO_COMPRESS_MAX: usize = 64 * 1024 * 1024; // 64 MB
+/// Fixed overhead in a ResourceAdvertisement msgpack payload (bytes).
+/// Size of the advertisement excluding the variable-length hashmap data.
+pub const RESOURCE_ADV_OVERHEAD: usize = 134;
 
 // ─── Channel Constants ─────────────────────────────────────────────────────
 

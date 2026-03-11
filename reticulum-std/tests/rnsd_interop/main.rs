@@ -57,6 +57,7 @@ mod protocol_tests;
 mod ratchet_rotation_tests;
 mod ratchet_tests;
 mod relay_integration_tests;
+mod resource_tests;
 mod responder_node_tests;
 mod responder_tests;
 mod rpc_interop_tests;

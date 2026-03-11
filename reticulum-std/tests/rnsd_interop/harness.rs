@@ -1435,6 +1435,93 @@ impl TestDaemon {
             _ => Ok(vec![]),
         }
     }
+
+    /// Set the resource acceptance strategy for a destination.
+    ///
+    /// Must be called BEFORE `create_link` so that `_on_link_established`
+    /// picks up the strategy and configures the link.
+    pub async fn set_resource_strategy(
+        &self,
+        dest_hash: &str,
+        strategy: &str,
+    ) -> Result<serde_json::Value, HarnessError> {
+        self.query(
+            "set_resource_strategy",
+            serde_json::json!({
+                "dest_hash": dest_hash,
+                "strategy": strategy,
+            }),
+        )
+        .await
+    }
+
+    /// Send a resource over an established link.
+    ///
+    /// Returns the resource hash (hex string).
+    pub async fn send_resource(
+        &self,
+        link_hash: &str,
+        data: &[u8],
+        metadata: Option<&[u8]>,
+    ) -> Result<String, HarnessError> {
+        let mut params = serde_json::json!({
+            "link_hash": link_hash,
+            "data": hex::encode(data),
+        });
+        if let Some(meta) = metadata {
+            params["metadata"] = serde_json::Value::String(hex::encode(meta));
+        }
+        let result = self.query("send_resource", params).await?;
+
+        let resource_hash = result
+            .get("resource_hash")
+            .and_then(|v| v.as_str())
+            .ok_or_else(|| HarnessError::ParseError("Missing resource_hash".to_string()))?
+            .to_string();
+
+        Ok(resource_hash)
+    }
+
+    /// Get all received resources (completed and failed).
+    pub async fn get_received_resources(&self) -> Result<Vec<ReceivedResource>, HarnessError> {
+        let result = self
+            .query("get_received_resources", serde_json::json!({}))
+            .await?;
+
+        let arr = match result {
+            serde_json::Value::Array(arr) => arr,
+            _ => return Ok(vec![]),
+        };
+
+        let mut resources = Vec::new();
+        for item in arr {
+            let resource_hash = item
+                .get("resource_hash")
+                .and_then(|v| v.as_str())
+                .unwrap_or("unknown")
+                .to_string();
+            let data_hex = item.get("data").and_then(|v| v.as_str()).unwrap_or("");
+            let data = hex::decode(data_hex).unwrap_or_default();
+            let metadata = item
+                .get("metadata")
+                .and_then(|v| v.as_str())
+                .map(|h| hex::decode(h).unwrap_or_default());
+            let status = item
+                .get("status")
+                .and_then(|v| v.as_str())
+                .unwrap_or("unknown")
+                .to_string();
+
+            resources.push(ReceivedResource {
+                resource_hash,
+                data,
+                metadata,
+                status,
+            });
+        }
+
+        Ok(resources)
+    }
 }
 
 impl Drop for TestDaemon {
@@ -1459,6 +1546,15 @@ impl Drop for TestDaemon {
 pub struct PathEntry {
     pub timestamp: Option<f64>,
     pub hops: Option<u8>,
+}
+
+/// A resource received by a Python test daemon.
+#[derive(Debug, Clone)]
+pub struct ReceivedResource {
+    pub resource_hash: String,
+    pub data: Vec<u8>,
+    pub metadata: Option<Vec<u8>>,
+    pub status: String,
 }
 
 /// Information about a Reticulum interface.

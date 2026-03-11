@@ -7,7 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- **Resource transfer interop tests (6 tests)** — prove wire compatibility for segmented data transfer between Rust and Python over TCP. Tests cover both directions (Rust→Python, Python→Rust), with and without metadata (msgpack-encoded), and large transfers (300KB Rust→Python, 51KB Python→Rust). All tests route through a Python relay.
+
 ### Fixed
+- **Resource API action draining** — `send_resource()`, `accept_resource()`, and `reject_resource()` on NodeCore now call `process_events_and_actions()` and return `TickOutput`, ensuring ADV/REQ packets are dispatched immediately instead of sitting undrained until the next timeout tick.
 - **RNode serial heartbeat fixes idle-correlated LoRa failures** — after 12+ minutes of radio silence, the first TX packet was lost (the USB-serial link or RNode firmware appeared to enter an idle state). A CMD_DETECT heartbeat every 300s keeps the serial link exercised without touching the radio. Also adds debug-level RX/TX logging for radio diagnostics. `lora_late_announce_10node`: 0/3 → 3/3 at SF10/scale=4.
 
 ### Added
