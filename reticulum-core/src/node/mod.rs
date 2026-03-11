@@ -1232,7 +1232,10 @@ impl<R: CryptoRngCore, C: Clock, S: Storage> NodeCore<R, C, S> {
                         && self.links.contains_key(&LinkId::new(destination_hash)))
                 {
                     // Route to link packet handler
-                    let raw = self.repack_packet(&packet);
+                    let Some(raw) = self.repack_packet(&packet) else {
+                        // repack_packet logs the error; drop the packet
+                        return;
+                    };
 
                     // Verify repack symmetry: if original wire hash is known,
                     // check that repacking produces the same hashable bytes.

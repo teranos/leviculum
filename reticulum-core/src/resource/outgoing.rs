@@ -17,8 +17,8 @@ use crate::packet::PacketContext;
 use crate::resource::hashmap::map_hash;
 use crate::resource::msgpack;
 use crate::resource::{
-    collision_guard_size, hashmap_max_len, resource_sdu, ResourceAdvertisement, ResourceError,
-    ResourceFlags, ResourceStatus, HASHMAP_IS_EXHAUSTED, RESOURCE_MAX_ADV_RETRIES,
+    resource_sdu, ResourceAdvertisement, ResourceError, ResourceFlags, ResourceStatus,
+    COLLISION_GUARD_SIZE, HASHMAP_IS_EXHAUSTED, HASHMAP_MAX_LEN, RESOURCE_MAX_ADV_RETRIES,
     RESOURCE_MAX_RETRIES, RESOURCE_RANDOM_HASH_SIZE,
 };
 
@@ -180,8 +180,8 @@ impl OutgoingResource {
             encrypted.len().div_ceil(sdu) as u32
         };
 
-        let guard_size = collision_guard_size(link_mdu);
-        let hashmap_max = hashmap_max_len(link_mdu);
+        let guard_size = COLLISION_GUARD_SIZE;
+        let hashmap_max = HASHMAP_MAX_LEN;
 
         // Build parts and hashmap, retrying if hash collisions occur
         let (parts, hashmap) = loop {
@@ -359,10 +359,7 @@ impl OutgoingResource {
 
         // Search within collision guard scope for matching parts
         let search_start = self.receiver_min_consecutive_height;
-        let search_end = core::cmp::min(
-            search_start + collision_guard_size(self.link_mdu),
-            self.parts.len(),
-        );
+        let search_end = core::cmp::min(search_start + COLLISION_GUARD_SIZE, self.parts.len());
 
         for i in search_start..search_end {
             if requested_hashes.contains(&self.hashmap[i]) {
@@ -378,12 +375,12 @@ impl OutgoingResource {
         // Handle hashmap exhaustion — send next HMU segment
         if wants_more_hashmap {
             let last_map_hash = &req_data[1..1 + RESOURCE_HASHMAP_LEN];
-            let hashmap_max = hashmap_max_len(self.link_mdu);
+            let hashmap_max = HASHMAP_MAX_LEN;
 
             // Find the part index matching last_map_hash
             let mut part_index = self.receiver_min_consecutive_height;
             let scan_end = core::cmp::min(
-                self.receiver_min_consecutive_height + collision_guard_size(self.link_mdu),
+                self.receiver_min_consecutive_height + COLLISION_GUARD_SIZE,
                 self.hashmap.len(),
             );
             for i in self.receiver_min_consecutive_height..scan_end {

@@ -23,8 +23,8 @@ When an issue is fixed, remove it from this file entirely.
 | E26 | M | post-7 | open | Design | Storage trait is a ~60-method God-Interface — split into per-concern sub-traits |
 | E27 | M | post-7 | open | Design | FileStorage wraps MemoryStorage — prevents custom eviction, lazy-loading, RAM/disk split |
 | E28 | M | post-7 | open | Design | InterfaceMode::multiple_access defined but unused — wire up for E10 (jitter) and E24 (ingress) |
-| E30 | L | 3 | open | Bug | All-Python topology: unreliable announce propagation through relay |
-| E31 | M | 3 | open | Bug | Python rncp sender → lrncp receiver: resource transfer stalls at ~28% for files >100KB |
+| E32 | L | post-7 | open | Bug | KISS deframer unwrap_or(0) silently masks state machine bugs |
+| E33 | L | post-7 | open | Bug | Deferred path response uses 0 hops when announce cache is empty |
 
 ---
 
@@ -179,21 +179,21 @@ When an issue is fixed, remove it from this file entirely.
 - **Fix:** Three steps: (a) AutoInterface and UDP-broadcast interfaces must override `mode()` to return `InterfaceMode { multiple_access: true, broadcast: true, .. }`. TCP and LocalInterface keep the default (all false). (b) E10 implementation checks `multiple_access` to decide whether to apply send-side jitter. (c) E24 implementation checks `multiple_access` to decide whether ingress control is active by default. Steps (b) and (c) are part of E10/E24 respectively — this issue tracks only the wiring gap (step a) and documents that the extension point exists.
 - **Test:** Unit test: verify AutoInterface returns `multiple_access: true`. Unit test: verify TCP returns `multiple_access: false` (default). Integration test deferred to E10/E24.
 
-### E31: Python rncp sender → lrncp receiver: resource transfer stalls at ~28% for files >100KB
-- **Status:** open
-- **Priority:** M
-- **Phase:** 3
-- **Category:** Bug
-- **Detail:** When Python rncp sends a file to lrncp (shared instance listener) through a relay, transfers of files >100KB stall at approximately 28% (292.63 KB for a 1MB file). 100KB transfers succeed. The same 1MB transfer works perfectly in all-Rust (lrncp↔lrncp) and Rust-sender (lrncp→rncp) configurations. The stall point (~28%) suggests a resource segment handling or flow control mismatch when receiving segments from Python's resource sender. The `lrncp_rust_sender` integration test uses `direction = "a_to_b"` only (Rust sends, Python receives) to work around this.
-- **Fix:** Debug the resource transfer receive path in lrncp when segments come from Python rncp. Compare segment acknowledgment and flow control between all-Rust (working) and Python→Rust (stalling) transfers. The stall at a consistent percentage suggests a window or acknowledgment protocol mismatch.
-- **Test:** `lrncp_rust_sender` test with `direction = "both"` and `file_sizes = [1048576]` should pass.
-
-### E30: All-Python topology: unreliable announce propagation through relay
+### E32: KISS deframer unwrap_or(0) silently masks state machine bugs
 - **Status:** open
 - **Priority:** L
-- **Phase:** 3
+- **Phase:** post-7
 - **Category:** Bug
-- **Detail:** In a 3-node all-Python topology (alpha=rnsd, relay=rnsd, charlie=rnsd), probe announces from charlie frequently fail to propagate through the relay to alpha. The relay logs show "Rebroadcasting announce" but alpha's rnsd never logs receiving the rebroadcasted announce, even after 90 seconds. This is NOT a timing issue — the same topology with Rust endpoints (lrnsd) and the same Python relay works reliably with 10-second convergence. The `lrncp_baseline` test was changed from all-Python to Rust-endpoints-with-Python-relay to work around this issue. The existing `probe_through_relay` test (Rust endpoints + Python relay) passes consistently.
-- **Fix:** Debug Python rnsd announce rebroadcast path. Verify the relay actually sends the rebroadcast packet to alpha's TCP interface, not just to charlie.
-- **Test:** Create an all-Python `probe_through_relay_python` scenario and verify it passes reliably.
+- **Detail:** In `framing/kiss.rs:240`, `finalize_frame()` uses `self.command.unwrap_or(0)` to extract the KISS command byte. The comment claims "command is guaranteed to be Some by the caller", but the fallback silently converts a state machine bug into a valid KISS data frame (command 0). If the precondition is ever violated, corrupted frames would be misclassified rather than rejected.
+- **Fix:** Replace `unwrap_or(0)` with a proper error return or debug assertion. `finalize_frame()` could return `Option<KissDeframeResult>`, returning `None` when command is missing.
+- **Test:** Unit test: verify that calling `finalize_frame()` without setting command produces an error rather than silently returning command 0.
+
+### E33: Deferred path response uses 0 hops when announce cache is empty
+- **Status:** open
+- **Priority:** L
+- **Phase:** post-7
+- **Category:** Bug
+- **Detail:** In `transport.rs:3272-3273`, two adjacent `unwrap_or_default()` / `unwrap_or(0)` calls compound: when no cached announce exists, `get_announce_cache()` returns `None` → empty Vec → `Packet::unpack()` fails → `hops` defaults to 0. This makes the placeholder `AnnounceEntry` appear as a 0-hop (local) announce. NodeCore reportedly overwrites this before it matters, but the intermediate state could be observed by concurrent code paths.
+- **Fix:** Either skip creating the deferred path response entry when no cached announce exists, or propagate the `None` explicitly so the hop count is clearly unknown rather than silently 0.
+- **Test:** Unit test: verify that a deferred path response without cached announce data either skips creation or correctly marks hops as unknown.
 

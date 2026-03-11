@@ -15,8 +15,8 @@ use crate::link::Link;
 use crate::resource::hashmap::map_hash;
 use crate::resource::msgpack;
 use crate::resource::{
-    hashmap_max_len, ResourceAdvertisement, ResourceError, ResourceFlags, ResourceStatus,
-    FAST_RATE_THRESHOLD, HASHMAP_IS_EXHAUSTED, HASHMAP_IS_NOT_EXHAUSTED, RESOURCE_MAX_RETRIES,
+    ResourceAdvertisement, ResourceError, ResourceFlags, ResourceStatus, FAST_RATE_THRESHOLD,
+    HASHMAP_IS_EXHAUSTED, HASHMAP_IS_NOT_EXHAUSTED, HASHMAP_MAX_LEN, RESOURCE_MAX_RETRIES,
     RESOURCE_RANDOM_HASH_SIZE, RESOURCE_WINDOW_FLEXIBILITY, RESOURCE_WINDOW_MAX_VERY_SLOW,
     SLOW_RATE_THRESHOLD, VERY_SLOW_RATE_THRESHOLD,
 };
@@ -53,6 +53,7 @@ pub(crate) struct IncomingResource {
     transfer_size: u64,
     data_size: u64,
     num_parts: u32,
+    segment_index: u32,
     total_segments: u32,
     request_id: Option<Vec<u8>>,
     // Parts storage
@@ -121,6 +122,7 @@ impl IncomingResource {
             transfer_size: adv.transfer_size,
             data_size: adv.data_size,
             num_parts,
+            segment_index: adv.segment_index,
             total_segments: adv.total_segments,
             request_id: adv.request_id.clone(),
             parts: vec![None; num_parts as usize],
@@ -195,14 +197,32 @@ impl IncomingResource {
             // Append last known map hash
             if self.hashmap_height > 0 {
                 if let Some(last_hash) = self.hashmap[self.hashmap_height - 1] {
+                    tracing::debug!(
+                        "REQ: HASHMAP_EXHAUSTED, hashmap_height={}, last_map_hash={:02x}{:02x}{:02x}{:02x}, outstanding={}, consecutive_height={}, window={}",
+                        self.hashmap_height,
+                        last_hash[0], last_hash[1], last_hash[2], last_hash[3],
+                        self.outstanding_parts,
+                        self.consecutive_completed_height,
+                        self.window,
+                    );
                     req.extend_from_slice(&last_hash);
                 } else {
+                    tracing::warn!("REQ: HASHMAP_EXHAUSTED but last entry is None!");
                     req.extend_from_slice(&[0u8; RESOURCE_HASHMAP_LEN]);
                 }
             } else {
+                tracing::warn!("REQ: HASHMAP_EXHAUSTED but hashmap_height=0!");
                 req.extend_from_slice(&[0u8; RESOURCE_HASHMAP_LEN]);
             }
             self.waiting_for_hmu = true;
+        } else {
+            tracing::debug!(
+                "REQ: NOT_EXHAUSTED, outstanding={}, consecutive_height={}, hashmap_height={}, window={}",
+                self.outstanding_parts,
+                self.consecutive_completed_height,
+                self.hashmap_height,
+                self.window,
+            );
         }
 
         req.extend_from_slice(&self.resource_hash);
@@ -310,6 +330,12 @@ impl IncomingResource {
                 let req = self.build_request();
                 self.req_sent_ms = Some(now_ms);
                 return ResourcePartResult::SendRequest(req);
+            } else {
+                tracing::debug!(
+                    "Window complete but waiting_for_hmu=true, consecutive_height={}, hashmap_height={}",
+                    self.consecutive_completed_height,
+                    self.hashmap_height,
+                );
             }
         }
 
@@ -351,8 +377,19 @@ impl IncomingResource {
             .ok_or(ResourceError::InvalidHashmap)?;
 
         // Parse hashmap entries
-        let seg_len = hashmap_max_len(self.link_mdu);
+        // Use HASHMAP_MAX_LEN (protocol constant from standard Link.MDU),
+        // NOT the negotiated link_mdu. Python's ResourceAdvertisement.HASHMAP_MAX_LEN
+        // is a class constant that doesn't change with MTU discovery.
+        let seg_len = HASHMAP_MAX_LEN;
         let num_entries = hashmap_bytes.len() / RESOURCE_HASHMAP_LEN;
+
+        tracing::debug!(
+            "HMU received: segment={}, seg_len={}, num_entries={}, hashmap_height_before={}",
+            segment,
+            seg_len,
+            num_entries,
+            self.hashmap_height,
+        );
 
         for i in 0..num_entries {
             let idx = i + segment * seg_len;
@@ -438,8 +475,8 @@ impl IncomingResource {
         // Store assembled data (including metadata prefix) for proof computation
         self.assembled_with_metadata = Some(assembled.clone());
 
-        // 6. Extract metadata if present
-        let (app_data, metadata) = if self.flags.has_metadata {
+        // 6. Extract metadata if present (only in segment 1, per Python Resource.py:685)
+        let (app_data, metadata) = if self.flags.has_metadata && self.segment_index == 1 {
             if assembled.len() < 3 {
                 return Err(ResourceError::HashMismatch);
             }
@@ -500,6 +537,14 @@ impl IncomingResource {
 
                 if now_ms.saturating_sub(self.last_activity_ms) >= timeout {
                     self.retries += 1;
+                    tracing::debug!(
+                        "Resource timeout: retry={}/{}, waiting_for_hmu={}, consecutive_height={}, hashmap_height={}, outstanding={}",
+                        self.retries, RESOURCE_MAX_RETRIES,
+                        self.waiting_for_hmu,
+                        self.consecutive_completed_height,
+                        self.hashmap_height,
+                        self.outstanding_parts,
+                    );
                     if self.retries >= RESOURCE_MAX_RETRIES {
                         self.status = ResourceStatus::Failed;
                         ResourcePollResult::TimedOut
@@ -576,6 +621,10 @@ impl IncomingResource {
     #[allow(dead_code)] // Resource accessor API — see ROADMAP v1.1 (Resource Transfer)
     pub(crate) fn original_hash(&self) -> &[u8; 32] {
         &self.original_hash
+    }
+
+    pub(crate) fn segment_index(&self) -> u32 {
+        self.segment_index
     }
 
     #[allow(dead_code)] // Resource accessor API — see ROADMAP v1.1 (Resource Transfer)
@@ -690,7 +739,7 @@ mod tests {
         assert!(result.is_ok());
 
         // Should have added 2 more hashmap entries at positions seg_len*1..
-        // hashmap_max_len(431) = 74, so entries go at indices 74 and 75
+        // HASHMAP_MAX_LEN = 74, so entries go at indices 74 and 75
         // But we only have 3 parts, so index 74 and 75 are out of range
         // The entries are at segment*seg_len + i = 74 + 0 = 74, 74 + 1 = 75
         // Both are >= 3 (num_parts), so they won't be stored

@@ -217,6 +217,10 @@ pub async fn run_listen(
         None
     };
 
+    // Multi-segment accumulation buffer
+    let mut segment_buffer: Vec<u8> = Vec::new();
+    let mut segment_metadata: Option<Vec<u8>> = None;
+
     // Event loop
     loop {
         tokio::select! {
@@ -240,16 +244,33 @@ pub async fn run_listen(
                         }
                     }
                     Some(NodeEvent::ResourceCompleted {
-                        data, metadata, is_sender: false, ..
+                        data, metadata, is_sender: false,
+                        segment_index, total_segments, ..
                     }) => {
-                        if let Err(e) = save_received_file(
-                            &data,
-                            metadata.as_deref(),
-                            save_dir.as_deref(),
-                            overwrite,
-                            quiet,
-                        ) {
-                            eprintln!("Error saving file: {e}");
+                        // Accumulate segment data
+                        segment_buffer.extend_from_slice(&data);
+                        if metadata.is_some() {
+                            segment_metadata = metadata;
+                        }
+
+                        if segment_index == total_segments {
+                            // Last segment — save the complete file
+                            if let Err(e) = save_received_file(
+                                &segment_buffer,
+                                segment_metadata.as_deref(),
+                                save_dir.as_deref(),
+                                overwrite,
+                                quiet,
+                            ) {
+                                eprintln!("Error saving file: {e}");
+                            }
+                            segment_buffer.clear();
+                            segment_metadata = None;
+                        } else if verbose > 0 {
+                            eprintln!(
+                                "Segment {}/{} received ({} bytes)",
+                                segment_index, total_segments, data.len()
+                            );
                         }
                     }
                     Some(NodeEvent::ResourceFailed { error, .. }) => {

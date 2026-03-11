@@ -923,20 +923,12 @@ fn execute_transfer_direction(
 
     // 3. Start listener on receiver (detached)
     //    docker exec -d runs detached — the Docker client returns immediately.
+    //    Use sh -c to redirect output to a log file for debugging.
     let container = runner.container_name(recv_node);
+    let listener_cmd =
+        format!("RUST_LOG=debug {recv_tool} -l -n -s /tmp/received -b 0 > /tmp/recv_tool.log 2>&1");
     let listener_output = std::process::Command::new("docker")
-        .args([
-            "exec",
-            "-d",
-            &container,
-            recv_tool,
-            "-l",
-            "-n",
-            "-s",
-            "/tmp/received",
-            "-b",
-            "0",
-        ])
+        .args(["exec", "-d", &container, "sh", "-c", &listener_cmd])
         .output()
         .map_err(|e| StepError::Runner(RunnerError::Io(e)))?;
     if !listener_output.status.success() {
@@ -1047,6 +1039,17 @@ fn execute_transfer_direction(
             if !send_output.status.success() {
                 let stderr = String::from_utf8_lossy(&send_output.stderr);
                 let stdout = String::from_utf8_lossy(&send_output.stdout);
+                // Dump receiver tool log on failure for debugging
+                if let Ok(out) = runner.docker_exec(recv_node, &["cat", "/tmp/recv_tool.log"]) {
+                    let log = String::from_utf8_lossy(&out.stdout);
+                    let lines: Vec<&str> = log.lines().collect();
+                    let start_line = 0;
+                    println!("  --- last {} lines of {recv_tool} log on {recv_node} (on send failure) ---", lines.len() - start_line);
+                    for line in &lines[start_line..] {
+                        println!("  {line}");
+                    }
+                    println!("  --- end of {recv_tool} log ---");
+                }
                 return Err(StepError::StepFailed {
                     step_index,
                     action: "file_transfer".into(),
@@ -2250,6 +2253,42 @@ Reticulum Transport Instance running
             "/tests/lrncp_full_rust.toml"
         ))
         .expect("lrncp_full_rust.toml not found");
+        let scenario = crate::topology::parse_scenario(&toml_str).expect("parse failed");
+
+        let mut runner = TestRunner::new(scenario).expect("TestRunner::new failed");
+
+        runner.up().expect("up failed");
+        runner.wait_ready(60).expect("wait_ready failed");
+
+        let result = execute_steps(&runner);
+        runner.down().expect("down failed");
+        result.expect("execute_steps should succeed");
+    }
+
+    #[test]
+    #[serial(docker)]
+    fn e30_repro() {
+        let toml_str =
+            std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/tests/e30_repro.toml"))
+                .expect("e30_repro.toml not found");
+        let scenario = crate::topology::parse_scenario(&toml_str).expect("parse failed");
+
+        let mut runner = TestRunner::new(scenario).expect("TestRunner::new failed");
+
+        runner.up().expect("up failed");
+        runner.wait_ready(60).expect("wait_ready failed");
+
+        let result = execute_steps(&runner);
+        runner.down().expect("down failed");
+        result.expect("execute_steps should succeed");
+    }
+
+    #[test]
+    #[serial(docker)]
+    fn e31_repro() {
+        let toml_str =
+            std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/tests/e31_repro.toml"))
+                .expect("e31_repro.toml not found");
         let scenario = crate::topology::parse_scenario(&toml_str).expect("parse failed");
 
         let mut runner = TestRunner::new(scenario).expect("TestRunner::new failed");

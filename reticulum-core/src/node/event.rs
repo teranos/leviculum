@@ -220,6 +220,10 @@ pub enum NodeEvent {
     },
 
     /// Resource transfer completed successfully.
+    ///
+    /// For multi-segment resources, this fires once per segment.
+    /// `segment_index` and `total_segments` indicate position within
+    /// the overall transfer. Metadata is only present in segment 1.
     ResourceCompleted {
         /// The link that carried the transfer
         link_id: LinkId,
@@ -230,9 +234,14 @@ pub enum NodeEvent {
         /// Extracted metadata (receiver only; None for sender).
         /// Contains raw msgpack-encoded bytes as received on the wire.
         /// Decode with a msgpack library to obtain the original value.
+        /// Only present in segment 1 of multi-segment transfers.
         metadata: Option<Vec<u8>>,
         /// True if we were the sender
         is_sender: bool,
+        /// Segment index (1-based)
+        segment_index: u32,
+        /// Total number of segments
+        total_segments: u32,
     },
 
     /// Resource transfer failed.

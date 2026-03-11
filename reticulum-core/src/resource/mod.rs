@@ -81,23 +81,40 @@ pub const VERY_SLOW_RATE_THRESHOLD: u64 = 1_000;
 pub const HASHMAP_IS_NOT_EXHAUSTED: u8 = 0x00;
 
 /// Hashmap exhausted flag in REQ packets.
-pub const HASHMAP_IS_EXHAUSTED: u8 = 0x01;
+/// Must match Python's `Resource.HASHMAP_IS_EXHAUSTED = 0xFF`.
+pub const HASHMAP_IS_EXHAUSTED: u8 = 0xFF;
 
-// ─── Derived functions ───────────────────────────────────────────────────────
+// ─── Derived constants ──────────────────────────────────────────────────────
 
-/// Maximum number of hashmap entries that fit in a single advertisement packet.
+/// Standard Link MDU computed from the default MTU (500).
 ///
-/// Depends on the link MDU (which varies with negotiated MTU).
-/// Standard MTU 500 → link MDU 431 → (431 - 134) / 4 = 74.
-pub fn hashmap_max_len(link_mdu: usize) -> usize {
-    link_mdu.saturating_sub(RESOURCE_ADV_OVERHEAD) / RESOURCE_HASHMAP_LEN
-}
+/// `floor((MTU - IFAC_MIN_SIZE - HEADER_MINSIZE - TOKEN_OVERHEAD) / AES_BLOCK_SIZE)
+///  * AES_BLOCK_SIZE - 1 = floor(432/16)*16 - 1 = 431`
+///
+/// Python computes this as `Link.MDU` — a class constant that never changes,
+/// even when Link MTU Discovery negotiates a higher MTU.
+/// Resource hashmap segmentation MUST use this standard MDU, not the
+/// negotiated link MDU, because Python's `ResourceAdvertisement.HASHMAP_MAX_LEN`
+/// is a class constant derived from the default `Link.MDU`.
+pub const STANDARD_LINK_MDU: usize = {
+    use crate::constants::{AES_BLOCK_SIZE, HEADER_MINSIZE, IFAC_MIN_SIZE, MTU, TOKEN_OVERHEAD};
+    let usable = MTU - IFAC_MIN_SIZE - HEADER_MINSIZE - TOKEN_OVERHEAD;
+    (usable / AES_BLOCK_SIZE) * AES_BLOCK_SIZE - 1
+};
+
+/// Maximum number of hashmap entries per segment.
+///
+/// This is a protocol constant — Python's `ResourceAdvertisement.HASHMAP_MAX_LEN`
+/// is a class constant `floor((Link.MDU - 134) / 4) = 74`.
+/// Both sender and receiver MUST use the same value for segment boundary
+/// alignment. Using the negotiated link_mdu instead of STANDARD_LINK_MDU
+/// causes segment boundary misalignment and breaks HMU processing.
+pub const HASHMAP_MAX_LEN: usize =
+    (STANDARD_LINK_MDU - RESOURCE_ADV_OVERHEAD) / RESOURCE_HASHMAP_LEN;
 
 /// Size of the collision guard: number of sequence numbers reserved to
 /// prevent hashmap collisions.
-pub fn collision_guard_size(link_mdu: usize) -> usize {
-    2 * RESOURCE_WINDOW_MAX_FAST + hashmap_max_len(link_mdu)
-}
+pub const COLLISION_GUARD_SIZE: usize = 2 * RESOURCE_WINDOW_MAX_FAST + HASHMAP_MAX_LEN;
 
 /// Compute the Resource SDU (Service Data Unit) for a given negotiated MTU.
 ///
@@ -726,30 +743,22 @@ mod tests {
         assert_eq!(resource_sdu(30), 0);
     }
 
-    // ── hashmap_max_len() ────────────────────────────────────────────────
+    // ── HASHMAP_MAX_LEN / COLLISION_GUARD_SIZE constants ──────────────────
 
     #[test]
-    fn test_hashmap_max_len_standard() {
-        // Standard link MDU = 431
-        assert_eq!(hashmap_max_len(431), 74);
+    fn test_standard_link_mdu() {
+        assert_eq!(STANDARD_LINK_MDU, 431);
     }
 
     #[test]
-    fn test_hashmap_max_len_at_overhead() {
-        // Edge: MDU exactly equals overhead
-        assert_eq!(hashmap_max_len(RESOURCE_ADV_OVERHEAD), 0);
+    fn test_hashmap_max_len_constant() {
+        // (431 - 134) / 4 = 74
+        assert_eq!(HASHMAP_MAX_LEN, 74);
     }
 
     #[test]
-    fn test_hashmap_max_len_below_overhead() {
-        assert_eq!(hashmap_max_len(100), 0);
-    }
-
-    // ── collision_guard_size() ───────────────────────────────────────────
-
-    #[test]
-    fn test_collision_guard_standard() {
+    fn test_collision_guard_size_constant() {
         // 2 * 75 + 74 = 224
-        assert_eq!(collision_guard_size(431), 2 * RESOURCE_WINDOW_MAX_FAST + 74);
+        assert_eq!(COLLISION_GUARD_SIZE, 2 * RESOURCE_WINDOW_MAX_FAST + 74);
     }
 }

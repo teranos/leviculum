@@ -1439,8 +1439,10 @@ impl<R: CryptoRngCore, C: Clock, S: Storage> NodeCore<R, C, S> {
                             }
                         }
 
-                        // Clear incoming resource (transfer complete)
+                        // Clear incoming resource (segment complete)
                         // (incoming is consumed, not put back)
+                        let seg_idx = incoming.segment_index();
+                        let total_segs = incoming.total_segments();
 
                         self.events.push(NodeEvent::ResourceCompleted {
                             link_id,
@@ -1448,6 +1450,8 @@ impl<R: CryptoRngCore, C: Clock, S: Storage> NodeCore<R, C, S> {
                             data,
                             metadata,
                             is_sender: false,
+                            segment_index: seg_idx,
+                            total_segments: total_segs,
                         });
                     }
                     Err(e) => {
@@ -1587,6 +1591,10 @@ impl<R: CryptoRngCore, C: Clock, S: Storage> NodeCore<R, C, S> {
                     data: Vec::new(), // sender doesn't return data
                     metadata: None,
                     is_sender: true,
+                    // Rust send_resource() always creates single-segment resources.
+                    // Multi-segment sending is not yet implemented.
+                    segment_index: 1,
+                    total_segments: 1,
                 });
             }
             Ok(_) => {
@@ -2191,10 +2199,19 @@ impl<R: CryptoRngCore, C: Clock, S: Storage> NodeCore<R, C, S> {
         });
     }
 
-    pub(super) fn repack_packet(&self, packet: &Packet) -> Vec<u8> {
-        let mut buf = [0u8; crate::constants::MTU];
-        let len = packet.pack(&mut buf).unwrap_or(0);
-        buf[..len].to_vec()
+    pub(super) fn repack_packet(&self, packet: &Packet) -> Option<Vec<u8>> {
+        let size = packet.packed_size();
+        let mut buf = alloc::vec![0u8; size];
+        match packet.pack(&mut buf) {
+            Ok(len) => {
+                buf.truncate(len);
+                Some(buf)
+            }
+            Err(e) => {
+                tracing::warn!(?e, "repack_packet failed — dropping packet");
+                None
+            }
+        }
     }
 }
 

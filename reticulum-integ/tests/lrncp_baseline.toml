@@ -1,15 +1,13 @@
-# Baseline: rncp (Python tools) through Python relay on Rust daemons
+# Baseline: rncp (Python tools) through all-Python topology
 # Measures Python rncp transfer performance for comparison with lrncp.
-# Uses Rust daemons (lrnsd) for reliable announce propagation —
-# all-Python topologies have unreliable announce timing through relays.
 
 [test]
 name = "lrncp_baseline"
-description = "Baseline: Python rncp on Rust daemons through Python relay"
+description = "Baseline: Python rncp through all-Python topology"
 timeout_secs = 600
 
 [nodes.alpha]
-type = "rust"
+type = "python"
 respond_to_probes = true
 
 [nodes.relay]
@@ -17,7 +15,7 @@ type = "python"
 respond_to_probes = false
 
 [nodes.charlie]
-type = "rust"
+type = "python"
 respond_to_probes = true
 
 [links]
@@ -26,7 +24,7 @@ charlie-relay = "tcp"
 
 [[steps]]
 action = "sleep"
-duration_secs = 10
+duration_secs = 20
 
 [[steps]]
 action = "wait_for_path"
