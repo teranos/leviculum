@@ -646,11 +646,11 @@ impl<R: CryptoRngCore, C: Clock, S: Storage> NodeCore<R, C, S> {
             .take_pending_resource_adv()
             .ok_or(ResourceError::NoPendingResource)?;
 
-        // Send cancel (ICL = initiator cancel)
+        // Send RCL (receiver cancel — we are rejecting the sender's ADV)
         let cancel_data = adv.resource_hash.to_vec();
         if let Ok(pkt) = link.build_data_packet_with_context(
             &cancel_data,
-            PacketContext::ResourceIcl,
+            PacketContext::ResourceRcl,
             &mut self.rng,
         ) {
             self.route_link_packet(link_id, &pkt);

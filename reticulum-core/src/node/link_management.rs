@@ -1402,9 +1402,14 @@ impl<R: CryptoRngCore, C: Clock, S: Storage> NodeCore<R, C, S> {
                     &mut self.rng,
                 );
                 link.set_incoming_resource(incoming);
-                if let Ok(pkt) = req_pkt {
-                    link.record_outbound(now_secs);
-                    self.route_link_packet(&link_id, &pkt);
+                match req_pkt {
+                    Ok(pkt) => {
+                        link.record_outbound(now_secs);
+                        self.route_link_packet(&link_id, &pkt);
+                    }
+                    Err(e) => {
+                        tracing::debug!("Resource REQ packet build failed on link {}: {:?}", link_id, e);
+                    }
                 }
             }
             ResourcePartResult::Assembling => {
@@ -1528,19 +1533,7 @@ impl<R: CryptoRngCore, C: Clock, S: Storage> NodeCore<R, C, S> {
         };
 
         if is_incoming_cancel {
-            // ICL = initiator cancel → clear outgoing resource
-            if let Some(res) = link.outgoing_resource() {
-                let resource_hash = *res.resource_hash();
-                link.clear_outgoing_resource();
-                self.events.push(NodeEvent::ResourceFailed {
-                    link_id,
-                    resource_hash,
-                    error: crate::resource::ResourceError::Cancelled,
-                    is_sender: true,
-                });
-            }
-        } else {
-            // RCL = receiver cancel → clear incoming resource
+            // ICL received = initiator (sender) cancelled = we are the receiver
             if let Some(res) = link.incoming_resource() {
                 let resource_hash = *res.resource_hash();
                 link.clear_incoming_resource();
@@ -1549,6 +1542,18 @@ impl<R: CryptoRngCore, C: Clock, S: Storage> NodeCore<R, C, S> {
                     resource_hash,
                     error: crate::resource::ResourceError::Cancelled,
                     is_sender: false,
+                });
+            }
+        } else {
+            // RCL received = receiver cancelled = we are the sender
+            if let Some(res) = link.outgoing_resource() {
+                let resource_hash = *res.resource_hash();
+                link.clear_outgoing_resource();
+                self.events.push(NodeEvent::ResourceFailed {
+                    link_id,
+                    resource_hash,
+                    error: crate::resource::ResourceError::Cancelled,
+                    is_sender: true,
                 });
             }
         }
