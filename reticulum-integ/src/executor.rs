@@ -2,7 +2,7 @@ use std::collections::BTreeMap;
 use std::fmt;
 use std::io::{BufRead, Write};
 use std::thread;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use crate::runner::{RunnerError, TestRunner};
 use crate::topology::{scale_timeout, timeout_scale, Step};
@@ -386,6 +386,32 @@ fn execute_step(
             println!("[{step_num}/{total}] proxy_stats on {node}...");
             execute_proxy_stats(runner, index, node, *expect_dropped, *expect_forwarded)
         }
+        Step::FileTransfer {
+            sender,
+            receiver,
+            sender_tool,
+            receiver_tool,
+            file_sizes,
+            direction,
+            repeats,
+            timeout_secs,
+        } => {
+            println!(
+                "[{step_num}/{total}] file_transfer {sender} <-> {receiver} ({sender_tool}/{receiver_tool})..."
+            );
+            execute_file_transfer(
+                runner,
+                index,
+                sender,
+                receiver,
+                sender_tool,
+                receiver_tool,
+                file_sizes,
+                direction,
+                *repeats,
+                *timeout_secs,
+            )
+        }
     }
 }
 
@@ -708,6 +734,452 @@ fn parse_json_u64(json: &str, key: &str) -> Option<u64> {
     rest[..end].parse().ok()
 }
 
+// ---------------------------------------------------------------------------
+// File transfer
+// ---------------------------------------------------------------------------
+
+struct TransferResult {
+    direction: String,
+    size: u64,
+    repeat: u32,
+    duration: Duration,
+    sender_tool: String,
+    receiver_tool: String,
+}
+
+/// Parse destination hash from tool `-p` output.
+///
+/// lrncp: bare hex on stdout.
+/// rncp: "Listening on : <hex>" format with prettyhexrep angle brackets.
+/// Fallback: scan all lines for a 32-char hex string.
+fn parse_dest_hash_from_print_identity(stdout: &str) -> Result<String, String> {
+    // Try rncp format: "Listening on : <hash>"
+    for line in stdout.lines() {
+        if let Some(rest) = line.strip_prefix("Listening on : ") {
+            let trimmed = rest.trim();
+            let hash = trimmed.trim_start_matches('<').trim_end_matches('>');
+            if hash.len() == 32 && hash.chars().all(|c| c.is_ascii_hexdigit()) {
+                return Ok(hash.to_string());
+            }
+        }
+    }
+
+    // Fallback: scan for any 32-char hex string (lrncp bare hash or other format)
+    for line in stdout.lines() {
+        let trimmed = line.trim();
+        if trimmed.len() == 32 && trimmed.chars().all(|c| c.is_ascii_hexdigit()) {
+            return Ok(trimmed.to_string());
+        }
+    }
+
+    Err(format!(
+        "could not parse destination hash from -p output:\n{stdout}"
+    ))
+}
+
+/// Format a file size for display.
+fn format_size(bytes: u64) -> String {
+    if bytes >= 1_048_576 {
+        format!("{}MB", bytes / 1_048_576)
+    } else if bytes >= 1024 {
+        format!("{}KB", bytes / 1024)
+    } else {
+        format!("{}B", bytes)
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn execute_file_transfer(
+    runner: &TestRunner,
+    step_index: usize,
+    sender: &str,
+    receiver: &str,
+    sender_tool: &str,
+    receiver_tool: &str,
+    file_sizes: &[u64],
+    direction: &str,
+    repeats: u32,
+    timeout_secs: u64,
+) -> Result<(), StepError> {
+    let mut results = Vec::new();
+
+    match direction {
+        "a_to_b" => {
+            execute_transfer_direction(
+                runner,
+                step_index,
+                sender,
+                receiver,
+                sender_tool,
+                receiver_tool,
+                file_sizes,
+                repeats,
+                timeout_secs,
+                &mut results,
+            )?;
+        }
+        "b_to_a" => {
+            execute_transfer_direction(
+                runner,
+                step_index,
+                receiver,
+                sender,
+                receiver_tool,
+                sender_tool,
+                file_sizes,
+                repeats,
+                timeout_secs,
+                &mut results,
+            )?;
+        }
+        "both" => {
+            execute_transfer_direction(
+                runner,
+                step_index,
+                sender,
+                receiver,
+                sender_tool,
+                receiver_tool,
+                file_sizes,
+                repeats,
+                timeout_secs,
+                &mut results,
+            )?;
+            execute_transfer_direction(
+                runner,
+                step_index,
+                receiver,
+                sender,
+                receiver_tool,
+                sender_tool,
+                file_sizes,
+                repeats,
+                timeout_secs,
+                &mut results,
+            )?;
+        }
+        other => {
+            return Err(StepError::StepFailed {
+                step_index,
+                action: "file_transfer".into(),
+                detail: format!("unknown direction '{other}', use 'a_to_b', 'b_to_a', or 'both'"),
+            });
+        }
+    }
+
+    print_transfer_results(&results);
+    save_transfer_results_json(runner, &results);
+
+    Ok(())
+}
+
+#[allow(clippy::too_many_arguments)]
+fn execute_transfer_direction(
+    runner: &TestRunner,
+    step_index: usize,
+    send_node: &str,
+    recv_node: &str,
+    send_tool: &str,
+    recv_tool: &str,
+    file_sizes: &[u64],
+    repeats: u32,
+    timeout_secs: u64,
+    results: &mut Vec<TransferResult>,
+) -> Result<(), StepError> {
+    let direction_label = format!("{send_node} -> {recv_node}");
+    println!("  === {direction_label} ({send_tool} -> {recv_tool}) ===");
+
+    // 1. Get receiver destination hash
+    //    PYTHONUNBUFFERED=1 is required for Python rncp: its RNS.exit() calls
+    //    os._exit() which doesn't flush stdout buffers. In docker exec (non-TTY),
+    //    Python's stdout is block-buffered, so print() output would be lost.
+    let print_output = runner.docker_exec_with_env(
+        recv_node,
+        &["timeout", "30", recv_tool, "-p"],
+        &[("PYTHONUNBUFFERED", "1")],
+    )?;
+    if !print_output.status.success() {
+        return Err(StepError::StepFailed {
+            step_index,
+            action: "file_transfer".into(),
+            detail: format!(
+                "{recv_tool} -p on {recv_node} failed (exit {}): {}",
+                print_output.status.code().unwrap_or(-1),
+                String::from_utf8_lossy(&print_output.stderr)
+            ),
+        });
+    }
+    let stdout = String::from_utf8_lossy(&print_output.stdout);
+    let dest_hash =
+        parse_dest_hash_from_print_identity(&stdout).map_err(|e| StepError::StepFailed {
+            step_index,
+            action: "file_transfer".into(),
+            detail: format!("failed to parse dest hash from {recv_tool} -p: {e}"),
+        })?;
+    println!("  receiver hash: {dest_hash}");
+
+    // 2. Create save directory on receiver
+    runner.docker_exec(recv_node, &["mkdir", "-p", "/tmp/received"])?;
+
+    // 3. Start listener on receiver (detached)
+    //    docker exec -d runs detached — the Docker client returns immediately.
+    let container = runner.container_name(recv_node);
+    let listener_output = std::process::Command::new("docker")
+        .args([
+            "exec",
+            "-d",
+            &container,
+            recv_tool,
+            "-l",
+            "-n",
+            "-s",
+            "/tmp/received",
+            "-b",
+            "0",
+        ])
+        .output()
+        .map_err(|e| StepError::Runner(RunnerError::Io(e)))?;
+    if !listener_output.status.success() {
+        return Err(StepError::StepFailed {
+            step_index,
+            action: "file_transfer".into(),
+            detail: format!(
+                "failed to start listener on {recv_node}: {}",
+                String::from_utf8_lossy(&listener_output.stderr)
+            ),
+        });
+    }
+    println!("  listener started on {recv_node}");
+
+    // 4. Wait for announce propagation using rnpath on sender.
+    //    Give the announce time to propagate before rnpath sends a path request.
+    //    Without this delay, rnpath's path request arrives at the relay before the
+    //    relay has learned the destination from the listener's announce, and the
+    //    relay ignores it. Python rnpath only sends one path request and then polls
+    //    has_path(), so if the relay never sent a path response, rnpath depends on
+    //    the announce rebroadcast reaching the sender's daemon — which doesn't
+    //    always happen reliably with all-Python setups.
+    thread::sleep(Duration::from_secs(5));
+    println!("  waiting for path to {dest_hash} on {send_node}...");
+    let path_output = runner.docker_exec(
+        send_node,
+        &[
+            "rnpath",
+            &dest_hash,
+            "--config",
+            "/root/.reticulum",
+            "-w",
+            "60",
+        ],
+    )?;
+    if !path_output.status.success() {
+        return Err(StepError::StepFailed {
+            step_index,
+            action: "file_transfer".into(),
+            detail: format!(
+                "announce from {recv_node} did not reach {send_node} (rnpath failed): {}",
+                String::from_utf8_lossy(&path_output.stderr)
+            ),
+        });
+    }
+    println!("  path found");
+
+    // 5. For each file size, for each repeat: create, send, verify
+    let timeout_str = timeout_secs.to_string();
+    for &size in file_sizes {
+        for repeat in 1..=repeats {
+            let size_label = format_size(size);
+            println!("  [{size_label} run {repeat}/{repeats}]");
+
+            // 5a. Create test file on sender
+            let (bs, count) = if size >= 1_048_576 {
+                ("1048576", size / 1_048_576)
+            } else {
+                ("1024", size / 1024)
+            };
+            let count_str = count.to_string();
+            let dd_output = runner.docker_exec(
+                send_node,
+                &[
+                    "dd",
+                    "if=/dev/urandom",
+                    "of=/tmp/test_transfer.bin",
+                    &format!("bs={bs}"),
+                    &format!("count={count_str}"),
+                ],
+            )?;
+            if !dd_output.status.success() {
+                return Err(StepError::StepFailed {
+                    step_index,
+                    action: "file_transfer".into(),
+                    detail: format!(
+                        "dd failed on {send_node}: {}",
+                        String::from_utf8_lossy(&dd_output.stderr)
+                    ),
+                });
+            }
+
+            // Get expected md5
+            let md5_output =
+                runner.docker_exec(send_node, &["md5sum", "/tmp/test_transfer.bin"])?;
+            let expected_md5 = String::from_utf8_lossy(&md5_output.stdout)
+                .split_whitespace()
+                .next()
+                .unwrap_or("")
+                .to_string();
+
+            // 5b. Send file
+            let start = Instant::now();
+            let send_output = runner.docker_exec(
+                send_node,
+                &[
+                    "timeout",
+                    &timeout_str,
+                    send_tool,
+                    "/tmp/test_transfer.bin",
+                    &dest_hash,
+                    "-w",
+                    "60",
+                ],
+            )?;
+            let elapsed = start.elapsed();
+
+            if !send_output.status.success() {
+                let stderr = String::from_utf8_lossy(&send_output.stderr);
+                let stdout = String::from_utf8_lossy(&send_output.stdout);
+                return Err(StepError::StepFailed {
+                    step_index,
+                    action: "file_transfer".into(),
+                    detail: format!(
+                        "send failed on {send_node} ({size_label} run {repeat}): exit {}\nstdout: {stdout}\nstderr: {stderr}",
+                        send_output.status.code().unwrap_or(-1)
+                    ),
+                });
+            }
+
+            // 5c. Verify received file
+            let verify_output =
+                runner.docker_exec(recv_node, &["md5sum", "/tmp/received/test_transfer.bin"])?;
+            let actual_md5 = String::from_utf8_lossy(&verify_output.stdout)
+                .split_whitespace()
+                .next()
+                .unwrap_or("")
+                .to_string();
+
+            if actual_md5 != expected_md5 {
+                return Err(StepError::StepFailed {
+                    step_index,
+                    action: "file_transfer".into(),
+                    detail: format!(
+                        "md5 mismatch ({size_label} run {repeat}): expected {expected_md5}, got {actual_md5}"
+                    ),
+                });
+            }
+
+            // Cleanup for next repeat
+            runner.docker_exec(recv_node, &["rm", "/tmp/received/test_transfer.bin"])?;
+
+            // 5d. Record result
+            println!(
+                "    {size_label} run {repeat}: {:.2}s (md5 ok)",
+                elapsed.as_secs_f64()
+            );
+            results.push(TransferResult {
+                direction: direction_label.clone(),
+                size,
+                repeat,
+                duration: elapsed,
+                sender_tool: send_tool.to_string(),
+                receiver_tool: recv_tool.to_string(),
+            });
+        }
+    }
+
+    // 6. Stop listener
+    let _ = runner.docker_exec(recv_node, &["pkill", "-f", &format!("{recv_tool} -l")]);
+    println!("  listener stopped on {recv_node}");
+
+    Ok(())
+}
+
+fn print_transfer_results(results: &[TransferResult]) {
+    if results.is_empty() {
+        return;
+    }
+
+    println!("\n{}", "=".repeat(70));
+    println!("File Transfer Results");
+    println!("{}", "=".repeat(70));
+    println!(
+        "{:<20} {:>8} {:>10} {:>10}  {:<20}",
+        "Direction", "Size", "Run", "Time", "Tools"
+    );
+    println!("{}", "-".repeat(70));
+
+    // Group by (direction, size) for averages
+    let mut groups: BTreeMap<(String, u64), Vec<Duration>> = BTreeMap::new();
+
+    for r in results {
+        let tool_pair = format!("{} -> {}", r.sender_tool, r.receiver_tool);
+        println!(
+            "{:<20} {:>8} {:>10} {:>9.2}s  {:<20}",
+            r.direction,
+            format_size(r.size),
+            format!(
+                "{}/{}",
+                r.repeat,
+                results
+                    .iter()
+                    .filter(|x| x.direction == r.direction && x.size == r.size)
+                    .count()
+            ),
+            r.duration.as_secs_f64(),
+            tool_pair,
+        );
+        groups
+            .entry((r.direction.clone(), r.size))
+            .or_default()
+            .push(r.duration);
+    }
+
+    println!("{}", "-".repeat(70));
+    println!("Averages:");
+    for ((direction, size), durations) in &groups {
+        let avg = durations.iter().map(|d| d.as_secs_f64()).sum::<f64>() / durations.len() as f64;
+        println!(
+            "  {direction:<20} {:>8}  avg {:.2}s ({} runs)",
+            format_size(*size),
+            avg,
+            durations.len()
+        );
+    }
+    println!("{}\n", "=".repeat(70));
+}
+
+fn save_transfer_results_json(runner: &TestRunner, results: &[TransferResult]) {
+    let logs_dir = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("logs");
+    if std::fs::create_dir_all(&logs_dir).is_err() {
+        return;
+    }
+    let path = logs_dir.join(format!(
+        "{}_transfer_results.json",
+        runner.scenario().test.name
+    ));
+
+    let mut json = String::from("[\n");
+    for (i, r) in results.iter().enumerate() {
+        if i > 0 {
+            json.push_str(",\n");
+        }
+        json.push_str(&format!(
+            "  {{\"direction\":\"{}\",\"size\":{},\"repeat\":{},\"duration_secs\":{:.3},\"sender_tool\":\"{}\",\"receiver_tool\":\"{}\"}}",
+            r.direction, r.size, r.repeat, r.duration.as_secs_f64(), r.sender_tool, r.receiver_tool
+        ));
+    }
+    json.push_str("\n]\n");
+    let _ = std::fs::write(&path, &json);
+}
+
 /// Parse hop count from rnprobe output. Looks for `over N hop` pattern.
 fn parse_hops_from_output(output: &str) -> Option<u32> {
     // rnprobe output: "Probe reply received ... over 1 hops"
@@ -847,6 +1319,37 @@ Reticulum Transport Instance running
     #[test]
     fn parse_hops_none() {
         assert_eq!(parse_hops_from_output("Probe timed out"), None);
+    }
+
+    #[test]
+    fn parse_dest_hash_rncp_format() {
+        let output = "Identity     : <abc123>\nListening on : <c46bbee6a9437963a27ad5d18ce4a87c>\n";
+        assert_eq!(
+            parse_dest_hash_from_print_identity(output).unwrap(),
+            "c46bbee6a9437963a27ad5d18ce4a87c"
+        );
+    }
+
+    #[test]
+    fn parse_dest_hash_lrncp_bare() {
+        let output = "c46bbee6a9437963a27ad5d18ce4a87c\n";
+        assert_eq!(
+            parse_dest_hash_from_print_identity(output).unwrap(),
+            "c46bbee6a9437963a27ad5d18ce4a87c"
+        );
+    }
+
+    #[test]
+    fn parse_dest_hash_empty_fails() {
+        assert!(parse_dest_hash_from_print_identity("").is_err());
+    }
+
+    #[test]
+    fn format_size_display() {
+        assert_eq!(format_size(102400), "100KB");
+        assert_eq!(format_size(1048576), "1MB");
+        assert_eq!(format_size(10485760), "10MB");
+        assert_eq!(format_size(512), "512B");
     }
 
     #[test]
@@ -1667,6 +2170,86 @@ Reticulum Transport Instance running
             "/tests/ifac_rust_relay.toml"
         ))
         .expect("ifac_rust_relay.toml not found");
+        let scenario = crate::topology::parse_scenario(&toml_str).expect("parse failed");
+
+        let mut runner = TestRunner::new(scenario).expect("TestRunner::new failed");
+
+        runner.up().expect("up failed");
+        runner.wait_ready(60).expect("wait_ready failed");
+
+        let result = execute_steps(&runner);
+        runner.down().expect("down failed");
+        result.expect("execute_steps should succeed");
+    }
+
+    #[test]
+    #[serial(docker)]
+    fn lrncp_baseline() {
+        let toml_str = std::fs::read_to_string(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/tests/lrncp_baseline.toml"
+        ))
+        .expect("lrncp_baseline.toml not found");
+        let scenario = crate::topology::parse_scenario(&toml_str).expect("parse failed");
+
+        let mut runner = TestRunner::new(scenario).expect("TestRunner::new failed");
+
+        runner.up().expect("up failed");
+        runner.wait_ready(60).expect("wait_ready failed");
+
+        let result = execute_steps(&runner);
+        runner.down().expect("down failed");
+        result.expect("execute_steps should succeed");
+    }
+
+    #[test]
+    #[serial(docker)]
+    fn lrncp_rust_sender() {
+        let toml_str = std::fs::read_to_string(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/tests/lrncp_rust_sender.toml"
+        ))
+        .expect("lrncp_rust_sender.toml not found");
+        let scenario = crate::topology::parse_scenario(&toml_str).expect("parse failed");
+
+        let mut runner = TestRunner::new(scenario).expect("TestRunner::new failed");
+
+        runner.up().expect("up failed");
+        runner.wait_ready(60).expect("wait_ready failed");
+
+        let result = execute_steps(&runner);
+        runner.down().expect("down failed");
+        result.expect("execute_steps should succeed");
+    }
+
+    #[test]
+    #[serial(docker)]
+    fn lrncp_rust_edges() {
+        let toml_str = std::fs::read_to_string(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/tests/lrncp_rust_edges.toml"
+        ))
+        .expect("lrncp_rust_edges.toml not found");
+        let scenario = crate::topology::parse_scenario(&toml_str).expect("parse failed");
+
+        let mut runner = TestRunner::new(scenario).expect("TestRunner::new failed");
+
+        runner.up().expect("up failed");
+        runner.wait_ready(60).expect("wait_ready failed");
+
+        let result = execute_steps(&runner);
+        runner.down().expect("down failed");
+        result.expect("execute_steps should succeed");
+    }
+
+    #[test]
+    #[serial(docker)]
+    fn lrncp_full_rust() {
+        let toml_str = std::fs::read_to_string(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/tests/lrncp_full_rust.toml"
+        ))
+        .expect("lrncp_full_rust.toml not found");
         let scenario = crate::topology::parse_scenario(&toml_str).expect("parse failed");
 
         let mut runner = TestRunner::new(scenario).expect("TestRunner::new failed");

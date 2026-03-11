@@ -207,6 +207,33 @@ pub enum Step {
         #[serde(default)]
         expect_forwarded: Option<u64>,
     },
+    /// End-to-end file transfer with md5sum verification and timing.
+    #[serde(rename = "file_transfer")]
+    FileTransfer {
+        sender: String,
+        receiver: String,
+        sender_tool: String,
+        receiver_tool: String,
+        file_sizes: Vec<u64>,
+        #[serde(default = "default_direction")]
+        direction: String,
+        #[serde(default = "default_repeats")]
+        repeats: u32,
+        #[serde(default = "default_transfer_timeout")]
+        timeout_secs: u64,
+    },
+}
+
+fn default_direction() -> String {
+    "both".to_string()
+}
+
+fn default_repeats() -> u32 {
+    3
+}
+
+fn default_transfer_timeout() -> u64 {
+    300
 }
 
 fn default_step_timeout() -> u64 {
@@ -1293,5 +1320,87 @@ passphrase = "mypass"
             bob_cfg.contains("passphrase = mypass"),
             "bob missing passphrase"
         );
+    }
+
+    #[test]
+    fn parse_file_transfer_step() {
+        let toml_str = fs::read_to_string(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/tests/lrncp_baseline.toml"
+        ))
+        .expect("lrncp_baseline.toml not found");
+        let scenario = parse_scenario(&toml_str).expect("parse failed");
+        assert_eq!(scenario.test.name, "lrncp_baseline");
+        assert_eq!(scenario.nodes.len(), 3);
+        assert_eq!(scenario.steps.len(), 3);
+        // Verify wait_for_path step has the expected timeout
+        match &scenario.steps[1] {
+            Step::WaitForPath { timeout_secs, .. } => assert_eq!(*timeout_secs, 60),
+            other => panic!("expected WaitForPath, got: {other:?}"),
+        }
+
+        match &scenario.steps[2] {
+            Step::FileTransfer {
+                sender,
+                receiver,
+                sender_tool,
+                receiver_tool,
+                file_sizes,
+                direction,
+                repeats,
+                timeout_secs,
+            } => {
+                assert_eq!(sender, "alpha");
+                assert_eq!(receiver, "charlie");
+                assert_eq!(sender_tool, "rncp");
+                assert_eq!(receiver_tool, "rncp");
+                assert_eq!(file_sizes, &[102400, 1048576]);
+                assert_eq!(direction, "a_to_b");
+                assert_eq!(*repeats, 3);
+                assert_eq!(*timeout_secs, 300);
+            }
+            other => panic!("expected FileTransfer, got: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn parse_file_transfer_defaults() {
+        let toml_str = r#"
+[test]
+name = "ft_defaults"
+
+[nodes.alice]
+type = "rust"
+respond_to_probes = true
+
+[nodes.bob]
+type = "python"
+respond_to_probes = true
+
+[links]
+alice-bob = "tcp"
+
+[[steps]]
+action = "file_transfer"
+sender = "alice"
+receiver = "bob"
+sender_tool = "lrncp"
+receiver_tool = "rncp"
+file_sizes = [1024]
+"#;
+        let scenario = parse_scenario(toml_str).unwrap();
+        match &scenario.steps[0] {
+            Step::FileTransfer {
+                direction,
+                repeats,
+                timeout_secs,
+                ..
+            } => {
+                assert_eq!(direction, "both");
+                assert_eq!(*repeats, 3);
+                assert_eq!(*timeout_secs, 300);
+            }
+            other => panic!("expected FileTransfer, got: {other:?}"),
+        }
     }
 }
