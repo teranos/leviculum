@@ -45,6 +45,9 @@ pub struct ReticulumNodeBuilder {
     share_instance_explicit: Option<bool>,
     /// Explicit instance_name override (takes priority over config value)
     instance_name_explicit: Option<String>,
+    /// Instance name to connect to as a shared instance client.
+    /// Mutually exclusive with share_instance.
+    connect_instance_name: Option<String>,
 }
 
 impl Default for ReticulumNodeBuilder {
@@ -66,6 +69,7 @@ impl ReticulumNodeBuilder {
             enable_transport_explicit: None,
             share_instance_explicit: None,
             instance_name_explicit: None,
+            connect_instance_name: None,
         }
     }
 
@@ -335,6 +339,20 @@ impl ReticulumNodeBuilder {
         self
     }
 
+    /// Connect to an existing shared instance daemon as a client.
+    ///
+    /// The node will connect to `\0rns/{instance_name}` and route all
+    /// traffic through the daemon. No config-file interfaces (TCP, UDP,
+    /// Auto, RNode) will be loaded — the daemon connection is the only
+    /// interface.
+    ///
+    /// Should be used with `enable_transport(false)`.
+    /// Mutually exclusive with `share_instance(true)`.
+    pub fn connect_to_shared_instance(mut self, instance_name: impl Into<String>) -> Self {
+        self.connect_instance_name = Some(instance_name.into());
+        self
+    }
+
     /// Set path expiry duration in seconds.
     ///
     /// Paths not refreshed within this duration will be removed.
@@ -418,6 +436,9 @@ impl ReticulumNodeBuilder {
         let mut node = ReticulumNode::new(node_core, interfaces, self.corrupt_every);
         if share_instance {
             node.set_share_instance(instance_name);
+        }
+        if let Some(ref name) = self.connect_instance_name {
+            node.set_connect_instance(name.clone());
         }
 
         Ok(node)

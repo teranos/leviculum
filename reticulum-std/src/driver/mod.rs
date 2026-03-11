@@ -171,6 +171,10 @@ pub struct ReticulumNode {
     /// Shared instance name (if enabled). When Some, the daemon listens on
     /// abstract Unix socket `\0rns/{name}` for local IPC clients.
     share_instance_name: Option<String>,
+    /// Shared instance to connect to as client. When Some, the node connects
+    /// to abstract Unix socket `\0rns/{name}` instead of starting its own
+    /// interfaces from config.
+    connect_instance_name: Option<String>,
     /// Time when the node was created (for RPC uptime reporting).
     start_time: std::time::Instant,
     /// Shared interface I/O counters, populated by the event loop.
@@ -199,6 +203,7 @@ impl ReticulumNode {
             corrupt_every,
             auto_peer_count_rx: None,
             share_instance_name: None,
+            connect_instance_name: None,
             start_time: std::time::Instant::now(),
             iface_stats_map: Arc::new(Mutex::new(std::collections::BTreeMap::new())),
         }
@@ -333,200 +338,230 @@ impl ReticulumNode {
         new_iface_tx: &mpsc::Sender<InterfaceHandle>,
         reconnect_tx: &mpsc::Sender<InterfaceId>,
     ) -> Result<InterfaceRegistry, Error> {
+        if self.share_instance_name.is_some() && self.connect_instance_name.is_some() {
+            return Err(Error::Config(
+                "cannot both share_instance and connect_to_shared_instance".to_string(),
+            ));
+        }
+
         let mut registry = InterfaceRegistry::new();
+        let is_client_mode = self.connect_instance_name.is_some();
 
-        for (idx, config) in self.interfaces.iter().enumerate() {
-            if !config.enabled {
-                continue;
-            }
+        // Only load config interfaces if NOT in shared-instance client mode.
+        // Client mode routes everything through the daemon's Unix socket.
+        if is_client_mode {
+            tracing::info!("Shared instance client mode — skipping config interfaces");
+        }
 
-            match config.interface_type.as_str() {
-                "TCPClientInterface" => {
-                    let target_host = config.target_host.as_ref().ok_or_else(|| {
-                        Error::Config("TCPClientInterface requires target_host".to_string())
-                    })?;
-                    let target_port = config.target_port.ok_or_else(|| {
-                        Error::Config("TCPClientInterface requires target_port".to_string())
-                    })?;
-
-                    let addr_str = format!("{}:{}", target_host, target_port);
-                    let addr: SocketAddr = addr_str
-                        .as_str()
-                        .to_socket_addrs()
-                        .map_err(|e| Error::Config(format!("cannot resolve {}: {}", addr_str, e)))?
-                        .next()
-                        .ok_or_else(|| Error::Config(format!("no addresses for {}", addr_str)))?;
-
-                    let iface_name = format!("tcp_client_{}", idx);
-                    let id = InterfaceId(idx);
-                    let buffer_size = config.buffer_size.unwrap_or(TCP_DEFAULT_BUFFER_SIZE);
-                    let reconnect_interval =
-                        Duration::from_secs(config.reconnect_interval_secs.unwrap_or(5));
-
-                    // NOTE: TCP interfaces don't register a bitrate cap
-                    // (bitrate=0 means unlimited). Future LoRa/serial interfaces
-                    // should call transport.register_interface_bitrate(id, bitrate)
-                    // after registration to enable per-interface announce caps.
-                    let handle = spawn_tcp_client_with_reconnect(TcpClientConfig {
-                        id,
-                        name: iface_name,
-                        addr,
-                        buffer_size,
-                        corrupt_every: self.corrupt_every,
-                        reconnect_interval,
-                        max_reconnect_tries: config.max_reconnect_tries,
-                        reconnect_notify: Some(reconnect_tx.clone()),
-                    });
-                    tracing::info!("TCP client interface for {} (reconnect enabled)", addr);
-                    registry.register(handle);
+        if !is_client_mode {
+            for (idx, config) in self.interfaces.iter().enumerate() {
+                if !config.enabled {
+                    continue;
                 }
-                "TCPServerInterface" => {
-                    let listen_ip = config.listen_ip.as_deref().unwrap_or("0.0.0.0");
-                    let listen_port = config.listen_port.ok_or_else(|| {
-                        Error::Config("TCPServerInterface requires listen_port".to_string())
-                    })?;
 
-                    let addr: SocketAddr = format!("{}:{}", listen_ip, listen_port)
-                        .parse()
-                        .map_err(|e| Error::Config(format!("invalid listen address: {}", e)))?;
-
-                    let buffer_size = config.buffer_size.unwrap_or(TCP_DEFAULT_BUFFER_SIZE);
-                    let ifac = build_ifac_config(config);
-                    spawn_tcp_server(
-                        addr,
-                        next_id.clone(),
-                        new_iface_tx.clone(),
-                        buffer_size,
-                        self.corrupt_every,
-                        ifac,
-                    )?;
-                }
-                "UDPInterface" => {
-                    let listen_ip = config.listen_ip.as_deref().unwrap_or("0.0.0.0");
-                    let listen_port = config.listen_port.ok_or_else(|| {
-                        Error::Config("UDPInterface requires listen_port".to_string())
-                    })?;
-                    let forward_ip = config.forward_ip.as_ref().ok_or_else(|| {
-                        Error::Config("UDPInterface requires forward_ip".to_string())
-                    })?;
-                    let forward_port = config.forward_port.ok_or_else(|| {
-                        Error::Config("UDPInterface requires forward_port".to_string())
-                    })?;
-
-                    let listen_addr: SocketAddr = format!("{}:{}", listen_ip, listen_port)
-                        .parse()
-                        .map_err(|e| {
-                            Error::Config(format!("UDPInterface invalid listen address: {}", e))
+                match config.interface_type.as_str() {
+                    "TCPClientInterface" => {
+                        let target_host = config.target_host.as_ref().ok_or_else(|| {
+                            Error::Config("TCPClientInterface requires target_host".to_string())
                         })?;
-                    let forward_addr: SocketAddr = format!("{}:{}", forward_ip, forward_port)
-                        .parse()
-                        .map_err(|e| {
-                            Error::Config(format!("UDPInterface invalid forward address: {}", e))
+                        let target_port = config.target_port.ok_or_else(|| {
+                            Error::Config("TCPClientInterface requires target_port".to_string())
                         })?;
 
-                    let iface_name = format!("udp_{}", idx);
-                    let id = InterfaceId(idx);
-                    let handle = spawn_udp_interface(id, iface_name, listen_addr, forward_addr)?;
-                    tracing::info!(
-                        "UDP interface listening on {}, forwarding to {}",
-                        listen_addr,
-                        forward_addr
-                    );
-                    registry.register(handle);
-                }
-                "AutoInterface" => {
-                    let auto_config = AutoInterfaceConfig {
-                        group_id: config
-                            .group_id
-                            .as_deref()
-                            .map(|s| s.as_bytes().to_vec())
-                            .unwrap_or_else(|| {
-                                crate::interfaces::auto_interface::DEFAULT_GROUP_ID.to_vec()
-                            }),
-                        discovery_port: config
-                            .discovery_port
-                            .unwrap_or(crate::interfaces::auto_interface::DEFAULT_DISCOVERY_PORT),
-                        data_port: config
-                            .data_port
-                            .unwrap_or(crate::interfaces::auto_interface::DEFAULT_DATA_PORT),
-                        discovery_scope: config
-                            .discovery_scope
-                            .clone()
-                            .unwrap_or_else(|| "link".to_string()),
-                        allowed_devices: config.devices.clone(),
-                        ignored_devices: config.ignored_devices.clone(),
-                        multicast_loopback: config.multicast_loopback.unwrap_or(false),
-                    };
-                    let peer_count_rx =
-                        spawn_auto_interface(next_id.clone(), new_iface_tx.clone(), auto_config);
-                    self.auto_peer_count_rx = Some(peer_count_rx);
-                    tracing::info!("AutoInterface: starting orchestrator");
-                }
-                #[cfg(feature = "serial")]
-                "RNodeInterface" => {
-                    let port_path = config
-                        .port
-                        .as_ref()
-                        .ok_or_else(|| Error::Config("RNodeInterface requires port".to_string()))?
-                        .clone();
-                    let frequency: u32 = config
-                        .frequency
-                        .ok_or_else(|| {
-                            Error::Config("RNodeInterface requires frequency".to_string())
-                        })
-                        .and_then(|f| {
-                            u32::try_from(f).map_err(|_| {
-                                Error::Config(format!("frequency {} exceeds u32 range", f))
-                            })
-                        })?;
-                    let bandwidth = config.bandwidth.ok_or_else(|| {
-                        Error::Config("RNodeInterface requires bandwidth".to_string())
-                    })?;
-                    let sf = config.spreading_factor.ok_or_else(|| {
-                        Error::Config("RNodeInterface requires spreading_factor".to_string())
-                    })?;
-                    let cr = config.coding_rate.ok_or_else(|| {
-                        Error::Config("RNodeInterface requires coding_rate".to_string())
-                    })?;
-                    let tx_power: u8 = config.tx_power.unwrap_or(0).try_into().map_err(|_| {
-                        Error::Config(format!(
-                            "tx_power {} out of range (0-37)",
-                            config.tx_power.unwrap_or(0)
-                        ))
-                    })?;
+                        let addr_str = format!("{}:{}", target_host, target_port);
+                        let addr: SocketAddr = addr_str
+                            .as_str()
+                            .to_socket_addrs()
+                            .map_err(|e| {
+                                Error::Config(format!("cannot resolve {}: {}", addr_str, e))
+                            })?
+                            .next()
+                            .ok_or_else(|| {
+                                Error::Config(format!("no addresses for {}", addr_str))
+                            })?;
 
-                    reticulum_core::rnode::validate_config(frequency, bandwidth, tx_power, sf, cr)
-                        .map_err(|e| Error::Config(format!("RNodeInterface: {}", e)))?;
+                        let iface_name = format!("tcp_client_{}", idx);
+                        let id = InterfaceId(idx);
+                        let buffer_size = config.buffer_size.unwrap_or(TCP_DEFAULT_BUFFER_SIZE);
+                        let reconnect_interval =
+                            Duration::from_secs(config.reconnect_interval_secs.unwrap_or(5));
 
-                    let st_alock = config.airtime_limit_short.map(|p| (p * 100.0) as u16);
-                    let lt_alock = config.airtime_limit_long.map(|p| (p * 100.0) as u16);
-                    let flow_control = config.flow_control.unwrap_or(false);
-                    let buffer_size = config
-                        .buffer_size
-                        .unwrap_or(crate::interfaces::rnode::RNODE_DEFAULT_BUFFER_SIZE);
-
-                    let iface_name = format!("rnode_{}", idx);
-                    let id = InterfaceId(idx);
-
-                    let handle = crate::interfaces::rnode::spawn_rnode_interface(
-                        crate::interfaces::rnode::RNodeInterfaceConfig {
+                        // NOTE: TCP interfaces don't register a bitrate cap
+                        // (bitrate=0 means unlimited). Future LoRa/serial interfaces
+                        // should call transport.register_interface_bitrate(id, bitrate)
+                        // after registration to enable per-interface announce caps.
+                        let handle = spawn_tcp_client_with_reconnect(TcpClientConfig {
                             id,
                             name: iface_name,
-                            port_path: port_path.clone(),
-                            frequency,
-                            bandwidth,
-                            tx_power,
-                            sf,
-                            cr,
-                            st_alock,
-                            lt_alock,
-                            flow_control,
+                            addr,
                             buffer_size,
+                            corrupt_every: self.corrupt_every,
+                            reconnect_interval,
+                            max_reconnect_tries: config.max_reconnect_tries,
                             reconnect_notify: Some(reconnect_tx.clone()),
-                        },
-                    );
+                        });
+                        tracing::info!("TCP client interface for {} (reconnect enabled)", addr);
+                        registry.register(handle);
+                    }
+                    "TCPServerInterface" => {
+                        let listen_ip = config.listen_ip.as_deref().unwrap_or("0.0.0.0");
+                        let listen_port = config.listen_port.ok_or_else(|| {
+                            Error::Config("TCPServerInterface requires listen_port".to_string())
+                        })?;
 
-                    tracing::info!(
+                        let addr: SocketAddr = format!("{}:{}", listen_ip, listen_port)
+                            .parse()
+                            .map_err(|e| Error::Config(format!("invalid listen address: {}", e)))?;
+
+                        let buffer_size = config.buffer_size.unwrap_or(TCP_DEFAULT_BUFFER_SIZE);
+                        let ifac = build_ifac_config(config);
+                        spawn_tcp_server(
+                            addr,
+                            next_id.clone(),
+                            new_iface_tx.clone(),
+                            buffer_size,
+                            self.corrupt_every,
+                            ifac,
+                        )?;
+                    }
+                    "UDPInterface" => {
+                        let listen_ip = config.listen_ip.as_deref().unwrap_or("0.0.0.0");
+                        let listen_port = config.listen_port.ok_or_else(|| {
+                            Error::Config("UDPInterface requires listen_port".to_string())
+                        })?;
+                        let forward_ip = config.forward_ip.as_ref().ok_or_else(|| {
+                            Error::Config("UDPInterface requires forward_ip".to_string())
+                        })?;
+                        let forward_port = config.forward_port.ok_or_else(|| {
+                            Error::Config("UDPInterface requires forward_port".to_string())
+                        })?;
+
+                        let listen_addr: SocketAddr = format!("{}:{}", listen_ip, listen_port)
+                            .parse()
+                            .map_err(|e| {
+                                Error::Config(format!("UDPInterface invalid listen address: {}", e))
+                            })?;
+                        let forward_addr: SocketAddr = format!("{}:{}", forward_ip, forward_port)
+                            .parse()
+                            .map_err(|e| {
+                                Error::Config(format!(
+                                    "UDPInterface invalid forward address: {}",
+                                    e
+                                ))
+                            })?;
+
+                        let iface_name = format!("udp_{}", idx);
+                        let id = InterfaceId(idx);
+                        let handle =
+                            spawn_udp_interface(id, iface_name, listen_addr, forward_addr)?;
+                        tracing::info!(
+                            "UDP interface listening on {}, forwarding to {}",
+                            listen_addr,
+                            forward_addr
+                        );
+                        registry.register(handle);
+                    }
+                    "AutoInterface" => {
+                        let auto_config = AutoInterfaceConfig {
+                            group_id: config
+                                .group_id
+                                .as_deref()
+                                .map(|s| s.as_bytes().to_vec())
+                                .unwrap_or_else(|| {
+                                    crate::interfaces::auto_interface::DEFAULT_GROUP_ID.to_vec()
+                                }),
+                            discovery_port: config.discovery_port.unwrap_or(
+                                crate::interfaces::auto_interface::DEFAULT_DISCOVERY_PORT,
+                            ),
+                            data_port: config
+                                .data_port
+                                .unwrap_or(crate::interfaces::auto_interface::DEFAULT_DATA_PORT),
+                            discovery_scope: config
+                                .discovery_scope
+                                .clone()
+                                .unwrap_or_else(|| "link".to_string()),
+                            allowed_devices: config.devices.clone(),
+                            ignored_devices: config.ignored_devices.clone(),
+                            multicast_loopback: config.multicast_loopback.unwrap_or(false),
+                        };
+                        let peer_count_rx = spawn_auto_interface(
+                            next_id.clone(),
+                            new_iface_tx.clone(),
+                            auto_config,
+                        );
+                        self.auto_peer_count_rx = Some(peer_count_rx);
+                        tracing::info!("AutoInterface: starting orchestrator");
+                    }
+                    #[cfg(feature = "serial")]
+                    "RNodeInterface" => {
+                        let port_path = config
+                            .port
+                            .as_ref()
+                            .ok_or_else(|| {
+                                Error::Config("RNodeInterface requires port".to_string())
+                            })?
+                            .clone();
+                        let frequency: u32 = config
+                            .frequency
+                            .ok_or_else(|| {
+                                Error::Config("RNodeInterface requires frequency".to_string())
+                            })
+                            .and_then(|f| {
+                                u32::try_from(f).map_err(|_| {
+                                    Error::Config(format!("frequency {} exceeds u32 range", f))
+                                })
+                            })?;
+                        let bandwidth = config.bandwidth.ok_or_else(|| {
+                            Error::Config("RNodeInterface requires bandwidth".to_string())
+                        })?;
+                        let sf = config.spreading_factor.ok_or_else(|| {
+                            Error::Config("RNodeInterface requires spreading_factor".to_string())
+                        })?;
+                        let cr = config.coding_rate.ok_or_else(|| {
+                            Error::Config("RNodeInterface requires coding_rate".to_string())
+                        })?;
+                        let tx_power: u8 =
+                            config.tx_power.unwrap_or(0).try_into().map_err(|_| {
+                                Error::Config(format!(
+                                    "tx_power {} out of range (0-37)",
+                                    config.tx_power.unwrap_or(0)
+                                ))
+                            })?;
+
+                        reticulum_core::rnode::validate_config(
+                            frequency, bandwidth, tx_power, sf, cr,
+                        )
+                        .map_err(|e| Error::Config(format!("RNodeInterface: {}", e)))?;
+
+                        let st_alock = config.airtime_limit_short.map(|p| (p * 100.0) as u16);
+                        let lt_alock = config.airtime_limit_long.map(|p| (p * 100.0) as u16);
+                        let flow_control = config.flow_control.unwrap_or(false);
+                        let buffer_size = config
+                            .buffer_size
+                            .unwrap_or(crate::interfaces::rnode::RNODE_DEFAULT_BUFFER_SIZE);
+
+                        let iface_name = format!("rnode_{}", idx);
+                        let id = InterfaceId(idx);
+
+                        let handle = crate::interfaces::rnode::spawn_rnode_interface(
+                            crate::interfaces::rnode::RNodeInterfaceConfig {
+                                id,
+                                name: iface_name,
+                                port_path: port_path.clone(),
+                                frequency,
+                                bandwidth,
+                                tx_power,
+                                sf,
+                                cr,
+                                st_alock,
+                                lt_alock,
+                                flow_control,
+                                buffer_size,
+                                reconnect_notify: Some(reconnect_tx.clone()),
+                            },
+                        );
+
+                        tracing::info!(
                         "RNode interface on {} (freq={} Hz, sf={}, bw={} Hz, cr={}, txp={} dBm)",
                         port_path,
                         frequency,
@@ -535,12 +570,25 @@ impl ReticulumNode {
                         cr,
                         tx_power,
                     );
-                    registry.register(handle);
-                }
-                other => {
-                    tracing::warn!("Unknown interface type: {}", other);
+                        registry.register(handle);
+                    }
+                    other => {
+                        tracing::warn!("Unknown interface type: {}", other);
+                    }
                 }
             }
+        } // end if !is_client_mode
+
+        // Connect to shared instance daemon as client
+        if let Some(ref instance_name) = self.connect_instance_name {
+            let id = InterfaceId(next_id.fetch_add(1, std::sync::atomic::Ordering::Relaxed));
+            let handle = crate::interfaces::local::spawn_local_client(
+                id,
+                instance_name,
+                crate::interfaces::local::LOCAL_DEFAULT_BUFFER_SIZE,
+            )?;
+            tracing::info!("Connected to shared instance '{}'", instance_name);
+            registry.register(handle);
         }
 
         // Start local (shared instance) server if enabled
@@ -629,6 +677,13 @@ impl ReticulumNode {
     /// Called by the builder when `share_instance = true`.
     pub(crate) fn set_share_instance(&mut self, name: String) {
         self.share_instance_name = Some(name);
+    }
+
+    /// Connect to a shared instance daemon as a client.
+    ///
+    /// Called by the builder when `connect_to_shared_instance` is set.
+    pub(crate) fn set_connect_instance(&mut self, name: String) {
+        self.connect_instance_name = Some(name);
     }
 
     /// Check if the node is running

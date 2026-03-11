@@ -1,14 +1,15 @@
-//! `lrns cp` — rncp-compatible file transfer over Reticulum
+//! rncp-compatible file transfer over Reticulum
 //!
-//! Send mode: `lrns cp <file> <destination>`
-//! Listen mode: `lrns cp -l`
+//! Shared module used by both `lrns cp` (standalone node) and `lrncp`
+//! (shared instance client).
 
 use std::io::Cursor;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
-use reticulum_std::config::Config;
-use reticulum_std::driver::ReticulumNodeBuilder;
+use tokio::sync::mpsc;
+
+use reticulum_std::driver::ReticulumNode;
 use reticulum_std::{
     Destination, DestinationHash, DestinationType, Direction, Identity, NodeEvent,
 };
@@ -17,41 +18,36 @@ fn err(msg: impl std::fmt::Display) -> Box<dyn std::error::Error> {
     msg.to_string().into()
 }
 
-pub struct CpArgs {
-    pub file: Option<String>,
-    pub destination: Option<String>,
-    pub listen: bool,
-    pub timeout: f64,
-    pub save: Option<PathBuf>,
-    pub overwrite: bool,
-    pub no_auth: bool,
-    pub announce_interval: i64,
-    pub verbose: u8,
-    pub quiet: bool,
-    pub config: Option<PathBuf>,
-}
-
-pub async fn run(args: CpArgs) -> Result<(), Box<dyn std::error::Error>> {
-    if args.listen {
-        run_listen(&args).await
+/// Load an identity from disk, or generate a new one and save it.
+pub fn load_or_generate_identity(path: &Path) -> Result<Identity, Box<dyn std::error::Error>> {
+    if path.exists() {
+        let bytes = std::fs::read(path)?;
+        Identity::from_private_key_bytes(&bytes).map_err(|e| err(format!("bad identity file: {e}")))
     } else {
-        let file = args
-            .file
-            .as_ref()
-            .ok_or_else(|| err("file argument required in send mode"))?;
-        let dest = args
-            .destination
-            .as_ref()
-            .ok_or_else(|| err("destination argument required in send mode"))?;
-        run_send(&args, file, dest).await
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent)?;
+        }
+        use rand_core::OsRng;
+        let id = Identity::generate(&mut OsRng);
+        let pk = id
+            .private_key_bytes()
+            .map_err(|e| err(format!("identity error: {e}")))?;
+        std::fs::write(path, pk)?;
+        Ok(id)
     }
 }
 
-async fn run_send(
-    args: &CpArgs,
+pub async fn run_send(
+    node: &ReticulumNode,
+    events: &mut mpsc::Receiver<NodeEvent>,
     file_path: &str,
     destination: &str,
+    timeout_secs: f64,
+    verbose: u8,
+    quiet: bool,
 ) -> Result<(), Box<dyn std::error::Error>> {
+    let _ = verbose; // reserved for future use
+
     // Parse destination hash
     let dest_bytes_vec = crate::hex_decode(destination).map_err(err)?;
     if dest_bytes_vec.len() != 16 {
@@ -77,37 +73,16 @@ async fn run_send(
     // Encode metadata matching Python's umsgpack.packb({"name": b"..."})
     let metadata_bytes = encode_metadata(filename.as_bytes());
 
-    // Build and start node
-    let config_dir = args
-        .config
-        .clone()
-        .unwrap_or_else(Config::default_config_dir);
-    let config_file = config_dir.join("config");
-    let config = if config_file.exists() {
-        Config::load(&config_file)?
-    } else {
-        Config::default()
-    };
-    let mut node = ReticulumNodeBuilder::new()
-        .config(config)
-        .enable_transport(false)
-        .build_sync()?;
-    node.start().await?;
-    let mut events = node
-        .take_event_receiver()
-        .ok_or_else(|| err("no event receiver"))?;
-
     // Wait for path
     let dest_hash = DestinationHash::new(dest_bytes);
-    let deadline = Instant::now() + Duration::from_secs_f64(args.timeout);
+    let deadline = Instant::now() + Duration::from_secs_f64(timeout_secs);
     if !node.has_path(&dest_hash) {
-        if !args.quiet {
+        if !quiet {
             eprintln!("Path to {} requested", destination);
         }
         node.request_path(&dest_hash).await?;
         while !node.has_path(&dest_hash) {
             if Instant::now() > deadline {
-                node.stop().await?;
                 return Err(err(format!("Could not find a path to {}", destination)));
             }
             tokio::time::sleep(Duration::from_millis(200)).await;
@@ -126,7 +101,7 @@ async fn run_send(
     signing_key.copy_from_slice(&pk[32..64]);
 
     // Connect and wait for LinkEstablished
-    if !args.quiet {
+    if !quiet {
         eprintln!("Establishing link with {}...", destination);
     }
     let _stream = node.connect(&dest_hash, &signing_key).await?;
@@ -136,7 +111,6 @@ async fn run_send(
                 match event {
                     Some(NodeEvent::LinkEstablished { link_id, .. }) => break link_id,
                     Some(NodeEvent::LinkClosed { .. }) => {
-                        node.stop().await?;
                         return Err(err(format!(
                             "Could not establish link to {}", destination)));
                     }
@@ -148,7 +122,6 @@ async fn run_send(
             }
             _ = tokio::time::sleep_until(
                 tokio::time::Instant::from_std(deadline)) => {
-                node.stop().await?;
                 return Err(err(format!(
                     "Could not establish link to {}", destination)));
             }
@@ -156,7 +129,7 @@ async fn run_send(
     };
 
     // Send resource
-    if !args.quiet {
+    if !quiet {
         eprintln!("Sending {} ({} bytes)...", file_path.display(), data.len());
     }
     node.send_resource(&link_id, &data, Some(&metadata_bytes))
@@ -169,7 +142,7 @@ async fn run_send(
             event = events.recv() => {
                 match event {
                     Some(NodeEvent::ResourceCompleted { is_sender: true, .. }) => {
-                        if !args.quiet {
+                        if !quiet {
                             eprintln!("{} copied to {}",
                                 file_path.display(), destination);
                         }
@@ -178,12 +151,10 @@ async fn run_send(
                     Some(NodeEvent::ResourceFailed {
                         is_sender: true, error, ..
                     }) => {
-                        node.stop().await?;
                         return Err(err(format!(
                             "The transfer failed: {:?}", error)));
                     }
                     Some(NodeEvent::LinkClosed { .. }) => {
-                        node.stop().await?;
                         return Err(err("The transfer failed (link closed)"));
                     }
                     None => return Err(err("Event channel closed")),
@@ -192,67 +163,36 @@ async fn run_send(
             }
             _ = tokio::time::sleep_until(
                 tokio::time::Instant::from_std(transfer_deadline)) => {
-                node.stop().await?;
                 return Err(err("The transfer timed out"));
             }
         }
     }
 
-    node.stop().await?;
     Ok(())
 }
 
-async fn run_listen(args: &CpArgs) -> Result<(), Box<dyn std::error::Error>> {
-    // Load or create persistent identity
-    let config_dir = args
-        .config
-        .clone()
-        .unwrap_or_else(Config::default_config_dir);
-    let identity_dir = config_dir.join("identities");
-    std::fs::create_dir_all(&identity_dir)?;
-    let identity_path = identity_dir.join("lrncp");
-
-    let identity = if identity_path.exists() {
-        let bytes = std::fs::read(&identity_path)?;
-        Identity::from_private_key_bytes(&bytes)
-            .map_err(|e| err(format!("bad identity file: {e}")))?
-    } else {
-        use rand_core::OsRng;
-        let id = Identity::generate(&mut OsRng);
-        let pk = id
-            .private_key_bytes()
-            .map_err(|e| err(format!("identity error: {e}")))?;
-        std::fs::write(&identity_path, pk)?;
-        id
-    };
-    let identity_for_dest = identity.clone();
-
-    // Build and start node
-    let config_file = config_dir.join("config");
-    let config = if config_file.exists() {
-        Config::load(&config_file)?
-    } else {
-        Config::default()
-    };
-    let mut node = ReticulumNodeBuilder::new()
-        .identity(identity)
-        .config(config)
-        .enable_transport(false)
-        .build_sync()?;
-    node.start().await?;
-    let mut events = node
-        .take_event_receiver()
-        .ok_or_else(|| err("no event receiver"))?;
-
+#[allow(clippy::too_many_arguments)]
+pub async fn run_listen(
+    node: &ReticulumNode,
+    events: &mut mpsc::Receiver<NodeEvent>,
+    identity: Identity,
+    save_dir: Option<PathBuf>,
+    overwrite: bool,
+    no_auth: bool,
+    announce_interval: i64,
+    verbose: u8,
+    quiet: bool,
+) -> Result<(), Box<dyn std::error::Error>> {
     // Register destination and announce
-    let dest = Destination::new(
-        Some(identity_for_dest),
+    let mut dest = Destination::new(
+        Some(identity),
         Direction::In,
         DestinationType::Single,
         "rncp",
         &["receive"],
     )
     .map_err(|e| err(format!("destination error: {e}")))?;
+    dest.set_accepts_links(true);
     let dest_hash = *dest.hash();
     node.register_destination(dest);
 
@@ -260,18 +200,17 @@ async fn run_listen(args: &CpArgs) -> Result<(), Box<dyn std::error::Error>> {
         "lrncp listening on {}",
         crate::hex_encode(dest_hash.as_bytes())
     );
-    if !args.no_auth {
+    if !no_auth {
         eprintln!("Warning: --no-auth is required (link.identify() not yet implemented)");
     }
 
-    if args.announce_interval >= 0 {
+    if announce_interval >= 0 {
         node.announce_destination(&dest_hash, None).await?;
     }
 
     // Announce timer for periodic re-announce
-    let mut announce_timer = if args.announce_interval > 0 {
-        let mut interval =
-            tokio::time::interval(Duration::from_secs(args.announce_interval as u64));
+    let mut announce_timer = if announce_interval > 0 {
+        let mut interval = tokio::time::interval(Duration::from_secs(announce_interval as u64));
         interval.tick().await; // consume the immediate first tick
         Some(interval)
     } else {
@@ -285,7 +224,7 @@ async fn run_listen(args: &CpArgs) -> Result<(), Box<dyn std::error::Error>> {
                 match event {
                     Some(NodeEvent::LinkRequest { link_id, .. }) => {
                         node.accept_link(&link_id).await?;
-                        if args.verbose > 0 {
+                        if verbose > 0 {
                             eprintln!("Incoming link request accepted");
                         }
                     }
@@ -296,24 +235,30 @@ async fn run_listen(args: &CpArgs) -> Result<(), Box<dyn std::error::Error>> {
                             &link_id,
                             reticulum_core::resource::ResourceStrategy::AcceptAll,
                         )?;
-                        if args.verbose > 0 {
+                        if verbose > 0 {
                             eprintln!("Link established");
                         }
                     }
                     Some(NodeEvent::ResourceCompleted {
                         data, metadata, is_sender: false, ..
                     }) => {
-                        if let Err(e) = save_received_file(args, &data, metadata.as_deref()) {
+                        if let Err(e) = save_received_file(
+                            &data,
+                            metadata.as_deref(),
+                            save_dir.as_deref(),
+                            overwrite,
+                            quiet,
+                        ) {
                             eprintln!("Error saving file: {e}");
                         }
                     }
                     Some(NodeEvent::ResourceFailed { error, .. }) => {
-                        if args.verbose > 0 {
+                        if verbose > 0 {
                             eprintln!("Transfer failed: {:?}", error);
                         }
                     }
                     Some(NodeEvent::LinkClosed { .. }) => {
-                        if args.verbose > 0 {
+                        if verbose > 0 {
                             eprintln!("Link closed");
                         }
                     }
@@ -332,26 +277,26 @@ async fn run_listen(args: &CpArgs) -> Result<(), Box<dyn std::error::Error>> {
         }
     }
 
-    node.stop().await?;
     Ok(())
 }
 
 fn save_received_file(
-    args: &CpArgs,
     data: &[u8],
     metadata: Option<&[u8]>,
+    save_dir: Option<&Path>,
+    overwrite: bool,
+    quiet: bool,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let filename = metadata
         .and_then(extract_filename_from_metadata)
         .unwrap_or_else(|| "received_file".to_string());
 
-    let base_dir = args
-        .save
-        .clone()
+    let base_dir = save_dir
+        .map(PathBuf::from)
         .unwrap_or_else(|| std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")));
 
     let mut full_path = base_dir.join(&filename);
-    if !args.overwrite {
+    if !overwrite {
         let mut counter = 0u32;
         while full_path.exists() {
             counter += 1;
@@ -360,7 +305,7 @@ fn save_received_file(
     }
 
     std::fs::write(&full_path, data)?;
-    if !args.quiet {
+    if !quiet {
         eprintln!("Received: {} ({} bytes)", full_path.display(), data.len());
     }
     Ok(())

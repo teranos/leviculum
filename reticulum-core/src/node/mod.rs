@@ -1054,13 +1054,13 @@ impl<R: CryptoRngCore, C: Clock, S: Storage> NodeCore<R, C, S> {
     /// Sends a PATH_REQUEST packet to all interfaces. The path response
     /// (if any) will arrive as a `PathFound` event and `has_path()` will
     /// return true.
-    pub fn request_path(
-        &mut self,
-        dest_hash: &DestinationHash,
-    ) -> crate::transport::TickOutput {
+    pub fn request_path(&mut self, dest_hash: &DestinationHash) -> crate::transport::TickOutput {
         let mut tag = [0u8; TRUNCATED_HASHBYTES];
         self.rng.fill_bytes(&mut tag);
-        if let Err(e) = self.transport.request_path(dest_hash.as_bytes(), None, &tag) {
+        if let Err(e) = self
+            .transport
+            .request_path(dest_hash.as_bytes(), None, &tag)
+        {
             tracing::debug!(
                 "Failed to build path request for <{}>: {}",
                 HexShort(dest_hash.as_bytes()),

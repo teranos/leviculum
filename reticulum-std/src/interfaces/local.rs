@@ -132,6 +132,58 @@ fn spawn_local_interface_from_stream(
     }
 }
 
+/// Connect to an existing shared instance daemon as a client.
+///
+/// Connects to the abstract Unix socket `\0rns/{instance_name}` and returns
+/// an `InterfaceHandle`. The handle has `is_local_client = false` because
+/// from the client's perspective this is a regular interface; the daemon
+/// marks its side as `is_local_client = true`.
+///
+/// Calls `tokio::spawn` for the I/O task — must be called from a context
+/// where a tokio runtime is active (same as `spawn_local_server`).
+///
+/// No reconnection — returns an error if the daemon is not running.
+pub(crate) fn spawn_local_client(
+    id: InterfaceId,
+    instance_name: &str,
+    buffer_size: usize,
+) -> Result<InterfaceHandle, io::Error> {
+    let abstract_name = format!("rns/{}", instance_name);
+
+    use std::os::linux::net::SocketAddrExt;
+    let addr = std::os::unix::net::SocketAddr::from_abstract_name(abstract_name.as_bytes())
+        .map_err(|e| io::Error::new(io::ErrorKind::InvalidInput, e))?;
+    let std_stream = std::os::unix::net::UnixStream::connect_addr(&addr)?;
+    std_stream.set_nonblocking(true)?;
+    let stream = tokio::net::UnixStream::from_std(std_stream)?;
+
+    let (incoming_tx, incoming_rx) = mpsc::channel(buffer_size);
+    let (outgoing_tx, outgoing_rx) = mpsc::channel(buffer_size);
+    let counters = Arc::new(InterfaceCounters::new());
+
+    let name = format!("LocalClient[{}]", instance_name);
+    let task_name = name.clone();
+    let task_counters = Arc::clone(&counters);
+
+    tokio::spawn(async move {
+        local_interface_task(task_name, stream, incoming_tx, outgoing_rx, task_counters).await;
+    });
+
+    Ok(InterfaceHandle {
+        info: InterfaceInfo {
+            id,
+            name,
+            hw_mtu: Some(LOCAL_HW_MTU),
+            is_local_client: false,
+            bitrate: None,
+            ifac: None,
+        },
+        incoming: incoming_rx,
+        outgoing: outgoing_tx,
+        counters,
+    })
+}
+
 /// I/O task owning the Unix stream.
 ///
 /// Handles bidirectional I/O using HDLC framing, identical to the TCP
@@ -379,5 +431,79 @@ mod tests {
         assert_ne!(h1.info.id, h2.info.id);
         assert!(h1.info.is_local_client);
         assert!(h2.info.is_local_client);
+    }
+
+    #[tokio::test]
+    async fn test_local_client_connects_and_communicates() {
+        let next_id = Arc::new(AtomicUsize::new(500));
+        let (tx, mut rx) = mpsc::channel::<InterfaceHandle>(4);
+
+        let instance_name = format!("test_client_{}", std::process::id());
+        spawn_local_server(&instance_name, next_id.clone(), tx, 16).unwrap();
+
+        // Give server time to bind
+        tokio::time::sleep(Duration::from_millis(100)).await;
+
+        // Connect via spawn_local_client
+        let id = InterfaceId(42);
+        let mut client_handle =
+            spawn_local_client(id, &instance_name, 16).expect("client connect failed");
+
+        // Verify client handle properties
+        assert_eq!(client_handle.info.id, InterfaceId(42));
+        assert!(!client_handle.info.is_local_client);
+        assert!(client_handle.info.name.contains("LocalClient"));
+
+        // Server should have received a new handle with is_local_client = true
+        let mut server_handle = tokio::time::timeout(Duration::from_secs(2), rx.recv())
+            .await
+            .expect("timeout waiting for server handle")
+            .expect("channel closed");
+        assert!(server_handle.info.is_local_client);
+
+        // Client → Server: send HDLC-framed data through client handle's outgoing
+        client_handle
+            .outgoing
+            .send(OutgoingPacket {
+                data: b"client-to-server".to_vec(),
+                high_priority: false,
+            })
+            .await
+            .unwrap();
+
+        let pkt = tokio::time::timeout(Duration::from_secs(2), server_handle.incoming.recv())
+            .await
+            .expect("timeout waiting for server packet")
+            .expect("channel closed");
+        assert_eq!(pkt.data, b"client-to-server");
+
+        // Server → Client: send data through server handle's outgoing
+        server_handle
+            .outgoing
+            .send(OutgoingPacket {
+                data: b"server-to-client".to_vec(),
+                high_priority: false,
+            })
+            .await
+            .unwrap();
+
+        let pkt = tokio::time::timeout(Duration::from_secs(2), client_handle.incoming.recv())
+            .await
+            .expect("timeout waiting for client packet")
+            .expect("channel closed");
+        assert_eq!(pkt.data, b"server-to-client");
+    }
+
+    #[tokio::test]
+    async fn test_local_client_connect_failure() {
+        let result = spawn_local_client(
+            InterfaceId(99),
+            "nonexistent_instance_that_does_not_exist",
+            16,
+        );
+        assert!(
+            result.is_err(),
+            "connecting to nonexistent socket should fail"
+        );
     }
 }

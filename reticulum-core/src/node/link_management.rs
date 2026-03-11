@@ -1408,7 +1408,11 @@ impl<R: CryptoRngCore, C: Clock, S: Storage> NodeCore<R, C, S> {
                         self.route_link_packet(&link_id, &pkt);
                     }
                     Err(e) => {
-                        tracing::debug!("Resource REQ packet build failed on link {}: {:?}", link_id, e);
+                        tracing::debug!(
+                            "Resource REQ packet build failed on link {}: {:?}",
+                            link_id,
+                            e
+                        );
                     }
                 }
             }

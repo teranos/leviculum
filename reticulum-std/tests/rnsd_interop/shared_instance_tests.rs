@@ -14,6 +14,9 @@ use reticulum_std::driver::ReticulumNodeBuilder;
 use reticulum_std::NodeEvent;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
+use reticulum_core::identity::Identity;
+use reticulum_core::{Destination, DestinationType, Direction};
+
 use crate::common::{
     build_announce_raw, extract_signing_key, init_tracing, parse_dest_hash, wait_for_data_event,
     wait_for_event, wait_for_path_on_node, DAEMON_PROCESS_TIME,
@@ -354,4 +357,202 @@ async fn test_shared_instance_link_through_daemon() {
         .stop()
         .await
         .expect("Failed to stop Rust daemon");
+}
+
+/// Test: Full link establishment through a Rust daemon's shared instance
+/// using `connect_to_shared_instance()` builder API (no raw socket code).
+///
+/// Topology:
+/// ```text
+/// Rust node A ── TCP ── Rust daemon (in-process) ── Unix socket ── Rust client B (builder)
+/// (initiator)           (transport, TCP server,                     (responder, registers dest,
+///                        share_instance=true)                        announces, accepts links)
+/// ```
+#[tokio::test]
+async fn test_local_client_builder_link_through_daemon() {
+    init_tracing();
+
+    // ── Phase 1: Port allocation ─────────────────────────────────────────
+    let ports = find_available_ports::<2>().expect("Failed to allocate ports");
+    let [daemon_tcp_port, _spare] = ports;
+    let instance_name = format!("clientbuilder_{}", std::process::id());
+
+    // Each node needs a unique storage path to avoid identity collisions
+    let tmp = std::env::temp_dir().join(format!("leviculum_si_{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&tmp);
+    let daemon_storage = tmp.join("daemon");
+    let client_b_storage = tmp.join("client_b");
+    let rust_a_storage = tmp.join("rust_a");
+
+    // ── Phase 2: Start Rust daemon (in-process) ─────────────────────────
+    let daemon_tcp_addr: SocketAddr = format!("127.0.0.1:{}", daemon_tcp_port).parse().unwrap();
+
+    let mut daemon_node = ReticulumNodeBuilder::new()
+        .enable_transport(true)
+        .share_instance(true)
+        .instance_name(instance_name.clone())
+        .add_tcp_server(daemon_tcp_addr)
+        .storage_path(daemon_storage)
+        .build()
+        .await
+        .expect("Failed to build Rust daemon node");
+    daemon_node
+        .start()
+        .await
+        .expect("Failed to start Rust daemon node");
+
+    // Wait for Unix socket listener to be ready
+    tokio::time::sleep(Duration::from_millis(500)).await;
+
+    // ── Phase 3: Build Rust client B via connect_to_shared_instance ─────
+    let mut client_b = ReticulumNodeBuilder::new()
+        .enable_transport(false)
+        .connect_to_shared_instance(&instance_name)
+        .storage_path(client_b_storage)
+        .build()
+        .await
+        .expect("Failed to build Rust client B");
+
+    let mut client_b_events = client_b
+        .take_event_receiver()
+        .expect("Event receiver should be available");
+    client_b
+        .start()
+        .await
+        .expect("Failed to start Rust client B");
+
+    // ── Phase 4: Register destination and announce on client B ──────────
+    let client_b_identity = Identity::generate(&mut rand_core::OsRng);
+    let client_b_signing_key = {
+        let pk = client_b_identity.public_key_bytes();
+        let mut key = [0u8; 32];
+        key.copy_from_slice(&pk[32..64]);
+        key
+    };
+    let mut dest = Destination::new(
+        Some(client_b_identity),
+        Direction::In,
+        DestinationType::Single,
+        "localclienttest",
+        &["echo"],
+    )
+    .expect("Failed to create destination");
+    dest.set_accepts_links(true);
+
+    let dest_hash = *dest.hash();
+    client_b.register_destination(dest);
+    client_b
+        .announce_destination(&dest_hash, Some(b"client-b-test"))
+        .await
+        .expect("Failed to announce destination on client B");
+
+    // ── Phase 5: Start Rust node A, wait for path ───────────────────────
+    let mut rust_a = ReticulumNodeBuilder::new()
+        .enable_transport(false)
+        .add_tcp_client(daemon_tcp_addr)
+        .storage_path(rust_a_storage)
+        .build()
+        .await
+        .expect("Failed to build Rust node A");
+
+    let mut rust_a_events = rust_a
+        .take_event_receiver()
+        .expect("Event receiver should be available");
+    rust_a.start().await.expect("Failed to start Rust node A");
+
+    assert!(
+        wait_for_path_on_node(&rust_a, &dest_hash, Duration::from_secs(15)).await,
+        "Rust A should learn path to client B's destination through daemon"
+    );
+
+    // ── Phase 6: Establish link ─────────────────────────────────────────
+    // connect() sends the link request. We must accept on client B before
+    // Rust A can receive the proof, so handle both sides concurrently.
+    let mut link_handle = rust_a
+        .connect(&dest_hash, &client_b_signing_key)
+        .await
+        .expect("Failed to initiate link");
+
+    let link_id = *link_handle.link_id();
+
+    // First: accept the link on client B (must happen before proof can be sent)
+    let client_b_link_event = wait_for_event(
+        &mut client_b_events,
+        Duration::from_secs(15),
+        |event| match event {
+            NodeEvent::LinkRequest {
+                link_id,
+                destination_hash,
+                ..
+            } => Some((link_id, destination_hash)),
+            _ => None,
+        },
+    )
+    .await;
+    assert!(
+        client_b_link_event.is_some(),
+        "Client B should receive LinkRequest"
+    );
+    let (client_b_link_id, _) = client_b_link_event.unwrap();
+
+    let client_b_link = client_b
+        .accept_link(&client_b_link_id)
+        .await
+        .expect("accept_link should succeed");
+
+    // Now wait for LinkEstablished on initiator side (Rust A)
+    let established =
+        wait_for_event(
+            &mut rust_a_events,
+            Duration::from_secs(15),
+            |event| match event {
+                NodeEvent::LinkEstablished {
+                    link_id: id,
+                    is_initiator,
+                } if id == link_id && is_initiator => Some(()),
+                _ => None,
+            },
+        )
+        .await;
+    assert!(
+        established.is_some(),
+        "Link should be established within 15s"
+    );
+
+    // ── Phase 7: Bidirectional data exchange ────────────────────────────
+
+    // Rust A → Client B
+    link_handle
+        .try_send(b"hello-from-a")
+        .await
+        .expect("Failed to send from A");
+
+    let data = wait_for_data_event(
+        &mut client_b_events,
+        &client_b_link_id,
+        Duration::from_secs(10),
+    )
+    .await;
+    assert!(data.is_some(), "Client B should receive data from A");
+    assert_eq!(data.unwrap(), b"hello-from-a");
+
+    // Client B → Rust A
+    client_b_link
+        .try_send(b"hello-from-b")
+        .await
+        .expect("Failed to send from B");
+
+    let data = wait_for_data_event(&mut rust_a_events, &link_id, Duration::from_secs(10)).await;
+    assert!(data.is_some(), "Rust A should receive data from client B");
+    assert_eq!(data.unwrap(), b"hello-from-b");
+
+    // ── Cleanup ─────────────────────────────────────────────────────────
+    link_handle.close().await.expect("Failed to close link");
+    rust_a.stop().await.expect("Failed to stop Rust node A");
+    client_b.stop().await.expect("Failed to stop client B");
+    daemon_node
+        .stop()
+        .await
+        .expect("Failed to stop Rust daemon");
+    let _ = std::fs::remove_dir_all(&tmp);
 }

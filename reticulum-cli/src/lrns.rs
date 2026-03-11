@@ -1224,20 +1224,58 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             quiet,
             cp_config,
         } => {
-            cp::run(cp::CpArgs {
-                file,
-                destination,
-                listen,
-                timeout,
-                save,
-                overwrite,
-                no_auth,
-                announce_interval,
-                verbose: cp_verbose,
-                quiet,
-                config: cp_config,
-            })
-            .await?;
+            let config_dir =
+                cp_config.unwrap_or_else(reticulum_std::config::Config::default_config_dir);
+            let config_file = config_dir.join("config");
+            let config = if config_file.exists() {
+                reticulum_std::config::Config::load(&config_file)?
+            } else {
+                reticulum_std::config::Config::default()
+            };
+
+            if listen {
+                let identity_path = config_dir.join("identities").join("lrncp");
+                let identity = cp::load_or_generate_identity(&identity_path)?;
+
+                let mut node = ReticulumNodeBuilder::new()
+                    .identity(identity.clone())
+                    .config(config)
+                    .enable_transport(false)
+                    .build_sync()?;
+                node.start().await?;
+                let mut events = node.take_event_receiver().ok_or("no event receiver")?;
+
+                let result = cp::run_listen(
+                    &node,
+                    &mut events,
+                    identity,
+                    save,
+                    overwrite,
+                    no_auth,
+                    announce_interval,
+                    cp_verbose,
+                    quiet,
+                )
+                .await;
+                node.stop().await?;
+                result?;
+            } else {
+                let file = file.ok_or("file argument required in send mode")?;
+                let dest = destination.ok_or("destination argument required in send mode")?;
+
+                let mut node = ReticulumNodeBuilder::new()
+                    .config(config)
+                    .enable_transport(false)
+                    .build_sync()?;
+                node.start().await?;
+                let mut events = node.take_event_receiver().ok_or("no event receiver")?;
+
+                let result =
+                    cp::run_send(&node, &mut events, &file, &dest, timeout, cp_verbose, quiet)
+                        .await;
+                node.stop().await?;
+                result?;
+            }
         }
 
         Commands::Connect { addr, identity } => {
