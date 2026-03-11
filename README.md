@@ -41,7 +41,8 @@ Version 0.5.19. The core uses a sans-I/O architecture — `reticulum-core` is a 
 - Config and storage system (persistent, Python-compatible)
 - RPC server (rnstatus, rnpath, rnprobe compatibility)
 - `lrnsd` daemon (drop-in replacement for rnsd)
-- `lrns` CLI (identity, connect, selftest, probe)
+- `lrns` CLI (identity, connect, selftest, probe, cp)
+- `lrncp` standalone file transfer (shared instance client, rncp-compatible)
 - C-API basics (identity, sign, verify)
 
 **What's missing:**
@@ -50,7 +51,7 @@ Version 0.5.19. The core uses a sans-I/O architecture — `reticulum-core` is a 
 - `lrns` remaining subcommands (status, path, interfaces)
 - Resource compression (bz2 over links)
 
-**Test coverage:** ~1350 tests (935 unit + 173 std + 242 interop against rnsd).
+**Test coverage:** ~1360 tests (935 unit + 175 std + 243 interop against rnsd).
 
 ## Building
 

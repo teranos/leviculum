@@ -305,6 +305,32 @@ action = "restart"
 node = "alice"
 ```
 
+#### `file_transfer`
+
+Transfer files between nodes using `lrncp` or `rncp`, with md5sum verification
+and timing measurement.
+
+```toml
+[[steps]]
+action = "file_transfer"
+sender = "alpha"
+receiver = "charlie"
+sender_tool = "lrncp"       # "lrncp" or "rncp"
+receiver_tool = "rncp"      # "lrncp" or "rncp"
+file_sizes = [102400, 1048576]  # bytes
+direction = "both"          # "a_to_b", "b_to_a", or "both"
+repeats = 3                 # runs per size per direction
+timeout_secs = 300
+```
+
+The step:
+1. Runs `<tool> -p` on the receiver to get the destination hash
+2. Starts a detached listener (`<tool> -l -n -s /tmp/received -b 0`)
+3. Waits for path availability on the sender via `rnpath`
+4. For each file size × repeat: creates a random file with `dd`, sends it,
+   verifies md5sum on the receiver, and records transfer time
+5. Prints a summary table with per-run and average times
+
 ### Symbolic References
 
 `bob.probe` resolves at runtime to the hex hash of bob's probe destination.

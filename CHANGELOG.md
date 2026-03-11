@@ -8,9 +8,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- **`lrncp` standalone binary** — shared instance client for rncp-compatible file transfer. Connects to a running `lrnsd` daemon via Unix socket IPC, avoiding the need to start its own network stack. Supports send mode (`lrncp <file> <dest>`) and listen mode (`lrncp -l`). ~2.5x faster than Python's `rncp` for 1MB transfers through a relay.
+- **Shared instance client mode** — `ReticulumNodeBuilder::connect_to_shared_instance()` creates a node that connects to an existing daemon's Unix socket instead of loading its own interfaces. Used by `lrncp` to route traffic through the daemon. Includes client-side LocalInterface, builder integration, and shared instance interop tests.
+- **File transfer integration tests (4 scenarios)** — Docker-based end-to-end tests for `lrncp`/`rncp` file transfer through relay topologies. Tests: `lrncp_baseline` (rncp↔rncp on Rust daemons), `lrncp_rust_sender` (lrncp→rncp through Python relay), `lrncp_rust_edges` (lrncp↔lrncp through Python relay), `lrncp_full_rust` (all Rust). Each scenario transfers 100KB and 1MB files with 3 repeats, md5sum verification, and timing results. New `file_transfer` step type in the integration test framework.
 - **Resource transfer interop tests (6 tests)** — prove wire compatibility for segmented data transfer between Rust and Python over TCP. Tests cover both directions (Rust→Python, Python→Rust), with and without metadata (msgpack-encoded), and large transfers (300KB Rust→Python, 51KB Python→Rust). All tests route through a Python relay.
 
 ### Fixed
+- **lrncp listener rejected incoming links** — `Destination::new()` defaults `accepts_links` to `false`, but `cp.rs:run_listen()` never called `set_accepts_links(true)`. Link requests to the listener were silently dropped (trace-level log only). Fix: call `dest.set_accepts_links(true)` before registering the destination.
 - **Resource API action draining** — `send_resource()`, `accept_resource()`, and `reject_resource()` on NodeCore now call `process_events_and_actions()` and return `TickOutput`, ensuring ADV/REQ packets are dispatched immediately instead of sitting undrained until the next timeout tick.
 - **RNode serial heartbeat fixes idle-correlated LoRa failures** — after 12+ minutes of radio silence, the first TX packet was lost (the USB-serial link or RNode firmware appeared to enter an idle state). A CMD_DETECT heartbeat every 300s keeps the serial link exercised without touching the radio. Also adds debug-level RX/TX logging for radio diagnostics. `lora_late_announce_10node`: 0/3 → 3/3 at SF10/scale=4.
 

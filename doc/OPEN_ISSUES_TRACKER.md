@@ -23,6 +23,8 @@ When an issue is fixed, remove it from this file entirely.
 | E26 | M | post-7 | open | Design | Storage trait is a ~60-method God-Interface — split into per-concern sub-traits |
 | E27 | M | post-7 | open | Design | FileStorage wraps MemoryStorage — prevents custom eviction, lazy-loading, RAM/disk split |
 | E28 | M | post-7 | open | Design | InterfaceMode::multiple_access defined but unused — wire up for E10 (jitter) and E24 (ingress) |
+| E30 | L | 3 | open | Bug | All-Python topology: unreliable announce propagation through relay |
+| E31 | M | 3 | open | Bug | Python rncp sender → lrncp receiver: resource transfer stalls at ~28% for files >100KB |
 
 ---
 
@@ -176,4 +178,22 @@ When an issue is fixed, remove it from this file entirely.
 - **Detail:** The Interface trait already has `fn mode(&self) -> InterfaceMode` with a `multiple_access: bool` flag (traits.rs:69-76), defaulting to false. This is exactly the medium-type discriminator needed for E10 (jitter on shared-medium interfaces) and E24 (ingress control per medium). However: (1) No concrete interface sets it — `InterfaceHandle::mode()` returns `InterfaceMode::default()` (all false), no override anywhere. (2) Core never reads it — no code in transport.rs or node/ checks `mode().multiple_access`. (3) It is effectively dead code. The trait design is correct: `mode()` has a default impl, so adding new flags or changing existing ones does not break implementors. No new enum (e.g., `MediumType`) is needed.
 - **Fix:** Three steps: (a) AutoInterface and UDP-broadcast interfaces must override `mode()` to return `InterfaceMode { multiple_access: true, broadcast: true, .. }`. TCP and LocalInterface keep the default (all false). (b) E10 implementation checks `multiple_access` to decide whether to apply send-side jitter. (c) E24 implementation checks `multiple_access` to decide whether ingress control is active by default. Steps (b) and (c) are part of E10/E24 respectively — this issue tracks only the wiring gap (step a) and documents that the extension point exists.
 - **Test:** Unit test: verify AutoInterface returns `multiple_access: true`. Unit test: verify TCP returns `multiple_access: false` (default). Integration test deferred to E10/E24.
+
+### E31: Python rncp sender → lrncp receiver: resource transfer stalls at ~28% for files >100KB
+- **Status:** open
+- **Priority:** M
+- **Phase:** 3
+- **Category:** Bug
+- **Detail:** When Python rncp sends a file to lrncp (shared instance listener) through a relay, transfers of files >100KB stall at approximately 28% (292.63 KB for a 1MB file). 100KB transfers succeed. The same 1MB transfer works perfectly in all-Rust (lrncp↔lrncp) and Rust-sender (lrncp→rncp) configurations. The stall point (~28%) suggests a resource segment handling or flow control mismatch when receiving segments from Python's resource sender. The `lrncp_rust_sender` integration test uses `direction = "a_to_b"` only (Rust sends, Python receives) to work around this.
+- **Fix:** Debug the resource transfer receive path in lrncp when segments come from Python rncp. Compare segment acknowledgment and flow control between all-Rust (working) and Python→Rust (stalling) transfers. The stall at a consistent percentage suggests a window or acknowledgment protocol mismatch.
+- **Test:** `lrncp_rust_sender` test with `direction = "both"` and `file_sizes = [1048576]` should pass.
+
+### E30: All-Python topology: unreliable announce propagation through relay
+- **Status:** open
+- **Priority:** L
+- **Phase:** 3
+- **Category:** Bug
+- **Detail:** In a 3-node all-Python topology (alpha=rnsd, relay=rnsd, charlie=rnsd), probe announces from charlie frequently fail to propagate through the relay to alpha. The relay logs show "Rebroadcasting announce" but alpha's rnsd never logs receiving the rebroadcasted announce, even after 90 seconds. This is NOT a timing issue — the same topology with Rust endpoints (lrnsd) and the same Python relay works reliably with 10-second convergence. The `lrncp_baseline` test was changed from all-Python to Rust-endpoints-with-Python-relay to work around this issue. The existing `probe_through_relay` test (Rust endpoints + Python relay) passes consistently.
+- **Fix:** Debug Python rnsd announce rebroadcast path. Verify the relay actually sends the rebroadcast packet to alpha's TCP interface, not just to charlie.
+- **Test:** Create an all-Python `probe_through_relay_python` scenario and verify it passes reliably.
 
