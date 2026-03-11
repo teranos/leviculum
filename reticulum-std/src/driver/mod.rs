@@ -69,7 +69,7 @@ use crate::interfaces::IncomingPacket;
 use reticulum_core::constants::TRUNCATED_HASHBYTES;
 use reticulum_core::link::LinkId;
 use reticulum_core::node::{NodeCore, NodeEvent};
-use reticulum_core::traits::InterfaceError;
+use reticulum_core::traits::{InterfaceError, Storage as StorageTrait};
 use reticulum_core::transport::{InterfaceId, TickOutput};
 use reticulum_core::{Destination, DestinationHash};
 
@@ -773,6 +773,42 @@ impl ReticulumNode {
     /// Check if a path to a destination is known
     pub fn has_path(&self, dest_hash: &reticulum_core::DestinationHash) -> bool {
         self.inner.lock().unwrap().has_path(dest_hash)
+    }
+
+    /// Look up a known identity for a destination hash.
+    ///
+    /// Returns the identity if it was previously learned from an announce.
+    /// The Ed25519 verifying key (bytes 32..64 of `public_key_bytes()`)
+    /// is the `dest_signing_key` required by `connect()`.
+    pub fn get_identity(
+        &self,
+        dest_hash: &reticulum_core::DestinationHash,
+    ) -> Option<reticulum_core::Identity> {
+        self.inner
+            .lock()
+            .unwrap()
+            .storage()
+            .get_identity(dest_hash.as_bytes())
+            .cloned()
+    }
+
+    /// Request a path to a destination.
+    ///
+    /// Sends a PATH_REQUEST. The result will arrive as a `PathFound` event
+    /// and `has_path()` will return true.
+    pub async fn request_path(
+        &self,
+        dest_hash: &reticulum_core::DestinationHash,
+    ) -> Result<(), Error> {
+        let output = {
+            let mut inner = self.inner.lock().unwrap();
+            inner.request_path(dest_hash)
+        };
+        self.action_dispatch_tx
+            .send(output)
+            .await
+            .map_err(|_| Error::NotRunning)?;
+        Ok(())
     }
 
     /// Get hop count to a destination

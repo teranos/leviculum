@@ -14,6 +14,7 @@ use tracing_subscriber::EnvFilter;
 
 use tokio::io::AsyncBufReadExt;
 
+mod cp;
 mod selftest;
 
 use reticulum_std::driver::{LinkHandle, PacketSender, ReticulumNodeBuilder};
@@ -398,6 +399,55 @@ enum Commands {
         /// Discovery timeout in seconds (Phase 2: mutual path discovery)
         #[arg(long, default_value = "60")]
         discovery_timeout: u64,
+    },
+
+    /// Copy files over Reticulum (compatible with rncp)
+    ///
+    /// Note: `-v`/`--verbose` and `-c`/`--config` are global Args flags,
+    /// so this subcommand uses `-V`/`--cp-verbose` and `--cp-config` instead.
+    /// rncp uses `-v` and has no `--config` equivalent.
+    Cp {
+        /// File to send (send mode)
+        file: Option<String>,
+
+        /// Destination hash, 32 hex characters (send mode)
+        destination: Option<String>,
+
+        /// Listen for incoming transfers
+        #[arg(short, long)]
+        listen: bool,
+
+        /// Timeout in seconds for path discovery and link establishment
+        #[arg(short = 'w', default_value = "15.0")]
+        timeout: f64,
+
+        /// Save received files in this directory (listen mode)
+        #[arg(short, long)]
+        save: Option<PathBuf>,
+
+        /// Overwrite existing files instead of adding .1 .2 suffix
+        #[arg(short = 'O', long)]
+        overwrite: bool,
+
+        /// Accept transfers from anyone (default; link.identify() not yet implemented)
+        #[arg(short = 'n', long = "no-auth", default_value = "true")]
+        no_auth: bool,
+
+        /// Announce interval in seconds (-1 = no announce, 0 = once at startup)
+        #[arg(short = 'b', default_value = "0")]
+        announce_interval: i64,
+
+        /// Increase verbosity
+        #[arg(short = 'V', long = "cp-verbose", action = clap::ArgAction::Count)]
+        cp_verbose: u8,
+
+        /// Suppress progress output
+        #[arg(short, long)]
+        quiet: bool,
+
+        /// Path to Reticulum config directory
+        #[arg(long = "cp-config")]
+        cp_config: Option<PathBuf>,
     },
 
     /// Interactive session: connect to rnsd and enter command loop
@@ -1158,6 +1208,35 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 args.corrupt_every,
                 discovery_timeout,
             )
+            .await?;
+        }
+
+        Commands::Cp {
+            file,
+            destination,
+            listen,
+            timeout,
+            save,
+            overwrite,
+            no_auth,
+            announce_interval,
+            cp_verbose,
+            quiet,
+            cp_config,
+        } => {
+            cp::run(cp::CpArgs {
+                file,
+                destination,
+                listen,
+                timeout,
+                save,
+                overwrite,
+                no_auth,
+                announce_interval,
+                verbose: cp_verbose,
+                quiet,
+                config: cp_config,
+            })
             .await?;
         }
 
