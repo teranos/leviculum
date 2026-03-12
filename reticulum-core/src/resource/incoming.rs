@@ -608,7 +608,6 @@ impl IncomingResource {
         received as f32 / self.num_parts as f32
     }
 
-    #[allow(dead_code)] // Resource accessor API — see ROADMAP v1.1 (Resource Transfer)
     pub(crate) fn transfer_size(&self) -> u64 {
         self.transfer_size
     }

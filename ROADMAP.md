@@ -32,7 +32,7 @@
 
 **Kernfunktionalität:** `NodeCore` (reticulum-core) und `ReticulumNode` (reticulum-std) bieten eine einheitliche async-kompatible API für Destinations, Links, Channels, Single-Packet-Verschlüsselung und Proof-Delivery. Vollständige Interoperabilität mit Python rnsd ist durch umfangreiche Interop-Tests nachgewiesen.
 
-**CLI-Tool `lrns`** mit Subcommands: `status`, `path`, `identity`, `probe`, `interfaces`, `connect`, `selftest`, `cp`. Davon voll implementiert: `identity`, `connect`, `selftest` (Zwei-Adress-Modus für Multi-Daemon-Topologien, 7 Modi: `all`, `link`, `packet`, `ratchet-basic`, `ratchet-enforced`, `bulk-transfer`, `ratchet-rotation`), `cp` (rncp-kompatibler Dateitransfer). **Standalone-Binary `lrncp`**: Shared-Instance-Client für Dateitransfer, verbindet sich per Unix-Socket mit lrnsd. Die anderen Subcommands sind Gerüste.
+**CLI-Tool `lrns`** mit Subcommands: `status`, `path`, `identity`, `probe`, `interfaces`, `connect`, `selftest`, `cp`. Davon voll implementiert: `identity`, `connect`, `selftest` (Zwei-Adress-Modus für Multi-Daemon-Topologien, 7 Modi: `all`, `link`, `packet`, `ratchet-basic`, `ratchet-enforced`, `bulk-transfer`, `ratchet-rotation`), `cp` (rncp-kompatibler Dateitransfer). **Standalone-Binary `lrncp`**: Shared-Instance-Client für Dateitransfer, verbindet sich per Unix-Socket mit lrnsd. Unterstützt `-S`/`--silent`, `-C`/`--no-compress`, Fortschrittsanzeige während der Übertragung. Die anderen Subcommands sind Gerüste.
 
 **Daemon `lrnsd`** läuft als Drop-in-Ersatz für `rnsd` mit TCP-Server/Client-Support, TCP-Reconnection, Config-Loading und sauberem Shutdown.
 
@@ -326,7 +326,8 @@ Sicherheitsfeatures verdrahten, Daemon-Zustand persistieren, Release-Qualität e
 - ✅ ReticulumNode API: `send_resource()`, `set_resource_strategy()`, `accept_resource()`, `reject_resource()`
 - ✅ Multi-Segment-Empfang: Dateien > 1MB (Python's MAX_EFFICIENT_SIZE) werden korrekt als mehrere Segmente empfangen, zusammengesetzt und gespeichert. Metadata-Parsing nur in Segment 1, HASHMAP_MAX_LEN als Protokoll-Konstante (74).
 - ✅ `lrns cp` und `lrncp` — Dateitransfer über CLI (standalone und shared-instance)
-- [ ] Bandbreitenanpassung und Kompression (bz2)
+- [x] Sender-seitige Kompressionssteuerung (`auto_compress` Parameter, `-C`/`--no-compress` CLI-Flag)
+- [ ] Bandbreitenanpassung
 - [ ] Request/Response-Pattern
 - [ ] Multi-Segment-Senden (Dateien > MAX_EFFICIENT_SIZE als mehrere Segmente)
 
@@ -375,6 +376,6 @@ Sicherheitsfeatures verdrahten, Daemon-Zustand persistieren, Release-Qualität e
 
 ---
 
-*Stand: 11. März 2026*
+*Stand: 12. März 2026*
 *Projekt: leviculum*
 *Lizenz: MIT*

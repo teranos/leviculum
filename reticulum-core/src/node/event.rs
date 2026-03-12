@@ -219,6 +219,21 @@ pub enum NodeEvent {
         is_sender: bool,
     },
 
+    /// Progress update during resource transfer.
+    /// Emitted each time a part is sent (sender) or a REQ is sent (receiver).
+    ResourceProgress {
+        /// The link carrying the transfer
+        link_id: LinkId,
+        /// Hash identifying this resource
+        resource_hash: [u8; 32],
+        /// Progress as a fraction 0.0..1.0
+        progress: f32,
+        /// Total encrypted transfer size in bytes
+        transfer_size: u64,
+        /// True if we are the sender
+        is_sender: bool,
+    },
+
     /// Resource transfer completed successfully.
     ///
     /// For multi-segment resources, this fires once per segment.

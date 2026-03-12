@@ -37,6 +37,7 @@ pub fn load_or_generate_identity(path: &Path) -> Result<Identity, Box<dyn std::e
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 pub async fn run_send(
     node: &ReticulumNode,
     events: &mut mpsc::Receiver<NodeEvent>,
@@ -45,6 +46,7 @@ pub async fn run_send(
     timeout_secs: f64,
     verbose: u8,
     quiet: bool,
+    no_compress: bool,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let _ = verbose; // reserved for future use
 
@@ -132,7 +134,7 @@ pub async fn run_send(
     if !quiet {
         eprintln!("Sending {} ({} bytes)...", file_path.display(), data.len());
     }
-    node.send_resource(&link_id, &data, Some(&metadata_bytes))
+    node.send_resource(&link_id, &data, Some(&metadata_bytes), !no_compress)
         .await?;
 
     // Wait for completion
@@ -141,8 +143,21 @@ pub async fn run_send(
         tokio::select! {
             event = events.recv() => {
                 match event {
+                    Some(NodeEvent::ResourceProgress {
+                        is_sender: true, progress, transfer_size, ..
+                    }) => {
+                        if !quiet {
+                            let transferred = (progress * transfer_size as f32) as u64;
+                            eprint!("\rSending {} ... {} / {} ({:.1}%)",
+                                file_path.display(),
+                                format_size(transferred),
+                                format_size(transfer_size),
+                                progress * 100.0);
+                        }
+                    }
                     Some(NodeEvent::ResourceCompleted { is_sender: true, .. }) => {
                         if !quiet {
+                            eprint!("\r");
                             eprintln!("{} copied to {}",
                                 file_path.display(), destination);
                         }
@@ -243,10 +258,24 @@ pub async fn run_listen(
                             eprintln!("Link established");
                         }
                     }
+                    Some(NodeEvent::ResourceProgress {
+                        is_sender: false, progress, transfer_size, ..
+                    }) => {
+                        if !quiet {
+                            let transferred = (progress * transfer_size as f32) as u64;
+                            eprint!("\rReceiving ... {} / {} ({:.1}%)",
+                                format_size(transferred),
+                                format_size(transfer_size),
+                                progress * 100.0);
+                        }
+                    }
                     Some(NodeEvent::ResourceCompleted {
                         data, metadata, is_sender: false,
                         segment_index, total_segments, ..
                     }) => {
+                        if !quiet {
+                            eprint!("\r");
+                        }
                         // Accumulate segment data
                         segment_buffer.extend_from_slice(&data);
                         if metadata.is_some() {
@@ -374,6 +403,16 @@ fn extract_filename_from_metadata(metadata_bytes: &[u8]) -> Option<String> {
         }
     }
     None
+}
+
+fn format_size(bytes: u64) -> String {
+    if bytes >= 1_048_576 {
+        format!("{:.1}MB", bytes as f64 / 1_048_576.0)
+    } else if bytes >= 1024 {
+        format!("{:.1}KB", bytes as f64 / 1024.0)
+    } else {
+        format!("{}B", bytes)
+    }
 }
 
 #[cfg(test)]

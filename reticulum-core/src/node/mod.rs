@@ -531,6 +531,7 @@ impl<R: CryptoRngCore, C: Clock, S: Storage> NodeCore<R, C, S> {
         link_id: &LinkId,
         data: &[u8],
         metadata: Option<&[u8]>,
+        auto_compress: bool,
     ) -> Result<([u8; 32], crate::transport::TickOutput), crate::resource::ResourceError> {
         use crate::packet::PacketContext;
         use crate::resource::outgoing::OutgoingResource;
@@ -547,7 +548,15 @@ impl<R: CryptoRngCore, C: Clock, S: Storage> NodeCore<R, C, S> {
             return Err(ResourceError::TransferInProgress);
         }
 
-        let outgoing = OutgoingResource::new(data, metadata, None, link, &mut self.rng, now_ms)?;
+        let outgoing = OutgoingResource::new(
+            data,
+            metadata,
+            None,
+            link,
+            auto_compress,
+            &mut self.rng,
+            now_ms,
+        )?;
         let resource_hash = *outgoing.resource_hash();
         let adv_bytes = outgoing.adv_packet().to_vec();
 

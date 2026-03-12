@@ -295,7 +295,7 @@ async fn test_rust_sends_resource_python_receives() {
 
     let data = vec![0x42u8; 512];
     rust_node
-        .send_resource(&link_id, &data, None)
+        .send_resource(&link_id, &data, None, true)
         .await
         .expect("send_resource should succeed");
 
@@ -355,7 +355,7 @@ async fn test_rust_sends_resource_with_metadata() {
     let encoded_metadata = msgpack_encode_bin(raw_metadata);
 
     rust_node
-        .send_resource(&link_id, &data, Some(&encoded_metadata))
+        .send_resource(&link_id, &data, Some(&encoded_metadata), true)
         .await
         .expect("send_resource should succeed");
 
@@ -423,7 +423,7 @@ async fn test_rust_sends_large_resource() {
 
     let data = vec![0x42u8; 300_000];
     rust_node
-        .send_resource(&link_id, &data, None)
+        .send_resource(&link_id, &data, None, true)
         .await
         .expect("send_resource should succeed");
 

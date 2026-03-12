@@ -1322,6 +1322,11 @@ impl<R: CryptoRngCore, C: Clock, S: Storage> NodeCore<R, C, S> {
             // Check status to decide what events to emit
             let status = res.status();
 
+            // Capture progress before storing resource back
+            let progress = res.progress();
+            let transfer_size = res.transfer_size();
+            let res_hash = *res.resource_hash();
+
             // Put back
             self.links
                 .get_mut(&link_id)
@@ -1333,7 +1338,16 @@ impl<R: CryptoRngCore, C: Clock, S: Storage> NodeCore<R, C, S> {
                     if status == crate::resource::ResourceStatus::Transferring
                         || status == crate::resource::ResourceStatus::AwaitingProof
                     {
-                        // First REQ transitions to Transferring — emit start event
+                        // Emit progress (skip at 1.0 — completion is a separate event)
+                        if progress < 1.0 {
+                            self.events.push(NodeEvent::ResourceProgress {
+                                link_id,
+                                resource_hash: res_hash,
+                                progress,
+                                transfer_size,
+                                is_sender: true,
+                            });
+                        }
                     }
                     pkts
                 }
@@ -1395,6 +1409,10 @@ impl<R: CryptoRngCore, C: Clock, S: Storage> NodeCore<R, C, S> {
                 link.set_incoming_resource(incoming);
             }
             ResourcePartResult::SendRequest(req_payload) => {
+                // Capture progress before storing resource back
+                let progress = incoming.progress();
+                let transfer_size = incoming.transfer_size();
+
                 // Encrypt and send REQ
                 let req_pkt = link.build_data_packet_with_context(
                     &req_payload,
@@ -1402,6 +1420,16 @@ impl<R: CryptoRngCore, C: Clock, S: Storage> NodeCore<R, C, S> {
                     &mut self.rng,
                 );
                 link.set_incoming_resource(incoming);
+
+                // Emit progress event
+                self.events.push(NodeEvent::ResourceProgress {
+                    link_id,
+                    resource_hash,
+                    progress,
+                    transfer_size,
+                    is_sender: false,
+                });
+
                 match req_pkt {
                     Ok(pkt) => {
                         link.record_outbound(now_secs);

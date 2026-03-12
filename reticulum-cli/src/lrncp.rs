@@ -89,12 +89,12 @@ struct Args {
     identity: Option<PathBuf>,
 
     // --- Flags accepted but not yet implemented ---
-    /// Disable transfer progress output [not yet implemented]
-    #[arg(short = 'S', long, hide = true)]
+    /// Disable transfer progress output
+    #[arg(short = 'S', long)]
     silent: bool,
 
-    /// Disable automatic compression [not yet implemented]
-    #[arg(short = 'C', long = "no-compress", hide = true)]
+    /// Disable automatic compression
+    #[arg(short = 'C', long = "no-compress")]
     no_compress: bool,
 
     /// Fetch file from remote listener [not yet implemented]
@@ -178,7 +178,7 @@ async fn run(args: Args) -> Result<(), Box<dyn std::error::Error>> {
 
     // quiet: u8 (count) from CLI, converted to bool for now.
     // TODO(ROADMAP #quiet-levels): differentiate -q / -qq levels in the future.
-    let quiet_bool = args.quiet > 0;
+    let quiet_bool = args.quiet > 0 || args.silent;
 
     let result = if args.listen {
         let identity_path = args
@@ -211,6 +211,7 @@ async fn run(args: Args) -> Result<(), Box<dyn std::error::Error>> {
             args.timeout,
             args.verbose,
             quiet_bool,
+            args.no_compress,
         )
         .await
     };
@@ -242,12 +243,6 @@ fn check_unimplemented(args: &Args) {
     }
     if args.jail.is_some() {
         flag = Some("-j/--jail");
-    }
-    if args.no_compress {
-        flag = Some("-C/--no-compress");
-    }
-    if args.silent {
-        flag = Some("-S/--silent");
     }
     if args.phy_rates {
         flag = Some("-P/--phy-rates");

@@ -1270,9 +1270,17 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 node.start().await?;
                 let mut events = node.take_event_receiver().ok_or("no event receiver")?;
 
-                let result =
-                    cp::run_send(&node, &mut events, &file, &dest, timeout, cp_verbose, quiet)
-                        .await;
+                let result = cp::run_send(
+                    &node,
+                    &mut events,
+                    &file,
+                    &dest,
+                    timeout,
+                    cp_verbose,
+                    quiet,
+                    false,
+                )
+                .await;
                 node.stop().await?;
                 result?;
             }

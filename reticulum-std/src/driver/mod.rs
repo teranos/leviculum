@@ -959,11 +959,12 @@ impl ReticulumNode {
         link_id: &LinkId,
         data: &[u8],
         metadata: Option<&[u8]>,
+        auto_compress: bool,
     ) -> Result<[u8; 32], Error> {
         let (resource_hash, output) = {
             let mut inner = self.inner.lock().unwrap();
             inner
-                .send_resource(link_id, data, metadata)
+                .send_resource(link_id, data, metadata, auto_compress)
                 .map_err(Error::Resource)?
         };
         self.action_dispatch_tx

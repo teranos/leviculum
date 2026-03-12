@@ -81,6 +81,7 @@ impl OutgoingResource {
         metadata: Option<&[u8]>,
         request_id: Option<&[u8]>,
         link: &Link,
+        auto_compress: bool,
         rng: &mut impl CryptoRngCore,
         now_ms: u64,
     ) -> Result<Self, ResourceError> {
@@ -118,7 +119,7 @@ impl OutgoingResource {
         let data_to_encrypt = {
             #[cfg(feature = "compression")]
             {
-                if combined.len() <= RESOURCE_AUTO_COMPRESS_MAX {
+                if auto_compress && combined.len() <= RESOURCE_AUTO_COMPRESS_MAX {
                     match super::compression::bz2_compress(&combined) {
                         Ok(compressed_data) if compressed_data.len() < combined.len() => {
                             compressed = true;
@@ -132,6 +133,7 @@ impl OutgoingResource {
             }
             #[cfg(not(feature = "compression"))]
             {
+                let _ = auto_compress;
                 combined.clone()
             }
         };
@@ -577,6 +579,10 @@ impl OutgoingResource {
         self.sent_parts as f32 / self.num_parts as f32
     }
 
+    pub(crate) fn transfer_size(&self) -> u64 {
+        self.encrypted_data.len() as u64
+    }
+
     #[allow(dead_code)] // Resource accessor API — see ROADMAP v1.1 (Resource Transfer)
     pub(crate) fn flags(&self) -> &ResourceFlags {
         &self.flags
@@ -650,7 +656,7 @@ mod tests {
         let mut rng = rand_core::OsRng;
         let data = b"Hello, Resource!";
 
-        let res = OutgoingResource::new(data, None, None, &link, &mut rng, 1000).unwrap();
+        let res = OutgoingResource::new(data, None, None, &link, true, &mut rng, 1000).unwrap();
 
         assert_eq!(res.status(), ResourceStatus::Advertised);
         assert_eq!(res.num_parts, 1); // small data = 1 part
@@ -663,7 +669,7 @@ mod tests {
         let mut rng = rand_core::OsRng;
         let data = b"Test data for advertisement roundtrip";
 
-        let res = OutgoingResource::new(data, None, None, &link, &mut rng, 1000).unwrap();
+        let res = OutgoingResource::new(data, None, None, &link, true, &mut rng, 1000).unwrap();
 
         // Verify the cached ADV unpacks correctly
         let adv = ResourceAdvertisement::unpack(res.adv_packet()).unwrap();
@@ -682,7 +688,8 @@ mod tests {
         let data = b"data with metadata";
         let metadata = b"some metadata";
 
-        let res = OutgoingResource::new(data, Some(metadata), None, &link, &mut rng, 1000).unwrap();
+        let res =
+            OutgoingResource::new(data, Some(metadata), None, &link, true, &mut rng, 1000).unwrap();
 
         let adv = ResourceAdvertisement::unpack(res.adv_packet()).unwrap();
         assert!(adv.flags.has_metadata);
@@ -694,7 +701,7 @@ mod tests {
         let mut rng = rand_core::OsRng;
         let data = b"proof test data";
 
-        let mut res = OutgoingResource::new(data, None, None, &link, &mut rng, 1000).unwrap();
+        let mut res = OutgoingResource::new(data, None, None, &link, true, &mut rng, 1000).unwrap();
 
         // Forge a valid proof: resource_hash + expected_proof
         let mut valid_proof = Vec::new();
@@ -712,7 +719,7 @@ mod tests {
         let mut rng = rand_core::OsRng;
         let data = b"proof test data";
 
-        let mut res = OutgoingResource::new(data, None, None, &link, &mut rng, 1000).unwrap();
+        let mut res = OutgoingResource::new(data, None, None, &link, true, &mut rng, 1000).unwrap();
 
         // Invalid proof
         let bad_proof = [0u8; 64];
@@ -728,7 +735,7 @@ mod tests {
         let mut rng = rand_core::OsRng;
         let data = b"timeout test";
 
-        let mut res = OutgoingResource::new(data, None, None, &link, &mut rng, 1000).unwrap();
+        let mut res = OutgoingResource::new(data, None, None, &link, true, &mut rng, 1000).unwrap();
 
         // Not timed out yet
         let result = res.poll(1000, 100);
@@ -752,7 +759,7 @@ mod tests {
         // Create data large enough for multiple parts
         let data = vec![0x42u8; 2000];
 
-        let res = OutgoingResource::new(&data, None, None, &link, &mut rng, 1000).unwrap();
+        let res = OutgoingResource::new(&data, None, None, &link, true, &mut rng, 1000).unwrap();
 
         // Verify each part's map_hash matches
         for (i, part) in res.parts.iter().enumerate() {
@@ -769,7 +776,8 @@ mod tests {
         let request_id = b"req-42";
 
         let mut res =
-            OutgoingResource::new(data, None, Some(request_id), &link, &mut rng, 1000).unwrap();
+            OutgoingResource::new(data, None, Some(request_id), &link, true, &mut rng, 1000)
+                .unwrap();
 
         // Protocol state fields accessible via accessors
         assert!(res.flags().encrypted);
