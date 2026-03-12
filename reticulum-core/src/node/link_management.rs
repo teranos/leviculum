@@ -835,6 +835,9 @@ impl<R: CryptoRngCore, C: Clock, S: Storage> NodeCore<R, C, S> {
             PacketContext::ResourceRcl => {
                 self.handle_resource_cancel(link_id, false);
             }
+            PacketContext::LinkIdentify => {
+                self.handle_link_identify(link_id, packet, now_secs);
+            }
             _ => self.handle_plain_data_packet(link_id, packet, raw_packet, now_secs),
         }
     }
@@ -1151,6 +1154,117 @@ impl<R: CryptoRngCore, C: Clock, S: Storage> NodeCore<R, C, S> {
                 );
             }
         }
+    }
+
+    /// Handle a LINKIDENTIFY packet — peer is proving their identity.
+    ///
+    /// Protocol: plaintext = public_key(64) + signature(64) = 128 bytes.
+    /// signed_data = link_id(16) + public_key(64) = 80 bytes.
+    /// Only accepted on responder side (non-initiator). Matches Python Link.py:1014-1032.
+    fn handle_link_identify(&mut self, link_id: LinkId, packet: &Packet, now_secs: u64) {
+        let Some(link) = self.links.get_mut(&link_id) else {
+            return;
+        };
+
+        // Only responders accept identify (Python: `if not self.initiator`)
+        if link.is_initiator() {
+            tracing::debug!(
+                link = %HexShort(link_id.as_bytes()),
+                "LinkIdentify rejected: we are initiator"
+            );
+            return;
+        }
+
+        if link.state() != LinkState::Active {
+            return;
+        }
+
+        link.record_inbound(now_secs);
+
+        // Decrypt
+        let encrypted_data = packet.data.as_slice();
+        let max_plaintext_len = encrypted_data.len();
+        let mut plaintext = alloc::vec![0u8; max_plaintext_len];
+
+        let plaintext_len = match link.decrypt(encrypted_data, &mut plaintext) {
+            Ok(len) => len,
+            Err(_) => {
+                tracing::debug!(
+                    link = %HexShort(link_id.as_bytes()),
+                    "LinkIdentify decryption failed"
+                );
+                return;
+            }
+        };
+
+        // Validate length: exactly 128 bytes (64 public_key + 64 signature)
+        if plaintext_len != 128 {
+            tracing::debug!(
+                link = %HexShort(link_id.as_bytes()),
+                len = plaintext_len,
+                "LinkIdentify rejected: wrong plaintext length"
+            );
+            return;
+        }
+
+        // Extract public_key and signature
+        let public_key = &plaintext[..64];
+        let signature = &plaintext[64..128];
+
+        // Reconstruct signed_data = link_id(16) + public_key(64)
+        let mut signed_data = [0u8; 80];
+        signed_data[..16].copy_from_slice(link_id.as_bytes());
+        signed_data[16..80].copy_from_slice(public_key);
+
+        // Create identity from public key bytes
+        let identity = match crate::identity::Identity::from_public_key_bytes(public_key) {
+            Ok(id) => id,
+            Err(e) => {
+                tracing::debug!(
+                    link = %HexShort(link_id.as_bytes()),
+                    %e,
+                    "LinkIdentify rejected: invalid public key"
+                );
+                return;
+            }
+        };
+
+        // Validate signature
+        match identity.verify(&signed_data, signature) {
+            Ok(true) => {}
+            Ok(false) => {
+                tracing::debug!(
+                    link = %HexShort(link_id.as_bytes()),
+                    "LinkIdentify rejected: invalid signature"
+                );
+                return;
+            }
+            Err(e) => {
+                tracing::debug!(
+                    link = %HexShort(link_id.as_bytes()),
+                    %e,
+                    "LinkIdentify rejected: verification error"
+                );
+                return;
+            }
+        }
+
+        // Store identity on link and emit event
+        let identity_hash = *identity.hash();
+        tracing::debug!(
+            link = %HexShort(link_id.as_bytes()),
+            identity = %HexShort(&identity_hash),
+            "Link peer identified"
+        );
+
+        if let Some(link) = self.links.get_mut(&link_id) {
+            link.set_remote_identity(identity);
+        }
+
+        self.events.push(NodeEvent::LinkIdentified {
+            link_id,
+            identity_hash,
+        });
     }
 
     /// If the link is Stale and we receive any valid packet, recover to Active.

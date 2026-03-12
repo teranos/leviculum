@@ -944,6 +944,31 @@ impl ReticulumNode {
         Ok(())
     }
 
+    /// Identify our identity to the link peer.
+    ///
+    /// See [`NodeCore::identify_link()`] for protocol details.
+    pub async fn identify_link(
+        &self,
+        link_id: &LinkId,
+        identity: &reticulum_core::Identity,
+    ) -> Result<(), Error> {
+        let output = {
+            let mut inner = self.inner.lock().unwrap();
+            inner.identify_link(link_id, identity)?
+        };
+        self.action_dispatch_tx
+            .send(output)
+            .await
+            .map_err(|_| Error::NotRunning)?;
+        Ok(())
+    }
+
+    /// Get the remote identity for a link, if the peer has identified.
+    pub fn get_remote_identity(&self, link_id: &LinkId) -> Option<reticulum_core::Identity> {
+        let inner = self.inner.lock().unwrap();
+        inner.get_remote_identity(link_id).cloned()
+    }
+
     /// Initiate a resource transfer on an established link.
     ///
     /// Returns the resource hash identifying this transfer. The ADV packet is

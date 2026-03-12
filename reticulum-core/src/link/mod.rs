@@ -420,6 +420,10 @@ pub struct Link {
     pending_resource_adv: Option<crate::resource::ResourceAdvertisement>,
     /// Resource acceptance strategy for this link.
     resource_strategy: crate::resource::ResourceStrategy,
+    /// Remote identity, set when the link peer identifies via LINKIDENTIFY.
+    /// Only populated on the responder side (non-initiator).
+    /// Removal: cleared when the link is dropped (Link owns this data).
+    remote_identity: Option<Identity>,
 }
 
 impl Link {
@@ -476,6 +480,7 @@ impl Link {
             incoming_resource: None,
             pending_resource_adv: None,
             resource_strategy: crate::resource::ResourceStrategy::AcceptNone,
+            remote_identity: None,
         }
     }
 
@@ -580,6 +585,7 @@ impl Link {
             incoming_resource: None,
             pending_resource_adv: None,
             resource_strategy: crate::resource::ResourceStrategy::AcceptNone,
+            remote_identity: None,
         })
     }
 
@@ -781,6 +787,16 @@ impl Link {
     /// Enable or disable compression for this link
     pub fn set_compression(&mut self, enabled: bool) {
         self.compression_enabled = enabled;
+    }
+
+    /// Get the remote identity if the peer has identified on this link.
+    pub fn remote_identity(&self) -> Option<&Identity> {
+        self.remote_identity.as_ref()
+    }
+
+    /// Store the validated remote identity (called by identify handler).
+    pub(crate) fn set_remote_identity(&mut self, identity: Identity) {
+        self.remote_identity = Some(identity);
     }
 
     /// Get the hop count
@@ -3598,5 +3614,134 @@ mod tests {
 
         let result = link.build_proof_packet_with_context(b"data", PacketContext::ResourcePrf);
         assert!(matches!(result, Err(LinkError::InvalidState)));
+    }
+
+    // ─── LinkIdentify tests ──────────────────────────────────────────────────
+
+    #[test]
+    fn test_link_identify_roundtrip() {
+        use crate::identity::Identity;
+
+        let (initiator, responder) = setup_active_link_pair();
+        let link_id = *initiator.id();
+
+        // Create an identity to identify with
+        let identity = Identity::generate(&mut OsRng);
+        let public_key = identity.public_key_bytes();
+
+        // Build signed_data and signature
+        let mut signed_data = [0u8; 80];
+        signed_data[..16].copy_from_slice(link_id.as_bytes());
+        signed_data[16..80].copy_from_slice(&public_key);
+        let signature = identity.sign(&signed_data).unwrap();
+
+        // Build proof payload
+        let mut proof = [0u8; 128];
+        proof[..64].copy_from_slice(&public_key);
+        proof[64..].copy_from_slice(&signature);
+
+        // Encrypt with initiator's link key
+        let packet = initiator
+            .build_data_packet_with_context(&proof, PacketContext::LinkIdentify, &mut OsRng)
+            .unwrap();
+
+        // Packet format: [flags(1)][hops(1)][link_id(16)][context(1)][encrypted]
+        let encrypted_data = &packet[19..];
+
+        // Decrypt with responder's link key
+        let mut plaintext = vec![0u8; encrypted_data.len()];
+        let len = responder.decrypt(encrypted_data, &mut plaintext).unwrap();
+        plaintext.truncate(len);
+
+        // Verify length and contents
+        assert_eq!(len, 128);
+        assert_eq!(&plaintext[..64], &public_key);
+        assert_eq!(&plaintext[64..], &signature);
+
+        // Verify signature
+        let peer = Identity::from_public_key_bytes(&plaintext[..64]).unwrap();
+        let mut check_data = [0u8; 80];
+        check_data[..16].copy_from_slice(link_id.as_bytes());
+        check_data[16..80].copy_from_slice(&plaintext[..64]);
+        assert!(peer.verify(&check_data, &plaintext[64..]).unwrap());
+        assert_eq!(peer.hash(), identity.hash());
+    }
+
+    #[test]
+    fn test_link_identify_invalid_signature_rejected() {
+        use crate::identity::Identity;
+
+        let (initiator, responder) = setup_active_link_pair();
+        let link_id = *initiator.id();
+
+        // Create two identities — sign with one, claim to be the other
+        let real_identity = Identity::generate(&mut OsRng);
+        let fake_identity = Identity::generate(&mut OsRng);
+
+        let public_key = fake_identity.public_key_bytes();
+
+        // Sign with the REAL identity but include FAKE public key
+        let mut signed_data = [0u8; 80];
+        signed_data[..16].copy_from_slice(link_id.as_bytes());
+        signed_data[16..80].copy_from_slice(&public_key);
+        let signature = real_identity.sign(&signed_data).unwrap();
+
+        let mut proof = [0u8; 128];
+        proof[..64].copy_from_slice(&public_key);
+        proof[64..].copy_from_slice(&signature);
+
+        // Encrypt and transmit
+        let packet = initiator
+            .build_data_packet_with_context(&proof, PacketContext::LinkIdentify, &mut OsRng)
+            .unwrap();
+        let encrypted_data = &packet[19..];
+
+        // Responder decrypts
+        let mut plaintext = vec![0u8; encrypted_data.len()];
+        let len = responder.decrypt(encrypted_data, &mut plaintext).unwrap();
+        assert_eq!(len, 128);
+
+        // Verify that the signature does NOT validate against the claimed identity
+        let claimed = Identity::from_public_key_bytes(&plaintext[..64]).unwrap();
+        let mut check_data = [0u8; 80];
+        check_data[..16].copy_from_slice(link_id.as_bytes());
+        check_data[16..80].copy_from_slice(&plaintext[..64]);
+        // The signature was made by real_identity, not fake_identity, so verification fails
+        assert!(!claimed.verify(&check_data, &plaintext[64..]).unwrap());
+    }
+
+    #[test]
+    fn test_link_identify_wrong_length_rejected() {
+        let (initiator, responder) = setup_active_link_pair();
+
+        // Encrypt a 100-byte payload (not 128)
+        let bad_payload = [0x42u8; 100];
+        let packet = initiator
+            .build_data_packet_with_context(&bad_payload, PacketContext::LinkIdentify, &mut OsRng)
+            .unwrap();
+        let encrypted_data = &packet[19..];
+
+        // Responder can decrypt it...
+        let mut plaintext = vec![0u8; encrypted_data.len()];
+        let len = responder.decrypt(encrypted_data, &mut plaintext).unwrap();
+
+        // ...but the length is wrong (not 128)
+        assert_eq!(len, 100);
+        assert_ne!(len, 128);
+    }
+
+    #[test]
+    fn test_link_remote_identity_accessors() {
+        use crate::identity::Identity;
+
+        let (_, mut responder) = setup_active_link_pair();
+        assert!(responder.remote_identity().is_none());
+
+        let identity = Identity::generate(&mut OsRng);
+        let hash = *identity.hash();
+        responder.set_remote_identity(identity);
+
+        assert!(responder.remote_identity().is_some());
+        assert_eq!(responder.remote_identity().unwrap().hash(), &hash);
     }
 }

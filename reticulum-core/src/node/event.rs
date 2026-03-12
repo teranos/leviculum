@@ -148,6 +148,18 @@ pub enum NodeEvent {
         tries: u8,
     },
 
+    /// The remote peer has proven their identity on a link.
+    ///
+    /// Emitted on the responder (non-initiator) side when the initiator sends
+    /// a valid LINKIDENTIFY packet. The full identity can be queried via
+    /// `get_remote_identity(link_id)`.
+    LinkIdentified {
+        /// The link on which identification occurred
+        link_id: LinkId,
+        /// Truncated hash of the identified identity (16 bytes)
+        identity_hash: [u8; TRUNCATED_HASHBYTES],
+    },
+
     /// Link closed
     LinkClosed {
         /// The link ID

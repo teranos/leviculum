@@ -964,6 +964,32 @@ impl TestDaemon {
         Ok(packets)
     }
 
+    /// Get the remote identity for a link, if the peer has identified.
+    ///
+    /// Returns `Some(identity_hash_hex)` if the peer identified, `None` otherwise.
+    pub async fn get_link_remote_identity(
+        &self,
+        link_hash: &str,
+    ) -> Result<Option<String>, HarnessError> {
+        let result = self
+            .query(
+                "get_link_remote_identity",
+                serde_json::json!({ "link_hash": link_hash }),
+            )
+            .await?;
+
+        if result.is_null() {
+            return Ok(None);
+        }
+
+        let hash = result
+            .get("identity_hash")
+            .and_then(|v| v.as_str())
+            .map(|s| s.to_string());
+
+        Ok(hash)
+    }
+
     /// Send a single (non-link) packet from Python to a remote destination.
     ///
     /// Requires that Python has already received an announce for the destination

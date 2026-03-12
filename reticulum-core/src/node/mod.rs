@@ -512,6 +512,61 @@ impl<R: CryptoRngCore, C: Clock, S: Storage> NodeCore<R, C, S> {
         Ok(self.process_events_and_actions())
     }
 
+    // ─── Link Identity API ────────────────────────────────────────────────────
+
+    /// Identify our identity to the link peer.
+    ///
+    /// Sends a LINKIDENTIFY packet encrypted with the link session key,
+    /// containing our public key and a signature binding the identity to
+    /// this specific link. Only the initiator can identify; the link must
+    /// be active.
+    ///
+    /// Matches Python `Link.identify()` (Link.py:459-475).
+    pub fn identify_link(
+        &mut self,
+        link_id: &LinkId,
+        identity: &Identity,
+    ) -> Result<crate::transport::TickOutput, crate::link::LinkError> {
+        use crate::link::LinkError;
+        use crate::packet::PacketContext;
+
+        // Verify link exists, is active, and we are initiator
+        let link = self.links.get(link_id).ok_or(LinkError::NotFound)?;
+        if !link.is_initiator() {
+            return Err(LinkError::InvalidState);
+        }
+        if !link.is_active() {
+            return Err(LinkError::InvalidState);
+        }
+
+        // Build proof: public_key(64) || signature(64) = 128 bytes
+        let public_key = identity.public_key_bytes();
+
+        let mut signed_data = [0u8; 80];
+        signed_data[..16].copy_from_slice(link_id.as_bytes());
+        signed_data[16..80].copy_from_slice(&public_key);
+
+        let signature = identity
+            .sign(&signed_data)
+            .map_err(|_| LinkError::NoIdentity)?;
+
+        let mut proof_data = [0u8; 128];
+        proof_data[..64].copy_from_slice(&public_key);
+        proof_data[64..128].copy_from_slice(&signature);
+
+        // Encrypt and build packet
+        let packet = link.build_data_packet_with_context(
+            &proof_data,
+            PacketContext::LinkIdentify,
+            &mut self.rng,
+        )?;
+
+        // Route
+        self.route_link_packet(link_id, &packet);
+
+        Ok(self.process_events_and_actions())
+    }
+
     // ─── Resource Transfer API ────────────────────────────────────────────────
 
     /// Initiate a resource transfer on an established link.
@@ -1036,6 +1091,11 @@ impl<R: CryptoRngCore, C: Clock, S: Storage> NodeCore<R, C, S> {
     /// Get the node's identity
     pub fn identity(&self) -> &Identity {
         self.transport.identity()
+    }
+
+    /// Get the remote identity for a link, if the peer has identified.
+    pub fn get_remote_identity(&self, link_id: &LinkId) -> Option<&Identity> {
+        self.links.get(link_id)?.remote_identity()
     }
 
     /// Get the transport configuration

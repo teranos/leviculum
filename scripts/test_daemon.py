@@ -381,6 +381,16 @@ class TestDaemon:
                 }
             return {"result": links}
 
+        elif method == "get_link_remote_identity":
+            link_hash = params.get("link_hash")
+            link = self.links.get(link_hash)
+            if not link:
+                return {"error": f"link {link_hash} not found"}
+            remote_id = link.get_remote_identity()
+            if remote_id is None:
+                return {"result": None}
+            return {"result": {"identity_hash": remote_id.hash.hex()}}
+
         elif method == "get_received_packets":
             # Return packets received over links
             packets = []

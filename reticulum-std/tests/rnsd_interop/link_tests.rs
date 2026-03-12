@@ -664,3 +664,115 @@ async fn test_link_proof_validation() {
 
     println!("SUCCESS: Proof validated and keys derived correctly");
 }
+
+// =========================================================================
+// Test: Link identify — Rust identifies to Python
+// =========================================================================
+
+/// Verify that Rust's link identify is recognized by Python.
+///
+/// This test verifies:
+/// - LinkIdentify packet format is correct (context 0xFB)
+/// - Encryption with link session key works
+/// - Python decrypts, verifies signature, stores remote identity
+/// - Python's get_remote_identity() returns the correct identity hash
+#[tokio::test]
+async fn test_link_identify_to_python() {
+    use reticulum_core::identity::Identity;
+    use reticulum_core::packet::PacketContext;
+
+    let daemon = TestDaemon::start().await.expect("Failed to start daemon");
+
+    // Register a destination that accepts links
+    let dest_info = daemon
+        .register_destination("identtest", &["echo"])
+        .await
+        .expect("Failed to register destination");
+
+    let pub_key_bytes = hex::decode(&dest_info.public_key).unwrap();
+    let signing_key_bytes: [u8; 32] = pub_key_bytes[32..64].try_into().unwrap();
+    let dest_hash: [u8; TRUNCATED_HASHBYTES] =
+        hex::decode(&dest_info.hash).unwrap().try_into().unwrap();
+
+    // Establish link
+    let mut link = Link::new_outgoing(dest_hash.into(), &mut OsRng);
+    link.set_destination_keys(&signing_key_bytes).unwrap();
+
+    let raw_packet = link.build_link_request_packet(None);
+    let mut stream = connect_to_daemon(&daemon).await;
+    let mut framed = Vec::new();
+    frame(&raw_packet, &mut framed);
+    stream.write_all(&framed).await.unwrap();
+    stream.flush().await.unwrap();
+
+    let mut deframer = Deframer::new();
+    let proof_packet = receive_proof_for_link(
+        &mut stream,
+        &mut deframer,
+        link.id(),
+        Duration::from_secs(10),
+    )
+    .await
+    .expect("Should receive proof");
+
+    link.process_proof(proof_packet.data.as_slice())
+        .expect("Proof should validate");
+
+    // Send RTT packet to finalize link on daemon side
+    let rtt_packet = link.build_rtt_packet(0.05, &mut OsRng).unwrap();
+    framed.clear();
+    frame(&rtt_packet, &mut framed);
+    stream.write_all(&framed).await.unwrap();
+    stream.flush().await.unwrap();
+    tokio::time::sleep(Duration::from_millis(500)).await;
+
+    // Verify link is established on daemon
+    let links = daemon.get_links().await.expect("get_links");
+    assert!(!links.is_empty(), "Daemon should have a link");
+
+    // Generate an identity to identify with
+    let identity = Identity::generate(&mut OsRng);
+    let public_key = identity.public_key_bytes();
+
+    // Build identify payload: public_key(64) || signature(64)
+    let mut signed_data = [0u8; 80];
+    signed_data[..16].copy_from_slice(link.id().as_bytes());
+    signed_data[16..80].copy_from_slice(&public_key);
+    let signature = identity.sign(&signed_data).unwrap();
+
+    let mut proof_data = [0u8; 128];
+    proof_data[..64].copy_from_slice(&public_key);
+    proof_data[64..128].copy_from_slice(&signature);
+
+    // Build and send LinkIdentify packet
+    let identify_packet = link
+        .build_data_packet_with_context(&proof_data, PacketContext::LinkIdentify, &mut OsRng)
+        .expect("Failed to build identify packet");
+
+    framed.clear();
+    frame(&identify_packet, &mut framed);
+    stream.write_all(&framed).await.unwrap();
+    stream.flush().await.unwrap();
+
+    // Wait for Python to process the identify
+    tokio::time::sleep(Duration::from_millis(500)).await;
+
+    // Query Python for the remote identity on this link
+    let link_hash = hex::encode(link.id().as_bytes());
+    let remote_identity = daemon
+        .get_link_remote_identity(&link_hash)
+        .await
+        .expect("RPC should succeed");
+
+    let expected_hash = hex::encode(identity.hash());
+    assert_eq!(
+        remote_identity.as_deref(),
+        Some(expected_hash.as_str()),
+        "Python should recognize Rust identity hash"
+    );
+
+    println!(
+        "SUCCESS: Python recognized Rust identity: {}",
+        expected_hash
+    );
+}
