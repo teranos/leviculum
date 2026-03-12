@@ -47,9 +47,8 @@ pub async fn run_send(
     verbose: u8,
     quiet: bool,
     no_compress: bool,
+    sender_identity: Option<&Identity>,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    let _ = verbose; // reserved for future use
-
     // Parse destination hash
     let dest_bytes_vec = crate::hex_decode(destination).map_err(err)?;
     if dest_bytes_vec.len() != 16 {
@@ -130,6 +129,16 @@ pub async fn run_send(
         }
     };
 
+    // Identify to the listener (if identity provided)
+    if let Some(id) = sender_identity {
+        node.identify_link(&link_id, id)
+            .await
+            .map_err(|e| err(format!("identify failed: {e}")))?;
+        if verbose > 0 && !quiet {
+            eprintln!("Identity announced to remote");
+        }
+    }
+
     // Send resource
     if !quiet {
         eprintln!("Sending {} ({} bytes)...", file_path.display(), data.len());
@@ -194,6 +203,7 @@ pub async fn run_listen(
     save_dir: Option<PathBuf>,
     overwrite: bool,
     no_auth: bool,
+    allowed_identities: &[[u8; 16]],
     announce_interval: i64,
     verbose: u8,
     quiet: bool,
@@ -215,9 +225,6 @@ pub async fn run_listen(
         "lrncp listening on {}",
         crate::hex_encode(dest_hash.as_bytes())
     );
-    if !no_auth {
-        eprintln!("Warning: --no-auth is required (link.identify() not yet implemented)");
-    }
 
     if announce_interval >= 0 {
         node.announce_destination(&dest_hash, None).await?;
@@ -250,12 +257,34 @@ pub async fn run_listen(
                     Some(NodeEvent::LinkEstablished {
                         link_id, is_initiator: false, ..
                     }) => {
-                        node.set_resource_strategy(
-                            &link_id,
-                            reticulum_core::resource::ResourceStrategy::AcceptAll,
-                        )?;
+                        if no_auth {
+                            node.set_resource_strategy(
+                                &link_id,
+                                reticulum_core::resource::ResourceStrategy::AcceptAll,
+                            )?;
+                        }
                         if verbose > 0 {
                             eprintln!("Link established");
+                        }
+                    }
+                    Some(NodeEvent::LinkIdentified { link_id, identity_hash }) => {
+                        if allowed_identities.is_empty()
+                            || allowed_identities.contains(&identity_hash)
+                        {
+                            node.set_resource_strategy(
+                                &link_id,
+                                reticulum_core::resource::ResourceStrategy::AcceptAll,
+                            )?;
+                            if verbose > 0 {
+                                let hash_hex = crate::hex_encode(&identity_hash);
+                                eprintln!("Identity {} authorized", hash_hex);
+                            }
+                        } else {
+                            let hash_hex = crate::hex_encode(&identity_hash);
+                            if !quiet {
+                                eprintln!("Identity {} not allowed, tearing down link", hash_hex);
+                            }
+                            node.close_link(&link_id).await?;
                         }
                     }
                     Some(NodeEvent::ResourceProgress {
@@ -418,6 +447,248 @@ fn format_size(bytes: u64) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use rand_core::OsRng;
+    use reticulum_std::driver::ReticulumNodeBuilder;
+
+    /// Compute the rncp/receive destination hash for an identity.
+    fn dest_hash_for(identity: &Identity) -> DestinationHash {
+        let dest = Destination::new(
+            Some(identity.clone()),
+            Direction::In,
+            DestinationType::Single,
+            "rncp",
+            &["receive"],
+        )
+        .unwrap();
+        *dest.hash()
+    }
+
+    /// Find an available TCP port by binding to :0 and extracting the OS-assigned port.
+    fn find_available_port() -> u16 {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        listener.local_addr().unwrap().port()
+    }
+
+    /// Create two connected ReticulumNode instances for testing.
+    async fn setup_connected_nodes() -> (
+        reticulum_std::driver::ReticulumNode,
+        mpsc::Receiver<NodeEvent>,
+        reticulum_std::driver::ReticulumNode,
+        mpsc::Receiver<NodeEvent>,
+        tempfile::TempDir,
+    ) {
+        let port = find_available_port();
+        let tmp = tempfile::tempdir().unwrap();
+
+        let mut listener = ReticulumNodeBuilder::new()
+            .add_tcp_server(format!("127.0.0.1:{port}").parse().unwrap())
+            .storage_path(tmp.path().join("listener"))
+            .build()
+            .await
+            .unwrap();
+        listener.start().await.unwrap();
+        let listener_events = listener.take_event_receiver().unwrap();
+
+        let mut sender = ReticulumNodeBuilder::new()
+            .add_tcp_client(format!("127.0.0.1:{port}").parse().unwrap())
+            .storage_path(tmp.path().join("sender"))
+            .build()
+            .await
+            .unwrap();
+        sender.start().await.unwrap();
+        let sender_events = sender.take_event_receiver().unwrap();
+
+        // Wait for TCP connection to establish
+        tokio::time::sleep(Duration::from_millis(500)).await;
+
+        (listener, listener_events, sender, sender_events, tmp)
+    }
+
+    #[tokio::test]
+    async fn test_auth_allowed_transfer_succeeds() {
+        let (listener_node, mut lev, sender_node, mut sev, tmp) =
+            setup_connected_nodes().await;
+
+        let listener_id = Identity::generate(&mut OsRng);
+        let sender_id = Identity::generate(&mut OsRng);
+        let allowed = vec![*sender_id.hash()];
+        let dest_hash = dest_hash_for(&listener_id);
+
+        // Create temp file to send
+        let file_path = tmp.path().join("testfile.bin");
+        std::fs::write(&file_path, b"hello auth test").unwrap();
+        let save_dir = tmp.path().join("received");
+        std::fs::create_dir(&save_dir).unwrap();
+
+        // Spawn listener in background (run_listen loops forever)
+        let listener_handle = tokio::spawn(async move {
+            run_listen(
+                &listener_node,
+                &mut lev,
+                listener_id,
+                Some(save_dir),
+                false,
+                false, // no_auth = false — require identity
+                &allowed,
+                0,
+                1,
+                false,
+            )
+            .await
+            .map_err(|e| e.to_string())
+        });
+
+        // Wait for announce to propagate
+        tokio::time::sleep(Duration::from_millis(1500)).await;
+
+        // Send with identity — should succeed
+        let result = run_send(
+            &sender_node,
+            &mut sev,
+            file_path.to_str().unwrap(),
+            &crate::hex_encode(dest_hash.as_bytes()),
+            15.0,
+            1,
+            false,
+            false,
+            Some(&sender_id),
+        )
+        .await;
+        assert!(
+            result.is_ok(),
+            "Transfer should succeed with authorized identity: {:?}",
+            result.err()
+        );
+
+        // Verify file was saved
+        assert!(
+            tmp.path().join("received").join("testfile.bin").exists(),
+            "Received file should exist"
+        );
+
+        listener_handle.abort();
+    }
+
+    #[tokio::test]
+    async fn test_auth_rejected_link_closed() {
+        let (listener_node, mut lev, sender_node, mut sev, tmp) =
+            setup_connected_nodes().await;
+
+        let listener_id = Identity::generate(&mut OsRng);
+        let sender_id = Identity::generate(&mut OsRng);
+        let wrong_id = Identity::generate(&mut OsRng);
+        let allowed = vec![*wrong_id.hash()]; // wrong hash — sender not allowed
+        let dest_hash = dest_hash_for(&listener_id);
+
+        // Create temp file to send
+        let file_path = tmp.path().join("testfile.bin");
+        std::fs::write(&file_path, b"should not arrive").unwrap();
+        let save_dir = tmp.path().join("received");
+        std::fs::create_dir(&save_dir).unwrap();
+
+        // Spawn listener in background
+        let listener_handle = tokio::spawn(async move {
+            run_listen(
+                &listener_node,
+                &mut lev,
+                listener_id,
+                Some(save_dir),
+                false,
+                false, // no_auth = false — require identity
+                &allowed,
+                0,
+                1,
+                false,
+            )
+            .await
+            .map_err(|e| e.to_string())
+        });
+
+        // Wait for announce to propagate
+        tokio::time::sleep(Duration::from_millis(1500)).await;
+
+        // Send with wrong identity — should fail
+        let result = run_send(
+            &sender_node,
+            &mut sev,
+            file_path.to_str().unwrap(),
+            &crate::hex_encode(dest_hash.as_bytes()),
+            10.0,
+            1,
+            false,
+            false,
+            Some(&sender_id),
+        )
+        .await;
+        assert!(
+            result.is_err(),
+            "Transfer should fail with unauthorized identity"
+        );
+
+        listener_handle.abort();
+    }
+
+    #[tokio::test]
+    async fn test_no_auth_accepts_anyone() {
+        let (listener_node, mut lev, sender_node, mut sev, tmp) =
+            setup_connected_nodes().await;
+
+        let listener_id = Identity::generate(&mut OsRng);
+        let dest_hash = dest_hash_for(&listener_id);
+
+        // Create temp file to send
+        let file_path = tmp.path().join("testfile.bin");
+        std::fs::write(&file_path, b"no auth test").unwrap();
+        let save_dir = tmp.path().join("received");
+        std::fs::create_dir(&save_dir).unwrap();
+
+        // Spawn listener with no_auth=true (no identity needed)
+        let listener_handle = tokio::spawn(async move {
+            run_listen(
+                &listener_node,
+                &mut lev,
+                listener_id,
+                Some(save_dir),
+                false,
+                true, // no_auth = true
+                &[],
+                0,
+                1,
+                false,
+            )
+            .await
+            .map_err(|e| e.to_string())
+        });
+
+        // Wait for announce to propagate
+        tokio::time::sleep(Duration::from_millis(1500)).await;
+
+        // Send without identity — should succeed in no_auth mode
+        let result = run_send(
+            &sender_node,
+            &mut sev,
+            file_path.to_str().unwrap(),
+            &crate::hex_encode(dest_hash.as_bytes()),
+            15.0,
+            1,
+            false,
+            false,
+            None, // no identity
+        )
+        .await;
+        assert!(
+            result.is_ok(),
+            "Transfer should succeed in no_auth mode: {:?}",
+            result.err()
+        );
+
+        assert!(
+            tmp.path().join("received").join("testfile.bin").exists(),
+            "Received file should exist"
+        );
+
+        listener_handle.abort();
+    }
 
     #[test]
     fn test_metadata_encoding() {

@@ -113,8 +113,8 @@ struct Args {
     #[arg(short = 'P', long = "phy-rates", hide = true)]
     phy_rates: bool,
 
-    /// Allow this identity hash [not yet implemented]
-    #[arg(short = 'a', action = ArgAction::Append, hide = true)]
+    /// Allow identity hash (can be specified multiple times)
+    #[arg(short = 'a', action = ArgAction::Append)]
     allowed: Vec<String>,
 }
 
@@ -185,6 +185,11 @@ async fn run(args: Args) -> Result<(), Box<dyn std::error::Error>> {
             .identity
             .unwrap_or_else(|| config_dir.join("identities").join("lrncp"));
         let identity = cp::load_or_generate_identity(&identity_path)?;
+        let allowed_identities = parse_identity_hashes(&args.allowed)?;
+
+        if args.no_auth && !allowed_identities.is_empty() {
+            eprintln!("Warning: -n/--no-auth overrides -a (accepting all identities)");
+        }
 
         cp::run_listen(
             &node,
@@ -193,6 +198,7 @@ async fn run(args: Args) -> Result<(), Box<dyn std::error::Error>> {
             args.save,
             args.overwrite,
             args.no_auth,
+            &allowed_identities,
             args.announce_interval,
             args.verbose,
             quiet_bool,
@@ -203,6 +209,13 @@ async fn run(args: Args) -> Result<(), Box<dyn std::error::Error>> {
         let dest = args
             .destination
             .ok_or("destination argument required in send mode")?;
+
+        // Sender always identifies
+        let identity_path = args
+            .identity
+            .unwrap_or_else(|| config_dir.join("identities").join("lrncp"));
+        let identity = cp::load_or_generate_identity(&identity_path)?;
+
         cp::run_send(
             &node,
             &mut events,
@@ -212,6 +225,7 @@ async fn run(args: Args) -> Result<(), Box<dyn std::error::Error>> {
             args.verbose,
             quiet_bool,
             args.no_compress,
+            Some(&identity),
         )
         .await
     };
@@ -247,9 +261,6 @@ fn check_unimplemented(args: &Args) {
     if args.phy_rates {
         flag = Some("-P/--phy-rates");
     }
-    if !args.allowed.is_empty() {
-        flag = Some("-a (allowed identity)");
-    }
     if let Some(f) = flag {
         eprintln!("lrncp: {} is not yet implemented", f);
         std::process::exit(1);
@@ -268,6 +279,26 @@ fn read_instance_name(config_dir: &std::path::Path) -> String {
     "default".to_string()
 }
 
+fn parse_identity_hashes(allowed: &[String]) -> Result<Vec<[u8; 16]>, Box<dyn std::error::Error>> {
+    allowed
+        .iter()
+        .map(|hex_str| {
+            let bytes =
+                hex_decode(hex_str).map_err(|e| format!("-a: invalid hex '{}': {}", hex_str, e))?;
+            if bytes.len() != 16 {
+                return Err(format!(
+                    "-a: identity hash must be 32 hex chars (16 bytes), got {} chars",
+                    hex_str.len()
+                )
+                .into());
+            }
+            let mut arr = [0u8; 16];
+            arr.copy_from_slice(&bytes);
+            Ok(arr)
+        })
+        .collect()
+}
+
 fn print_identity(
     config_dir: &std::path::Path,
     identity_path: Option<&std::path::Path>,
@@ -276,6 +307,7 @@ fn print_identity(
         .map(PathBuf::from)
         .unwrap_or_else(|| config_dir.join("identities").join("lrncp"));
     let identity = cp::load_or_generate_identity(&path)?;
+    let id_hash = hex_encode(identity.hash());
     let dest = Destination::new(
         Some(identity),
         Direction::In,
@@ -285,5 +317,48 @@ fn print_identity(
     )
     .map_err(|e| format!("destination error: {e}"))?;
     println!("{}", hex_encode(dest.hash().as_bytes()));
+    println!("Identity  : {}", id_hash);
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_parse_identity_hashes_valid() {
+        let hashes =
+            parse_identity_hashes(&["a1b2c3d4e5f6a7b8a1b2c3d4e5f6a7b8".to_string()]).unwrap();
+        assert_eq!(hashes.len(), 1);
+        assert_eq!(hashes[0][0], 0xa1);
+        assert_eq!(hashes[0][15], 0xb8);
+    }
+
+    #[test]
+    fn test_parse_identity_hashes_multiple() {
+        let hashes = parse_identity_hashes(&[
+            "a1b2c3d4e5f6a7b8a1b2c3d4e5f6a7b8".to_string(),
+            "00112233445566778899aabbccddeeff".to_string(),
+        ])
+        .unwrap();
+        assert_eq!(hashes.len(), 2);
+    }
+
+    #[test]
+    fn test_parse_identity_hashes_empty() {
+        let hashes = parse_identity_hashes(&[]).unwrap();
+        assert!(hashes.is_empty());
+    }
+
+    #[test]
+    fn test_parse_identity_hashes_wrong_length() {
+        let result = parse_identity_hashes(&["abcd".to_string()]);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_parse_identity_hashes_invalid_hex() {
+        let result = parse_identity_hashes(&["zzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzz".to_string()]);
+        assert!(result.is_err());
+    }
 }

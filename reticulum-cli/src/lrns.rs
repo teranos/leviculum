@@ -1252,6 +1252,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     save,
                     overwrite,
                     no_auth,
+                    &[], // no -a flag for lrns cp
                     announce_interval,
                     cp_verbose,
                     quiet,
@@ -1279,6 +1280,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     cp_verbose,
                     quiet,
                     false,
+                    None, // lrns cp sender does not identify
                 )
                 .await;
                 node.stop().await?;
