@@ -51,7 +51,7 @@
 | Destination (Hashing, Typen, Ratchets, Encrypt/Decrypt) | ✅ Fertig |
 | Receipt (Delivery-Tracking, Proof-Validierung) | ✅ Fertig |
 | Ratchet (Forward Secrecy) | ⚠️ Krypto + Persistenz fertig, Validierung nicht eingebunden |
-| IFAC (Interface Access Codes) | ⚠️ Modul fertig, nicht in Empfangspfad eingebunden |
+| IFAC (Interface Access Codes) | ✅ Fertig |
 | Link-State-Machine (Handshake, Proof, RTT, Data) | ✅ Initiator + Responder |
 | Channel/Buffer (Reliable Messaging, Streams) | ✅ Fertig |
 | Node (High-Level API, Builder, Events, LinkManagement) | ✅ Fertig |
@@ -155,7 +155,7 @@ Kleinere Lücken (nicht blockierend für v1.0): Announce-Expiry-Timer, mehrere P
 
 | ID | Beschreibung | Status |
 |----|-------------|--------|
-| B3 | IFAC-Modul existiert, nicht in Paketempfangspfad eingebunden | ⚠️ Modul fertig |
+| B3 | IFAC End-to-End: Empfangspfad, Sendepfad, Config, TCP-Vererbung, 4 Integrationstests | ✅ Behoben |
 | B4 | Ratchet-Krypto funktioniert, Validierung bei Announces/Links nicht aktiv | ⚠️ Krypto fertig |
 | C10 | Buffer/Stream-System existiert, nicht in LinkHandle integriert | ⚠️ Code fertig |
 
@@ -181,11 +181,11 @@ Sicherheitsfeatures verdrahten, Daemon-Zustand persistieren, Release-Qualität e
 - [x] FileStorage umschließt MemoryStorage + Python-kompatible Persistenz
 - [ ] Interop-Test: Rust-Node neustarten, zuvor bekannte Destinations ohne Re-Announce erreichbar
 
-### Meilenstein 3.2: IFAC-Integration (B3)
-- [ ] IFAC in den Paketempfangspfad einbinden (Validierung eingehender Pakete)
-- [ ] IFAC in den Sendevorgang einbinden (Tags an ausgehende Pakete)
-- [ ] Config-Option für IFAC pro Interface
-- [ ] Interop-Test: IFAC-gesicherte Kommunikation zwischen Rust und Python
+### Meilenstein 3.2: IFAC-Integration (B3) ✅
+- [x] IFAC in den Paketempfangspfad einbinden (`process_incoming()` → `verify_ifac()`, transport.rs:970-995)
+- [x] IFAC in den Sendevorgang einbinden (`dispatch_actions()` → `apply_ifac()`, transport.rs:222-256)
+- [x] Config-Option für IFAC pro Interface (networkname, passphrase, ifac_size in INI-Config; TCP-Server vererbt an Spawned-Interfaces)
+- [x] Interop-Test: 4 Docker-Integrationstests (ifac_basic_probe, ifac_through_relay, ifac_mixed_links, ifac_rust_relay)
 
 ### Meilenstein 3.3: Ratchet-Validierung (B4)
 - [x] Ratchet-Schlüssel auf Disk persistieren (Python-kompatibles Format, signiert)
@@ -231,7 +231,7 @@ Sicherheitsfeatures verdrahten, Daemon-Zustand persistieren, Release-Qualität e
 └─────────┬───────────┘
           ▼
 ┌─────────────────────┐
-│ 3.2 IFAC (B3)       │ ⬜ — Interface-Authentifizierung
+│ 3.2 IFAC (B3)       │ ✅ — End-to-End mit 4 Integrationstests
 │ 3.3 Ratchet (B4)    │ ⬜ — Forward Secrecy
 └─────────┬───────────┘
           ▼
@@ -259,7 +259,7 @@ Sicherheitsfeatures verdrahten, Daemon-Zustand persistieren, Release-Qualität e
 - [x] Interop-Tests gegen Python rnsd bestehen
 - [x] no_std-Kompatibilität für reticulum-core
 - [ ] Forward Secrecy via Ratchets (B4)
-- [ ] Interface Access Codes / IFAC (B3)
+- [x] Interface Access Codes / IFAC (B3)
 - [x] Persistente Speicherung (E9)
 - [x] UDP Interface
 

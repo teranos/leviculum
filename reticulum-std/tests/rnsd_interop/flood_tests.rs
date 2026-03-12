@@ -323,10 +323,13 @@ async fn test_diamond_originator_echo() {
         "Py-Exit should have hops=1 (direct from Rust-Node, Python +1 on recv)"
     );
 
-    // Wait for rebroadcasts and echoes to propagate through all paths
-    // Entry and Exit may rebroadcast announces back to Rust-Node and to
-    // Py-Bypass. Py-Bypass may forward further echoes. Give plenty of time.
-    tokio::time::sleep(Duration::from_secs(10)).await;
+    // Wait for all 3 announce retransmits to complete (~16.5s from announce time).
+    // Locally-originated announces are retransmitted 3 times for LoRa reliability
+    // (transport.rs:1152-1178, Rust extension — Python does not retransmit these).
+    // Each retransmit increments packets_forwarded via forward_on_all_except().
+    // After retries exhaust (retries > PATHFINDER_RETRIES), the entry is removed
+    // and no further forwarding occurs.
+    tokio::time::sleep(Duration::from_secs(25)).await;
 
     // Diagnostic: dump transport stats for investigation
     let stats = rust_node.transport_stats();

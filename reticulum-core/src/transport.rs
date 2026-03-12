@@ -1149,9 +1149,11 @@ impl<C: Clock, S: Storage> Transport<C, S> {
             exclude_iface: None,
         });
 
-        // Schedule retries for locally-originated announces. Without this,
-        // the probe announce gets ONE LoRa transmission with no retries —
-        // if that single TX is lost to collision or noise, the node is
+        // Rust extension: schedule retries for locally-originated announces.
+        // Python does NOT do this — its outbound() broadcasts once and never
+        // adds locally-originated announces to announce_table (only received
+        // announces get retransmitted via handle_announce → announce_table).
+        // We add retries because on LoRa, a single lost TX means the node is
         // unreachable until the next mgmt announce (2 hours later).
         if let Ok(packet) = Packet::unpack(data) {
             if packet.flags.packet_type == PacketType::Announce {
