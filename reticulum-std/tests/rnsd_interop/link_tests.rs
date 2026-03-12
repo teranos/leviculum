@@ -22,14 +22,18 @@
 //! cargo test --package reticulum-std --test rnsd_interop link_tests -- --nocapture
 //! ```
 
+use std::net::SocketAddr;
 use std::time::Duration;
 
 use rand_core::OsRng;
-use tokio::io::AsyncWriteExt;
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
+use tokio::net::TcpStream as TokioTcpStream;
 
 use reticulum_core::constants::TRUNCATED_HASHBYTES;
+use reticulum_core::identity::Identity;
 use reticulum_core::link::{Link, LinkState};
 use reticulum_core::packet::PacketType;
+use reticulum_std::driver::ReticulumNodeBuilder;
 use reticulum_std::interfaces::hdlc::{frame, Deframer};
 
 use crate::common::*;
@@ -775,4 +779,184 @@ async fn test_link_identify_to_python() {
         "SUCCESS: Python recognized Rust identity: {}",
         expected_hash
     );
+}
+
+// =========================================================================
+// Test: Python identifies to Rust (reverse direction)
+// =========================================================================
+
+/// Verify that Python's link.identify() is recognized by Rust.
+///
+/// Topology: Py-Daemon (transport) ← Rust-Node (responder)
+///           Py-Daemon creates a link to Rust, then identifies.
+///
+/// This test verifies:
+/// - Python's LINKIDENTIFY packet format is compatible with Rust
+/// - Rust decrypts, verifies signature, stores remote identity
+/// - NodeEvent::LinkIdentified fires with correct identity_hash
+/// - get_remote_identity() returns the correct identity
+#[tokio::test]
+async fn test_link_identify_from_python() {
+    use reticulum_core::{Destination, DestinationType, Direction};
+
+    // Start Python daemon (acts as both relay and initiator)
+    let daemon = TestDaemon::start().await.expect("start daemon");
+
+    // Build Rust node connected to daemon
+    let mut rust_node = ReticulumNodeBuilder::new()
+        .enable_transport(false)
+        .add_tcp_client(daemon.rns_addr())
+        .build()
+        .await
+        .expect("build Rust node");
+
+    let mut event_rx = rust_node.take_event_receiver().expect("event receiver");
+
+    rust_node.start().await.expect("start Rust node");
+    tokio::time::sleep(Duration::from_secs(1)).await;
+
+    // Register a Rust destination that accepts links
+    let rust_identity = Identity::generate(&mut OsRng);
+    let public_key_hex = hex::encode(rust_identity.public_key_bytes());
+    let mut dest = Destination::new(
+        Some(rust_identity),
+        Direction::In,
+        DestinationType::Single,
+        "identrecv",
+        &["test"],
+    )
+    .expect("create destination");
+    dest.set_accepts_links(true);
+    let dest_hash = *dest.hash();
+    let dest_hash_hex = hex::encode(dest_hash.as_bytes());
+
+    rust_node.register_destination(dest);
+    rust_node
+        .announce_destination(&dest_hash, Some(b"identify-test"))
+        .await
+        .expect("announce");
+
+    // Wait for daemon to learn the path
+    let path_deadline = tokio::time::Instant::now() + Duration::from_secs(10);
+    while tokio::time::Instant::now() < path_deadline {
+        if daemon.has_path(dest_hash.as_bytes()).await {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(200)).await;
+    }
+
+    // Python creates a link to Rust (blocks until ACTIVE).
+    // Must run concurrently with Rust's accept_link.
+    let create_link_handle = {
+        let cmd_addr = daemon.cmd_addr();
+        let dh = dest_hash_hex.clone();
+        let pk = public_key_hex.clone();
+        tokio::spawn(async move { create_link_raw(cmd_addr, &dh, &pk, 15).await })
+    };
+
+    // Rust waits for LinkRequest
+    let (link_id, _) = wait_for_link_request_event(&mut event_rx, Duration::from_secs(10))
+        .await
+        .expect("should receive LinkRequest");
+
+    // Accept the link
+    let _stream = rust_node.accept_link(&link_id).await.expect("accept_link");
+
+    // Wait for establishment on Rust side
+    assert!(
+        wait_for_responder_established(&mut event_rx, &link_id, Duration::from_secs(10)).await,
+        "Rust link should be established"
+    );
+
+    // Wait for Python's create_link to complete
+    let link_hash = create_link_handle
+        .await
+        .expect("task panicked")
+        .expect("Python create_link should succeed");
+
+    // Python identifies on the link
+    let python_identity_hash = daemon
+        .identify_link(&link_hash)
+        .await
+        .expect("identify_link RPC should succeed");
+
+    // Wait for LinkIdentified event on Rust side
+    let identified_hash = wait_for_link_identified(&mut event_rx, &link_id, Duration::from_secs(5))
+        .await
+        .expect("should receive LinkIdentified event");
+
+    let identified_hex = hex::encode(identified_hash);
+    assert_eq!(
+        identified_hex, python_identity_hash,
+        "Rust should recognize the same identity hash Python used"
+    );
+
+    // Verify get_remote_identity returns matching identity
+    let remote = rust_node
+        .get_remote_identity(&link_id)
+        .expect("should have remote identity");
+    assert_eq!(
+        hex::encode(remote.hash()),
+        python_identity_hash,
+        "get_remote_identity should match"
+    );
+
+    println!(
+        "SUCCESS: Rust recognized Python identity: {}",
+        python_identity_hash
+    );
+
+    rust_node.stop().await.expect("stop Rust node");
+}
+
+/// Send a `create_link` JSON-RPC command to a daemon using a raw TCP connection.
+///
+/// Callable from a spawned task without borrowing `TestDaemon`.
+async fn create_link_raw(
+    cmd_addr: SocketAddr,
+    dest_hash: &str,
+    dest_key: &str,
+    timeout_secs: u64,
+) -> Result<String, String> {
+    let cmd = serde_json::json!({
+        "method": "create_link",
+        "params": {
+            "dest_hash": dest_hash,
+            "dest_key": dest_key,
+            "timeout": timeout_secs,
+        }
+    });
+
+    let mut stream = TokioTcpStream::connect(cmd_addr)
+        .await
+        .map_err(|e| format!("connect failed: {}", e))?;
+
+    stream
+        .write_all(cmd.to_string().as_bytes())
+        .await
+        .map_err(|e| format!("write failed: {}", e))?;
+
+    stream
+        .shutdown()
+        .await
+        .map_err(|e| format!("shutdown failed: {}", e))?;
+
+    let mut response = Vec::new();
+    stream
+        .read_to_end(&mut response)
+        .await
+        .map_err(|e| format!("read failed: {}", e))?;
+
+    let resp: serde_json::Value =
+        serde_json::from_slice(&response).map_err(|e| format!("parse failed: {}", e))?;
+
+    if let Some(error) = resp.get("error") {
+        return Err(format!("create_link error: {}", error));
+    }
+
+    resp.get("result")
+        .and_then(|r| r.get("link_hash"))
+        .and_then(|v| v.as_str())
+        .map(|s| s.to_string())
+        .ok_or_else(|| "missing link_hash in response".to_string())
 }

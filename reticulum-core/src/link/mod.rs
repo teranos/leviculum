@@ -790,6 +790,9 @@ impl Link {
     }
 
     /// Get the remote identity if the peer has identified on this link.
+    ///
+    /// `pub` because `NodeCore::get_remote_identity()` delegates here, and
+    /// `reticulum-std` driver exposes it to async callers.
     pub fn remote_identity(&self) -> Option<&Identity> {
         self.remote_identity.as_ref()
     }

@@ -577,6 +577,22 @@ class TestDaemon:
             except Exception as e:
                 return {"error": f"Failed to create link: {str(e)}"}
 
+        elif method == "identify_link":
+            # Identify an identity on an existing link (Python as initiator).
+            # Creates a fresh identity with private keys for signing.
+            link_hash = params.get("link_hash")
+            if not link_hash:
+                return {"error": "link_hash required"}
+            link = self.links.get(link_hash)
+            if not link:
+                return {"error": f"link {link_hash} not found"}
+            try:
+                identity = RNS.Identity()
+                link.identify(identity)
+                return {"result": {"identity_hash": identity.hash.hex()}}
+            except Exception as e:
+                return {"error": f"identify failed: {str(e)}"}
+
         elif method == "send_on_link":
             # Send data on an existing link
             link_hash = params.get("link_hash")

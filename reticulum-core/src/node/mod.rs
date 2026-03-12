@@ -5870,4 +5870,121 @@ mod tests {
             expected
         );
     }
+
+    // ─── LinkIdentify tests ──────────────────────────────────────────────────
+
+    #[test]
+    fn test_identify_link_nodecore_roundtrip() {
+        use crate::transport::InterfaceId;
+
+        let mut pair = establish_nodecore_link_pair();
+
+        // Generate an identity to identify with
+        let identity = Identity::generate(&mut OsRng);
+        let expected_hash = *identity.hash();
+
+        // Before identify: responder has no remote identity
+        assert!(
+            pair.responder
+                .get_remote_identity(&pair.responder_link_id)
+                .is_none(),
+            "responder should not have remote identity yet"
+        );
+
+        // Initiator sends identify
+        let output = pair
+            .initiator
+            .identify_link(&pair.initiator_link_id, &identity)
+            .expect("identify_link should succeed");
+        let identify_data = extract_broadcast_data(&output);
+
+        // Feed to responder
+        let output = pair.responder.handle_packet(InterfaceId(0), &identify_data);
+
+        // Assert: responder emitted LinkIdentified with correct hash
+        let identified_hash = output
+            .events
+            .iter()
+            .find_map(|e| match e {
+                NodeEvent::LinkIdentified { identity_hash, .. } => Some(*identity_hash),
+                _ => None,
+            })
+            .expect("responder should emit LinkIdentified event");
+        assert_eq!(identified_hash, expected_hash, "identity hash should match");
+
+        // Assert: get_remote_identity returns matching identity
+        let remote = pair
+            .responder
+            .get_remote_identity(&pair.responder_link_id)
+            .expect("responder should have remote identity");
+        assert_eq!(remote.hash(), &expected_hash);
+    }
+
+    #[test]
+    fn test_identify_link_responder_rejects() {
+        let mut pair = establish_nodecore_link_pair();
+
+        // Responder cannot call identify_link (must be initiator)
+        let identity = Identity::generate(&mut OsRng);
+        let result = pair
+            .responder
+            .identify_link(&pair.responder_link_id, &identity);
+        assert!(
+            matches!(result, Err(crate::link::LinkError::InvalidState)),
+            "responder should not be able to identify"
+        );
+    }
+
+    #[test]
+    fn test_identify_link_invalid_signature_ignored() {
+        use crate::transport::InterfaceId;
+
+        let mut pair = establish_nodecore_link_pair();
+
+        // Manually build a bad identify packet: valid format but wrong signature
+        let real_identity = Identity::generate(&mut OsRng);
+        let fake_identity = Identity::generate(&mut OsRng);
+
+        // Use fake's public key but sign with real identity
+        let public_key = fake_identity.public_key_bytes();
+        let mut signed_data = [0u8; 80];
+        signed_data[..16].copy_from_slice(pair.initiator_link_id.as_bytes());
+        signed_data[16..80].copy_from_slice(&public_key);
+        let signature = real_identity.sign(&signed_data).unwrap();
+
+        let mut proof_data = [0u8; 128];
+        proof_data[..64].copy_from_slice(&public_key);
+        proof_data[64..128].copy_from_slice(&signature);
+
+        // Encrypt and build packet via the initiator's link
+        let link = pair.initiator.link(&pair.initiator_link_id).unwrap();
+        let packet = link
+            .build_data_packet_with_context(
+                &proof_data,
+                crate::packet::PacketContext::LinkIdentify,
+                &mut OsRng,
+            )
+            .unwrap();
+
+        // Feed to responder
+        let output = pair.responder.handle_packet(InterfaceId(0), &packet);
+
+        // Should NOT emit LinkIdentified (invalid signature, silently dropped)
+        let has_identified = output
+            .events
+            .iter()
+            .any(|e| matches!(e, NodeEvent::LinkIdentified { .. }));
+        assert!(
+            !has_identified,
+            "invalid signature should not produce LinkIdentified event"
+        );
+
+        // And no remote identity stored
+        assert!(
+            pair.responder
+                .get_remote_identity(&pair.responder_link_id)
+                .is_none(),
+            "responder should not store identity from bad signature"
+        );
+    }
 }

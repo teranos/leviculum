@@ -1028,6 +1028,24 @@ pub async fn wait_for_responder_established(
     .is_some()
 }
 
+/// Wait for a `LinkIdentified` event for a specific link ID.
+/// Returns the identity hash. Drains other events while waiting.
+pub async fn wait_for_link_identified(
+    event_rx: &mut mpsc::Receiver<NodeEvent>,
+    link_id: &LinkId,
+    timeout: Duration,
+) -> Option<[u8; reticulum_core::constants::TRUNCATED_HASHBYTES]> {
+    let link_id = *link_id;
+    wait_for_event(event_rx, timeout, move |event| match event {
+        NodeEvent::LinkIdentified {
+            link_id: id,
+            identity_hash,
+        } if id == link_id => Some(identity_hash),
+        _ => None,
+    })
+    .await
+}
+
 /// Drain `event_rx` for `LinkDeliveryConfirmed` events until `expected_count` are
 /// collected or `timeout` expires. Returns the count received.
 pub async fn wait_for_delivery_confirmations(

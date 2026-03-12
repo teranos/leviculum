@@ -964,6 +964,27 @@ impl TestDaemon {
         Ok(packets)
     }
 
+    /// Identify on a link (Python as initiator).
+    ///
+    /// Creates a fresh identity on Python side and calls link.identify().
+    /// Returns the identity hash of the identity that was used.
+    pub async fn identify_link(&self, link_hash: &str) -> Result<String, HarnessError> {
+        let result = self
+            .query(
+                "identify_link",
+                serde_json::json!({ "link_hash": link_hash }),
+            )
+            .await?;
+
+        let identity_hash = result
+            .get("identity_hash")
+            .and_then(|v| v.as_str())
+            .ok_or_else(|| HarnessError::ParseError("Missing identity_hash".to_string()))?
+            .to_string();
+
+        Ok(identity_hash)
+    }
+
     /// Get the remote identity for a link, if the peer has identified.
     ///
     /// Returns `Some(identity_hash_hex)` if the peer identified, `None` otherwise.
