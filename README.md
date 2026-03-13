@@ -42,12 +42,12 @@ Version 0.5.19. The core uses a sans-I/O architecture — `reticulum-core` is a 
 - RPC server (rnstatus, rnpath, rnprobe compatibility)
 - `lrnsd` daemon (drop-in replacement for rnsd)
 - `lrns` CLI (identity, connect, selftest, probe, cp)
-- `lrncp` standalone file transfer (shared instance client, rncp-compatible)
+- Request/Response pattern (link.request/link.response, link.identify)
+- `lrncp` standalone file transfer (shared instance client, rncp-compatible, fetch mode)
 - C-API basics (identity, sign, verify)
 
 **What's missing:**
 
-- Request/Response pattern
 - `lrns` remaining subcommands (status, path, interfaces)
 - Resource compression (bz2 over links)
 

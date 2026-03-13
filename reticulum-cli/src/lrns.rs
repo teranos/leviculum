@@ -1256,6 +1256,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     announce_interval,
                     cp_verbose,
                     quiet,
+                    false, // allow_fetch — lrns cp doesn't support fetch
+                    None,  // fetch_jail
                 )
                 .await;
                 node.stop().await?;

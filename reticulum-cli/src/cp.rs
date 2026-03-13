@@ -11,7 +11,7 @@ use tokio::sync::mpsc;
 
 use reticulum_std::driver::ReticulumNode;
 use reticulum_std::{
-    Destination, DestinationHash, DestinationType, Direction, Identity, NodeEvent,
+    Destination, DestinationHash, DestinationType, Direction, Identity, LinkId, NodeEvent,
 };
 
 fn err(msg: impl std::fmt::Display) -> Box<dyn std::error::Error> {
@@ -37,18 +37,18 @@ pub fn load_or_generate_identity(path: &Path) -> Result<Identity, Box<dyn std::e
     }
 }
 
+/// Establish a link to a remote destination and optionally identify.
+/// Shared between run_send() (push) and run_fetch() (pull).
 #[allow(clippy::too_many_arguments)]
-pub async fn run_send(
+async fn establish_link(
     node: &ReticulumNode,
     events: &mut mpsc::Receiver<NodeEvent>,
-    file_path: &str,
     destination: &str,
+    identity: Option<&Identity>,
     timeout_secs: f64,
     verbose: u8,
     quiet: bool,
-    no_compress: bool,
-    sender_identity: Option<&Identity>,
-) -> Result<(), Box<dyn std::error::Error>> {
+) -> Result<LinkId, Box<dyn std::error::Error>> {
     // Parse destination hash
     let dest_bytes_vec = crate::hex_decode(destination).map_err(err)?;
     if dest_bytes_vec.len() != 16 {
@@ -59,20 +59,6 @@ pub async fn run_send(
     }
     let mut dest_bytes = [0u8; 16];
     dest_bytes.copy_from_slice(&dest_bytes_vec);
-
-    // Read file
-    let file_path = PathBuf::from(file_path);
-    if !file_path.exists() {
-        return Err(err(format!("file not found: {}", file_path.display())));
-    }
-    let data = std::fs::read(&file_path)?;
-    let filename = file_path
-        .file_name()
-        .ok_or_else(|| err("cannot extract filename"))?
-        .to_string_lossy();
-
-    // Encode metadata matching Python's umsgpack.packb({"name": b"..."})
-    let metadata_bytes = encode_metadata(filename.as_bytes());
 
     // Wait for path
     let dest_hash = DestinationHash::new(dest_bytes);
@@ -91,13 +77,13 @@ pub async fn run_send(
     }
 
     // Get signing key from identity
-    let identity = node.get_identity(&dest_hash).ok_or_else(|| {
+    let remote_identity = node.get_identity(&dest_hash).ok_or_else(|| {
         err(format!(
             "Identity for {} not found (no announce received)",
             destination
         ))
     })?;
-    let pk = identity.public_key_bytes();
+    let pk = remote_identity.public_key_bytes();
     let mut signing_key = [0u8; 32];
     signing_key.copy_from_slice(&pk[32..64]);
 
@@ -129,8 +115,8 @@ pub async fn run_send(
         }
     };
 
-    // Identify to the listener (if identity provided)
-    if let Some(id) = sender_identity {
+    // Identify to the remote (if identity provided)
+    if let Some(id) = identity {
         node.identify_link(&link_id, id)
             .await
             .map_err(|e| err(format!("identify failed: {e}")))?;
@@ -138,6 +124,47 @@ pub async fn run_send(
             eprintln!("Identity announced to remote");
         }
     }
+
+    Ok(link_id)
+}
+
+#[allow(clippy::too_many_arguments)]
+pub async fn run_send(
+    node: &ReticulumNode,
+    events: &mut mpsc::Receiver<NodeEvent>,
+    file_path: &str,
+    destination: &str,
+    timeout_secs: f64,
+    verbose: u8,
+    quiet: bool,
+    no_compress: bool,
+    sender_identity: Option<&Identity>,
+) -> Result<(), Box<dyn std::error::Error>> {
+    // Read file
+    let file_path = PathBuf::from(file_path);
+    if !file_path.exists() {
+        return Err(err(format!("file not found: {}", file_path.display())));
+    }
+    let data = std::fs::read(&file_path)?;
+    let filename = file_path
+        .file_name()
+        .ok_or_else(|| err("cannot extract filename"))?
+        .to_string_lossy();
+
+    // Encode metadata matching Python's umsgpack.packb({"name": b"..."})
+    let metadata_bytes = encode_metadata(filename.as_bytes());
+
+    // Establish link
+    let link_id = establish_link(
+        node,
+        events,
+        destination,
+        sender_identity,
+        timeout_secs,
+        verbose,
+        quiet,
+    )
+    .await?;
 
     // Send resource
     if !quiet {
@@ -207,6 +234,8 @@ pub async fn run_listen(
     announce_interval: i64,
     verbose: u8,
     quiet: bool,
+    allow_fetch: bool,
+    fetch_jail: Option<PathBuf>,
 ) -> Result<(), Box<dyn std::error::Error>> {
     // Register destination and announce
     let mut dest = Destination::new(
@@ -220,6 +249,21 @@ pub async fn run_listen(
     dest.set_accepts_links(true);
     let dest_hash = *dest.hash();
     node.register_destination(dest);
+
+    if allow_fetch {
+        let fetch_policy = if no_auth || allowed_identities.is_empty() {
+            reticulum_core::RequestPolicy::AllowAll
+        } else {
+            reticulum_core::RequestPolicy::AllowList(allowed_identities.to_vec())
+        };
+        node.register_request_handler(dest_hash, "fetch_file", fetch_policy);
+        if !quiet {
+            eprintln!("Fetch requests enabled");
+            if let Some(ref jail) = fetch_jail {
+                eprintln!("Fetch jail: {}", jail.display());
+            }
+        }
+    }
 
     eprintln!(
         "lrncp listening on {}",
@@ -341,6 +385,16 @@ pub async fn run_listen(
                             eprintln!("Link closed");
                         }
                     }
+                    Some(NodeEvent::RequestReceived {
+                        link_id, request_id, path, data, ..
+                    }) if path == "fetch_file" => {
+                        if let Err(e) = handle_fetch_request(
+                            node, &link_id, &request_id, &data,
+                            fetch_jail.as_deref(), quiet, verbose,
+                        ).await {
+                            if !quiet { eprintln!("Fetch error: {e}"); }
+                        }
+                    }
                     None => break,
                     _ => {}
                 }
@@ -357,6 +411,286 @@ pub async fn run_listen(
     }
 
     Ok(())
+}
+
+/// Server-side handler for fetch_file requests.
+///
+/// Reads the requested file, starts a Resource transfer, then sends the
+/// response. This ordering matches Python rncp exactly — the Resource ADV
+/// is sent before the response so the client (which has AcceptAll set)
+/// receives the data as soon as possible.
+#[allow(clippy::too_many_arguments)]
+async fn handle_fetch_request(
+    node: &ReticulumNode,
+    link_id: &LinkId,
+    request_id: &[u8; 16],
+    data: &[u8],
+    fetch_jail: Option<&Path>,
+    quiet: bool,
+    verbose: u8,
+) -> Result<(), Box<dyn std::error::Error>> {
+    // Decode file path from msgpack string
+    let requested_path = {
+        let mut cursor = Cursor::new(data);
+        let value = rmpv::decode::read_value(&mut cursor)
+            .map_err(|e| err(format!("invalid request data: {e}")))?;
+        match value {
+            rmpv::Value::String(s) => s
+                .into_str()
+                .ok_or_else(|| err("request path is not valid UTF-8"))?,
+            _ => return Err(err("request data is not a string")),
+        }
+    };
+
+    if verbose > 0 && !quiet {
+        eprintln!("Fetch request for: {}", requested_path);
+    }
+
+    let file_path = PathBuf::from(&requested_path);
+
+    // Validate against jail if set
+    if let Some(jail) = fetch_jail {
+        let canonical_jail = std::fs::canonicalize(jail)
+            .map_err(|e| err(format!("cannot resolve jail path: {e}")))?;
+        let canonical_file = match std::fs::canonicalize(&file_path) {
+            Ok(p) => p,
+            Err(_) => {
+                // File doesn't exist or can't be resolved — deny
+                if !quiet {
+                    eprintln!("Fetch denied (not in jail): {}", requested_path);
+                }
+                // Response: 0xF0 = not allowed
+                node.send_response(link_id, request_id, &encode_fetch_response_not_allowed())
+                    .await?;
+                return Ok(());
+            }
+        };
+        if !canonical_file.starts_with(&canonical_jail) {
+            if !quiet {
+                eprintln!("Fetch denied (outside jail): {}", requested_path);
+            }
+            node.send_response(link_id, request_id, &encode_fetch_response_not_allowed())
+                .await?;
+            return Ok(());
+        }
+    }
+
+    // Check file exists
+    if !file_path.exists() || !file_path.is_file() {
+        if !quiet {
+            eprintln!("Fetch: file not found: {}", requested_path);
+        }
+        // Response: false = not found
+        node.send_response(link_id, request_id, &[0xC2]).await?;
+        return Ok(());
+    }
+
+    // Read file
+    let file_data = std::fs::read(&file_path)
+        .map_err(|e| err(format!("cannot read {}: {e}", requested_path)))?;
+
+    // Build metadata with filename
+    let filename = file_path
+        .file_name()
+        .map(|n| n.to_string_lossy().into_owned())
+        .unwrap_or_else(|| "file".to_string());
+    let metadata_bytes = encode_metadata(filename.as_bytes());
+
+    if !quiet {
+        eprintln!("Sending {} ({} bytes)", requested_path, file_data.len());
+    }
+
+    // Send Resource FIRST, then response — matches Python ordering
+    node.send_resource(link_id, &file_data, Some(&metadata_bytes), true)
+        .await?;
+
+    // Response: true = found, transfer started
+    node.send_response(link_id, request_id, &[0xC3]).await?;
+
+    Ok(())
+}
+
+/// Encode the "not allowed" fetch response (msgpack uint8 0xF0).
+fn encode_fetch_response_not_allowed() -> Vec<u8> {
+    let mut buf = Vec::new();
+    rmpv::encode::write_value(&mut buf, &rmpv::Value::Integer(0xF0_u64.into()))
+        .expect("msgpack encoding to Vec cannot fail");
+    buf
+}
+
+/// Decode the server's fetch response.
+enum FetchResponse {
+    Found,
+    NotFound,
+    NotAllowed,
+    RemoteError,
+}
+
+fn decode_fetch_response(data: &[u8]) -> FetchResponse {
+    let value = rmpv::decode::read_value(&mut Cursor::new(data)).ok();
+    match value {
+        Some(rmpv::Value::Boolean(true)) => FetchResponse::Found,
+        Some(rmpv::Value::Boolean(false)) => FetchResponse::NotFound,
+        Some(rmpv::Value::Integer(n)) if n.as_u64() == Some(0xF0) => FetchResponse::NotAllowed,
+        _ => FetchResponse::RemoteError,
+    }
+}
+
+/// Encode a string as msgpack for use as request data.
+fn encode_msgpack_string(s: &str) -> Vec<u8> {
+    let mut buf = Vec::new();
+    rmpv::encode::write_value(&mut buf, &rmpv::Value::String(s.into()))
+        .expect("msgpack encoding to Vec cannot fail");
+    buf
+}
+
+/// Fetch a file from a remote listener.
+#[allow(clippy::too_many_arguments)]
+pub async fn run_fetch(
+    node: &ReticulumNode,
+    events: &mut mpsc::Receiver<NodeEvent>,
+    remote_path: &str,
+    destination: &str,
+    save_dir: Option<PathBuf>,
+    overwrite: bool,
+    timeout_secs: f64,
+    verbose: u8,
+    quiet: bool,
+    no_compress: bool,
+    sender_identity: Option<&Identity>,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let _ = no_compress; // fetch compression is controlled by the server
+
+    // Establish link
+    let link_id = establish_link(
+        node,
+        events,
+        destination,
+        sender_identity,
+        timeout_secs,
+        verbose,
+        quiet,
+    )
+    .await?;
+
+    // Set AcceptAll BEFORE sending request — the server starts the Resource
+    // transfer as a side-effect, so we must be ready to accept it.
+    node.set_resource_strategy(
+        &link_id,
+        reticulum_core::resource::ResourceStrategy::AcceptAll,
+    )?;
+
+    // Send fetch request
+    let request_data = encode_msgpack_string(remote_path);
+    let request_id = node
+        .send_request(&link_id, "fetch_file", Some(&request_data), None)
+        .await
+        .map_err(|e| err(format!("send_request failed: {e}")))?;
+
+    if !quiet {
+        eprintln!("Fetch requested: {}", remote_path);
+    }
+
+    // Wait for response and resource
+    let transfer_deadline = Instant::now() + Duration::from_secs(300);
+    let mut got_response = false;
+    let mut segment_buffer: Vec<u8> = Vec::new();
+    let mut segment_metadata: Option<Vec<u8>> = None;
+
+    loop {
+        tokio::select! {
+            event = events.recv() => {
+                match event {
+                    Some(NodeEvent::ResponseReceived {
+                        request_id: rid, response_data, ..
+                    }) if rid == request_id => {
+                        match decode_fetch_response(&response_data) {
+                            FetchResponse::Found => {
+                                if verbose > 0 && !quiet {
+                                    eprintln!("Remote has the file, receiving...");
+                                }
+                                got_response = true;
+                            }
+                            FetchResponse::NotFound => {
+                                return Err(err(format!(
+                                    "Fetch failed: file not found on remote: {}", remote_path)));
+                            }
+                            FetchResponse::NotAllowed => {
+                                return Err(err(
+                                    "Fetch failed: not allowed by remote".to_string()));
+                            }
+                            FetchResponse::RemoteError => {
+                                return Err(err(
+                                    "Fetch failed: remote error".to_string()));
+                            }
+                        }
+                    }
+                    Some(NodeEvent::RequestTimedOut {
+                        request_id: rid, ..
+                    }) if rid == request_id => {
+                        return Err(err("Fetch request timed out"));
+                    }
+                    Some(NodeEvent::ResourceProgress {
+                        is_sender: false, progress, transfer_size, ..
+                    }) => {
+                        if !quiet {
+                            let transferred = (progress * transfer_size as f32) as u64;
+                            eprint!("\rFetching {} ... {} / {} ({:.1}%)",
+                                remote_path,
+                                format_size(transferred),
+                                format_size(transfer_size),
+                                progress * 100.0);
+                        }
+                    }
+                    Some(NodeEvent::ResourceCompleted {
+                        data, metadata, is_sender: false,
+                        segment_index, total_segments, ..
+                    }) => {
+                        if !quiet {
+                            eprint!("\r");
+                        }
+                        segment_buffer.extend_from_slice(&data);
+                        if metadata.is_some() {
+                            segment_metadata = metadata;
+                        }
+
+                        if segment_index == total_segments {
+                            // Last segment — save the complete file
+                            save_received_file(
+                                &segment_buffer,
+                                segment_metadata.as_deref(),
+                                save_dir.as_deref(),
+                                overwrite,
+                                quiet,
+                            )?;
+                            return Ok(());
+                        } else if verbose > 0 {
+                            eprintln!(
+                                "Segment {}/{} received ({} bytes)",
+                                segment_index, total_segments, data.len()
+                            );
+                        }
+                    }
+                    Some(NodeEvent::ResourceFailed { error, .. }) => {
+                        return Err(err(format!("Fetch transfer failed: {:?}", error)));
+                    }
+                    Some(NodeEvent::LinkClosed { .. }) => {
+                        if got_response {
+                            return Err(err("Fetch failed: link closed during transfer"));
+                        } else {
+                            return Err(err("Fetch failed: link closed"));
+                        }
+                    }
+                    None => return Err(err("Event channel closed")),
+                    _ => {}
+                }
+            }
+            _ = tokio::time::sleep_until(
+                tokio::time::Instant::from_std(transfer_deadline)) => {
+                return Err(err("Fetch transfer timed out"));
+            }
+        }
+    }
 }
 
 fn save_received_file(
@@ -506,8 +840,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_auth_allowed_transfer_succeeds() {
-        let (listener_node, mut lev, sender_node, mut sev, tmp) =
-            setup_connected_nodes().await;
+        let (listener_node, mut lev, sender_node, mut sev, tmp) = setup_connected_nodes().await;
 
         let listener_id = Identity::generate(&mut OsRng);
         let sender_id = Identity::generate(&mut OsRng);
@@ -533,6 +866,8 @@ mod tests {
                 0,
                 1,
                 false,
+                false, // allow_fetch
+                None,  // fetch_jail
             )
             .await
             .map_err(|e| e.to_string())
@@ -571,8 +906,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_auth_rejected_link_closed() {
-        let (listener_node, mut lev, sender_node, mut sev, tmp) =
-            setup_connected_nodes().await;
+        let (listener_node, mut lev, sender_node, mut sev, tmp) = setup_connected_nodes().await;
 
         let listener_id = Identity::generate(&mut OsRng);
         let sender_id = Identity::generate(&mut OsRng);
@@ -599,6 +933,8 @@ mod tests {
                 0,
                 1,
                 false,
+                false, // allow_fetch
+                None,  // fetch_jail
             )
             .await
             .map_err(|e| e.to_string())
@@ -630,8 +966,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_no_auth_accepts_anyone() {
-        let (listener_node, mut lev, sender_node, mut sev, tmp) =
-            setup_connected_nodes().await;
+        let (listener_node, mut lev, sender_node, mut sev, tmp) = setup_connected_nodes().await;
 
         let listener_id = Identity::generate(&mut OsRng);
         let dest_hash = dest_hash_for(&listener_id);
@@ -655,6 +990,8 @@ mod tests {
                 0,
                 1,
                 false,
+                false, // allow_fetch
+                None,  // fetch_jail
             )
             .await
             .map_err(|e| e.to_string())
@@ -750,5 +1087,258 @@ mod tests {
         let mut buf = Vec::new();
         rmpv::encode::write_value(&mut buf, &value).unwrap();
         assert_eq!(extract_filename_from_metadata(&buf), None);
+    }
+
+    #[test]
+    fn test_fetch_response_encoding() {
+        // true
+        assert!(matches!(
+            decode_fetch_response(&[0xC3]),
+            FetchResponse::Found
+        ));
+        // false
+        assert!(matches!(
+            decode_fetch_response(&[0xC2]),
+            FetchResponse::NotFound
+        ));
+        // 0xF0 (uint8)
+        let not_allowed = encode_fetch_response_not_allowed();
+        assert!(matches!(
+            decode_fetch_response(&not_allowed),
+            FetchResponse::NotAllowed
+        ));
+        // garbage
+        assert!(matches!(
+            decode_fetch_response(&[0xFF]),
+            FetchResponse::RemoteError
+        ));
+        // empty
+        assert!(matches!(
+            decode_fetch_response(&[]),
+            FetchResponse::RemoteError
+        ));
+    }
+
+    #[test]
+    fn test_msgpack_string_encoding() {
+        let encoded = encode_msgpack_string("test.txt");
+        let mut cursor = Cursor::new(&encoded);
+        let value = rmpv::decode::read_value(&mut cursor).unwrap();
+        assert_eq!(value, rmpv::Value::String("test.txt".into()));
+    }
+
+    #[test]
+    fn test_jail_validation() {
+        let tmp = tempfile::tempdir().unwrap();
+        let jail = tmp.path().join("allowed");
+        std::fs::create_dir(&jail).unwrap();
+
+        let inside = jail.join("file.txt");
+        std::fs::write(&inside, b"content").unwrap();
+
+        let outside = tmp.path().join("outside.txt");
+        std::fs::write(&outside, b"secret").unwrap();
+
+        // File inside jail — canonicalize succeeds and starts_with matches
+        let canonical_jail = std::fs::canonicalize(&jail).unwrap();
+        let canonical_inside = std::fs::canonicalize(&inside).unwrap();
+        assert!(canonical_inside.starts_with(&canonical_jail));
+
+        // File outside jail — should NOT start_with jail
+        let canonical_outside = std::fs::canonicalize(&outside).unwrap();
+        assert!(!canonical_outside.starts_with(&canonical_jail));
+    }
+
+    #[tokio::test]
+    async fn test_fetch_succeeds() {
+        let (listener_node, mut lev, sender_node, mut sev, tmp) = setup_connected_nodes().await;
+
+        let listener_id = Identity::generate(&mut OsRng);
+        let dest_hash = dest_hash_for(&listener_id);
+
+        // Create temp file to serve
+        let serve_dir = tmp.path().join("serve");
+        std::fs::create_dir(&serve_dir).unwrap();
+        let serve_file = serve_dir.join("testfile.txt");
+        std::fs::write(&serve_file, b"fetch test content").unwrap();
+
+        let save_dir = tmp.path().join("fetched");
+        std::fs::create_dir(&save_dir).unwrap();
+
+        // Spawn listener with allow_fetch=true, no_auth=true
+        let serve_file_path = serve_file.to_str().unwrap().to_string();
+        let listener_handle = tokio::spawn(async move {
+            run_listen(
+                &listener_node,
+                &mut lev,
+                listener_id,
+                None,
+                false,
+                true, // no_auth
+                &[],
+                0,
+                1,
+                false,
+                true, // allow_fetch
+                None, // no jail
+            )
+            .await
+            .map_err(|e| e.to_string())
+        });
+
+        // Wait for announce to propagate
+        tokio::time::sleep(Duration::from_millis(1500)).await;
+
+        // Fetch the file
+        let result = run_fetch(
+            &sender_node,
+            &mut sev,
+            &serve_file_path,
+            &crate::hex_encode(dest_hash.as_bytes()),
+            Some(save_dir.clone()),
+            false,
+            15.0,
+            1,
+            false,
+            false,
+            None,
+        )
+        .await;
+        assert!(result.is_ok(), "Fetch should succeed: {:?}", result.err());
+
+        // Verify file was saved with correct content
+        let saved = save_dir.join("testfile.txt");
+        assert!(saved.exists(), "Fetched file should exist");
+        assert_eq!(
+            std::fs::read(&saved).unwrap(),
+            b"fetch test content",
+            "Fetched file content should match"
+        );
+
+        listener_handle.abort();
+    }
+
+    #[tokio::test]
+    async fn test_fetch_file_not_found() {
+        let (listener_node, mut lev, sender_node, mut sev, tmp) = setup_connected_nodes().await;
+
+        let listener_id = Identity::generate(&mut OsRng);
+        let dest_hash = dest_hash_for(&listener_id);
+
+        let save_dir = tmp.path().join("fetched");
+        std::fs::create_dir(&save_dir).unwrap();
+
+        // Spawn listener with allow_fetch=true, no_auth=true
+        let listener_handle = tokio::spawn(async move {
+            run_listen(
+                &listener_node,
+                &mut lev,
+                listener_id,
+                None,
+                false,
+                true, // no_auth
+                &[],
+                0,
+                1,
+                false,
+                true, // allow_fetch
+                None, // no jail
+            )
+            .await
+            .map_err(|e| e.to_string())
+        });
+
+        // Wait for announce to propagate
+        tokio::time::sleep(Duration::from_millis(1500)).await;
+
+        // Fetch a nonexistent file
+        let result = run_fetch(
+            &sender_node,
+            &mut sev,
+            "/nonexistent/file.txt",
+            &crate::hex_encode(dest_hash.as_bytes()),
+            Some(save_dir),
+            false,
+            15.0,
+            1,
+            false,
+            false,
+            None,
+        )
+        .await;
+        assert!(result.is_err(), "Fetch should fail for nonexistent file");
+        let err_msg = result.err().unwrap().to_string();
+        assert!(
+            err_msg.contains("not found"),
+            "Error should mention 'not found': {err_msg}"
+        );
+
+        listener_handle.abort();
+    }
+
+    #[tokio::test]
+    async fn test_fetch_denied_by_jail() {
+        let (listener_node, mut lev, sender_node, mut sev, tmp) = setup_connected_nodes().await;
+
+        let listener_id = Identity::generate(&mut OsRng);
+        let dest_hash = dest_hash_for(&listener_id);
+
+        // Create a jail dir and a file OUTSIDE it
+        let jail_dir = tmp.path().join("jail");
+        std::fs::create_dir(&jail_dir).unwrap();
+        let outside_file = tmp.path().join("secret.txt");
+        std::fs::write(&outside_file, b"secret data").unwrap();
+
+        let save_dir = tmp.path().join("fetched");
+        std::fs::create_dir(&save_dir).unwrap();
+
+        let outside_path = outside_file.to_str().unwrap().to_string();
+
+        // Spawn listener with allow_fetch=true, jail set
+        let listener_handle = tokio::spawn(async move {
+            run_listen(
+                &listener_node,
+                &mut lev,
+                listener_id,
+                None,
+                false,
+                true, // no_auth
+                &[],
+                0,
+                1,
+                false,
+                true,           // allow_fetch
+                Some(jail_dir), // fetch_jail
+            )
+            .await
+            .map_err(|e| e.to_string())
+        });
+
+        // Wait for announce to propagate
+        tokio::time::sleep(Duration::from_millis(1500)).await;
+
+        // Fetch a file outside the jail
+        let result = run_fetch(
+            &sender_node,
+            &mut sev,
+            &outside_path,
+            &crate::hex_encode(dest_hash.as_bytes()),
+            Some(save_dir),
+            false,
+            15.0,
+            1,
+            false,
+            false,
+            None,
+        )
+        .await;
+        assert!(result.is_err(), "Fetch should fail for jailed file");
+        let err_msg = result.err().unwrap().to_string();
+        assert!(
+            err_msg.contains("not allowed"),
+            "Error should mention 'not allowed': {err_msg}"
+        );
+
+        listener_handle.abort();
     }
 }

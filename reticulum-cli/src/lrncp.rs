@@ -97,16 +97,16 @@ struct Args {
     #[arg(short = 'C', long = "no-compress")]
     no_compress: bool,
 
-    /// Fetch file from remote listener [not yet implemented]
-    #[arg(short = 'f', long, hide = true)]
+    /// Fetch file from remote listener
+    #[arg(short = 'f', long)]
     fetch: bool,
 
-    /// Allow authenticated clients to fetch files [not yet implemented]
-    #[arg(short = 'F', long = "allow-fetch", hide = true)]
+    /// Allow authenticated clients to fetch files
+    #[arg(short = 'F', long = "allow-fetch")]
     allow_fetch: bool,
 
-    /// Restrict fetch requests to specified path [not yet implemented]
-    #[arg(short = 'j', long, hide = true)]
+    /// Restrict fetch requests to specified path
+    #[arg(short = 'j', long)]
     jail: Option<PathBuf>,
 
     /// Display physical layer transfer rates [not yet implemented]
@@ -180,6 +180,14 @@ async fn run(args: Args) -> Result<(), Box<dyn std::error::Error>> {
     // TODO(ROADMAP #quiet-levels): differentiate -q / -qq levels in the future.
     let quiet_bool = args.quiet > 0 || args.silent;
 
+    // Validate flag combinations
+    if args.allow_fetch && !args.listen {
+        eprintln!("Warning: -F/--allow-fetch only applies in listen mode (-l)");
+    }
+    if args.jail.is_some() && !args.allow_fetch {
+        eprintln!("Warning: -j/--jail only applies with -F/--allow-fetch");
+    }
+
     let result = if args.listen {
         let identity_path = args
             .identity
@@ -202,6 +210,32 @@ async fn run(args: Args) -> Result<(), Box<dyn std::error::Error>> {
             args.announce_interval,
             args.verbose,
             quiet_bool,
+            args.allow_fetch,
+            args.jail.clone(),
+        )
+        .await
+    } else if args.fetch {
+        let file = args.file.ok_or("remote file path required in fetch mode")?;
+        let dest = args
+            .destination
+            .ok_or("destination hash required in fetch mode")?;
+        let identity_path = args
+            .identity
+            .unwrap_or_else(|| config_dir.join("identities").join("lrncp"));
+        let identity = cp::load_or_generate_identity(&identity_path)?;
+
+        cp::run_fetch(
+            &node,
+            &mut events,
+            &file,
+            &dest,
+            args.save,
+            args.overwrite,
+            args.timeout,
+            args.verbose,
+            quiet_bool,
+            args.no_compress,
+            Some(&identity),
         )
         .await
     } else {
@@ -248,21 +282,8 @@ fn daemon_connect_error(instance_name: &str, error: &dyn std::fmt::Display, verb
 }
 
 fn check_unimplemented(args: &Args) {
-    let mut flag = None;
-    if args.fetch {
-        flag = Some("-f/--fetch");
-    }
-    if args.allow_fetch {
-        flag = Some("-F/--allow-fetch");
-    }
-    if args.jail.is_some() {
-        flag = Some("-j/--jail");
-    }
     if args.phy_rates {
-        flag = Some("-P/--phy-rates");
-    }
-    if let Some(f) = flag {
-        eprintln!("lrncp: {} is not yet implemented", f);
+        eprintln!("lrncp: -P/--phy-rates is not yet implemented");
         std::process::exit(1);
     }
 }
