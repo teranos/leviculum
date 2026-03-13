@@ -1502,6 +1502,24 @@ impl TestDaemon {
         .await
     }
 
+    /// Register an echo request handler on a destination.
+    ///
+    /// The handler echoes back whatever data was sent in the request.
+    pub async fn register_echo_request_handler(
+        &self,
+        dest_hash: &str,
+        path: &str,
+    ) -> Result<serde_json::Value, HarnessError> {
+        self.query(
+            "register_echo_request_handler",
+            serde_json::json!({
+                "dest_hash": dest_hash,
+                "path": path,
+            }),
+        )
+        .await
+    }
+
     /// Send a resource over an established link.
     ///
     /// Returns the resource hash (hex string).

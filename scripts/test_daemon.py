@@ -364,6 +364,23 @@ class TestDaemon:
                 }
             }
 
+        elif method == "register_echo_request_handler":
+            # Register an echo request handler on a destination
+            dest_hash = params.get("dest_hash")
+            path = params.get("path", "/echo")
+            if dest_hash not in self.destinations:
+                return {"error": f"destination {dest_hash} not found"}
+            _identity, dest = self.destinations[dest_hash]
+            def echo_request_handler(path, data, request_id, link_id, remote_identity, requested_at):
+                """Echo handler for request/response interop testing."""
+                return data  # Echo back whatever was sent
+            dest.register_request_handler(
+                path,
+                response_generator=echo_request_handler,
+                allow=RNS.Destination.ALLOW_ALL,
+            )
+            return {"result": "ok"}
+
         elif method == "get_destinations":
             dests = {}
             for h, (identity, dest) in self.destinations.items():

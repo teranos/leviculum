@@ -77,6 +77,17 @@ pub(crate) fn write_fixarray_header(buf: &mut Vec<u8>, count: usize) {
     buf.push(0x90 | (count as u8));
 }
 
+/// Write a float64 value.
+pub(crate) fn write_float64(buf: &mut Vec<u8>, val: f64) {
+    buf.push(0xcb); // float64 tag
+    buf.extend_from_slice(&val.to_be_bytes());
+}
+
+/// Write a boolean value.
+pub(crate) fn write_bool(buf: &mut Vec<u8>, val: bool) {
+    buf.push(if val { 0xc3 } else { 0xc2 });
+}
+
 // ─── Decoding helpers ────────────────────────────────────────────────────────
 
 /// Read one byte, advancing position.
@@ -123,6 +134,59 @@ fn read_be_u64(data: &[u8], pos: &mut usize) -> Option<u64> {
     ]);
     *pos += 8;
     Some(val)
+}
+
+/// Read a msgpack float64 (or float32, promoted).
+pub(crate) fn read_float64(data: &[u8], pos: &mut usize) -> Option<f64> {
+    let tag = read_byte(data, pos)?;
+    match tag {
+        0xcb => {
+            // float64
+            if *pos + 8 > data.len() {
+                return None;
+            }
+            let val = f64::from_be_bytes([
+                data[*pos],
+                data[*pos + 1],
+                data[*pos + 2],
+                data[*pos + 3],
+                data[*pos + 4],
+                data[*pos + 5],
+                data[*pos + 6],
+                data[*pos + 7],
+            ]);
+            *pos += 8;
+            Some(val)
+        }
+        0xca => {
+            // float32 (Python could send this)
+            if *pos + 4 > data.len() {
+                return None;
+            }
+            let val =
+                f32::from_be_bytes([data[*pos], data[*pos + 1], data[*pos + 2], data[*pos + 3]]);
+            *pos += 4;
+            Some(val as f64)
+        }
+        _ => None,
+    }
+}
+
+/// Read a msgpack boolean.
+pub(crate) fn read_bool(data: &[u8], pos: &mut usize) -> Option<bool> {
+    let tag = read_byte(data, pos)?;
+    match tag {
+        0xc2 => Some(false),
+        0xc3 => Some(true),
+        _ => None,
+    }
+}
+
+/// Read one complete msgpack value as raw bytes (for opaque data passthrough).
+pub(crate) fn read_msgpack_raw_value<'a>(data: &'a [u8], pos: &mut usize) -> Option<&'a [u8]> {
+    let start = *pos;
+    skip_msgpack_value(data, pos)?;
+    Some(&data[start..*pos])
 }
 
 /// Read a msgpack string (fixstr, str8, str16).
@@ -575,5 +639,71 @@ mod tests {
         pos = 0;
         let decoded = read_msgpack_bin(&buf, &mut pos).unwrap();
         assert_eq!(decoded.len(), 300);
+    }
+
+    #[test]
+    fn test_float64_roundtrip() {
+        let test_values: &[f64] = &[
+            0.0,
+            1.0,
+            -1.0,
+            3.14159,
+            1_700_000_000.123,
+            f64::MAX,
+            f64::MIN,
+        ];
+        for &val in test_values {
+            let mut buf = Vec::new();
+            write_float64(&mut buf, val);
+            let mut pos = 0;
+            let decoded = read_float64(&buf, &mut pos).unwrap();
+            assert_eq!(decoded, val, "roundtrip failed for {val}");
+            assert_eq!(pos, buf.len());
+        }
+    }
+
+    #[test]
+    fn test_float32_promotion() {
+        // Manually encode a float32 value and verify read_float64 promotes it
+        let val: f32 = 3.14;
+        let mut buf = Vec::new();
+        buf.push(0xca); // float32 tag
+        buf.extend_from_slice(&val.to_be_bytes());
+        let mut pos = 0;
+        let decoded = read_float64(&buf, &mut pos).unwrap();
+        assert!((decoded - val as f64).abs() < 1e-6);
+        assert_eq!(pos, buf.len());
+    }
+
+    #[test]
+    fn test_bool_roundtrip() {
+        for &val in &[true, false] {
+            let mut buf = Vec::new();
+            write_bool(&mut buf, val);
+            let mut pos = 0;
+            let decoded = read_bool(&buf, &mut pos).unwrap();
+            assert_eq!(decoded, val);
+            assert_eq!(pos, buf.len());
+        }
+    }
+
+    #[test]
+    fn test_read_msgpack_raw_value() {
+        // Build a buffer with multiple values
+        let mut buf = Vec::new();
+        write_uint(&mut buf, 42); // fixint
+        write_bin(&mut buf, b"hello"); // bin8
+
+        // Read first raw value (fixint 42 = single byte)
+        let mut pos = 0;
+        let raw1 = read_msgpack_raw_value(&buf, &mut pos).unwrap();
+        assert_eq!(raw1, &[42]);
+
+        // Read second raw value (bin8 "hello")
+        let raw2 = read_msgpack_raw_value(&buf, &mut pos).unwrap();
+        let mut expected = Vec::new();
+        write_bin(&mut expected, b"hello");
+        assert_eq!(raw2, expected.as_slice());
+        assert_eq!(pos, buf.len());
     }
 }

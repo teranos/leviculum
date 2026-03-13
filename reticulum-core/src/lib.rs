@@ -92,7 +92,10 @@ pub use destination::{
 };
 pub use identity::Identity;
 pub use link::{LinkCloseReason, LinkError, LinkId, PeerKeys};
-pub use node::{DeliveryError, LinkStats, NodeCore, NodeCoreBuilder, NodeEvent, SendError};
+pub use node::{
+    DeliveryError, LinkStats, NodeCore, NodeCoreBuilder, NodeEvent, RequestError, RequestPolicy,
+    SendError,
+};
 pub use resource::{
     ResourceAdvertisement, ResourceError, ResourceFlags, ResourceStatus, ResourceStrategy,
 };

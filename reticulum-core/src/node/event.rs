@@ -4,6 +4,7 @@
 //! transport, link management, and channels into a single stream, simplifying
 //! event handling for application developers.
 
+use alloc::string::String;
 use alloc::vec::Vec;
 
 use crate::announce::ReceivedAnnounce;
@@ -281,6 +282,42 @@ pub enum NodeEvent {
         error: crate::resource::ResourceError,
         /// True if we were the sender
         is_sender: bool,
+    },
+
+    // ─── Request/Response Events ────────────────────────────────────────────────
+    /// Request received on a link for a registered handler.
+    /// Call `send_response()` with the request_id to reply.
+    RequestReceived {
+        /// The link that received the request
+        link_id: LinkId,
+        /// Unique request identifier (truncated packet hash)
+        request_id: [u8; TRUNCATED_HASHBYTES],
+        /// The request path string
+        path: String,
+        /// Truncated hash of the path
+        path_hash: [u8; TRUNCATED_HASHBYTES],
+        /// Raw msgpack-encoded request data (or empty for nil)
+        data: Vec<u8>,
+        /// Timestamp from requester (seconds since epoch)
+        requested_at: f64,
+    },
+
+    /// Response received for a previously sent request.
+    ResponseReceived {
+        /// The link that received the response
+        link_id: LinkId,
+        /// The request identifier matching the original request
+        request_id: [u8; TRUNCATED_HASHBYTES],
+        /// Raw msgpack-encoded response data
+        response_data: Vec<u8>,
+    },
+
+    /// Pending request timed out without receiving a response.
+    RequestTimedOut {
+        /// The link the request was sent on
+        link_id: LinkId,
+        /// The request identifier that timed out
+        request_id: [u8; TRUNCATED_HASHBYTES],
     },
 
     // ─── Interface Events ──────────────────────────────────────────────────────

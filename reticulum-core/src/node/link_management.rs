@@ -838,6 +838,12 @@ impl<R: CryptoRngCore, C: Clock, S: Storage> NodeCore<R, C, S> {
             PacketContext::LinkIdentify => {
                 self.handle_link_identify(link_id, packet, now_secs);
             }
+            PacketContext::Request => {
+                self.handle_request_packet(link_id, packet, raw_packet, now_ms, now_secs);
+            }
+            PacketContext::Response => {
+                self.handle_response_packet(link_id, packet, raw_packet, now_secs);
+            }
             _ => self.handle_plain_data_packet(link_id, packet, raw_packet, now_secs),
         }
     }
@@ -1265,6 +1271,270 @@ impl<R: CryptoRngCore, C: Clock, S: Storage> NodeCore<R, C, S> {
             link_id,
             identity_hash,
         });
+    }
+
+    // ─── Internal: Request/Response Handlers ────────────────────────────────────
+
+    /// Handle an incoming request packet (responder side).
+    ///
+    /// Protocol: plaintext = msgpack fixarray(3) [timestamp, path_hash, data].
+    /// Matches Python Link.py:1036 request_handler().
+    fn handle_request_packet(
+        &mut self,
+        link_id: LinkId,
+        packet: &Packet,
+        raw_packet: &[u8],
+        _now_ms: u64, // passed by dispatch_link_data_packet uniformly; unused here
+        now_secs: u64,
+    ) {
+        use crate::resource::msgpack::{
+            read_fixarray_len, read_float64, read_msgpack_bin, read_msgpack_raw_value,
+        };
+
+        let Some(link) = self.links.get_mut(&link_id) else {
+            return;
+        };
+
+        if link.state() != LinkState::Active {
+            return;
+        }
+        link.record_inbound(now_secs);
+
+        // Decrypt
+        let encrypted_data = packet.data.as_slice();
+        let max_plaintext_len = encrypted_data.len();
+        let mut plaintext = alloc::vec![0u8; max_plaintext_len];
+        let plaintext_len = match link.decrypt(encrypted_data, &mut plaintext) {
+            Ok(len) => len,
+            Err(_) => {
+                tracing::debug!(
+                    link = %HexShort(link_id.as_bytes()),
+                    "Request packet decryption failed"
+                );
+                return;
+            }
+        };
+        let plaintext = &plaintext[..plaintext_len];
+
+        // Compute request_id = truncated_packet_hash(raw_packet)
+        let request_id = crate::packet::truncated_packet_hash(raw_packet);
+
+        // Parse msgpack
+        let mut pos = 0;
+        let Some(3) = read_fixarray_len(plaintext, &mut pos) else {
+            tracing::debug!(
+                link = %HexShort(link_id.as_bytes()),
+                "Request: invalid array header"
+            );
+            return;
+        };
+        let Some(requested_at) = read_float64(plaintext, &mut pos) else {
+            tracing::debug!(
+                link = %HexShort(link_id.as_bytes()),
+                "Request: invalid timestamp"
+            );
+            return;
+        };
+        let Some(path_hash_bytes) = read_msgpack_bin(plaintext, &mut pos) else {
+            tracing::debug!(
+                link = %HexShort(link_id.as_bytes()),
+                "Request: invalid path_hash"
+            );
+            return;
+        };
+        if path_hash_bytes.len() != crate::constants::TRUNCATED_HASHBYTES {
+            tracing::debug!(
+                link = %HexShort(link_id.as_bytes()),
+                len = path_hash_bytes.len(),
+                "Request: path_hash wrong length"
+            );
+            return;
+        }
+        let mut path_hash = [0u8; crate::constants::TRUNCATED_HASHBYTES];
+        path_hash.copy_from_slice(path_hash_bytes);
+
+        let Some(data_raw) = read_msgpack_raw_value(plaintext, &mut pos) else {
+            tracing::debug!(
+                link = %HexShort(link_id.as_bytes()),
+                "Request: invalid data value"
+            );
+            return;
+        };
+
+        // Convert nil to empty, otherwise preserve raw bytes
+        let data = if data_raw == [0xc0] {
+            alloc::vec::Vec::new()
+        } else {
+            data_raw.to_vec()
+        };
+
+        // Look up handler
+        let Some(handler) = self.request_handlers.get(&path_hash) else {
+            tracing::trace!(
+                link = %HexShort(link_id.as_bytes()),
+                path_hash = %HexShort(&path_hash),
+                "Request: no handler for path_hash, dropping"
+            );
+            return;
+        };
+
+        // Verify destination matches
+        let link = self.links.get(&link_id).expect("link checked above");
+        if handler.destination_hash != *link.destination_hash() {
+            tracing::debug!(
+                link = %HexShort(link_id.as_bytes()),
+                "Request: destination mismatch, dropping"
+            );
+            return;
+        }
+
+        // Authorization check
+        let path = handler.path.clone();
+        match &handler.policy {
+            super::request::RequestPolicy::AllowNone => {
+                tracing::trace!(
+                    link = %HexShort(link_id.as_bytes()),
+                    "Request: AllowNone policy, dropping"
+                );
+                return;
+            }
+            super::request::RequestPolicy::AllowAll => {
+                // Allowed
+            }
+            super::request::RequestPolicy::AllowList(list) => {
+                let allowed = link
+                    .remote_identity()
+                    .map(|id| list.contains(id.hash()))
+                    .unwrap_or(false);
+                if !allowed {
+                    tracing::debug!(
+                        link = %HexShort(link_id.as_bytes()),
+                        "Request: identity not in allow list, dropping"
+                    );
+                    return;
+                }
+            }
+        }
+
+        self.events.push(NodeEvent::RequestReceived {
+            link_id,
+            request_id,
+            path,
+            path_hash,
+            data,
+            requested_at,
+        });
+    }
+
+    /// Handle an incoming response packet (initiator side).
+    ///
+    /// Protocol: plaintext = msgpack fixarray(2) [request_id, response_data].
+    fn handle_response_packet(
+        &mut self,
+        link_id: LinkId,
+        packet: &Packet,
+        raw_packet: &[u8],
+        now_secs: u64,
+    ) {
+        use crate::resource::msgpack::{
+            read_fixarray_len, read_msgpack_bin, read_msgpack_raw_value,
+        };
+        let _ = raw_packet; // request_id is inside the payload, not derived from packet hash
+
+        let Some(link) = self.links.get_mut(&link_id) else {
+            return;
+        };
+
+        if link.state() != LinkState::Active {
+            return;
+        }
+        link.record_inbound(now_secs);
+
+        // Decrypt
+        let encrypted_data = packet.data.as_slice();
+        let max_plaintext_len = encrypted_data.len();
+        let mut plaintext = alloc::vec![0u8; max_plaintext_len];
+        let plaintext_len = match link.decrypt(encrypted_data, &mut plaintext) {
+            Ok(len) => len,
+            Err(_) => {
+                tracing::debug!(
+                    link = %HexShort(link_id.as_bytes()),
+                    "Response packet decryption failed"
+                );
+                return;
+            }
+        };
+        let plaintext = &plaintext[..plaintext_len];
+
+        // Parse msgpack
+        let mut pos = 0;
+        let Some(2) = read_fixarray_len(plaintext, &mut pos) else {
+            tracing::debug!(
+                link = %HexShort(link_id.as_bytes()),
+                "Response: invalid array header"
+            );
+            return;
+        };
+        let Some(request_id_bytes) = read_msgpack_bin(plaintext, &mut pos) else {
+            tracing::debug!(
+                link = %HexShort(link_id.as_bytes()),
+                "Response: invalid request_id"
+            );
+            return;
+        };
+        if request_id_bytes.len() != crate::constants::TRUNCATED_HASHBYTES {
+            tracing::debug!(
+                link = %HexShort(link_id.as_bytes()),
+                len = request_id_bytes.len(),
+                "Response: request_id wrong length"
+            );
+            return;
+        }
+        let mut request_id = [0u8; crate::constants::TRUNCATED_HASHBYTES];
+        request_id.copy_from_slice(request_id_bytes);
+
+        let Some(response_data) = read_msgpack_raw_value(plaintext, &mut pos) else {
+            tracing::debug!(
+                link = %HexShort(link_id.as_bytes()),
+                "Response: invalid response data"
+            );
+            return;
+        };
+
+        // Remove pending request
+        if self.pending_requests.remove(&request_id).is_none() {
+            tracing::trace!(
+                link = %HexShort(link_id.as_bytes()),
+                request_id = %HexShort(&request_id),
+                "Response: no pending request found, ignoring"
+            );
+            return;
+        }
+
+        self.events.push(NodeEvent::ResponseReceived {
+            link_id,
+            request_id,
+            response_data: response_data.to_vec(),
+        });
+    }
+
+    /// Check for request timeouts and emit RequestTimedOut events.
+    pub(super) fn check_request_timeouts(&mut self, now_ms: u64) {
+        let expired: Vec<[u8; crate::constants::TRUNCATED_HASHBYTES]> = self
+            .pending_requests
+            .iter()
+            .filter(|(_, pr)| pr.sent_at_ms.saturating_add(pr.timeout_ms) < now_ms)
+            .map(|(id, _)| *id)
+            .collect();
+
+        for request_id in expired {
+            if let Some(pr) = self.pending_requests.remove(&request_id) {
+                self.events.push(NodeEvent::RequestTimedOut {
+                    link_id: pr.link_id,
+                    request_id: pr.request_id,
+                });
+            }
+        }
     }
 
     /// If the link is Stale and we receive any valid packet, recover to Active.
@@ -2263,6 +2533,11 @@ impl<R: CryptoRngCore, C: Clock, S: Storage> NodeCore<R, C, S> {
             update(now_ms.saturating_add(MS_PER_SECOND));
         }
 
+        // Pending request timeout deadlines
+        for pr in self.pending_requests.values() {
+            update(pr.sent_at_ms.saturating_add(pr.timeout_ms));
+        }
+
         // Resource transfer deadlines
         for link in self.links.values() {
             let rtt_ms = link.rtt_ms();
@@ -2315,6 +2590,9 @@ impl<R: CryptoRngCore, C: Clock, S: Storage> NodeCore<R, C, S> {
     ) {
         // Clean up all receipt entries for this link
         self.receipt_tracker.remove_for_link(&link_id);
+
+        // Clean up pending requests for this link (no timeout events — LinkClosed suffices)
+        self.pending_requests.retain(|_, pr| pr.link_id != link_id);
 
         // Path recovery for locally-initiated links that never activated
         // (Python Transport.py:472-494)

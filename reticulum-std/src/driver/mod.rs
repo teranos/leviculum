@@ -969,6 +969,66 @@ impl ReticulumNode {
         inner.get_remote_identity(link_id).cloned()
     }
 
+    // ─── Request/Response API ─────────────────────────────────────────────────
+
+    /// Register a request handler for a given path on a destination.
+    pub fn register_request_handler(
+        &self,
+        destination_hash: reticulum_core::DestinationHash,
+        path: &str,
+        policy: reticulum_core::RequestPolicy,
+    ) {
+        let mut inner = self.inner.lock().unwrap();
+        inner.register_request_handler(destination_hash, path, policy);
+    }
+
+    /// Send a request on an established link.
+    ///
+    /// Returns the request_id identifying this request.
+    pub async fn send_request(
+        &self,
+        link_id: &LinkId,
+        path: &str,
+        data: Option<&[u8]>,
+        timeout_ms: Option<u64>,
+    ) -> Result<[u8; 16], Error> {
+        let (request_id, output) = {
+            let mut inner = self.inner.lock().unwrap();
+            inner
+                .send_request(link_id, path, data, timeout_ms)
+                .map_err(Error::Request)?
+        };
+        self.action_dispatch_tx
+            .send(output)
+            .await
+            .map_err(|_| Error::NotRunning)?;
+        Ok(request_id)
+    }
+
+    /// Send a response to a received request.
+    ///
+    /// `response_data` must be exactly one valid msgpack-encoded value.
+    pub async fn send_response(
+        &self,
+        link_id: &LinkId,
+        request_id: &[u8; 16],
+        response_data: &[u8],
+    ) -> Result<(), Error> {
+        let output = {
+            let mut inner = self.inner.lock().unwrap();
+            inner
+                .send_response(link_id, request_id, response_data)
+                .map_err(Error::Request)?
+        };
+        self.action_dispatch_tx
+            .send(output)
+            .await
+            .map_err(|_| Error::NotRunning)?;
+        Ok(())
+    }
+
+    // ─── Resource Transfer API ────────────────────────────────────────────────
+
     /// Initiate a resource transfer on an established link.
     ///
     /// Returns the resource hash identifying this transfer. The ADV packet is

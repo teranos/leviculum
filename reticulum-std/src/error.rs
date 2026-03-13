@@ -3,7 +3,7 @@
 use thiserror::Error;
 
 use reticulum_core::resource::ResourceError;
-use reticulum_core::{AnnounceError, LinkError, SendError};
+use reticulum_core::{AnnounceError, LinkError, RequestError, SendError};
 
 /// Main error type for reticulum operations
 #[derive(Error, Debug)]
@@ -43,6 +43,10 @@ pub enum Error {
     /// Resource transfer operation failed
     #[error("resource error: {0}")]
     Resource(ResourceError),
+
+    /// Request/response operation failed
+    #[error("request error: {0}")]
+    Request(RequestError),
 }
 
 impl From<AnnounceError> for Error {
@@ -66,6 +70,12 @@ impl From<LinkError> for Error {
 impl From<ResourceError> for Error {
     fn from(e: ResourceError) -> Self {
         Error::Resource(e)
+    }
+}
+
+impl From<RequestError> for Error {
+    fn from(e: RequestError) -> Self {
+        Error::Request(e)
     }
 }
 

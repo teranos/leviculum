@@ -215,6 +215,12 @@ pub const ANNOUNCE_RATE_PENALTY_MS: u64 = 0;
 /// Maximum number of random blobs to retain per destination (matches Python MAX_RANDOM_BLOBS)
 pub const MAX_RANDOM_BLOBS: usize = 64;
 
+/// Default timeout factor for request/response (Python Link.TRAFFIC_TIMEOUT_FACTOR = 6)
+pub const TRAFFIC_TIMEOUT_FACTOR: u64 = 6;
+
+/// Max grace time for response in ms (Python Resource.RESPONSE_MAX_GRACE_TIME = 10s)
+pub const RESPONSE_MAX_GRACE_TIME_MS: u64 = 10_000;
+
 /// Maximum number of queued announces per interface (Python Interface.py:260)
 pub const MAX_QUEUED_ANNOUNCES_PER_INTERFACE: usize = 16384;
 
