@@ -51,7 +51,7 @@ Version 0.5.19. The core uses a sans-I/O architecture — `reticulum-core` is a 
 - `lrns` remaining subcommands (status, path, interfaces)
 - Resource compression (bz2 over links)
 
-**Test coverage:** ~1360 tests (935 unit + 175 std + 243 interop against rnsd).
+**Test coverage:** ~1375 tests (957 unit + 175 std + 243 interop against rnsd).
 
 ## Building
 

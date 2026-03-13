@@ -3,6 +3,7 @@
 //! Shared module used by both `lrns cp` (standalone node) and `lrncp`
 //! (shared instance client).
 
+use std::collections::VecDeque;
 use std::io::Cursor;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
@@ -139,6 +140,7 @@ pub async fn run_send(
     quiet: bool,
     no_compress: bool,
     sender_identity: Option<&Identity>,
+    phy_rates: bool,
 ) -> Result<(), Box<dyn std::error::Error>> {
     // Read file
     let file_path = PathBuf::from(file_path);
@@ -170,11 +172,13 @@ pub async fn run_send(
     if !quiet {
         eprintln!("Sending {} ({} bytes)...", file_path.display(), data.len());
     }
+    let send_data_size = data.len() as u64;
     node.send_resource(&link_id, &data, Some(&metadata_bytes), !no_compress)
         .await?;
 
     // Wait for completion
     let transfer_deadline = Instant::now() + Duration::from_secs(300);
+    let mut speed_tracker = SpeedTracker::new();
     loop {
         tokio::select! {
             event = events.recv() => {
@@ -183,12 +187,27 @@ pub async fn run_send(
                         is_sender: true, progress, transfer_size, ..
                     }) => {
                         if !quiet {
-                            let transferred = (progress * transfer_size as f32) as u64;
-                            eprint!("\rSending {} ... {} / {} ({:.1}%)",
+                            let app_bytes = progress as f64 * send_data_size as f64;
+                            let phy_bytes = progress as f64 * transfer_size as f64;
+                            speed_tracker.update(app_bytes, phy_bytes);
+                            let transferred = app_bytes as u64;
+                            let speed_str = if speed_tracker.app_speed() > 0.0 {
+                                format!(" - {}", format_speed(speed_tracker.app_speed()))
+                            } else {
+                                String::new()
+                            };
+                            let phy_str = if phy_rates && speed_tracker.phy_speed() > 0.0 {
+                                format!(" ({} at physical layer)", format_speed_bits(speed_tracker.phy_speed()))
+                            } else {
+                                String::new()
+                            };
+                            eprint!("\rSending {} ... {} / {} ({:.1}%){}{}",
                                 file_path.display(),
                                 format_size(transferred),
-                                format_size(transfer_size),
-                                progress * 100.0);
+                                format_size(send_data_size),
+                                progress * 100.0,
+                                speed_str,
+                                phy_str);
                         }
                     }
                     Some(NodeEvent::ResourceCompleted { is_sender: true, .. }) => {
@@ -236,6 +255,7 @@ pub async fn run_listen(
     quiet: bool,
     allow_fetch: bool,
     fetch_jail: Option<PathBuf>,
+    phy_rates: bool,
 ) -> Result<(), Box<dyn std::error::Error>> {
     // Register destination and announce
     let mut dest = Destination::new(
@@ -286,6 +306,7 @@ pub async fn run_listen(
     // Multi-segment accumulation buffer
     let mut segment_buffer: Vec<u8> = Vec::new();
     let mut segment_metadata: Option<Vec<u8>> = None;
+    let mut speed_tracker = SpeedTracker::new();
 
     // Event loop
     loop {
@@ -332,20 +353,36 @@ pub async fn run_listen(
                         }
                     }
                     Some(NodeEvent::ResourceProgress {
-                        is_sender: false, progress, transfer_size, ..
+                        is_sender: false, progress, transfer_size, data_size, ..
                     }) => {
                         if !quiet {
-                            let transferred = (progress * transfer_size as f32) as u64;
-                            eprint!("\rReceiving ... {} / {} ({:.1}%)",
+                            let app_bytes = progress as f64 * data_size as f64;
+                            let phy_bytes = progress as f64 * transfer_size as f64;
+                            speed_tracker.update(app_bytes, phy_bytes);
+                            let transferred = app_bytes as u64;
+                            let speed_str = if speed_tracker.app_speed() > 0.0 {
+                                format!(" - {}", format_speed(speed_tracker.app_speed()))
+                            } else {
+                                String::new()
+                            };
+                            let phy_str = if phy_rates && speed_tracker.phy_speed() > 0.0 {
+                                format!(" ({} at physical layer)", format_speed_bits(speed_tracker.phy_speed()))
+                            } else {
+                                String::new()
+                            };
+                            eprint!("\rReceiving ... {} / {} ({:.1}%){}{}",
                                 format_size(transferred),
-                                format_size(transfer_size),
-                                progress * 100.0);
+                                format_size(data_size),
+                                progress * 100.0,
+                                speed_str,
+                                phy_str);
                         }
                     }
                     Some(NodeEvent::ResourceCompleted {
                         data, metadata, is_sender: false,
                         segment_index, total_segments, ..
                     }) => {
+                        speed_tracker = SpeedTracker::new();
                         if !quiet {
                             eprint!("\r");
                         }
@@ -558,6 +595,7 @@ pub async fn run_fetch(
     quiet: bool,
     no_compress: bool,
     sender_identity: Option<&Identity>,
+    phy_rates: bool,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let _ = no_compress; // fetch compression is controlled by the server
 
@@ -596,6 +634,7 @@ pub async fn run_fetch(
     let mut got_response = false;
     let mut segment_buffer: Vec<u8> = Vec::new();
     let mut segment_metadata: Option<Vec<u8>> = None;
+    let mut speed_tracker = SpeedTracker::new();
 
     loop {
         tokio::select! {
@@ -631,15 +670,30 @@ pub async fn run_fetch(
                         return Err(err("Fetch request timed out"));
                     }
                     Some(NodeEvent::ResourceProgress {
-                        is_sender: false, progress, transfer_size, ..
+                        is_sender: false, progress, transfer_size, data_size, ..
                     }) => {
                         if !quiet {
-                            let transferred = (progress * transfer_size as f32) as u64;
-                            eprint!("\rFetching {} ... {} / {} ({:.1}%)",
+                            let app_bytes = progress as f64 * data_size as f64;
+                            let phy_bytes = progress as f64 * transfer_size as f64;
+                            speed_tracker.update(app_bytes, phy_bytes);
+                            let transferred = app_bytes as u64;
+                            let speed_str = if speed_tracker.app_speed() > 0.0 {
+                                format!(" - {}", format_speed(speed_tracker.app_speed()))
+                            } else {
+                                String::new()
+                            };
+                            let phy_str = if phy_rates && speed_tracker.phy_speed() > 0.0 {
+                                format!(" ({} at physical layer)", format_speed_bits(speed_tracker.phy_speed()))
+                            } else {
+                                String::new()
+                            };
+                            eprint!("\rFetching {} ... {} / {} ({:.1}%){}{}",
                                 remote_path,
                                 format_size(transferred),
-                                format_size(transfer_size),
-                                progress * 100.0);
+                                format_size(data_size),
+                                progress * 100.0,
+                                speed_str,
+                                phy_str);
                         }
                     }
                     Some(NodeEvent::ResourceCompleted {
@@ -768,6 +822,66 @@ fn extract_filename_from_metadata(metadata_bytes: &[u8]) -> Option<String> {
     None
 }
 
+struct SpeedTracker {
+    samples: VecDeque<(Instant, f64, f64)>,
+    max_samples: usize,
+}
+
+impl SpeedTracker {
+    fn new() -> Self {
+        Self {
+            samples: VecDeque::new(),
+            max_samples: 32,
+        }
+    }
+
+    fn update(&mut self, app_bytes: f64, phy_bytes: f64) {
+        let now = Instant::now();
+        self.samples.push_back((now, app_bytes, phy_bytes));
+        while self.samples.len() > self.max_samples {
+            self.samples.pop_front();
+        }
+    }
+
+    fn app_speed(&self) -> f64 {
+        self.speed(|s| s.1)
+    }
+
+    fn phy_speed(&self) -> f64 {
+        self.speed(|s| s.2)
+    }
+
+    fn speed(&self, get_bytes: impl Fn(&(Instant, f64, f64)) -> f64) -> f64 {
+        if self.samples.len() < 2 {
+            return 0.0;
+        }
+        let first = self.samples.front().unwrap();
+        let last = self.samples.back().unwrap();
+        let span = last.0.duration_since(first.0).as_secs_f64();
+        if span == 0.0 {
+            return 0.0;
+        }
+        (get_bytes(last) - get_bytes(first)) / span
+    }
+}
+
+fn format_speed(bytes_per_sec: f64) -> String {
+    format!("{}/s", format_size(bytes_per_sec as u64))
+}
+
+fn format_speed_bits(bytes_per_sec: f64) -> String {
+    let bits = bytes_per_sec * 8.0;
+    if bits >= 1_000_000_000.0 {
+        format!("{:.2} Gb/s", bits / 1_000_000_000.0)
+    } else if bits >= 1_000_000.0 {
+        format!("{:.2} Mb/s", bits / 1_000_000.0)
+    } else if bits >= 1_000.0 {
+        format!("{:.2} Kb/s", bits / 1_000.0)
+    } else {
+        format!("{:.0} b/s", bits)
+    }
+}
+
 fn format_size(bytes: u64) -> String {
     if bytes >= 1_048_576 {
         format!("{:.1}MB", bytes as f64 / 1_048_576.0)
@@ -868,6 +982,7 @@ mod tests {
                 false,
                 false, // allow_fetch
                 None,  // fetch_jail
+                false, // phy_rates
             )
             .await
             .map_err(|e| e.to_string())
@@ -887,6 +1002,7 @@ mod tests {
             false,
             false,
             Some(&sender_id),
+            false, // phy_rates
         )
         .await;
         assert!(
@@ -935,6 +1051,7 @@ mod tests {
                 false,
                 false, // allow_fetch
                 None,  // fetch_jail
+                false, // phy_rates
             )
             .await
             .map_err(|e| e.to_string())
@@ -954,6 +1071,7 @@ mod tests {
             false,
             false,
             Some(&sender_id),
+            false, // phy_rates
         )
         .await;
         assert!(
@@ -992,6 +1110,7 @@ mod tests {
                 false,
                 false, // allow_fetch
                 None,  // fetch_jail
+                false, // phy_rates
             )
             .await
             .map_err(|e| e.to_string())
@@ -1010,7 +1129,8 @@ mod tests {
             1,
             false,
             false,
-            None, // no identity
+            None,  // no identity
+            false, // phy_rates
         )
         .await;
         assert!(
@@ -1179,8 +1299,9 @@ mod tests {
                 0,
                 1,
                 false,
-                true, // allow_fetch
-                None, // no jail
+                true,  // allow_fetch
+                None,  // no jail
+                false, // phy_rates
             )
             .await
             .map_err(|e| e.to_string())
@@ -1202,6 +1323,7 @@ mod tests {
             false,
             false,
             None,
+            false, // phy_rates
         )
         .await;
         assert!(result.is_ok(), "Fetch should succeed: {:?}", result.err());
@@ -1241,8 +1363,9 @@ mod tests {
                 0,
                 1,
                 false,
-                true, // allow_fetch
-                None, // no jail
+                true,  // allow_fetch
+                None,  // no jail
+                false, // phy_rates
             )
             .await
             .map_err(|e| e.to_string())
@@ -1264,6 +1387,7 @@ mod tests {
             false,
             false,
             None,
+            false, // phy_rates
         )
         .await;
         assert!(result.is_err(), "Fetch should fail for nonexistent file");
@@ -1309,6 +1433,7 @@ mod tests {
                 false,
                 true,           // allow_fetch
                 Some(jail_dir), // fetch_jail
+                false,          // phy_rates
             )
             .await
             .map_err(|e| e.to_string())
@@ -1330,6 +1455,7 @@ mod tests {
             false,
             false,
             None,
+            false, // phy_rates
         )
         .await;
         assert!(result.is_err(), "Fetch should fail for jailed file");

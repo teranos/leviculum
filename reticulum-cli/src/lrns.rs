@@ -1258,6 +1258,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     quiet,
                     false, // allow_fetch — lrns cp doesn't support fetch
                     None,  // fetch_jail
+                    false, // phy_rates — lrns cp doesn't support -P
                 )
                 .await;
                 node.stop().await?;
@@ -1282,7 +1283,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     cp_verbose,
                     quiet,
                     false,
-                    None, // lrns cp sender does not identify
+                    None,  // lrns cp sender does not identify
+                    false, // phy_rates — lrns cp doesn't support -P
                 )
                 .await;
                 node.stop().await?;

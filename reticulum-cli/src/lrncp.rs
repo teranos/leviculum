@@ -109,8 +109,8 @@ struct Args {
     #[arg(short = 'j', long)]
     jail: Option<PathBuf>,
 
-    /// Display physical layer transfer rates [not yet implemented]
-    #[arg(short = 'P', long = "phy-rates", hide = true)]
+    /// Display physical layer transfer rates
+    #[arg(short = 'P', long = "phy-rates")]
     phy_rates: bool,
 
     /// Allow identity hash (can be specified multiple times)
@@ -121,9 +121,6 @@ struct Args {
 #[tokio::main]
 async fn main() {
     let args = Args::parse();
-
-    // Check for unimplemented flags before anything else
-    check_unimplemented(&args);
 
     // RUST_LOG env takes precedence; otherwise use -v/-q flags.
     // Default is "warn" (not "info") — lrncp is a user tool, not a daemon.
@@ -212,6 +209,7 @@ async fn run(args: Args) -> Result<(), Box<dyn std::error::Error>> {
             quiet_bool,
             args.allow_fetch,
             args.jail.clone(),
+            args.phy_rates,
         )
         .await
     } else if args.fetch {
@@ -236,6 +234,7 @@ async fn run(args: Args) -> Result<(), Box<dyn std::error::Error>> {
             quiet_bool,
             args.no_compress,
             Some(&identity),
+            args.phy_rates,
         )
         .await
     } else {
@@ -260,6 +259,7 @@ async fn run(args: Args) -> Result<(), Box<dyn std::error::Error>> {
             quiet_bool,
             args.no_compress,
             Some(&identity),
+            args.phy_rates,
         )
         .await
     };
@@ -279,13 +279,6 @@ fn daemon_connect_error(instance_name: &str, error: &dyn std::fmt::Display, verb
             String::new()
         }
     )
-}
-
-fn check_unimplemented(args: &Args) {
-    if args.phy_rates {
-        eprintln!("lrncp: -P/--phy-rates is not yet implemented");
-        std::process::exit(1);
-    }
 }
 
 fn read_instance_name(config_dir: &std::path::Path) -> String {

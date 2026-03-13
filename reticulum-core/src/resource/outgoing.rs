@@ -598,7 +598,6 @@ impl OutgoingResource {
         &self.random_hash
     }
 
-    #[allow(dead_code)] // Resource accessor API — see ROADMAP v1.1 (Resource Transfer)
     pub(crate) fn uncompressed_size(&self) -> u64 {
         self.uncompressed_size
     }

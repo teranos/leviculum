@@ -612,7 +612,6 @@ impl IncomingResource {
         self.transfer_size
     }
 
-    #[allow(dead_code)] // Resource accessor API — see ROADMAP v1.1 (Resource Transfer)
     pub(crate) fn data_size(&self) -> u64 {
         self.data_size
     }

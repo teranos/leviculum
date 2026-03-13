@@ -1709,6 +1709,7 @@ impl<R: CryptoRngCore, C: Clock, S: Storage> NodeCore<R, C, S> {
             // Capture progress before storing resource back
             let progress = res.progress();
             let transfer_size = res.transfer_size();
+            let data_size = res.uncompressed_size();
             let res_hash = *res.resource_hash();
 
             // Put back
@@ -1729,6 +1730,7 @@ impl<R: CryptoRngCore, C: Clock, S: Storage> NodeCore<R, C, S> {
                                 resource_hash: res_hash,
                                 progress,
                                 transfer_size,
+                                data_size,
                                 is_sender: true,
                             });
                         }
@@ -1796,6 +1798,7 @@ impl<R: CryptoRngCore, C: Clock, S: Storage> NodeCore<R, C, S> {
                 // Capture progress before storing resource back
                 let progress = incoming.progress();
                 let transfer_size = incoming.transfer_size();
+                let data_size = incoming.data_size();
 
                 // Encrypt and send REQ
                 let req_pkt = link.build_data_packet_with_context(
@@ -1811,6 +1814,7 @@ impl<R: CryptoRngCore, C: Clock, S: Storage> NodeCore<R, C, S> {
                     resource_hash,
                     progress,
                     transfer_size,
+                    data_size,
                     is_sender: false,
                 });
 

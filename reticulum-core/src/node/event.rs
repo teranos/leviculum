@@ -243,6 +243,8 @@ pub enum NodeEvent {
         progress: f32,
         /// Total encrypted transfer size in bytes
         transfer_size: u64,
+        /// Original uncompressed data size in bytes
+        data_size: u64,
         /// True if we are the sender
         is_sender: bool,
     },
