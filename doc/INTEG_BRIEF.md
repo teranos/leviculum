@@ -338,6 +338,26 @@ The step:
    verifies md5sum on the receiver, and records transfer time
 6. Prints a summary table with per-run and average times
 
+### LoRa Radio Test Profiles
+
+Tests with a `[radio]` section use RNode hardware. All TOML files define
+the "slow" profile (62.5 kHz). Two faster profiles are run via env-var
+overrides — no TOML changes needed:
+
+| Profile | `LORA_BANDWIDTH` | ~Bitrate |
+|---------|-------------------|----------|
+| slow | (default) | ~2.7 kbps |
+| medium | `125000` | ~5.5 kbps |
+| fast | `250000` | ~10.9 kbps |
+
+```bash
+# Run with medium profile:
+LORA_BANDWIDTH=125000 cargo test -p reticulum-integ -- lora_lrncp_push --ignored --nocapture
+```
+
+All three profiles must pass before a LoRa test is considered complete.
+for the override implementation.
+
 ### Symbolic References
 
 `bob.probe` resolves at runtime to the hex hash of bob's probe destination.
