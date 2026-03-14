@@ -16,9 +16,11 @@ use crate::resource::hashmap::map_hash;
 use crate::resource::msgpack;
 use crate::resource::{
     ResourceAdvertisement, ResourceError, ResourceFlags, ResourceStatus, FAST_RATE_THRESHOLD,
-    HASHMAP_IS_EXHAUSTED, HASHMAP_IS_NOT_EXHAUSTED, HASHMAP_MAX_LEN, RESOURCE_MAX_RETRIES,
-    RESOURCE_RANDOM_HASH_SIZE, RESOURCE_WINDOW_FLEXIBILITY, RESOURCE_WINDOW_MAX_VERY_SLOW,
-    SLOW_RATE_THRESHOLD, VERY_SLOW_RATE_THRESHOLD,
+    HASHMAP_IS_EXHAUSTED, HASHMAP_IS_NOT_EXHAUSTED, HASHMAP_MAX_LEN,
+    PART_TIMEOUT_FACTOR_AFTER_RTT, PART_TIMEOUT_FACTOR_INITIAL, PER_RETRY_DELAY_MS,
+    RESOURCE_MAX_RETRIES, RESOURCE_RANDOM_HASH_SIZE, RESOURCE_WINDOW_FLEXIBILITY,
+    RESOURCE_WINDOW_MAX_VERY_SLOW, RETRY_GRACE_TIME_MS, SLOW_RATE_THRESHOLD,
+    VERY_SLOW_RATE_THRESHOLD,
 };
 
 use super::outgoing::ResourcePollResult;
@@ -73,6 +75,7 @@ pub(crate) struct IncomingResource {
     consecutive_completed_windows: usize,
     // Transfer metrics
     eifr: u64,
+    data_received: bool,
     retries: usize,
     waiting_for_hmu: bool,
     link_mdu: usize,
@@ -137,6 +140,7 @@ impl IncomingResource {
             parts_received_this_window: 0,
             consecutive_completed_windows: 0,
             eifr: 0,
+            data_received: false,
             retries: 0,
             waiting_for_hmu: false,
             link_mdu,
@@ -275,6 +279,7 @@ impl IncomingResource {
         self.outstanding_parts = self.outstanding_parts.saturating_sub(1);
         self.parts_received_this_window += 1;
         self.last_activity_ms = now_ms;
+        self.data_received = true;
         self.retries = 0;
 
         // Update EIFR based on RTT
@@ -525,15 +530,32 @@ impl IncomingResource {
 
         match self.status {
             ResourceStatus::Transferring => {
-                // timeout = max(rtt * 2.5, per_part_timeout * window)
-                let rtt_timeout = rtt_ms * 5 / 2;
-                let per_part_timeout = if self.num_parts > 0 && self.eifr > 0 {
-                    (self.transfer_size).saturating_mul(1000) / self.num_parts as u64 / self.eifr
+                // Timeout factor reduces after first data received
+                // (Python Resource.py:828 — PART_TIMEOUT_FACTOR_AFTER_RTT).
+                let timeout_factor = if self.data_received {
+                    PART_TIMEOUT_FACTOR_AFTER_RTT // 2
+                } else {
+                    PART_TIMEOUT_FACTOR_INITIAL // 4
+                };
+
+                // Base timeout: expected time-of-flight for outstanding parts.
+                // When eifr is measured, per_part_tof = bytes_per_part * 1000 / eifr
+                // (matches Python Resource.py:597 — outstanding_parts * sdu * 8 / eifr).
+                // When eifr is 0 (no data yet), use rtt_ms as proxy.
+                let per_part_tof = if self.num_parts > 0 && self.eifr > 0 {
+                    self.transfer_size.saturating_mul(1000)
+                        / self.num_parts as u64
+                        / self.eifr
                 } else {
                     rtt_ms
                 };
-                let window_timeout = per_part_timeout * self.window as u64;
-                let timeout = core::cmp::max(rtt_timeout, window_timeout);
+                let base = per_part_tof
+                    * core::cmp::max(self.outstanding_parts, 1) as u64;
+                // Per-retry progressive delay (Python Resource.py:594).
+                let per_retry_extra = self.retries as u64 * PER_RETRY_DELAY_MS;
+                let timeout = base * timeout_factor
+                    + RETRY_GRACE_TIME_MS
+                    + per_retry_extra;
 
                 if now_ms.saturating_sub(self.last_activity_ms) >= timeout {
                     self.retries += 1;
@@ -570,14 +592,23 @@ impl IncomingResource {
         let rtt_ms = core::cmp::max(rtt_ms, 1);
         match self.status {
             ResourceStatus::Transferring => {
-                let rtt_timeout = rtt_ms * 5 / 2;
-                let per_part_timeout = if self.num_parts > 0 && self.eifr > 0 {
-                    self.transfer_size.saturating_mul(1000) / self.num_parts as u64 / self.eifr
+                let timeout_factor = if self.data_received {
+                    PART_TIMEOUT_FACTOR_AFTER_RTT
+                } else {
+                    PART_TIMEOUT_FACTOR_INITIAL
+                };
+                let per_part_tof = if self.num_parts > 0 && self.eifr > 0 {
+                    self.transfer_size.saturating_mul(1000)
+                        / self.num_parts as u64
+                        / self.eifr
                 } else {
                     rtt_ms
                 };
-                let window_timeout = per_part_timeout * self.window as u64;
-                let timeout = core::cmp::max(rtt_timeout, window_timeout);
+                let base =
+                    per_part_tof * core::cmp::max(self.outstanding_parts, 1) as u64;
+                let per_retry_extra = self.retries as u64 * PER_RETRY_DELAY_MS;
+                let timeout =
+                    base * timeout_factor + RETRY_GRACE_TIME_MS + per_retry_extra;
                 Some(self.last_activity_ms.saturating_add(timeout))
             }
             _ => None,

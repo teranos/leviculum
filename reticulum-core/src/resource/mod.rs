@@ -77,6 +77,27 @@ pub const SLOW_RATE_THRESHOLD: u64 = 15_000;
 /// Very slow rate threshold (bytes/sec). Below this, window_max = WINDOW_MAX_VERY_SLOW.
 pub const VERY_SLOW_RATE_THRESHOLD: u64 = 1_000;
 
+/// Sender grace time before declaring failure (Python Resource.py:131 SENDER_GRACE_TIME = 10.0).
+pub const SENDER_GRACE_TIME_MS: u64 = 10_000;
+
+/// Additional delay per retry used, for progressive backoff (Python Resource.py:134 PER_RETRY_DELAY = 0.5).
+pub const PER_RETRY_DELAY_MS: u64 = 500;
+
+/// Small grace period added to each timeout check (Python Resource.py:133 RETRY_GRACE_TIME = 0.25).
+pub const RETRY_GRACE_TIME_MS: u64 = 250;
+
+/// Initial part timeout multiplier before first data/response (Python Resource.py:126 PART_TIMEOUT_FACTOR = 4).
+pub const PART_TIMEOUT_FACTOR_INITIAL: u64 = 4;
+
+/// Reduced part timeout multiplier after first data received (Python Resource.py:127 PART_TIMEOUT_FACTOR_AFTER_RTT = 2).
+pub const PART_TIMEOUT_FACTOR_AFTER_RTT: u64 = 2;
+
+/// Timeout multiplier for awaiting proof (Python Resource.py:128 PROOF_TIMEOUT_FACTOR = 3).
+pub const PROOF_TIMEOUT_FACTOR: u64 = 3;
+
+/// Processing grace for advertisement retransmit (Python Resource.py:132 PROCESSING_GRACE = 1.0).
+pub const PROCESSING_GRACE_MS: u64 = 1_000;
+
 /// Hashmap not exhausted flag in REQ packets.
 pub const HASHMAP_IS_NOT_EXHAUSTED: u8 = 0x00;
 

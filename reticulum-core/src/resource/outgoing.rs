@@ -18,8 +18,10 @@ use crate::resource::hashmap::map_hash;
 use crate::resource::msgpack;
 use crate::resource::{
     resource_sdu, ResourceAdvertisement, ResourceError, ResourceFlags, ResourceStatus,
-    COLLISION_GUARD_SIZE, HASHMAP_IS_EXHAUSTED, HASHMAP_MAX_LEN, RESOURCE_MAX_ADV_RETRIES,
-    RESOURCE_MAX_RETRIES, RESOURCE_RANDOM_HASH_SIZE,
+    COLLISION_GUARD_SIZE, HASHMAP_IS_EXHAUSTED, HASHMAP_MAX_LEN, PART_TIMEOUT_FACTOR_AFTER_RTT,
+    PART_TIMEOUT_FACTOR_INITIAL, PER_RETRY_DELAY_MS, PROCESSING_GRACE_MS, PROOF_TIMEOUT_FACTOR,
+    RESOURCE_MAX_ADV_RETRIES, RESOURCE_MAX_RETRIES, RESOURCE_RANDOM_HASH_SIZE,
+    SENDER_GRACE_TIME_MS,
 };
 
 /// Result of polling an outgoing resource for timeout.
@@ -57,6 +59,7 @@ pub(crate) struct OutgoingResource {
     receiver_min_consecutive_height: usize,
     total_hashmap_segments: u32,
     window: usize,
+    req_received: bool,
     retries: usize,
     adv_retries: usize,
     last_activity_ms: u64,
@@ -290,6 +293,7 @@ impl OutgoingResource {
             receiver_min_consecutive_height: 0,
             total_hashmap_segments,
             window: crate::constants::RESOURCE_WINDOW_INITIAL,
+            req_received: false,
             retries: 0,
             adv_retries: 0,
             last_activity_ms: now_ms,
@@ -342,6 +346,7 @@ impl OutgoingResource {
             self.status = ResourceStatus::Transferring;
         }
 
+        self.req_received = true;
         self.retries = 0;
         self.last_activity_ms = now_ms;
 
@@ -470,7 +475,8 @@ impl OutgoingResource {
 
         match self.status {
             ResourceStatus::Advertised => {
-                let timeout = rtt_ms.saturating_mul(6);
+                // Python Resource.py:571: timeout + PROCESSING_GRACE
+                let timeout = rtt_ms.saturating_mul(6) + PROCESSING_GRACE_MS;
                 if now_ms.saturating_sub(self.last_activity_ms) >= timeout {
                     self.adv_retries += 1;
                     if self.adv_retries < RESOURCE_MAX_ADV_RETRIES {
@@ -485,17 +491,18 @@ impl OutgoingResource {
                 }
             }
             ResourceStatus::Transferring => {
-                // timeout = max(rtt * 2.5, per_part_timeout * window * 1.125)
-                let rtt_timeout = rtt_ms * 5 / 2;
-                let per_part_timeout = if self.num_parts > 0 {
-                    (self.encrypted_data.len() as u64).saturating_mul(1000)
-                        / self.num_parts as u64
-                        / core::cmp::max(rtt_ms, 1)
+                // Sender watchdog: wait for receiver's REQ. The receiver drives
+                // retransmission, so the sender should be patient.
+                // Python sender uses global budget (Resource.py:627-633).
+                let timeout_factor = if self.req_received {
+                    PART_TIMEOUT_FACTOR_AFTER_RTT // 2: link characteristics known
                 } else {
-                    rtt_ms
+                    PART_TIMEOUT_FACTOR_INITIAL // 4: initial, generous
                 };
-                let window_timeout = per_part_timeout * self.window as u64 * 1125 / 1000;
-                let timeout = core::cmp::max(rtt_timeout, window_timeout);
+                let per_retry_extra = self.retries as u64 * PER_RETRY_DELAY_MS;
+                let timeout = rtt_ms.saturating_mul(timeout_factor)
+                    + SENDER_GRACE_TIME_MS
+                    + per_retry_extra;
 
                 if now_ms.saturating_sub(self.last_activity_ms) >= timeout {
                     self.retries += 1;
@@ -512,7 +519,11 @@ impl OutgoingResource {
                 }
             }
             ResourceStatus::AwaitingProof => {
-                let timeout = rtt_ms.saturating_mul(6);
+                // Python Resource.py:638-640: PROOF_TIMEOUT_FACTOR * RTT + SENDER_GRACE_TIME
+                let per_retry_extra = self.retries as u64 * PER_RETRY_DELAY_MS;
+                let timeout = rtt_ms.saturating_mul(PROOF_TIMEOUT_FACTOR)
+                    + SENDER_GRACE_TIME_MS
+                    + per_retry_extra;
                 if now_ms.saturating_sub(self.last_activity_ms) >= timeout {
                     self.retries += 1;
                     self.last_activity_ms = now_ms;
@@ -538,25 +549,27 @@ impl OutgoingResource {
         match self.status {
             ResourceStatus::Advertised => Some(
                 self.last_activity_ms
-                    .saturating_add(rtt_ms.saturating_mul(6)),
+                    .saturating_add(rtt_ms.saturating_mul(6) + PROCESSING_GRACE_MS),
             ),
             ResourceStatus::Transferring => {
-                let rtt_timeout = rtt_ms * 5 / 2;
-                let per_part_timeout = if self.num_parts > 0 {
-                    (self.encrypted_data.len() as u64).saturating_mul(1000)
-                        / self.num_parts as u64
-                        / core::cmp::max(rtt_ms, 1)
+                let timeout_factor = if self.req_received {
+                    PART_TIMEOUT_FACTOR_AFTER_RTT
                 } else {
-                    rtt_ms
+                    PART_TIMEOUT_FACTOR_INITIAL
                 };
-                let window_timeout = per_part_timeout * self.window as u64 * 1125 / 1000;
-                let timeout = core::cmp::max(rtt_timeout, window_timeout);
+                let per_retry_extra = self.retries as u64 * PER_RETRY_DELAY_MS;
+                let timeout = rtt_ms.saturating_mul(timeout_factor)
+                    + SENDER_GRACE_TIME_MS
+                    + per_retry_extra;
                 Some(self.last_activity_ms.saturating_add(timeout))
             }
-            ResourceStatus::AwaitingProof => Some(
-                self.last_activity_ms
-                    .saturating_add(rtt_ms.saturating_mul(6)),
-            ),
+            ResourceStatus::AwaitingProof => {
+                let per_retry_extra = self.retries as u64 * PER_RETRY_DELAY_MS;
+                let timeout = rtt_ms.saturating_mul(PROOF_TIMEOUT_FACTOR)
+                    + SENDER_GRACE_TIME_MS
+                    + per_retry_extra;
+                Some(self.last_activity_ms.saturating_add(timeout))
+            }
             _ => None,
         }
     }
@@ -749,13 +762,13 @@ mod tests {
         let result = res.poll(1000, 100);
         assert!(matches!(result, ResourcePollResult::Nothing));
 
-        // Timed out (rtt_ms * 6 = 600ms)
-        let result = res.poll(1601, 100);
+        // Timed out (rtt_ms * 6 + PROCESSING_GRACE_MS = 600 + 1000 = 1600ms)
+        let result = res.poll(2601, 100);
         assert!(matches!(result, ResourcePollResult::RetransmitAdv(_)));
 
         // After max retries, should be TimedOut
         for _ in 0..RESOURCE_MAX_ADV_RETRIES {
-            res.poll(res.last_activity_ms + 601, 100);
+            res.poll(res.last_activity_ms + 1601, 100);
         }
         assert_eq!(res.status(), ResourceStatus::Failed);
     }
@@ -780,35 +793,38 @@ mod tests {
         let _ = res.handle_request(&req, &link, &mut rng, 2000);
         assert_eq!(res.status(), ResourceStatus::Transferring);
 
-        // Use rtt_ms = 1000. Transfer timeout = max(1000*5/2, per_part * window * 1.125) = max(2500, ...)
+        // Use rtt_ms = 1000. After handle_request, req_received=true, so
+        // timeout_factor = PART_TIMEOUT_FACTOR_AFTER_RTT (2).
+        // Sender timeout = rtt * 2 + SENDER_GRACE_TIME_MS(10000) + retries*500
+        // = 2000 + 10000 = 12000ms (0 retries)
         let rtt_ms = 1000;
 
         // First poll just after the REQ — should NOT time out.
         let result = res.poll(2500, rtt_ms);
         assert!(matches!(result, ResourcePollResult::Nothing));
 
-        // Fire first timeout (2500ms after last activity at t=2000).
-        let result = res.poll(4501, rtt_ms);
+        // Fire first timeout (12000ms after last activity at t=2000 → t=14000).
+        let result = res.poll(14001, rtt_ms);
         assert!(matches!(result, ResourcePollResult::Nothing)); // retry incremented, returns Nothing
         assert_eq!(res.retries, 1);
 
         // Immediately polling again should NOT fire another retry because
         // last_activity_ms was reset.
-        let result = res.poll(4502, rtt_ms);
+        let result = res.poll(14002, rtt_ms);
         assert!(matches!(result, ResourcePollResult::Nothing));
         assert_eq!(
             res.retries, 1,
             "retry must not increment without waiting full timeout"
         );
 
-        // After another full timeout period, retry should fire again.
-        let result = res.poll(4501 + 2501, rtt_ms);
+        // After another full timeout period (now 12500ms = 12000 + 500 backoff), retry fires.
+        let result = res.poll(14001 + 12501, rtt_ms);
         assert!(matches!(result, ResourcePollResult::Nothing));
         assert_eq!(res.retries, 2);
 
         // Verify we don't immediately hit max retries (16) from rapid polling.
         for _ in 0..20 {
-            res.poll(4501 + 2501 + 1, rtt_ms);
+            res.poll(14001 + 12501 + 1, rtt_ms);
         }
         assert!(
             res.retries < RESOURCE_MAX_RETRIES,
@@ -840,27 +856,28 @@ mod tests {
         assert_eq!(res.status(), ResourceStatus::AwaitingProof);
 
         let rtt_ms = 1000;
-        // AwaitingProof timeout = rtt * 6 = 6000ms
+        // AwaitingProof timeout = PROOF_TIMEOUT_FACTOR * rtt + SENDER_GRACE_TIME_MS + retries*500
+        // = 3 * 1000 + 10000 + 0 = 13000ms (0 retries)
 
         // Not timed out yet
-        let result = res.poll(7999, rtt_ms);
+        let result = res.poll(14999, rtt_ms);
         assert!(matches!(result, ResourcePollResult::Nothing));
 
-        // First timeout fires at 2000 + 6000 = 8000
-        let result = res.poll(8001, rtt_ms);
+        // First timeout fires at 2000 + 13000 = 15000
+        let result = res.poll(15001, rtt_ms);
         assert!(matches!(result, ResourcePollResult::Nothing));
         assert_eq!(res.retries, 1);
         assert_eq!(res.status(), ResourceStatus::AwaitingProof);
 
-        // Second timeout at 8001 + 6000 = 14001
-        let result = res.poll(14002, rtt_ms);
+        // Second timeout at 15001 + 13500 (13000 + 500 backoff) = 28501
+        let result = res.poll(28502, rtt_ms);
         assert!(matches!(result, ResourcePollResult::Nothing));
         assert_eq!(res.retries, 2);
         assert_eq!(res.status(), ResourceStatus::AwaitingProof);
 
         // Rapid polling should not exhaust retries
         for _ in 0..20 {
-            res.poll(14003, rtt_ms);
+            res.poll(28503, rtt_ms);
         }
         assert!(
             res.retries < RESOURCE_MAX_RETRIES,
@@ -871,7 +888,9 @@ mod tests {
 
         // Exhaust all retries
         for _ in res.retries..RESOURCE_MAX_RETRIES {
-            let t = res.last_activity_ms + 6001;
+            // Each retry adds 500ms more: timeout grows with retries
+            let timeout = 13000 + res.retries as u64 * PER_RETRY_DELAY_MS;
+            let t = res.last_activity_ms + timeout + 1;
             res.poll(t, rtt_ms);
         }
         assert_eq!(res.status(), ResourceStatus::Failed);

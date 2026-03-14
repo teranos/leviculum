@@ -893,6 +893,11 @@ fn execute_file_transfer(
         None
     };
 
+    let has_rnode = runner
+        .scenario()
+        .nodes
+        .values()
+        .any(|n| n.rnode.is_some());
     let mut results = Vec::new();
 
     match direction {
@@ -914,6 +919,7 @@ fn execute_file_transfer(
                 expect_result,
                 fetch_path,
                 &mut results,
+                has_rnode,
             )?;
         }
         "b_to_a" => {
@@ -934,6 +940,7 @@ fn execute_file_transfer(
                 expect_result,
                 fetch_path,
                 &mut results,
+                has_rnode,
             )?;
         }
         "both" => {
@@ -954,6 +961,7 @@ fn execute_file_transfer(
                 expect_result,
                 fetch_path,
                 &mut results,
+                has_rnode,
             )?;
             execute_transfer_direction(
                 runner,
@@ -972,6 +980,7 @@ fn execute_file_transfer(
                 expect_result,
                 fetch_path,
                 &mut results,
+                has_rnode,
             )?;
         }
         other => {
@@ -1007,6 +1016,7 @@ fn execute_transfer_direction(
     expect_result: &str,
     fetch_path: &str,
     results: &mut Vec<TransferResult>,
+    has_rnode: bool,
 ) -> Result<(), StepError> {
     let is_fetch = mode == "fetch";
     let expect_failure = expect_result == "failure";
@@ -1042,11 +1052,11 @@ fn execute_transfer_direction(
         })?;
     println!("  receiver hash: {dest_hash}");
 
-    // 2. Create save directory on receiver (for push) or sender (for fetch)
+    // 2. Create save directory. The listener always needs /tmp/received (-s flag),
+    //    and in fetch mode the sender also needs it for saving fetched files.
+    runner.docker_exec(recv_node, &["mkdir", "-p", "/tmp/received"])?;
     if is_fetch {
         runner.docker_exec(send_node, &["mkdir", "-p", "/tmp/received"])?;
-    } else {
-        runner.docker_exec(recv_node, &["mkdir", "-p", "/tmp/received"])?;
     }
 
     // 3. Build and start listener on receiver (detached)
@@ -1079,7 +1089,9 @@ fn execute_transfer_direction(
     //    has_path(), so if the relay never sent a path response, rnpath depends on
     //    the announce rebroadcast reaching the sender's daemon — which doesn't
     //    always happen reliably with all-Python setups.
-    thread::sleep(Duration::from_secs(5));
+    //    LoRa needs 30s: announce airtime (~490ms) + jitter (up to ~3s) + propagation.
+    let announce_wait = if has_rnode { 30 } else { 5 };
+    thread::sleep(Duration::from_secs(announce_wait));
     println!("  waiting for path to {dest_hash} on {send_node}...");
     let path_output = runner.docker_exec(
         send_node,
