@@ -80,12 +80,15 @@ pub fn generate_compose(
         .ok();
 
         if let Some(device) = &node.rnode {
-            writeln!(out, "    privileged: true").ok();
-            writeln!(out, "    devices:").ok();
             if let Some(pty_path) = proxy_devices.get(name) {
-                // Proxy PTY slave mapped to the original device path inside the container.
-                writeln!(out, "      - \"{}:{device}\"", pty_path.display()).ok();
-            } else {
+                // Proxy node: bind-mount PTY slave to /dev/rnode_proxy via
+                // volumes (not devices) to ensure it works in privileged mode.
+                // The node config uses /dev/rnode_proxy as the serial port path.
+                writeln!(out, "      - \"{}:/dev/rnode_proxy\"", pty_path.display()).ok();
+            }
+            writeln!(out, "    privileged: true").ok();
+            if proxy_devices.get(name).is_none() {
+                writeln!(out, "    devices:").ok();
                 writeln!(out, "      - \"{device}:{device}\"").ok();
             }
         }

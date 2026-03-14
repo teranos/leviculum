@@ -127,6 +127,8 @@ async fn parse_rule_add(args: &[&str], engine: &Arc<Mutex<RuleEngine>>) -> Strin
 
     let mut direction = Direction::Both;
     let mut filter = Filter::All;
+    let mut min_size: usize = 0;
+    let mut skip: u32 = 0;
     let mut count: Option<u32> = None;
 
     for &arg in rest {
@@ -150,6 +152,16 @@ async fn parse_rule_add(args: &[&str], engine: &Arc<Mutex<RuleEngine>>) -> Strin
                 }
                 _ => return format!("ERR invalid filter: {val}"),
             };
+        } else if let Some(val) = arg.strip_prefix("min_size=") {
+            match val.parse::<usize>() {
+                Ok(n) => min_size = n,
+                Err(_) => return format!("ERR invalid min_size: {val}"),
+            }
+        } else if let Some(val) = arg.strip_prefix("skip=") {
+            match val.parse::<u32>() {
+                Ok(n) => skip = n,
+                Err(_) => return format!("ERR invalid skip: {val}"),
+            }
         } else if let Some(val) = arg.strip_prefix("count=") {
             match val.parse::<u32>() {
                 Ok(n) => count = Some(n),
@@ -163,6 +175,6 @@ async fn parse_rule_add(args: &[&str], engine: &Arc<Mutex<RuleEngine>>) -> Strin
     let id = engine
         .lock()
         .await
-        .add_rule(direction, action, filter, count);
+        .add_rule(direction, action, filter, min_size, skip, count);
     format!("OK {id}")
 }

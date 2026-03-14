@@ -395,9 +395,15 @@ fn execute_step(
             direction,
             repeats,
             timeout_secs,
+            mode,
+            receiver_flags,
+            sender_flags,
+            auth_from,
+            expect_result,
+            fetch_path,
         } => {
             println!(
-                "[{step_num}/{total}] file_transfer {sender} <-> {receiver} ({sender_tool}/{receiver_tool})..."
+                "[{step_num}/{total}] file_transfer {sender} <-> {receiver} ({sender_tool}/{receiver_tool}, mode={mode})..."
             );
             execute_file_transfer(
                 runner,
@@ -410,6 +416,12 @@ fn execute_step(
                 direction,
                 *repeats,
                 *timeout_secs,
+                mode,
+                receiver_flags,
+                sender_flags,
+                auth_from,
+                expect_result,
+                fetch_path,
             )
         }
     }
@@ -777,6 +789,34 @@ fn parse_dest_hash_from_print_identity(stdout: &str) -> Result<String, String> {
     ))
 }
 
+/// Parse identity hash from tool `-p` output.
+///
+/// lrncp format: `"Identity  : aabbccdd..."` (line 2)
+/// rncp format:  `"Identity     : <aabbccdd...>"` (line 1, angle-bracketed)
+///
+/// Finds the line starting with "Identity", strips prefix/colon/whitespace/angle
+/// brackets, and validates 32 hex chars.
+fn parse_identity_hash_from_print_identity(stdout: &str) -> Result<String, String> {
+    for line in stdout.lines() {
+        let trimmed = line.trim();
+        if trimmed.starts_with("Identity") {
+            // Strip "Identity" prefix, then optional whitespace, then ':'
+            let rest = trimmed.strip_prefix("Identity").unwrap_or("");
+            let rest = rest.trim_start();
+            let rest = rest.strip_prefix(':').unwrap_or(rest);
+            let rest = rest.trim();
+            // Strip angle brackets (rncp prettyhexrep format)
+            let hash = rest.trim_start_matches('<').trim_end_matches('>');
+            if hash.len() == 32 && hash.chars().all(|c| c.is_ascii_hexdigit()) {
+                return Ok(hash.to_string());
+            }
+        }
+    }
+    Err(format!(
+        "could not parse identity hash from -p output:\n{stdout}"
+    ))
+}
+
 /// Format a file size for display.
 fn format_size(bytes: u64) -> String {
     if bytes >= 1_048_576 {
@@ -800,7 +840,59 @@ fn execute_file_transfer(
     direction: &str,
     repeats: u32,
     timeout_secs: u64,
+    mode: &str,
+    receiver_flags: &str,
+    sender_flags: &str,
+    auth_from: &str,
+    expect_result: &str,
+    fetch_path: &str,
 ) -> Result<(), StepError> {
+    // Resolve auth identity hash if auth_from is set
+    let auth_identity_hash = if !auth_from.is_empty() {
+        let auth_node_def =
+            runner
+                .scenario()
+                .nodes
+                .get(auth_from)
+                .ok_or_else(|| StepError::StepFailed {
+                    step_index,
+                    action: "file_transfer".into(),
+                    detail: format!("auth_from node '{auth_from}' not found in scenario"),
+                })?;
+        let auth_tool = match auth_node_def.node_type.as_str() {
+            "rust" => "lrncp",
+            _ => "rncp",
+        };
+        let print_output = runner.docker_exec_with_env(
+            auth_from,
+            &["timeout", "30", auth_tool, "-p"],
+            &[("PYTHONUNBUFFERED", "1")],
+        )?;
+        if !print_output.status.success() {
+            return Err(StepError::StepFailed {
+                step_index,
+                action: "file_transfer".into(),
+                detail: format!(
+                    "{auth_tool} -p on {auth_from} failed (exit {}): {}",
+                    print_output.status.code().unwrap_or(-1),
+                    String::from_utf8_lossy(&print_output.stderr)
+                ),
+            });
+        }
+        let stdout = String::from_utf8_lossy(&print_output.stdout);
+        let hash = parse_identity_hash_from_print_identity(&stdout).map_err(|e| {
+            StepError::StepFailed {
+                step_index,
+                action: "file_transfer".into(),
+                detail: format!("failed to parse identity hash from {auth_tool} -p: {e}"),
+            }
+        })?;
+        println!("  auth identity ({auth_from}): {hash}");
+        Some(hash)
+    } else {
+        None
+    };
+
     let mut results = Vec::new();
 
     match direction {
@@ -815,6 +907,12 @@ fn execute_file_transfer(
                 file_sizes,
                 repeats,
                 timeout_secs,
+                mode,
+                receiver_flags,
+                sender_flags,
+                auth_identity_hash.as_deref(),
+                expect_result,
+                fetch_path,
                 &mut results,
             )?;
         }
@@ -829,6 +927,12 @@ fn execute_file_transfer(
                 file_sizes,
                 repeats,
                 timeout_secs,
+                mode,
+                receiver_flags,
+                sender_flags,
+                auth_identity_hash.as_deref(),
+                expect_result,
+                fetch_path,
                 &mut results,
             )?;
         }
@@ -843,6 +947,12 @@ fn execute_file_transfer(
                 file_sizes,
                 repeats,
                 timeout_secs,
+                mode,
+                receiver_flags,
+                sender_flags,
+                auth_identity_hash.as_deref(),
+                expect_result,
+                fetch_path,
                 &mut results,
             )?;
             execute_transfer_direction(
@@ -855,6 +965,12 @@ fn execute_file_transfer(
                 file_sizes,
                 repeats,
                 timeout_secs,
+                mode,
+                receiver_flags,
+                sender_flags,
+                auth_identity_hash.as_deref(),
+                expect_result,
+                fetch_path,
                 &mut results,
             )?;
         }
@@ -884,10 +1000,18 @@ fn execute_transfer_direction(
     file_sizes: &[u64],
     repeats: u32,
     timeout_secs: u64,
+    mode: &str,
+    receiver_flags: &str,
+    sender_flags: &str,
+    auth_identity_hash: Option<&str>,
+    expect_result: &str,
+    fetch_path: &str,
     results: &mut Vec<TransferResult>,
 ) -> Result<(), StepError> {
+    let is_fetch = mode == "fetch";
+    let expect_failure = expect_result == "failure";
     let direction_label = format!("{send_node} -> {recv_node}");
-    println!("  === {direction_label} ({send_tool} -> {recv_tool}) ===");
+    println!("  === {direction_label} ({send_tool} -> {recv_tool}, mode={mode}) ===");
 
     // 1. Get receiver destination hash
     //    PYTHONUNBUFFERED=1 is required for Python rncp: its RNS.exit() calls
@@ -918,15 +1042,19 @@ fn execute_transfer_direction(
         })?;
     println!("  receiver hash: {dest_hash}");
 
-    // 2. Create save directory on receiver
-    runner.docker_exec(recv_node, &["mkdir", "-p", "/tmp/received"])?;
+    // 2. Create save directory on receiver (for push) or sender (for fetch)
+    if is_fetch {
+        runner.docker_exec(send_node, &["mkdir", "-p", "/tmp/received"])?;
+    } else {
+        runner.docker_exec(recv_node, &["mkdir", "-p", "/tmp/received"])?;
+    }
 
-    // 3. Start listener on receiver (detached)
+    // 3. Build and start listener on receiver (detached)
     //    docker exec -d runs detached — the Docker client returns immediately.
     //    Use sh -c to redirect output to a log file for debugging.
     let container = runner.container_name(recv_node);
-    let listener_cmd =
-        format!("RUST_LOG=debug {recv_tool} -l -n -s /tmp/received -b 0 > /tmp/recv_tool.log 2>&1");
+    let listener_cmd = build_listener_cmd(recv_tool, receiver_flags, auth_identity_hash);
+    println!("  listener cmd: {listener_cmd}");
     let listener_output = std::process::Command::new("docker")
         .args(["exec", "-d", &container, "sh", "-c", &listener_cmd])
         .output()
@@ -965,6 +1093,19 @@ fn execute_transfer_direction(
         ],
     )?;
     if !path_output.status.success() {
+        // Dump the listener's log for debugging
+        if let Ok(out) = runner.docker_exec(recv_node, &["cat", "/tmp/recv_tool.log"]) {
+            let log = String::from_utf8_lossy(&out.stdout);
+            let lines: Vec<&str> = log.lines().collect();
+            println!(
+                "  --- {recv_tool} log on {recv_node} ({} lines, on rnpath failure) ---",
+                lines.len()
+            );
+            for line in &lines {
+                println!("  {line}");
+            }
+            println!("  --- end of {recv_tool} log ---");
+        }
         return Err(StepError::StepFailed {
             step_index,
             action: "file_transfer".into(),
@@ -978,24 +1119,49 @@ fn execute_transfer_direction(
 
     // 5. For each file size, for each repeat: create, send, verify
     let timeout_str = timeout_secs.to_string();
+    // For fetch mode, determine the remote file path
+    let remote_file_path = if !fetch_path.is_empty() {
+        fetch_path.to_string()
+    } else {
+        "/tmp/fetchable/test_transfer.bin".to_string()
+    };
+
     for &size in file_sizes {
         for repeat in 1..=repeats {
             let size_label = format_size(size);
             println!("  [{size_label} run {repeat}/{repeats}]");
 
-            // 5a. Create test file on sender
+            // 5a. Create test file
             let (bs, count) = if size >= 1_048_576 {
                 ("1048576", size / 1_048_576)
             } else {
                 ("1024", size / 1024)
             };
             let count_str = count.to_string();
+
+            // In fetch mode, create the file on recv_node (server).
+            // In push mode, create on send_node (client).
+            let file_create_node = if is_fetch { recv_node } else { send_node };
+            let file_create_path = if is_fetch {
+                remote_file_path.clone()
+            } else {
+                "/tmp/test_transfer.bin".to_string()
+            };
+
+            // Ensure parent directory exists
+            if let Some(parent) = std::path::Path::new(&file_create_path).parent() {
+                let parent_str = parent.to_string_lossy();
+                if !parent_str.is_empty() {
+                    runner.docker_exec(file_create_node, &["mkdir", "-p", &parent_str])?;
+                }
+            }
+
             let dd_output = runner.docker_exec(
-                send_node,
+                file_create_node,
                 &[
                     "dd",
                     "if=/dev/urandom",
-                    "of=/tmp/test_transfer.bin",
+                    &format!("of={file_create_path}"),
                     &format!("bs={bs}"),
                     &format!("count={count_str}"),
                 ],
@@ -1005,7 +1171,7 @@ fn execute_transfer_direction(
                     step_index,
                     action: "file_transfer".into(),
                     detail: format!(
-                        "dd failed on {send_node}: {}",
+                        "dd failed on {file_create_node}: {}",
                         String::from_utf8_lossy(&dd_output.stderr)
                     ),
                 });
@@ -1013,28 +1179,71 @@ fn execute_transfer_direction(
 
             // Get expected md5
             let md5_output =
-                runner.docker_exec(send_node, &["md5sum", "/tmp/test_transfer.bin"])?;
+                runner.docker_exec(file_create_node, &["md5sum", &file_create_path])?;
             let expected_md5 = String::from_utf8_lossy(&md5_output.stdout)
                 .split_whitespace()
                 .next()
                 .unwrap_or("")
                 .to_string();
 
-            // 5b. Send file
+            // 5b. Transfer file
             let start = Instant::now();
-            let send_output = runner.docker_exec(
-                send_node,
-                &[
-                    "timeout",
-                    &timeout_str,
-                    send_tool,
-                    "/tmp/test_transfer.bin",
-                    &dest_hash,
-                    "-w",
-                    "60",
-                ],
-            )?;
+            let send_output = if is_fetch {
+                // Fetch mode: sender runs `<tool> -f <remote_path> <dest_hash> -s /tmp/received -w 60`
+                let mut args: Vec<String> = vec![
+                    "timeout".into(),
+                    timeout_str.clone(),
+                    send_tool.into(),
+                    "-f".into(),
+                    remote_file_path.clone(),
+                    dest_hash.clone(),
+                    "-s".into(),
+                    "/tmp/received".into(),
+                    "-w".into(),
+                    "60".into(),
+                ];
+                // Append extra sender flags
+                for flag in sender_flags.split_whitespace() {
+                    args.push(flag.into());
+                }
+                let args_ref: Vec<&str> = args.iter().map(|s| s.as_str()).collect();
+                runner.docker_exec(send_node, &args_ref)?
+            } else {
+                // Push mode: sender runs `<tool> <file> <dest_hash> -w 60`
+                let mut args: Vec<String> = vec![
+                    "timeout".into(),
+                    timeout_str.clone(),
+                    send_tool.into(),
+                    "/tmp/test_transfer.bin".into(),
+                    dest_hash.clone(),
+                    "-w".into(),
+                    "60".into(),
+                ];
+                for flag in sender_flags.split_whitespace() {
+                    args.push(flag.into());
+                }
+                let args_ref: Vec<&str> = args.iter().map(|s| s.as_str()).collect();
+                runner.docker_exec(send_node, &args_ref)?
+            };
             let elapsed = start.elapsed();
+
+            if expect_failure {
+                // We expect the transfer to fail
+                if send_output.status.success() {
+                    return Err(StepError::StepFailed {
+                        step_index,
+                        action: "file_transfer".into(),
+                        detail: format!(
+                            "transfer unexpectedly succeeded ({size_label} run {repeat}), expected failure"
+                        ),
+                    });
+                }
+                println!(
+                    "    {size_label} run {repeat}: transfer correctly failed (exit {})",
+                    send_output.status.code().unwrap_or(-1)
+                );
+                continue;
+            }
 
             if !send_output.status.success() {
                 let stderr = String::from_utf8_lossy(&send_output.stderr);
@@ -1061,8 +1270,11 @@ fn execute_transfer_direction(
             }
 
             // 5c. Verify received file
+            // In fetch mode, the file lands on send_node at /tmp/received/test_transfer.bin
+            // In push mode, the file lands on recv_node at /tmp/received/test_transfer.bin
+            let verify_node = if is_fetch { send_node } else { recv_node };
             let verify_output =
-                runner.docker_exec(recv_node, &["md5sum", "/tmp/received/test_transfer.bin"])?;
+                runner.docker_exec(verify_node, &["md5sum", "/tmp/received/test_transfer.bin"])?;
             let actual_md5 = String::from_utf8_lossy(&verify_output.stdout)
                 .split_whitespace()
                 .next()
@@ -1080,7 +1292,7 @@ fn execute_transfer_direction(
             }
 
             // Cleanup for next repeat
-            runner.docker_exec(recv_node, &["rm", "/tmp/received/test_transfer.bin"])?;
+            runner.docker_exec(verify_node, &["rm", "/tmp/received/test_transfer.bin"])?;
 
             // 5d. Record result
             println!(
@@ -1103,6 +1315,39 @@ fn execute_transfer_direction(
     println!("  listener stopped on {recv_node}");
 
     Ok(())
+}
+
+/// Build the listener command string with proper flag handling.
+///
+/// Decision table:
+/// | auth_hash | receiver_flags | Listener gets               |
+/// |-----------|----------------|-----------------------------|
+/// | None      | empty          | `-l -n -s /tmp/received -b 0` (backward compat) |
+/// | None      | "-F -n"        | `-l -F -n -s /tmp/received -b 0` |
+/// | Some(h)   | empty          | `-l -a <h> -s /tmp/received -b 0` |
+/// | Some(h)   | "-F"           | `-l -a <h> -F -s /tmp/received -b 0` |
+fn build_listener_cmd(
+    recv_tool: &str,
+    receiver_flags: &str,
+    auth_identity_hash: Option<&str>,
+) -> String {
+    let mut parts = vec![format!("RUST_LOG=debug {recv_tool} -l")];
+
+    // Auth or no-auth flag
+    if let Some(hash) = auth_identity_hash {
+        parts.push(format!("-a {hash}"));
+    } else if receiver_flags.is_empty() || !receiver_flags.contains("-n") {
+        // Backward compat: auto-add -n when no auth and -n not in receiver_flags
+        parts.push("-n".into());
+    }
+
+    // Extra receiver flags
+    if !receiver_flags.is_empty() {
+        parts.push(receiver_flags.to_string());
+    }
+
+    parts.push("-s /tmp/received -b 0 > /tmp/recv_tool.log 2>&1".into());
+    parts.join(" ")
 }
 
 fn print_transfer_results(results: &[TransferResult]) {
@@ -1345,6 +1590,32 @@ Reticulum Transport Instance running
     #[test]
     fn parse_dest_hash_empty_fails() {
         assert!(parse_dest_hash_from_print_identity("").is_err());
+    }
+
+    #[test]
+    fn parse_identity_hash_lrncp_format() {
+        // lrncp -p output: line 1 = dest hash, line 2 = "Identity  : <hex>"
+        let output =
+            "c46bbee6a9437963a27ad5d18ce4a87c\nIdentity  : aabbccdd11223344aabbccdd11223344\n";
+        assert_eq!(
+            parse_identity_hash_from_print_identity(output).unwrap(),
+            "aabbccdd11223344aabbccdd11223344"
+        );
+    }
+
+    #[test]
+    fn parse_identity_hash_rncp_format() {
+        // rncp -p output: "Identity     : <hex>" with angle brackets
+        let output = "Identity     : <aabbccdd11223344aabbccdd11223344>\nListening on : <c46bbee6a9437963a27ad5d18ce4a87c>\n";
+        assert_eq!(
+            parse_identity_hash_from_print_identity(output).unwrap(),
+            "aabbccdd11223344aabbccdd11223344"
+        );
+    }
+
+    #[test]
+    fn parse_identity_hash_missing() {
+        assert!(parse_identity_hash_from_print_identity("no identity here\n").is_err());
     }
 
     #[test]
@@ -2086,6 +2357,362 @@ Reticulum Transport Instance running
     }
 
     #[test]
+    #[ignore] // Requires RNode hardware
+    #[serial(lora)]
+    fn lora_lrncp_push() {
+        let _lock = acquire_lora_lock();
+        let toml_str = std::fs::read_to_string(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/tests/lora_lrncp_push.toml"
+        ))
+        .expect("lora_lrncp_push.toml not found");
+        let scenario = crate::topology::parse_scenario(&toml_str).expect("parse failed");
+
+        let mut runner = TestRunner::new(scenario).expect("TestRunner::new failed");
+
+        runner.up().expect("up failed");
+        runner.wait_ready(60).expect("wait_ready failed");
+
+        let result = execute_steps(&runner);
+        runner.down().expect("down failed");
+        result.expect("execute_steps should succeed");
+    }
+
+    #[test]
+    #[ignore] // Requires RNode hardware
+    #[serial(lora)]
+    fn lora_lrncp_fetch() {
+        let _lock = acquire_lora_lock();
+        let toml_str = std::fs::read_to_string(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/tests/lora_lrncp_fetch.toml"
+        ))
+        .expect("lora_lrncp_fetch.toml not found");
+        let scenario = crate::topology::parse_scenario(&toml_str).expect("parse failed");
+
+        let mut runner = TestRunner::new(scenario).expect("TestRunner::new failed");
+
+        runner.up().expect("up failed");
+        runner.wait_ready(60).expect("wait_ready failed");
+
+        let result = execute_steps(&runner);
+        runner.down().expect("down failed");
+        result.expect("execute_steps should succeed");
+    }
+
+    #[test]
+    #[ignore] // Requires RNode hardware
+    #[serial(lora)]
+    fn lora_lrncp_auth() {
+        let _lock = acquire_lora_lock();
+        let toml_str = std::fs::read_to_string(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/tests/lora_lrncp_auth.toml"
+        ))
+        .expect("lora_lrncp_auth.toml not found");
+        let scenario = crate::topology::parse_scenario(&toml_str).expect("parse failed");
+
+        let mut runner = TestRunner::new(scenario).expect("TestRunner::new failed");
+
+        runner.up().expect("up failed");
+        runner.wait_ready(60).expect("wait_ready failed");
+
+        let result = execute_steps(&runner);
+        runner.down().expect("down failed");
+        result.expect("execute_steps should succeed");
+    }
+
+    #[test]
+    #[ignore] // Requires RNode hardware + lora-proxy binary
+    #[serial(lora)]
+    fn lora_lrncp_proxy() {
+        let _lock = acquire_lora_lock();
+        let toml_str = std::fs::read_to_string(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/tests/lora_lrncp_proxy.toml"
+        ))
+        .expect("lora_lrncp_proxy.toml not found");
+        let scenario = crate::topology::parse_scenario(&toml_str).expect("parse failed");
+
+        let mut runner = TestRunner::new(scenario).expect("TestRunner::new failed");
+
+        runner.up().expect("up failed");
+        runner.wait_ready(60).expect("wait_ready failed");
+
+        let result = execute_steps(&runner);
+        runner.down().expect("down failed");
+        result.expect("execute_steps should succeed");
+    }
+
+    #[test]
+    #[ignore] // Requires RNode hardware
+    #[serial(lora)]
+    fn lora_lrncp_bridge() {
+        let _lock = acquire_lora_lock();
+        let toml_str = std::fs::read_to_string(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/tests/lora_lrncp_bridge.toml"
+        ))
+        .expect("lora_lrncp_bridge.toml not found");
+        let scenario = crate::topology::parse_scenario(&toml_str).expect("parse failed");
+
+        let mut runner = TestRunner::new(scenario).expect("TestRunner::new failed");
+
+        runner.up().expect("up failed");
+        runner.wait_ready(60).expect("wait_ready failed");
+
+        let result = execute_steps(&runner);
+        runner.down().expect("down failed");
+        result.expect("execute_steps should succeed");
+    }
+
+    // Python-to-Python LoRa tests
+
+    #[test]
+    #[ignore] // Requires RNode hardware
+    #[serial(lora)]
+    fn lora_rncp_push() {
+        let _lock = acquire_lora_lock();
+        let toml_str = std::fs::read_to_string(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/tests/lora_rncp_push.toml"
+        ))
+        .expect("lora_rncp_push.toml not found");
+        let scenario = crate::topology::parse_scenario(&toml_str).expect("parse failed");
+
+        let mut runner = TestRunner::new(scenario).expect("TestRunner::new failed");
+
+        runner.up().expect("up failed");
+        runner.wait_ready(60).expect("wait_ready failed");
+
+        let result = execute_steps(&runner);
+        runner.down().expect("down failed");
+        result.expect("execute_steps should succeed");
+    }
+
+    #[test]
+    #[ignore] // Requires RNode hardware
+    #[serial(lora)]
+    fn lora_rncp_fetch() {
+        let _lock = acquire_lora_lock();
+        let toml_str = std::fs::read_to_string(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/tests/lora_rncp_fetch.toml"
+        ))
+        .expect("lora_rncp_fetch.toml not found");
+        let scenario = crate::topology::parse_scenario(&toml_str).expect("parse failed");
+
+        let mut runner = TestRunner::new(scenario).expect("TestRunner::new failed");
+
+        runner.up().expect("up failed");
+        runner.wait_ready(60).expect("wait_ready failed");
+
+        let result = execute_steps(&runner);
+        runner.down().expect("down failed");
+        result.expect("execute_steps should succeed");
+    }
+
+    #[test]
+    #[ignore] // Requires RNode hardware
+    #[serial(lora)]
+    fn lora_rncp_auth() {
+        let _lock = acquire_lora_lock();
+        let toml_str = std::fs::read_to_string(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/tests/lora_rncp_auth.toml"
+        ))
+        .expect("lora_rncp_auth.toml not found");
+        let scenario = crate::topology::parse_scenario(&toml_str).expect("parse failed");
+
+        let mut runner = TestRunner::new(scenario).expect("TestRunner::new failed");
+
+        runner.up().expect("up failed");
+        runner.wait_ready(60).expect("wait_ready failed");
+
+        let result = execute_steps(&runner);
+        runner.down().expect("down failed");
+        result.expect("execute_steps should succeed");
+    }
+
+    #[test]
+    #[ignore] // Requires RNode hardware + lora-proxy binary
+    #[serial(lora)]
+    fn lora_rncp_proxy() {
+        let _lock = acquire_lora_lock();
+        let toml_str = std::fs::read_to_string(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/tests/lora_rncp_proxy.toml"
+        ))
+        .expect("lora_rncp_proxy.toml not found");
+        let scenario = crate::topology::parse_scenario(&toml_str).expect("parse failed");
+
+        let mut runner = TestRunner::new(scenario).expect("TestRunner::new failed");
+
+        runner.up().expect("up failed");
+        runner.wait_ready(60).expect("wait_ready failed");
+
+        let result = execute_steps(&runner);
+        runner.down().expect("down failed");
+        result.expect("execute_steps should succeed");
+    }
+
+    #[test]
+    #[ignore] // Requires RNode hardware
+    #[serial(lora)]
+    fn lora_rncp_bridge() {
+        let _lock = acquire_lora_lock();
+        let toml_str = std::fs::read_to_string(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/tests/lora_rncp_bridge.toml"
+        ))
+        .expect("lora_rncp_bridge.toml not found");
+        let scenario = crate::topology::parse_scenario(&toml_str).expect("parse failed");
+
+        let mut runner = TestRunner::new(scenario).expect("TestRunner::new failed");
+
+        runner.up().expect("up failed");
+        runner.wait_ready(60).expect("wait_ready failed");
+
+        let result = execute_steps(&runner);
+        runner.down().expect("down failed");
+        result.expect("execute_steps should succeed");
+    }
+
+    // Cross-implementation LoRa tests
+
+    #[test]
+    #[ignore] // Requires RNode hardware
+    #[serial(lora)]
+    fn lora_lrncp_push_to_python() {
+        let _lock = acquire_lora_lock();
+        let toml_str = std::fs::read_to_string(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/tests/lora_lrncp_push_to_python.toml"
+        ))
+        .expect("lora_lrncp_push_to_python.toml not found");
+        let scenario = crate::topology::parse_scenario(&toml_str).expect("parse failed");
+
+        let mut runner = TestRunner::new(scenario).expect("TestRunner::new failed");
+
+        runner.up().expect("up failed");
+        runner.wait_ready(60).expect("wait_ready failed");
+
+        let result = execute_steps(&runner);
+        runner.down().expect("down failed");
+        result.expect("execute_steps should succeed");
+    }
+
+    #[test]
+    #[ignore] // Requires RNode hardware
+    #[serial(lora)]
+    fn lora_rncp_push_to_rust() {
+        let _lock = acquire_lora_lock();
+        let toml_str = std::fs::read_to_string(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/tests/lora_rncp_push_to_rust.toml"
+        ))
+        .expect("lora_rncp_push_to_rust.toml not found");
+        let scenario = crate::topology::parse_scenario(&toml_str).expect("parse failed");
+
+        let mut runner = TestRunner::new(scenario).expect("TestRunner::new failed");
+
+        runner.up().expect("up failed");
+        runner.wait_ready(60).expect("wait_ready failed");
+
+        let result = execute_steps(&runner);
+        runner.down().expect("down failed");
+        result.expect("execute_steps should succeed");
+    }
+
+    #[test]
+    #[ignore] // Requires RNode hardware
+    #[serial(lora)]
+    fn lora_lrncp_fetch_from_python() {
+        let _lock = acquire_lora_lock();
+        let toml_str = std::fs::read_to_string(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/tests/lora_lrncp_fetch_from_python.toml"
+        ))
+        .expect("lora_lrncp_fetch_from_python.toml not found");
+        let scenario = crate::topology::parse_scenario(&toml_str).expect("parse failed");
+
+        let mut runner = TestRunner::new(scenario).expect("TestRunner::new failed");
+
+        runner.up().expect("up failed");
+        runner.wait_ready(60).expect("wait_ready failed");
+
+        let result = execute_steps(&runner);
+        runner.down().expect("down failed");
+        result.expect("execute_steps should succeed");
+    }
+
+    #[test]
+    #[ignore] // Requires RNode hardware
+    #[serial(lora)]
+    fn lora_rncp_fetch_from_rust() {
+        let _lock = acquire_lora_lock();
+        let toml_str = std::fs::read_to_string(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/tests/lora_rncp_fetch_from_rust.toml"
+        ))
+        .expect("lora_rncp_fetch_from_rust.toml not found");
+        let scenario = crate::topology::parse_scenario(&toml_str).expect("parse failed");
+
+        let mut runner = TestRunner::new(scenario).expect("TestRunner::new failed");
+
+        runner.up().expect("up failed");
+        runner.wait_ready(60).expect("wait_ready failed");
+
+        let result = execute_steps(&runner);
+        runner.down().expect("down failed");
+        result.expect("execute_steps should succeed");
+    }
+
+    #[test]
+    #[ignore] // Requires RNode hardware
+    #[serial(lora)]
+    fn lora_lrncp_auth_to_python() {
+        let _lock = acquire_lora_lock();
+        let toml_str = std::fs::read_to_string(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/tests/lora_lrncp_auth_to_python.toml"
+        ))
+        .expect("lora_lrncp_auth_to_python.toml not found");
+        let scenario = crate::topology::parse_scenario(&toml_str).expect("parse failed");
+
+        let mut runner = TestRunner::new(scenario).expect("TestRunner::new failed");
+
+        runner.up().expect("up failed");
+        runner.wait_ready(60).expect("wait_ready failed");
+
+        let result = execute_steps(&runner);
+        runner.down().expect("down failed");
+        result.expect("execute_steps should succeed");
+    }
+
+    #[test]
+    #[ignore] // Requires RNode hardware
+    #[serial(lora)]
+    fn lora_lrncp_bridge_python_relay() {
+        let _lock = acquire_lora_lock();
+        let toml_str = std::fs::read_to_string(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/tests/lora_lrncp_bridge_python_relay.toml"
+        ))
+        .expect("lora_lrncp_bridge_python_relay.toml not found");
+        let scenario = crate::topology::parse_scenario(&toml_str).expect("parse failed");
+
+        let mut runner = TestRunner::new(scenario).expect("TestRunner::new failed");
+
+        runner.up().expect("up failed");
+        runner.wait_ready(60).expect("wait_ready failed");
+
+        let result = execute_steps(&runner);
+        runner.down().expect("down failed");
+        result.expect("execute_steps should succeed");
+    }
+
+    #[test]
     #[serial(docker)]
     fn selftest_bulk() {
         let toml_str = std::fs::read_to_string(concat!(
@@ -2289,6 +2916,126 @@ Reticulum Transport Instance running
         let toml_str =
             std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/tests/e31_repro.toml"))
                 .expect("e31_repro.toml not found");
+        let scenario = crate::topology::parse_scenario(&toml_str).expect("parse failed");
+
+        let mut runner = TestRunner::new(scenario).expect("TestRunner::new failed");
+
+        runner.up().expect("up failed");
+        runner.wait_ready(60).expect("wait_ready failed");
+
+        let result = execute_steps(&runner);
+        runner.down().expect("down failed");
+        result.expect("execute_steps should succeed");
+    }
+
+    #[test]
+    #[serial(docker)]
+    fn lrncp_fetch() {
+        let toml_str = std::fs::read_to_string(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/tests/lrncp_fetch.toml"
+        ))
+        .expect("lrncp_fetch.toml not found");
+        let scenario = crate::topology::parse_scenario(&toml_str).expect("parse failed");
+
+        let mut runner = TestRunner::new(scenario).expect("TestRunner::new failed");
+
+        runner.up().expect("up failed");
+        runner.wait_ready(60).expect("wait_ready failed");
+
+        let result = execute_steps(&runner);
+        runner.down().expect("down failed");
+        result.expect("execute_steps should succeed");
+    }
+
+    #[test]
+    #[serial(docker)]
+    fn lrncp_auth() {
+        let toml_str = std::fs::read_to_string(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/tests/lrncp_auth.toml"
+        ))
+        .expect("lrncp_auth.toml not found");
+        let scenario = crate::topology::parse_scenario(&toml_str).expect("parse failed");
+
+        let mut runner = TestRunner::new(scenario).expect("TestRunner::new failed");
+
+        runner.up().expect("up failed");
+        runner.wait_ready(60).expect("wait_ready failed");
+
+        let result = execute_steps(&runner);
+        runner.down().expect("down failed");
+        result.expect("execute_steps should succeed");
+    }
+
+    #[test]
+    #[serial(docker)]
+    fn lrncp_auth_reject() {
+        let toml_str = std::fs::read_to_string(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/tests/lrncp_auth_reject.toml"
+        ))
+        .expect("lrncp_auth_reject.toml not found");
+        let scenario = crate::topology::parse_scenario(&toml_str).expect("parse failed");
+
+        let mut runner = TestRunner::new(scenario).expect("TestRunner::new failed");
+
+        runner.up().expect("up failed");
+        runner.wait_ready(60).expect("wait_ready failed");
+
+        let result = execute_steps(&runner);
+        runner.down().expect("down failed");
+        result.expect("execute_steps should succeed");
+    }
+
+    #[test]
+    #[serial(docker)]
+    fn lrncp_fetch_auth() {
+        let toml_str = std::fs::read_to_string(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/tests/lrncp_fetch_auth.toml"
+        ))
+        .expect("lrncp_fetch_auth.toml not found");
+        let scenario = crate::topology::parse_scenario(&toml_str).expect("parse failed");
+
+        let mut runner = TestRunner::new(scenario).expect("TestRunner::new failed");
+
+        runner.up().expect("up failed");
+        runner.wait_ready(60).expect("wait_ready failed");
+
+        let result = execute_steps(&runner);
+        runner.down().expect("down failed");
+        result.expect("execute_steps should succeed");
+    }
+
+    #[test]
+    #[serial(docker)]
+    fn lrncp_fetch_jail() {
+        let toml_str = std::fs::read_to_string(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/tests/lrncp_fetch_jail.toml"
+        ))
+        .expect("lrncp_fetch_jail.toml not found");
+        let scenario = crate::topology::parse_scenario(&toml_str).expect("parse failed");
+
+        let mut runner = TestRunner::new(scenario).expect("TestRunner::new failed");
+
+        runner.up().expect("up failed");
+        runner.wait_ready(60).expect("wait_ready failed");
+
+        let result = execute_steps(&runner);
+        runner.down().expect("down failed");
+        result.expect("execute_steps should succeed");
+    }
+
+    #[test]
+    #[serial(docker)]
+    fn lrncp_fetch_cross() {
+        let toml_str = std::fs::read_to_string(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/tests/lrncp_fetch_cross.toml"
+        ))
+        .expect("lrncp_fetch_cross.toml not found");
         let scenario = crate::topology::parse_scenario(&toml_str).expect("parse failed");
 
         let mut runner = TestRunner::new(scenario).expect("TestRunner::new failed");

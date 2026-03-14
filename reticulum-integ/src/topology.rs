@@ -221,7 +221,31 @@ pub enum Step {
         repeats: u32,
         #[serde(default = "default_transfer_timeout")]
         timeout_secs: u64,
+        /// "push" (default) or "fetch" — fetch reverses file creation/verification.
+        #[serde(default = "default_mode")]
+        mode: String,
+        /// Extra flags appended to the listener command (e.g., "-F -n", "-F -j /tmp/jail").
+        #[serde(default)]
+        receiver_flags: String,
+        /// Extra flags appended to the sender command.
+        #[serde(default)]
+        sender_flags: String,
+        /// Node whose identity hash is used for `-a` on the listener.
+        /// Empty = no auth (default: `-n` for backward compat).
+        #[serde(default)]
+        auth_from: String,
+        /// "success" (default) or "failure" — expect the transfer to fail.
+        #[serde(default = "default_expect_success")]
+        expect_result: String,
+        /// Override remote file path for fetch (default: /tmp/fetchable/test_transfer.bin).
+        /// Used for jail violation tests to request a path outside the jail.
+        #[serde(default)]
+        fetch_path: String,
     },
+}
+
+fn default_mode() -> String {
+    "push".to_string()
 }
 
 fn default_direction() -> String {
@@ -479,10 +503,18 @@ pub fn render_config(
     }
 
     if let (Some(port), Some(radio)) = (&node.rnode, radio) {
+        // When rnode_proxy is active, the container uses /dev/rnode_proxy
+        // instead of the real device path, preventing the container from
+        // accessing the real serial device in privileged mode.
+        let device_path = if node.rnode_proxy {
+            "/dev/rnode_proxy".to_string()
+        } else {
+            port.clone()
+        };
         writeln!(out, "  [[RNode Interface]]").ok();
         writeln!(out, "    type = RNodeInterface").ok();
         writeln!(out, "    enabled = yes").ok();
-        writeln!(out, "    port = {port}").ok();
+        writeln!(out, "    port = {device_path}").ok();
         writeln!(out, "    frequency = {}", radio.frequency).ok();
         writeln!(out, "    bandwidth = {}", radio.bandwidth).ok();
         writeln!(out, "    spreadingfactor = {}", radio.spreading_factor).ok();
@@ -1349,6 +1381,12 @@ passphrase = "mypass"
                 direction,
                 repeats,
                 timeout_secs,
+                mode,
+                receiver_flags,
+                sender_flags,
+                auth_from,
+                expect_result,
+                fetch_path,
             } => {
                 assert_eq!(sender, "alpha");
                 assert_eq!(receiver, "charlie");
@@ -1358,6 +1396,13 @@ passphrase = "mypass"
                 assert_eq!(direction, "a_to_b");
                 assert_eq!(*repeats, 3);
                 assert_eq!(*timeout_secs, 300);
+                // Defaults for new fields
+                assert_eq!(mode, "push");
+                assert_eq!(receiver_flags, "");
+                assert_eq!(sender_flags, "");
+                assert_eq!(auth_from, "");
+                assert_eq!(expect_result, "success");
+                assert_eq!(fetch_path, "");
             }
             other => panic!("expected FileTransfer, got: {other:?}"),
         }

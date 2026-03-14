@@ -81,7 +81,7 @@ async fn test_drop_count() {
     engine
         .lock()
         .await
-        .add_rule(Direction::Both, Action::Drop, Filter::All, Some(1));
+        .add_rule(Direction::Both, Action::Drop, Filter::All, 0, 0, Some(1));
 
     // Small yield to let the forwarding loop start
     tokio::task::yield_now().await;
@@ -124,10 +124,14 @@ async fn test_delay() {
     });
 
     // Add 200ms delay rule (count=1)
-    engine
-        .lock()
-        .await
-        .add_rule(Direction::Both, Action::Delay(200), Filter::All, Some(1));
+    engine.lock().await.add_rule(
+        Direction::Both,
+        Action::Delay(200),
+        Filter::All,
+        0,
+        0,
+        Some(1),
+    );
 
     tokio::task::yield_now().await;
 
@@ -183,11 +187,11 @@ async fn test_clear_all() {
     engine
         .lock()
         .await
-        .add_rule(Direction::Both, Action::Drop, Filter::All, None);
+        .add_rule(Direction::Both, Action::Drop, Filter::All, 0, 0, None);
     engine
         .lock()
         .await
-        .add_rule(Direction::Both, Action::Corrupt, Filter::All, None);
+        .add_rule(Direction::Both, Action::Corrupt, Filter::All, 0, 0, None);
 
     tokio::task::yield_now().await;
 
@@ -266,7 +270,7 @@ async fn test_corrupt() {
     engine
         .lock()
         .await
-        .add_rule(Direction::Both, Action::Corrupt, Filter::All, Some(1));
+        .add_rule(Direction::Both, Action::Corrupt, Filter::All, 0, 0, Some(1));
 
     tokio::task::yield_now().await;
 
@@ -296,7 +300,7 @@ async fn test_direction_filter() {
     engine
         .lock()
         .await
-        .add_rule(Direction::AToB, Action::Drop, Filter::All, None);
+        .add_rule(Direction::AToB, Action::Drop, Filter::All, 0, 0, None);
 
     tokio::task::yield_now().await;
 
@@ -326,10 +330,14 @@ async fn test_command_filter() {
     });
 
     // Drop only CMD_DATA (0x00)
-    engine
-        .lock()
-        .await
-        .add_rule(Direction::Both, Action::Drop, Filter::Command(0x00), None);
+    engine.lock().await.add_rule(
+        Direction::Both,
+        Action::Drop,
+        Filter::Command(0x00),
+        0,
+        0,
+        None,
+    );
 
     tokio::task::yield_now().await;
 
@@ -407,7 +415,7 @@ async fn test_drop_5_forward_10() {
     engine
         .lock()
         .await
-        .add_rule(Direction::Both, Action::Drop, Filter::All, Some(5));
+        .add_rule(Direction::Both, Action::Drop, Filter::All, 0, 0, Some(5));
 
     tokio::task::yield_now().await;
 

@@ -1071,9 +1071,20 @@ impl<C: Clock, S: Storage> Transport<C, S> {
         // and relayed (Type2) copies hash identically (get_hashable_part strips hops
         // and transport_id). Both copies must be processed so the best path wins.
         // Matches Python Transport.py:1230-1232.
+        //
+        // Local-client link-table relays are also exempt: resource retransmissions
+        // produce identical raw bytes (build_raw_data_packet has no nonce), so the
+        // hash matches the original. In Python the daemon sends outbound directly
+        // (never through process_incoming), so dedup never fires. We replicate that
+        // by skipping dedup for packets from a local client destined for a known link.
         let is_single_announce = packet.flags.packet_type == PacketType::Announce
             && packet.flags.dest_type == DestinationType::Single;
-        if !is_single_announce && self.storage.has_packet_hash(&full_packet_hash) {
+        let is_local_link_relay = self.is_local_client(interface_index)
+            && self.storage.has_link_entry(&packet.destination_hash);
+        if !is_single_announce
+            && !is_local_link_relay
+            && self.storage.has_packet_hash(&full_packet_hash)
+        {
             if packet.context == PacketContext::Lrproof {
                 tracing::debug!(
                     "Dropped duplicate LRPROOF for <{}> on {}",
@@ -2521,7 +2532,15 @@ impl<C: Clock, S: Storage> Transport<C, S> {
                     // Deferred cache insert: hash was skipped in process_incoming()
                     // because dest_hash is in link_table. Insert now that we've
                     // validated direction and will forward (Python Transport.py:1543).
-                    self.storage.add_packet_hash(full_packet_hash);
+                    //
+                    // Skip for local-client traffic: resource retransmissions produce
+                    // identical raw bytes, so caching the hash would block future
+                    // retransmits from the same client. In Python the daemon never
+                    // runs outbound traffic through process_incoming, so this doesn't
+                    // arise there.
+                    if !self.is_local_client(interface_index) {
+                        self.storage.add_packet_hash(full_packet_hash);
+                    }
 
                     // Forward data via link table
                     tracing::trace!(

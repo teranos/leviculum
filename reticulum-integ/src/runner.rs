@@ -335,11 +335,43 @@ impl TestRunner {
         Ok(())
     }
 
-    /// Kill all proxy child processes and clean up socket files.
+    /// Kill all proxy child processes and collect stderr output.
     fn kill_proxies(&mut self) {
         for mut child in self.proxy_processes.drain(..) {
-            let _ = child.kill();
-            let _ = child.wait();
+            // Send SIGTERM so the proxy can flush its buffers.
+            let _ = Command::new("kill")
+                .args(["-TERM", &child.id().to_string()])
+                .status();
+            // Wait up to 2s for graceful shutdown, then force kill.
+            let deadline = Instant::now() + Duration::from_secs(2);
+            loop {
+                match child.try_wait() {
+                    Ok(Some(_)) => break,
+                    _ if Instant::now() >= deadline => {
+                        let _ = child.kill();
+                        let _ = child.wait();
+                        break;
+                    }
+                    _ => thread::sleep(Duration::from_millis(50)),
+                }
+            }
+            // Collect stderr for debugging.
+            if let Some(mut stderr) = child.stderr.take() {
+                let mut buf = String::new();
+                use std::io::Read;
+                let _ = stderr.read_to_string(&mut buf);
+                if !buf.is_empty() {
+                    let proxy_lines: Vec<&str> = buf
+                        .lines()
+                        .filter(|l| l.contains("AToB") || l.contains("BToA"))
+                        .collect();
+                    println!("--- proxy: {} frame lines ---", proxy_lines.len());
+                    for line in &proxy_lines {
+                        println!("  {line}");
+                    }
+                    println!("--- end proxy ---");
+                }
+            }
         }
         for sock_path in self.proxy_sockets.values() {
             let _ = fs::remove_file(sock_path);
@@ -453,6 +485,7 @@ fn spawn_proxies(
                 "--control",
                 sock_path.to_str().expect("sock path not UTF-8"),
             ])
+            .env("RUST_LOG", "debug")
             .stdout(std::process::Stdio::null())
             .stderr(std::process::Stdio::piped())
             .spawn()

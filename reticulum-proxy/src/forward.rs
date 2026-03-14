@@ -56,12 +56,18 @@ where
                     info!("{side_a_name} closed");
                     return Ok(());
                 }
-
                 let frames = deframer_a.process(&buf_a[..n]);
                 for frame in frames {
                     if let KissDeframeResult::Frame { command, ref payload } = frame {
                         let kiss_frame = KissFrame { command, payload: payload.clone() };
                         let decision = engine.lock().await.evaluate(&kiss_frame, Direction::AToB);
+                        let decision_tag = match &decision {
+                            FrameDecision::Forward => "FWD",
+                            FrameDecision::Drop => "DROP",
+                            FrameDecision::Delay(_) => "DELAY",
+                            FrameDecision::Corrupt(_) => "CORRUPT",
+                        };
+                        debug!("AToB cmd=0x{command:02X} payload_len={} {decision_tag}", payload.len());
                         apply_decision(
                             decision, command, payload, &mut frame_buf,
                             &mut side_b, &mut delayed, false,
@@ -81,6 +87,7 @@ where
                 let frames = deframer_b.process(&buf_b[..n]);
                 for frame in frames {
                     if let KissDeframeResult::Frame { command, ref payload } = frame {
+                        debug!("BToA cmd=0x{command:02X} payload_len={}", payload.len());
                         let kiss_frame = KissFrame { command, payload: payload.clone() };
                         let decision = engine.lock().await.evaluate(&kiss_frame, Direction::BToA);
                         apply_decision(

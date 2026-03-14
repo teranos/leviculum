@@ -321,15 +321,22 @@ file_sizes = [102400, 1048576]  # bytes
 direction = "both"          # "a_to_b", "b_to_a", or "both"
 repeats = 3                 # runs per size per direction
 timeout_secs = 300
+mode = "push"               # "push" (default) or "fetch"
+receiver_flags = ""         # extra flags for listener (e.g., "-F -n", "-F -j /tmp/jail")
+sender_flags = ""           # extra flags for sender
+auth_from = ""              # node whose identity hash is used for -a on the listener
+expect_result = "success"   # "success" (default) or "failure"
+fetch_path = ""             # override remote file path for fetch requests
 ```
 
 The step:
-1. Runs `<tool> -p` on the receiver to get the destination hash
-2. Starts a detached listener (`<tool> -l -n -s /tmp/received -b 0`)
-3. Waits for path availability on the sender via `rnpath`
-4. For each file size × repeat: creates a random file with `dd`, sends it,
+1. If `auth_from` is set, runs `<tool> -p` on that node to get its identity hash
+2. Runs `<tool> -p` on the receiver to get the destination hash
+3. Starts a detached listener (`<tool> -l [-a <hash>] [receiver_flags] -s /tmp/received -b 0`)
+4. Waits for path availability on the sender via `rnpath`
+5. For each file size × repeat: creates a random file with `dd`, sends it,
    verifies md5sum on the receiver, and records transfer time
-5. Prints a summary table with per-run and average times
+6. Prints a summary table with per-run and average times
 
 ### Symbolic References
 

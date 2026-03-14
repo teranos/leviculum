@@ -499,6 +499,7 @@ impl OutgoingResource {
 
                 if now_ms.saturating_sub(self.last_activity_ms) >= timeout {
                     self.retries += 1;
+                    self.last_activity_ms = now_ms;
                     if self.retries >= RESOURCE_MAX_RETRIES {
                         self.status = ResourceStatus::Failed;
                         ResourcePollResult::TimedOut
@@ -513,8 +514,16 @@ impl OutgoingResource {
             ResourceStatus::AwaitingProof => {
                 let timeout = rtt_ms.saturating_mul(6);
                 if now_ms.saturating_sub(self.last_activity_ms) >= timeout {
-                    self.status = ResourceStatus::Failed;
-                    ResourcePollResult::TimedOut
+                    self.retries += 1;
+                    self.last_activity_ms = now_ms;
+                    if self.retries >= RESOURCE_MAX_RETRIES {
+                        self.status = ResourceStatus::Failed;
+                        ResourcePollResult::TimedOut
+                    } else {
+                        // Keep waiting — receiver may still retry its REQ
+                        // and send the proof once it has all parts.
+                        ResourcePollResult::Nothing
+                    }
                 } else {
                     ResourcePollResult::Nothing
                 }
@@ -747,6 +756,123 @@ mod tests {
         // After max retries, should be TimedOut
         for _ in 0..RESOURCE_MAX_ADV_RETRIES {
             res.poll(res.last_activity_ms + 601, 100);
+        }
+        assert_eq!(res.status(), ResourceStatus::Failed);
+    }
+
+    #[test]
+    fn test_transferring_retries_spaced_by_timeout() {
+        let (link, _) = make_test_link();
+        let mut rng = rand_core::OsRng;
+        // Large enough data for multiple parts
+        let data = vec![0x42u8; 2000];
+
+        let mut res =
+            OutgoingResource::new(&data, None, None, &link, true, &mut rng, 1000).unwrap();
+        assert!(res.parts.len() >= 2, "need multi-part resource");
+
+        // Build a partial REQ requesting only the first part to keep status=Transferring.
+        // Format: [0x00][resource_hash:32][hashmap_entry_0:4]
+        let mut req = Vec::new();
+        req.push(0x00); // not exhausted
+        req.extend_from_slice(&res.resource_hash);
+        req.extend_from_slice(&res.hashmap[0]);
+        let _ = res.handle_request(&req, &link, &mut rng, 2000);
+        assert_eq!(res.status(), ResourceStatus::Transferring);
+
+        // Use rtt_ms = 1000. Transfer timeout = max(1000*5/2, per_part * window * 1.125) = max(2500, ...)
+        let rtt_ms = 1000;
+
+        // First poll just after the REQ — should NOT time out.
+        let result = res.poll(2500, rtt_ms);
+        assert!(matches!(result, ResourcePollResult::Nothing));
+
+        // Fire first timeout (2500ms after last activity at t=2000).
+        let result = res.poll(4501, rtt_ms);
+        assert!(matches!(result, ResourcePollResult::Nothing)); // retry incremented, returns Nothing
+        assert_eq!(res.retries, 1);
+
+        // Immediately polling again should NOT fire another retry because
+        // last_activity_ms was reset.
+        let result = res.poll(4502, rtt_ms);
+        assert!(matches!(result, ResourcePollResult::Nothing));
+        assert_eq!(
+            res.retries, 1,
+            "retry must not increment without waiting full timeout"
+        );
+
+        // After another full timeout period, retry should fire again.
+        let result = res.poll(4501 + 2501, rtt_ms);
+        assert!(matches!(result, ResourcePollResult::Nothing));
+        assert_eq!(res.retries, 2);
+
+        // Verify we don't immediately hit max retries (16) from rapid polling.
+        for _ in 0..20 {
+            res.poll(4501 + 2501 + 1, rtt_ms);
+        }
+        assert!(
+            res.retries < RESOURCE_MAX_RETRIES,
+            "retries should not exhaust from rapid polling: got {}",
+            res.retries
+        );
+        assert_eq!(res.status(), ResourceStatus::Transferring);
+    }
+
+    #[test]
+    fn test_awaiting_proof_retries() {
+        let (link, _) = make_test_link();
+        let mut rng = rand_core::OsRng;
+        // Small data — fits in few parts so all get sent in one REQ
+        let data = vec![0x42u8; 200];
+
+        let mut res =
+            OutgoingResource::new(&data, None, None, &link, true, &mut rng, 1000).unwrap();
+
+        // Build full REQ requesting all parts
+        let mut req = Vec::new();
+        req.push(0x00); // not exhausted
+        req.extend_from_slice(&res.resource_hash);
+        for h in &res.hashmap {
+            req.extend_from_slice(h);
+        }
+        let _ = res.handle_request(&req, &link, &mut rng, 2000);
+        // All parts sent → should transition to AwaitingProof
+        assert_eq!(res.status(), ResourceStatus::AwaitingProof);
+
+        let rtt_ms = 1000;
+        // AwaitingProof timeout = rtt * 6 = 6000ms
+
+        // Not timed out yet
+        let result = res.poll(7999, rtt_ms);
+        assert!(matches!(result, ResourcePollResult::Nothing));
+
+        // First timeout fires at 2000 + 6000 = 8000
+        let result = res.poll(8001, rtt_ms);
+        assert!(matches!(result, ResourcePollResult::Nothing));
+        assert_eq!(res.retries, 1);
+        assert_eq!(res.status(), ResourceStatus::AwaitingProof);
+
+        // Second timeout at 8001 + 6000 = 14001
+        let result = res.poll(14002, rtt_ms);
+        assert!(matches!(result, ResourcePollResult::Nothing));
+        assert_eq!(res.retries, 2);
+        assert_eq!(res.status(), ResourceStatus::AwaitingProof);
+
+        // Rapid polling should not exhaust retries
+        for _ in 0..20 {
+            res.poll(14003, rtt_ms);
+        }
+        assert!(
+            res.retries < RESOURCE_MAX_RETRIES,
+            "retries should not exhaust from rapid polling: got {}",
+            res.retries
+        );
+        assert_eq!(res.status(), ResourceStatus::AwaitingProof);
+
+        // Exhaust all retries
+        for _ in res.retries..RESOURCE_MAX_RETRIES {
+            let t = res.last_activity_ms + 6001;
+            res.poll(t, rtt_ms);
         }
         assert_eq!(res.status(), ResourceStatus::Failed);
     }
