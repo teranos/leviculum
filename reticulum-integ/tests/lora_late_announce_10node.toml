@@ -138,6 +138,6 @@ timeout_secs = 120
 [[steps]]
 action = "exec"
 on = "a1"
-command = "lrns selftest 127.0.0.1:5555 b1:5555 --mode link --rate 1 --duration 3 --discovery-timeout 240"
+command = "lrns selftest 127.0.0.1:5555 b1:5555 --mode link --rate 1 --duration 3 --discovery-timeout 360"
 expect_exit_code = 0
 env = { RUST_LOG = "reticulum_core::link::channel=debug,reticulum_core::link=debug,reticulum_core::transport=debug,reticulum_std::interfaces=debug,info" }

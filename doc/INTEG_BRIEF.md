@@ -358,10 +358,8 @@ LORA_BANDWIDTH=125000 cargo test -p reticulum-integ -- lora_lrncp_push --ignored
 All three profiles must pass before a LoRa test is considered complete.
 for the override implementation.
 
-**Zero tolerance:** We test with two radios on the same desk. Every
-LoRa test failure is a MAJOR BUG — "radio flakiness" is never an
-acceptable diagnosis. Every test where Rust is slower than Python is
-Must Be Faster Than Python".
+**Reliability policy:** Two co-located RNodes = controlled setup.
+Zero flakiness acceptable — every failure is a major bug. Rust must
 
 ### Symbolic References
 

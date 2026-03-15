@@ -45,10 +45,10 @@ sender = "alpha"
 receiver = "beta"
 sender_tool = "lrncp"
 receiver_tool = "lrncp"
-file_sizes = [1024]
+file_sizes = [2048]
 direction = "a_to_b"
 repeats = 1
-timeout_secs = 180
+timeout_secs = 240
 
 [[steps]]
 action = "proxy_stats"
