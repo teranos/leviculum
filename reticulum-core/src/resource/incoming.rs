@@ -539,16 +539,20 @@ impl IncomingResource {
                 };
 
                 // Base timeout: expected time-of-flight for outstanding parts.
-                // When eifr is measured, per_part_tof = bytes_per_part * 1000 / eifr
-                // (matches Python Resource.py:597 — outstanding_parts * sdu * 8 / eifr).
-                // When eifr is 0 (no data yet), use rtt_ms as proxy.
-                let per_part_tof = if self.num_parts > 0 && self.eifr > 0 {
+                // When eifr is measured, per_part_tof = bytes_per_part * 1000 / eifr.
+                // Cap at rtt_ms: a single part is one packet, should arrive within
+                // one RTT. If measured eifr suggests longer, the measurement is
+                // contaminated by dropped frames inflating the req-to-first-part
+                // elapsed time. Python avoids this by falling back to the link
+                // establishment rate (Resource.py:552).
+                let eifr_tof = if self.num_parts > 0 && self.eifr > 0 {
                     self.transfer_size.saturating_mul(1000)
                         / self.num_parts as u64
                         / self.eifr
                 } else {
                     rtt_ms
                 };
+                let per_part_tof = core::cmp::min(eifr_tof, rtt_ms);
                 let base = per_part_tof
                     * core::cmp::max(self.outstanding_parts, 1) as u64;
                 // Per-retry progressive delay (Python Resource.py:594).
@@ -572,12 +576,11 @@ impl IncomingResource {
                         ResourcePollResult::TimedOut
                     } else {
                         self.last_activity_ms = now_ms;
-                        // Retransmit last request
-                        if let Some(ref req) = self.last_req {
-                            ResourcePollResult::RetransmitAdv(req.clone())
-                        } else {
-                            ResourcePollResult::Nothing
-                        }
+                        // Rebuild request with only the currently missing parts
+                        // (matches Python Resource.py:622 — request_next() on timeout).
+                        let req = self.build_request();
+                        self.req_sent_ms = Some(now_ms);
+                        ResourcePollResult::RetransmitAdv(req)
                     }
                 } else {
                     ResourcePollResult::Nothing
@@ -597,13 +600,14 @@ impl IncomingResource {
                 } else {
                     PART_TIMEOUT_FACTOR_INITIAL
                 };
-                let per_part_tof = if self.num_parts > 0 && self.eifr > 0 {
+                let eifr_tof = if self.num_parts > 0 && self.eifr > 0 {
                     self.transfer_size.saturating_mul(1000)
                         / self.num_parts as u64
                         / self.eifr
                 } else {
                     rtt_ms
                 };
+                let per_part_tof = core::cmp::min(eifr_tof, rtt_ms);
                 let base =
                     per_part_tof * core::cmp::max(self.outstanding_parts, 1) as u64;
                 let per_retry_extra = self.retries as u64 * PER_RETRY_DELAY_MS;
