@@ -25,6 +25,10 @@ When an issue is fixed, remove it from this file entirely.
 | E28 | M | post-7 | open | Design | InterfaceMode::multiple_access defined but unused — wire up for E10 (jitter) and E24 (ingress) |
 | E32 | L | post-7 | open | Bug | KISS deframer unwrap_or(0) silently masks state machine bugs |
 | E33 | L | post-7 | open | Bug | Deferred path response uses 0 hops when announce cache is empty |
+| E34 | H | post-7 | open | Protocol | No link request retry mechanism — single lost frame kills link establishment |
+| E35 | L | post-7 | open | Test | size_sweep runs without proxy — no loss recovery tested for 5KB/50KB files |
+| E36 | L | post-7 | open | Test | lora_lrncp_bidir is sequential, not simultaneous — no contention testing |
+| E37 | L | post-7 | open | Test | Proxy only supports deterministic drop counts, not random loss rates |
 
 ---
 
@@ -196,4 +200,44 @@ When an issue is fixed, remove it from this file entirely.
 - **Detail:** In `transport.rs:3272-3273`, two adjacent `unwrap_or_default()` / `unwrap_or(0)` calls compound: when no cached announce exists, `get_announce_cache()` returns `None` → empty Vec → `Packet::unpack()` fails → `hops` defaults to 0. This makes the placeholder `AnnounceEntry` appear as a 0-hop (local) announce. NodeCore reportedly overwrites this before it matters, but the intermediate state could be observed by concurrent code paths.
 - **Fix:** Either skip creating the deferred path response entry when no cached announce exists, or propagate the `None` explicitly so the hop count is clearly unknown rather than silently 0.
 - **Test:** Unit test: verify that a deferred path response without cached announce data either skips creation or correctly marks hops as unknown.
+
+### E34: No link request retry mechanism
+- **Status:** open
+- **Priority:** H
+- **Phase:** post-7
+- **Category:** Protocol
+- **Found:** lora_lrncp_link_loss test implementation (Gap 3)
+- **Detail:** When a link request frame is lost in transit, the protocol has no retry mechanism. The sender does not retransmit the link request, and the link simply fails to establish. In real LoRa deployments (EU duty cycle limits, collisions, marginal signal conditions) this is a realistic scenario. Any single lost link request frame causes a complete link establishment failure with no recovery. This was discovered when attempting to test link establishment under loss — the `lora_lrncp_link_loss` test had to be redesigned to drop data segments instead, because even 1 dropped link request kills the link.
+- **Fix:** Implement a link request retry mechanism with configurable retry count and backoff. Should be implemented immediately after current Gap/bugfix cycle completes.
+- **Test:** Integration test: `lora_lrncp_link_loss` with proxy dropping link-request-sized frames (min_size=50 max_size=130), verifying the link establishes after retries.
+
+### E35: size_sweep runs without proxy — no loss recovery tested for 5KB/50KB files
+- **Status:** open
+- **Priority:** L
+- **Phase:** post-7
+- **Category:** Test
+- **Found:** Gap 1 implementation
+- **Detail:** The size_sweep test was simplified to run without proxy due to proxy rule auto-expiry after count drops. As a result, loss recovery is only tested at 2KB (existing proxy test) and 10KB (4drop/6drop tests). The 5KB and 50KB sizes have no proxy coverage.
+- **Fix:** Either extend the proxy to support persistent rules (no auto-expiry), or add dedicated proxy tests for 5KB and 50KB files.
+- **Test:** New proxy-enabled transfer tests for 5KB and 50KB file sizes.
+
+### E36: lora_lrncp_bidir is sequential, not simultaneous — no contention testing
+- **Status:** open
+- **Priority:** L
+- **Phase:** post-7
+- **Category:** Test
+- **Found:** Gap 4 implementation
+- **Detail:** The bidir test runs a→b and then b→a sequentially. True simultaneous bidirectional transfer (both sides sending at the same time over the same LoRa channel) is not tested. This would require parallel execution support in the test framework. Potential contention, collision, and throughput degradation under simultaneous load is not covered.
+- **Fix:** Add parallel file_transfer execution to the test framework, then add a lora_lrncp_bidir_simultaneous test.
+- **Test:** New test: `lora_lrncp_bidir_simultaneous` with both directions running concurrently.
+
+### E37: Proxy only supports deterministic drop counts, not random loss rates
+- **Status:** open
+- **Priority:** L
+- **Phase:** post-7
+- **Category:** Test
+- **Found:** Coverage audit (Gap 5)
+- **Detail:** The proxy drops exactly N frames by count. Real radio channels exhibit probabilistic loss (e.g. 10-20% random frame loss). A `rate=0.2` proxy parameter would allow testing behavior under realistic stochastic loss patterns rather than worst-case deterministic bursts.
+- **Fix:** Add `rate=N.N` parameter to proxy rules as a complement to `count=N`. When `rate` is set, each matching frame is independently dropped with probability N.N.
+- **Test:** Unit test: verify rate-based dropping produces approximately the expected drop ratio over many frames. Integration test: LoRa transfer with `rate=0.1` proxy rule.
 
