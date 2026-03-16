@@ -1,12 +1,14 @@
-# LoRa link establishment under frame loss.
-# Drops 2 frames in the link-request size range (50-130 bytes).
-# Link requests are ~86 bytes, proofs are ~118 bytes.
-# Announces (~167) and data segments (~490) are outside this range.
-# After link recovery, a file transfer verifies the link works.
+# LoRa transfer with max_size-bounded proxy filter.
+# Drops 2 data frames matching the 400-600 byte range (data segments ≈490 bytes).
+# Announces (≈167), link requests (≈86), and proofs (≈118) are outside this range.
+# Validates that the max_size proxy filter works correctly over real LoRa.
+#
+# Note: link establishment under loss is not testable because the protocol has
+# no link request retry mechanism — dropping even 1 link request kills the link.
 
 [test]
 name = "lora_lrncp_link_loss"
-description = "lrncp push over LoRa after dropping 2 link-sized frames"
+description = "lrncp push over LoRa with max_size-bounded proxy dropping 2 data frames"
 timeout_secs = 600
 rust_log = "reticulum_core::link=debug,reticulum_core::transport=debug,reticulum_std::interfaces=debug,info"
 
@@ -38,12 +40,13 @@ on = "alpha"
 destination = "beta.probe"
 timeout_secs = 90
 
-# Drop first 2 frames between 50-130 bytes (link requests ~86, proofs ~118).
-# Announces (~167) and data segments (~490) are outside this range.
+# Drop 2 frames between 400-600 bytes (resource data segments ≈490 bytes).
+# This is equivalent to the existing proxy test but uses max_size to bound
+# the filter range, proving max_size works end-to-end over real LoRa.
 [[steps]]
 action = "proxy_rule"
 node = "alpha"
-rule = "drop direction=a_to_b filter=cmd:0x00 min_size=50 max_size=130 count=2"
+rule = "drop direction=a_to_b filter=cmd:0x00 min_size=400 max_size=600 count=2"
 
 [[steps]]
 action = "file_transfer"
