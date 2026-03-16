@@ -1,0 +1,62 @@
+# LoRa link establishment under frame loss.
+# Drops 2 frames in the link-request size range (50-130 bytes).
+# Link requests are ~86 bytes, proofs are ~118 bytes.
+# Announces (~167) and data segments (~490) are outside this range.
+# After link recovery, a file transfer verifies the link works.
+
+[test]
+name = "lora_lrncp_link_loss"
+description = "lrncp push over LoRa after dropping 2 link-sized frames"
+timeout_secs = 600
+rust_log = "reticulum_core::link=debug,reticulum_core::transport=debug,reticulum_std::interfaces=debug,info"
+
+[radio]
+frequency = 869525000
+bandwidth = 62500
+sf = 7
+cr = 5
+txpower = 17
+
+[nodes.alpha]
+type = "rust"
+respond_to_probes = true
+rnode = "/dev/ttyACM0"
+rnode_proxy = true
+
+[nodes.beta]
+type = "rust"
+respond_to_probes = true
+rnode = "/dev/ttyACM1"
+
+[[steps]]
+action = "sleep"
+duration_secs = 25
+
+[[steps]]
+action = "wait_for_path"
+on = "alpha"
+destination = "beta.probe"
+timeout_secs = 90
+
+# Drop first 2 frames between 50-130 bytes (link requests ~86, proofs ~118).
+# Announces (~167) and data segments (~490) are outside this range.
+[[steps]]
+action = "proxy_rule"
+node = "alpha"
+rule = "drop direction=a_to_b filter=cmd:0x00 min_size=50 max_size=130 count=2"
+
+[[steps]]
+action = "file_transfer"
+sender = "alpha"
+receiver = "beta"
+sender_tool = "lrncp"
+receiver_tool = "lrncp"
+file_sizes = [2048]
+direction = "a_to_b"
+repeats = 1
+timeout_secs = 300
+
+[[steps]]
+action = "proxy_stats"
+node = "alpha"
+expect_dropped = 2

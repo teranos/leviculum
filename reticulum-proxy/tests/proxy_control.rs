@@ -81,7 +81,7 @@ async fn test_drop_count() {
     engine
         .lock()
         .await
-        .add_rule(Direction::Both, Action::Drop, Filter::All, 0, 0, Some(1));
+        .add_rule(Direction::Both, Action::Drop, Filter::All, 0, 0, 0, Some(1));
 
     // Small yield to let the forwarding loop start
     tokio::task::yield_now().await;
@@ -128,6 +128,7 @@ async fn test_delay() {
         Direction::Both,
         Action::Delay(200),
         Filter::All,
+        0,
         0,
         0,
         Some(1),
@@ -187,11 +188,11 @@ async fn test_clear_all() {
     engine
         .lock()
         .await
-        .add_rule(Direction::Both, Action::Drop, Filter::All, 0, 0, None);
+        .add_rule(Direction::Both, Action::Drop, Filter::All, 0, 0, 0, None);
     engine
         .lock()
         .await
-        .add_rule(Direction::Both, Action::Corrupt, Filter::All, 0, 0, None);
+        .add_rule(Direction::Both, Action::Corrupt, Filter::All, 0, 0, 0, None);
 
     tokio::task::yield_now().await;
 
@@ -267,10 +268,15 @@ async fn test_corrupt() {
         let _ = forward_kiss_frames(a_proxy, "a", b_proxy, "b", engine_clone).await;
     });
 
-    engine
-        .lock()
-        .await
-        .add_rule(Direction::Both, Action::Corrupt, Filter::All, 0, 0, Some(1));
+    engine.lock().await.add_rule(
+        Direction::Both,
+        Action::Corrupt,
+        Filter::All,
+        0,
+        0,
+        0,
+        Some(1),
+    );
 
     tokio::task::yield_now().await;
 
@@ -300,7 +306,7 @@ async fn test_direction_filter() {
     engine
         .lock()
         .await
-        .add_rule(Direction::AToB, Action::Drop, Filter::All, 0, 0, None);
+        .add_rule(Direction::AToB, Action::Drop, Filter::All, 0, 0, 0, None);
 
     tokio::task::yield_now().await;
 
@@ -334,6 +340,7 @@ async fn test_command_filter() {
         Direction::Both,
         Action::Drop,
         Filter::Command(0x00),
+        0,
         0,
         0,
         None,
@@ -415,7 +422,7 @@ async fn test_drop_5_forward_10() {
     engine
         .lock()
         .await
-        .add_rule(Direction::Both, Action::Drop, Filter::All, 0, 0, Some(5));
+        .add_rule(Direction::Both, Action::Drop, Filter::All, 0, 0, 0, Some(5));
 
     tokio::task::yield_now().await;
 
@@ -444,4 +451,39 @@ async fn test_drop_5_forward_10() {
     assert_eq!(eng.dropped, 5);
     assert_eq!(eng.forwarded, 5);
     println!("Stats: {}", eng.stats_json());
+}
+
+/// Test 10: max_size via control socket
+#[tokio::test]
+async fn test_control_socket_max_size() {
+    let engine = Arc::new(Mutex::new(RuleEngine::new()));
+    let sock_path =
+        std::env::temp_dir().join(format!("proxy-test-maxsz-{}.sock", std::process::id()));
+
+    let engine_clone = Arc::clone(&engine);
+    let sock = sock_path.clone();
+    tokio::spawn(async move {
+        let _ = run_control_socket(&sock, engine_clone).await;
+    });
+    tokio::time::sleep(Duration::from_millis(50)).await;
+
+    // Add a drop rule with min_size and max_size
+    let resp = control_cmd(
+        &sock_path,
+        "rule add drop direction=a_to_b filter=cmd:0x00 min_size=50 max_size=130 count=2",
+    )
+    .await;
+    assert!(resp.starts_with("OK "), "Got: {resp}");
+
+    // Verify rule was added via the engine
+    let eng = engine.lock().await;
+    let rules = eng.list_rules();
+    assert_eq!(rules.len(), 1);
+    assert_eq!(rules[0].min_size, 50);
+    assert_eq!(rules[0].max_size, 130);
+    assert_eq!(rules[0].direction, Direction::AToB);
+    assert!(matches!(rules[0].remaining, Some(2)));
+    drop(eng);
+
+    let _ = std::fs::remove_file(&sock_path);
 }

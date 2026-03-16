@@ -56,6 +56,8 @@ pub struct Rule {
     pub filter: Filter,
     /// Only match frames with payload >= this size (0 = no minimum).
     pub min_size: usize,
+    /// Only match frames with payload <= this size (0 = no maximum).
+    pub max_size: usize,
     /// Number of matching frames to skip before the rule activates.
     pub skip: u32,
     pub remaining: Option<u32>,
@@ -100,12 +102,14 @@ impl RuleEngine {
         }
     }
 
+    #[allow(clippy::too_many_arguments)]
     pub fn add_rule(
         &mut self,
         direction: Direction,
         action: Action,
         filter: Filter,
         min_size: usize,
+        max_size: usize,
         skip: u32,
         count: Option<u32>,
     ) -> u32 {
@@ -117,6 +121,7 @@ impl RuleEngine {
             action,
             filter,
             min_size,
+            max_size,
             skip,
             remaining: count,
         });
@@ -163,6 +168,10 @@ impl RuleEngine {
             }
 
             if rule.min_size > 0 && frame.payload.len() < rule.min_size {
+                continue;
+            }
+
+            if rule.max_size > 0 && frame.payload.len() > rule.max_size {
                 continue;
             }
 
@@ -247,7 +256,7 @@ mod tests {
     #[test]
     fn drop_rule() {
         let mut engine = RuleEngine::new();
-        engine.add_rule(Direction::Both, Action::Drop, Filter::All, 0, 0, None);
+        engine.add_rule(Direction::Both, Action::Drop, Filter::All, 0, 0, 0, None);
         let frame = KissFrame {
             command: 0x00,
             payload: vec![1, 2, 3],
@@ -263,7 +272,7 @@ mod tests {
     #[test]
     fn drop_with_count() {
         let mut engine = RuleEngine::new();
-        engine.add_rule(Direction::Both, Action::Drop, Filter::All, 0, 0, Some(2));
+        engine.add_rule(Direction::Both, Action::Drop, Filter::All, 0, 0, 0, Some(2));
         let frame = KissFrame {
             command: 0x00,
             payload: vec![1],
@@ -290,7 +299,7 @@ mod tests {
     #[test]
     fn direction_filter() {
         let mut engine = RuleEngine::new();
-        engine.add_rule(Direction::AToB, Action::Drop, Filter::All, 0, 0, None);
+        engine.add_rule(Direction::AToB, Action::Drop, Filter::All, 0, 0, 0, None);
         let frame = KissFrame {
             command: 0x00,
             payload: vec![1],
@@ -315,6 +324,7 @@ mod tests {
             Direction::Both,
             Action::Drop,
             Filter::Command(0x00),
+            0,
             0,
             0,
             None,
@@ -342,7 +352,7 @@ mod tests {
     #[test]
     fn corrupt_flips_first_byte() {
         let mut engine = RuleEngine::new();
-        engine.add_rule(Direction::Both, Action::Corrupt, Filter::All, 0, 0, None);
+        engine.add_rule(Direction::Both, Action::Corrupt, Filter::All, 0, 0, 0, None);
         let frame = KissFrame {
             command: 0x00,
             payload: vec![0xAB, 0xCD],
@@ -360,7 +370,15 @@ mod tests {
     #[test]
     fn delay_returns_ms() {
         let mut engine = RuleEngine::new();
-        engine.add_rule(Direction::Both, Action::Delay(150), Filter::All, 0, 0, None);
+        engine.add_rule(
+            Direction::Both,
+            Action::Delay(150),
+            Filter::All,
+            0,
+            0,
+            0,
+            None,
+        );
         let frame = KissFrame {
             command: 0x00,
             payload: vec![1],
@@ -376,8 +394,8 @@ mod tests {
     #[test]
     fn first_matching_rule_wins() {
         let mut engine = RuleEngine::new();
-        engine.add_rule(Direction::Both, Action::Drop, Filter::All, 0, 0, None);
-        engine.add_rule(Direction::Both, Action::Corrupt, Filter::All, 0, 0, None);
+        engine.add_rule(Direction::Both, Action::Drop, Filter::All, 0, 0, 0, None);
+        engine.add_rule(Direction::Both, Action::Corrupt, Filter::All, 0, 0, 0, None);
         let frame = KissFrame {
             command: 0x00,
             payload: vec![1],
@@ -393,7 +411,7 @@ mod tests {
     #[test]
     fn clear_rule_by_id() {
         let mut engine = RuleEngine::new();
-        let id = engine.add_rule(Direction::Both, Action::Drop, Filter::All, 0, 0, None);
+        let id = engine.add_rule(Direction::Both, Action::Drop, Filter::All, 0, 0, 0, None);
         assert!(engine.clear_rule(id));
         assert!(!engine.clear_rule(id)); // already removed
         assert_eq!(engine.rule_count(), 0);
@@ -402,8 +420,8 @@ mod tests {
     #[test]
     fn clear_all() {
         let mut engine = RuleEngine::new();
-        engine.add_rule(Direction::Both, Action::Drop, Filter::All, 0, 0, None);
-        engine.add_rule(Direction::Both, Action::Corrupt, Filter::All, 0, 0, None);
+        engine.add_rule(Direction::Both, Action::Drop, Filter::All, 0, 0, 0, None);
+        engine.add_rule(Direction::Both, Action::Corrupt, Filter::All, 0, 0, 0, None);
         engine.clear_all();
         assert_eq!(engine.rule_count(), 0);
     }
@@ -415,7 +433,7 @@ mod tests {
         engine.dropped = 2;
         engine.delayed = 1;
         engine.corrupted = 3;
-        engine.add_rule(Direction::Both, Action::Drop, Filter::All, 0, 0, None);
+        engine.add_rule(Direction::Both, Action::Drop, Filter::All, 0, 0, 0, None);
 
         let json = engine.stats_json();
         assert_eq!(
@@ -428,7 +446,7 @@ mod tests {
     fn skip_forwards_before_acting() {
         let mut engine = RuleEngine::new();
         // Skip 2 matching frames, then drop the next 3
-        engine.add_rule(Direction::Both, Action::Drop, Filter::All, 0, 2, Some(3));
+        engine.add_rule(Direction::Both, Action::Drop, Filter::All, 0, 0, 2, Some(3));
         let frame = KissFrame {
             command: 0x00,
             payload: vec![1],
@@ -468,5 +486,62 @@ mod tests {
         ));
         assert_eq!(engine.forwarded, 3);
         assert_eq!(engine.rule_count(), 0);
+    }
+
+    #[test]
+    fn max_size_filter() {
+        let mut engine = RuleEngine::new();
+        // Drop frames with payload between 50 and 130 bytes
+        engine.add_rule(Direction::Both, Action::Drop, Filter::All, 50, 130, 0, None);
+
+        let small_frame = KissFrame {
+            command: 0x00,
+            payload: vec![0u8; 30],
+        };
+        let medium_frame = KissFrame {
+            command: 0x00,
+            payload: vec![0u8; 86],
+        };
+        let large_frame = KissFrame {
+            command: 0x00,
+            payload: vec![0u8; 200],
+        };
+
+        // 30 bytes: below min_size, forwarded
+        assert!(matches!(
+            engine.evaluate(&small_frame, Direction::AToB),
+            FrameDecision::Forward
+        ));
+        // 86 bytes: within range, dropped
+        assert!(matches!(
+            engine.evaluate(&medium_frame, Direction::AToB),
+            FrameDecision::Drop
+        ));
+        // 200 bytes: above max_size, forwarded
+        assert!(matches!(
+            engine.evaluate(&large_frame, Direction::AToB),
+            FrameDecision::Forward
+        ));
+
+        assert_eq!(engine.dropped, 1);
+        assert_eq!(engine.forwarded, 2);
+    }
+
+    #[test]
+    fn max_size_zero_means_no_limit() {
+        let mut engine = RuleEngine::new();
+        // max_size=0 means no upper bound
+        engine.add_rule(Direction::Both, Action::Drop, Filter::All, 50, 0, 0, None);
+
+        let large_frame = KissFrame {
+            command: 0x00,
+            payload: vec![0u8; 10000],
+        };
+
+        // Should match since max_size=0 imposes no limit
+        assert!(matches!(
+            engine.evaluate(&large_frame, Direction::AToB),
+            FrameDecision::Drop
+        ));
     }
 }

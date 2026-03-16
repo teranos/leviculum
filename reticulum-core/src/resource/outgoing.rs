@@ -500,9 +500,8 @@ impl OutgoingResource {
                     PART_TIMEOUT_FACTOR_INITIAL // 4: initial, generous
                 };
                 let per_retry_extra = self.retries as u64 * PER_RETRY_DELAY_MS;
-                let timeout = rtt_ms.saturating_mul(timeout_factor)
-                    + SENDER_GRACE_TIME_MS
-                    + per_retry_extra;
+                let timeout =
+                    rtt_ms.saturating_mul(timeout_factor) + SENDER_GRACE_TIME_MS + per_retry_extra;
 
                 if now_ms.saturating_sub(self.last_activity_ms) >= timeout {
                     self.retries += 1;
@@ -558,9 +557,8 @@ impl OutgoingResource {
                     PART_TIMEOUT_FACTOR_INITIAL
                 };
                 let per_retry_extra = self.retries as u64 * PER_RETRY_DELAY_MS;
-                let timeout = rtt_ms.saturating_mul(timeout_factor)
-                    + SENDER_GRACE_TIME_MS
-                    + per_retry_extra;
+                let timeout =
+                    rtt_ms.saturating_mul(timeout_factor) + SENDER_GRACE_TIME_MS + per_retry_extra;
                 Some(self.last_activity_ms.saturating_add(timeout))
             }
             ResourceStatus::AwaitingProof => {
