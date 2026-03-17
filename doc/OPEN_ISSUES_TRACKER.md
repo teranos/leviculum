@@ -29,6 +29,8 @@ When an issue is fixed, remove it from this file entirely.
 | E35 | L | post-7 | open | Test | size_sweep runs without proxy — no loss recovery tested for 5KB/50KB files |
 | E36 | L | post-7 | open | Test | lora_lrncp_bidir is sequential, not simultaneous — no contention testing |
 | E37 | L | post-7 | open | Test | Proxy only supports deterministic drop counts, not random loss rates |
+| E38 | M | post-7 | open | Test | Multi-hop LoRa testing requires per-node radio config, multi-RNode nodes, and 4 RNodes |
+| E39 | H | post-7 | open | Bug | Transport relay of link requests on shared medium causes collision with responder proof |
 
 ---
 
@@ -240,4 +242,31 @@ When an issue is fixed, remove it from this file entirely.
 - **Detail:** The proxy drops exactly N frames by count. Real radio channels exhibit probabilistic loss (e.g. 10-20% random frame loss). A `rate=0.2` proxy parameter would allow testing behavior under realistic stochastic loss patterns rather than worst-case deterministic bursts.
 - **Fix:** Add `rate=N.N` parameter to proxy rules as a complement to `count=N`. When `rate` is set, each matching frame is independently dropped with probability N.N.
 - **Test:** Unit test: verify rate-based dropping produces approximately the expected drop ratio over many frames. Integration test: LoRa transfer with `rate=0.1` proxy rule.
+
+### E38: Multi-hop LoRa testing requires per-node radio config, multi-RNode nodes, and 4 RNodes
+- **Status:** open
+- **Priority:** M
+- **Phase:** post-7
+- **Category:** Test
+- **Found:** Gap 8 implementation — 3 co-located same-frequency RNodes cannot test multi-hop relay because Reticulum discovers the direct 1-hop path and bypasses the relay.
+- **Detail:** True multi-hop LoRa testing (A→B→C where B relays between two separate LoRa links) requires frequency isolation: A↔B on frequency F1, B↔C on frequency F2. Node B must have two RNode interfaces (one per frequency), acting as a frequency bridge. This requires 4 physical RNode devices total: A on F1, B on F1 + F2 (two radios), C on F2. With 3 co-located same-frequency radios, KISS frames carry no sender identity so the proxy cannot filter by source, and Reticulum's hop-count path selection always prefers the direct 1-hop path over the 2-hop relay.
+- **Hardware:** 4 RNodes required. A on F1, B with 2 RNodes (F1 + F2), C on F2.
+- **Infrastructure changes:**
+  1. Per-node radio config: replace global `[radio]` section with per-RNode config inside `[nodes.<name>]` (`topology.rs`: `RadioConfig`, `NodeDef`, `render_config()`)
+  2. Multi-RNode nodes: change `NodeDef.rnode: Option<String>` to `rnodes: Vec<RNodeConfig>` with per-entry device path + radio params
+  3. Config generator: emit multiple `[[RNode Interface]]` sections per node (`topology.rs`: `render_config()`)
+  4. Compose generator: map multiple host devices into one container (`compose.rs`: device list)
+- **Scope:** topology.rs, compose.rs, runner.rs, config generation. No core protocol changes needed — Reticulum already supports multiple interfaces per node.
+- **Test:** Integration test: `lora_multihop_probe` — A sends probe to C through relay B, verify 2-hop path where A and C are on different frequencies.
+
+### E39: Transport relay of link requests on shared medium causes collision with responder proof
+- **Status:** open
+- **Priority:** H
+- **Phase:** post-7
+- **Category:** Bug
+- **Found:** Gap 8 implementation — 3-node shared medium LoRa tests fail consistently (0/2) due to link establishment failure.
+- **Detail:** When 3+ transport-enabled nodes share a LoRa channel, a bystander node (C) that receives a link request from A to B forwards it back onto the same RNode interface (`transport.rs:2084`, `target_iface = path.interface_index`). This rebroadcast collides with B's link proof, preventing A from receiving the proof and killing the link. The forwarding is correct for multi-hop relay across different interfaces, but on a shared single-interface medium it causes destructive interference. Python Reticulum has the same forwarding logic but may avoid the collision through different timing or interface handling. Root cause code path: `transport.rs:1955-2084` — link request forwarding does not check whether `target_iface == interface_index` (receiving interface equals forwarding interface on a shared medium).
+- **Impact:** Link establishment fails 100% of the time with 3+ transport-enabled nodes on the same LoRa channel. Workaround: disable transport on bystander nodes (`enable_transport = false`).
+- **Fix:** Either (a) suppress link request forwarding when `target_iface == interface_index` on shared-medium interfaces (check `mode().multiple_access`), or (b) add jitter to link request forwarding to avoid collision with the responder's proof, or (c) implement link request retry (E34) to recover from the collision. Check Python Reticulum behavior on shared-medium interfaces for reference.
+- **Test:** 3-node LoRa test with all nodes transport-enabled: `lora_3node_transfer` should pass without `enable_transport = false` on bystander.
 

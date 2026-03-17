@@ -1,0 +1,68 @@
+# 3-node bidirectional: sequential transfer alpha→gamma then gamma→alpha
+# with beta as active 3rd peer. Tests file transfer between the alpha↔gamma
+# pair (ACM0↔ACM3), which no existing LoRa test covers.
+#
+# All three radios are co-located on the same frequency — every node
+# hears every other node directly (1-hop paths).
+# Beta (bystander) has transport disabled to prevent link request relay
+# collisions on the shared channel (see E38, E39).
+#
+# Requires 3 RNode devices at /dev/ttyACM0, /dev/ttyACM1, /dev/ttyACM3.
+
+[test]
+name = "lora_3node_bidir"
+description = "lrncp bidirectional 2KB over LoRa between alpha and gamma (3-node mesh)"
+timeout_secs = 600
+rust_log = "reticulum_core::link=debug,reticulum_core::transport=debug,reticulum_std::interfaces=debug,info"
+
+[radio]
+frequency = 869525000
+bandwidth = 125000
+sf = 7
+cr = 5
+txpower = 17
+
+[nodes.alpha]
+type = "rust"
+respond_to_probes = true
+rnode = "/dev/ttyACM0"
+
+[nodes.beta]
+type = "rust"
+respond_to_probes = true
+enable_transport = false
+rnode = "/dev/ttyACM1"
+
+[nodes.gamma]
+type = "rust"
+respond_to_probes = true
+rnode = "/dev/ttyACM3"
+
+[[steps]]
+action = "sleep"
+duration_secs = 30
+
+# Path convergence (beta has transport disabled, skip its probe resolution)
+[[steps]]
+action = "wait_for_path"
+on = "alpha"
+destination = "gamma.probe"
+timeout_secs = 90
+
+[[steps]]
+action = "wait_for_path"
+on = "gamma"
+destination = "alpha.probe"
+timeout_secs = 90
+
+# Bidirectional transfer alpha↔gamma (beta as bystander)
+[[steps]]
+action = "file_transfer"
+sender = "alpha"
+receiver = "gamma"
+sender_tool = "lrncp"
+receiver_tool = "lrncp"
+file_sizes = [2048]
+direction = "both"
+repeats = 1
+timeout_secs = 300

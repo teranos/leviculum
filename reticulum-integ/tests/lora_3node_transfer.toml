@@ -1,0 +1,65 @@
+# 3-node shared medium baseline: 1KB transfer from alpha to beta with gamma
+# present as bystander. Gamma's management announces add channel contention
+# vs the 2-node baseline (lora_lrncp_push).
+#
+# All three radios are co-located on the same frequency — every node hears
+# every other node directly (1-hop paths). No relay is possible.
+# Gamma has transport disabled to prevent it from relaying link requests
+# back onto the same LoRa channel, which causes collisions with the
+# responder's proof (see E38, E39).
+#
+# Requires 3 RNode devices at /dev/ttyACM0, /dev/ttyACM1, /dev/ttyACM3.
+
+[test]
+name = "lora_3node_transfer"
+description = "lrncp push 1KB over LoRa with 3rd node present (shared medium)"
+timeout_secs = 480
+rust_log = "reticulum_core::link=debug,reticulum_core::transport=debug,reticulum_std::interfaces=debug,info"
+
+[radio]
+frequency = 869525000
+bandwidth = 125000
+sf = 7
+cr = 5
+txpower = 17
+
+[nodes.alpha]
+type = "rust"
+respond_to_probes = true
+rnode = "/dev/ttyACM0"
+
+[nodes.beta]
+type = "rust"
+respond_to_probes = true
+rnode = "/dev/ttyACM1"
+
+[nodes.gamma]
+type = "rust"
+respond_to_probes = true
+enable_transport = false
+rnode = "/dev/ttyACM3"
+
+[[steps]]
+action = "sleep"
+duration_secs = 30
+
+[[steps]]
+action = "wait_for_path"
+on = "alpha"
+destination = "beta.probe"
+timeout_secs = 90
+
+# No wait_for_path to gamma — gamma has transport disabled (bystander),
+# so rnstatus doesn't expose its probe responder hash.
+# Gamma's presence is confirmed by the 30s sleep + wait_ready.
+
+[[steps]]
+action = "file_transfer"
+sender = "alpha"
+receiver = "beta"
+sender_tool = "lrncp"
+receiver_tool = "lrncp"
+file_sizes = [1024]
+direction = "a_to_b"
+repeats = 3
+timeout_secs = 180

@@ -1,0 +1,75 @@
+# 3-node contention: transfer from alpha to beta while gamma generates
+# announce traffic. Gamma restarts after path convergence, triggering
+# fresh management announces that compete with alpha's data segments on
+# the shared LoRa channel.
+#
+# Compare timing with lora_3node_transfer (3-node quiet baseline) and
+# lora_lrncp_push (2-node baseline) to quantify contention impact.
+#
+# Gamma has transport disabled to prevent link request relay collisions
+# on the shared channel (see E38, E39).
+#
+# Non-determinism note: the restart-to-announce timing relative to the
+# transfer is not controlled. The test only asserts transfer success,
+# not timing. If flaky in practice, replace restart with a fixed-interval
+# announce loop for deterministic contention.
+#
+# Requires 3 RNode devices at /dev/ttyACM0, /dev/ttyACM1, /dev/ttyACM3.
+
+[test]
+name = "lora_3node_contention"
+description = "lrncp push 2KB over LoRa with active contention from 3rd node"
+timeout_secs = 600
+rust_log = "reticulum_core::link=debug,reticulum_core::transport=debug,reticulum_std::interfaces=debug,info"
+
+[radio]
+frequency = 869525000
+bandwidth = 125000
+sf = 7
+cr = 5
+txpower = 17
+
+[nodes.alpha]
+type = "rust"
+respond_to_probes = true
+rnode = "/dev/ttyACM0"
+
+[nodes.beta]
+type = "rust"
+respond_to_probes = true
+rnode = "/dev/ttyACM1"
+
+[nodes.gamma]
+type = "rust"
+respond_to_probes = true
+enable_transport = false
+rnode = "/dev/ttyACM3"
+
+[[steps]]
+action = "sleep"
+duration_secs = 30
+
+# Wait for alpha→beta path (gamma has transport disabled, no probe hash)
+[[steps]]
+action = "wait_for_path"
+on = "alpha"
+destination = "beta.probe"
+timeout_secs = 90
+
+# Restart gamma to trigger fresh announces during the transfer
+[[steps]]
+action = "restart"
+node = "gamma"
+
+# Start transfer — gamma's post-restart announces will compete
+# with data segments on the shared channel
+[[steps]]
+action = "file_transfer"
+sender = "alpha"
+receiver = "beta"
+sender_tool = "lrncp"
+receiver_tool = "lrncp"
+file_sizes = [2048]
+direction = "a_to_b"
+repeats = 3
+timeout_secs = 300
