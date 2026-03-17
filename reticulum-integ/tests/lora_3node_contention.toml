@@ -6,9 +6,6 @@
 # Compare timing with lora_3node_transfer (3-node quiet baseline) and
 # lora_lrncp_push (2-node baseline) to quantify contention impact.
 #
-# Gamma has transport disabled to prevent link request relay collisions
-# on the shared channel (see E38, E39).
-#
 # Non-determinism note: the restart-to-announce timing relative to the
 # transfer is not controlled. The test only asserts transfer success,
 # not timing. If flaky in practice, replace restart with a fixed-interval
@@ -42,18 +39,23 @@ rnode = "/dev/ttyACM1"
 [nodes.gamma]
 type = "rust"
 respond_to_probes = true
-enable_transport = false
 rnode = "/dev/ttyACM3"
 
 [[steps]]
 action = "sleep"
 duration_secs = 30
 
-# Wait for alpha→beta path (gamma has transport disabled, no probe hash)
+# Full 3-node path convergence
 [[steps]]
 action = "wait_for_path"
 on = "alpha"
 destination = "beta.probe"
+timeout_secs = 90
+
+[[steps]]
+action = "wait_for_path"
+on = "alpha"
+destination = "gamma.probe"
 timeout_secs = 90
 
 # Restart gamma to trigger fresh announces during the transfer

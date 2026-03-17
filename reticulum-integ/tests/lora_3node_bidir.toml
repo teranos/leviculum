@@ -4,8 +4,6 @@
 #
 # All three radios are co-located on the same frequency — every node
 # hears every other node directly (1-hop paths).
-# Beta (bystander) has transport disabled to prevent link request relay
-# collisions on the shared channel (see E38, E39).
 #
 # Requires 3 RNode devices at /dev/ttyACM0, /dev/ttyACM1, /dev/ttyACM3.
 
@@ -30,7 +28,6 @@ rnode = "/dev/ttyACM0"
 [nodes.beta]
 type = "rust"
 respond_to_probes = true
-enable_transport = false
 rnode = "/dev/ttyACM1"
 
 [nodes.gamma]
@@ -42,7 +39,7 @@ rnode = "/dev/ttyACM3"
 action = "sleep"
 duration_secs = 30
 
-# Path convergence (beta has transport disabled, skip its probe resolution)
+# Full 3-node path convergence
 [[steps]]
 action = "wait_for_path"
 on = "alpha"
@@ -52,6 +49,12 @@ timeout_secs = 90
 [[steps]]
 action = "wait_for_path"
 on = "gamma"
+destination = "alpha.probe"
+timeout_secs = 90
+
+[[steps]]
+action = "wait_for_path"
+on = "beta"
 destination = "alpha.probe"
 timeout_secs = 90
 

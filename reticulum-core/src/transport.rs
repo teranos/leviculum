@@ -1138,6 +1138,12 @@ impl<C: Clock, S: Storage> Transport<C, S> {
         interface_index: usize,
         data: &[u8],
     ) -> Result<(), TransportError> {
+        // Cache outbound packet hash so echoes returning via shared-medium
+        // relay are dropped by the dedup check in process_incoming().
+        // Matches Python Transport.py:1168-1169 and send_on_all_interfaces().
+        let cache_hash = packet_hash(data);
+        self.storage.add_packet_hash(cache_hash);
+
         self.pending_actions.push(Action::SendPacket {
             iface: InterfaceId(interface_index),
             data: data.to_vec(),
@@ -2081,7 +2087,11 @@ impl<C: Clock, S: Storage> Transport<C, S> {
                 self.iface_name(target_iface),
                 path_hops
             );
-            return self.forward_on_interface(target_iface, &mut forwarded);
+            return self.forward_on_interface_from(
+                target_iface,
+                Some(interface_index),
+                &mut forwarded,
+            );
         }
 
         Ok(())
@@ -2352,7 +2362,11 @@ impl<C: Clock, S: Storage> Transport<C, S> {
                     self.iface_name(target_iface)
                 );
                 let mut forwarded = packet;
-                return self.forward_on_interface(target_iface, &mut forwarded);
+                return self.forward_on_interface_from(
+                    target_iface,
+                    Some(interface_index),
+                    &mut forwarded,
+                );
             } else if packet.context == PacketContext::Lrproof {
                 tracing::debug!(
                     "LRPROOF for <{}> on {}: no link_table entry found",
@@ -2391,8 +2405,9 @@ impl<C: Clock, S: Storage> Transport<C, S> {
                             self.iface_name(reverse_entry.receiving_interface_index)
                         );
                         let mut forwarded = packet;
-                        return self.forward_on_interface(
+                        return self.forward_on_interface_from(
                             reverse_entry.receiving_interface_index,
+                            Some(interface_index),
                             &mut forwarded,
                         );
                     }
@@ -2549,7 +2564,11 @@ impl<C: Clock, S: Storage> Transport<C, S> {
                         self.iface_name(target_iface)
                     );
                     let mut forwarded = packet;
-                    return self.forward_on_interface(target_iface, &mut forwarded);
+                    return self.forward_on_interface_from(
+                        target_iface,
+                        Some(interface_index),
+                        &mut forwarded,
+                    );
                 }
             }
 
@@ -2645,7 +2664,7 @@ impl<C: Clock, S: Storage> Transport<C, S> {
             packet.transport_id = None;
         }
 
-        self.forward_on_interface(target_iface, &mut packet)
+        self.forward_on_interface_from(target_iface, Some(source_interface_index), &mut packet)
     }
 
     /// Clamp MTU signaling bytes in a link request payload.
@@ -2708,21 +2727,74 @@ impl<C: Clock, S: Storage> Transport<C, S> {
     /// Checks TTL and updates stats. Hops were already incremented on receipt.
     fn forward_on_interface(
         &mut self,
-        interface_index: usize,
+        target_iface: usize,
+        packet: &mut Packet,
+    ) -> Result<(), TransportError> {
+        self.forward_on_interface_from(target_iface, None, packet)
+    }
+
+    /// Forward a packet to `target_iface`, optionally suppressing same-interface
+    /// relay on shared media.
+    ///
+    /// When `receiving_iface` is `Some(idx)` and equals `target_iface`, the
+    /// packet is silently dropped instead of being transmitted. This prevents
+    /// two distinct problems on shared broadcast media like LoRa (E39):
+    ///
+    /// 1. **RF collision** (primary): On a half-duplex LoRa channel with 3+
+    ///    transport-enabled nodes, a bystander (C) that relays A's link request
+    ///    back onto the same channel causes its TX to overlap with B's proof TX.
+    ///    The collision corrupts both frames — A never receives the proof, and
+    ///    the link fails. Hash-based dedup (Part 1 of the E39 fix, in
+    ///    `send_on_interface`) cannot fix this because the proof was destroyed
+    ///    in flight before reception.
+    ///
+    /// 2. **Duplicate processing**: Even without collision, the relayed echo
+    ///    would be a duplicate that wastes channel airtime and could confuse
+    ///    link/resource state machines.
+    ///
+    /// **Why Python doesn't need this**: Python Reticulum has no explicit
+    /// same-interface suppression (Transport.py:1503 forwards unconditionally).
+    /// Python relies on outbound hash caching (Transport.py:1169) for dedup.
+    /// Python's GIL-serialized execution creates different TX timing than
+    /// Rust's async driver, making RF collisions less likely in practice.
+    /// With Rust's async driver, the relay TX fires fast enough to collide
+    /// with the responder's proof. Confirmed: 3 Python nodes all transport-
+    /// enabled on same LoRa channel PASSES; 3 Rust nodes without this fix
+    /// FAILS 100%.
+    ///
+    /// **Safe for multi-hop**: When `target_iface != receiving_iface` (e.g.,
+    /// a bridge node with two RNodes on different frequencies), forwarding
+    /// proceeds normally. The suppression only fires when both interfaces
+    /// are the same object — i.e., the packet would be relayed back onto the
+    /// exact medium it was received from.
+    fn forward_on_interface_from(
+        &mut self,
+        target_iface: usize,
+        receiving_iface: Option<usize>,
         packet: &mut Packet,
     ) -> Result<(), TransportError> {
         if packet.hops > self.config.max_hops {
             tracing::debug!(
                 "Dropped packet on {}, max hops exceeded (hops={}, max={})",
-                self.iface_name(interface_index),
+                self.iface_name(target_iface),
                 packet.hops,
                 self.config.max_hops
             );
             self.stats.packets_dropped += 1;
             return Ok(());
         }
+
+        // Suppress same-interface relay on shared media (E39).
+        if receiving_iface == Some(target_iface) {
+            tracing::trace!(
+                "Suppressed same-interface relay on {}",
+                self.iface_name(target_iface)
+            );
+            return Ok(());
+        }
+
         self.stats.packets_forwarded += 1;
-        self.send_packet_on_interface(interface_index, packet)
+        self.send_packet_on_interface(target_iface, packet)
     }
 
     /// Forward a packet on all interfaces except one.
@@ -3218,6 +3290,12 @@ impl<C: Clock, S: Storage> Transport<C, S> {
 
     /// Send data on all online interfaces except the one at `except_index` (emits Broadcast action)
     fn send_on_all_interfaces_except(&mut self, except_index: usize, data: &[u8]) {
+        // Cache outbound packet hash so echoes returning via shared-medium
+        // relay are dropped by the dedup check in process_incoming().
+        // Matches Python Transport.py:1168-1169 and send_on_all_interfaces().
+        let cache_hash = packet_hash(data);
+        self.storage.add_packet_hash(cache_hash);
+
         self.pending_actions.push(Action::Broadcast {
             data: data.to_vec(),
             exclude_iface: Some(InterfaceId(except_index)),
@@ -10025,9 +10103,12 @@ mod tests {
         }
 
         #[test]
-        fn test_lrproof_not_cached_on_link_table_forward() {
-            // LRPROOF forwarded via link table should NOT be cached
-            // (matches Python Transport.py:2016-2039).
+        fn test_lrproof_not_cached_on_incoming_but_cached_on_outbound() {
+            // LRPROOF forwarded via link table:
+            // - NOT cached by process_incoming (deferred, Python Transport.py:2016-2039)
+            // - IS cached by send_on_interface (outbound hash caching, Python Transport.py:1169)
+            // This ensures the forwarded proof can still be processed on arrival
+            // (deferred cache) while preventing echoes on shared media (outbound cache).
             let mut transport = make_transport_enabled();
             let _idx0 = transport.register_interface(Box::new(MockInterface::new("if0", 1)));
             let _idx1 = transport.register_interface(Box::new(MockInterface::new("if1", 2)));
@@ -10075,9 +10156,12 @@ mod tests {
                 transport.stats().packets_forwarded > 0,
                 "LRPROOF should be forwarded"
             );
+            // Outbound hash caching adds the forwarded packet's hash to prevent
+            // shared-medium echoes (E39 fix). The hash count is 1 (from
+            // send_on_interface), not 0 (the old behavior before E39 fix).
             assert!(
-                transport.storage().packet_hash_count() == 0,
-                "LRPROOF hash must NOT be cached during link-table forwarding"
+                transport.storage().packet_hash_count() == 1,
+                "Forwarded LRPROOF hash should be cached by outbound send"
             );
         }
 
