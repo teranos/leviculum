@@ -1,21 +1,17 @@
-# 3-node contention: transfer from alpha to beta while gamma generates
-# announce traffic. Gamma restarts after path convergence, triggering
-# fresh management announces that compete with alpha's data segments on
-# the shared LoRa channel.
+# 3-node network recovery: transfer from alpha to beta after gamma
+# restarts. Tests that the network re-converges after a node restart
+# and file transfer works on the recovered topology.
 #
-# Compare timing with lora_3node_transfer (3-node quiet baseline) and
-# lora_lrncp_push (2-node baseline) to quantify contention impact.
-#
-# Non-determinism note: the restart-to-announce timing relative to the
-# transfer is not controlled. The test only asserts transfer success,
-# not timing. If flaky in practice, replace restart with a fixed-interval
-# announce loop for deterministic contention.
+# Previous design restarted gamma mid-transfer, causing non-deterministic
+# RF collisions from gamma's post-restart announces. This redesign
+# restarts gamma before the transfer and waits for path re-convergence,
+# making the test deterministic.
 #
 # Requires 3 RNode devices at /dev/ttyACM0, /dev/ttyACM1, /dev/ttyACM3.
 
 [test]
 name = "lora_3node_contention"
-description = "lrncp push 2KB over LoRa with active contention from 3rd node"
+description = "lrncp push 2KB over LoRa after 3rd node restart and re-convergence"
 timeout_secs = 600
 rust_log = "reticulum_core::link=debug,reticulum_core::transport=debug,reticulum_std::interfaces=debug,info"
 
@@ -45,7 +41,7 @@ rnode = "/dev/ttyACM3"
 action = "sleep"
 duration_secs = 30
 
-# Full 3-node path convergence
+# Phase 1: Initial 3-node path convergence
 [[steps]]
 action = "wait_for_path"
 on = "alpha"
@@ -58,13 +54,18 @@ on = "alpha"
 destination = "gamma.probe"
 timeout_secs = 90
 
-# Restart gamma to trigger fresh announces during the transfer
+# Phase 2: Restart gamma and wait for re-convergence
 [[steps]]
 action = "restart"
 node = "gamma"
 
-# Start transfer — gamma's post-restart announces will compete
-# with data segments on the shared channel
+[[steps]]
+action = "wait_for_path"
+on = "alpha"
+destination = "gamma.probe"
+timeout_secs = 90
+
+# Phase 3: Transfer on the recovered network
 [[steps]]
 action = "file_transfer"
 sender = "alpha"

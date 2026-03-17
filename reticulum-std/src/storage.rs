@@ -470,6 +470,13 @@ impl reticulum_core::traits::Storage for Storage {
         self.packet_hashes_dirty = true;
     }
 
+    fn remove_packet_hash(&mut self, hash: &[u8; 32]) {
+        let removed = self.packet_cache.remove(hash) | self.packet_cache_prev.remove(hash);
+        if removed {
+            self.packet_hashes_dirty = true;
+        }
+    }
+
     // ─── Path Table ──────────────────────────────────────────────────────
     fn get_path(
         &self,

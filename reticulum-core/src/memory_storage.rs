@@ -478,6 +478,11 @@ impl Storage for MemoryStorage {
         }
     }
 
+    fn remove_packet_hash(&mut self, hash: &[u8; 32]) {
+        self.packet_cache.remove(hash);
+        self.packet_cache_prev.remove(hash);
+    }
+
     // ─── Path Table ─────────────────────────────────────────────────────
 
     fn get_path(&self, dest_hash: &[u8; TRUNCATED_HASHBYTES]) -> Option<&PathEntry> {

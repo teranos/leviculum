@@ -187,6 +187,12 @@ pub trait Storage {
     /// Record a packet hash as seen. Implementations handle capacity/eviction.
     fn add_packet_hash(&mut self, hash: [u8; 32]);
 
+    /// Remove a packet hash from the seen set, allowing the same packet to be
+    /// processed again. Used by link request retry (E34) to allow resending
+    /// a link request with identical bytes through a shared-instance daemon
+    /// whose outbound hash caching (E39) would otherwise reject the retry.
+    fn remove_packet_hash(&mut self, hash: &[u8; 32]);
+
     // ─── Path Table ─────────────────────────────────────────────────────────
 
     /// Look up a path by destination hash
@@ -541,6 +547,7 @@ impl Storage for NoStorage {
         false
     }
     fn add_packet_hash(&mut self, _hash: [u8; 32]) {}
+    fn remove_packet_hash(&mut self, _hash: &[u8; 32]) {}
 
     fn get_path(&self, _dest_hash: &[u8; TRUNCATED_HASHBYTES]) -> Option<&PathEntry> {
         None

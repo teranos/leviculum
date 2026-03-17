@@ -162,6 +162,12 @@ pub struct NodeCore<R: CryptoRngCore, C: Clock, S: Storage> {
     /// Pending outgoing requests, keyed by request_id.
     /// Cleanup: removed on (a) response, (b) timeout, (c) link close.
     pending_requests: BTreeMap<[u8; TRUNCATED_HASHBYTES], request::PendingRequest>,
+    /// Link establishment retry state, keyed by link_id.
+    /// When a link request times out, the retry state determines whether
+    /// to re-attempt with fresh keys or emit LinkClosed::Timeout.
+    /// Cleanup: removed on (a) successful proof, (b) all retries exhausted,
+    /// (c) remove_link() when the link is torn down.
+    link_retry_state: BTreeMap<LinkId, link_management::LinkRetryState>,
 }
 
 impl<R: CryptoRngCore, C: Clock, S: Storage> NodeCore<R, C, S> {
@@ -204,6 +210,7 @@ impl<R: CryptoRngCore, C: Clock, S: Storage> NodeCore<R, C, S> {
             next_mgmt_announce_ms: None,
             request_handlers: BTreeMap::new(),
             pending_requests: BTreeMap::new(),
+            link_retry_state: BTreeMap::new(),
         }
     }
 
@@ -2215,7 +2222,7 @@ mod tests {
 
     #[test]
     fn test_pending_link_timeout_triggers_path_recovery() {
-        use crate::constants::LINK_PENDING_TIMEOUT_MS;
+        use crate::constants::{LINK_PENDING_TIMEOUT_MS, LINK_REQUEST_MAX_RETRIES};
         use crate::transport::Action;
 
         let (mut node, dest_hash, _link_id) = setup_pending_link(false);
@@ -2223,31 +2230,36 @@ mod tests {
         // Path should exist before timeout
         assert!(node.has_path(&dest_hash));
 
-        // Advance clock past the pending link timeout
-        node.transport()
-            .clock()
-            .set(TEST_TIME_MS + LINK_PENDING_TIMEOUT_MS + 1);
-        let output = node.handle_timeout();
+        // Exhaust all link request retries (E34). Each timeout triggers a
+        // retry with fresh keys; the final timeout emits LinkClosed.
+        let mut final_output = node.handle_timeout(); // no-op, not timed out yet
+        for _attempt in 0..=(LINK_REQUEST_MAX_RETRIES as usize) {
+            let now = node.transport().clock().now_ms();
+            node.transport()
+                .clock()
+                .set(now + LINK_PENDING_TIMEOUT_MS + 1);
+            final_output = node.handle_timeout();
+        }
 
-        // Path should have been expired
+        // Path should have been expired after all retries exhausted
         assert!(
             !node.has_path(&dest_hash),
             "path should be expired after pending link timeout"
         );
 
         // Should have a Broadcast action (the path request)
-        let has_broadcast = output
+        let has_broadcast = final_output
             .actions
             .iter()
             .any(|a| matches!(a, Action::Broadcast { .. }));
         assert!(
             has_broadcast,
             "should emit a Broadcast action for path request, got: {:?}",
-            output.actions
+            final_output.actions
         );
 
         // Should have LinkClosed event with Timeout reason
-        let has_closed = output.events.iter().any(|e| {
+        let has_closed = final_output.events.iter().any(|e| {
             matches!(
                 e,
                 NodeEvent::LinkClosed {
@@ -2261,15 +2273,18 @@ mod tests {
 
     #[test]
     fn test_pending_link_timeout_no_recovery_for_transport_nodes() {
-        use crate::constants::LINK_PENDING_TIMEOUT_MS;
+        use crate::constants::{LINK_PENDING_TIMEOUT_MS, LINK_REQUEST_MAX_RETRIES};
 
         let (mut node, dest_hash, _link_id) = setup_pending_link(true);
 
-        // Advance clock past the pending link timeout
-        node.transport()
-            .clock()
-            .set(TEST_TIME_MS + LINK_PENDING_TIMEOUT_MS + 1);
-        let _output = node.handle_timeout();
+        // Exhaust all retries (E34)
+        for _attempt in 0..=(LINK_REQUEST_MAX_RETRIES as usize) {
+            let now = node.transport().clock().now_ms();
+            node.transport()
+                .clock()
+                .set(now + LINK_PENDING_TIMEOUT_MS + 1);
+            let _output = node.handle_timeout();
+        }
 
         // Transport nodes should NOT expire the path — they handle recovery
         // via clean_link_table() instead
@@ -2871,14 +2886,19 @@ mod tests {
 
     #[test]
     fn test_d12_handshake_timeout_vs_stale_timeout_different_reason() {
-        use crate::constants::LINK_PENDING_TIMEOUT_MS;
+        use crate::constants::{LINK_PENDING_TIMEOUT_MS, LINK_REQUEST_MAX_RETRIES};
 
         // Case 1: Handshake timeout produces LinkClosed with Timeout reason
+        // Exhaust all retries first (E34)
         let (mut node, _dest_hash, _link_id) = setup_pending_link(false);
-        node.transport()
-            .clock()
-            .set(TEST_TIME_MS + LINK_PENDING_TIMEOUT_MS + 1);
-        let output = node.handle_timeout();
+        let mut output = node.handle_timeout();
+        for _attempt in 0..=(LINK_REQUEST_MAX_RETRIES as usize) {
+            let now = node.transport().clock().now_ms();
+            node.transport()
+                .clock()
+                .set(now + LINK_PENDING_TIMEOUT_MS + 1);
+            output = node.handle_timeout();
+        }
 
         let has_timeout = output.events.iter().any(|e| {
             matches!(
@@ -2929,17 +2949,22 @@ mod tests {
 
     #[test]
     fn test_link_timeout_triggers_path_recovery() {
-        use crate::constants::LINK_PENDING_TIMEOUT_MS;
+        use crate::constants::{LINK_PENDING_TIMEOUT_MS, LINK_REQUEST_MAX_RETRIES};
         use crate::transport::Action;
 
         let (mut node, dest_hash, _link_id) = setup_pending_link(false);
 
         assert!(node.has_path(&dest_hash));
 
-        node.transport()
-            .clock()
-            .set(TEST_TIME_MS + LINK_PENDING_TIMEOUT_MS + 1);
-        let output = node.handle_timeout();
+        // Exhaust all retries (E34)
+        let mut output = node.handle_timeout();
+        for _attempt in 0..=(LINK_REQUEST_MAX_RETRIES as usize) {
+            let now = node.transport().clock().now_ms();
+            node.transport()
+                .clock()
+                .set(now + LINK_PENDING_TIMEOUT_MS + 1);
+            output = node.handle_timeout();
+        }
 
         assert!(
             !node.has_path(&dest_hash),
@@ -3009,14 +3034,21 @@ mod tests {
         let (_, _, _) = node.connect(hash1, &signing1);
         let (_, _, _) = node.connect(hash2, &signing2);
 
-        node.transport()
-            .clock()
-            .set(TEST_TIME_MS + LINK_PENDING_TIMEOUT_MS + 1);
-        let output = node.handle_timeout();
+        // Exhaust all retries for both links (E34)
+        let mut output = node.handle_timeout();
+        for _attempt in 0..=(crate::constants::LINK_REQUEST_MAX_RETRIES as usize) {
+            let now = node.transport().clock().now_ms();
+            node.transport()
+                .clock()
+                .set(now + LINK_PENDING_TIMEOUT_MS + 1);
+            output = node.handle_timeout();
+        }
 
         assert!(!node.has_path(&hash1));
         assert!(!node.has_path(&hash2));
 
+        // Count LinkClosed events across ALL handle_timeout rounds.
+        // Each destination eventually times out after retries are exhausted.
         let closed_count = output
             .events
             .iter()

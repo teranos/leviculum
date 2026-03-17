@@ -7,8 +7,9 @@
 use alloc::vec::Vec;
 
 use crate::constants::{
-    CHANNEL_DEFAULT_RTT_MS, DATA_RECEIPT_TIMEOUT_MS, MODE_AES256_CBC, MS_PER_SECOND,
-    PROOF_DATA_SIZE, RTT_RETRY_MAX_ATTEMPTS, TRUNCATED_HASHBYTES,
+    CHANNEL_DEFAULT_RTT_MS, DATA_RECEIPT_TIMEOUT_MS, LINK_REQUEST_MAX_RETRIES,
+    MODE_AES256_CBC, MS_PER_SECOND, PROOF_DATA_SIZE, RTT_RETRY_MAX_ATTEMPTS,
+    TRUNCATED_HASHBYTES,
 };
 use crate::destination::{DestinationHash, ProofStrategy};
 use crate::hex_fmt::{HexFmt, HexShort};
@@ -21,6 +22,18 @@ use rand_core::CryptoRngCore;
 use super::event::NodeEvent;
 use super::send;
 use super::{LinkStats, NodeCore};
+
+/// State for link establishment retry (E34).
+///
+/// Stored per link_id in `NodeCore::link_retry_state`. When a link request
+/// times out, the retry state determines whether to re-attempt (with fresh
+/// ephemeral keys and a new link_id) or emit `LinkClosed::Timeout`.
+#[derive(Debug, Clone)]
+pub(super) struct LinkRetryState {
+    pub dest_hash: DestinationHash,
+    pub signing_key: [u8; 32],
+    pub remaining: u8,
+}
 
 /// Simple message type for sending raw bytes over a channel
 struct RawBytesMessage<'a>(&'a [u8]);
@@ -228,6 +241,16 @@ impl<R: CryptoRngCore, C: Clock, S: Storage> NodeCore<R, C, S> {
         });
         self.links.insert(link_id, link);
 
+        // Register retry state so check_timeouts() can re-attempt on failure (E34).
+        self.link_retry_state.insert(
+            link_id,
+            LinkRetryState {
+                dest_hash,
+                signing_key: *dest_signing_key,
+                remaining: LINK_REQUEST_MAX_RETRIES,
+            },
+        );
+
         // Register link_id as a local destination so that the returning
         // LRPROOF (and subsequent data packets) are delivered to us.
         // Without this, handle_proof() silently drops the proof on
@@ -317,6 +340,7 @@ impl<R: CryptoRngCore, C: Clock, S: Storage> NodeCore<R, C, S> {
     /// ensures the reverse cleanup always happens together.
     fn remove_link(&mut self, link_id: &LinkId) {
         self.links.remove(link_id);
+        self.link_retry_state.remove(link_id);
         self.transport.unregister_destination(link_id.as_bytes());
     }
 
@@ -668,6 +692,9 @@ impl<R: CryptoRngCore, C: Clock, S: Storage> NodeCore<R, C, S> {
         }
 
         link.set_phase(LinkPhase::Established);
+
+        // Link established — no more retries needed.
+        self.link_retry_state.remove(&link_id);
 
         // Keepalive timing uses the actual measurement (even 0 for localhost).
         let rtt_seconds_actual = measured_rtt_ms as f64 / MS_PER_SECOND as f64;
@@ -2048,15 +2075,66 @@ impl<R: CryptoRngCore, C: Clock, S: Storage> NodeCore<R, C, S> {
             .collect();
 
         for link_id in timed_out {
-            tracing::debug!(
-                "Link <{}> establishment timed out",
-                HexShort(link_id.as_bytes())
-            );
             let (is_initiator, destination_hash) = self
                 .links
                 .get(&link_id)
                 .map(|l| (l.is_initiator(), *l.destination_hash()))
                 .unwrap_or((false, DestinationHash::new([0; 16])));
+
+            // Link request retry (E34): if this is an initiator link and
+            // retries remain, resend the link request and reset the timeout.
+            // The same link_id is reused so the caller's watch is unaffected.
+            if is_initiator {
+                if let Some(retry) = self.link_retry_state.get_mut(&link_id) {
+                    if retry.remaining > 0 {
+                        retry.remaining -= 1;
+                        tracing::debug!(
+                            "Link <{}> establishment timed out, resending request ({} retries left)",
+                            HexShort(link_id.as_bytes()),
+                            retry.remaining
+                        );
+                        // Rebuild and resend the link request with the same keys.
+                        // Reset the PendingOutgoing timestamp so the timeout restarts.
+                        let now_ms = self.transport.clock().now_ms();
+                        if let Some(link) = self.links.get_mut(&link_id) {
+                            let dest_hash_bytes = *destination_hash.as_bytes();
+                            let (next_hop, hops) =
+                                if let Some(path) = self.transport.path(&dest_hash_bytes) {
+                                    if path.needs_relay() {
+                                        (path.next_hop, path.hops)
+                                    } else {
+                                        (None, path.hops)
+                                    }
+                                } else {
+                                    (None, 1)
+                                };
+                            let hw_mtu = self
+                                .transport
+                                .next_hop_interface_hw_mtu(&dest_hash_bytes);
+                            let packet = link
+                                .build_link_request_packet_with_transport(next_hop, hops, hw_mtu);
+                            link.set_phase(LinkPhase::PendingOutgoing {
+                                created_at_ms: now_ms,
+                            });
+                            // Route the retried request
+                            let was_routed = self
+                                .transport
+                                .send_to_destination(&dest_hash_bytes, &packet)
+                                .is_ok();
+                            if !was_routed {
+                                self.transport.send_on_all_interfaces(&packet);
+                            }
+                        }
+                        continue;
+                    }
+                }
+            }
+
+            // No retries left (or not initiator): original behavior
+            tracing::debug!(
+                "Link <{}> establishment timed out (no retries left)",
+                HexShort(link_id.as_bytes())
+            );
             self.remove_link(&link_id);
             self.emit_link_closed(
                 link_id,

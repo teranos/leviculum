@@ -1195,9 +1195,12 @@ fn execute_transfer_direction(
                 .to_string();
 
             // 5b. Transfer file
+            // LoRa tests need a longer sender timeout to accommodate link
+            // request retries (E34): establishment_timeout × (1 + max_retries).
+            let sender_wait = if has_rnode { "120" } else { "60" };
             let start = Instant::now();
             let send_output = if is_fetch {
-                // Fetch mode: sender runs `<tool> -f <remote_path> <dest_hash> -s /tmp/received -w 60`
+                // Fetch mode: sender runs `<tool> -f <remote_path> <dest_hash> -s /tmp/received -w <timeout>`
                 let mut args: Vec<String> = vec![
                     "timeout".into(),
                     timeout_str.clone(),
@@ -1208,7 +1211,7 @@ fn execute_transfer_direction(
                     "-s".into(),
                     "/tmp/received".into(),
                     "-w".into(),
-                    "60".into(),
+                    sender_wait.into(),
                 ];
                 // Append extra sender flags
                 for flag in sender_flags.split_whitespace() {
@@ -1217,7 +1220,7 @@ fn execute_transfer_direction(
                 let args_ref: Vec<&str> = args.iter().map(|s| s.as_str()).collect();
                 runner.docker_exec(send_node, &args_ref)?
             } else {
-                // Push mode: sender runs `<tool> <file> <dest_hash> -w 60`
+                // Push mode: sender runs `<tool> <file> <dest_hash> -w <timeout>`
                 let mut args: Vec<String> = vec![
                     "timeout".into(),
                     timeout_str.clone(),
@@ -1225,7 +1228,7 @@ fn execute_transfer_direction(
                     "/tmp/test_transfer.bin".into(),
                     dest_hash.clone(),
                     "-w".into(),
-                    "60".into(),
+                    sender_wait.into(),
                 ];
                 for flag in sender_flags.split_whitespace() {
                     args.push(flag.into());
@@ -2528,6 +2531,28 @@ Reticulum Transport Instance running
             "/tests/lora_lrncp_link_loss.toml"
         ))
         .expect("lora_lrncp_link_loss.toml not found");
+        let scenario = crate::topology::parse_scenario(&toml_str).expect("parse failed");
+
+        let mut runner = TestRunner::new(scenario).expect("TestRunner::new failed");
+
+        runner.up().expect("up failed");
+        runner.wait_ready(60).expect("wait_ready failed");
+
+        let result = execute_steps(&runner);
+        runner.down().expect("down failed");
+        result.expect("execute_steps should succeed");
+    }
+
+    #[test]
+    #[ignore] // Requires RNode hardware
+    #[serial(lora)]
+    fn lora_lrncp_link_retry() {
+        let _lock = acquire_lora_lock();
+        let toml_str = std::fs::read_to_string(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/tests/lora_lrncp_link_retry.toml"
+        ))
+        .expect("lora_lrncp_link_retry.toml not found");
         let scenario = crate::topology::parse_scenario(&toml_str).expect("parse failed");
 
         let mut runner = TestRunner::new(scenario).expect("TestRunner::new failed");

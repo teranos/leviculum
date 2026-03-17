@@ -1079,10 +1079,22 @@ impl<C: Clock, S: Storage> Transport<C, S> {
         // by skipping dedup for packets from a local client destined for a known link.
         let is_single_announce = packet.flags.packet_type == PacketType::Announce
             && packet.flags.dest_type == DestinationType::Single;
-        let is_local_link_relay = self.is_local_client(interface_index)
+        let is_from_local_client = self.is_local_client(interface_index);
+        let is_local_link_relay = is_from_local_client
             && self.storage.has_link_entry(&packet.destination_hash);
+        // Local-client link requests skip hash dedup to allow link request
+        // retries (E34). When lrncp retries a link request, the daemon
+        // receives the same bytes again. Without this exemption, the daemon
+        // would reject the retry as a duplicate (hash cached from first attempt).
+        // This is safe: link requests from local clients are forwarded to the
+        // network, not processed locally, so duplicates don't affect daemon state.
+        // Python avoids this entirely because its outbound path doesn't pass
+        // through inbound() (Transport.py architecture difference).
+        let is_local_client_link_request = is_from_local_client
+            && packet.flags.packet_type == PacketType::LinkRequest;
         if !is_single_announce
             && !is_local_link_relay
+            && !is_local_client_link_request
             && self.storage.has_packet_hash(&full_packet_hash)
         {
             if packet.context == PacketContext::Lrproof {
@@ -1138,12 +1150,6 @@ impl<C: Clock, S: Storage> Transport<C, S> {
         interface_index: usize,
         data: &[u8],
     ) -> Result<(), TransportError> {
-        // Cache outbound packet hash so echoes returning via shared-medium
-        // relay are dropped by the dedup check in process_incoming().
-        // Matches Python Transport.py:1168-1169 and send_on_all_interfaces().
-        let cache_hash = packet_hash(data);
-        self.storage.add_packet_hash(cache_hash);
-
         self.pending_actions.push(Action::SendPacket {
             iface: InterfaceId(interface_index),
             data: data.to_vec(),
@@ -1203,23 +1209,36 @@ impl<C: Clock, S: Storage> Transport<C, S> {
         dest_hash: &[u8; TRUNCATED_HASHBYTES],
         data: &[u8],
     ) -> Result<(), TransportError> {
-        let path = self
-            .storage
-            .get_path(dest_hash)
-            .ok_or(TransportError::NoPath)?;
-
-        let interface_index = path.interface_index;
+        // Read path data into locals to release the immutable borrow on storage
+        // before we mutably borrow for hash caching.
+        let (interface_index, needs_relay, next_hop) = {
+            let path = self
+                .storage
+                .get_path(dest_hash)
+                .ok_or(TransportError::NoPath)?;
+            (path.interface_index, path.needs_relay(), path.next_hop)
+        };
 
         if self.is_interface_congested(interface_index) {
             return Err(TransportError::Busy);
         }
+
+        // Cache outbound packet hash so echoes returning via shared-medium
+        // relay are dropped by the dedup check in process_incoming().
+        // This is an ORIGINATION path (the caller is sending a new packet),
+        // matching Python Transport.outbound() line 1169.
+        // Forwarding paths (forward_on_interface → send_packet_on_interface →
+        // send_on_interface) intentionally do NOT cache, matching Python's
+        // Transport.transmit() which also doesn't cache.
+        let cache_hash = packet_hash(data);
+        self.storage.add_packet_hash(cache_hash);
 
         // Only convert Type1 packets to Type2 for relay routing.
         // Type2 packets (e.g., link requests from initiate_with_path) are
         // already correctly formatted — pass them through unchanged.
         let is_type1 = data.len() >= 2 && (data[0] & 0x40) == 0;
 
-        if path.needs_relay() && is_type1 {
+        if needs_relay && is_type1 {
             // Multi-hop: convert Type1 packet to Type2 with transport header.
             // Python equivalent: Transport.py outbound() lines 980-991.
             //
@@ -1228,7 +1247,7 @@ impl<C: Clock, S: Storage> Transport<C, S> {
             //   Type2: [flags'][hops][next_hop(16)][dest_hash(16)][context][data...]
             //
             // flags' = header_type=Type2, transport_type=Transport, keep lower 4 bits
-            let next_hop = path.next_hop.ok_or(TransportError::NoPath)?;
+            let next_hop = next_hop.ok_or(TransportError::NoPath)?;
 
             let mut buf = alloc::vec![0u8; data.len() + TRUNCATED_HASHBYTES];
 
@@ -10103,12 +10122,12 @@ mod tests {
         }
 
         #[test]
-        fn test_lrproof_not_cached_on_incoming_but_cached_on_outbound() {
+        fn test_lrproof_not_cached_on_forwarding() {
             // LRPROOF forwarded via link table:
             // - NOT cached by process_incoming (deferred, Python Transport.py:2016-2039)
-            // - IS cached by send_on_interface (outbound hash caching, Python Transport.py:1169)
-            // This ensures the forwarded proof can still be processed on arrival
-            // (deferred cache) while preventing echoes on shared media (outbound cache).
+            // - NOT cached by the forwarding path (forward_on_interface → send_on_interface)
+            // Only ORIGINATION paths (send_to_destination, send_on_all_interfaces) cache.
+            // This matches Python where Transport.transmit() doesn't cache hashes.
             let mut transport = make_transport_enabled();
             let _idx0 = transport.register_interface(Box::new(MockInterface::new("if0", 1)));
             let _idx1 = transport.register_interface(Box::new(MockInterface::new("if1", 2)));
@@ -10156,12 +10175,12 @@ mod tests {
                 transport.stats().packets_forwarded > 0,
                 "LRPROOF should be forwarded"
             );
-            // Outbound hash caching adds the forwarded packet's hash to prevent
-            // shared-medium echoes (E39 fix). The hash count is 1 (from
-            // send_on_interface), not 0 (the old behavior before E39 fix).
+            // Forwarding path does NOT cache hashes — only origination paths do.
+            // This matches Python where Transport.transmit() doesn't call
+            // add_packet_hash(), only Transport.outbound() does.
             assert!(
-                transport.storage().packet_hash_count() == 1,
-                "Forwarded LRPROOF hash should be cached by outbound send"
+                transport.storage().packet_hash_count() == 0,
+                "Forwarded LRPROOF hash should NOT be cached (forwarding, not origination)"
             );
         }
 
