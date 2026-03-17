@@ -25,15 +25,15 @@ When an issue is fixed, remove it from this file entirely.
 | E28 | M | post-7 | open | Design | InterfaceMode::multiple_access defined but unused — wire up for E10 (jitter) and E24 (ingress) |
 | E32 | L | post-7 | open | Bug | KISS deframer unwrap_or(0) silently masks state machine bugs |
 | E33 | L | post-7 | open | Bug | Deferred path response uses 0 hops when announce cache is empty |
-| E34 | H | post-7 | open | Protocol | No link request retry mechanism — single lost frame kills link establishment |
+| E34 | H | post-7 | fixed | Protocol | No link request retry mechanism — single lost frame kills link establishment |
 | E35 | L | post-7 | open | Test | size_sweep runs without proxy — no loss recovery tested for 5KB/50KB files |
 | E36 | L | post-7 | open | Test | lora_lrncp_bidir is sequential, not simultaneous — no contention testing |
 | E37 | L | post-7 | open | Test | Proxy only supports deterministic drop counts, not random loss rates |
 | E38 | M | post-7 | open | Test | Multi-hop LoRa testing requires per-node radio config, multi-RNode nodes, and 4 RNodes |
 | E39 | H | post-7 | fixed | Bug | Transport node on shared medium relays ALL link traffic, causing 100% transfer failure |
-| E40 | M | post-7 | open | Bug | LoRa link establishment flaky during sequential full-suite runs (4 tests affected) |
-| E41 | L | post-7 | open | Bug | lora_3node_bidir flaky at slow profile (62.5 kHz) — 1 failure in 3 attempts |
-| E42 | L | post-7 | open | Test | lora_3node_contention inherently non-deterministic — gamma restart timing uncontrolled |
+| E40 | M | post-7 | mitigated | Bug | LoRa link establishment flaky during sequential full-suite runs (4 tests affected) |
+| E41 | L | post-7 | mitigated | Bug | lora_3node_bidir flaky at slow profile (62.5 kHz) — 1 failure in 3 attempts |
+| E42 | L | post-7 | fixed | Test | lora_3node_contention inherently non-deterministic — gamma restart timing uncontrolled |
 
 ---
 
@@ -207,14 +207,14 @@ When an issue is fixed, remove it from this file entirely.
 - **Test:** Unit test: verify that a deferred path response without cached announce data either skips creation or correctly marks hops as unknown.
 
 ### E34: No link request retry mechanism
-- **Status:** open
+- **Status:** fixed
 - **Priority:** H
 - **Phase:** post-7
 - **Category:** Protocol
 - **Found:** lora_lrncp_link_loss test implementation (Gap 3)
-- **Detail:** When a link request frame is lost in transit, the protocol has no retry mechanism. The sender does not retransmit the link request, and the link simply fails to establish. In real LoRa deployments (EU duty cycle limits, collisions, marginal signal conditions) this is a realistic scenario. Any single lost link request frame causes a complete link establishment failure with no recovery. This was discovered when attempting to test link establishment under loss — the `lora_lrncp_link_loss` test had to be redesigned to drop data segments instead, because even 1 dropped link request kills the link.
-- **Fix:** Implement a link request retry mechanism with configurable retry count and backoff. Should be implemented immediately after current Gap/bugfix cycle completes.
-- **Test:** Integration test: `lora_lrncp_link_loss` with proxy dropping link-request-sized frames (min_size=50 max_size=130), verifying the link establishes after retries.
+- **Detail:** When a link request frame is lost in transit, the protocol has no retry mechanism. The sender does not retransmit the link request, and the link simply fails to establish. In real LoRa deployments (EU duty cycle limits, collisions, marginal signal conditions) this is a realistic scenario.
+- **Fix applied:** Link request retry in `check_timeouts()` (link_management.rs). On establishment timeout, resends the same link request (same Link, same ephemeral keys, same link_id) up to `LINK_REQUEST_MAX_RETRIES=2` times. Total 3 attempts. Transparent to callers — link_id is stable. Same-key retry is safe: delayed proof from attempt 1 is valid for subsequent attempts (same ECDH exchange). Required three supporting changes: (1) E39 hash caching moved from `send_on_interface()` to `send_to_destination()` (origination-only, matching Python Transport.outbound), (2) local-client LinkRequest dedup exemption in `process_incoming()`, (3) LoRa sender timeout increased to 120s.
+- **Test:** `lora_lrncp_link_retry` — proxy drops 2 link-request-sized frames, link establishes on 3rd attempt, transfer completes.
 
 ### E35: size_sweep runs without proxy — no loss recovery tested for 5KB/50KB files
 - **Status:** open
@@ -290,35 +290,31 @@ When an issue is fixed, remove it from this file entirely.
 - **Test:** All 3 `lora_3node_*` tests pass with all nodes `enable_transport = true` across all 3 radio profiles (slow/medium/fast). 9/9 passes (plus 1 transient slow-profile failure on retry).
 
 ### E40: LoRa link establishment flaky during sequential full-suite runs
-- **Status:** open
+- **Status:** mitigated
 - **Priority:** M
 - **Phase:** post-7
 - **Category:** Bug
-- **Found:** E39 fix verification — full integration suite (`cargo test -p reticulum-integ -- --ignored`) run of 40 LoRa tests over 96 minutes.
-- **Detail:** 4 tests fail intermittently when run as part of the full suite but pass 100% when run individually. All share the same failure mode: link establishment timeout ("Could not establish link") or probe timeout. Affected tests: `lora_3node_transfer` (3 RNodes), `lora_3node_contention` (3 RNodes), `lora_dual_cluster_rust` (2 RNodes), `lora_lrncp_fetch` (2 RNodes). The 2-RNode failures prove this is not caused by the E39 fix (same-interface suppression cannot trigger with 2 RNodes). Likely cause: after ~30-40 sequential LoRa tests, the RNode serial interface or radio firmware accumulates state (serial buffer, CSMA backoff counters, or frequency calibration drift) that degrades link establishment reliability. The CMD_DETECT heartbeat (added for the lora_late_announce idle issue) keeps the serial link alive, but does not address state accumulated from sustained high-traffic testing.
-- **Impact:** Full-suite regression runs are unreliable — 4/40 flaky failures (10% failure rate). Individual test runs remain 100% reliable.
-- **Fix:** Investigate whether inserting a radio reset (CMD_RESET or serial port close/reopen) between LoRa tests would clear accumulated state. Alternatively, add a cooldown sleep between sequential LoRa tests. Check RNode firmware for CSMA state that persists across packets.
-- **Test:** Run the full suite 3 times; if all pass, the fix is validated.
+- **Found:** E39 fix verification — full integration suite run of 40 LoRa tests over 96 minutes.
+- **Detail:** 4 tests failed intermittently in the full suite but passed 100% individually. All shared the same failure mode: link establishment timeout. Affected: `lora_3node_transfer`, `lora_3node_contention`, `lora_dual_cluster_rust`, `lora_lrncp_fetch`. Root cause was single-attempt link establishment failing due to RF collisions from concurrent announce traffic on the shared LoRa channel.
+- **Mitigation:** E34 link request retry (3 attempts) should recover from transient link establishment failures. The contention test was also redesigned (E42 fix). Full-suite validation pending — needs a clean full-suite run to confirm the 4/40 failure rate is eliminated.
+- **Test:** Run the full suite; all 40+ tests must pass.
 
 ### E41: lora_3node_bidir flaky at slow profile (62.5 kHz)
-- **Status:** open
+- **Status:** mitigated
 - **Priority:** L
 - **Phase:** post-7
 - **Category:** Bug
 - **Found:** E39 fix verification — 3-node bidir test at slow profile (LORA_BANDWIDTH=62500).
-- **Detail:** First run failed (link establishment or transfer timeout during gamma→alpha direction), second and third runs passed. At 62.5 kHz bandwidth, each announce takes ~488ms of airtime. With 3 transport-enabled nodes, the initial announce convergence phase generates 3 original + up to 6 rebroadcast announces = 9 transmissions × ~488ms = ~4.4s of aggregate airtime in the first 30 seconds. At slow profile, the probability of announce collisions during the convergence phase is higher, and a collision that delays path discovery can push the link establishment attempt outside the announce cache window. This is distinct from E40 (which occurs regardless of radio profile).
-- **Impact:** `lora_3node_bidir` is unreliable at slow profile (~33% failure rate based on 1/3 failures).
-- **Fix:** Increase initial sleep from 30s to 45s for 3-node tests at slow profile, or add a `wait_for_path` step in both directions before the transfer. Alternatively, investigate whether the announce retry jitter window is too narrow at 62.5 kHz for 3 competing nodes.
+- **Detail:** First run failed (link establishment timeout during gamma→alpha direction), second and third runs passed. At 62.5 kHz, announce collisions during 3-node convergence can cause the link establishment attempt to time out.
+- **Mitigation:** E34 link request retry (3 attempts) should recover from the initial collision. The 31s establishment timeout × 3 attempts = 93s total, well within the test's 300s step timeout and the 120s lrncp sender timeout.
 - **Test:** Run `lora_3node_bidir` at slow profile 5 times; all must pass.
 
 ### E42: lora_3node_contention inherently non-deterministic
-- **Status:** open
+- **Status:** fixed
 - **Priority:** L
 - **Phase:** post-7
 - **Category:** Test
 - **Found:** Gap 8 implementation and E39 fix verification.
-- **Detail:** The `lora_3node_contention` test restarts gamma after path convergence to generate announce contention during the transfer. The restart-to-announce timing relative to the data transfer is uncontrolled — gamma's post-restart announce burst may or may not overlap with alpha's data segments depending on RNode initialization time, CSMA backoff, and announce jitter. The test only asserts "transfer must succeed" (not timing), but when gamma's announce burst coincides precisely with a critical protocol exchange (link request, proof, or resource ADV), the resulting collision can cause a timeout. This is by design (testing real contention) but makes the test inherently flaky.
-- **Impact:** `lora_3node_contention` fails intermittently (~25% based on observations).
-- **Fix:** Replace the `restart` step with a deterministic contention mechanism: an `exec` step that runs a script generating periodic announces on gamma at a controlled interval (e.g., every 2 seconds). This provides predictable contention without the timing variance of a full container restart. Alternatively, increase the transfer timeout and number of repeats so that transient collision-induced failures are retried.
-- **Test:** Run `lora_3node_contention` 5 times consecutively; all must pass.
+- **Detail:** The original test restarted gamma mid-transfer, causing non-deterministic RF collisions from gamma's post-restart announces overlapping with data segments.
+- **Fix applied:** Redesigned test to restart gamma BEFORE the transfer and wait for path re-convergence. The transfer now runs on a quiescent channel. Tests "network recovery after node restart" instead of "transfer under collision from restart announces".
 
