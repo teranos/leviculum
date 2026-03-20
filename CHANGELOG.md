@@ -8,250 +8,234 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [0.6.0] - 2026-03-20
 
 ### Added
-- Link request retry (E34) — 3 attempts on establishment timeout with exponential backoff
-- Proof re-send on duplicate link request for shared medium resilience
-- 3-node shared medium LoRa integration tests (bidirectional, contention, transfer)
-- LoRa test coverage: size sweep, frame loss, link-under-loss, bidirectional, 16-test cross-impl matrix
-- Proxy rule `max_size`, `min_size`, and `skip` filters for targeting specific packet types
-- File transfer test framework: fetch mode, auth, negative testing, jail violation tests
-- `lncp` fetch mode (`-f`, `-F`, `-j`) with jail path restriction and identity-based auth
-- `lncp` physical layer rate display (`-P`), compression toggle (`-C`), silent flag (`-S`)
-- `lncp` standalone binary — shared instance client for rncp-compatible file transfer via Unix socket
-- Link request/response protocol for single-packet RPC over established links
-- Link identity verification (`link.identify()`) with Ed25519 signature proof
-- Resource transfer progress display with real-time speed and percentage
-- Send queue priority for LoRa — link traffic before announces on half-duplex interfaces
-- First-hop timeout for link establishment on slow interfaces (LoRa airtime-aware)
-- RTT packet retry for LoRa — up to 5 retries, confirmed by inbound traffic
-- Discovery path request with retry for LoRa resilience
-- Interface backpressure with retry queue and congestion flag for LoRa buffer management
-- Per-hop link establishment timeout scaling with hop count
-- Reduced responder handshake timeout from 360s to 54s (RTT retry makes long waits unnecessary)
-- Env-var radio overrides (`LORA_BANDWIDTH`, `LORA_SF`, `LORA_TIMEOUT_SCALE`) for LoRa test profiles
-- 10-node dual-cluster LoRa integration tests and late-announce escalation tests (2-10 nodes)
-- Ratchet selftest modes, integration tests, and disk persistence (Python-compatible msgpack)
-- Local client destination expiry after 6 hours
-- Negative assertion support (`expect_result = "no_path"/"fail"`) in integration tests
-- Shared instance: registration delay, reconnect re-announce, fresh path response, interface recovery
-- Link failure simulation via iptables (`block_link`/`restore_link`) with recovery test
-- Docker-based integration test framework (`reticulum-integ`) with TOML-defined scenarios
-- Re-announce on new TCP peer connection to prevent startup races
-- RPC server for Python CLI tool compatibility (`rnstatus`, `rnpath`, `rnprobe`)
-- Probe responder, per-interface I/O counters, announce frequency tracking
-- LocalInterface (Unix socket IPC) with local client routing gates
-- AutoInterface zero-config LAN discovery via IPv6 multicast (7 integration tests)
-- SIGUSR1 diagnostic dump (memory summary of all protocol collections + RSS)
+
+Link requests are now retried up to three times on establishment timeout with exponential backoff (E34). When a link proof is lost, the responder re-sends the cached proof on receiving a duplicate link request. Three-node shared medium LoRa tests cover bidirectional transfer, contention, and relay scenarios. The LoRa test matrix now includes size sweep, frame loss, link-under-loss, bidirectional, and cross-implementation tests across all Rust and Python pairings. Proxy rules gained `max_size`, `min_size`, and `skip` filters for targeting specific packet types by size range.
+
+The `lncp` tool gained fetch mode (`-f`, `-F`, `-j`) with jail path restriction and identity-based authentication, physical layer rate display (`-P`), compression toggle (`-C`), and silent flag (`-S`). It works as a shared instance client connecting to a running daemon via Unix socket.
+
+Link request/response provides single-packet RPC over established links. Link identity verification proves ownership via Ed25519 signature. Resource transfers show real-time progress with speed and percentage.
+
+LoRa reliability improved through send queue priority (link traffic before announces), first-hop timeout accounting for airtime, RTT packet retry confirmed by inbound traffic, discovery path request retry, interface backpressure with retry queue, per-hop establishment timeout scaling, and reduced responder handshake timeout from 360s to 54s.
+
+The integration test framework gained Docker-based multi-node scenarios with TOML-defined topologies, dual-cluster tests up to 10 nodes, ratchet selftest modes with disk persistence, link failure simulation via iptables, negative assertions, and env-var radio overrides for LoRa profiles. RPC compatibility with Python CLI tools (`rnstatus`, `rnpath`, `rnprobe`) is complete. AutoInterface provides zero-config LAN discovery via IPv6 multicast.
 
 ### Fixed
-- Resource retransmit timing matched to Python — adaptive timeout, progressive backoff, grace times
-- Receiver retransmit REQ rebuilt with only missing parts (was re-requesting already-received data)
-- Resource retransmit timeout not resetting between retries (all fired immediately)
-- Shared-instance resource retransmissions blocked by packet dedup
-- Multi-segment resource receive (E31) — dynamic buffer, correct hashmap length, metadata parsing
-- `lncp` listener rejected incoming links (missing `set_accepts_links(true)`)
-- Resource API action draining — ADV/REQ packets dispatched immediately
-- RNode serial heartbeat fixes idle-correlated LoRa failures after 12+ min silence
-- Channel RTT=0 retransmit storm — SRTT seeded to 5000ms with LoRa-appropriate pacing
-- Selftest no longer overwrites daemon's transport_identity
-- Re-originate path requests instead of forwarding (matches Python, fixes multi-hop interop)
-- Hops incremented on receipt matching Python — direct neighbors are hops=1
-- Cached announce forwarding to local clients (Header1-to-Header2 conversion)
-- Path request response for local clients (transport gate, routing, delay fixes)
-- AutoInterface peer identity, source port, ephemeral ports, link-local discovery
-- Announce replay allows better-hop paths; rate-limited announces still update path table
-- Vendored Python RNS `ingress_control` inheritance fix and update to 1.1.4
+
+Resource retransmit timing now matches Python with adaptive timeout factors, progressive backoff, and grace times. Receiver retransmit requests are rebuilt with only missing parts instead of re-requesting already-received data. The retransmit timeout resets correctly between retries. Shared-instance resource retransmissions are no longer blocked by packet dedup. Multi-segment resource receive handles dynamic buffer sizes, correct hashmap lengths, and proper metadata parsing. The `lncp` listener accepts incoming links. Resource API actions are dispatched immediately. RNode serial heartbeat prevents idle-correlated LoRa failures after prolonged silence. Channel SRTT is seeded to prevent retransmit storms.
+
+The selftest no longer overwrites the daemon's transport identity. Path requests are re-originated at each hop matching Python behavior. Hops are incremented on receipt so direct neighbors show as one hop. Cached announces are converted to the correct header format when forwarded to local clients. Path request responses reach local clients correctly. AutoInterface peer identity, source port, and discovery all work across machines. Announce replay protection allows better-hop paths through, and rate-limited announces still update the path table. Vendored Python RNS ingress_control inheritance is fixed.
 
 ### Changed
-- Jitter ceiling is now airtime-based; announce collision fixes with 3 retries and exponential backoff
-- Renamed `WindowFull` to `Busy` across all error types
-- Storage trait refactoring — all Transport/NodeCore collections behind type-safe Storage trait
-- `MemoryStorage` as production embedded impl, `FileStorage` wraps it with persistence
-- Immediate announce rebroadcast (removes ~600ms per-hop latency)
-- FileStorage packet_cache switched to HashSet; default identity cap lowered to 50k
+
+Jitter ceiling is now airtime-based with exponential backoff on announce collisions. The `WindowFull` error is renamed to `Busy` across all types. All Transport and NodeCore collections live behind the type-safe Storage trait. `MemoryStorage` is the production embedded implementation and `FileStorage` wraps it with persistence. Announce rebroadcast is immediate, removing per-hop latency. FileStorage packet cache uses HashSet with a 50k identity cap.
 
 ## [0.5.19] - 2026-02-15
 
 ### Fixed
-- Pacing interval used handshake RTT instead of measured SRTT
+
+Pacing interval used handshake RTT instead of measured SRTT.
 
 ## [0.5.18] - 2026-02-15
 
 ### Changed
-- Live timeout computation using current queue length instead of frozen send-time values
-- Smoothed RTT (SRTT) from proof round-trips using RFC 6298 with Karn's algorithm
-- `CHANNEL_MAX_TRIES` increased from 5 to 8; first retransmit skips pacing decrease
+
+Timeout computation uses current queue length instead of frozen send-time values. Smoothed RTT from proof round-trips uses RFC 6298 with Karn's algorithm. Maximum channel retries increased from five to eight, and the first retransmit skips pacing decrease.
 
 ## [0.5.17] - 2026-02-14
 
 ### Added
-- Sender-side pacing with AIMD congestion control — even spacing across RTT instead of burst-until-busy
+
+Sender-side pacing with AIMD congestion control spaces sends evenly across the RTT instead of bursting until busy.
 
 ## [0.5.16] - 2026-02-14
 
 ### Fixed
-- Retransmitted messages permanently rejected when proof lost (sequence wrap-around)
+
+Retransmitted messages were permanently rejected when the proof was lost due to sequence wrap-around.
 
 ## [0.5.15] - 2026-02-14
 
 ### Fixed
-- Channel retransmissions never triggered — unified duplicate Channel instances into one per link
+
+Channel retransmissions never triggered because duplicate Channel instances existed per link. Unified into one.
 
 ## [0.5.14] - 2026-02-13
 
 ### Fixed
-- ConnectionStream silently dropped messages when busy — now returns WouldBlock
-- Selftest closed links before messages confirmed; burst counted Busy as permanent failure
+
+ConnectionStream silently dropped messages when busy. It now returns WouldBlock. The selftest closed links before messages were confirmed and counted Busy as permanent failure.
 
 ## [0.5.13] - 2026-02-13
 
 ### Fixed
-- `/peers` hop count always showing `?` and garbled app_data from Python msgpack formats
+
+The peers display showed unknown hop counts and garbled app_data from Python msgpack formats.
 
 ## [0.5.12] - 2026-02-12
 
 ### Added
-- `PacketEndpoint` handle for single-packet fire-and-forget destinations
+
+PacketEndpoint handle provides fire-and-forget delivery to single-packet destinations.
 
 ### Fixed
-- Single-packet delivery broken through relays — Type1-to-Type2 conversion for relay paths
+
+Single-packet delivery through relays was broken. Packets are now converted from Type1 to Type2 format for relay paths.
 
 ## [0.5.11] - 2026-02-12
 
 ### Changed
-- `Identity::encrypt()` returns `Result` instead of panicking on failure
-- Selective re-exports from `reticulum-std` instead of `pub use reticulum_core::*`
+
+`Identity::encrypt()` returns Result instead of panicking on failure. Selective re-exports from reticulum-std replace the blanket `pub use reticulum_core::*`.
 
 ## [0.5.10] - 2026-02-12
 
 ### Changed
-- `ConnectionStream` is send-only — received data delivered exclusively via `NodeEvent`
+
+ConnectionStream is send-only. Received data is delivered exclusively via NodeEvent.
 
 ## [0.5.9] - 2026-02-12
 
 ### Fixed
-- Channel data proofs not generated on responder (signing key gated on proof strategy)
-- Channel data proofs not generated on initiator (wrong signing key consulted)
+
+Channel data proofs were not generated on the responder because the signing key was gated on proof strategy. On the initiator, the wrong signing key was consulted.
 
 ## [0.5.8] - 2026-02-12
 
 ### Added
-- `lns connect` interactive CLI for diagnostics, link management, and data exchange
+
+The `lns connect` command provides an interactive CLI for diagnostics, link management, and data exchange.
 
 ### Fixed
-- Stale-to-Active link recovery on inbound traffic (matching Python)
+
+Links in Stale state now recover to Active on inbound traffic, matching Python.
 
 ## [0.5.6] - 2026-02-11
 
 ### Fixed
-- `MessageReceived` events silently dropped — Channel data never reached `ConnectionStream`
+
+MessageReceived events were silently dropped so channel data never reached ConnectionStream.
 
 ## [0.5.5] - 2026-02-11
 
 ### Fixed
-- Link-addressed Data and proof packets dropped on non-transport nodes
-- Channel `mark_delivered()` never called — full proof delivery chain now works
-- `ConnectionStream::close()` did not send LINKCLOSE
+
+Link-addressed Data and proof packets were dropped on non-transport nodes. Channel mark_delivered was never called, breaking the proof delivery chain. ConnectionStream close did not send LINKCLOSE.
 
 ## [0.5.4] - 2026-02-11
 
 ### Fixed
-- `PathRequestReceived` emitted incorrect `PathFound` event with fabricated data
+
+PathRequestReceived emitted an incorrect PathFound event with fabricated data.
 
 ## [0.5.3] - 2026-02-11
 
 ### Fixed
-- Multi-hop link initiation from non-transport nodes (wrong header format)
-- LRPROOF delivery to local pending links (silently dropped)
+
+Multi-hop link initiation from non-transport nodes used the wrong header format. LRPROOF delivery to local pending links was silently dropped.
 
 ## [0.5.2] - 2026-02-11
 
 ### Fixed
-- 4 hop off-by-one bugs in forwarding thresholds (Python/Rust hop semantics mismatch)
+
+Four hop off-by-one bugs in forwarding thresholds caused by Python/Rust hop semantics mismatch.
 
 ## [0.5.1] - 2026-02-11
 
 ### Fixed
-- Multi-hop link forwarding through mixed relay chains (premature header stripping, wrong transport_id)
+
+Multi-hop link forwarding through mixed relay chains failed due to premature header stripping and wrong transport_id.
 
 ## [0.5.0] - 2026-02-11
 
 ### Changed
-- All `NodeCore` mutation methods return `TickOutput` for immediate action dispatch
+
+All NodeCore mutation methods return TickOutput for immediate action dispatch.
 
 ## [0.4.4] - 2026-02-10
 
 ### Added
-- Per-destination announce rate limiting matching Python (violation/grace/penalty)
+
+Per-destination announce rate limiting matches Python with violation, grace, and penalty phases.
 
 ## [0.4.3] - 2026-02-10
 
 ### Fixed
-- Path rediscovery was dead code — event handler was empty
+
+Path rediscovery was dead code because the event handler was empty.
 
 ## [0.4.2] - 2026-02-09
 
 ### Added
-- Path recovery mechanism — expired links trigger path rediscovery with unresponsive state
+
+Expired links trigger path rediscovery with unresponsive state tracking.
 
 ## [0.4.1] - 2026-02-08
 
 ### Added
-- `NodeCore::announce_destination()` for broadcasting registered destinations
+
+`NodeCore::announce_destination()` broadcasts registered destinations.
 
 ### Fixed
-- Outbound packets not cached for dedup — node learned paths to itself via echo
+
+Outbound packets were not cached for dedup so the node learned paths to itself via echo.
 
 ## [0.4.0] - 2026-02-07
 
 ### Added
-- `reticulum-nrf` embedded skeleton for Heltec Mesh Node T114 (nRF52840 + SX1262)
-- Channel-based `InterfaceHandle`/`InterfaceRegistry`; async `select!` event loop
+
+Embedded skeleton for the Heltec Mesh Node T114 (nRF52840 + SX1262). Channel-based InterfaceHandle and InterfaceRegistry with async event loop.
 
 ## [0.3.1] - 2026-02-06
 
 ### Fixed
-- `send_on_connection()` dropped first packet; `connect()` link request never sent
+
+`send_on_connection()` dropped the first packet and `connect()` never sent the link request.
 
 ## [0.3.0] - 2026-02-06
 
 ### Changed
-- Sans-I/O architecture — `handle_packet()`, `handle_timeout()`, `Action` enum; driver owns I/O
-- `Context` trait removed — all functions take direct `rng` and `now_ms` parameters
+
+Sans-I/O architecture introduced. `handle_packet()`, `handle_timeout()`, and the Action enum replace direct I/O. The driver owns all interfaces. The Context trait is removed in favor of direct `rng` and `now_ms` parameters.
 
 ## [0.2.8] - 2026-02-04
 
 ### Fixed
-- `enable_transport` not wired; relay hop count, destination hash, proof routing, announce replay
+
+Transport enable flag was not wired. Relay hop count, destination hash, proof routing, and announce replay all corrected.
 
 ## [0.2.6] - 2026-02-03
 
 ### Fixed
-- Keepalive packets encrypted instead of plaintext (rejected by Python peers)
+
+Keepalive packets were encrypted instead of sent as plaintext, causing rejection by Python peers.
 
 ## [0.2.5] - 2026-02-03
 
 ### Added
-- Link-level data proof system (PROVE_ALL/PROVE_APP/PROVE_NONE)
+
+Link-level data proof system with PROVE_ALL, PROVE_APP, and PROVE_NONE strategies.
 
 ### Changed
-- `DestinationHash` and `LinkId` are now newtypes; unified packet queues in `LinkManager`
+
+DestinationHash and LinkId are now newtypes. Packet queues unified in LinkManager.
 
 ## [0.2.3] - 2026-02-01
 
 ### Added
-- High-level Node API (`NodeCore`, `NodeCoreBuilder`, `ReticulumNode`, `ConnectionStream`)
-- Channel system, packet proofs, ratchets, IFAC, link keepalive, graceful close
+
+High-level Node API with NodeCore, NodeCoreBuilder, ReticulumNode, and ConnectionStream. Channel system, packet proofs, ratchets, IFAC, link keepalive, and graceful close.
 
 ## [0.2.0] - 2026-01-30
 
 ### Added
-- `Destination::announce()`, link responder, `LinkManager` API, event system
+
+Destination announce, link responder, LinkManager API, and event system.
 
 ## [0.1.0] - 2025-XX-XX
 
 ### Added
-- Cryptography, identity, packets, announce, link state machine, HDLC framing, TCP, transport
-- Full interoperability with Python rnsd
+
+Initial release with cryptography, identity, packets, announce, link state machine, HDLC framing, TCP interface, and transport layer. Full interoperability with Python rnsd.
 
 [0.6.0]: https://codeberg.org/Lew_Palm/leviculum/compare/v0.5.19...v0.6.0
 [0.5.19]: https://codeberg.org/Lew_Palm/leviculum/compare/v0.5.18...v0.5.19
