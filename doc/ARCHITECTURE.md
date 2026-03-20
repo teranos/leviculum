@@ -31,7 +31,7 @@ leviculum/
 │   │   │   ├── mod.rs       # Link establishment, encryption, teardown
 │   │   │   └── channel/     # Reliable ordered messaging over links
 │   │   ├── transport.rs     # Sans-I/O routing engine + dispatch_actions()
-│   │   ├── resource.rs      # Segmented data transfer (stub)
+│   │   ├── resource/         # Segmented data transfer (outgoing, incoming, hashmap, compression)
 │   │   └── node/            # High-level unified API
 │   │       ├── mod.rs       # NodeCore: ties everything together
 │   │       ├── send.rs      # Outbound message routing decisions
@@ -77,7 +77,7 @@ leviculum/
 ├── reticulum-nrf/           # Embedded driver for nRF52840 (T114 board, SX1262 LoRa)
 │
 ├── reticulum-ffi/           # C-API bindings
-└── reticulum-cli/           # Command-line tools (lrns, lrnsd)
+└── reticulum-cli/           # Command-line tools (lrnsd, lrns, lrncp)
 ```
 
 ### reticulum-std Module Responsibilities
@@ -214,6 +214,7 @@ channels handle retransmission). This makes `try_send()` the natural API:
 | UDP | std | UDP datagram | 1064 | None |
 | LocalInterface | std | Unix abstract socket | 262144 | HDLC |
 | AutoInterface | std | IPv6 multicast + unicast UDP | 1196 | None |
+| RNode | std | Serial (USB-CDC) to LoRa radio | 500 | KISS |
 
 TCP and LocalInterface use HDLC framing to delimit packets on their stream-oriented
 transports. UDP and AutoInterface send one packet per datagram so no framing is needed.
@@ -395,8 +396,10 @@ steps → teardown.
 - `restart` — stop and restart a container mid-test
 - `exec` — run an arbitrary command inside a container
 - `block_link` / `restore_link` — iptables-based link failure simulation
+- `file_transfer` — lrncp/rncp push/fetch with md5 verification
+- `proxy_rule` / `proxy_stats` — LoRa proxy frame drop/delay/corrupt rules
 
-Each test run uses unique container names (PID-based) for parallel safety.
+Each test run uses unique container names (run-ID-based) for parallel safety.
 
 ## Layer Architecture
 
