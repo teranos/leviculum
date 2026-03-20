@@ -3,8 +3,8 @@
 # Announces (≈167), link requests (≈86), and proofs (≈118) are outside this range.
 # Validates that the max_size proxy filter works correctly over real LoRa.
 #
-# Note: link establishment under loss is not testable because the protocol has
-# no link request retry mechanism — dropping even 1 link request kills the link.
+# Note: link establishment under loss is tested separately in lora_lrncp_link_retry
+# (dropped link requests) and lora_lrncp_proof_retry (dropped proofs).
 
 [test]
 name = "lora_lrncp_link_loss"

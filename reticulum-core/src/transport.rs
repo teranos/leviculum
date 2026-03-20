@@ -1080,8 +1080,8 @@ impl<C: Clock, S: Storage> Transport<C, S> {
         let is_single_announce = packet.flags.packet_type == PacketType::Announce
             && packet.flags.dest_type == DestinationType::Single;
         let is_from_local_client = self.is_local_client(interface_index);
-        let is_local_link_relay = is_from_local_client
-            && self.storage.has_link_entry(&packet.destination_hash);
+        let is_local_link_relay =
+            is_from_local_client && self.storage.has_link_entry(&packet.destination_hash);
         // Local-client link requests skip hash dedup to allow link request
         // retries (E34). When lrncp retries a link request, the daemon
         // receives the same bytes again. Without this exemption, the daemon
@@ -1090,11 +1090,22 @@ impl<C: Clock, S: Storage> Transport<C, S> {
         // network, not processed locally, so duplicates don't affect daemon state.
         // Python avoids this entirely because its outbound path doesn't pass
         // through inbound() (Transport.py architecture difference).
-        let is_local_client_link_request = is_from_local_client
-            && packet.flags.packet_type == PacketType::LinkRequest;
+        let is_local_client_link_request =
+            is_from_local_client && packet.flags.packet_type == PacketType::LinkRequest;
+        // Link requests for our own destinations (or forwarded to a local
+        // client) skip dedup so that E34 retries (proof lost → initiator
+        // re-sends same link request) reach handle_link_request(), which
+        // re-sends the cached proof. Covers both cases:
+        //   - Destination on this daemon (local_destinations)
+        //   - Destination on a local client (lrncp receiver behind this daemon)
+        // The link management layer handles its own dedup via links.contains_key().
+        let is_link_request_for_us = packet.flags.packet_type == PacketType::LinkRequest
+            && (self.local_destinations.contains(&packet.destination_hash)
+                || self.is_for_local_client(&packet.destination_hash));
         if !is_single_announce
             && !is_local_link_relay
             && !is_local_client_link_request
+            && !is_link_request_for_us
             && self.storage.has_packet_hash(&full_packet_hash)
         {
             if packet.context == PacketContext::Lrproof {

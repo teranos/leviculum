@@ -193,10 +193,10 @@ pub const ESTABLISHMENT_RESPONDER_BONUS_MS: u64 = 54_000;
 /// RTT packet retry: max additional attempts after the initial send.
 pub const RTT_RETRY_MAX_ATTEMPTS: u8 = 5;
 
-/// Link request retry: maximum number of retries after the initial attempt.
-/// Total attempts = 1 + this value. Each retry creates a fresh link with
-/// new ephemeral keys (different link_id). The establishment timeout per
-/// attempt provides natural spacing between retries.
+/// Link request retry: minimum number of retries after the initial attempt.
+/// The actual retry count is `max(this, hops)` — multi-hop paths get more
+/// retries because each hop is an independent loss opportunity.
+/// Total attempts = 1 + effective_retries.
 /// Python Reticulum has no link request retry (single attempt only).
 pub const LINK_REQUEST_MAX_RETRIES: u8 = 2;
 

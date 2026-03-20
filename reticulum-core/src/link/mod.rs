@@ -39,6 +39,8 @@
 
 pub mod channel;
 
+use alloc::vec::Vec;
+
 use crate::constants::{
     ED25519_SIGNATURE_SIZE, ESTABLISHMENT_RESPONDER_BONUS_MS, ESTABLISHMENT_TIMEOUT_PER_HOP_MS,
     KEEPALIVE_INITIATOR_BYTE, KEEPALIVE_PAYLOAD_SIZE, KEEPALIVE_RESPONDER_BYTE,
@@ -424,6 +426,14 @@ pub struct Link {
     /// Only populated on the responder side (non-initiator).
     /// Removal: cleared when the link is dropped (Link owns this data).
     remote_identity: Option<Identity>,
+    /// Cached proof packet bytes for re-sending on duplicate link requests (responder only).
+    ///
+    /// Set in `accept_link()` after `build_proof_packet()` returns.
+    /// Read in `handle_link_request()` when a duplicate request arrives for a
+    /// link still in `PendingIncoming` phase (E34 retry: proof was lost).
+    /// Cleared when the link transitions to Active (in `process_rtt()`).
+    /// ~118 bytes per pending responder link. Dropped when the link is removed.
+    cached_proof: Option<Vec<u8>>,
 }
 
 impl Link {
@@ -481,6 +491,7 @@ impl Link {
             pending_resource_adv: None,
             resource_strategy: crate::resource::ResourceStrategy::AcceptNone,
             remote_identity: None,
+            cached_proof: None,
         }
     }
 
@@ -586,6 +597,7 @@ impl Link {
             pending_resource_adv: None,
             resource_strategy: crate::resource::ResourceStrategy::AcceptNone,
             remote_identity: None,
+            cached_proof: None,
         })
     }
 
@@ -713,8 +725,9 @@ impl Link {
             "link: handshake RTT measured"
         );
 
-        // Link is now active
+        // Link is now active — clear cached proof (no longer needed for re-send)
         self.state = LinkState::Active;
+        self.cached_proof = None;
 
         Ok(rtt_seconds)
     }
@@ -777,6 +790,19 @@ impl Link {
     /// Set the interface this link is attached to
     pub fn set_attached_interface(&mut self, iface: usize) {
         self.attached_interface = Some(iface);
+    }
+
+    /// Get the cached proof bytes (for re-sending on duplicate link requests)
+    pub fn cached_proof(&self) -> Option<&[u8]> {
+        self.cached_proof.as_deref()
+    }
+
+    /// Store proof bytes for potential re-send on duplicate link requests.
+    ///
+    /// Called in `accept_link()` after `build_proof_packet()`. Cleared when
+    /// the link transitions to Active in `process_rtt()`.
+    pub fn set_cached_proof(&mut self, proof: Vec<u8>) {
+        self.cached_proof = Some(proof);
     }
 
     /// Check if compression is enabled for this link

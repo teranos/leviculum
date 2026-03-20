@@ -7,9 +7,8 @@
 use alloc::vec::Vec;
 
 use crate::constants::{
-    CHANNEL_DEFAULT_RTT_MS, DATA_RECEIPT_TIMEOUT_MS, LINK_REQUEST_MAX_RETRIES,
-    MODE_AES256_CBC, MS_PER_SECOND, PROOF_DATA_SIZE, RTT_RETRY_MAX_ATTEMPTS,
-    TRUNCATED_HASHBYTES,
+    CHANNEL_DEFAULT_RTT_MS, DATA_RECEIPT_TIMEOUT_MS, LINK_REQUEST_MAX_RETRIES, MODE_AES256_CBC,
+    MS_PER_SECOND, PROOF_DATA_SIZE, RTT_RETRY_MAX_ATTEMPTS, TRUNCATED_HASHBYTES,
 };
 use crate::destination::{DestinationHash, ProofStrategy};
 use crate::hex_fmt::{HexFmt, HexShort};
@@ -242,12 +241,16 @@ impl<R: CryptoRngCore, C: Clock, S: Storage> NodeCore<R, C, S> {
         self.links.insert(link_id, link);
 
         // Register retry state so check_timeouts() can re-attempt on failure (E34).
+        // Retry count is hop-aware: multi-hop paths need more attempts because
+        // each hop is an independent loss opportunity. A 3-hop path has 3×
+        // the chance of losing the request or proof compared to 1-hop.
+        let retries = core::cmp::max(LINK_REQUEST_MAX_RETRIES, hops);
         self.link_retry_state.insert(
             link_id,
             LinkRetryState {
                 dest_hash,
                 signing_key: *dest_signing_key,
-                remaining: LINK_REQUEST_MAX_RETRIES,
+                remaining: retries,
             },
         );
 
@@ -311,6 +314,7 @@ impl<R: CryptoRngCore, C: Clock, S: Storage> NodeCore<R, C, S> {
         }
         let proof_mtu = link.negotiated_mtu();
         let proof = link.build_proof_packet(identity, proof_mtu, MODE_AES256_CBC)?;
+        link.set_cached_proof(proof.clone());
         link.set_phase(LinkPhase::PendingIncoming {
             proof_sent_at_ms: now_ms,
         });
@@ -543,11 +547,33 @@ impl<R: CryptoRngCore, C: Clock, S: Storage> NodeCore<R, C, S> {
         let link_id = Link::calculate_link_id(raw_packet);
 
         // Check if we already have this link
-        if self.links.contains_key(&link_id) {
-            tracing::trace!(
-                link = %HexShort(link_id.as_bytes()),
-                "Link request ignored, link already exists"
-            );
+        if let Some(link) = self.links.get(&link_id) {
+            // E34 retry scenario: if the link is still in PendingIncoming,
+            // the original proof was likely lost. Re-send the cached proof.
+            if matches!(link.phase(), LinkPhase::PendingIncoming { .. }) {
+                if let Some(proof) = link.cached_proof() {
+                    let proof = proof.to_vec();
+                    if let Some(iface_idx) = link.attached_interface() {
+                        tracing::debug!(
+                            link = %HexShort(link_id.as_bytes()),
+                            "Re-sending proof for duplicate link request (E34 retry)"
+                        );
+                        if let Err(e) = self.transport.send_on_interface(iface_idx, &proof) {
+                            tracing::debug!(%e, "proof re-send failed");
+                        }
+                    } else {
+                        tracing::warn!(
+                            link = %HexShort(link_id.as_bytes()),
+                            "Cannot re-send proof: no attached interface"
+                        );
+                    }
+                }
+            } else {
+                tracing::trace!(
+                    link = %HexShort(link_id.as_bytes()),
+                    "Link request ignored, link already exists"
+                );
+            }
             return;
         }
 
@@ -2108,9 +2134,7 @@ impl<R: CryptoRngCore, C: Clock, S: Storage> NodeCore<R, C, S> {
                                 } else {
                                     (None, 1)
                                 };
-                            let hw_mtu = self
-                                .transport
-                                .next_hop_interface_hw_mtu(&dest_hash_bytes);
+                            let hw_mtu = self.transport.next_hop_interface_hw_mtu(&dest_hash_bytes);
                             let packet = link
                                 .build_link_request_packet_with_transport(next_hop, hops, hw_mtu);
                             link.set_phase(LinkPhase::PendingOutgoing {

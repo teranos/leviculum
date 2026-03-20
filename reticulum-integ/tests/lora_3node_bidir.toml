@@ -5,7 +5,7 @@
 # All three radios are co-located on the same frequency — every node
 # hears every other node directly (1-hop paths).
 #
-# Requires 3 RNode devices at /dev/ttyACM0, /dev/ttyACM1, /dev/ttyACM3.
+# Requires 3 RNode devices at /dev/ttyACM0, /dev/ttyACM1, /dev/ttyACM2.
 
 [test]
 name = "lora_3node_bidir"
@@ -33,7 +33,7 @@ rnode = "/dev/ttyACM1"
 [nodes.gamma]
 type = "rust"
 respond_to_probes = true
-rnode = "/dev/ttyACM3"
+rnode = "/dev/ttyACM2"
 
 [[steps]]
 action = "sleep"

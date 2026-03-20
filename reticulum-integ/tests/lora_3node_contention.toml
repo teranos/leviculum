@@ -7,7 +7,7 @@
 # restarts gamma before the transfer and waits for path re-convergence,
 # making the test deterministic.
 #
-# Requires 3 RNode devices at /dev/ttyACM0, /dev/ttyACM1, /dev/ttyACM3.
+# Requires 3 RNode devices at /dev/ttyACM0, /dev/ttyACM1, /dev/ttyACM2.
 
 [test]
 name = "lora_3node_contention"
@@ -35,7 +35,7 @@ rnode = "/dev/ttyACM1"
 [nodes.gamma]
 type = "rust"
 respond_to_probes = true
-rnode = "/dev/ttyACM3"
+rnode = "/dev/ttyACM2"
 
 [[steps]]
 action = "sleep"
