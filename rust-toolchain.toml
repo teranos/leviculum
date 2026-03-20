@@ -1,14 +1,7 @@
-# Rust toolchain configuration for leviculum
-# See doc/EMBEDDED_TARGETS.md for details on supported hardware
-
 [toolchain]
 channel = "stable"
 targets = [
-    # nRF52840 - ARM Cortex-M4F (most Meshtastic devices)
-    "thumbv7em-none-eabihf",
-    # RP2040 - ARM Cortex-M0+ (RAK11310, Pi Pico)
-    "thumbv6m-none-eabi",
+    "thumbv7em-none-eabihf", # nRF52840 (ARM Cortex-M4F)
+    "thumbv6m-none-eabi",    # RP2040 (ARM Cortex-M0+)
 ]
-
-# Note: Xtensa targets (ESP32, ESP32-S3) require espup, not rustup.
-# See doc/EMBEDDED_TARGETS.md for setup instructions.
+# Xtensa targets (ESP32, ESP32-S3) require espup, not rustup.

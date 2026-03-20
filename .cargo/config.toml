@@ -1,8 +1,4 @@
-# Cargo configuration for leviculum
-# See doc/EMBEDDED_TARGETS.md for details on supported hardware
-
 [alias]
-# Build reticulum-core for specific embedded targets
 check-nrf52 = "build -p reticulum-core --target thumbv7em-none-eabihf"
 check-rp2040 = "build -p reticulum-core --target thumbv6m-none-eabi"
 check-esp32s3 = "build -p reticulum-core --target xtensa-esp32s3-none-elf"
