@@ -206,7 +206,7 @@ struct LinkProofVectors {
 fn load_vectors() -> TestVectors {
     let path = concat!(
         env!("CARGO_MANIFEST_DIR"),
-        "/../tests/vectors/test_vectors.json"
+        "/tests/vectors/test_vectors.json"
     );
     let content = fs::read_to_string(path).expect("Failed to read test vectors");
     serde_json::from_str(&content).expect("Failed to parse test vectors")
@@ -414,7 +414,7 @@ use reticulum_core::DestinationType;
 fn load_all_vectors() -> TestVectors {
     let path = concat!(
         env!("CARGO_MANIFEST_DIR"),
-        "/../tests/vectors/test_vectors.json"
+        "/tests/vectors/test_vectors.json"
     );
     let content = fs::read_to_string(path).expect("Failed to read test vectors");
     serde_json::from_str(&content).expect("Failed to parse test vectors")
