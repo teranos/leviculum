@@ -25,16 +25,10 @@ When an issue is fixed, remove it from this file entirely.
 | E28 | M | post-7 | open | Design | InterfaceMode::multiple_access defined but unused — wire up for E10 (jitter) and E24 (ingress) |
 | E32 | L | post-7 | open | Bug | KISS deframer unwrap_or(0) silently masks state machine bugs |
 | E33 | L | post-7 | open | Bug | Deferred path response uses 0 hops when announce cache is empty |
-| E34 | H | post-7 | fixed | Protocol | No link request retry mechanism — single lost frame kills link establishment |
 | E35 | L | post-7 | open | Test | size_sweep runs without proxy — no loss recovery tested for 5KB/50KB files |
 | E36 | L | post-7 | open | Test | lora_lrncp_bidir is sequential, not simultaneous — no contention testing |
 | E37 | L | post-7 | open | Test | Proxy only supports deterministic drop counts, not random loss rates |
 | E38 | M | post-7 | open | Test | Multi-hop LoRa testing requires per-node radio config, multi-RNode nodes, and 4 RNodes |
-| E39 | H | post-7 | fixed | Bug | Transport node on shared medium relays ALL link traffic, causing 100% transfer failure |
-| E40 | M | post-7 | fixed | Bug | LoRa link establishment flaky during sequential full-suite runs (4 tests affected) |
-| E41 | L | post-7 | fixed | Bug | lora_3node_bidir flaky at slow profile (62.5 kHz) — 1 failure in 3 attempts |
-| E42 | L | post-7 | fixed | Test | lora_3node_contention inherently non-deterministic — gamma restart timing uncontrolled |
-| E43 | M | post-7 | fixed | Protocol | lora_link_interop: selftest Phase 3 timeout was hardcoded 60s, too short for E34 retry budget at 3 hops |
 | E44 | M | post-7 | open | Protocol | Resource completion proof lost — sender passively burns retries, no recovery |
 
 ---
@@ -208,16 +202,6 @@ When an issue is fixed, remove it from this file entirely.
 - **Fix:** Either skip creating the deferred path response entry when no cached announce exists, or propagate the `None` explicitly so the hop count is clearly unknown rather than silently 0.
 - **Test:** Unit test: verify that a deferred path response without cached announce data either skips creation or correctly marks hops as unknown.
 
-### E34: No link request retry mechanism
-- **Status:** fixed
-- **Priority:** H
-- **Phase:** post-7
-- **Category:** Protocol
-- **Found:** lora_lrncp_link_loss test implementation (Gap 3)
-- **Detail:** When a link request frame is lost in transit, the protocol has no retry mechanism. The sender does not retransmit the link request, and the link simply fails to establish. In real LoRa deployments (EU duty cycle limits, collisions, marginal signal conditions) this is a realistic scenario.
-- **Fix applied:** Link request retry in `check_timeouts()` (link_management.rs). On establishment timeout, resends the same link request (same Link, same ephemeral keys, same link_id) up to `LINK_REQUEST_MAX_RETRIES=2` times. Total 3 attempts. Transparent to callers — link_id is stable. Same-key retry is safe: delayed proof from attempt 1 is valid for subsequent attempts (same ECDH exchange). Required three supporting changes: (1) E39 hash caching moved from `send_on_interface()` to `send_to_destination()` (origination-only, matching Python Transport.outbound), (2) local-client LinkRequest dedup exemption in `process_incoming()`, (3) LoRa sender timeout increased to 120s.
-- **Test:** `lora_lrncp_link_retry` — proxy drops 2 link-request-sized frames, link establishes on 3rd attempt, transfer completes.
-
 ### E35: size_sweep runs without proxy — no loss recovery tested for 5KB/50KB files
 - **Status:** open
 - **Priority:** L
@@ -263,69 +247,6 @@ When an issue is fixed, remove it from this file entirely.
   4. Compose generator: map multiple host devices into one container (`compose.rs`: device list)
 - **Scope:** topology.rs, compose.rs, runner.rs, config generation. No core protocol changes needed — Reticulum already supports multiple interfaces per node.
 - **Test:** Integration test: `lora_multihop_probe` — A sends probe to C through relay B, verify 2-hop path where A and C are on different frequencies.
-
-### E39: Transport node on shared medium relays ALL link traffic, causing 100% transfer failure
-- **Status:** fixed
-- **Priority:** H
-- **Phase:** post-7
-- **Category:** Bug
-- **Found:** Gap 8 — E39 investigation with 3-node shared medium LoRa (3/3 failures).
-- **Root cause:** When a transport-enabled bystander (gamma) shares a LoRa channel with two communicating nodes (alpha, beta), gamma receives every packet on its single RNode interface. For each packet, gamma looks up the destination in its link table and path table, finds `target_iface = path.interface_index` which points to the same RNode interface it received on, and rebroadcasts the packet back onto the channel. This applies to ALL link traffic — not just link requests, but also proofs, RTT packets, resource ADV, resource data, and resource REQ. The effect is that every packet alpha sends is received by gamma, relayed back onto LoRa, and received by BOTH alpha and beta as duplicates. This doubles channel utilization, creates radio collisions (gamma TX overlaps with beta TX), and corrupts the link/resource state machines with duplicate packets.
-- **Code path:** `transport.rs:1955-2084` (link request forwarding), `transport.rs:2195-2364` (proof forwarding via link table). Both paths call `forward_on_interface(target_iface, ...)` without checking `target_iface == interface_index`. The `forward_on_interface()` function (`transport.rs:2709-2726`) has no same-interface guard.
-- **Observed behavior (from logs):**
-  1. Alpha TX 86B (link request) → beta RX + gamma RX
-  2. Beta TX 118B (proof) → alpha RX + gamma RX
-  3. Gamma TX 86B (relays link request back onto LoRa) — same-interface relay
-  4. Gamma TX 118B (relays proof back onto LoRa) — same-interface relay
-  5. Alpha TX 83B (RTT), 211B (ADV), 195B (data) → gamma relays each one
-  6. Alpha receives its own packets echoed back by gamma as duplicates
-  7. Transfer times out — resource state machine confused by duplicate/corrupt packets
-- **Python Reticulum:** Has no explicit same-interface suppression for forwarding, but Python's `Transport.outbound()` (line 1169) caches the outbound packet hash before transmitting. When a relay echoes the packet back, Python's dedup filter catches it. Python also benefits from GIL-based serialization which makes RF collision timing different. 3 Python nodes all transport-enabled on same LoRa channel: PASSES (tested).
-- **Impact:** 100% link and transfer failure with 3+ transport-enabled nodes on the same LoRa channel. Workaround: `enable_transport = false` on non-communicating nodes.
-- **Hypothesis evaluation:**
-  1. Path hijack: **ruled out** — alpha learns the direct 1-hop path correctly, link request is routed to the correct destination
-  2. Announce collision: **partially confirmed** — announce rebroadcasts add contention but don't break path discovery (paths converge correctly)
-  3. Proof interception: **confirmed** — gamma forwards beta's proof via link table back onto the same interface, causing duplicates
-  4. Full traffic relay: **confirmed and worse than hypothesized** — gamma relays ALL link traffic (request, proof, RTT, ADV, data, REQ), not just link requests. This is the primary failure mechanism.
-- **E34 interaction:** Link request retry (E34) would NOT fix this. The link actually establishes successfully (proof arrives). The failure is in the data transfer phase — resource packets are duplicated by gamma's relay, corrupting the resource state machine. E34 is orthogonal.
-- **Fix applied:** Two-part fix: (1) Outbound packet hash caching in `send_on_interface()` and `send_on_all_interfaces_except()` (transport.rs) — mirrors Python Transport.py:1169, prevents echo processing. (2) Same-interface relay suppression in `forward_on_interface_from()` — when `target_iface == receiving_iface`, drops the packet instead of transmitting, preventing RF collisions on shared media. Both fixes are needed: hash caching alone doesn't prevent the RF collision that corrupts other nodes' transmissions.
-- **Test:** All 3 `lora_3node_*` tests pass with all nodes `enable_transport = true` across all 3 radio profiles (slow/medium/fast). 9/9 passes (plus 1 transient slow-profile failure on retry).
-
-### E40: LoRa link establishment flaky during sequential full-suite runs
-- **Status:** fixed
-- **Priority:** M
-- **Phase:** post-7
-- **Category:** Bug
-- **Found:** E39 fix verification — full integration suite run of 40 LoRa tests over 96 minutes.
-- **Detail:** 4 tests failed intermittently in the full suite but passed 100% individually. All shared the same failure mode: link establishment timeout. Affected: `lora_3node_transfer`, `lora_3node_contention`, `lora_dual_cluster_rust`, `lora_lrncp_fetch`. Root cause was single-attempt link establishment failing due to RF collisions from concurrent announce traffic on the shared LoRa channel.
-- **Fix applied:** E34 link request retry (3 attempts) recovers from transient link establishment failures. Contention test redesigned (E42). Validated with 3 consecutive full-suite runs: all 4 previously-failing tests pass in all 3 runs. Residual: 1/41 stochastic failures per run (different test each time — `lora_proxy_loss` in run 1 from Python rnprobe timeout, `lora_link_rust` in run 2 from TCP disconnect, 0 failures in run 3). These are not reproducible and have different root causes unrelated to E40.
-
-### E41: lora_3node_bidir flaky at slow profile (62.5 kHz)
-- **Status:** fixed
-- **Priority:** L
-- **Phase:** post-7
-- **Category:** Bug
-- **Found:** E39 fix verification — 3-node bidir test at slow profile (LORA_BANDWIDTH=62500).
-- **Detail:** First run failed (link establishment timeout during gamma→alpha direction), second and third runs passed. At 62.5 kHz, announce collisions during 3-node convergence can cause the link establishment attempt to time out.
-- **Fix applied:** E34 link request retry (3 attempts) recovers from the initial collision. Validated: `lora_3node_bidir` passes in all 3 consecutive full-suite runs (including slow-profile tests run earlier).
-
-### E42: lora_3node_contention inherently non-deterministic
-- **Status:** fixed
-- **Priority:** L
-- **Phase:** post-7
-- **Category:** Test
-- **Found:** Gap 8 implementation and E39 fix verification.
-- **Detail:** The original test restarted gamma mid-transfer, causing non-deterministic RF collisions from gamma's post-restart announces overlapping with data segments.
-- **Fix applied:** Redesigned test to restart gamma BEFORE the transfer and wait for path re-convergence. The transfer now runs on a quiescent channel. Tests "network recovery after node restart" instead of "transfer under collision from restart announces".
-
-### E43: lora_link_interop: selftest Phase 3 timeout too short for E34 retry budget
-- **Status:** fixed
-- **Priority:** M
-- **Phase:** post-7
-- **Category:** Protocol
-- **Found:** Full suite ×3 baseline run (proof-resend verification).
-- **Detail:** `lrns selftest` creates two ephemeral nodes (A, B) as local clients of alpha/beta daemons. Topology: selftest_A → TCP → alpha_daemon → LoRa → beta_daemon → TCP → selftest_B = 3 hops. With hops=3: establishment_timeout_ms = 6000 × (3+1) = 24s. E34 effective retries = max(2, 3) = 3. Total budget = 4 × 24s = 96s. But selftest Phase 3 timeout was hardcoded at 60s, allowing only 2 full retries before the selftest killed the link.
-- **Fix applied:** Replaced hardcoded 60s with computed timeout: `(per_attempt_ms × total_attempts × 5/4) / 1000`, floored at 60s. At 3 hops this gives 120s. The formula tracks ESTABLISHMENT_TIMEOUT_PER_HOP_MS and LINK_REQUEST_MAX_RETRIES so future constant changes don't silently break it.
 
 ### E44: Resource completion proof lost — sender passively burns retries, no recovery
 - **Status:** open
