@@ -34,6 +34,8 @@ When an issue is fixed, remove it from this file entirely.
 | E40 | M | post-7 | fixed | Bug | LoRa link establishment flaky during sequential full-suite runs (4 tests affected) |
 | E41 | L | post-7 | fixed | Bug | lora_3node_bidir flaky at slow profile (62.5 kHz) — 1 failure in 3 attempts |
 | E42 | L | post-7 | fixed | Test | lora_3node_contention inherently non-deterministic — gamma restart timing uncontrolled |
+| E43 | M | post-7 | fixed | Protocol | lora_link_interop: selftest Phase 3 timeout was hardcoded 60s, too short for E34 retry budget at 3 hops |
+| E44 | M | post-7 | open | Protocol | Resource completion proof lost — sender passively burns retries, no recovery |
 
 ---
 
@@ -315,4 +317,25 @@ When an issue is fixed, remove it from this file entirely.
 - **Found:** Gap 8 implementation and E39 fix verification.
 - **Detail:** The original test restarted gamma mid-transfer, causing non-deterministic RF collisions from gamma's post-restart announces overlapping with data segments.
 - **Fix applied:** Redesigned test to restart gamma BEFORE the transfer and wait for path re-convergence. The transfer now runs on a quiescent channel. Tests "network recovery after node restart" instead of "transfer under collision from restart announces".
+
+### E43: lora_link_interop: selftest Phase 3 timeout too short for E34 retry budget
+- **Status:** fixed
+- **Priority:** M
+- **Phase:** post-7
+- **Category:** Protocol
+- **Found:** Full suite ×3 baseline run (proof-resend verification).
+- **Detail:** `lrns selftest` creates two ephemeral nodes (A, B) as local clients of alpha/beta daemons. Topology: selftest_A → TCP → alpha_daemon → LoRa → beta_daemon → TCP → selftest_B = 3 hops. With hops=3: establishment_timeout_ms = 6000 × (3+1) = 24s. E34 effective retries = max(2, 3) = 3. Total budget = 4 × 24s = 96s. But selftest Phase 3 timeout was hardcoded at 60s, allowing only 2 full retries before the selftest killed the link.
+- **Fix applied:** Replaced hardcoded 60s with computed timeout: `(per_attempt_ms × total_attempts × 5/4) / 1000`, floored at 60s. At 3 hops this gives 120s. The formula tracks ESTABLISHMENT_TIMEOUT_PER_HOP_MS and LINK_REQUEST_MAX_RETRIES so future constant changes don't silently break it.
+
+### E44: Resource completion proof lost — sender passively burns retries, no recovery
+- **Status:** open
+- **Priority:** M
+- **Phase:** post-7
+- **Category:** Protocol
+- **Found:** Full suite ×3 baseline run (proof-resend verification), lora_lrncp_size_sweep 10KB transfer.
+- **Detail:** When the receiver completes a resource transfer, it sends a completion proof (83 bytes). If this proof is lost over LoRa, the sender enters AwaitingProof state and passively increments its retry counter on each timeout (RTT×3 + 10s + retries×0.5s ≈ 22s per retry, 16 retries max ≈ 352s budget). The sender never requests the proof again. The receiver considers the transfer done and has no mechanism to detect proof loss or re-send. Observed: 10KB at 62.5kHz SF7, transfer reached 90.9%, beta sent 83-byte proof at 10:35:03, alpha never received it, 137s radio silence, lrncp's hardcoded 300s deadline fires at 10:39:14 (before the 352s retry budget expires). The lrncp timeout kills the transfer, not the resource retry budget.
+- **Mitigation options:** (1) Sender sends explicit proof re-request after N passive retries; (2) Receiver implements proof delivery confirmation (waits for ACK, re-sends on timeout); (3) Extend lrncp timeout beyond resource retry budget (>360s). Option 3 is a band-aid. Options 1/2 require protocol extension.
+- **Python behavior:** Same passive AwaitingProof design (Resource.py:638). Not a compatibility constraint — we can improve.
+- **Also affects:** lora_rncp_fetch_from_rust (fetch mode, Rust=sender, Python=receiver). Python rncp stalls at "Requesting file from remote" when completion proof is lost — identical AwaitingProof stall from the Rust sender side. Observed once in suite Run 3, 0/5 in isolation. Suite context increases proof loss probability (higher RF load between consecutive tests).
+- **Test:** lora_lrncp_size_sweep should pass 5/5 after fix. Consider a dedicated proxy test that drops completion proofs.
 

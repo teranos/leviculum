@@ -104,6 +104,9 @@ pub struct TestRunner {
     proxy_processes: Vec<Child>,
     /// Node name -> control socket path for proxy commands.
     proxy_sockets: BTreeMap<String, PathBuf>,
+    /// Background `dmesg --follow` process for capturing USB/kernel events.
+    /// Started in `up()`, killed in `down()`.
+    dmesg_process: Option<Child>,
 }
 
 impl TestRunner {
@@ -169,6 +172,7 @@ impl TestRunner {
             is_up: false,
             proxy_processes,
             proxy_sockets,
+            dmesg_process: None,
         })
     }
 
@@ -207,6 +211,7 @@ impl TestRunner {
         }
 
         self.is_up = true;
+        self.start_dmesg_logger();
         Ok(())
     }
 
@@ -266,10 +271,68 @@ impl TestRunner {
         PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("logs")
     }
 
-    /// Collect container logs and write to `reticulum-integ/logs/{test_name}_failure.log`.
+    /// UTC timestamp formatted for filenames: `2026-03-20T03-12-00`.
+    fn utc_timestamp() -> String {
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default();
+        let secs = now.as_secs();
+        let days = secs / 86400;
+        let day_secs = secs % 86400;
+        let h = day_secs / 3600;
+        let m = (day_secs % 3600) / 60;
+        let s = day_secs % 60;
+        let mut y = 1970i64;
+        let mut rem = days as i64;
+        loop {
+            let ydays = if y % 4 == 0 && (y % 100 != 0 || y % 400 == 0) {
+                366
+            } else {
+                365
+            };
+            if rem < ydays {
+                break;
+            }
+            rem -= ydays;
+            y += 1;
+        }
+        let leap = y % 4 == 0 && (y % 100 != 0 || y % 400 == 0);
+        let mdays = [
+            31,
+            if leap { 29 } else { 28 },
+            31,
+            30,
+            31,
+            30,
+            31,
+            31,
+            30,
+            31,
+            30,
+            31,
+        ];
+        let mut mo = 0usize;
+        for md in &mdays {
+            if rem < *md as i64 {
+                break;
+            }
+            rem -= *md as i64;
+            mo += 1;
+        }
+        format!(
+            "{:04}-{:02}-{:02}T{:02}-{:02}-{:02}",
+            y,
+            mo + 1,
+            rem + 1,
+            h,
+            m,
+            s
+        )
+    }
+
+    /// Collect container logs to a timestamped file under `reticulum-integ/logs/`.
     ///
-    /// Creates the logs directory if it doesn't exist. Returns the path to
-    /// the written log file.
+    /// Filename: `{test_name}_{timestamp}.log` — never overwrites.
     pub fn collect_logs(&self) -> Result<PathBuf, RunnerError> {
         let logs_dir = Self::logs_dir();
         fs::create_dir_all(&logs_dir)?;
@@ -279,7 +342,8 @@ impl TestRunner {
             .args(["logs", "--no-color", "--timestamps"])
             .output()?;
 
-        let log_file = logs_dir.join(format!("{}_failure.log", self.scenario.test.name));
+        let ts = Self::utc_timestamp();
+        let log_file = logs_dir.join(format!("{}_{}.log", self.scenario.test.name, ts));
         fs::write(&log_file, &output.stdout)?;
         Ok(log_file)
     }
@@ -324,6 +388,7 @@ impl TestRunner {
 
         self.is_up = false;
         self.kill_proxies();
+        self.stop_dmesg_logger();
 
         if !output.status.success() {
             return Err(RunnerError::Compose {
@@ -379,7 +444,51 @@ impl TestRunner {
         self.proxy_sockets.clear();
     }
 
-    /// Save exec step stdout/stderr to `reticulum-integ/logs/{test_name}_{label}.log`.
+    /// Start a background `dmesg --follow` process to capture USB/kernel events.
+    ///
+    /// Output goes to `reticulum-integ/logs/{test_name}_dmesg_{timestamp}.log`.
+    /// Non-fatal if dmesg is unavailable (e.g., no permissions).
+    fn start_dmesg_logger(&mut self) {
+        let logs_dir = Self::logs_dir();
+        let _ = fs::create_dir_all(&logs_dir);
+        let ts = Self::utc_timestamp();
+        let log_path = logs_dir.join(format!("{}_{}_dmesg.log", self.scenario.test.name, ts));
+
+        match fs::File::create(&log_path) {
+            Ok(file) => {
+                match Command::new("dmesg")
+                    .args(["--follow", "--time-format", "iso"])
+                    .stdout(file)
+                    .stderr(std::process::Stdio::null())
+                    .spawn()
+                {
+                    Ok(child) => {
+                        self.dmesg_process = Some(child);
+                    }
+                    Err(e) => {
+                        eprintln!("dmesg --follow unavailable: {e}");
+                    }
+                }
+            }
+            Err(e) => {
+                eprintln!("Cannot create dmesg log {}: {e}", log_path.display());
+            }
+        }
+    }
+
+    /// Stop the background dmesg logger (if running).
+    fn stop_dmesg_logger(&mut self) {
+        if let Some(mut child) = self.dmesg_process.take() {
+            let _ = Command::new("kill")
+                .args(["-TERM", &child.id().to_string()])
+                .status();
+            let _ = child.wait();
+        }
+    }
+
+    /// Save exec step stdout/stderr to a timestamped file under `reticulum-integ/logs/`.
+    ///
+    /// Filename: `{test_name}_{label}_{timestamp}.log` — never overwrites.
     pub fn save_exec_output(
         &self,
         step_label: &str,
@@ -388,7 +497,11 @@ impl TestRunner {
     ) -> Result<PathBuf, RunnerError> {
         let logs_dir = Self::logs_dir();
         fs::create_dir_all(&logs_dir)?;
-        let log_file = logs_dir.join(format!("{}_{}.log", self.scenario.test.name, step_label));
+        let ts = Self::utc_timestamp();
+        let log_file = logs_dir.join(format!(
+            "{}_{}_{}.log",
+            self.scenario.test.name, step_label, ts
+        ));
         let mut content = Vec::new();
         content.extend_from_slice(b"=== STDOUT ===\n");
         content.extend_from_slice(stdout);
