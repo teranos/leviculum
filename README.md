@@ -32,4 +32,4 @@ cargo test -p reticulum-std --test rnsd_interop
 
 ## License
 
-MIT
+AGPL-3.0-or-later. See [LICENSE](LICENSE) for the full text.

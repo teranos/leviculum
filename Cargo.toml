@@ -18,7 +18,7 @@ exclude = ["reticulum-nrf"]
 version = "0.6.0"
 edition = "2021"
 authors = ["Lew Palm"]
-license = "MIT"
+license = "AGPL-3.0-or-later"
 repository = "https://codeberg.org/Lew_Palm/leviculum"
 description = "Rust implementation of the Reticulum network stack"
 
