@@ -55,11 +55,11 @@ pub const CMD_LT_ALOCK: u8 = 0x0C;
 /// Device ready for next TX packet
 pub const CMD_READY: u8 = 0x0F;
 /// Select subinterface for next command
-/// (multi-interface support — see OPEN_ISSUES_TRACKER and doc/RNODE_PROTOCOL_RESEARCH.md)
+/// (multi-interface support — see doc/RNODE_PROTOCOL_RESEARCH.md)
 pub const CMD_SEL_INT: u8 = 0x1F;
 
 // ---------------------------------------------------------------------------
-// Statistics commands (see E51 in OPEN_ISSUES_TRACKER)
+// Statistics commands (see Codeberg issue #25)
 // ---------------------------------------------------------------------------
 
 /// Total RX packet count (4 bytes BE)
@@ -76,7 +76,7 @@ pub const CMD_STAT_CHTM: u8 = 0x25;
 pub const CMD_STAT_PHYPRM: u8 = 0x26;
 /// Battery status (2 bytes: state, percent)
 pub const CMD_STAT_BAT: u8 = 0x27;
-/// CSMA contention window params (3 bytes) — see E51 in OPEN_ISSUES_TRACKER
+/// CSMA contention window params (3 bytes) — see Codeberg issue #25
 pub const CMD_STAT_CSMA: u8 = 0x28;
 /// CPU temperature (1 byte, value - 120 = Celsius)
 pub const CMD_STAT_TEMP: u8 = 0x29;
@@ -96,7 +96,7 @@ pub const CMD_RESET: u8 = 0x55;
 
 // ---------------------------------------------------------------------------
 // Multi-interface data commands
-// (multi-interface support — see OPEN_ISSUES_TRACKER and doc/RNODE_PROTOCOL_RESEARCH.md)
+// (multi-interface support — see doc/RNODE_PROTOCOL_RESEARCH.md)
 // ---------------------------------------------------------------------------
 
 /// List available radio interfaces

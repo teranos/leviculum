@@ -174,7 +174,7 @@ async fn run(args: Args) -> Result<(), Box<dyn std::error::Error>> {
     let mut events = node.take_event_receiver().ok_or("no event receiver")?;
 
     // quiet: u8 (count) from CLI, converted to bool for now.
-    // TODO(OPEN_ISSUES_TRACKER #quiet-levels): differentiate -q / -qq levels in the future.
+    // TODO(Codeberg): differentiate -q / -qq levels in the future.
     let quiet_bool = args.quiet > 0 || args.silent;
 
     // Validate flag combinations

@@ -13,7 +13,7 @@ use super::error::RpcError;
 /// Fields are parsed from pickle dicts and logged via `Debug`.
 /// Some stub fields (blackhole params) are not yet read by handlers.
 #[derive(Debug)]
-#[allow(dead_code)] // blackhole fields not yet used — see OPEN_ISSUES_TRACKER
+#[allow(dead_code)] // blackhole fields not yet used — see Codeberg issues
 pub(crate) enum RpcRequest {
     // GET commands
     GetInterfaceStats,

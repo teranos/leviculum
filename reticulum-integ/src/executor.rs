@@ -283,10 +283,10 @@ fn execute_step(
             Ok(())
         }
         Step::RnPath { .. } => {
-            unimplemented!("step type 'rnpath' — see OPEN_ISSUES_TRACKER")
+            unimplemented!("step type 'rnpath' — see Codeberg issues")
         }
         Step::RnStatus { .. } => {
-            unimplemented!("step type 'rnstatus' — see OPEN_ISSUES_TRACKER")
+            unimplemented!("step type 'rnstatus' — see Codeberg issues")
         }
         Step::Exec {
             on,
