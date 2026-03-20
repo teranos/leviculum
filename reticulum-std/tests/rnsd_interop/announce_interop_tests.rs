@@ -132,8 +132,7 @@ async fn test_invalid_announce_no_path() {
     let daemon = TestDaemon::start().await.expect("Failed to start daemon");
 
     // Build a valid announce then corrupt the signature
-    let (mut raw, dest_hash, _) =
-        build_announce_raw("leviculum", &["invalid", "sig"], b"bad-sig");
+    let (mut raw, dest_hash, _) = build_announce_raw("leviculum", &["invalid", "sig"], b"bad-sig");
 
     // Corrupt the signature (at offset 103-167 in raw packet)
     raw[103] ^= 0xFF;
@@ -451,13 +450,8 @@ async fn test_non_ratcheted_32_byte_app_data() {
     // Create an announce with exactly 32 bytes of app_data (non-ratcheted)
     // This is the boundary case where payload size equals ratcheted minimum
     let app_data_32 = vec![0x42u8; 32];
-    let dest_hash = send_announce_to_daemon(
-        &daemon,
-        "leviculum",
-        &["ratchet", "boundary"],
-        &app_data_32,
-    )
-    .await;
+    let dest_hash =
+        send_announce_to_daemon(&daemon, "leviculum", &["ratchet", "boundary"], &app_data_32).await;
 
     tokio::time::sleep(Duration::from_millis(500)).await;
 
@@ -618,13 +612,8 @@ async fn test_reconnect_after_disconnect() {
     let mut stream1 = connect_to_daemon(&daemon).await;
 
     // Send first announce
-    let (dest1, _) = build_and_send_announce(
-        &mut stream1,
-        "leviculum",
-        &["reconnect", "first"],
-        b"first",
-    )
-    .await;
+    let (dest1, _) =
+        build_and_send_announce(&mut stream1, "leviculum", &["reconnect", "first"], b"first").await;
 
     tokio::time::sleep(Duration::from_millis(500)).await;
     assert!(

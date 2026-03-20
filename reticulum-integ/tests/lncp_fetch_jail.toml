@@ -3,7 +3,7 @@
 # Step 2: fetch outside jail (failure) — file at /tmp/outside_jail/test_transfer.bin
 
 [test]
-name = "lrncp_fetch_jail"
+name = "lncp_fetch_jail"
 description = "Fetch jail enforcement (allow inside, deny outside)"
 timeout_secs = 600
 
@@ -38,8 +38,8 @@ timeout_secs = 60
 action = "file_transfer"
 sender = "alpha"
 receiver = "charlie"
-sender_tool = "lrncp"
-receiver_tool = "lrncp"
+sender_tool = "lncp"
+receiver_tool = "lncp"
 mode = "fetch"
 receiver_flags = "-F -n -j /tmp/fetchable"
 file_sizes = [102400]
@@ -55,8 +55,8 @@ timeout_secs = 300
 action = "file_transfer"
 sender = "alpha"
 receiver = "charlie"
-sender_tool = "lrncp"
-receiver_tool = "lrncp"
+sender_tool = "lncp"
+receiver_tool = "lncp"
 mode = "fetch"
 receiver_flags = "-F -n -j /tmp/fetchable"
 fetch_path = "/tmp/outside_jail/test_transfer.bin"

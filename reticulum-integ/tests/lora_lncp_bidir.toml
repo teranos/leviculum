@@ -1,10 +1,10 @@
-# Baseline file size sweep over direct LoRa (no proxy).
-# Tests transfer correctness and timing across a range of sizes.
+# Sequential bidirectional transfer: a→b then b→a (not simultaneous).
+# Tests that both directions work on the same LoRa link.
 
 [test]
-name = "lora_lrncp_size_sweep"
-description = "lrncp push multiple file sizes over direct LoRa"
-timeout_secs = 600
+name = "lora_lncp_bidir"
+description = "lncp bidirectional 2KB over direct LoRa"
+timeout_secs = 480
 rust_log = "reticulum_core::link=debug,reticulum_core::transport=debug,reticulum_std::interfaces=debug,info"
 
 [radio]
@@ -38,9 +38,9 @@ timeout_secs = 90
 action = "file_transfer"
 sender = "alpha"
 receiver = "beta"
-sender_tool = "lrncp"
-receiver_tool = "lrncp"
-file_sizes = [64, 512, 2048, 5120, 10240, 51200]
-direction = "a_to_b"
+sender_tool = "lncp"
+receiver_tool = "lncp"
+file_sizes = [2048]
+direction = "both"
 repeats = 1
-timeout_secs = 480
+timeout_secs = 240

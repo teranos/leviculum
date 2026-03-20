@@ -9,7 +9,7 @@
 
 [test]
 name = "lora_3node_bidir"
-description = "lrncp bidirectional 2KB over LoRa between alpha and gamma (3-node mesh)"
+description = "lncp bidirectional 2KB over LoRa between alpha and gamma (3-node mesh)"
 timeout_secs = 600
 rust_log = "reticulum_core::link=debug,reticulum_core::transport=debug,reticulum_std::interfaces=debug,info"
 
@@ -63,8 +63,8 @@ timeout_secs = 90
 action = "file_transfer"
 sender = "alpha"
 receiver = "gamma"
-sender_tool = "lrncp"
-receiver_tool = "lrncp"
+sender_tool = "lncp"
+receiver_tool = "lncp"
 file_sizes = [2048]
 direction = "both"
 repeats = 1

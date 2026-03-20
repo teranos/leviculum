@@ -1,9 +1,11 @@
-# Fetch with identity auth: charlie allows alpha to fetch. Alpha identifies
-# via link.identify() -> authorized -> fetch succeeds.
+# Rust sender (lncp) -> Python relay -> Python receiver (rncp)
+# Tests lncp's send path against Python ecosystem.
+# Direction a_to_b only: reverse direction (Python rncp sender -> lncp
+# receiver) stalls at ~28% for files >100KB (see E31).
 
 [test]
-name = "lrncp_fetch_auth"
-description = "Fetch with identity authentication"
+name = "lncp_rust_sender"
+description = "Rust lncp sender through Python relay to Python rncp receiver"
 timeout_secs = 600
 
 [nodes.alpha]
@@ -15,7 +17,7 @@ type = "python"
 respond_to_probes = false
 
 [nodes.charlie]
-type = "rust"
+type = "python"
 respond_to_probes = true
 
 [links]
@@ -36,12 +38,9 @@ timeout_secs = 60
 action = "file_transfer"
 sender = "alpha"
 receiver = "charlie"
-sender_tool = "lrncp"
-receiver_tool = "lrncp"
-mode = "fetch"
-receiver_flags = "-F"
-auth_from = "alpha"
-file_sizes = [102400]
+sender_tool = "lncp"
+receiver_tool = "rncp"
+file_sizes = [102400, 1048576]
 direction = "a_to_b"
-repeats = 1
+repeats = 3
 timeout_secs = 300

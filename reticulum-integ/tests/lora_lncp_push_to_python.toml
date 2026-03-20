@@ -1,8 +1,7 @@
 [test]
-name = "lora_lrncp_auth"
-description = "lrncp push with identity auth over LoRa"
+name = "lora_lncp_push_to_python"
+description = "lncp push 1KB over direct LoRa (Rust sender, Python receiver)"
 timeout_secs = 360
-rust_log = "reticulum_core::link=debug,reticulum_core::transport=debug,reticulum_std::interfaces=debug,info"
 
 [radio]
 frequency = 869525000
@@ -17,7 +16,7 @@ respond_to_probes = true
 rnode = "/dev/ttyACM0"
 
 [nodes.beta]
-type = "rust"
+type = "python"
 respond_to_probes = true
 rnode = "/dev/ttyACM1"
 
@@ -35,9 +34,8 @@ timeout_secs = 90
 action = "file_transfer"
 sender = "alpha"
 receiver = "beta"
-sender_tool = "lrncp"
-receiver_tool = "lrncp"
-auth_from = "alpha"
+sender_tool = "lncp"
+receiver_tool = "rncp"
 file_sizes = [1024]
 direction = "a_to_b"
 repeats = 1

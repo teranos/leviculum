@@ -1,6 +1,6 @@
 //! rncp-compatible file transfer over Reticulum
 //!
-//! Shared module used by both `lrns cp` (standalone node) and `lrncp`
+//! Shared module used by both `lns cp` (standalone node) and `lncp`
 //! (shared instance client).
 
 use std::collections::VecDeque;
@@ -286,7 +286,7 @@ pub async fn run_listen(
     }
 
     eprintln!(
-        "lrncp listening on {}",
+        "lncp listening on {}",
         crate::hex_encode(dest_hash.as_bytes())
     );
 
@@ -556,7 +556,7 @@ fn encode_fetch_response_not_allowed() -> Vec<u8> {
 }
 
 /// Decode the server's fetch response.
-/// Used by lrncp binary; dead_code warning is a false positive from lrns binary.
+/// Used by lncp binary; dead_code warning is a false positive from lns binary.
 #[allow(dead_code)]
 enum FetchResponse {
     Found,
@@ -565,7 +565,7 @@ enum FetchResponse {
     RemoteError,
 }
 
-#[allow(dead_code)] // used by lrncp, not lrns
+#[allow(dead_code)] // used by lncp, not lns
 fn decode_fetch_response(data: &[u8]) -> FetchResponse {
     let value = rmpv::decode::read_value(&mut Cursor::new(data)).ok();
     match value {
@@ -577,7 +577,7 @@ fn decode_fetch_response(data: &[u8]) -> FetchResponse {
 }
 
 /// Encode a string as msgpack for use as request data.
-#[allow(dead_code)] // used by lrncp, not lrns
+#[allow(dead_code)] // used by lncp, not lns
 fn encode_msgpack_string(s: &str) -> Vec<u8> {
     let mut buf = Vec::new();
     rmpv::encode::write_value(&mut buf, &rmpv::Value::String(s.into()))
@@ -586,7 +586,7 @@ fn encode_msgpack_string(s: &str) -> Vec<u8> {
 }
 
 /// Fetch a file from a remote listener.
-#[allow(dead_code)] // used by lrncp, not lrns
+#[allow(dead_code)] // used by lncp, not lns
 #[allow(clippy::too_many_arguments)]
 pub async fn run_fetch(
     node: &ReticulumNode,

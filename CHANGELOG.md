@@ -14,9 +14,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - LoRa test coverage: size sweep, frame loss, link-under-loss, bidirectional, 16-test cross-impl matrix
 - Proxy rule `max_size`, `min_size`, and `skip` filters for targeting specific packet types
 - File transfer test framework: fetch mode, auth, negative testing, jail violation tests
-- `lrncp` fetch mode (`-f`, `-F`, `-j`) with jail path restriction and identity-based auth
-- `lrncp` physical layer rate display (`-P`), compression toggle (`-C`), silent flag (`-S`)
-- `lrncp` standalone binary — shared instance client for rncp-compatible file transfer via Unix socket
+- `lncp` fetch mode (`-f`, `-F`, `-j`) with jail path restriction and identity-based auth
+- `lncp` physical layer rate display (`-P`), compression toggle (`-C`), silent flag (`-S`)
+- `lncp` standalone binary — shared instance client for rncp-compatible file transfer via Unix socket
 - Link request/response protocol for single-packet RPC over established links
 - Link identity verification (`link.identify()`) with Ed25519 signature proof
 - Resource transfer progress display with real-time speed and percentage
@@ -48,7 +48,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Resource retransmit timeout not resetting between retries (all fired immediately)
 - Shared-instance resource retransmissions blocked by packet dedup
 - Multi-segment resource receive (E31) — dynamic buffer, correct hashmap length, metadata parsing
-- `lrncp` listener rejected incoming links (missing `set_accepts_links(true)`)
+- `lncp` listener rejected incoming links (missing `set_accepts_links(true)`)
 - Resource API action draining — ADV/REQ packets dispatched immediately
 - RNode serial heartbeat fixes idle-correlated LoRa failures after 12+ min silence
 - Channel RTT=0 retransmit storm — SRTT seeded to 5000ms with LoRa-appropriate pacing
@@ -135,7 +135,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [0.5.8] - 2026-02-12
 
 ### Added
-- `lrns connect` interactive CLI for diagnostics, link management, and data exchange
+- `lns connect` interactive CLI for diagnostics, link management, and data exchange
 
 ### Fixed
 - Stale-to-Active link recovery on inbound traffic (matching Python)

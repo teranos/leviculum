@@ -1,9 +1,9 @@
-# Rust edges (lrncp) -> Python relay -> Rust receiver (lrncp)
-# Tests lrncp on both ends through Python relay.
+# Rust edges (lncp) -> Python relay -> Rust receiver (lncp)
+# Tests lncp on both ends through Python relay.
 
 [test]
-name = "lrncp_rust_edges"
-description = "Rust lrncp on both edges through Python rnsd relay"
+name = "lncp_rust_edges"
+description = "Rust lncp on both edges through Python rnsd relay"
 timeout_secs = 600
 
 [nodes.alpha]
@@ -36,8 +36,8 @@ timeout_secs = 60
 action = "file_transfer"
 sender = "alpha"
 receiver = "charlie"
-sender_tool = "lrncp"
-receiver_tool = "lrncp"
+sender_tool = "lncp"
+receiver_tool = "lncp"
 file_sizes = [102400, 1048576]
 direction = "both"
 repeats = 3

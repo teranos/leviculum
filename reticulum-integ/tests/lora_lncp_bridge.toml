@@ -1,7 +1,7 @@
 [test]
-name = "lora_lrncp_push"
-description = "lrncp push 1KB over direct LoRa"
-timeout_secs = 360
+name = "lora_lncp_bridge"
+description = "lncp push over LoRa-to-TCP bridge"
+timeout_secs = 480
 rust_log = "reticulum_core::link=debug,reticulum_core::transport=debug,reticulum_std::interfaces=debug,info"
 
 [radio]
@@ -21,23 +21,30 @@ type = "rust"
 respond_to_probes = true
 rnode = "/dev/ttyACM1"
 
+[nodes.charlie]
+type = "rust"
+respond_to_probes = true
+
+[links]
+beta-charlie = "tcp"
+
 [[steps]]
 action = "sleep"
-duration_secs = 25
+duration_secs = 40
 
 [[steps]]
 action = "wait_for_path"
 on = "alpha"
-destination = "beta.probe"
-timeout_secs = 90
+destination = "charlie.probe"
+timeout_secs = 120
 
 [[steps]]
 action = "file_transfer"
 sender = "alpha"
-receiver = "beta"
-sender_tool = "lrncp"
-receiver_tool = "lrncp"
+receiver = "charlie"
+sender_tool = "lncp"
+receiver_tool = "lncp"
 file_sizes = [1024]
 direction = "a_to_b"
 repeats = 1
-timeout_secs = 120
+timeout_secs = 180

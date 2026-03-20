@@ -25,7 +25,7 @@ pub enum RunnerError {
     Compose { action: String, stderr: String },
     ReadinessTimeout { node: String, timeout_secs: u64 },
     Io(io::Error),
-    LrnsdNotFound(PathBuf),
+    BinaryNotFound(PathBuf),
     ConfigGeneration(String),
     ProxyError(String),
 }
@@ -40,10 +40,10 @@ impl fmt::Display for RunnerError {
                 write!(f, "node '{node}' not ready after {timeout_secs}s")
             }
             RunnerError::Io(e) => write!(f, "I/O error: {e}"),
-            RunnerError::LrnsdNotFound(path) => {
+            RunnerError::BinaryNotFound(path) => {
                 write!(
                     f,
-                    "lrnsd binary not found at {}: run `cargo build --release --bin lrnsd`",
+                    "lnsd binary not found at {}: run `cargo build --release --bin lnsd`",
                     path.display()
                 )
             }
@@ -112,7 +112,7 @@ pub struct TestRunner {
 impl TestRunner {
     /// Create a new test runner for the given scenario.
     ///
-    /// Resolves repo root from `CARGO_MANIFEST_DIR`, checks that lrnsd exists,
+    /// Resolves repo root from `CARGO_MANIFEST_DIR`, checks that lnsd exists,
     /// creates a tempdir, generates node configs and the compose file.
     /// If any node has `rnode_proxy = true`, spawns lora-proxy processes and
     /// waits for their PTYs to appear.
@@ -123,21 +123,21 @@ impl TestRunner {
             .expect("CARGO_MANIFEST_DIR has no parent")
             .to_path_buf();
 
-        let lrnsd_path = repo_root.join("target/release/lrnsd");
-        if !lrnsd_path.exists() {
-            return Err(RunnerError::LrnsdNotFound(lrnsd_path));
+        let lnsd_path = repo_root.join("target/release/lnsd");
+        if !lnsd_path.exists() {
+            return Err(RunnerError::BinaryNotFound(lnsd_path));
         }
 
-        let lrns_path = repo_root.join("target/release/lrns");
-        if !lrns_path.exists() {
-            return Err(RunnerError::LrnsdNotFound(lrns_path));
+        let lns_path = repo_root.join("target/release/lns");
+        if !lns_path.exists() {
+            return Err(RunnerError::BinaryNotFound(lns_path));
         }
 
         let has_proxy = scenario.nodes.values().any(|n| n.rnode_proxy);
         if has_proxy {
             let proxy_path = repo_root.join("target/release/lora-proxy");
             if !proxy_path.exists() {
-                return Err(RunnerError::LrnsdNotFound(proxy_path));
+                return Err(RunnerError::BinaryNotFound(proxy_path));
             }
         }
 
@@ -228,7 +228,7 @@ impl TestRunner {
 
     /// Poll a single node until it is ready, or timeout.
     ///
-    /// Probes the abstract Unix socket `\0rns/default` that both lrnsd
+    /// Probes the abstract Unix socket `\0rns/default` that both lnsd
     /// (Rust) and rnsd (Python) listen on. Using a raw socket connect
     /// instead of `rnstatus` avoids a race condition where rnstatus
     /// accidentally becomes the shared-instance server before rnsd starts.
@@ -679,12 +679,12 @@ mod tests {
     }
 
     #[test]
-    fn lrnsd_not_found_error_message() {
-        let err = RunnerError::LrnsdNotFound(PathBuf::from("/some/path/lrnsd"));
+    fn lnsd_not_found_error_message() {
+        let err = RunnerError::BinaryNotFound(PathBuf::from("/some/path/lnsd"));
         let msg = err.to_string();
-        assert!(msg.contains("/some/path/lrnsd"), "should contain path");
+        assert!(msg.contains("/some/path/lnsd"), "should contain path");
         assert!(
-            msg.contains("cargo build --release --bin lrnsd"),
+            msg.contains("cargo build --release --bin lnsd"),
             "should contain build hint"
         );
     }

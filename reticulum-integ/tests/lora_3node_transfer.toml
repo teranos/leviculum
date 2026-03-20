@@ -1,6 +1,6 @@
 # 3-node shared medium baseline: 1KB transfer from alpha to beta with gamma
 # present as bystander. Gamma's management announces add channel contention
-# vs the 2-node baseline (lora_lrncp_push).
+# vs the 2-node baseline (lora_lncp_push).
 #
 # All three radios are co-located on the same frequency — every node hears
 # every other node directly (1-hop paths). No relay is possible.
@@ -9,7 +9,7 @@
 
 [test]
 name = "lora_3node_transfer"
-description = "lrncp push 1KB over LoRa with 3rd node present (shared medium)"
+description = "lncp push 1KB over LoRa with 3rd node present (shared medium)"
 timeout_secs = 480
 rust_log = "reticulum_core::link=debug,reticulum_core::transport=debug,reticulum_std::interfaces=debug,info"
 
@@ -55,8 +55,8 @@ timeout_secs = 90
 action = "file_transfer"
 sender = "alpha"
 receiver = "beta"
-sender_tool = "lrncp"
-receiver_tool = "lrncp"
+sender_tool = "lncp"
+receiver_tool = "lncp"
 file_sizes = [1024]
 direction = "a_to_b"
 repeats = 3

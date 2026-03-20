@@ -10,8 +10,8 @@
 # proof → link timeout). With retry, the 3rd attempt succeeds.
 
 [test]
-name = "lora_lrncp_link_retry"
-description = "lrncp push over LoRa after 2 dropped link requests recovered by E34 retry"
+name = "lora_lncp_link_retry"
+description = "lncp push over LoRa after 2 dropped link requests recovered by E34 retry"
 timeout_secs = 600
 rust_log = "reticulum_core::link=debug,reticulum_core::transport=debug,reticulum_std::interfaces=debug,info"
 
@@ -55,8 +55,8 @@ rule = "drop direction=a_to_b filter=cmd:0x00 min_size=50 max_size=130 count=2"
 action = "file_transfer"
 sender = "alpha"
 receiver = "beta"
-sender_tool = "lrncp"
-receiver_tool = "lrncp"
+sender_tool = "lncp"
+receiver_tool = "lncp"
 file_sizes = [2048]
 direction = "a_to_b"
 repeats = 1

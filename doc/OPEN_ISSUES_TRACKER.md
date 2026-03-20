@@ -26,7 +26,7 @@ When an issue is fixed, remove it from this file entirely.
 | E32 | L | post-7 | open | Bug | KISS deframer unwrap_or(0) silently masks state machine bugs |
 | E33 | L | post-7 | open | Bug | Deferred path response uses 0 hops when announce cache is empty |
 | E35 | L | post-7 | open | Test | size_sweep runs without proxy — no loss recovery tested for 5KB/50KB files |
-| E36 | L | post-7 | open | Test | lora_lrncp_bidir is sequential, not simultaneous — no contention testing |
+| E36 | L | post-7 | open | Test | lora_lncp_bidir is sequential, not simultaneous — no contention testing |
 | E37 | L | post-7 | open | Test | Proxy only supports deterministic drop counts, not random loss rates |
 | E38 | M | post-7 | open | Test | Multi-hop LoRa testing requires per-node radio config, multi-RNode nodes, and 4 RNodes |
 | E44 | M | post-7 | open | Protocol | Resource completion proof lost — sender passively burns retries, no recovery |
@@ -212,15 +212,15 @@ When an issue is fixed, remove it from this file entirely.
 - **Fix:** Either extend the proxy to support persistent rules (no auto-expiry), or add dedicated proxy tests for 5KB and 50KB files.
 - **Test:** New proxy-enabled transfer tests for 5KB and 50KB file sizes.
 
-### E36: lora_lrncp_bidir is sequential, not simultaneous — no contention testing
+### E36: lora_lncp_bidir is sequential, not simultaneous — no contention testing
 - **Status:** open
 - **Priority:** L
 - **Phase:** post-7
 - **Category:** Test
 - **Found:** Gap 4 implementation
 - **Detail:** The bidir test runs a→b and then b→a sequentially. True simultaneous bidirectional transfer (both sides sending at the same time over the same LoRa channel) is not tested. This would require parallel execution support in the test framework. Potential contention, collision, and throughput degradation under simultaneous load is not covered.
-- **Fix:** Add parallel file_transfer execution to the test framework, then add a lora_lrncp_bidir_simultaneous test.
-- **Test:** New test: `lora_lrncp_bidir_simultaneous` with both directions running concurrently.
+- **Fix:** Add parallel file_transfer execution to the test framework, then add a lora_lncp_bidir_simultaneous test.
+- **Test:** New test: `lora_lncp_bidir_simultaneous` with both directions running concurrently.
 
 ### E37: Proxy only supports deterministic drop counts, not random loss rates
 - **Status:** open
@@ -253,10 +253,10 @@ When an issue is fixed, remove it from this file entirely.
 - **Priority:** M
 - **Phase:** post-7
 - **Category:** Protocol
-- **Found:** Full suite ×3 baseline run (proof-resend verification), lora_lrncp_size_sweep 10KB transfer.
-- **Detail:** When the receiver completes a resource transfer, it sends a completion proof (83 bytes). If this proof is lost over LoRa, the sender enters AwaitingProof state and passively increments its retry counter on each timeout (RTT×3 + 10s + retries×0.5s ≈ 22s per retry, 16 retries max ≈ 352s budget). The sender never requests the proof again. The receiver considers the transfer done and has no mechanism to detect proof loss or re-send. Observed: 10KB at 62.5kHz SF7, transfer reached 90.9%, beta sent 83-byte proof at 10:35:03, alpha never received it, 137s radio silence, lrncp's hardcoded 300s deadline fires at 10:39:14 (before the 352s retry budget expires). The lrncp timeout kills the transfer, not the resource retry budget.
-- **Mitigation options:** (1) Sender sends explicit proof re-request after N passive retries; (2) Receiver implements proof delivery confirmation (waits for ACK, re-sends on timeout); (3) Extend lrncp timeout beyond resource retry budget (>360s). Option 3 is a band-aid. Options 1/2 require protocol extension.
+- **Found:** Full suite ×3 baseline run (proof-resend verification), lora_lncp_size_sweep 10KB transfer.
+- **Detail:** When the receiver completes a resource transfer, it sends a completion proof (83 bytes). If this proof is lost over LoRa, the sender enters AwaitingProof state and passively increments its retry counter on each timeout (RTT×3 + 10s + retries×0.5s ≈ 22s per retry, 16 retries max ≈ 352s budget). The sender never requests the proof again. The receiver considers the transfer done and has no mechanism to detect proof loss or re-send. Observed: 10KB at 62.5kHz SF7, transfer reached 90.9%, beta sent 83-byte proof at 10:35:03, alpha never received it, 137s radio silence, lncp's hardcoded 300s deadline fires at 10:39:14 (before the 352s retry budget expires). The lncp timeout kills the transfer, not the resource retry budget.
+- **Mitigation options:** (1) Sender sends explicit proof re-request after N passive retries; (2) Receiver implements proof delivery confirmation (waits for ACK, re-sends on timeout); (3) Extend lncp timeout beyond resource retry budget (>360s). Option 3 is a band-aid. Options 1/2 require protocol extension.
 - **Python behavior:** Same passive AwaitingProof design (Resource.py:638). Not a compatibility constraint — we can improve.
 - **Also affects:** lora_rncp_fetch_from_rust (fetch mode, Rust=sender, Python=receiver). Python rncp stalls at "Requesting file from remote" when completion proof is lost — identical AwaitingProof stall from the Rust sender side. Observed once in suite Run 3, 0/5 in isolation. Suite context increases proof loss probability (higher RF load between consecutive tests).
-- **Test:** lora_lrncp_size_sweep should pass 5/5 after fix. Consider a dedicated proxy test that drops completion proofs.
+- **Test:** lora_lncp_size_sweep should pass 5/5 after fix. Consider a dedicated proxy test that drops completion proofs.
 

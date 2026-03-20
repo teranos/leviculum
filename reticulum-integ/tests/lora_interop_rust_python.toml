@@ -1,7 +1,7 @@
 # Rust and Python nodes communicating directly over LoRa radio.
 # Tests KISS framing compatibility, announce format, packet encoding.
 # Requires two RNode devices at /dev/ttyACM0 and /dev/ttyACM1.
-# Build lrnsd with: cargo build --release --bin lrnsd --features serial
+# Build lnsd with: cargo build --release --bin lnsd --features serial
 
 [test]
 name = "lora_interop_rust_python"

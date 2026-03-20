@@ -1358,11 +1358,11 @@ passphrase = "mypass"
     fn parse_file_transfer_step() {
         let toml_str = fs::read_to_string(concat!(
             env!("CARGO_MANIFEST_DIR"),
-            "/tests/lrncp_baseline.toml"
+            "/tests/lncp_baseline.toml"
         ))
-        .expect("lrncp_baseline.toml not found");
+        .expect("lncp_baseline.toml not found");
         let scenario = parse_scenario(&toml_str).expect("parse failed");
-        assert_eq!(scenario.test.name, "lrncp_baseline");
+        assert_eq!(scenario.test.name, "lncp_baseline");
         assert_eq!(scenario.nodes.len(), 3);
         assert_eq!(scenario.steps.len(), 3);
         // Verify wait_for_path step has the expected timeout
@@ -1429,7 +1429,7 @@ alice-bob = "tcp"
 action = "file_transfer"
 sender = "alice"
 receiver = "bob"
-sender_tool = "lrncp"
+sender_tool = "lncp"
 receiver_tool = "rncp"
 file_sizes = [1024]
 "#;

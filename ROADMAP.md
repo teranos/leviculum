@@ -28,13 +28,13 @@
 
 ## Aktueller Stand
 
-**Aktuelle Version: 0.5.19.** Phase 1 (Protokoll-Fundament) und Phase 2 (Core API & Full Node) sind vollständig abgeschlossen, inklusive eines 7-phasigen Code-Refactorings (63 Issues in `doc/BATTLEPLAN.md`). Storage-Trait-Refactoring abgeschlossen: alle 11 Transport/NodeCore-Sammlungen auf typsicheren Storage-Trait migriert, FileStorage umschließt MemoryStorage mit Python-kompatibler Persistenz. Ratchet-Schlüssel werden auf Disk persistiert (Sender-Seite: signiertes Msgpack in `ratchetkeys/`, Empfänger-Seite: Msgpack in `ratchets/`), Python-kompatibles Format. Ratchet-Selftest: 4 Modi (`ratchet-basic`, `ratchet-enforced`, `bulk-transfer`, `ratchet-rotation`) testen Ratchet-Verschlüsselung End-to-End durch Relay-Daemons, inklusive Rotations-Verifikation und Korruptionstest. UDP-Interface implementiert (Socket, I/O-Task, Config-Parsing, Interop-Tests). AutoInterface mit 7 Integrationstests und Cross-Machine-Interop-Test abgedeckt. RPC-Server implementiert: Python-CLI-Tools (`rnstatus`, `rnpath`, `rnprobe`) funktionieren gegen den Rust-Daemon, inklusive HMAC-MD5/SHA256-Kompatibilität für Python 3.11+. Probe-Responder eingebaut. Hops werden jetzt bei Empfang inkrementiert (wie Python). Transport-Identity wird über Neustarts persistiert. Path-Request-Responses werden jetzt gezielt nur an das anfragende Interface gesendet (nicht mehr Broadcast). Lokale Announces werden beim Senden gecacht, damit Path Requests beantwortet werden können. Replay-Schutz erlaubt bessere (weniger Hops) Routen durch. Docker-basiertes Integrationstest-Framework (`reticulum-integ`): TOML-definierte Szenarien mit gemischten Rust/Python-Topologien, automatischer Config-Generierung und schrittweisen Assertions (basic_probe, probe_through_relay, path_self_healing, four_node_chain, announce_replacement, node_restart_path_recovery, rust_relay_python_endpoints, five_node_mesh, rust_python_rust_chain, python_rust_python_chain, non_transport_no_relay, selftest_ratchet_direct, selftest_ratchet_chain, selftest_ratchet_mixed, selftest_bulk, lora_dual_cluster_rust, lora_dual_cluster_mixed, lora_late_announce_2node, lora_late_announce_4node, lora_late_announce_6node, lora_late_announce_8node, lora_late_announce_10node, lrncp_baseline, lrncp_rust_sender, lrncp_rust_edges, lrncp_full_rust, lrncp_fetch, lrncp_fetch_cross, lrncp_fetch_auth, lrncp_fetch_jail, lrncp_auth, lrncp_auth_reject, lora_lrncp_push, lora_lrncp_fetch, lora_lrncp_auth, lora_lrncp_proxy, lora_lrncp_bridge, lora_rncp_push, lora_rncp_fetch, lora_rncp_auth, lora_rncp_proxy, lora_rncp_bridge, lora_lrncp_push_to_python, lora_rncp_push_to_rust, lora_lrncp_fetch_from_python, lora_rncp_fetch_from_rust, lora_lrncp_auth_to_python, lora_lrncp_bridge_python_relay, lora_lrncp_size_sweep, lora_lrncp_proxy_4drop, lora_lrncp_proxy_6drop, lora_lrncp_link_loss, lora_lrncp_bidir). LoRa-Implementierungsvergleichsmatrix: 16 LoRa-Tests decken alle Implementierungskombinationen ab (Rust↔Rust, Python↔Python, Rust→Python, Python→Rust) für Push, Fetch, Auth, Proxy und Bridge-Szenarien. Announce Rate Limiter erlaubt jetzt Pfadtabellen-Updates auch innerhalb des Rate Windows, wenn weniger Hops. Re-Announce bei neuer TCP-Peer-Verbindung verhindert Startup-Races. Shared-Instance-Zustandsverwaltung: Local-Client-Destinations mit Zeitstempel-Expiry (6h), Block A-D (Announce-Regeln). Path Requests werden jetzt Python-kompatibel re-originiert (frisches Paket mit hops=0 statt Weiterleitung des Originals). LoRa-Zuverlässigkeit bei SF10 validiert: Send-Queue-Priorität (Link-Verkehr vor Announces), First-Hop-Timeout, Announce-Kollisionsschutz (Jitter-Cap entfernt, exponentielle Backoff, 3 Retries), RTT-Seeding gegen Retransmit-Storm, Interface-Backpressure mit Retry-Queue und Congestion-Flag. lora_link_rust: 5/5 bei SF10. Resource Transfer: Multi-Segment-Empfang (Python→Rust) für Dateien >1MB funktioniert (E31 behoben: repack_packet Buffer-Overflow, HASHMAP_MAX_LEN als Protokoll-Konstante, Metadata-Parsing nur Segment 1). `lrncp`/`lrns cp` Dateitransfer vollständig (send + listen + fetch, standalone + shared instance). Link Request/Response-Protokoll implementiert (single-packet RPC über Links). Link-Identitätsverifikation (`link.identify()`) mit kryptographischem Beweis. Fetch-Modus (`-f`/`-F`/`-j`): Dateien von Remote-Listenern abrufen, mit Jail-Unterstützung und Auth-Integration. Resource-Retransmit-Timing an Python angepasst: adaptive Timeout-Faktoren (4→2 nach erstem Datenempfang), per-Retry-Backoff (+500ms), Sender-Grace-Time (10s), Proof-Timeout-Faktor (3×RTT+10s). Ergebnis: Rust Push 1KB über LoRa 7.87s (Python 9.15s), Proxy mit 2 Drops 16.6s (Python 24.0s), Varianz nahe Null (0.03s Spread). Receiver-Retransmit sendet jetzt nur fehlende Parts (statt alle, inkl. bereits empfangene). EIFR-basierter Timeout auf RTT gecappt gegen Kontamination durch Proxy-Drops. LoRa-Testinfrastruktur: 3 Pflicht-Radio-Profile (slow/medium/fast), Null-Toleranz-Policy für Flakiness und Performance-Regressions. Offene Issues: E10 (Interface-spezifischer Jitter für Shared-Medium-Interfaces), E24 (Ingress Control per-Interface).
+**Aktuelle Version: 0.5.19.** Phase 1 (Protokoll-Fundament) und Phase 2 (Core API & Full Node) sind vollständig abgeschlossen, inklusive eines 7-phasigen Code-Refactorings (63 Issues in `doc/BATTLEPLAN.md`). Storage-Trait-Refactoring abgeschlossen: alle 11 Transport/NodeCore-Sammlungen auf typsicheren Storage-Trait migriert, FileStorage umschließt MemoryStorage mit Python-kompatibler Persistenz. Ratchet-Schlüssel werden auf Disk persistiert (Sender-Seite: signiertes Msgpack in `ratchetkeys/`, Empfänger-Seite: Msgpack in `ratchets/`), Python-kompatibles Format. Ratchet-Selftest: 4 Modi (`ratchet-basic`, `ratchet-enforced`, `bulk-transfer`, `ratchet-rotation`) testen Ratchet-Verschlüsselung End-to-End durch Relay-Daemons, inklusive Rotations-Verifikation und Korruptionstest. UDP-Interface implementiert (Socket, I/O-Task, Config-Parsing, Interop-Tests). AutoInterface mit 7 Integrationstests und Cross-Machine-Interop-Test abgedeckt. RPC-Server implementiert: Python-CLI-Tools (`rnstatus`, `rnpath`, `rnprobe`) funktionieren gegen den Rust-Daemon, inklusive HMAC-MD5/SHA256-Kompatibilität für Python 3.11+. Probe-Responder eingebaut. Hops werden jetzt bei Empfang inkrementiert (wie Python). Transport-Identity wird über Neustarts persistiert. Path-Request-Responses werden jetzt gezielt nur an das anfragende Interface gesendet (nicht mehr Broadcast). Lokale Announces werden beim Senden gecacht, damit Path Requests beantwortet werden können. Replay-Schutz erlaubt bessere (weniger Hops) Routen durch. Docker-basiertes Integrationstest-Framework (`reticulum-integ`): TOML-definierte Szenarien mit gemischten Rust/Python-Topologien, automatischer Config-Generierung und schrittweisen Assertions (basic_probe, probe_through_relay, path_self_healing, four_node_chain, announce_replacement, node_restart_path_recovery, rust_relay_python_endpoints, five_node_mesh, rust_python_rust_chain, python_rust_python_chain, non_transport_no_relay, selftest_ratchet_direct, selftest_ratchet_chain, selftest_ratchet_mixed, selftest_bulk, lora_dual_cluster_rust, lora_dual_cluster_mixed, lora_late_announce_2node, lora_late_announce_4node, lora_late_announce_6node, lora_late_announce_8node, lora_late_announce_10node, lncp_baseline, lncp_rust_sender, lncp_rust_edges, lncp_full_rust, lncp_fetch, lncp_fetch_cross, lncp_fetch_auth, lncp_fetch_jail, lncp_auth, lncp_auth_reject, lora_lncp_push, lora_lncp_fetch, lora_lncp_auth, lora_lncp_proxy, lora_lncp_bridge, lora_rncp_push, lora_rncp_fetch, lora_rncp_auth, lora_rncp_proxy, lora_rncp_bridge, lora_lncp_push_to_python, lora_rncp_push_to_rust, lora_lncp_fetch_from_python, lora_rncp_fetch_from_rust, lora_lncp_auth_to_python, lora_lncp_bridge_python_relay, lora_lncp_size_sweep, lora_lncp_proxy_4drop, lora_lncp_proxy_6drop, lora_lncp_link_loss, lora_lncp_bidir). LoRa-Implementierungsvergleichsmatrix: 16 LoRa-Tests decken alle Implementierungskombinationen ab (Rust↔Rust, Python↔Python, Rust→Python, Python→Rust) für Push, Fetch, Auth, Proxy und Bridge-Szenarien. Announce Rate Limiter erlaubt jetzt Pfadtabellen-Updates auch innerhalb des Rate Windows, wenn weniger Hops. Re-Announce bei neuer TCP-Peer-Verbindung verhindert Startup-Races. Shared-Instance-Zustandsverwaltung: Local-Client-Destinations mit Zeitstempel-Expiry (6h), Block A-D (Announce-Regeln). Path Requests werden jetzt Python-kompatibel re-originiert (frisches Paket mit hops=0 statt Weiterleitung des Originals). LoRa-Zuverlässigkeit bei SF10 validiert: Send-Queue-Priorität (Link-Verkehr vor Announces), First-Hop-Timeout, Announce-Kollisionsschutz (Jitter-Cap entfernt, exponentielle Backoff, 3 Retries), RTT-Seeding gegen Retransmit-Storm, Interface-Backpressure mit Retry-Queue und Congestion-Flag. lora_link_rust: 5/5 bei SF10. Resource Transfer: Multi-Segment-Empfang (Python→Rust) für Dateien >1MB funktioniert (E31 behoben: repack_packet Buffer-Overflow, HASHMAP_MAX_LEN als Protokoll-Konstante, Metadata-Parsing nur Segment 1). `lncp`/`lns cp` Dateitransfer vollständig (send + listen + fetch, standalone + shared instance). Link Request/Response-Protokoll implementiert (single-packet RPC über Links). Link-Identitätsverifikation (`link.identify()`) mit kryptographischem Beweis. Fetch-Modus (`-f`/`-F`/`-j`): Dateien von Remote-Listenern abrufen, mit Jail-Unterstützung und Auth-Integration. Resource-Retransmit-Timing an Python angepasst: adaptive Timeout-Faktoren (4→2 nach erstem Datenempfang), per-Retry-Backoff (+500ms), Sender-Grace-Time (10s), Proof-Timeout-Faktor (3×RTT+10s). Ergebnis: Rust Push 1KB über LoRa 7.87s (Python 9.15s), Proxy mit 2 Drops 16.6s (Python 24.0s), Varianz nahe Null (0.03s Spread). Receiver-Retransmit sendet jetzt nur fehlende Parts (statt alle, inkl. bereits empfangene). EIFR-basierter Timeout auf RTT gecappt gegen Kontamination durch Proxy-Drops. LoRa-Testinfrastruktur: 3 Pflicht-Radio-Profile (slow/medium/fast), Null-Toleranz-Policy für Flakiness und Performance-Regressions. Offene Issues: E10 (Interface-spezifischer Jitter für Shared-Medium-Interfaces), E24 (Ingress Control per-Interface).
 
 **Kernfunktionalität:** `NodeCore` (reticulum-core) und `ReticulumNode` (reticulum-std) bieten eine einheitliche async-kompatible API für Destinations, Links, Channels, Single-Packet-Verschlüsselung und Proof-Delivery. Vollständige Interoperabilität mit Python rnsd ist durch umfangreiche Interop-Tests nachgewiesen.
 
-**CLI-Tool `lrns`** mit Subcommands: `status`, `path`, `identity`, `probe`, `interfaces`, `connect`, `selftest`, `cp`. Davon voll implementiert: `identity`, `connect`, `selftest` (Zwei-Adress-Modus für Multi-Daemon-Topologien, 7 Modi: `all`, `link`, `packet`, `ratchet-basic`, `ratchet-enforced`, `bulk-transfer`, `ratchet-rotation`), `cp` (rncp-kompatibler Dateitransfer). **Standalone-Binary `lrncp`**: Shared-Instance-Client für Dateitransfer, verbindet sich per Unix-Socket mit lrnsd. Unterstützt `-S`/`--silent`, `-C`/`--no-compress`, `-P`/`--phy-rates` (Transfergeschwindigkeit mit optionaler Physical-Layer-Anzeige), Fortschrittsanzeige während der Übertragung, Fetch-Modus (`-f`/`-F`/`-j`) zum Abrufen von Dateien von Remote-Listenern, Link-Authentifizierung (`-a`). Die anderen Subcommands sind Gerüste.
+**CLI-Tool `lns`** mit Subcommands: `status`, `path`, `identity`, `probe`, `interfaces`, `connect`, `selftest`, `cp`. Davon voll implementiert: `identity`, `connect`, `selftest` (Zwei-Adress-Modus für Multi-Daemon-Topologien, 7 Modi: `all`, `link`, `packet`, `ratchet-basic`, `ratchet-enforced`, `bulk-transfer`, `ratchet-rotation`), `cp` (rncp-kompatibler Dateitransfer). **Standalone-Binary `lncp`**: Shared-Instance-Client für Dateitransfer, verbindet sich per Unix-Socket mit lnsd. Unterstützt `-S`/`--silent`, `-C`/`--no-compress`, `-P`/`--phy-rates` (Transfergeschwindigkeit mit optionaler Physical-Layer-Anzeige), Fortschrittsanzeige während der Übertragung, Fetch-Modus (`-f`/`-F`/`-j`) zum Abrufen von Dateien von Remote-Listenern, Link-Authentifizierung (`-a`). Die anderen Subcommands sind Gerüste.
 
-**Daemon `lrnsd`** läuft als Drop-in-Ersatz für `rnsd` mit TCP-Server/Client-Support, TCP-Reconnection, Config-Loading und sauberem Shutdown.
+**Daemon `lnsd`** läuft als Drop-in-Ersatz für `rnsd` mit TCP-Server/Client-Support, TCP-Reconnection, Config-Loading und sauberem Shutdown.
 
 **Sans-I/O-Architektur:** `reticulum-core` ist ein reiner Zustandsautomat — keine I/O, kein Jitter, keine künstlichen Verzögerungen. Der Core verarbeitet und leitet Pakete sofort weiter. Kollisionsvermeidung und Send-Timing liegen in der Verantwortung der Interface-Implementierung (siehe `doc/ARCHITECTURE.md`, Abschnitt "Zero-delay core"). `reticulum-nrf` ist ein Embassy-basiertes Firmware-Crate für den Heltec Mesh Node T114 (nRF52840 + SX1262).
 
@@ -60,7 +60,7 @@
 | Storage-Trait (typsicher, ~44 Methoden, 3 Implementierungen) | ✅ Fertig |
 | reticulum-std (Driver, TCP, Storage) | ✅ Fertig |
 | reticulum-ffi (C-API) | ✅ Grundfunktionen |
-| reticulum-cli (lrns, lrnsd, lrncp) | 🔶 Teilweise |
+| reticulum-cli (lns, lnsd, lncp) | 🔶 Teilweise |
 
 **Architektur:** Siehe [doc/ARCHITECTURE.md](doc/ARCHITECTURE.md) — no_std/embedded-freundlich, sans-I/O Core (reine Zustandsmaschine), I/O via Action-Rückgabewerte an den Treiber.
 
@@ -125,7 +125,7 @@ Vollständige API für Destinations und Links. Leviculum kann sowohl Client als 
 ### Meilenstein 2.4: TCP Server & Daemon ✅
 - [x] TCP Server Interface (`spawn_tcp_server()`)
 - [x] TCP Client Reconnection (`spawn_tcp_client_with_reconnect()`)
-- [x] `lrnsd` Daemon (Config-Loading, Interfaces, Graceful Shutdown, Log-Levels)
+- [x] `lnsd` Daemon (Config-Loading, Interfaces, Graceful Shutdown, Log-Levels)
 - [x] Transport-Tracing (`tracing::trace!` in Hot-Path-Funktionen)
 
 ### Meilenstein 2.5: Transport Layer ✅
@@ -198,7 +198,7 @@ Sicherheitsfeatures verdrahten, Daemon-Zustand persistieren, Release-Qualität e
 
 ### Meilenstein 3.4: UDP Interface ✅
 - [x] UDP-Interface implementieren (reticulum-std)
-- [x] Config-Option für UDP-Interfaces in `lrnsd`
+- [x] Config-Option für UDP-Interfaces in `lnsd`
 - [x] Interop-Test: Rust ↔ Python über UDP
 
 ### Meilenstein 3.5: Buffer/Stream-Integration (C10)
@@ -206,15 +206,15 @@ Sicherheitsfeatures verdrahten, Daemon-Zustand persistieren, Release-Qualität e
 - [ ] Kompression (BZ2) über Links nutzbar
 - [ ] Interop-Test: Stream-Daten zwischen Rust und Python
 
-### `lrns` CLI
-- [ ] `lrns status` — Status-Anzeige
-- [ ] `lrns path` — Pfad-Lookup
-- [ ] `lrns probe` — Konnektivitätstest
-- [x] `lrns identity` — Identity-Management ✅
-- [x] `lrns connect` — Interaktive Session ✅
-- [x] `lrns selftest` — Zwei-Adress-Modus für Multi-Daemon-Topologien, 7 Modi (all, link, packet, ratchet-basic, ratchet-enforced, bulk-transfer, ratchet-rotation), DNS-Auflösung für Docker-Container ✅
-- [ ] `lrns interfaces` — Interface-Übersicht
-- [x] `lrnsd` — Daemon ✅
+### `lns` CLI
+- [ ] `lns status` — Status-Anzeige
+- [ ] `lns path` — Pfad-Lookup
+- [ ] `lns probe` — Konnektivitätstest
+- [x] `lns identity` — Identity-Management ✅
+- [x] `lns connect` — Interaktive Session ✅
+- [x] `lns selftest` — Zwei-Adress-Modus für Multi-Daemon-Topologien, 7 Modi (all, link, packet, ratchet-basic, ratchet-enforced, bulk-transfer, ratchet-rotation), DNS-Auflösung für Docker-Container ✅
+- [ ] `lns interfaces` — Interface-Übersicht
+- [x] `lnsd` — Daemon ✅
 
 ### Qualitätssicherung
 - [x] Interop-Tests gegen rnsd-Daemon ✅
@@ -255,7 +255,7 @@ Sicherheitsfeatures verdrahten, Daemon-Zustand persistieren, Release-Qualität e
 - [x] Transport Layer: Routing, Announce-Relay, Multi-Hop
 - [x] Channel-System: Reliable Messaging
 - [x] TCP Server + Client Interface (mit Reconnection)
-- [x] `lrnsd` Daemon läuft standalone
+- [x] `lnsd` Daemon läuft standalone
 - [x] Interop-Tests gegen Python rnsd bestehen
 - [x] no_std-Kompatibilität für reticulum-core
 - [ ] Forward Secrecy via Ratchets (B4)
@@ -264,7 +264,7 @@ Sicherheitsfeatures verdrahten, Daemon-Zustand persistieren, Release-Qualität e
 - [x] UDP Interface
 
 **Should-Have:**
-- [ ] `lrns` CLI: status, path, probe, interfaces
+- [ ] `lns` CLI: status, path, probe, interfaces
 - [ ] Buffer/Stream-Integration in LinkHandle (C10)
 - [ ] Fuzzing der Paket-Parser
 - [ ] Dokumentation vollständig
@@ -325,14 +325,14 @@ Sicherheitsfeatures verdrahten, Daemon-Zustand persistieren, Release-Qualität e
 - ✅ Interop-Tests: Dateitransfer zwischen Rust und Python (6 Tests: bidirektional, mit/ohne Metadata, Large Transfer bis 300KB)
 - ✅ ReticulumNode API: `send_resource()`, `set_resource_strategy()`, `accept_resource()`, `reject_resource()`
 - ✅ Multi-Segment-Empfang: Dateien > 1MB (Python's MAX_EFFICIENT_SIZE) werden korrekt als mehrere Segmente empfangen, zusammengesetzt und gespeichert. Metadata-Parsing nur in Segment 1, HASHMAP_MAX_LEN als Protokoll-Konstante (74).
-- ✅ `lrns cp` und `lrncp` — Dateitransfer über CLI (standalone und shared-instance)
+- ✅ `lns cp` und `lncp` — Dateitransfer über CLI (standalone und shared-instance)
 - [x] Sender-seitige Kompressionssteuerung (`auto_compress` Parameter, `-C`/`--no-compress` CLI-Flag)
 - [ ] Bandbreitenanpassung
-- [x] Request/Response-Pattern (link.request/link.response, lrncp fetch mode)
+- [x] Request/Response-Pattern (link.request/link.response, lncp fetch mode)
 - [ ] Multi-Segment-Senden (Dateien > MAX_EFFICIENT_SIZE als mehrere Segmente)
 
 ## IPC (Shared Instance)
-- ✅ LocalInterface: Unix-Domain-Socket-basierte IPC-Kommunikation zwischen `lrnsd` und Client-Programmen (wie Python's `LocalClientInterface` / `LocalServerInterface`) — Abstract Unix Socket (`\0rns/{instance_name}`), HDLC-Framing, `spawn_local_server()`, Config-Integration (`share_instance`/`instance_name`), 2 Python-Interop-Tests
+- ✅ LocalInterface: Unix-Domain-Socket-basierte IPC-Kommunikation zwischen `lnsd` und Client-Programmen (wie Python's `LocalClientInterface` / `LocalServerInterface`) — Abstract Unix Socket (`\0rns/{instance_name}`), HDLC-Framing, `spawn_local_server()`, Config-Integration (`share_instance`/`instance_name`), 2 Python-Interop-Tests
 - ✅ Routing-Gates für Local-Client-Bedingungen: `handle_link_request()`, `handle_proof()`, `handle_data()` routen Pakete für/von Local-Client-Interfaces auch ohne `enable_transport`, matching Python Transport.py:1378-1404. 5 Unit-Tests mit `enable_transport=false`
 - ✅ Local-Client-Destination-Expiry: `local_client_known_dests` mit Zeitstempel (BTreeMap statt BTreeSet), Einträge verfallen nach 6h ohne Re-Announce. Announce-Cache-Schutz endet mit Ablauf. Timestamp-Update erfolgt bedingungslos bei jedem Local-Client-Announce.
 - ✅ End-to-End-Link durch Shared Instance: Rust-Daemon (in-process, TCP+IPC) → Python als Shared-Instance-Client → Link-Establishment + bidirektionaler Datenfluss (Channel-Echo + Raw-Packets), 1 Interop-Test
@@ -352,7 +352,7 @@ Sicherheitsfeatures verdrahten, Daemon-Zustand persistieren, Release-Qualität e
 ## C-API & Paketierung
 - `leviculum-ffi` erweitern (Reticulum-Instanz, Destinations, Links, Packets, Resources, Path Discovery)
 - pkg-config Integration und Header-Generierung (cbindgen)
-- Debian-Pakete (leviculum0, -dev, -tools) mit systemd-Unit für lrnsd
+- Debian-Pakete (leviculum0, -dev, -tools) mit systemd-Unit für lnsd
 
 ## Android-Integration
 - UniFFI-basierte Kotlin-Bindings

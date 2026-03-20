@@ -1,4 +1,4 @@
-//! lrnsd - Reticulum daemon
+//! lnsd - Reticulum daemon
 //!
 //! This is the main daemon process that runs the Reticulum network stack.
 //! Equivalent to rnsd in the Python implementation.
@@ -13,7 +13,7 @@ use reticulum_std::config::Config;
 use reticulum_std::Reticulum;
 
 #[derive(Parser, Debug)]
-#[command(name = "lrnsd")]
+#[command(name = "lnsd")]
 #[command(author, version, about = "Reticulum network daemon")]
 struct Args {
     /// Path to Reticulum config directory (like Python rnsd --config)
@@ -52,7 +52,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         )
         .init();
 
-    info!("Starting lrnsd v{}", env!("CARGO_PKG_VERSION"));
+    info!("Starting lnsd v{}", env!("CARGO_PKG_VERSION"));
 
     // --config is a directory (like Python rnsd), config file is {dir}/config
     let config_dir = args.config.unwrap_or_else(Config::default_config_dir);

@@ -1,6 +1,6 @@
 [test]
-name = "lora_lrncp_fetch_from_python"
-description = "lrncp fetch 1KB over direct LoRa (Rust fetcher, Python listener)"
+name = "lora_lncp_auth_to_python"
+description = "lncp push with identity auth over LoRa (Rust sender, Python receiver)"
 timeout_secs = 360
 
 [radio]
@@ -34,10 +34,9 @@ timeout_secs = 90
 action = "file_transfer"
 sender = "alpha"
 receiver = "beta"
-sender_tool = "lrncp"
+sender_tool = "lncp"
 receiver_tool = "rncp"
-mode = "fetch"
-receiver_flags = "-F -n"
+auth_from = "alpha"
 file_sizes = [1024]
 direction = "a_to_b"
 repeats = 1

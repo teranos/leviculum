@@ -11,7 +11,7 @@
 
 [test]
 name = "lora_3node_contention"
-description = "lrncp push 2KB over LoRa after 3rd node restart and re-convergence"
+description = "lncp push 2KB over LoRa after 3rd node restart and re-convergence"
 timeout_secs = 600
 rust_log = "reticulum_core::link=debug,reticulum_core::transport=debug,reticulum_std::interfaces=debug,info"
 
@@ -70,8 +70,8 @@ timeout_secs = 90
 action = "file_transfer"
 sender = "alpha"
 receiver = "beta"
-sender_tool = "lrncp"
-receiver_tool = "lrncp"
+sender_tool = "lncp"
+receiver_tool = "lncp"
 file_sizes = [2048]
 direction = "a_to_b"
 repeats = 3

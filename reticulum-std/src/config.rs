@@ -23,7 +23,7 @@ pub struct ReticulumConfig {
     /// Enable transport mode (routing for others)
     ///
     /// Defaults to `true` — daemon use enables transport.
-    /// Python Reticulum defaults to `false` (library use), but lrnsd is a daemon.
+    /// Python Reticulum defaults to `false` (library use), but lnsd is a daemon.
     #[serde(default = "default_true")]
     pub enable_transport: bool,
     /// Use implicit proof for link identification

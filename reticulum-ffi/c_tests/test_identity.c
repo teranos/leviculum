@@ -51,13 +51,13 @@ static void print_hex(const uint8_t *data, size_t len) {
 /* Tests */
 
 TEST(init) {
-    int result = lrns_init();
-    ASSERT_EQ(result, LRNS_OK);
+    int result = lns_init();
+    ASSERT_EQ(result, LNS_OK);
     return 0;
 }
 
 TEST(version) {
-    const char *version = lrns_version();
+    const char *version = lns_version();
     ASSERT(version != NULL);
     ASSERT(strlen(version) > 0);
     printf("(v%s) ", version);
@@ -65,70 +65,70 @@ TEST(version) {
 }
 
 TEST(identity_new) {
-    struct LrnsIdentity *id = lrns_identity_new();
+    struct LnsIdentity *id = lns_identity_new();
     ASSERT(id != NULL);
-    lrns_identity_free(id);
+    lns_identity_free(id);
     return 0;
 }
 
 TEST(identity_hash) {
-    struct LrnsIdentity *id = lrns_identity_new();
+    struct LnsIdentity *id = lns_identity_new();
     ASSERT(id != NULL);
 
     uint8_t hash[32];
     size_t hash_len = sizeof(hash);
-    int result = lrns_identity_hash(id, hash, &hash_len);
+    int result = lns_identity_hash(id, hash, &hash_len);
 
-    ASSERT_EQ(result, LRNS_OK);
+    ASSERT_EQ(result, LNS_OK);
     ASSERT_EQ(hash_len, 16);  /* Truncated hash is 16 bytes */
 
-    lrns_identity_free(id);
+    lns_identity_free(id);
     return 0;
 }
 
 TEST(identity_public_key) {
-    struct LrnsIdentity *id = lrns_identity_new();
+    struct LnsIdentity *id = lns_identity_new();
     ASSERT(id != NULL);
 
     uint8_t pubkey[128];
     size_t pubkey_len = sizeof(pubkey);
-    int result = lrns_identity_public_key(id, pubkey, &pubkey_len);
+    int result = lns_identity_public_key(id, pubkey, &pubkey_len);
 
-    ASSERT_EQ(result, LRNS_OK);
+    ASSERT_EQ(result, LNS_OK);
     ASSERT_EQ(pubkey_len, 64);  /* 32 X25519 + 32 Ed25519 */
 
-    lrns_identity_free(id);
+    lns_identity_free(id);
     return 0;
 }
 
 TEST(identity_private_key) {
-    struct LrnsIdentity *id = lrns_identity_new();
+    struct LnsIdentity *id = lns_identity_new();
     ASSERT(id != NULL);
 
     uint8_t privkey[128];
     size_t privkey_len = sizeof(privkey);
-    int result = lrns_identity_private_key(id, privkey, &privkey_len);
+    int result = lns_identity_private_key(id, privkey, &privkey_len);
 
-    ASSERT_EQ(result, LRNS_OK);
+    ASSERT_EQ(result, LNS_OK);
     ASSERT_EQ(privkey_len, 64);
 
-    lrns_identity_free(id);
+    lns_identity_free(id);
     return 0;
 }
 
 TEST(identity_has_private_keys) {
-    struct LrnsIdentity *id = lrns_identity_new();
+    struct LnsIdentity *id = lns_identity_new();
     ASSERT(id != NULL);
 
-    int has_keys = lrns_identity_has_private_keys(id);
+    int has_keys = lns_identity_has_private_keys(id);
     ASSERT_EQ(has_keys, 1);
 
-    lrns_identity_free(id);
+    lns_identity_free(id);
     return 0;
 }
 
 TEST(identity_sign_verify) {
-    struct LrnsIdentity *id = lrns_identity_new();
+    struct LnsIdentity *id = lns_identity_new();
     ASSERT(id != NULL);
 
     const uint8_t message[] = "Hello, Reticulum!";
@@ -136,26 +136,26 @@ TEST(identity_sign_verify) {
 
     uint8_t signature[128];
     size_t sig_len = sizeof(signature);
-    int result = lrns_identity_sign(id, message, message_len, signature, &sig_len);
+    int result = lns_identity_sign(id, message, message_len, signature, &sig_len);
 
-    ASSERT_EQ(result, LRNS_OK);
+    ASSERT_EQ(result, LNS_OK);
     ASSERT_EQ(sig_len, 64);  /* Ed25519 signature */
 
     /* Verify the signature */
-    result = lrns_identity_verify(id, message, message_len, signature, sig_len);
-    ASSERT_EQ(result, LRNS_OK);
+    result = lns_identity_verify(id, message, message_len, signature, sig_len);
+    ASSERT_EQ(result, LNS_OK);
 
     /* Verify fails with wrong message */
     const uint8_t wrong_message[] = "Wrong message";
-    result = lrns_identity_verify(id, wrong_message, sizeof(wrong_message) - 1, signature, sig_len);
-    ASSERT_EQ(result, LRNS_ERR_CRYPTO);
+    result = lns_identity_verify(id, wrong_message, sizeof(wrong_message) - 1, signature, sig_len);
+    ASSERT_EQ(result, LNS_ERR_CRYPTO);
 
-    lrns_identity_free(id);
+    lns_identity_free(id);
     return 0;
 }
 
 TEST(identity_encrypt_decrypt) {
-    struct LrnsIdentity *id = lrns_identity_new();
+    struct LnsIdentity *id = lns_identity_new();
     ASSERT(id != NULL);
 
     const uint8_t plaintext[] = "Secret message for encryption test";
@@ -164,105 +164,105 @@ TEST(identity_encrypt_decrypt) {
     /* Encrypt */
     uint8_t ciphertext[256];
     size_t ciphertext_len = sizeof(ciphertext);
-    int result = lrns_identity_encrypt(id, plaintext, plaintext_len, ciphertext, &ciphertext_len);
+    int result = lns_identity_encrypt(id, plaintext, plaintext_len, ciphertext, &ciphertext_len);
 
-    ASSERT_EQ(result, LRNS_OK);
+    ASSERT_EQ(result, LNS_OK);
     ASSERT(ciphertext_len > plaintext_len);  /* Ciphertext includes overhead */
 
     /* Decrypt */
     uint8_t decrypted[256];
     size_t decrypted_len = sizeof(decrypted);
-    result = lrns_identity_decrypt(id, ciphertext, ciphertext_len, decrypted, &decrypted_len);
+    result = lns_identity_decrypt(id, ciphertext, ciphertext_len, decrypted, &decrypted_len);
 
-    ASSERT_EQ(result, LRNS_OK);
+    ASSERT_EQ(result, LNS_OK);
     ASSERT_EQ(decrypted_len, plaintext_len);
     ASSERT(memcmp(decrypted, plaintext, plaintext_len) == 0);
 
-    lrns_identity_free(id);
+    lns_identity_free(id);
     return 0;
 }
 
 TEST(identity_roundtrip_keys) {
     /* Create identity, get keys, recreate from keys */
-    struct LrnsIdentity *id1 = lrns_identity_new();
+    struct LnsIdentity *id1 = lns_identity_new();
     ASSERT(id1 != NULL);
 
     /* Get private key */
     uint8_t privkey[64];
     size_t privkey_len = sizeof(privkey);
-    int result = lrns_identity_private_key(id1, privkey, &privkey_len);
-    ASSERT_EQ(result, LRNS_OK);
+    int result = lns_identity_private_key(id1, privkey, &privkey_len);
+    ASSERT_EQ(result, LNS_OK);
 
     /* Get hash for comparison */
     uint8_t hash1[16];
     size_t hash1_len = sizeof(hash1);
-    lrns_identity_hash(id1, hash1, &hash1_len);
+    lns_identity_hash(id1, hash1, &hash1_len);
 
     /* Recreate from private key */
-    struct LrnsIdentity *id2 = lrns_identity_from_private_key(privkey, privkey_len);
+    struct LnsIdentity *id2 = lns_identity_from_private_key(privkey, privkey_len);
     ASSERT(id2 != NULL);
 
     /* Hashes should match */
     uint8_t hash2[16];
     size_t hash2_len = sizeof(hash2);
-    lrns_identity_hash(id2, hash2, &hash2_len);
+    lns_identity_hash(id2, hash2, &hash2_len);
 
     ASSERT(memcmp(hash1, hash2, 16) == 0);
 
-    lrns_identity_free(id1);
-    lrns_identity_free(id2);
+    lns_identity_free(id1);
+    lns_identity_free(id2);
     return 0;
 }
 
 TEST(identity_public_only) {
     /* Create identity, export public key, import as public-only */
-    struct LrnsIdentity *id1 = lrns_identity_new();
+    struct LnsIdentity *id1 = lns_identity_new();
     ASSERT(id1 != NULL);
 
     /* Get public key */
     uint8_t pubkey[64];
     size_t pubkey_len = sizeof(pubkey);
-    int result = lrns_identity_public_key(id1, pubkey, &pubkey_len);
-    ASSERT_EQ(result, LRNS_OK);
+    int result = lns_identity_public_key(id1, pubkey, &pubkey_len);
+    ASSERT_EQ(result, LNS_OK);
 
     /* Create public-only identity */
-    struct LrnsIdentity *id2 = lrns_identity_from_public_key(pubkey, pubkey_len);
+    struct LnsIdentity *id2 = lns_identity_from_public_key(pubkey, pubkey_len);
     ASSERT(id2 != NULL);
 
     /* Should not have private keys */
-    int has_keys = lrns_identity_has_private_keys(id2);
+    int has_keys = lns_identity_has_private_keys(id2);
     ASSERT_EQ(has_keys, 0);
 
     /* Sign should fail */
     const uint8_t message[] = "test";
     uint8_t signature[64];
     size_t sig_len = sizeof(signature);
-    result = lrns_identity_sign(id2, message, 4, signature, &sig_len);
-    ASSERT_EQ(result, LRNS_ERR_CRYPTO);
+    result = lns_identity_sign(id2, message, 4, signature, &sig_len);
+    ASSERT_EQ(result, LNS_ERR_CRYPTO);
 
     /* But verify should work (sign with id1, verify with id2) */
     sig_len = sizeof(signature);
-    result = lrns_identity_sign(id1, message, 4, signature, &sig_len);
-    ASSERT_EQ(result, LRNS_OK);
+    result = lns_identity_sign(id1, message, 4, signature, &sig_len);
+    ASSERT_EQ(result, LNS_OK);
 
-    result = lrns_identity_verify(id2, message, 4, signature, sig_len);
-    ASSERT_EQ(result, LRNS_OK);
+    result = lns_identity_verify(id2, message, 4, signature, sig_len);
+    ASSERT_EQ(result, LNS_OK);
 
-    lrns_identity_free(id1);
-    lrns_identity_free(id2);
+    lns_identity_free(id1);
+    lns_identity_free(id2);
     return 0;
 }
 
 TEST(error_string) {
-    const char *msg = lrns_error_string(LRNS_OK);
+    const char *msg = lns_error_string(LNS_OK);
     ASSERT(msg != NULL);
     ASSERT(strcmp(msg, "Success") == 0);
 
-    msg = lrns_error_string(LRNS_ERR_NULL_PTR);
+    msg = lns_error_string(LNS_ERR_NULL_PTR);
     ASSERT(msg != NULL);
     ASSERT(strcmp(msg, "Null pointer") == 0);
 
-    msg = lrns_error_string(LRNS_ERR_CRYPTO);
+    msg = lns_error_string(LNS_ERR_CRYPTO);
     ASSERT(msg != NULL);
     ASSERT(strcmp(msg, "Cryptographic error") == 0);
 
@@ -274,13 +274,13 @@ TEST(null_pointer_handling) {
     uint8_t buf[64];
     size_t len = sizeof(buf);
 
-    ASSERT_EQ(lrns_identity_hash(NULL, buf, &len), LRNS_ERR_NULL_PTR);
-    ASSERT_EQ(lrns_identity_public_key(NULL, buf, &len), LRNS_ERR_NULL_PTR);
-    ASSERT_EQ(lrns_identity_private_key(NULL, buf, &len), LRNS_ERR_NULL_PTR);
-    ASSERT_EQ(lrns_identity_has_private_keys(NULL), 0);
+    ASSERT_EQ(lns_identity_hash(NULL, buf, &len), LNS_ERR_NULL_PTR);
+    ASSERT_EQ(lns_identity_public_key(NULL, buf, &len), LNS_ERR_NULL_PTR);
+    ASSERT_EQ(lns_identity_private_key(NULL, buf, &len), LNS_ERR_NULL_PTR);
+    ASSERT_EQ(lns_identity_has_private_keys(NULL), 0);
 
     /* free should not crash on NULL */
-    lrns_identity_free(NULL);
+    lns_identity_free(NULL);
 
     return 0;
 }

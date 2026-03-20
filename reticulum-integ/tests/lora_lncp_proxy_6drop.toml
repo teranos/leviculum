@@ -1,7 +1,10 @@
+# LoRa transfer with proxy dropping 6 data frames.
+# 10KB file produces ~22 parts — dropping 6 tests heavy retransmit recovery.
+
 [test]
-name = "lora_lrncp_proxy"
-description = "lrncp push over LoRa with proxy dropping 2 data frames"
-timeout_secs = 480
+name = "lora_lncp_proxy_6drop"
+description = "lncp push 10KB over LoRa with proxy dropping 6 data frames"
+timeout_secs = 600
 rust_log = "reticulum_core::link=debug,reticulum_core::transport=debug,reticulum_std::interfaces=debug,info"
 
 [radio]
@@ -32,25 +35,24 @@ on = "alpha"
 destination = "beta.probe"
 timeout_secs = 90
 
-# Drop rule: min_size=400 targets only large resource data segments (≈490 bytes),
-# ignoring announces (≈167), link requests (≈86), identifies (≈83), and ADVs (≈211).
+# Drop 6 large data frames (resource segments ≈490 bytes)
 [[steps]]
 action = "proxy_rule"
 node = "alpha"
-rule = "drop direction=a_to_b filter=cmd:0x00 min_size=400 count=2"
+rule = "drop direction=a_to_b filter=cmd:0x00 min_size=400 count=6"
 
 [[steps]]
 action = "file_transfer"
 sender = "alpha"
 receiver = "beta"
-sender_tool = "lrncp"
-receiver_tool = "lrncp"
-file_sizes = [2048]
+sender_tool = "lncp"
+receiver_tool = "lncp"
+file_sizes = [10240]
 direction = "a_to_b"
 repeats = 1
-timeout_secs = 240
+timeout_secs = 360
 
 [[steps]]
 action = "proxy_stats"
 node = "alpha"
-expect_dropped = 2
+expect_dropped = 6

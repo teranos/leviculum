@@ -1,6 +1,6 @@
 //! Tests for rnprobe hop count correctness.
 //!
-//! When lrnsd forwards a cached announce to a shared instance local client
+//! When lnsd forwards a cached announce to a shared instance local client
 //! (via path request response), it should include the receipt-incremented
 //! hop count, not the raw wire hops from the cache.
 
@@ -72,7 +72,7 @@ fn cleanup_config_dir(path: &Path) {
 ///
 /// Topology:
 /// ```text
-/// Python daemon (node B)         ── TCP ──  Rust lrnsd (node A, shared instance)
+/// Python daemon (node B)         ── TCP ──  Rust lnsd (node A, shared instance)
 /// (respond_to_probes, announces)             (transport, TCP server, share_instance)
 ///                                                    |
 ///                                            Unix socket (shared instance)
@@ -80,7 +80,7 @@ fn cleanup_config_dir(path: &Path) {
 ///                                            rnprobe (shared instance client)
 /// ```
 ///
-/// The bug: lrnsd forwards the raw cached announce bytes to the local client,
+/// The bug: lnsd forwards the raw cached announce bytes to the local client,
 /// which contain wire hops=0 (pre-increment). The local client's process_incoming
 /// applies +1 then -1 (net zero), so rnprobe sees hops=0 instead of hops=1.
 #[tokio::test]
@@ -100,7 +100,7 @@ async fn test_rnprobe_reports_correct_hops() {
         .private_key_bytes()
         .expect("generated identity must have private keys");
 
-    // ── Phase 2: Start Rust lrnsd (node A) ──────────────────────────────
+    // ── Phase 2: Start Rust lnsd (node A) ──────────────────────────────
     let mut config = Config::default();
     config.reticulum.respond_to_probes = true;
     let mut daemon_node = ReticulumNodeBuilder::new()

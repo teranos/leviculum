@@ -12,8 +12,8 @@
 # beta detects the duplicate request and re-sends the cached proof.
 
 [test]
-name = "lora_lrncp_proof_retry"
-description = "lrncp push over LoRa after 2 dropped proofs recovered by proof re-send on E34 retry"
+name = "lora_lncp_proof_retry"
+description = "lncp push over LoRa after 2 dropped proofs recovered by proof re-send on E34 retry"
 timeout_secs = 600
 rust_log = "reticulum_core::link=debug,reticulum_core::node=debug,reticulum_core::transport=debug,reticulum_std::interfaces=debug,info"
 
@@ -57,8 +57,8 @@ rule = "drop direction=b_to_a filter=cmd:0x00 min_size=105 max_size=130 count=2"
 action = "file_transfer"
 sender = "alpha"
 receiver = "beta"
-sender_tool = "lrncp"
-receiver_tool = "lrncp"
+sender_tool = "lncp"
+receiver_tool = "lncp"
 file_sizes = [2048]
 direction = "a_to_b"
 repeats = 1

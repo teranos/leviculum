@@ -40,15 +40,15 @@ Version 0.5.19. The core uses a sans-I/O architecture — `reticulum-core` is a 
 - HDLC framing (no_std)
 - Config and storage system (persistent, Python-compatible)
 - RPC server (rnstatus, rnpath, rnprobe compatibility)
-- `lrnsd` daemon (drop-in replacement for rnsd)
-- `lrns` CLI (identity, connect, selftest, probe, cp)
+- `lnsd` daemon (drop-in replacement for rnsd)
+- `lns` CLI (identity, connect, selftest, probe, cp)
 - Request/Response pattern (link.request/link.response, link.identify)
-- `lrncp` standalone file transfer (shared instance client, rncp-compatible, fetch mode)
+- `lncp` standalone file transfer (shared instance client, rncp-compatible, fetch mode)
 - C-API basics (identity, sign, verify)
 
 **What's missing:**
 
-- `lrns` remaining subcommands (status, path, interfaces)
+- `lns` remaining subcommands (status, path, interfaces)
 - Resource compression (bz2 over links)
 
 **Test coverage:** ~1375 tests (957 unit + 175 std + 243 interop against rnsd).
@@ -84,7 +84,7 @@ leviculum/
 ├── reticulum-core/     # no_std compatible core library
 ├── reticulum-std/      # std extensions (networking, config, storage)
 ├── reticulum-ffi/      # C-API bindings
-├── reticulum-cli/      # Command-line tools (lrnsd, lrns)
+├── reticulum-cli/      # Command-line tools (lnsd, lns)
 ├── doc/                # Protocol documentation
 └── tests/vectors/      # Test vectors generated from Python
 ```
@@ -138,8 +138,8 @@ cbindgen --output reticulum.h
 
 Command-line tools:
 
-- `lrnsd` - Daemon process (equivalent to rnsd, planned)
-- `lrns` - Management utility (`identity` subcommand implemented, others pending)
+- `lnsd` - Daemon process (equivalent to rnsd, planned)
+- `lns` - Management utility (`identity` subcommand implemented, others pending)
 
 ## License
 

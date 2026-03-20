@@ -1,6 +1,6 @@
 [test]
-name = "lora_lrncp_fetch"
-description = "lrncp fetch 1KB over direct LoRa"
+name = "lora_lncp_fetch"
+description = "lncp fetch 1KB over direct LoRa"
 timeout_secs = 360
 rust_log = "reticulum_core::link=debug,reticulum_core::transport=debug,reticulum_std::interfaces=debug,info"
 
@@ -35,8 +35,8 @@ timeout_secs = 90
 action = "file_transfer"
 sender = "alpha"
 receiver = "beta"
-sender_tool = "lrncp"
-receiver_tool = "lrncp"
+sender_tool = "lncp"
+receiver_tool = "lncp"
 mode = "fetch"
 receiver_flags = "-F -n"
 file_sizes = [1024]

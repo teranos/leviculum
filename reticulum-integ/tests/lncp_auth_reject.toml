@@ -3,7 +3,7 @@
 # != charlie's identity hash, the listener rejects the link -> transfer fails.
 
 [test]
-name = "lrncp_auth_reject"
+name = "lncp_auth_reject"
 description = "Push rejected due to identity mismatch"
 timeout_secs = 600
 
@@ -37,8 +37,8 @@ timeout_secs = 60
 action = "file_transfer"
 sender = "alpha"
 receiver = "charlie"
-sender_tool = "lrncp"
-receiver_tool = "lrncp"
+sender_tool = "lncp"
+receiver_tool = "lncp"
 # auth_from = "charlie" means: extract charlie's identity hash and pass it
 # as -a to charlie's listener. Alpha connects and identifies as alpha.
 # Since alpha's identity hash != charlie's identity hash, the listener

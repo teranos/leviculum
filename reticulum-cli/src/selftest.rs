@@ -1,4 +1,4 @@
-//! `lrns selftest` — real-network integration self-test
+//! `lns selftest` — real-network integration self-test
 //!
 //! Two ephemeral nodes in one process, both connected to a public relay,
 //! establishing a link through it and exchanging messages bidirectionally.

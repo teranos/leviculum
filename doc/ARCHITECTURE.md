@@ -119,7 +119,7 @@ Application → connect/send/announce → TickOutput (via action_dispatch)
 
 ### Local Client (Shared Instance)
 ```
-lrns/lrncp → Unix socket → LocalInterface (HDLC)
+lns/lncp → Unix socket → LocalInterface (HDLC)
   → handle_packet() with is_local_client=true
   → local_client_known_dests updated (6h TTL)
 ```

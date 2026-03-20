@@ -3,7 +3,7 @@
 //! This crate provides a C-compatible API for using reticulum from
 //! other programming languages. The API follows these conventions:
 //!
-//! - All functions are prefixed with `lrns_` (reticulum namespace)
+//! - All functions are prefixed with `lns_` (reticulum namespace)
 //! - Opaque pointers are used for complex types
 //! - Error codes are returned as integers
 //! - Strings are passed as null-terminated C strings
@@ -19,44 +19,44 @@ use std::ptr;
 use reticulum_core::constants::TRUNCATED_HASHBYTES;
 
 // Error codes
-pub const LRNS_OK: c_int = 0;
-pub const LRNS_ERR_NULL_PTR: c_int = -1;
-pub const LRNS_ERR_INVALID_ARG: c_int = -2;
-pub const LRNS_ERR_INIT_FAILED: c_int = -3;
-pub const LRNS_ERR_NOT_RUNNING: c_int = -4;
-pub const LRNS_ERR_ALREADY_RUNNING: c_int = -5;
-pub const LRNS_ERR_IO: c_int = -6;
-pub const LRNS_ERR_CRYPTO: c_int = -7;
-pub const LRNS_ERR_BUFFER_TOO_SMALL: c_int = -8;
+pub const LNS_OK: c_int = 0;
+pub const LNS_ERR_NULL_PTR: c_int = -1;
+pub const LNS_ERR_INVALID_ARG: c_int = -2;
+pub const LNS_ERR_INIT_FAILED: c_int = -3;
+pub const LNS_ERR_NOT_RUNNING: c_int = -4;
+pub const LNS_ERR_ALREADY_RUNNING: c_int = -5;
+pub const LNS_ERR_IO: c_int = -6;
+pub const LNS_ERR_CRYPTO: c_int = -7;
+pub const LNS_ERR_BUFFER_TOO_SMALL: c_int = -8;
 
 /// Opaque handle to a Reticulum instance
-pub struct LrnsReticulum {
+pub struct LnsReticulum {
     // Will hold the actual Reticulum instance and runtime
     _runtime: tokio::runtime::Runtime,
     // instance: reticulum_std::Reticulum,
 }
 
 /// Opaque handle to an Identity
-pub struct LrnsIdentity {
+pub struct LnsIdentity {
     inner: reticulum_core::Identity,
 }
 
 /// Opaque handle to a Destination
-pub struct LrnsDestination {
+pub struct LnsDestination {
     // Will hold the actual Destination
     _placeholder: (),
 }
 
 /// Initialize the library (call once at startup)
 #[no_mangle]
-pub extern "C" fn lrns_init() -> c_int {
+pub extern "C" fn lns_init() -> c_int {
     // Initialize logging, etc.
-    LRNS_OK
+    LNS_OK
 }
 
 /// Get the library version string
 #[no_mangle]
-pub extern "C" fn lrns_version() -> *const c_char {
+pub extern "C" fn lns_version() -> *const c_char {
     static VERSION: &[u8] = b"0.1.0\0";
     VERSION.as_ptr() as *const c_char
 }
@@ -65,14 +65,14 @@ pub extern "C" fn lrns_version() -> *const c_char {
 
 /// Create a new random identity
 #[no_mangle]
-pub extern "C" fn lrns_identity_new() -> *mut LrnsIdentity {
+pub extern "C" fn lns_identity_new() -> *mut LnsIdentity {
     let identity = reticulum_core::Identity::generate(&mut rand_core::OsRng);
-    Box::into_raw(Box::new(LrnsIdentity { inner: identity }))
+    Box::into_raw(Box::new(LnsIdentity { inner: identity }))
 }
 
 /// Free an identity
 #[no_mangle]
-pub unsafe extern "C" fn lrns_identity_free(identity: *mut LrnsIdentity) {
+pub unsafe extern "C" fn lns_identity_free(identity: *mut LnsIdentity) {
     if !identity.is_null() {
         drop(Box::from_raw(identity));
     }
@@ -80,13 +80,13 @@ pub unsafe extern "C" fn lrns_identity_free(identity: *mut LrnsIdentity) {
 
 /// Get the identity hash (16 bytes)
 #[no_mangle]
-pub unsafe extern "C" fn lrns_identity_hash(
-    identity: *const LrnsIdentity,
+pub unsafe extern "C" fn lns_identity_hash(
+    identity: *const LnsIdentity,
     out_hash: *mut u8,
     out_len: *mut usize,
 ) -> c_int {
     if identity.is_null() || out_hash.is_null() || out_len.is_null() {
-        return LRNS_ERR_NULL_PTR;
+        return LNS_ERR_NULL_PTR;
     }
 
     let identity = &(*identity).inner;
@@ -94,24 +94,24 @@ pub unsafe extern "C" fn lrns_identity_hash(
 
     if *out_len < TRUNCATED_HASHBYTES {
         *out_len = TRUNCATED_HASHBYTES;
-        return LRNS_ERR_BUFFER_TOO_SMALL;
+        return LNS_ERR_BUFFER_TOO_SMALL;
     }
 
     ptr::copy_nonoverlapping(hash.as_ptr(), out_hash, TRUNCATED_HASHBYTES);
     *out_len = TRUNCATED_HASHBYTES;
 
-    LRNS_OK
+    LNS_OK
 }
 
 /// Get the public key bytes (64 bytes)
 #[no_mangle]
-pub unsafe extern "C" fn lrns_identity_public_key(
-    identity: *const LrnsIdentity,
+pub unsafe extern "C" fn lns_identity_public_key(
+    identity: *const LnsIdentity,
     out_key: *mut u8,
     out_len: *mut usize,
 ) -> c_int {
     if identity.is_null() || out_key.is_null() || out_len.is_null() {
-        return LRNS_ERR_NULL_PTR;
+        return LNS_ERR_NULL_PTR;
     }
 
     let identity = &(*identity).inner;
@@ -119,26 +119,26 @@ pub unsafe extern "C" fn lrns_identity_public_key(
 
     if *out_len < key.len() {
         *out_len = key.len();
-        return LRNS_ERR_BUFFER_TOO_SMALL;
+        return LNS_ERR_BUFFER_TOO_SMALL;
     }
 
     ptr::copy_nonoverlapping(key.as_ptr(), out_key, key.len());
     *out_len = key.len();
 
-    LRNS_OK
+    LNS_OK
 }
 
 /// Sign a message
 #[no_mangle]
-pub unsafe extern "C" fn lrns_identity_sign(
-    identity: *const LrnsIdentity,
+pub unsafe extern "C" fn lns_identity_sign(
+    identity: *const LnsIdentity,
     message: *const u8,
     message_len: usize,
     out_signature: *mut u8,
     out_len: *mut usize,
 ) -> c_int {
     if identity.is_null() || message.is_null() || out_signature.is_null() || out_len.is_null() {
-        return LRNS_ERR_NULL_PTR;
+        return LNS_ERR_NULL_PTR;
     }
 
     let identity = &(*identity).inner;
@@ -148,27 +148,27 @@ pub unsafe extern "C" fn lrns_identity_sign(
         Ok(sig) => {
             if *out_len < sig.len() {
                 *out_len = sig.len();
-                return LRNS_ERR_BUFFER_TOO_SMALL;
+                return LNS_ERR_BUFFER_TOO_SMALL;
             }
             ptr::copy_nonoverlapping(sig.as_ptr(), out_signature, sig.len());
             *out_len = sig.len();
-            LRNS_OK
+            LNS_OK
         }
-        Err(_) => LRNS_ERR_CRYPTO,
+        Err(_) => LNS_ERR_CRYPTO,
     }
 }
 
 /// Verify a signature
 #[no_mangle]
-pub unsafe extern "C" fn lrns_identity_verify(
-    identity: *const LrnsIdentity,
+pub unsafe extern "C" fn lns_identity_verify(
+    identity: *const LnsIdentity,
     message: *const u8,
     message_len: usize,
     signature: *const u8,
     signature_len: usize,
 ) -> c_int {
     if identity.is_null() || message.is_null() || signature.is_null() {
-        return LRNS_ERR_NULL_PTR;
+        return LNS_ERR_NULL_PTR;
     }
 
     let identity = &(*identity).inner;
@@ -176,17 +176,17 @@ pub unsafe extern "C" fn lrns_identity_verify(
     let signature = std::slice::from_raw_parts(signature, signature_len);
 
     match identity.verify(message, signature) {
-        Ok(true) => LRNS_OK,
-        Ok(false) | Err(_) => LRNS_ERR_CRYPTO,
+        Ok(true) => LNS_OK,
+        Ok(false) | Err(_) => LNS_ERR_CRYPTO,
     }
 }
 
 /// Load identity from private key bytes (64 bytes)
 #[no_mangle]
-pub unsafe extern "C" fn lrns_identity_from_private_key(
+pub unsafe extern "C" fn lns_identity_from_private_key(
     key: *const u8,
     key_len: usize,
-) -> *mut LrnsIdentity {
+) -> *mut LnsIdentity {
     if key.is_null() || key_len != 64 {
         return ptr::null_mut();
     }
@@ -194,17 +194,17 @@ pub unsafe extern "C" fn lrns_identity_from_private_key(
     let key_bytes = std::slice::from_raw_parts(key, key_len);
 
     match reticulum_core::Identity::from_private_key_bytes(key_bytes) {
-        Ok(identity) => Box::into_raw(Box::new(LrnsIdentity { inner: identity })),
+        Ok(identity) => Box::into_raw(Box::new(LnsIdentity { inner: identity })),
         Err(_) => ptr::null_mut(),
     }
 }
 
 /// Load identity from public key bytes (64 bytes)
 #[no_mangle]
-pub unsafe extern "C" fn lrns_identity_from_public_key(
+pub unsafe extern "C" fn lns_identity_from_public_key(
     key: *const u8,
     key_len: usize,
-) -> *mut LrnsIdentity {
+) -> *mut LnsIdentity {
     if key.is_null() || key_len != 64 {
         return ptr::null_mut();
     }
@@ -212,22 +212,22 @@ pub unsafe extern "C" fn lrns_identity_from_public_key(
     let key_bytes = std::slice::from_raw_parts(key, key_len);
 
     match reticulum_core::Identity::from_public_key_bytes(key_bytes) {
-        Ok(identity) => Box::into_raw(Box::new(LrnsIdentity { inner: identity })),
+        Ok(identity) => Box::into_raw(Box::new(LnsIdentity { inner: identity })),
         Err(_) => ptr::null_mut(),
     }
 }
 
 /// Get the private key bytes (64 bytes)
 ///
-/// Returns LRNS_ERR_CRYPTO if identity has no private keys (public-only).
+/// Returns LNS_ERR_CRYPTO if identity has no private keys (public-only).
 #[no_mangle]
-pub unsafe extern "C" fn lrns_identity_private_key(
-    identity: *const LrnsIdentity,
+pub unsafe extern "C" fn lns_identity_private_key(
+    identity: *const LnsIdentity,
     out_key: *mut u8,
     out_len: *mut usize,
 ) -> c_int {
     if identity.is_null() || out_key.is_null() || out_len.is_null() {
-        return LRNS_ERR_NULL_PTR;
+        return LNS_ERR_NULL_PTR;
     }
 
     let identity = &(*identity).inner;
@@ -236,13 +236,13 @@ pub unsafe extern "C" fn lrns_identity_private_key(
         Ok(key) => {
             if *out_len < key.len() {
                 *out_len = key.len();
-                return LRNS_ERR_BUFFER_TOO_SMALL;
+                return LNS_ERR_BUFFER_TOO_SMALL;
             }
             ptr::copy_nonoverlapping(key.as_ptr(), out_key, key.len());
             *out_len = key.len();
-            LRNS_OK
+            LNS_OK
         }
-        Err(_) => LRNS_ERR_CRYPTO,
+        Err(_) => LNS_ERR_CRYPTO,
     }
 }
 
@@ -250,7 +250,7 @@ pub unsafe extern "C" fn lrns_identity_private_key(
 ///
 /// Returns 1 if identity has private keys, 0 otherwise.
 #[no_mangle]
-pub unsafe extern "C" fn lrns_identity_has_private_keys(identity: *const LrnsIdentity) -> c_int {
+pub unsafe extern "C" fn lns_identity_has_private_keys(identity: *const LnsIdentity) -> c_int {
     if identity.is_null() {
         return 0;
     }
@@ -268,15 +268,15 @@ pub unsafe extern "C" fn lrns_identity_has_private_keys(identity: *const LrnsIde
 ///
 /// Returns the ciphertext length, or negative error code.
 #[no_mangle]
-pub unsafe extern "C" fn lrns_identity_encrypt(
-    identity: *const LrnsIdentity,
+pub unsafe extern "C" fn lns_identity_encrypt(
+    identity: *const LnsIdentity,
     plaintext: *const u8,
     plaintext_len: usize,
     out_ciphertext: *mut u8,
     out_len: *mut usize,
 ) -> c_int {
     if identity.is_null() || plaintext.is_null() || out_ciphertext.is_null() || out_len.is_null() {
-        return LRNS_ERR_NULL_PTR;
+        return LNS_ERR_NULL_PTR;
     }
 
     let identity = &(*identity).inner;
@@ -284,17 +284,17 @@ pub unsafe extern "C" fn lrns_identity_encrypt(
 
     let ciphertext = match identity.encrypt(plaintext, &mut rand_core::OsRng) {
         Ok(c) => c,
-        Err(_) => return LRNS_ERR_CRYPTO,
+        Err(_) => return LNS_ERR_CRYPTO,
     };
 
     if *out_len < ciphertext.len() {
         *out_len = ciphertext.len();
-        return LRNS_ERR_BUFFER_TOO_SMALL;
+        return LNS_ERR_BUFFER_TOO_SMALL;
     }
 
     ptr::copy_nonoverlapping(ciphertext.as_ptr(), out_ciphertext, ciphertext.len());
     *out_len = ciphertext.len();
-    LRNS_OK
+    LNS_OK
 }
 
 /// Decrypt data encrypted for this identity
@@ -303,15 +303,15 @@ pub unsafe extern "C" fn lrns_identity_encrypt(
 ///
 /// Returns the plaintext length, or negative error code.
 #[no_mangle]
-pub unsafe extern "C" fn lrns_identity_decrypt(
-    identity: *const LrnsIdentity,
+pub unsafe extern "C" fn lns_identity_decrypt(
+    identity: *const LnsIdentity,
     ciphertext: *const u8,
     ciphertext_len: usize,
     out_plaintext: *mut u8,
     out_len: *mut usize,
 ) -> c_int {
     if identity.is_null() || ciphertext.is_null() || out_plaintext.is_null() || out_len.is_null() {
-        return LRNS_ERR_NULL_PTR;
+        return LNS_ERR_NULL_PTR;
     }
 
     let identity = &(*identity).inner;
@@ -321,13 +321,13 @@ pub unsafe extern "C" fn lrns_identity_decrypt(
         Ok(plaintext) => {
             if *out_len < plaintext.len() {
                 *out_len = plaintext.len();
-                return LRNS_ERR_BUFFER_TOO_SMALL;
+                return LNS_ERR_BUFFER_TOO_SMALL;
             }
             ptr::copy_nonoverlapping(plaintext.as_ptr(), out_plaintext, plaintext.len());
             *out_len = plaintext.len();
-            LRNS_OK
+            LNS_OK
         }
-        Err(_) => LRNS_ERR_CRYPTO,
+        Err(_) => LNS_ERR_CRYPTO,
     }
 }
 
@@ -335,7 +335,7 @@ pub unsafe extern "C" fn lrns_identity_decrypt(
 
 /// Free a string allocated by the library
 #[no_mangle]
-pub unsafe extern "C" fn lrns_string_free(s: *mut c_char) {
+pub unsafe extern "C" fn lns_string_free(s: *mut c_char) {
     if !s.is_null() {
         drop(CString::from_raw(s));
     }
@@ -343,17 +343,17 @@ pub unsafe extern "C" fn lrns_string_free(s: *mut c_char) {
 
 /// Get the error message for an error code
 #[no_mangle]
-pub extern "C" fn lrns_error_string(code: c_int) -> *const c_char {
+pub extern "C" fn lns_error_string(code: c_int) -> *const c_char {
     let msg: &'static [u8] = match code {
-        LRNS_OK => b"Success\0",
-        LRNS_ERR_NULL_PTR => b"Null pointer\0",
-        LRNS_ERR_INVALID_ARG => b"Invalid argument\0",
-        LRNS_ERR_INIT_FAILED => b"Initialization failed\0",
-        LRNS_ERR_NOT_RUNNING => b"Not running\0",
-        LRNS_ERR_ALREADY_RUNNING => b"Already running\0",
-        LRNS_ERR_IO => b"I/O error\0",
-        LRNS_ERR_CRYPTO => b"Cryptographic error\0",
-        LRNS_ERR_BUFFER_TOO_SMALL => b"Buffer too small\0",
+        LNS_OK => b"Success\0",
+        LNS_ERR_NULL_PTR => b"Null pointer\0",
+        LNS_ERR_INVALID_ARG => b"Invalid argument\0",
+        LNS_ERR_INIT_FAILED => b"Initialization failed\0",
+        LNS_ERR_NOT_RUNNING => b"Not running\0",
+        LNS_ERR_ALREADY_RUNNING => b"Already running\0",
+        LNS_ERR_IO => b"I/O error\0",
+        LNS_ERR_CRYPTO => b"Cryptographic error\0",
+        LNS_ERR_BUFFER_TOO_SMALL => b"Buffer too small\0",
         _ => b"Unknown error\0",
     };
     msg.as_ptr() as *const c_char

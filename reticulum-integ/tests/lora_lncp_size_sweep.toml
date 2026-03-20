@@ -1,9 +1,9 @@
-# LoRa transfer with proxy dropping 4 data frames.
-# 10KB file produces ~22 parts — dropping 4 tests multi-retransmit recovery.
+# Baseline file size sweep over direct LoRa (no proxy).
+# Tests transfer correctness and timing across a range of sizes.
 
 [test]
-name = "lora_lrncp_proxy_4drop"
-description = "lrncp push 10KB over LoRa with proxy dropping 4 data frames"
+name = "lora_lncp_size_sweep"
+description = "lncp push multiple file sizes over direct LoRa"
 timeout_secs = 600
 rust_log = "reticulum_core::link=debug,reticulum_core::transport=debug,reticulum_std::interfaces=debug,info"
 
@@ -18,7 +18,6 @@ txpower = 17
 type = "rust"
 respond_to_probes = true
 rnode = "/dev/ttyACM0"
-rnode_proxy = true
 
 [nodes.beta]
 type = "rust"
@@ -35,24 +34,13 @@ on = "alpha"
 destination = "beta.probe"
 timeout_secs = 90
 
-# Drop 4 large data frames (resource segments ≈490 bytes)
-[[steps]]
-action = "proxy_rule"
-node = "alpha"
-rule = "drop direction=a_to_b filter=cmd:0x00 min_size=400 count=4"
-
 [[steps]]
 action = "file_transfer"
 sender = "alpha"
 receiver = "beta"
-sender_tool = "lrncp"
-receiver_tool = "lrncp"
-file_sizes = [10240]
+sender_tool = "lncp"
+receiver_tool = "lncp"
+file_sizes = [64, 512, 2048, 5120, 10240, 51200]
 direction = "a_to_b"
 repeats = 1
-timeout_secs = 360
-
-[[steps]]
-action = "proxy_stats"
-node = "alpha"
-expect_dropped = 4
+timeout_secs = 480

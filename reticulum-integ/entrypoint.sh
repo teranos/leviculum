@@ -9,7 +9,7 @@ export PYTHONUNBUFFERED=1
 
 case "${NODE_TYPE}" in
     rust)
-        exec /usr/local/bin/lrnsd -v --config /root/.reticulum
+        exec /usr/local/bin/lnsd -v --config /root/.reticulum
         ;;
     python)
         exec python3 -m RNS.Utilities.rnsd -v --config /root/.reticulum

@@ -1,6 +1,6 @@
 [test]
-name = "lora_lrncp_bridge_python_relay"
-description = "lrncp push over LoRa-to-TCP bridge with Python relay"
+name = "lora_lncp_bridge_python_relay"
+description = "lncp push over LoRa-to-TCP bridge with Python relay"
 timeout_secs = 480
 
 [radio]
@@ -41,8 +41,8 @@ timeout_secs = 120
 action = "file_transfer"
 sender = "alpha"
 receiver = "charlie"
-sender_tool = "lrncp"
-receiver_tool = "lrncp"
+sender_tool = "lncp"
+receiver_tool = "lncp"
 file_sizes = [1024]
 direction = "a_to_b"
 repeats = 1

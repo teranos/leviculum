@@ -1,9 +1,6 @@
-# Sequential bidirectional transfer: a→b then b→a (not simultaneous).
-# Tests that both directions work on the same LoRa link.
-
 [test]
-name = "lora_lrncp_bidir"
-description = "lrncp bidirectional 2KB over direct LoRa"
+name = "lora_lncp_proxy"
+description = "lncp push over LoRa with proxy dropping 2 data frames"
 timeout_secs = 480
 rust_log = "reticulum_core::link=debug,reticulum_core::transport=debug,reticulum_std::interfaces=debug,info"
 
@@ -18,6 +15,7 @@ txpower = 17
 type = "rust"
 respond_to_probes = true
 rnode = "/dev/ttyACM0"
+rnode_proxy = true
 
 [nodes.beta]
 type = "rust"
@@ -34,13 +32,25 @@ on = "alpha"
 destination = "beta.probe"
 timeout_secs = 90
 
+# Drop rule: min_size=400 targets only large resource data segments (≈490 bytes),
+# ignoring announces (≈167), link requests (≈86), identifies (≈83), and ADVs (≈211).
+[[steps]]
+action = "proxy_rule"
+node = "alpha"
+rule = "drop direction=a_to_b filter=cmd:0x00 min_size=400 count=2"
+
 [[steps]]
 action = "file_transfer"
 sender = "alpha"
 receiver = "beta"
-sender_tool = "lrncp"
-receiver_tool = "lrncp"
+sender_tool = "lncp"
+receiver_tool = "lncp"
 file_sizes = [2048]
-direction = "both"
+direction = "a_to_b"
 repeats = 1
 timeout_secs = 240
+
+[[steps]]
+action = "proxy_stats"
+node = "alpha"
+expect_dropped = 2

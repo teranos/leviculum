@@ -761,7 +761,7 @@ struct TransferResult {
 
 /// Parse destination hash from tool `-p` output.
 ///
-/// lrncp: bare hex on stdout.
+/// lncp: bare hex on stdout.
 /// rncp: "Listening on : <hex>" format with prettyhexrep angle brackets.
 /// Fallback: scan all lines for a 32-char hex string.
 fn parse_dest_hash_from_print_identity(stdout: &str) -> Result<String, String> {
@@ -776,7 +776,7 @@ fn parse_dest_hash_from_print_identity(stdout: &str) -> Result<String, String> {
         }
     }
 
-    // Fallback: scan for any 32-char hex string (lrncp bare hash or other format)
+    // Fallback: scan for any 32-char hex string (lncp bare hash or other format)
     for line in stdout.lines() {
         let trimmed = line.trim();
         if trimmed.len() == 32 && trimmed.chars().all(|c| c.is_ascii_hexdigit()) {
@@ -791,7 +791,7 @@ fn parse_dest_hash_from_print_identity(stdout: &str) -> Result<String, String> {
 
 /// Parse identity hash from tool `-p` output.
 ///
-/// lrncp format: `"Identity  : aabbccdd..."` (line 2)
+/// lncp format: `"Identity  : aabbccdd..."` (line 2)
 /// rncp format:  `"Identity     : <aabbccdd...>"` (line 1, angle-bracketed)
 ///
 /// Finds the line starting with "Identity", strips prefix/colon/whitespace/angle
@@ -860,7 +860,7 @@ fn execute_file_transfer(
                     detail: format!("auth_from node '{auth_from}' not found in scenario"),
                 })?;
         let auth_tool = match auth_node_def.node_type.as_str() {
-            "rust" => "lrncp",
+            "rust" => "lncp",
             _ => "rncp",
         };
         let print_output = runner.docker_exec_with_env(
@@ -1590,7 +1590,7 @@ Reticulum Transport Instance running
     }
 
     #[test]
-    fn parse_dest_hash_lrncp_bare() {
+    fn parse_dest_hash_lncp_bare() {
         let output = "c46bbee6a9437963a27ad5d18ce4a87c\n";
         assert_eq!(
             parse_dest_hash_from_print_identity(output).unwrap(),
@@ -1604,8 +1604,8 @@ Reticulum Transport Instance running
     }
 
     #[test]
-    fn parse_identity_hash_lrncp_format() {
-        // lrncp -p output: line 1 = dest hash, line 2 = "Identity  : <hex>"
+    fn parse_identity_hash_lncp_format() {
+        // lncp -p output: line 1 = dest hash, line 2 = "Identity  : <hex>"
         let output =
             "c46bbee6a9437963a27ad5d18ce4a87c\nIdentity  : aabbccdd11223344aabbccdd11223344\n";
         assert_eq!(
@@ -2000,7 +2000,7 @@ Reticulum Transport Instance running
     #[test]
     #[ignore]
     // Requires RNode hardware at /dev/ttyACM0 and /dev/ttyACM1.
-    // Build lrnsd with: cargo build --release --bin lrnsd --features serial
+    // Build lnsd with: cargo build --release --bin lnsd --features serial
     // NOTE: If wait_for_path times out, check container logs for
     // "configured" or "configuration failed" — wait_ready() succeeds
     // even if the RNode device is not detected (reconnect runs in background).
@@ -2027,7 +2027,7 @@ Reticulum Transport Instance running
     #[test]
     #[ignore]
     // Requires RNode hardware at /dev/ttyACM0 and /dev/ttyACM1.
-    // Build lrnsd with: cargo build --release --bin lrnsd --features serial
+    // Build lnsd with: cargo build --release --bin lnsd --features serial
     // Docker image must have pyserial installed for Python RNodeInterface.
     // NOTE: If wait_for_path times out, check container logs for
     // "configured"/"configuration failed" (Rust) or RNodeInterface errors (Python).
@@ -2054,8 +2054,8 @@ Reticulum Transport Instance running
     #[test]
     #[ignore]
     // Requires RNode hardware at /dev/ttyACM0 and /dev/ttyACM1.
-    // Build lrnsd with: cargo build --release --bin lrnsd --features serial
-    // Build lrns with: cargo build --release --bin lrns
+    // Build lnsd with: cargo build --release --bin lnsd --features serial
+    // Build lns with: cargo build --release --bin lns
     #[serial(lora)]
     fn lora_link_rust() {
         let _lock = acquire_lora_lock();
@@ -2079,8 +2079,8 @@ Reticulum Transport Instance running
     #[test]
     #[ignore]
     // Requires RNode hardware at /dev/ttyACM0 and /dev/ttyACM1.
-    // Build lrnsd with: cargo build --release --bin lrnsd --features serial
-    // Build lrns with: cargo build --release --bin lrns
+    // Build lnsd with: cargo build --release --bin lnsd --features serial
+    // Build lns with: cargo build --release --bin lns
     #[serial(lora)]
     fn lora_link_interop() {
         let _lock = acquire_lora_lock();
@@ -2370,13 +2370,13 @@ Reticulum Transport Instance running
     #[test]
     #[ignore] // Requires RNode hardware
     #[serial(lora)]
-    fn lora_lrncp_push() {
+    fn lora_lncp_push() {
         let _lock = acquire_lora_lock();
         let toml_str = std::fs::read_to_string(concat!(
             env!("CARGO_MANIFEST_DIR"),
-            "/tests/lora_lrncp_push.toml"
+            "/tests/lora_lncp_push.toml"
         ))
-        .expect("lora_lrncp_push.toml not found");
+        .expect("lora_lncp_push.toml not found");
         let scenario = crate::topology::parse_scenario(&toml_str).expect("parse failed");
 
         let mut runner = TestRunner::new(scenario).expect("TestRunner::new failed");
@@ -2392,13 +2392,13 @@ Reticulum Transport Instance running
     #[test]
     #[ignore] // Requires RNode hardware
     #[serial(lora)]
-    fn lora_lrncp_fetch() {
+    fn lora_lncp_fetch() {
         let _lock = acquire_lora_lock();
         let toml_str = std::fs::read_to_string(concat!(
             env!("CARGO_MANIFEST_DIR"),
-            "/tests/lora_lrncp_fetch.toml"
+            "/tests/lora_lncp_fetch.toml"
         ))
-        .expect("lora_lrncp_fetch.toml not found");
+        .expect("lora_lncp_fetch.toml not found");
         let scenario = crate::topology::parse_scenario(&toml_str).expect("parse failed");
 
         let mut runner = TestRunner::new(scenario).expect("TestRunner::new failed");
@@ -2414,13 +2414,13 @@ Reticulum Transport Instance running
     #[test]
     #[ignore] // Requires RNode hardware
     #[serial(lora)]
-    fn lora_lrncp_auth() {
+    fn lora_lncp_auth() {
         let _lock = acquire_lora_lock();
         let toml_str = std::fs::read_to_string(concat!(
             env!("CARGO_MANIFEST_DIR"),
-            "/tests/lora_lrncp_auth.toml"
+            "/tests/lora_lncp_auth.toml"
         ))
-        .expect("lora_lrncp_auth.toml not found");
+        .expect("lora_lncp_auth.toml not found");
         let scenario = crate::topology::parse_scenario(&toml_str).expect("parse failed");
 
         let mut runner = TestRunner::new(scenario).expect("TestRunner::new failed");
@@ -2436,13 +2436,13 @@ Reticulum Transport Instance running
     #[test]
     #[ignore] // Requires RNode hardware + lora-proxy binary
     #[serial(lora)]
-    fn lora_lrncp_proxy() {
+    fn lora_lncp_proxy() {
         let _lock = acquire_lora_lock();
         let toml_str = std::fs::read_to_string(concat!(
             env!("CARGO_MANIFEST_DIR"),
-            "/tests/lora_lrncp_proxy.toml"
+            "/tests/lora_lncp_proxy.toml"
         ))
-        .expect("lora_lrncp_proxy.toml not found");
+        .expect("lora_lncp_proxy.toml not found");
         let scenario = crate::topology::parse_scenario(&toml_str).expect("parse failed");
 
         let mut runner = TestRunner::new(scenario).expect("TestRunner::new failed");
@@ -2458,13 +2458,13 @@ Reticulum Transport Instance running
     #[test]
     #[ignore] // Requires RNode hardware
     #[serial(lora)]
-    fn lora_lrncp_size_sweep() {
+    fn lora_lncp_size_sweep() {
         let _lock = acquire_lora_lock();
         let toml_str = std::fs::read_to_string(concat!(
             env!("CARGO_MANIFEST_DIR"),
-            "/tests/lora_lrncp_size_sweep.toml"
+            "/tests/lora_lncp_size_sweep.toml"
         ))
-        .expect("lora_lrncp_size_sweep.toml not found");
+        .expect("lora_lncp_size_sweep.toml not found");
         let scenario = crate::topology::parse_scenario(&toml_str).expect("parse failed");
 
         let mut runner = TestRunner::new(scenario).expect("TestRunner::new failed");
@@ -2480,13 +2480,13 @@ Reticulum Transport Instance running
     #[test]
     #[ignore] // Requires RNode hardware
     #[serial(lora)]
-    fn lora_lrncp_proxy_4drop() {
+    fn lora_lncp_proxy_4drop() {
         let _lock = acquire_lora_lock();
         let toml_str = std::fs::read_to_string(concat!(
             env!("CARGO_MANIFEST_DIR"),
-            "/tests/lora_lrncp_proxy_4drop.toml"
+            "/tests/lora_lncp_proxy_4drop.toml"
         ))
-        .expect("lora_lrncp_proxy_4drop.toml not found");
+        .expect("lora_lncp_proxy_4drop.toml not found");
         let scenario = crate::topology::parse_scenario(&toml_str).expect("parse failed");
 
         let mut runner = TestRunner::new(scenario).expect("TestRunner::new failed");
@@ -2502,13 +2502,13 @@ Reticulum Transport Instance running
     #[test]
     #[ignore] // Requires RNode hardware
     #[serial(lora)]
-    fn lora_lrncp_proxy_6drop() {
+    fn lora_lncp_proxy_6drop() {
         let _lock = acquire_lora_lock();
         let toml_str = std::fs::read_to_string(concat!(
             env!("CARGO_MANIFEST_DIR"),
-            "/tests/lora_lrncp_proxy_6drop.toml"
+            "/tests/lora_lncp_proxy_6drop.toml"
         ))
-        .expect("lora_lrncp_proxy_6drop.toml not found");
+        .expect("lora_lncp_proxy_6drop.toml not found");
         let scenario = crate::topology::parse_scenario(&toml_str).expect("parse failed");
 
         let mut runner = TestRunner::new(scenario).expect("TestRunner::new failed");
@@ -2524,13 +2524,13 @@ Reticulum Transport Instance running
     #[test]
     #[ignore] // Requires RNode hardware
     #[serial(lora)]
-    fn lora_lrncp_link_loss() {
+    fn lora_lncp_link_loss() {
         let _lock = acquire_lora_lock();
         let toml_str = std::fs::read_to_string(concat!(
             env!("CARGO_MANIFEST_DIR"),
-            "/tests/lora_lrncp_link_loss.toml"
+            "/tests/lora_lncp_link_loss.toml"
         ))
-        .expect("lora_lrncp_link_loss.toml not found");
+        .expect("lora_lncp_link_loss.toml not found");
         let scenario = crate::topology::parse_scenario(&toml_str).expect("parse failed");
 
         let mut runner = TestRunner::new(scenario).expect("TestRunner::new failed");
@@ -2546,13 +2546,13 @@ Reticulum Transport Instance running
     #[test]
     #[ignore] // Requires RNode hardware
     #[serial(lora)]
-    fn lora_lrncp_link_retry() {
+    fn lora_lncp_link_retry() {
         let _lock = acquire_lora_lock();
         let toml_str = std::fs::read_to_string(concat!(
             env!("CARGO_MANIFEST_DIR"),
-            "/tests/lora_lrncp_link_retry.toml"
+            "/tests/lora_lncp_link_retry.toml"
         ))
-        .expect("lora_lrncp_link_retry.toml not found");
+        .expect("lora_lncp_link_retry.toml not found");
         let scenario = crate::topology::parse_scenario(&toml_str).expect("parse failed");
 
         let mut runner = TestRunner::new(scenario).expect("TestRunner::new failed");
@@ -2568,13 +2568,13 @@ Reticulum Transport Instance running
     #[test]
     #[ignore] // Requires RNode hardware
     #[serial(lora)]
-    fn lora_lrncp_proof_retry() {
+    fn lora_lncp_proof_retry() {
         let _lock = acquire_lora_lock();
         let toml_str = std::fs::read_to_string(concat!(
             env!("CARGO_MANIFEST_DIR"),
-            "/tests/lora_lrncp_proof_retry.toml"
+            "/tests/lora_lncp_proof_retry.toml"
         ))
-        .expect("lora_lrncp_proof_retry.toml not found");
+        .expect("lora_lncp_proof_retry.toml not found");
         let scenario = crate::topology::parse_scenario(&toml_str).expect("parse failed");
 
         let mut runner = TestRunner::new(scenario).expect("TestRunner::new failed");
@@ -2590,13 +2590,13 @@ Reticulum Transport Instance running
     #[test]
     #[ignore] // Requires RNode hardware
     #[serial(lora)]
-    fn lora_lrncp_bidir() {
+    fn lora_lncp_bidir() {
         let _lock = acquire_lora_lock();
         let toml_str = std::fs::read_to_string(concat!(
             env!("CARGO_MANIFEST_DIR"),
-            "/tests/lora_lrncp_bidir.toml"
+            "/tests/lora_lncp_bidir.toml"
         ))
-        .expect("lora_lrncp_bidir.toml not found");
+        .expect("lora_lncp_bidir.toml not found");
         let scenario = crate::topology::parse_scenario(&toml_str).expect("parse failed");
 
         let mut runner = TestRunner::new(scenario).expect("TestRunner::new failed");
@@ -2612,13 +2612,13 @@ Reticulum Transport Instance running
     #[test]
     #[ignore] // Requires RNode hardware
     #[serial(lora)]
-    fn lora_lrncp_bridge() {
+    fn lora_lncp_bridge() {
         let _lock = acquire_lora_lock();
         let toml_str = std::fs::read_to_string(concat!(
             env!("CARGO_MANIFEST_DIR"),
-            "/tests/lora_lrncp_bridge.toml"
+            "/tests/lora_lncp_bridge.toml"
         ))
-        .expect("lora_lrncp_bridge.toml not found");
+        .expect("lora_lncp_bridge.toml not found");
         let scenario = crate::topology::parse_scenario(&toml_str).expect("parse failed");
 
         let mut runner = TestRunner::new(scenario).expect("TestRunner::new failed");
@@ -2748,13 +2748,13 @@ Reticulum Transport Instance running
     #[test]
     #[ignore] // Requires RNode hardware
     #[serial(lora)]
-    fn lora_lrncp_push_to_python() {
+    fn lora_lncp_push_to_python() {
         let _lock = acquire_lora_lock();
         let toml_str = std::fs::read_to_string(concat!(
             env!("CARGO_MANIFEST_DIR"),
-            "/tests/lora_lrncp_push_to_python.toml"
+            "/tests/lora_lncp_push_to_python.toml"
         ))
-        .expect("lora_lrncp_push_to_python.toml not found");
+        .expect("lora_lncp_push_to_python.toml not found");
         let scenario = crate::topology::parse_scenario(&toml_str).expect("parse failed");
 
         let mut runner = TestRunner::new(scenario).expect("TestRunner::new failed");
@@ -2792,13 +2792,13 @@ Reticulum Transport Instance running
     #[test]
     #[ignore] // Requires RNode hardware
     #[serial(lora)]
-    fn lora_lrncp_fetch_from_python() {
+    fn lora_lncp_fetch_from_python() {
         let _lock = acquire_lora_lock();
         let toml_str = std::fs::read_to_string(concat!(
             env!("CARGO_MANIFEST_DIR"),
-            "/tests/lora_lrncp_fetch_from_python.toml"
+            "/tests/lora_lncp_fetch_from_python.toml"
         ))
-        .expect("lora_lrncp_fetch_from_python.toml not found");
+        .expect("lora_lncp_fetch_from_python.toml not found");
         let scenario = crate::topology::parse_scenario(&toml_str).expect("parse failed");
 
         let mut runner = TestRunner::new(scenario).expect("TestRunner::new failed");
@@ -2836,13 +2836,13 @@ Reticulum Transport Instance running
     #[test]
     #[ignore] // Requires RNode hardware
     #[serial(lora)]
-    fn lora_lrncp_auth_to_python() {
+    fn lora_lncp_auth_to_python() {
         let _lock = acquire_lora_lock();
         let toml_str = std::fs::read_to_string(concat!(
             env!("CARGO_MANIFEST_DIR"),
-            "/tests/lora_lrncp_auth_to_python.toml"
+            "/tests/lora_lncp_auth_to_python.toml"
         ))
-        .expect("lora_lrncp_auth_to_python.toml not found");
+        .expect("lora_lncp_auth_to_python.toml not found");
         let scenario = crate::topology::parse_scenario(&toml_str).expect("parse failed");
 
         let mut runner = TestRunner::new(scenario).expect("TestRunner::new failed");
@@ -2858,13 +2858,13 @@ Reticulum Transport Instance running
     #[test]
     #[ignore] // Requires RNode hardware
     #[serial(lora)]
-    fn lora_lrncp_bridge_python_relay() {
+    fn lora_lncp_bridge_python_relay() {
         let _lock = acquire_lora_lock();
         let toml_str = std::fs::read_to_string(concat!(
             env!("CARGO_MANIFEST_DIR"),
-            "/tests/lora_lrncp_bridge_python_relay.toml"
+            "/tests/lora_lncp_bridge_python_relay.toml"
         ))
-        .expect("lora_lrncp_bridge_python_relay.toml not found");
+        .expect("lora_lncp_bridge_python_relay.toml not found");
         let scenario = crate::topology::parse_scenario(&toml_str).expect("parse failed");
 
         let mut runner = TestRunner::new(scenario).expect("TestRunner::new failed");
@@ -3047,12 +3047,12 @@ Reticulum Transport Instance running
 
     #[test]
     #[serial(docker)]
-    fn lrncp_baseline() {
+    fn lncp_baseline() {
         let toml_str = std::fs::read_to_string(concat!(
             env!("CARGO_MANIFEST_DIR"),
-            "/tests/lrncp_baseline.toml"
+            "/tests/lncp_baseline.toml"
         ))
-        .expect("lrncp_baseline.toml not found");
+        .expect("lncp_baseline.toml not found");
         let scenario = crate::topology::parse_scenario(&toml_str).expect("parse failed");
 
         let mut runner = TestRunner::new(scenario).expect("TestRunner::new failed");
@@ -3067,12 +3067,12 @@ Reticulum Transport Instance running
 
     #[test]
     #[serial(docker)]
-    fn lrncp_rust_sender() {
+    fn lncp_rust_sender() {
         let toml_str = std::fs::read_to_string(concat!(
             env!("CARGO_MANIFEST_DIR"),
-            "/tests/lrncp_rust_sender.toml"
+            "/tests/lncp_rust_sender.toml"
         ))
-        .expect("lrncp_rust_sender.toml not found");
+        .expect("lncp_rust_sender.toml not found");
         let scenario = crate::topology::parse_scenario(&toml_str).expect("parse failed");
 
         let mut runner = TestRunner::new(scenario).expect("TestRunner::new failed");
@@ -3087,12 +3087,12 @@ Reticulum Transport Instance running
 
     #[test]
     #[serial(docker)]
-    fn lrncp_rust_edges() {
+    fn lncp_rust_edges() {
         let toml_str = std::fs::read_to_string(concat!(
             env!("CARGO_MANIFEST_DIR"),
-            "/tests/lrncp_rust_edges.toml"
+            "/tests/lncp_rust_edges.toml"
         ))
-        .expect("lrncp_rust_edges.toml not found");
+        .expect("lncp_rust_edges.toml not found");
         let scenario = crate::topology::parse_scenario(&toml_str).expect("parse failed");
 
         let mut runner = TestRunner::new(scenario).expect("TestRunner::new failed");
@@ -3107,12 +3107,12 @@ Reticulum Transport Instance running
 
     #[test]
     #[serial(docker)]
-    fn lrncp_full_rust() {
+    fn lncp_full_rust() {
         let toml_str = std::fs::read_to_string(concat!(
             env!("CARGO_MANIFEST_DIR"),
-            "/tests/lrncp_full_rust.toml"
+            "/tests/lncp_full_rust.toml"
         ))
-        .expect("lrncp_full_rust.toml not found");
+        .expect("lncp_full_rust.toml not found");
         let scenario = crate::topology::parse_scenario(&toml_str).expect("parse failed");
 
         let mut runner = TestRunner::new(scenario).expect("TestRunner::new failed");
@@ -3163,12 +3163,12 @@ Reticulum Transport Instance running
 
     #[test]
     #[serial(docker)]
-    fn lrncp_fetch() {
+    fn lncp_fetch() {
         let toml_str = std::fs::read_to_string(concat!(
             env!("CARGO_MANIFEST_DIR"),
-            "/tests/lrncp_fetch.toml"
+            "/tests/lncp_fetch.toml"
         ))
-        .expect("lrncp_fetch.toml not found");
+        .expect("lncp_fetch.toml not found");
         let scenario = crate::topology::parse_scenario(&toml_str).expect("parse failed");
 
         let mut runner = TestRunner::new(scenario).expect("TestRunner::new failed");
@@ -3183,12 +3183,10 @@ Reticulum Transport Instance running
 
     #[test]
     #[serial(docker)]
-    fn lrncp_auth() {
-        let toml_str = std::fs::read_to_string(concat!(
-            env!("CARGO_MANIFEST_DIR"),
-            "/tests/lrncp_auth.toml"
-        ))
-        .expect("lrncp_auth.toml not found");
+    fn lncp_auth() {
+        let toml_str =
+            std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/tests/lncp_auth.toml"))
+                .expect("lncp_auth.toml not found");
         let scenario = crate::topology::parse_scenario(&toml_str).expect("parse failed");
 
         let mut runner = TestRunner::new(scenario).expect("TestRunner::new failed");
@@ -3203,12 +3201,12 @@ Reticulum Transport Instance running
 
     #[test]
     #[serial(docker)]
-    fn lrncp_auth_reject() {
+    fn lncp_auth_reject() {
         let toml_str = std::fs::read_to_string(concat!(
             env!("CARGO_MANIFEST_DIR"),
-            "/tests/lrncp_auth_reject.toml"
+            "/tests/lncp_auth_reject.toml"
         ))
-        .expect("lrncp_auth_reject.toml not found");
+        .expect("lncp_auth_reject.toml not found");
         let scenario = crate::topology::parse_scenario(&toml_str).expect("parse failed");
 
         let mut runner = TestRunner::new(scenario).expect("TestRunner::new failed");
@@ -3223,12 +3221,12 @@ Reticulum Transport Instance running
 
     #[test]
     #[serial(docker)]
-    fn lrncp_fetch_auth() {
+    fn lncp_fetch_auth() {
         let toml_str = std::fs::read_to_string(concat!(
             env!("CARGO_MANIFEST_DIR"),
-            "/tests/lrncp_fetch_auth.toml"
+            "/tests/lncp_fetch_auth.toml"
         ))
-        .expect("lrncp_fetch_auth.toml not found");
+        .expect("lncp_fetch_auth.toml not found");
         let scenario = crate::topology::parse_scenario(&toml_str).expect("parse failed");
 
         let mut runner = TestRunner::new(scenario).expect("TestRunner::new failed");
@@ -3243,12 +3241,12 @@ Reticulum Transport Instance running
 
     #[test]
     #[serial(docker)]
-    fn lrncp_fetch_jail() {
+    fn lncp_fetch_jail() {
         let toml_str = std::fs::read_to_string(concat!(
             env!("CARGO_MANIFEST_DIR"),
-            "/tests/lrncp_fetch_jail.toml"
+            "/tests/lncp_fetch_jail.toml"
         ))
-        .expect("lrncp_fetch_jail.toml not found");
+        .expect("lncp_fetch_jail.toml not found");
         let scenario = crate::topology::parse_scenario(&toml_str).expect("parse failed");
 
         let mut runner = TestRunner::new(scenario).expect("TestRunner::new failed");
@@ -3263,12 +3261,12 @@ Reticulum Transport Instance running
 
     #[test]
     #[serial(docker)]
-    fn lrncp_fetch_cross() {
+    fn lncp_fetch_cross() {
         let toml_str = std::fs::read_to_string(concat!(
             env!("CARGO_MANIFEST_DIR"),
-            "/tests/lrncp_fetch_cross.toml"
+            "/tests/lncp_fetch_cross.toml"
         ))
-        .expect("lrncp_fetch_cross.toml not found");
+        .expect("lncp_fetch_cross.toml not found");
         let scenario = crate::topology::parse_scenario(&toml_str).expect("parse failed");
 
         let mut runner = TestRunner::new(scenario).expect("TestRunner::new failed");

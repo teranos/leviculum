@@ -4,7 +4,7 @@
 #
 # Requires two RNode devices at /dev/ttyACM0 and /dev/ttyACM1.
 # Build with:
-#   cargo build --release --bin lrnsd --features serial
+#   cargo build --release --bin lnsd --features serial
 #   cargo build --release --bin lora-proxy
 
 [test]

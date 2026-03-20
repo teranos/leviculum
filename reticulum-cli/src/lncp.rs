@@ -1,8 +1,8 @@
-//! lrncp - Reticulum File Transfer Utility
+//! lncp - Reticulum File Transfer Utility
 //!
 //! Standalone binary for sending/receiving files over Reticulum,
 //! compatible with Python's rncp. Connects to a running daemon
-//! (lrnsd or rnsd) via shared instance IPC.
+//! (lnsd or rnsd) via shared instance IPC.
 
 use std::path::PathBuf;
 
@@ -36,7 +36,7 @@ fn hex_decode(s: &str) -> Result<Vec<u8>, String> {
 }
 
 #[derive(Parser, Debug)]
-#[command(name = "lrncp", version, about = "Reticulum File Transfer Utility")]
+#[command(name = "lncp", version, about = "Reticulum File Transfer Utility")]
 struct Args {
     /// File to send (send mode)
     file: Option<String>,
@@ -123,7 +123,7 @@ async fn main() {
     let args = Args::parse();
 
     // RUST_LOG env takes precedence; otherwise use -v/-q flags.
-    // Default is "warn" (not "info") — lrncp is a user tool, not a daemon.
+    // Default is "warn" (not "info") — lncp is a user tool, not a daemon.
     let default_filter = match (args.verbose as i8) - (args.quiet as i8) {
         3.. => "trace",
         2 => "debug",
@@ -162,7 +162,7 @@ async fn run(args: Args) -> Result<(), Box<dyn std::error::Error>> {
     let mut node = ReticulumNodeBuilder::new()
         .enable_transport(false)
         .connect_to_shared_instance(&instance_name)
-        // Safe to share storage path with lrnsd: a client with
+        // Safe to share storage path with lnsd: a client with
         // enable_transport(false) writes no paths, announces, or
         // packet hashes to storage. Identity is loaded separately.
         .storage_path(config_dir.join("storage"))
@@ -188,7 +188,7 @@ async fn run(args: Args) -> Result<(), Box<dyn std::error::Error>> {
     let result = if args.listen {
         let identity_path = args
             .identity
-            .unwrap_or_else(|| config_dir.join("identities").join("lrncp"));
+            .unwrap_or_else(|| config_dir.join("identities").join("lncp"));
         let identity = cp::load_or_generate_identity(&identity_path)?;
         let allowed_identities = parse_identity_hashes(&args.allowed)?;
 
@@ -219,7 +219,7 @@ async fn run(args: Args) -> Result<(), Box<dyn std::error::Error>> {
             .ok_or("destination hash required in fetch mode")?;
         let identity_path = args
             .identity
-            .unwrap_or_else(|| config_dir.join("identities").join("lrncp"));
+            .unwrap_or_else(|| config_dir.join("identities").join("lncp"));
         let identity = cp::load_or_generate_identity(&identity_path)?;
 
         cp::run_fetch(
@@ -246,7 +246,7 @@ async fn run(args: Args) -> Result<(), Box<dyn std::error::Error>> {
         // Sender always identifies
         let identity_path = args
             .identity
-            .unwrap_or_else(|| config_dir.join("identities").join("lrncp"));
+            .unwrap_or_else(|| config_dir.join("identities").join("lncp"));
         let identity = cp::load_or_generate_identity(&identity_path)?;
 
         cp::run_send(
@@ -271,7 +271,7 @@ async fn run(args: Args) -> Result<(), Box<dyn std::error::Error>> {
 fn daemon_connect_error(instance_name: &str, error: &dyn std::fmt::Display, verbose: u8) -> String {
     format!(
         "Could not connect to a running Reticulum daemon on rns/{}.\n\
-         Start lrnsd or rnsd first.{}",
+         Start lnsd or rnsd first.{}",
         instance_name,
         if verbose > 0 {
             format!("\nDetail: {}", error)
@@ -319,7 +319,7 @@ fn print_identity(
 ) -> Result<(), Box<dyn std::error::Error>> {
     let path = identity_path
         .map(PathBuf::from)
-        .unwrap_or_else(|| config_dir.join("identities").join("lrncp"));
+        .unwrap_or_else(|| config_dir.join("identities").join("lncp"));
     let identity = cp::load_or_generate_identity(&path)?;
     let id_hash = hex_encode(identity.hash());
     let dest = Destination::new(

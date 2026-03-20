@@ -1,9 +1,9 @@
-# Baseline: rncp (Python tools) through all-Python topology
-# Measures Python rncp transfer performance for comparison with lrncp.
+# Cross-implementation fetch: Python rncp fetches from Rust lncp.
+# Strongest interop test: Python's rncp -f talking to Rust's lncp -l -F -n.
 
 [test]
-name = "lrncp_baseline"
-description = "Baseline: Python rncp through all-Python topology"
+name = "lncp_fetch_cross"
+description = "Python rncp fetches from Rust lncp through Python relay"
 timeout_secs = 600
 
 [nodes.alpha]
@@ -15,7 +15,7 @@ type = "python"
 respond_to_probes = false
 
 [nodes.charlie]
-type = "python"
+type = "rust"
 respond_to_probes = true
 
 [links]
@@ -24,7 +24,7 @@ charlie-relay = "tcp"
 
 [[steps]]
 action = "sleep"
-duration_secs = 20
+duration_secs = 10
 
 [[steps]]
 action = "wait_for_path"
@@ -37,7 +37,9 @@ action = "file_transfer"
 sender = "alpha"
 receiver = "charlie"
 sender_tool = "rncp"
-receiver_tool = "rncp"
+receiver_tool = "lncp"
+mode = "fetch"
+receiver_flags = "-F -n"
 file_sizes = [102400, 1048576]
 direction = "a_to_b"
 repeats = 3

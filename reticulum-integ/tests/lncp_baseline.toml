@@ -1,15 +1,13 @@
-# Rust sender (lrncp) -> Python relay -> Python receiver (rncp)
-# Tests lrncp's send path against Python ecosystem.
-# Direction a_to_b only: reverse direction (Python rncp sender -> lrncp
-# receiver) stalls at ~28% for files >100KB (see E31).
+# Baseline: rncp (Python tools) through all-Python topology
+# Measures Python rncp transfer performance for comparison with lncp.
 
 [test]
-name = "lrncp_rust_sender"
-description = "Rust lrncp sender through Python relay to Python rncp receiver"
+name = "lncp_baseline"
+description = "Baseline: Python rncp through all-Python topology"
 timeout_secs = 600
 
 [nodes.alpha]
-type = "rust"
+type = "python"
 respond_to_probes = true
 
 [nodes.relay]
@@ -26,7 +24,7 @@ charlie-relay = "tcp"
 
 [[steps]]
 action = "sleep"
-duration_secs = 10
+duration_secs = 20
 
 [[steps]]
 action = "wait_for_path"
@@ -38,7 +36,7 @@ timeout_secs = 60
 action = "file_transfer"
 sender = "alpha"
 receiver = "charlie"
-sender_tool = "lrncp"
+sender_tool = "rncp"
 receiver_tool = "rncp"
 file_sizes = [102400, 1048576]
 direction = "a_to_b"

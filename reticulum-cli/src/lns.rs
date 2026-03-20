@@ -1,4 +1,4 @@
-//! lrns - Reticulum command-line utility
+//! lns - Reticulum command-line utility
 //!
 //! This provides various utility commands for interacting with Reticulum.
 //! Equivalent to rnstatus, rnpath, etc. in the Python implementation.
@@ -337,7 +337,7 @@ fn skip_msgpack_element(data: &[u8]) -> Option<&[u8]> {
 }
 
 #[derive(Parser, Debug)]
-#[command(name = "lrns")]
+#[command(name = "lns")]
 #[command(author, version, about = "Reticulum command-line utility")]
 struct Args {
     /// Configuration file path
@@ -565,7 +565,7 @@ async fn run_connect(
         Some(dest_identity),
         Direction::In,
         DestinationType::Single,
-        "lrns",
+        "lns",
         &["connect"],
     )
     .map_err(|e| format!("destination error: {e}"))?;
@@ -576,7 +576,7 @@ async fn run_connect(
 
     // Announce ourselves
     if let Err(e) = node
-        .announce_destination(&dest_hash, Some(b"lrns-cli"))
+        .announce_destination(&dest_hash, Some(b"lns-cli"))
         .await
     {
         eprintln!("announce failed: {e}");
@@ -584,7 +584,7 @@ async fn run_connect(
 
     println!("Identity: {identity_hash}");
     println!("Destination: {dest_hash_hex}");
-    println!("Announced as lrns-cli");
+    println!("Announced as lns-cli");
     println!("Type /help for commands.");
     print_prompt();
 
@@ -855,7 +855,7 @@ async fn run_connect(
                 }
 
                 "/announce" => match node
-                    .announce_destination(&dest_hash, Some(b"lrns-cli"))
+                    .announce_destination(&dest_hash, Some(b"lns-cli"))
                     .await
                 {
                     Ok(()) => println!("[announced] {dest_hash_hex}"),
@@ -1234,7 +1234,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             };
 
             if listen {
-                let identity_path = config_dir.join("identities").join("lrncp");
+                let identity_path = config_dir.join("identities").join("lncp");
                 let identity = cp::load_or_generate_identity(&identity_path)?;
 
                 let mut node = ReticulumNodeBuilder::new()
@@ -1252,13 +1252,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     save,
                     overwrite,
                     no_auth,
-                    &[], // no -a flag for lrns cp
+                    &[], // no -a flag for lns cp
                     announce_interval,
                     cp_verbose,
                     quiet,
-                    false, // allow_fetch — lrns cp doesn't support fetch
+                    false, // allow_fetch — lns cp doesn't support fetch
                     None,  // fetch_jail
-                    false, // phy_rates — lrns cp doesn't support -P
+                    false, // phy_rates — lns cp doesn't support -P
                 )
                 .await;
                 node.stop().await?;
@@ -1283,8 +1283,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     cp_verbose,
                     quiet,
                     false,
-                    None,  // lrns cp sender does not identify
-                    false, // phy_rates — lrns cp doesn't support -P
+                    None,  // lns cp sender does not identify
+                    false, // phy_rates — lns cp doesn't support -P
                 )
                 .await;
                 node.stop().await?;

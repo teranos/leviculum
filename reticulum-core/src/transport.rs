@@ -1083,7 +1083,7 @@ impl<C: Clock, S: Storage> Transport<C, S> {
         let is_local_link_relay =
             is_from_local_client && self.storage.has_link_entry(&packet.destination_hash);
         // Local-client link requests skip hash dedup to allow link request
-        // retries (E34). When lrncp retries a link request, the daemon
+        // retries (E34). When lncp retries a link request, the daemon
         // receives the same bytes again. Without this exemption, the daemon
         // would reject the retry as a duplicate (hash cached from first attempt).
         // This is safe: link requests from local clients are forwarded to the
@@ -1097,7 +1097,7 @@ impl<C: Clock, S: Storage> Transport<C, S> {
         // re-sends same link request) reach handle_link_request(), which
         // re-sends the cached proof. Covers both cases:
         //   - Destination on this daemon (local_destinations)
-        //   - Destination on a local client (lrncp receiver behind this daemon)
+        //   - Destination on a local client (lncp receiver behind this daemon)
         // The link management layer handles its own dedup via links.contains_key().
         let is_link_request_for_us = packet.flags.packet_type == PacketType::LinkRequest
             && (self.local_destinations.contains(&packet.destination_hash)
