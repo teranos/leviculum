@@ -41,8 +41,8 @@ pub(crate) enum ResourcePollResult {
 /// `total_hashmap_segments`, `request_id`, and `sdu` are stored during resource
 /// creation and needed for protocol correctness (advertisement reconstruction,
 /// hash verification, hashmap segment calculation). Accessors are provided and
-/// exercised in tests; production callers arrive with ROADMAP v1.1 (Resource Transfer).
-#[allow(dead_code)] // Protocol state fields — see ROADMAP v1.1 (Resource Transfer)
+/// exercised in tests; production callers arrive with OPEN_ISSUES_TRACKER v1.1 (Resource Transfer).
+#[allow(dead_code)] // Protocol state fields — see E53/E54 in OPEN_ISSUES_TRACKER
 pub(crate) struct OutgoingResource {
     status: ResourceStatus,
     flags: ResourceFlags,
@@ -573,7 +573,7 @@ impl OutgoingResource {
     }
 
     /// Mark this resource as failed/cancelled.
-    #[allow(dead_code)] // Resource cancel API — see ROADMAP v1.1 (Resource Transfer)
+    #[allow(dead_code)] // Resource cancel API — see E53/E54 in OPEN_ISSUES_TRACKER
     pub(crate) fn cancel(&mut self) {
         self.status = ResourceStatus::Failed;
     }
@@ -603,17 +603,17 @@ impl OutgoingResource {
         self.encrypted_data.len() as u64
     }
 
-    #[allow(dead_code)] // Resource accessor API — see ROADMAP v1.1 (Resource Transfer)
+    #[allow(dead_code)] // Resource accessor API — see E53/E54 in OPEN_ISSUES_TRACKER
     pub(crate) fn flags(&self) -> &ResourceFlags {
         &self.flags
     }
 
-    #[allow(dead_code)] // Resource accessor API — see ROADMAP v1.1 (Resource Transfer)
+    #[allow(dead_code)] // Resource accessor API — see E53/E54 in OPEN_ISSUES_TRACKER
     pub(crate) fn original_hash(&self) -> &[u8; 32] {
         &self.original_hash
     }
 
-    #[allow(dead_code)] // Resource accessor API — see ROADMAP v1.1 (Resource Transfer)
+    #[allow(dead_code)] // Resource accessor API — see E53/E54 in OPEN_ISSUES_TRACKER
     pub(crate) fn random_hash(&self) -> &[u8; RESOURCE_RANDOM_HASH_SIZE] {
         &self.random_hash
     }
@@ -622,17 +622,17 @@ impl OutgoingResource {
         self.uncompressed_size
     }
 
-    #[allow(dead_code)] // Resource accessor API — see ROADMAP v1.1 (Resource Transfer)
+    #[allow(dead_code)] // Resource accessor API — see E53/E54 in OPEN_ISSUES_TRACKER
     pub(crate) fn total_hashmap_segments(&self) -> u32 {
         self.total_hashmap_segments
     }
 
-    #[allow(dead_code)] // Resource accessor API — see ROADMAP v1.1 (Resource Transfer)
+    #[allow(dead_code)] // Resource accessor API — see E53/E54 in OPEN_ISSUES_TRACKER
     pub(crate) fn request_id(&self) -> Option<&[u8]> {
         self.request_id.as_deref()
     }
 
-    #[allow(dead_code)] // Resource accessor API — see ROADMAP v1.1 (Resource Transfer)
+    #[allow(dead_code)] // Resource accessor API — see E53/E54 in OPEN_ISSUES_TRACKER
     pub(crate) fn sdu(&self) -> usize {
         self.sdu
     }

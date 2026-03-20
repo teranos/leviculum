@@ -30,6 +30,22 @@ When an issue is fixed, remove it from this file entirely.
 | E37 | L | post-7 | open | Test | Proxy only supports deterministic drop counts, not random loss rates |
 | E38 | M | post-7 | open | Test | Multi-hop LoRa testing requires per-node radio config, multi-RNode nodes, and 4 RNodes |
 | E44 | M | post-7 | open | Protocol | Resource completion proof lost — sender passively burns retries, no recovery |
+| E45 | H | open | open | Protocol | Ratchet forward secrecy not wired — validation on announce, exchange on link, runtime rotation |
+| E46 | L | open | open | Test | Persistence interop test — restart daemon, previously known destinations still reachable |
+| E47 | L | open | open | Feature | Buffer/Stream integration in LinkHandle and compression over links (C10) |
+| E48 | L | open | open | Feature | `lns` missing subcommands: status, path, probe, interfaces |
+| E49 | L | open | open | Test | Fuzzing of packet parsers |
+| E50 | L | open | open | Feature | `is_connected_to_shared_instance` semantics for local transport decisions |
+| E51 | L | open | open | Feature | RNode stats parsing (RSSI, SNR, battery, temperature) for rnstatus reporting |
+| E52 | L | open | open | Feature | Serial Interface and KISS Interface (TNC protocol) |
+| E53 | L | open | open | Feature | Multi-segment sending for files exceeding MAX_EFFICIENT_SIZE |
+| E54 | L | open | open | Feature | Resource bandwidth adaptation |
+| E55 | L | open | open | Feature | C-API expansion (destinations, links, packets, resources, path discovery) |
+| E56 | L | open | open | Feature | Debian packaging with systemd unit for lnsd |
+| E57 | L | open | open | Feature | Android/Kotlin bindings via UniFFI |
+| E58 | L | open | open | Feature | Interface Discovery (auto-connect to discovered TCP/LoRa peers) |
+| E59 | L | open | open | Feature | Additional interfaces: I2P (SAM v3), AX.25 KISS, Pipe |
+| E60 | L | open | open | Feature | Roaming mode and reachability tracking |
 
 ---
 
@@ -259,4 +275,101 @@ When an issue is fixed, remove it from this file entirely.
 - **Python behavior:** Same passive AwaitingProof design (Resource.py:638). Not a compatibility constraint — we can improve.
 - **Also affects:** lora_rncp_fetch_from_rust (fetch mode, Rust=sender, Python=receiver). Python rncp stalls at "Requesting file from remote" when completion proof is lost — identical AwaitingProof stall from the Rust sender side. Observed once in suite Run 3, 0/5 in isolation. Suite context increases proof loss probability (higher RF load between consecutive tests).
 - **Test:** lora_lncp_size_sweep should pass 5/5 after fix. Consider a dedicated proxy test that drops completion proofs.
+
+### E45: Ratchet forward secrecy not wired
+- **Status:** open
+- **Priority:** H
+- **Category:** Protocol
+- **Detail:** Ratchet cryptography and disk persistence work and are tested via selftest. However, ratchet validation on announce receipt, ratchet exchange during link establishment, and forward secrecy key rotation at runtime are not activated. Without these, ratchets are stored but never enforced.
+- **Test:** Interop test with ratchet-protected announces between Rust and Python.
+
+### E46: Persistence interop test
+- **Status:** open
+- **Priority:** L
+- **Category:** Test
+- **Detail:** No test verifies that restarting the Rust daemon preserves known destinations without re-announce. The persistence code exists but lacks end-to-end validation.
+
+### E47: Buffer/Stream integration in LinkHandle and compression over links
+- **Status:** open
+- **Priority:** L
+- **Category:** Feature
+- **Detail:** The Buffer/Stream layer (RawChannelReader/Writer) exists but is not integrated into LinkHandle. BZ2 compression over link channels is not yet usable.
+
+### E48: `lns` missing subcommands
+- **Status:** open
+- **Priority:** L
+- **Category:** Feature
+- **Detail:** `lns status`, `lns path`, `lns probe`, and `lns interfaces` are stubs. The RPC server already supports the underlying queries.
+
+### E49: Fuzzing of packet parsers
+- **Status:** open
+- **Priority:** L
+- **Category:** Test
+- **Detail:** No fuzz testing for Packet::unpack, announce validation, HDLC deframing, or KISS decoding.
+
+### E50: `is_connected_to_shared_instance` semantics
+- **Status:** open
+- **Priority:** L
+- **Category:** Feature
+- **Detail:** Python gates several transport decisions on whether the node is connected to a shared instance. Rust supports shared instances via LocalInterface but does not replicate all gated behavior.
+
+### E51: RNode stats parsing
+- **Status:** open
+- **Priority:** L
+- **Category:** Feature
+- **Detail:** RNode firmware reports RSSI, SNR, channel time, battery voltage, and temperature. These are not parsed or exposed via rnstatus.
+
+### E52: Serial Interface and KISS Interface
+- **Status:** open
+- **Priority:** L
+- **Category:** Feature
+- **Detail:** Generic serial and KISS TNC interfaces are not implemented. RNode uses KISS framing but is a specific implementation, not a generic KISS interface.
+
+### E53: Multi-segment sending
+- **Status:** open
+- **Priority:** L
+- **Category:** Feature
+- **Detail:** Files exceeding MAX_EFFICIENT_SIZE (1,048,575 bytes) are received correctly as multiple segments but cannot be sent as multiple segments from Rust.
+
+### E54: Resource bandwidth adaptation
+- **Status:** open
+- **Priority:** L
+- **Category:** Feature
+- **Detail:** Resource transfers do not adapt sending rate to available bandwidth. Python has basic rate adaptation.
+
+### E55: C-API expansion
+- **Status:** open
+- **Priority:** L
+- **Category:** Feature
+- **Detail:** The C-API covers identity operations only. Destinations, links, packets, resources, and path discovery are not exposed.
+
+### E56: Debian packaging
+- **Status:** open
+- **Priority:** L
+- **Category:** Feature
+- **Detail:** No Debian packages or systemd unit for lnsd.
+
+### E57: Android/Kotlin bindings
+- **Status:** open
+- **Priority:** L
+- **Category:** Feature
+- **Detail:** No UniFFI bindings or AAR package for Android.
+
+### E58: Interface Discovery
+- **Status:** open
+- **Priority:** L
+- **Category:** Feature
+- **Detail:** Python's Discovery.py auto-discovers and connects to TCP/LoRa peers via special announces. Not implemented.
+
+### E59: Additional interfaces (I2P, AX.25, Pipe)
+- **Status:** open
+- **Priority:** L
+- **Category:** Feature
+- **Detail:** I2P (SAM v3), AX.25 KISS (amateur radio), and Pipe interfaces are not implemented.
+
+### E60: Roaming mode and reachability tracking
+- **Status:** open
+- **Priority:** L
+- **Category:** Feature
+- **Detail:** Python's MODE_ROAMING with reachability tracking is not implemented.
 

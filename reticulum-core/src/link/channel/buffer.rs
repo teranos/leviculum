@@ -98,7 +98,7 @@ pub enum ReadResult {
 /// the data before calling `receive()`, or use the compression wrappers
 /// in `reticulum-std`.
 #[derive(Debug)]
-#[allow(dead_code)] // Buffer API not yet integrated — see ROADMAP C10
+#[allow(dead_code)] // Buffer API not yet integrated — see E47 in OPEN_ISSUES_TRACKER
 pub(crate) struct RawChannelReader {
     /// Stream identifier this reader accepts
     stream_id: u16,
@@ -108,7 +108,7 @@ pub(crate) struct RawChannelReader {
     eof: bool,
 }
 
-#[allow(dead_code)] // Buffer API not yet integrated — see ROADMAP C10
+#[allow(dead_code)] // Buffer API not yet integrated — see E47 in OPEN_ISSUES_TRACKER
 impl RawChannelReader {
     /// Create a new reader for the given stream ID
     ///
@@ -367,7 +367,7 @@ impl RawChannelWriter {
 /// This type is fully no_std compatible. Messages are produced without
 /// compression. For compression support, use the wrappers in `reticulum-std`.
 #[derive(Debug)]
-#[allow(dead_code)] // Buffer API not yet integrated — see ROADMAP C10
+#[allow(dead_code)] // Buffer API not yet integrated — see E47 in OPEN_ISSUES_TRACKER
 pub(crate) struct BufferedChannelWriter {
     /// The underlying raw writer
     raw: RawChannelWriter,
@@ -377,7 +377,7 @@ pub(crate) struct BufferedChannelWriter {
     eof: bool,
 }
 
-#[allow(dead_code)] // Buffer API not yet integrated — see ROADMAP C10
+#[allow(dead_code)] // Buffer API not yet integrated — see E47 in OPEN_ISSUES_TRACKER
 impl BufferedChannelWriter {
     /// Create a new buffered writer
     ///
@@ -493,7 +493,7 @@ mod compression_support {
     /// Maximum decompressed size for safety (1 MB)
     pub const MAX_DECOMPRESS_SIZE: usize = 1024 * 1024;
 
-    #[allow(dead_code)] // Buffer API not yet integrated — see ROADMAP C10
+    #[allow(dead_code)] // Buffer API not yet integrated — see E47 in OPEN_ISSUES_TRACKER
     impl RawChannelReader {
         /// Receive and decompress a StreamDataMessage
         ///
@@ -562,7 +562,7 @@ mod compression_support {
         }
 
         /// Get the inner RawChannelWriter
-        #[allow(dead_code)] // Buffer API not yet integrated — see ROADMAP C10
+        #[allow(dead_code)] // Buffer API not yet integrated — see E47 in OPEN_ISSUES_TRACKER
         pub(crate) fn inner(&self) -> &RawChannelWriter {
             &self.inner
         }

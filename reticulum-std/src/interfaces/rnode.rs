@@ -549,7 +549,7 @@ async fn rnode_io_task(
                                     // Statistics — log at trace level
                                     // TODO: Parse stat values (RSSI, SNR, channel time,
                                     // battery, temperature) and store for rnstatus reporting
-                                    // — see ROADMAP "RNode Stats Parsing"
+                                    // — see E51 in OPEN_ISSUES_TRACKER
                                     rnode::CMD_STAT_RSSI
                                     | rnode::CMD_STAT_SNR
                                     | rnode::CMD_STAT_CHTM

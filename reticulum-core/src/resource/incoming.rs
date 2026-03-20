@@ -42,9 +42,9 @@ pub(crate) enum ResourcePartResult {
 /// Fields like `original_hash`, `data_size`, `total_segments`, and `request_id`
 /// are stored from the resource advertisement and needed for protocol correctness
 /// (hash verification, proof generation, multi-segment reassembly). Accessors are
-/// provided and exercised in tests; production callers arrive with ROADMAP v1.1
+/// provided and exercised in tests; production callers arrive with OPEN_ISSUES_TRACKER v1.1
 /// (Resource Transfer).
-#[allow(dead_code)] // Protocol state fields — see ROADMAP v1.1 (Resource Transfer)
+#[allow(dead_code)] // Protocol state fields — see E53/E54 in OPEN_ISSUES_TRACKER
 pub(crate) struct IncomingResource {
     status: ResourceStatus,
     flags: ResourceFlags,
@@ -610,7 +610,7 @@ impl IncomingResource {
     }
 
     /// Mark as failed/cancelled.
-    #[allow(dead_code)] // Resource cancel API — see ROADMAP v1.1 (Resource Transfer)
+    #[allow(dead_code)] // Resource cancel API — see E53/E54 in OPEN_ISSUES_TRACKER
     pub(crate) fn cancel(&mut self) {
         self.status = ResourceStatus::Failed;
     }
@@ -641,7 +641,7 @@ impl IncomingResource {
         self.data_size
     }
 
-    #[allow(dead_code)] // Resource accessor API — see ROADMAP v1.1 (Resource Transfer)
+    #[allow(dead_code)] // Resource accessor API — see E53/E54 in OPEN_ISSUES_TRACKER
     pub(crate) fn original_hash(&self) -> &[u8; 32] {
         &self.original_hash
     }
@@ -650,12 +650,12 @@ impl IncomingResource {
         self.segment_index
     }
 
-    #[allow(dead_code)] // Resource accessor API — see ROADMAP v1.1 (Resource Transfer)
+    #[allow(dead_code)] // Resource accessor API — see E53/E54 in OPEN_ISSUES_TRACKER
     pub(crate) fn total_segments(&self) -> u32 {
         self.total_segments
     }
 
-    #[allow(dead_code)] // Resource accessor API — see ROADMAP v1.1 (Resource Transfer)
+    #[allow(dead_code)] // Resource accessor API — see E53/E54 in OPEN_ISSUES_TRACKER
     pub(crate) fn request_id(&self) -> Option<&[u8]> {
         self.request_id.as_deref()
     }
