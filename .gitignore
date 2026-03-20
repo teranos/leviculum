@@ -39,4 +39,3 @@ __pycache__/
 # Local deploy scripts
 scripts/deploy-*.fish
 
-# Local development config
