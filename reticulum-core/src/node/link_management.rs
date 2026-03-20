@@ -29,8 +29,6 @@ use super::{LinkStats, NodeCore};
 /// ephemeral keys and a new link_id) or emit `LinkClosed::Timeout`.
 #[derive(Debug, Clone)]
 pub(super) struct LinkRetryState {
-    pub dest_hash: DestinationHash,
-    pub signing_key: [u8; 32],
     pub remaining: u8,
 }
 
@@ -245,14 +243,8 @@ impl<R: CryptoRngCore, C: Clock, S: Storage> NodeCore<R, C, S> {
         // each hop is an independent loss opportunity. A 3-hop path has 3×
         // the chance of losing the request or proof compared to 1-hop.
         let retries = core::cmp::max(LINK_REQUEST_MAX_RETRIES, hops);
-        self.link_retry_state.insert(
-            link_id,
-            LinkRetryState {
-                dest_hash,
-                signing_key: *dest_signing_key,
-                remaining: retries,
-            },
-        );
+        self.link_retry_state
+            .insert(link_id, LinkRetryState { remaining: retries });
 
         // Register link_id as a local destination so that the returning
         // LRPROOF (and subsequent data packets) are delivered to us.

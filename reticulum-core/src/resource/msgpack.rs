@@ -84,6 +84,7 @@ pub(crate) fn write_float64(buf: &mut Vec<u8>, val: f64) {
 }
 
 /// Write a boolean value.
+#[cfg(test)]
 pub(crate) fn write_bool(buf: &mut Vec<u8>, val: bool) {
     buf.push(if val { 0xc3 } else { 0xc2 });
 }
@@ -173,6 +174,7 @@ pub(crate) fn read_float64(data: &[u8], pos: &mut usize) -> Option<f64> {
 }
 
 /// Read a msgpack boolean.
+#[cfg(test)]
 pub(crate) fn read_bool(data: &[u8], pos: &mut usize) -> Option<bool> {
     let tag = read_byte(data, pos)?;
     match tag {

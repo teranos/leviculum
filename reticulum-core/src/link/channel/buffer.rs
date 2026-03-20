@@ -340,6 +340,7 @@ impl RawChannelWriter {
     ///
     /// # Returns
     /// The StreamDataMessage ready to send
+    #[cfg(feature = "compression")]
     pub(crate) fn prepare_compressed_chunk(
         &self,
         compressed_data: Vec<u8>,
@@ -813,6 +814,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(feature = "compression")]
     fn test_raw_channel_writer_prepare_compressed_chunk() {
         let writer = RawChannelWriter::new(1, 100);
 

@@ -2753,16 +2753,6 @@ impl<C: Clock, S: Storage> Transport<C, S> {
         Some(PacketData::Owned(new_data))
     }
 
-    /// Forward a packet through a single interface.
-    /// Checks TTL and updates stats. Hops were already incremented on receipt.
-    fn forward_on_interface(
-        &mut self,
-        target_iface: usize,
-        packet: &mut Packet,
-    ) -> Result<(), TransportError> {
-        self.forward_on_interface_from(target_iface, None, packet)
-    }
-
     /// Forward a packet to `target_iface`, optionally suppressing same-interface
     /// relay on shared media.
     ///

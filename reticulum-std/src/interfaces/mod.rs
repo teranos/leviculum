@@ -123,7 +123,8 @@ pub(crate) struct OutgoingPacket {
     pub data: Vec<u8>,
     /// High-priority packets (link requests, proofs, channel data) are sent
     /// before normal-priority packets (announce rebroadcasts) on constrained
-    /// interfaces like LoRa.
+    /// interfaces like LoRa. Read by RNode send queue (behind `serial` feature).
+    #[cfg_attr(not(feature = "serial"), allow(dead_code))]
     pub high_priority: bool,
 }
 
