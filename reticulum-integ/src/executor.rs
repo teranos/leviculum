@@ -1490,6 +1490,20 @@ mod tests {
             );
         }
         eprintln!("[lora-lock] acquired exclusive lock on {lock_path}");
+
+        // Inter-test cooldown: let the LoRa channel settle between tests.
+        // Under sustained suite runs, back-to-back tests saturate the shared
+        // medium, causing announce loss and retry budget exhaustion.
+        // Override with LORA_COOLDOWN_SECS (default: 10).
+        let cooldown_secs: u64 = std::env::var("LORA_COOLDOWN_SECS")
+            .ok()
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(10);
+        if cooldown_secs > 0 {
+            eprintln!("[lora-lock] cooldown {cooldown_secs}s before test");
+            std::thread::sleep(std::time::Duration::from_secs(cooldown_secs));
+        }
+
         file
     }
 
