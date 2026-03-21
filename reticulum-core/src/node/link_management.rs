@@ -889,6 +889,9 @@ impl<R: CryptoRngCore, C: Clock, S: Storage> NodeCore<R, C, S> {
             PacketContext::Response => {
                 self.handle_response_packet(link_id, packet, raw_packet, now_secs);
             }
+            PacketContext::CacheRequest => {
+                self.handle_cache_request(link_id, packet, now_secs);
+            }
             _ => self.handle_plain_data_packet(link_id, packet, raw_packet, now_secs),
         }
     }
@@ -1563,6 +1566,45 @@ impl<R: CryptoRngCore, C: Clock, S: Storage> NodeCore<R, C, S> {
         });
     }
 
+    /// Handle a CacheRequest packet: re-send a cached resource proof if we have it.
+    fn handle_cache_request(&mut self, link_id: LinkId, packet: &Packet, now_secs: u64) {
+        let Some(link) = self.links.get_mut(&link_id) else {
+            return;
+        };
+        link.record_inbound(now_secs);
+
+        let data = packet.data.as_slice();
+        if data.len() != 32 {
+            tracing::debug!(
+                link = %HexShort(link_id.as_bytes()),
+                len = data.len(),
+                "CacheRequest with invalid length"
+            );
+            return;
+        }
+        let mut requested_hash = [0u8; 32];
+        requested_hash.copy_from_slice(data);
+
+        let proof_bytes = match link.get_cached_resource_proof(&requested_hash) {
+            Some(bytes) => bytes.clone(),
+            None => {
+                tracing::debug!(
+                    link = %HexShort(link_id.as_bytes()),
+                    hash = %HexShort(&requested_hash),
+                    "CacheRequest for unknown hash"
+                );
+                return;
+            }
+        };
+
+        link.record_outbound(now_secs);
+        tracing::debug!(
+            link = %HexShort(link_id.as_bytes()),
+            "Re-sending cached resource proof"
+        );
+        self.route_link_packet(&link_id, &proof_bytes);
+    }
+
     /// Check for request timeouts and emit RequestTimedOut events.
     pub(super) fn check_request_timeouts(&mut self, now_ms: u64) {
         let expired: Vec<[u8; crate::constants::TRUNCATED_HASHBYTES]> = self
@@ -1882,7 +1924,7 @@ impl<R: CryptoRngCore, C: Clock, S: Storage> NodeCore<R, C, S> {
                 let link_ref = &*link;
                 match incoming.assemble(link_ref) {
                     Ok((data, metadata)) => {
-                        // Build and send proof
+                        // Build and send proof, caching for CacheRequest re-send
                         let proof_data = incoming.build_proof();
                         match proof_data {
                             Ok(pd) => {
@@ -1891,6 +1933,8 @@ impl<R: CryptoRngCore, C: Clock, S: Storage> NodeCore<R, C, S> {
                                     PacketContext::ResourcePrf,
                                 );
                                 if let Ok(pkt) = proof_pkt {
+                                    let ph = crate::packet::packet_hash(&pkt);
+                                    link.cache_resource_proof(ph, pkt.clone());
                                     link.record_outbound(now_secs);
                                     self.route_link_packet(&link_id, &pkt);
                                 }
@@ -2503,6 +2547,34 @@ impl<R: CryptoRngCore, C: Clock, S: Storage> NodeCore<R, C, S> {
                             });
                         }
                     }
+                    ResourcePollResult::RequestProof { proof_data } => {
+                        // Reconstruct expected proof packet to get deterministic packet_hash
+                        let packet_hash = if let Some(link) = self.links.get(&link_id) {
+                            link.build_proof_packet_with_context(
+                                &proof_data,
+                                PacketContext::ResourcePrf,
+                            )
+                            .ok()
+                            .map(|mock| crate::packet::packet_hash(&mock))
+                        } else {
+                            None
+                        };
+                        if let Some(ph) = packet_hash {
+                            // CacheRequest is NOT encrypted (Python Packet.py:209-211)
+                            let cache_req = if let Some(link) = self.links.get(&link_id) {
+                                link.build_raw_data_packet(&ph, PacketContext::CacheRequest)
+                                    .ok()
+                            } else {
+                                None
+                            };
+                            if let Some(pkt) = cache_req {
+                                if let Some(link) = self.links.get_mut(&link_id) {
+                                    link.record_outbound(now_secs);
+                                }
+                                self.route_link_packet(&link_id, &pkt);
+                            }
+                        }
+                    }
                     ResourcePollResult::Nothing => {}
                 }
             }
@@ -2553,6 +2625,9 @@ impl<R: CryptoRngCore, C: Clock, S: Storage> NodeCore<R, C, S> {
                                 is_sender: false,
                             });
                         }
+                    }
+                    ResourcePollResult::RequestProof { .. } => {
+                        // Incoming resources never produce RequestProof
                     }
                     ResourcePollResult::Nothing => {}
                 }

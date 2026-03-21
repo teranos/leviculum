@@ -434,6 +434,14 @@ pub struct Link {
     /// Cleared when the link transitions to Active (in `process_rtt()`).
     /// ~118 bytes per pending responder link. Dropped when the link is removed.
     cached_proof: Option<Vec<u8>>,
+    /// Cached resource proof packets for re-send on CacheRequest.
+    /// Key: packet_hash of the proof packet. Value: raw proof wire bytes.
+    /// Same lifecycle class as `cached_proof` (link-scoped, bounded: at most
+    /// one active resource per link direction). Lives on Link directly rather
+    /// than behind Storage because it is tiny, temporary, and dies with the link.
+    /// Cleanup: entries are replaced on each new resource proof (insert overwrites).
+    /// All entries are dropped when the link is closed or dropped.
+    cached_resource_proofs: alloc::collections::BTreeMap<[u8; 32], Vec<u8>>,
 }
 
 impl Link {
@@ -492,6 +500,7 @@ impl Link {
             resource_strategy: crate::resource::ResourceStrategy::AcceptNone,
             remote_identity: None,
             cached_proof: None,
+            cached_resource_proofs: alloc::collections::BTreeMap::new(),
         }
     }
 
@@ -598,6 +607,7 @@ impl Link {
             resource_strategy: crate::resource::ResourceStrategy::AcceptNone,
             remote_identity: None,
             cached_proof: None,
+            cached_resource_proofs: alloc::collections::BTreeMap::new(),
         })
     }
 
@@ -803,6 +813,16 @@ impl Link {
     /// the link transitions to Active in `process_rtt()`.
     pub fn set_cached_proof(&mut self, proof: Vec<u8>) {
         self.cached_proof = Some(proof);
+    }
+
+    /// Cache a resource proof packet for re-send on CacheRequest.
+    pub(crate) fn cache_resource_proof(&mut self, packet_hash: [u8; 32], raw: Vec<u8>) {
+        self.cached_resource_proofs.insert(packet_hash, raw);
+    }
+
+    /// Look up a cached resource proof by packet_hash.
+    pub(crate) fn get_cached_resource_proof(&self, packet_hash: &[u8; 32]) -> Option<&Vec<u8>> {
+        self.cached_resource_proofs.get(packet_hash)
     }
 
     /// Check if compression is enabled for this link
@@ -3772,5 +3792,56 @@ mod tests {
 
         assert!(responder.remote_identity().is_some());
         assert_eq!(responder.remote_identity().unwrap().hash(), &hash);
+    }
+
+    #[test]
+    fn test_cached_resource_proof_roundtrip() {
+        let (_, mut responder) = setup_active_link_pair();
+
+        let proof_data = vec![0xAA; 64];
+        let proof_pkt = responder
+            .build_proof_packet_with_context(&proof_data, crate::packet::PacketContext::ResourcePrf)
+            .unwrap();
+        let ph = crate::packet::packet_hash(&proof_pkt);
+
+        responder.cache_resource_proof(ph, proof_pkt.clone());
+
+        // Matching hash returns cached proof
+        let cached = responder.get_cached_resource_proof(&ph);
+        assert!(cached.is_some());
+        assert_eq!(cached.unwrap(), &proof_pkt);
+
+        // Non-matching hash returns None
+        let unknown = [0xFF; 32];
+        assert!(responder.get_cached_resource_proof(&unknown).is_none());
+    }
+
+    #[test]
+    fn test_proof_packet_determinism() {
+        // Both initiator and responder must produce identical proof packets
+        // for the same proof_data and link_id, so the sender can reconstruct
+        // the expected packet_hash for a CacheRequest.
+        let (initiator, responder) = setup_active_link_pair();
+
+        let proof_data = vec![0xBB; 64];
+
+        let pkt_initiator = initiator
+            .build_proof_packet_with_context(&proof_data, crate::packet::PacketContext::ResourcePrf)
+            .unwrap();
+        let pkt_responder = responder
+            .build_proof_packet_with_context(&proof_data, crate::packet::PacketContext::ResourcePrf)
+            .unwrap();
+
+        // Both sides share the same link_id, so the packets (and their hashes) must match
+        let hash_init = crate::packet::packet_hash(&pkt_initiator);
+        let hash_resp = crate::packet::packet_hash(&pkt_responder);
+        assert_eq!(
+            hash_init, hash_resp,
+            "proof packet_hash must be deterministic across link sides"
+        );
+        assert_eq!(
+            pkt_initiator, pkt_responder,
+            "raw proof packets must be identical"
+        );
     }
 }

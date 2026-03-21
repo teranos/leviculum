@@ -31,6 +31,9 @@ pub(crate) enum ResourcePollResult {
     Nothing,
     /// Re-send advertisement packet.
     RetransmitAdv(Vec<u8>),
+    /// Send CacheRequest for the expected proof.
+    /// Contains proof_data: [resource_hash:32][expected_proof:32].
+    RequestProof { proof_data: Vec<u8> },
     /// Transfer has timed out — should be failed.
     TimedOut,
 }
@@ -530,9 +533,11 @@ impl OutgoingResource {
                         self.status = ResourceStatus::Failed;
                         ResourcePollResult::TimedOut
                     } else {
-                        // Keep waiting — receiver may still retry its REQ
-                        // and send the proof once it has all parts.
-                        ResourcePollResult::Nothing
+                        // Send CacheRequest so receiver re-sends the proof
+                        let mut proof_data = Vec::with_capacity(64);
+                        proof_data.extend_from_slice(&self.resource_hash);
+                        proof_data.extend_from_slice(&self.expected_proof);
+                        ResourcePollResult::RequestProof { proof_data }
                     }
                 } else {
                     ResourcePollResult::Nothing
@@ -861,15 +866,15 @@ mod tests {
         let result = res.poll(14999, rtt_ms);
         assert!(matches!(result, ResourcePollResult::Nothing));
 
-        // First timeout fires at 2000 + 13000 = 15000
+        // First timeout fires at 2000 + 13000 = 15000 — sends CacheRequest
         let result = res.poll(15001, rtt_ms);
-        assert!(matches!(result, ResourcePollResult::Nothing));
+        assert!(matches!(result, ResourcePollResult::RequestProof { .. }));
         assert_eq!(res.retries, 1);
         assert_eq!(res.status(), ResourceStatus::AwaitingProof);
 
         // Second timeout at 15001 + 13500 (13000 + 500 backoff) = 28501
         let result = res.poll(28502, rtt_ms);
-        assert!(matches!(result, ResourcePollResult::Nothing));
+        assert!(matches!(result, ResourcePollResult::RequestProof { .. }));
         assert_eq!(res.retries, 2);
         assert_eq!(res.status(), ResourceStatus::AwaitingProof);
 
@@ -934,5 +939,50 @@ mod tests {
         // cancel() transitions to Failed
         res.cancel();
         assert_eq!(res.status(), ResourceStatus::Failed);
+    }
+
+    #[test]
+    fn test_awaiting_proof_returns_request_proof_with_correct_data() {
+        let (link, _) = make_test_link();
+        let mut rng = rand_core::OsRng;
+        let data = vec![0x42u8; 200];
+
+        let mut res =
+            OutgoingResource::new(&data, None, None, &link, true, &mut rng, 1000).unwrap();
+
+        // Build full REQ requesting all parts → transition to AwaitingProof
+        let mut req = Vec::new();
+        req.push(0x00);
+        req.extend_from_slice(&res.resource_hash);
+        for h in &res.hashmap {
+            req.extend_from_slice(h);
+        }
+        let _ = res.handle_request(&req, &link, &mut rng, 2000);
+        assert_eq!(res.status(), ResourceStatus::AwaitingProof);
+
+        let expected_resource_hash = res.resource_hash;
+        let expected_proof = res.expected_proof;
+
+        // Trigger first timeout → should return RequestProof
+        let rtt_ms = 1000;
+        let timeout = rtt_ms * PROOF_TIMEOUT_FACTOR + SENDER_GRACE_TIME_MS;
+        let result = res.poll(2000 + timeout + 1, rtt_ms);
+
+        match result {
+            ResourcePollResult::RequestProof { proof_data } => {
+                assert_eq!(proof_data.len(), 64, "proof_data must be 64 bytes");
+                assert_eq!(
+                    &proof_data[..32],
+                    &expected_resource_hash,
+                    "first 32 bytes must be resource_hash"
+                );
+                assert_eq!(
+                    &proof_data[32..],
+                    &expected_proof,
+                    "last 32 bytes must be expected_proof"
+                );
+            }
+            other => panic!("expected RequestProof, got {other:?}"),
+        }
     }
 }
