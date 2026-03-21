@@ -2590,6 +2590,28 @@ Reticulum Transport Instance running
     #[test]
     #[ignore] // Requires RNode hardware
     #[serial(lora)]
+    fn lora_lrncp_resource_proof_retry() {
+        let _lock = acquire_lora_lock();
+        let toml_str = std::fs::read_to_string(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/tests/lora_lrncp_resource_proof_retry.toml"
+        ))
+        .expect("lora_lrncp_resource_proof_retry.toml not found");
+        let scenario = crate::topology::parse_scenario(&toml_str).expect("parse failed");
+
+        let mut runner = TestRunner::new(scenario).expect("TestRunner::new failed");
+
+        runner.up().expect("up failed");
+        runner.wait_ready(60).expect("wait_ready failed");
+
+        let result = execute_steps(&runner);
+        runner.down().expect("down failed");
+        result.expect("execute_steps should succeed");
+    }
+
+    #[test]
+    #[ignore] // Requires RNode hardware
+    #[serial(lora)]
     fn lora_lncp_bidir() {
         let _lock = acquire_lora_lock();
         let toml_str = std::fs::read_to_string(concat!(

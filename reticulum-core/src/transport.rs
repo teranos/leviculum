@@ -1102,10 +1102,18 @@ impl<C: Clock, S: Storage> Transport<C, S> {
         let is_link_request_for_us = packet.flags.packet_type == PacketType::LinkRequest
             && (self.local_destinations.contains(&packet.destination_hash)
                 || self.is_for_local_client(&packet.destination_hash));
+        // CacheRequest packets skip dedup unconditionally: the sender retries
+        // CacheRequest on timeout with identical bytes (deterministic packet_hash).
+        // Without this exemption, both the daemon and the lncp client would reject
+        // retries as duplicates. The handler (handle_cache_request) is idempotent —
+        // it simply re-sends the cached proof. No routing loop risk: CacheRequests
+        // are link-addressed (dest_type=Link) and never forwarded via path table.
+        let is_cache_request = packet.context == PacketContext::CacheRequest;
         if !is_single_announce
             && !is_local_link_relay
             && !is_local_client_link_request
             && !is_link_request_for_us
+            && !is_cache_request
             && self.storage.has_packet_hash(&full_packet_hash)
         {
             if packet.context == PacketContext::Lrproof {
