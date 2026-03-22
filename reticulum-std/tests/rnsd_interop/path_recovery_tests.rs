@@ -183,10 +183,13 @@ async fn test_rust_node_path_recovery_on_link_timeout() {
         .await
         .expect("connect() should return immediately (async link request)");
 
-    // Step 12: Wait for link timeout via LinkClosed event (~30s)
+    // Step 12: Wait for link timeout via LinkClosed event.
+    // E34 budget: max(2, hops) retries × establishment_timeout_ms
+    // At 2 hops with UNKNOWN_BITRATE_ASSUMPTION_BPS=300:
+    // 3 attempts × ~31s = ~94s. 120s gives comfortable margin.
     assert!(
-        wait_for_link_closed_event(&mut event_rx, stream2.link_id(), Duration::from_secs(45)).await,
-        "Should receive LinkClosed event — link timeout should fire within 45s"
+        wait_for_link_closed_event(&mut event_rx, stream2.link_id(), Duration::from_secs(120)).await,
+        "Should receive LinkClosed event — link timeout should fire within 120s"
     );
 
     // Step 13: KEY ASSERTION — path should be gone.

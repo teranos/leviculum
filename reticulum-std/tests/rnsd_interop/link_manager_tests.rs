@@ -1348,6 +1348,11 @@ async fn test_rust_to_rust_multiple_messages() {
 // =========================================================================
 
 /// Test handshake timeout for initiator.
+///
+/// E34 retry gives max(LINK_REQUEST_MAX_RETRIES, hops) = max(2, 1) = 2 retries,
+/// so 3 total attempts. Each attempt resets the timeout to establishment_timeout_ms().
+/// For hops=1, no bitrate: establishment_timeout_ms = 6000 * (1+1) = 12_000ms.
+/// We must exhaust all retries before the link is removed.
 #[tokio::test]
 async fn test_manager_handshake_timeout() {
     let clock = SharedMockClock::new(1_000_000);
@@ -1365,8 +1370,20 @@ async fn test_manager_handshake_timeout() {
     assert_eq!(node.pending_link_count(), 1);
     assert!(node.link(&link_id).is_some());
 
-    // Advance time past 30s timeout
-    clock_handle.advance(31_000);
+    // E34: 3 attempts × 12_000ms timeout each. Advance past each attempt
+    // and call handle_timeout() to trigger the retry/removal cycle.
+    // Attempt 1: times out → retry (remaining: 2 → 1)
+    clock_handle.advance(12_001);
+    let _ = node.handle_timeout();
+    assert!(node.link(&link_id).is_some(), "link should survive first E34 retry");
+
+    // Attempt 2: times out → retry (remaining: 1 → 0)
+    clock_handle.advance(12_001);
+    let _ = node.handle_timeout();
+    assert!(node.link(&link_id).is_some(), "link should survive second E34 retry");
+
+    // Attempt 3: times out → no retries left → link removed
+    clock_handle.advance(12_001);
     let output = node.handle_timeout();
 
     // Link should be removed
