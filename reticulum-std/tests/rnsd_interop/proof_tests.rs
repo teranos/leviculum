@@ -278,8 +278,10 @@ async fn test_single_packet_proof_round_trip_via_node() {
     let py_dest_hash = parse_dest_hash(&dest_info.hash);
 
     // 2. Build Rust node connected to Python daemon
+    let _storage = crate::common::temp_storage("test_single_packet_proof_round_trip_via_node", "node");
     let mut rust_node = ReticulumNodeBuilder::new()
         .add_tcp_client(daemon.rns_addr())
+        .storage_path(_storage.path().to_path_buf())
         .build()
         .await
         .expect("Failed to build node");

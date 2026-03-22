@@ -38,15 +38,19 @@ use crate::harness::TestDaemon;
 
 /// Build a Rust node connected to a daemon, ready for single-packet operations.
 ///
-/// Returns `(node, event_rx)`. The node is started and connected.
+/// Returns `(node, event_rx, _storage)`. The node is started and connected.
+/// The `_storage` guard must be kept alive for the test duration.
 async fn build_rust_node(
     daemon: &TestDaemon,
 ) -> (
     reticulum_std::driver::ReticulumNode,
     tokio::sync::mpsc::Receiver<NodeEvent>,
+    tempfile::TempDir,
 ) {
+    let storage = crate::common::temp_storage("build_rust_node", "node");
     let mut node = ReticulumNodeBuilder::new()
         .add_tcp_client(daemon.rns_addr())
+        .storage_path(storage.path().to_path_buf())
         .build()
         .await
         .expect("Failed to build node");
@@ -58,7 +62,7 @@ async fn build_rust_node(
     tokio::time::sleep(Duration::from_secs(1)).await;
 
     // Return as mut since stop() needs &mut self
-    (node, event_rx)
+    (node, event_rx, storage)
 }
 
 /// Register Python destination with PROVE_ALL and announce it.
@@ -166,7 +170,7 @@ async fn setup_rust_dest_for_receiving(
 #[tokio::test]
 async fn test_single_packet_rust_to_python_payload_match() {
     let daemon = TestDaemon::start().await.expect("Failed to start daemon");
-    let (mut rust_node, _event_rx) = build_rust_node(&daemon).await;
+    let (mut rust_node, _event_rx, _storage) = build_rust_node(&daemon).await;
     let (py_dest_hash, _) =
         setup_python_dest(&daemon, &rust_node, "enc_test", &["r2p"], b"r2p-data").await;
 
@@ -201,7 +205,7 @@ async fn test_single_packet_rust_to_python_payload_match() {
 #[tokio::test]
 async fn test_single_packet_python_to_rust_payload_match() {
     let daemon = TestDaemon::start().await.expect("Failed to start daemon");
-    let (mut rust_node, mut event_rx) = build_rust_node(&daemon).await;
+    let (mut rust_node, mut event_rx, _storage) = build_rust_node(&daemon).await;
 
     let dest_hash_hex = setup_rust_dest_for_receiving(
         &daemon,
@@ -245,7 +249,7 @@ async fn test_single_packet_python_to_rust_payload_match() {
 #[tokio::test]
 async fn test_single_packet_empty_payload() {
     let daemon = TestDaemon::start().await.expect("Failed to start daemon");
-    let (mut rust_node, _event_rx) = build_rust_node(&daemon).await;
+    let (mut rust_node, _event_rx, _storage) = build_rust_node(&daemon).await;
     let (py_dest_hash, _) =
         setup_python_dest(&daemon, &rust_node, "enc_test", &["empty"], b"empty-data").await;
 
@@ -277,7 +281,7 @@ async fn test_single_packet_empty_payload() {
 #[tokio::test]
 async fn test_single_packet_one_byte_payload() {
     let daemon = TestDaemon::start().await.expect("Failed to start daemon");
-    let (mut rust_node, _event_rx) = build_rust_node(&daemon).await;
+    let (mut rust_node, _event_rx, _storage) = build_rust_node(&daemon).await;
     let (py_dest_hash, _) =
         setup_python_dest(&daemon, &rust_node, "enc_test", &["onebyte"], b"1b-data").await;
 
@@ -303,7 +307,7 @@ async fn test_single_packet_one_byte_payload() {
 #[tokio::test]
 async fn test_single_packet_near_mtu_payload() {
     let daemon = TestDaemon::start().await.expect("Failed to start daemon");
-    let (mut rust_node, _event_rx) = build_rust_node(&daemon).await;
+    let (mut rust_node, _event_rx, _storage) = build_rust_node(&daemon).await;
     let (py_dest_hash, _) =
         setup_python_dest(&daemon, &rust_node, "enc_test", &["large"], b"large-data").await;
 
@@ -333,7 +337,7 @@ async fn test_single_packet_near_mtu_payload() {
 #[tokio::test]
 async fn test_link_data_rust_to_python_payload_match() {
     let daemon = TestDaemon::start().await.expect("Failed to start daemon");
-    let (mut rust_node, mut event_rx) = build_rust_node(&daemon).await;
+    let (mut rust_node, mut event_rx, _storage) = build_rust_node(&daemon).await;
 
     // Register destination that accepts links
     let dest_info = daemon
@@ -393,7 +397,7 @@ async fn test_link_data_rust_to_python_payload_match() {
 #[tokio::test]
 async fn test_link_data_python_to_rust_payload_match() {
     let daemon = TestDaemon::start().await.expect("Failed to start daemon");
-    let (mut rust_node, mut event_rx) = build_rust_node(&daemon).await;
+    let (mut rust_node, mut event_rx, _storage) = build_rust_node(&daemon).await;
 
     // Register destination that accepts links
     let dest_info = daemon
@@ -459,7 +463,7 @@ async fn test_link_data_python_to_rust_payload_match() {
 #[tokio::test]
 async fn test_channel_message_bidirectional() {
     let daemon = TestDaemon::start().await.expect("Failed to start daemon");
-    let (mut rust_node, mut event_rx) = build_rust_node(&daemon).await;
+    let (mut rust_node, mut event_rx, _storage) = build_rust_node(&daemon).await;
 
     let dest_info = daemon
         .register_destination("enc_test", &["bidir"])
@@ -536,7 +540,7 @@ async fn test_channel_message_bidirectional() {
 #[tokio::test]
 async fn test_wrong_key_packet_silently_dropped_by_python() {
     let daemon = TestDaemon::start().await.expect("Failed to start daemon");
-    let (mut rust_node, _event_rx) = build_rust_node(&daemon).await;
+    let (mut rust_node, _event_rx, _storage) = build_rust_node(&daemon).await;
 
     // Register destination on Python
     let dest_info = daemon
@@ -605,7 +609,7 @@ async fn test_wrong_key_packet_silently_dropped_by_python() {
 #[tokio::test]
 async fn test_corrupted_ciphertext_dropped_by_python() {
     let daemon = TestDaemon::start().await.expect("Failed to start daemon");
-    let (mut rust_node, _event_rx) = build_rust_node(&daemon).await;
+    let (mut rust_node, _event_rx, _storage) = build_rust_node(&daemon).await;
     let (py_dest_hash, _) = setup_python_dest(
         &daemon,
         &rust_node,
@@ -647,7 +651,7 @@ async fn test_corrupted_ciphertext_dropped_by_python() {
 #[tokio::test]
 async fn test_corrupted_ciphertext_dropped_by_rust() {
     let daemon = TestDaemon::start().await.expect("Failed to start daemon");
-    let (mut rust_node, mut event_rx) = build_rust_node(&daemon).await;
+    let (mut rust_node, mut event_rx, _storage) = build_rust_node(&daemon).await;
 
     let dest_hash_hex = setup_rust_dest_for_receiving(
         &daemon,
@@ -696,7 +700,7 @@ async fn test_corrupted_ciphertext_dropped_by_rust() {
 #[tokio::test]
 async fn test_100_single_packets_all_decrypted() {
     let daemon = TestDaemon::start().await.expect("Failed to start daemon");
-    let (mut rust_node, _event_rx) = build_rust_node(&daemon).await;
+    let (mut rust_node, _event_rx, _storage) = build_rust_node(&daemon).await;
     let (py_dest_hash, _) =
         setup_python_dest(&daemon, &rust_node, "enc_test", &["vol100"], b"vol100-data").await;
 
@@ -751,7 +755,7 @@ async fn test_100_single_packets_all_decrypted() {
 #[tokio::test]
 async fn test_100_channel_messages_ordered() {
     let daemon = TestDaemon::start().await.expect("Failed to start daemon");
-    let (mut rust_node, mut event_rx) = build_rust_node(&daemon).await;
+    let (mut rust_node, mut event_rx, _storage) = build_rust_node(&daemon).await;
 
     let dest_info = daemon
         .register_destination("enc_test", &["chan100"])
@@ -827,7 +831,7 @@ async fn test_100_channel_messages_ordered() {
 #[tokio::test]
 async fn test_interleaved_single_and_link_no_cross_contamination() {
     let daemon = TestDaemon::start().await.expect("Failed to start daemon");
-    let (mut rust_node, mut event_rx) = build_rust_node(&daemon).await;
+    let (mut rust_node, mut event_rx, _storage) = build_rust_node(&daemon).await;
 
     // Set up destination that accepts both single packets and links
     let dest_info = daemon
@@ -957,7 +961,7 @@ async fn test_interleaved_single_and_link_no_cross_contamination() {
 #[tokio::test]
 async fn test_full_cycle_rust_initiated_announce_packet_proof() {
     let daemon = TestDaemon::start().await.expect("Failed to start daemon");
-    let (mut rust_node, mut event_rx) = build_rust_node(&daemon).await;
+    let (mut rust_node, mut event_rx, _storage) = build_rust_node(&daemon).await;
 
     // 1. Register and announce a Rust destination
     let dest_hash_hex = setup_rust_dest_for_receiving(
@@ -1006,7 +1010,7 @@ async fn test_full_cycle_rust_initiated_announce_packet_proof() {
 #[tokio::test]
 async fn test_full_cycle_python_initiated_announce_packet_proof() {
     let daemon = TestDaemon::start().await.expect("Failed to start daemon");
-    let (mut rust_node, mut event_rx) = build_rust_node(&daemon).await;
+    let (mut rust_node, mut event_rx, _storage) = build_rust_node(&daemon).await;
 
     // 1. Python registers dest with PROVE_ALL and announces
     let (py_dest_hash, _) = setup_python_dest(
@@ -1060,7 +1064,7 @@ async fn test_full_cycle_python_initiated_announce_packet_proof() {
 #[tokio::test]
 async fn test_link_reconnect_channel_survives() {
     let daemon = TestDaemon::start().await.expect("Failed to start daemon");
-    let (mut rust_node, mut event_rx) = build_rust_node(&daemon).await;
+    let (mut rust_node, mut event_rx, _storage) = build_rust_node(&daemon).await;
 
     let dest_info = daemon
         .register_destination("enc_test", &["reconnect"])
@@ -1141,7 +1145,7 @@ async fn test_link_reconnect_channel_survives() {
 #[tokio::test]
 async fn test_parallel_destinations_no_key_mixup() {
     let daemon = TestDaemon::start().await.expect("Failed to start daemon");
-    let (mut rust_node, _event_rx) = build_rust_node(&daemon).await;
+    let (mut rust_node, _event_rx, _storage) = build_rust_node(&daemon).await;
 
     // Set up two distinct Python destinations
     let (dest_hash_a, _) =

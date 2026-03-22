@@ -54,6 +54,18 @@ pub fn now_ms() -> u64 {
     TestClock.now_ms()
 }
 
+/// Create a unique temp storage directory for a test node.
+///
+/// Returns `TempDir` guard — directory is removed on Drop. The caller must
+/// keep the guard alive for the test duration. Use `.path().to_path_buf()`
+/// to get the `PathBuf` for `ReticulumNodeBuilder::storage_path()`.
+pub fn temp_storage(test_name: &str, node: &str) -> tempfile::TempDir {
+    tempfile::Builder::new()
+        .prefix(&format!("reticulum_test_{test_name}_{node}_"))
+        .tempdir()
+        .expect("failed to create temp storage dir")
+}
+
 /// Parsed announce data for verification
 pub struct ParsedAnnounce {
     pub destination_hash: [u8; 16],

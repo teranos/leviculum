@@ -691,8 +691,10 @@ async fn test_mtu_a0_direct_tcp_full_mtu() {
     dest_a.set_accepts_links(true);
 
     // Node A: TCP server (responder)
+    let _storage1 = crate::common::temp_storage("test_mtu_a0_direct_tcp_full_mtu", "node1");
     let mut node_a = ReticulumNodeBuilder::new()
         .add_tcp_server(tcp_addr)
+        .storage_path(_storage1.path().to_path_buf())
         .build()
         .await
         .expect("Failed to build node A");
@@ -703,8 +705,10 @@ async fn test_mtu_a0_direct_tcp_full_mtu() {
     tokio::time::sleep(Duration::from_millis(200)).await;
 
     // Node B: TCP client (initiator)
+    let _storage2 = crate::common::temp_storage("test_mtu_a0_direct_tcp_full_mtu", "node2");
     let mut node_b = ReticulumNodeBuilder::new()
         .add_tcp_client(tcp_addr)
+        .storage_path(_storage2.path().to_path_buf())
         .build()
         .await
         .expect("Failed to build node B");
@@ -948,11 +952,13 @@ async fn test_mtu_b1_rust_to_rust_udp_mtu() {
     dest_a.set_accepts_links(true);
 
     // Node A: listens on port_a, forwards to port_b (Responder)
+    let _storage1 = crate::common::temp_storage("test_mtu_b1_rust_to_rust_udp_mtu", "node1");
     let mut node_a = ReticulumNodeBuilder::new()
         .add_udp_interface(
             format!("127.0.0.1:{}", port_a).parse().unwrap(),
             format!("127.0.0.1:{}", port_b).parse().unwrap(),
         )
+        .storage_path(_storage1.path().to_path_buf())
         .build()
         .await
         .expect("Failed to build node A");
@@ -960,11 +966,13 @@ async fn test_mtu_b1_rust_to_rust_udp_mtu() {
     node_a.register_destination(dest_a);
 
     // Node B: listens on port_b, forwards to port_a (Initiator)
+    let _storage2 = crate::common::temp_storage("test_mtu_b1_rust_to_rust_udp_mtu", "node2");
     let mut node_b = ReticulumNodeBuilder::new()
         .add_udp_interface(
             format!("127.0.0.1:{}", port_b).parse().unwrap(),
             format!("127.0.0.1:{}", port_a).parse().unwrap(),
         )
+        .storage_path(_storage2.path().to_path_buf())
         .build()
         .await
         .expect("Failed to build node B");
@@ -1082,8 +1090,10 @@ async fn test_mtu_b2_rust_to_python_udp() {
         .udp_forward_addr()
         .expect("daemon should have UDP forward addr");
 
+    let _storage = crate::common::temp_storage("test_mtu_b2_rust_to_python_udp", "node");
     let mut node = ReticulumNodeBuilder::new()
         .add_udp_interface(rust_listen, py_listen)
+        .storage_path(_storage.path().to_path_buf())
         .build()
         .await
         .expect("Failed to build node");
@@ -1232,8 +1242,10 @@ async fn test_mtu_b3_python_to_rust_udp() {
     let dest_hash = *dest.hash();
     dest.set_accepts_links(true);
 
+    let _storage = crate::common::temp_storage("test_mtu_b3_python_to_rust_udp", "node");
     let mut node = ReticulumNodeBuilder::new()
         .add_udp_interface(rust_listen, py_listen)
+        .storage_path(_storage.path().to_path_buf())
         .build()
         .await
         .expect("Failed to build node");
@@ -1630,10 +1642,12 @@ async fn test_mtu_d1_tcp_relay_udp_clamp() {
     dest_b.set_accepts_links(true);
 
     // RustRelay: TCP server + UDP, transport enabled
+    let _storage1 = crate::common::temp_storage("test_mtu_d1_tcp_relay_udp_clamp", "node1");
     let mut relay = ReticulumNodeBuilder::new()
         .enable_transport(true)
         .add_tcp_server(tcp_addr)
         .add_udp_interface(relay_udp_addr, b_udp_addr)
+        .storage_path(_storage1.path().to_path_buf())
         .build()
         .await
         .expect("Failed to build relay");
@@ -1643,16 +1657,20 @@ async fn test_mtu_d1_tcp_relay_udp_clamp() {
     tokio::time::sleep(Duration::from_millis(200)).await;
 
     // RustA: TCP client (initiator)
+    let _storage2 = crate::common::temp_storage("test_mtu_d1_tcp_relay_udp_clamp", "node2");
     let mut node_a = ReticulumNodeBuilder::new()
         .add_tcp_client(tcp_addr)
+        .storage_path(_storage2.path().to_path_buf())
         .build()
         .await
         .expect("Failed to build node A");
     node_a.start().await.expect("Failed to start node A");
 
     // RustB: UDP (responder)
+    let _storage3 = crate::common::temp_storage("test_mtu_d1_tcp_relay_udp_clamp", "node3");
     let mut node_b = ReticulumNodeBuilder::new()
         .add_udp_interface(b_udp_addr, relay_udp_addr)
+        .storage_path(_storage3.path().to_path_buf())
         .build()
         .await
         .expect("Failed to build node B");
@@ -1801,10 +1819,12 @@ async fn test_mtu_d2_udp_relay_tcp() {
     dest_b.set_accepts_links(true);
 
     // RustRelay: TCP server + UDP, transport enabled
+    let _storage1 = crate::common::temp_storage("test_mtu_d2_udp_relay_tcp", "node1");
     let mut relay = ReticulumNodeBuilder::new()
         .enable_transport(true)
         .add_tcp_server(tcp_addr)
         .add_udp_interface(relay_udp_addr, a_udp_addr)
+        .storage_path(_storage1.path().to_path_buf())
         .build()
         .await
         .expect("Failed to build relay");
@@ -1814,8 +1834,10 @@ async fn test_mtu_d2_udp_relay_tcp() {
     tokio::time::sleep(Duration::from_millis(200)).await;
 
     // RustB: TCP client (responder)
+    let _storage2 = crate::common::temp_storage("test_mtu_d2_udp_relay_tcp", "node2");
     let mut node_b = ReticulumNodeBuilder::new()
         .add_tcp_client(tcp_addr)
+        .storage_path(_storage2.path().to_path_buf())
         .build()
         .await
         .expect("Failed to build node B");
@@ -1823,8 +1845,10 @@ async fn test_mtu_d2_udp_relay_tcp() {
     node_b.register_destination(dest_b);
 
     // RustA: UDP (initiator)
+    let _storage3 = crate::common::temp_storage("test_mtu_d2_udp_relay_tcp", "node3");
     let mut node_a = ReticulumNodeBuilder::new()
         .add_udp_interface(a_udp_addr, relay_udp_addr)
+        .storage_path(_storage3.path().to_path_buf())
         .build()
         .await
         .expect("Failed to build node A");

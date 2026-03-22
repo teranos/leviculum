@@ -24,10 +24,12 @@ use crate::harness::TestDaemon;
 #[tokio::test]
 async fn test_node_creation_and_startup() {
     let daemon = TestDaemon::start().await.expect("Failed to start daemon");
+    let _storage = crate::common::temp_storage("test_node_creation_and_startup", "node");
 
     // Build a node connecting to the daemon
     let mut node = ReticulumNodeBuilder::new()
         .add_tcp_client(daemon.rns_addr())
+        .storage_path(_storage.path().to_path_buf())
         .build()
         .await
         .expect("Failed to build node");
@@ -53,10 +55,12 @@ async fn test_node_creation_and_startup() {
 #[tokio::test]
 async fn test_node_receives_announce_from_daemon() {
     let daemon = TestDaemon::start().await.expect("Failed to start daemon");
+    let _storage = crate::common::temp_storage("test_node_receives_announce_from_daemon", "node");
 
     // Build and start node
     let mut node = ReticulumNodeBuilder::new()
         .add_tcp_client(daemon.rns_addr())
+        .storage_path(_storage.path().to_path_buf())
         .build()
         .await
         .expect("Failed to build node");
@@ -117,9 +121,11 @@ async fn test_node_receives_announce_from_daemon() {
 #[tokio::test]
 async fn test_node_receives_multiple_announces() {
     let daemon = TestDaemon::start().await.expect("Failed to start daemon");
+    let _storage = crate::common::temp_storage("test_node_receives_multiple_announces", "node");
 
     let mut node = ReticulumNodeBuilder::new()
         .add_tcp_client(daemon.rns_addr())
+        .storage_path(_storage.path().to_path_buf())
         .build()
         .await
         .expect("Failed to build node");
@@ -190,9 +196,11 @@ async fn test_node_receives_multiple_announces() {
 #[tokio::test]
 async fn test_node_inner_accessor() {
     let daemon = TestDaemon::start().await.expect("Failed to start daemon");
+    let _storage = crate::common::temp_storage("test_node_inner_accessor", "node");
 
     let mut node = ReticulumNodeBuilder::new()
         .add_tcp_client(daemon.rns_addr())
+        .storage_path(_storage.path().to_path_buf())
         .build()
         .await
         .expect("Failed to build node");
@@ -218,9 +226,11 @@ async fn test_node_inner_accessor() {
 #[tokio::test]
 async fn test_node_graceful_shutdown() {
     let daemon = TestDaemon::start().await.expect("Failed to start daemon");
+    let _storage = crate::common::temp_storage("test_node_graceful_shutdown", "node");
 
     let mut node = ReticulumNodeBuilder::new()
         .add_tcp_client(daemon.rns_addr())
+        .storage_path(_storage.path().to_path_buf())
         .build()
         .await
         .expect("Failed to build node");
@@ -249,9 +259,11 @@ async fn test_node_graceful_shutdown() {
 #[tokio::test]
 async fn test_node_restart() {
     let daemon = TestDaemon::start().await.expect("Failed to start daemon");
+    let _storage = crate::common::temp_storage("test_node_restart", "node");
 
     let mut node = ReticulumNodeBuilder::new()
         .add_tcp_client(daemon.rns_addr())
+        .storage_path(_storage.path().to_path_buf())
         .build()
         .await
         .expect("Failed to build node");
@@ -277,9 +289,11 @@ async fn test_node_restart() {
 #[tokio::test]
 async fn test_node_learns_path_from_announce() {
     let daemon = TestDaemon::start().await.expect("Failed to start daemon");
+    let _storage = crate::common::temp_storage("test_node_learns_path_from_announce", "node");
 
     let mut node = ReticulumNodeBuilder::new()
         .add_tcp_client(daemon.rns_addr())
+        .storage_path(_storage.path().to_path_buf())
         .build()
         .await
         .expect("Failed to build node");
@@ -341,7 +355,9 @@ async fn test_node_learns_path_from_announce() {
 #[tokio::test]
 async fn test_node_builder_creates_node_without_interfaces() {
     // This tests that the builder works even without daemon (no interfaces)
+    let _storage = crate::common::temp_storage("test_node_builder_creates_node_without_interfaces", "node");
     let node = ReticulumNodeBuilder::new()
+        .storage_path(_storage.path().to_path_buf())
         .build()
         .await
         .expect("Failed to build node without interfaces");

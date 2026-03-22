@@ -193,11 +193,13 @@ async fn test_shared_instance_link_through_daemon() {
     // for Rust node A to connect to.
     let daemon_tcp_addr: SocketAddr = format!("127.0.0.1:{}", daemon_tcp_port).parse().unwrap();
 
+    let _storage1 = crate::common::temp_storage("test_shared_instance_link_through_daemon", "node1");
     let mut daemon_node = ReticulumNodeBuilder::new()
         .enable_transport(true)
         .share_instance(true)
         .instance_name(instance_name.clone())
         .add_tcp_server(daemon_tcp_addr)
+        .storage_path(_storage1.path().to_path_buf())
         .build()
         .await
         .expect("Failed to build Rust daemon node");
@@ -235,9 +237,11 @@ async fn test_shared_instance_link_through_daemon() {
 
     // ── Phase 5: Start Rust node A, wait for announce ────────────────────
     // Rust node A connects to the daemon's TCP server as a non-transport endpoint.
+    let _storage2 = crate::common::temp_storage("test_shared_instance_link_through_daemon", "node2");
     let mut rust_a = ReticulumNodeBuilder::new()
         .enable_transport(false)
         .add_tcp_client(daemon_tcp_addr)
+        .storage_path(_storage2.path().to_path_buf())
         .build()
         .await
         .expect("Failed to build Rust node A");

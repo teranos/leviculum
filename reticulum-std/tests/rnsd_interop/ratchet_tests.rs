@@ -512,9 +512,12 @@ async fn build_rust_node(
 ) -> (
     reticulum_std::driver::ReticulumNode,
     tokio::sync::mpsc::Receiver<NodeEvent>,
+    tempfile::TempDir,
 ) {
+    let storage = crate::common::temp_storage("build_rust_node", "node");
     let mut node = ReticulumNodeBuilder::new()
         .add_tcp_client(daemon.rns_addr())
+        .storage_path(storage.path().to_path_buf())
         .build()
         .await
         .expect("Failed to build node");
@@ -525,7 +528,7 @@ async fn build_rust_node(
     // Allow TCP connection to settle
     tokio::time::sleep(Duration::from_secs(1)).await;
 
-    (node, event_rx)
+    (node, event_rx, storage)
 }
 
 /// Register Python destination with ratchets enabled and enforced, then announce.
@@ -598,7 +601,7 @@ async fn setup_ratcheted_python_dest(
 #[tokio::test]
 async fn test_python_decrypts_ratcheted_packet_from_rust() {
     let daemon = TestDaemon::start().await.expect("Failed to start daemon");
-    let (mut rust_node, _event_rx) = build_rust_node(&daemon).await;
+    let (mut rust_node, _event_rx, _storage) = build_rust_node(&daemon).await;
 
     let (py_dest_hash, _) =
         setup_ratcheted_python_dest(&daemon, &rust_node, "ratchet_enc", &["r2p"], b"ratchet-r2p")
@@ -638,7 +641,7 @@ async fn test_python_decrypts_ratcheted_packet_from_rust() {
 #[tokio::test]
 async fn test_rust_decrypts_ratcheted_packet_from_python() {
     let daemon = TestDaemon::start().await.expect("Failed to start daemon");
-    let (mut rust_node, mut event_rx) = build_rust_node(&daemon).await;
+    let (mut rust_node, mut event_rx, _storage) = build_rust_node(&daemon).await;
 
     // Create Rust destination with ratchets enabled and enforced
     let identity = Identity::generate(&mut OsRng);
@@ -766,7 +769,7 @@ async fn test_ratcheted_packet_through_relay() {
     );
 
     // Build Rust node connected to entry daemon (relay)
-    let (mut rust_node, _event_rx) = build_rust_node(entry_daemon).await;
+    let (mut rust_node, _event_rx, _storage) = build_rust_node(entry_daemon).await;
 
     // Register exit daemon's destination on Rust side
     let py_pub_bytes = hex::decode(&dest_info.public_key).expect("Invalid public key hex");

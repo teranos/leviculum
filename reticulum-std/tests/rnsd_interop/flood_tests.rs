@@ -42,8 +42,10 @@ async fn test_announce_destination_smoke() {
     let py_a = TestDaemon::start().await.expect("Failed to start daemon");
 
     // Build Rust node connected to daemon (transport disabled — no relay)
+    let _storage = crate::common::temp_storage("test_announce_destination_smoke", "node");
     let mut rust_node = ReticulumNodeBuilder::new()
         .add_tcp_client(py_a.rns_addr())
+        .storage_path(_storage.path().to_path_buf())
         .build()
         .await
         .expect("Failed to build node");
@@ -127,10 +129,12 @@ async fn test_triangle_echo_prevention() {
     tokio::time::sleep(Duration::from_millis(500)).await;
 
     // Build Rust node connected to BOTH daemons (two interfaces)
+    let _storage = crate::common::temp_storage("test_triangle_echo_prevention", "node");
     let mut rust_node = ReticulumNodeBuilder::new()
         .enable_transport(true)
         .add_tcp_client(py_a.rns_addr())
         .add_tcp_client(py_b.rns_addr())
+        .storage_path(_storage.path().to_path_buf())
         .build()
         .await
         .expect("Failed to build node");
@@ -264,10 +268,12 @@ async fn test_diamond_originator_echo() {
     tokio::time::sleep(Duration::from_secs(1)).await;
 
     // Build Rust node connected to Py-Entry and Py-Exit (diamond top)
+    let _storage = crate::common::temp_storage("test_diamond_originator_echo", "node");
     let mut rust_node = ReticulumNodeBuilder::new()
         .enable_transport(true)
         .add_tcp_client(py_entry.rns_addr())
         .add_tcp_client(py_exit.rns_addr())
+        .storage_path(_storage.path().to_path_buf())
         .build()
         .await
         .expect("Failed to build node");
@@ -417,10 +423,12 @@ async fn test_diamond_link_redundant_paths() {
     tokio::time::sleep(Duration::from_secs(1)).await;
 
     // Build Rust relay connected to Py-Src and Py-Dst (alternate path)
+    let _storage = crate::common::temp_storage("test_diamond_link_redundant_paths", "node");
     let mut rust_relay = ReticulumNodeBuilder::new()
         .enable_transport(true)
         .add_tcp_client(py_src.rns_addr())
         .add_tcp_client(py_dst.rns_addr())
+        .storage_path(_storage.path().to_path_buf())
         .build()
         .await
         .expect("Failed to build relay node");

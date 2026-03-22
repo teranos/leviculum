@@ -36,7 +36,7 @@ const VENDOR_RNS_ROOT: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/../vendor/Re
 /// Start a Rust daemon with shared instance + RPC and return the node,
 /// instance name, TCP address, and the identity's private key bytes
 /// (needed to write the transport_identity file for Python tools).
-async fn start_rust_daemon_with_rpc() -> (reticulum_std::ReticulumNode, String, SocketAddr, [u8; 64])
+async fn start_rust_daemon_with_rpc() -> (reticulum_std::ReticulumNode, String, SocketAddr, [u8; 64], tempfile::TempDir)
 {
     let ports = find_available_ports::<2>().expect("failed to allocate ports");
     let tcp_port = ports[0];
@@ -51,12 +51,14 @@ async fn start_rust_daemon_with_rpc() -> (reticulum_std::ReticulumNode, String, 
         .private_key_bytes()
         .expect("generated identity must have private keys");
 
+    let storage = crate::common::temp_storage("start_rust_daemon_with_rpc", "node");
     let mut node = ReticulumNodeBuilder::new()
         .identity(identity)
         .enable_transport(true)
         .share_instance(true)
         .instance_name(instance_name.clone())
         .add_tcp_server(tcp_addr)
+        .storage_path(storage.path().to_path_buf())
         .build()
         .await
         .expect("Failed to build Rust daemon node");
@@ -66,7 +68,7 @@ async fn start_rust_daemon_with_rpc() -> (reticulum_std::ReticulumNode, String, 
     // Wait for sockets to be ready
     tokio::time::sleep(Duration::from_millis(500)).await;
 
-    (node, instance_name, tcp_addr, identity_bytes)
+    (node, instance_name, tcp_addr, identity_bytes, storage)
 }
 
 /// Create a temp config directory with a Python-compatible config file and
@@ -140,7 +142,7 @@ fn cleanup_config_dir(path: &Path) {
 async fn test_rnstatus_against_rust_daemon() {
     init_tracing();
 
-    let (_node, instance_name, _tcp_addr, identity_bytes) = start_rust_daemon_with_rpc().await;
+    let (_node, instance_name, _tcp_addr, identity_bytes, _storage) = start_rust_daemon_with_rpc().await;
     let config_dir = create_python_config_dir(&instance_name, &identity_bytes);
 
     let output = run_python_tool(RNSTATUS_PY, &[], &config_dir).await;
@@ -180,7 +182,7 @@ async fn test_rnstatus_against_rust_daemon() {
 async fn test_rnstatus_json_against_rust_daemon() {
     init_tracing();
 
-    let (_node, instance_name, _tcp_addr, identity_bytes) = start_rust_daemon_with_rpc().await;
+    let (_node, instance_name, _tcp_addr, identity_bytes, _storage) = start_rust_daemon_with_rpc().await;
     let config_dir = create_python_config_dir(&instance_name, &identity_bytes);
 
     let output = run_python_tool(RNSTATUS_PY, &["--json"], &config_dir).await;
@@ -231,7 +233,7 @@ async fn test_rnstatus_json_against_rust_daemon() {
 async fn test_rnpath_table_against_rust_daemon() {
     init_tracing();
 
-    let (_node, instance_name, _tcp_addr, identity_bytes) = start_rust_daemon_with_rpc().await;
+    let (_node, instance_name, _tcp_addr, identity_bytes, _storage) = start_rust_daemon_with_rpc().await;
     let config_dir = create_python_config_dir(&instance_name, &identity_bytes);
 
     let output = run_python_tool(RNPATH_PY, &["-t"], &config_dir).await;
@@ -256,7 +258,7 @@ async fn test_rnpath_table_against_rust_daemon() {
 async fn test_rnpath_rate_table_against_rust_daemon() {
     init_tracing();
 
-    let (_node, instance_name, _tcp_addr, identity_bytes) = start_rust_daemon_with_rpc().await;
+    let (_node, instance_name, _tcp_addr, identity_bytes, _storage) = start_rust_daemon_with_rpc().await;
     let config_dir = create_python_config_dir(&instance_name, &identity_bytes);
 
     let output = run_python_tool(RNPATH_PY, &["-r"], &config_dir).await;
@@ -279,7 +281,7 @@ async fn test_rnpath_rate_table_against_rust_daemon() {
 async fn test_rnstatus_link_stats_against_rust_daemon() {
     init_tracing();
 
-    let (_node, instance_name, _tcp_addr, identity_bytes) = start_rust_daemon_with_rpc().await;
+    let (_node, instance_name, _tcp_addr, identity_bytes, _storage) = start_rust_daemon_with_rpc().await;
     let config_dir = create_python_config_dir(&instance_name, &identity_bytes);
 
     let output = run_python_tool(RNSTATUS_PY, &["-l"], &config_dir).await;

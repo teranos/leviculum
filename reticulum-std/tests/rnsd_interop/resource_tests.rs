@@ -119,7 +119,7 @@ fn msgpack_decode_bin(data: &[u8]) -> Vec<u8> {
 /// on the Python initiator BEFORE creating the link, so that the
 /// `_on_link_established` callback configures ACCEPT_ALL on the new link.
 ///
-/// Returns `(rust_node, event_rx, py_initiator, py_relay, link_id, py_link_hash, dest_hash_hex)`.
+/// Returns `(rust_node, event_rx, py_initiator, py_relay, link_id, py_link_hash, dest_hash_hex, _storage)`.
 async fn setup_link(
     accept_resources: bool,
 ) -> (
@@ -130,6 +130,7 @@ async fn setup_link(
     LinkId,
     String,
     String,
+    tempfile::TempDir,
 ) {
     crate::common::init_tracing();
 
@@ -148,9 +149,11 @@ async fn setup_link(
     tokio::time::sleep(Duration::from_secs(1)).await;
 
     // Build Rust node connected to relay
+    let _storage = crate::common::temp_storage("setup_link", "node");
     let mut rust_node = ReticulumNodeBuilder::new()
         .enable_transport(false)
         .add_tcp_client(py_relay.rns_addr())
+        .storage_path(_storage.path().to_path_buf())
         .build()
         .await
         .expect("Failed to build Rust node");
@@ -258,6 +261,7 @@ async fn setup_link(
         req_link_id,
         py_link_hash,
         dest_hash_hex,
+        _storage,
     )
 }
 
@@ -290,7 +294,7 @@ async fn wait_for_python_resource(
 /// TEST 1: Rust sends a small resource (512 bytes), Python receives it.
 #[tokio::test]
 async fn test_rust_sends_resource_python_receives() {
-    let (rust_node, mut event_rx, py_initiator, _py_relay, link_id, _py_link_hash, _dest_hash) =
+    let (rust_node, mut event_rx, py_initiator, _py_relay, link_id, _py_link_hash, _dest_hash, _storage) =
         setup_link(true).await;
 
     let data = vec![0x42u8; 512];
@@ -318,7 +322,7 @@ async fn test_rust_sends_resource_python_receives() {
 /// TEST 2: Python sends a small resource (512 bytes), Rust receives it.
 #[tokio::test]
 async fn test_python_sends_resource_rust_receives() {
-    let (rust_node, mut event_rx, py_initiator, _py_relay, link_id, py_link_hash, _dest_hash) =
+    let (rust_node, mut event_rx, py_initiator, _py_relay, link_id, py_link_hash, _dest_hash, _storage) =
         setup_link(false).await;
 
     // Set Rust side to accept all resources
@@ -345,7 +349,7 @@ async fn test_python_sends_resource_rust_receives() {
 /// TEST 3: Rust sends resource with metadata, Python receives and decodes it.
 #[tokio::test]
 async fn test_rust_sends_resource_with_metadata() {
-    let (rust_node, mut event_rx, py_initiator, _py_relay, link_id, _py_link_hash, _dest_hash) =
+    let (rust_node, mut event_rx, py_initiator, _py_relay, link_id, _py_link_hash, _dest_hash, _storage) =
         setup_link(true).await;
 
     let data = vec![0x42u8; 256];
@@ -383,7 +387,7 @@ async fn test_rust_sends_resource_with_metadata() {
 /// TEST 4: Python sends resource with metadata, Rust receives msgpack-encoded bytes.
 #[tokio::test]
 async fn test_python_sends_resource_with_metadata() {
-    let (rust_node, mut event_rx, py_initiator, _py_relay, link_id, py_link_hash, _dest_hash) =
+    let (rust_node, mut event_rx, py_initiator, _py_relay, link_id, py_link_hash, _dest_hash, _storage) =
         setup_link(false).await;
 
     rust_node
@@ -418,7 +422,7 @@ async fn test_python_sends_resource_with_metadata() {
 /// Verifies multi-part transfer with HMU (hashmap update) exchanges.
 #[tokio::test]
 async fn test_rust_sends_large_resource() {
-    let (rust_node, mut event_rx, py_initiator, _py_relay, link_id, _py_link_hash, _dest_hash) =
+    let (rust_node, mut event_rx, py_initiator, _py_relay, link_id, _py_link_hash, _dest_hash, _storage) =
         setup_link(true).await;
 
     let data = vec![0x42u8; 300_000];
@@ -449,7 +453,7 @@ async fn test_rust_sends_large_resource() {
 /// TEST 6: Python sends a large resource (51KB of varied data), Rust receives it.
 #[tokio::test]
 async fn test_python_sends_large_resource_to_rust() {
-    let (rust_node, mut event_rx, py_initiator, _py_relay, link_id, py_link_hash, _dest_hash) =
+    let (rust_node, mut event_rx, py_initiator, _py_relay, link_id, py_link_hash, _dest_hash, _storage) =
         setup_link(false).await;
 
     rust_node

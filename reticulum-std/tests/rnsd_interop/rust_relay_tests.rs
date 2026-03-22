@@ -38,10 +38,12 @@ async fn test_rust_relay_announce_and_link_data() {
     let daemon_b = TestDaemon::start().await.expect("Failed to start daemon B");
 
     // Step 2: Build Rust node with transport enabled, connecting to both daemons
+    let _storage = crate::common::temp_storage("test_rust_relay_announce_and_link_data", "node");
     let mut relay = ReticulumNodeBuilder::new()
         .enable_transport(true)
         .add_tcp_client(daemon_a.rns_addr())
         .add_tcp_client(daemon_b.rns_addr())
+        .storage_path(_storage.path().to_path_buf())
         .build()
         .await
         .expect("Failed to build relay node");

@@ -290,8 +290,10 @@ async fn test_multiple_daemon_announces() {
     let daemon = TestDaemon::start().await.expect("Failed to start daemon");
 
     // Build and start node connecting to the daemon
+    let _storage = crate::common::temp_storage("test_multiple_daemon_announces", "node");
     let mut node = ReticulumNodeBuilder::new()
         .add_tcp_client(daemon.rns_addr())
+        .storage_path(_storage.path().to_path_buf())
         .build()
         .await
         .expect("Failed to build node");

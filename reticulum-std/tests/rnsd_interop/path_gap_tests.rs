@@ -32,11 +32,13 @@ async fn test_path_refresh_keeps_route_alive() {
     let daemon_b = TestDaemon::start().await.expect("daemon B");
 
     // Build Rust relay with short path expiry (20s)
+    let _storage = crate::common::temp_storage("test_path_refresh_keeps_route_alive", "node");
     let mut relay = ReticulumNodeBuilder::new()
         .enable_transport(true)
         .path_expiry_secs(20)
         .add_tcp_client(daemon_a.rns_addr())
         .add_tcp_client(daemon_b.rns_addr())
+        .storage_path(_storage.path().to_path_buf())
         .build()
         .await
         .expect("build relay");
@@ -107,11 +109,13 @@ async fn test_path_expires_when_idle() {
     let daemon_b = TestDaemon::start().await.expect("daemon B");
 
     // Short path expiry: 15 seconds
+    let _storage = crate::common::temp_storage("test_path_expires_when_idle", "node");
     let mut relay = ReticulumNodeBuilder::new()
         .enable_transport(true)
         .path_expiry_secs(15)
         .add_tcp_client(daemon_a.rns_addr())
         .add_tcp_client(daemon_b.rns_addr())
+        .storage_path(_storage.path().to_path_buf())
         .build()
         .await
         .expect("build relay");
@@ -197,9 +201,11 @@ async fn test_path_request_through_python_relay() {
     assert!(relay_has_path, "Python relay should learn path to target");
 
     // Build Rust non-transport node connected to relay
+    let _storage = crate::common::temp_storage("test_path_request_through_python_relay", "node");
     let mut rust_node = ReticulumNodeBuilder::new()
         .enable_transport(false)
         .add_tcp_client(py_relay.rns_addr())
+        .storage_path(_storage.path().to_path_buf())
         .build()
         .await
         .expect("build Rust node");
@@ -234,9 +240,11 @@ async fn test_path_request_through_python_relay() {
 async fn test_path_request_for_unknown_destination() {
     let py_relay = TestDaemon::start().await.expect("relay daemon");
 
+    let _storage = crate::common::temp_storage("test_path_request_for_unknown_destination", "node");
     let mut rust_node = ReticulumNodeBuilder::new()
         .enable_transport(false)
         .add_tcp_client(py_relay.rns_addr())
+        .storage_path(_storage.path().to_path_buf())
         .build()
         .await
         .expect("build Rust node");
@@ -271,10 +279,12 @@ async fn test_announces_forwarded_through_transport() {
     let daemon_a = TestDaemon::start().await.expect("daemon A");
     let daemon_b = TestDaemon::start().await.expect("daemon B");
 
+    let _storage = crate::common::temp_storage("test_announces_forwarded_through_transport", "node");
     let mut relay = ReticulumNodeBuilder::new()
         .enable_transport(true)
         .add_tcp_client(daemon_a.rns_addr())
         .add_tcp_client(daemon_b.rns_addr())
+        .storage_path(_storage.path().to_path_buf())
         .build()
         .await
         .expect("build relay");
@@ -326,10 +336,12 @@ async fn test_burst_announces_not_lost() {
     let daemon_a = TestDaemon::start().await.expect("daemon A");
     let daemon_b = TestDaemon::start().await.expect("daemon B");
 
+    let _storage = crate::common::temp_storage("test_burst_announces_not_lost", "node");
     let mut relay = ReticulumNodeBuilder::new()
         .enable_transport(true)
         .add_tcp_client(daemon_a.rns_addr())
         .add_tcp_client(daemon_b.rns_addr())
+        .storage_path(_storage.path().to_path_buf())
         .build()
         .await
         .expect("build relay");

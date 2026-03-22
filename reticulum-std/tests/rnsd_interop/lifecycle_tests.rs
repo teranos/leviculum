@@ -56,9 +56,11 @@ async fn test_full_link_lifecycle_through_relay() {
     tokio::time::sleep(Duration::from_secs(1)).await;
 
     // Step 3: Build Rust node (non-transport, client to relay)
+    let _storage = crate::common::temp_storage("test_full_link_lifecycle_through_relay", "node");
     let mut rust_node = ReticulumNodeBuilder::new()
         .enable_transport(false)
         .add_tcp_client(py_relay.rns_addr())
+        .storage_path(_storage.path().to_path_buf())
         .build()
         .await
         .expect("Failed to build Rust node");

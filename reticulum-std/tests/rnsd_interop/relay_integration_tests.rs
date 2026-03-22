@@ -51,10 +51,12 @@ async fn test_diamond_relay_and_failure_recovery() {
     let daemon_b = TestDaemon::start().await.expect("Failed to start daemon B");
 
     // Step 2: Build + start Rust relay R1
+    let _storage1 = crate::common::temp_storage("test_diamond_relay_and_failure_recovery", "node1");
     let mut relay_r1 = ReticulumNodeBuilder::new()
         .enable_transport(true)
         .add_tcp_client(daemon_a.rns_addr())
         .add_tcp_client(daemon_b.rns_addr())
+        .storage_path(_storage1.path().to_path_buf())
         .build()
         .await
         .expect("Failed to build relay R1");
@@ -178,10 +180,12 @@ async fn test_diamond_relay_and_failure_recovery() {
     let _ = daemon_b.close_link(&link_b_to_a).await;
 
     // Step 12: Build + start Rust relay R2
+    let _storage2 = crate::common::temp_storage("test_diamond_relay_and_failure_recovery", "node2");
     let mut relay_r2 = ReticulumNodeBuilder::new()
         .enable_transport(true)
         .add_tcp_client(daemon_a.rns_addr())
         .add_tcp_client(daemon_b.rns_addr())
+        .storage_path(_storage2.path().to_path_buf())
         .build()
         .await
         .expect("Failed to build relay R2");
@@ -289,10 +293,12 @@ async fn test_mixed_python_rust_relay_chain() {
     tokio::time::sleep(Duration::from_secs(1)).await;
 
     // Step 3: Build Rust relay R (clients to A and M)
+    let _storage = crate::common::temp_storage("test_mixed_python_rust_relay_chain", "node");
     let mut rust_relay = ReticulumNodeBuilder::new()
         .enable_transport(true)
         .add_tcp_client(daemon_a.rns_addr())
         .add_tcp_client(daemon_m.rns_addr())
+        .storage_path(_storage.path().to_path_buf())
         .build()
         .await
         .expect("Failed to build Rust relay");

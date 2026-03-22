@@ -803,9 +803,11 @@ async fn test_link_identify_from_python() {
     let daemon = TestDaemon::start().await.expect("start daemon");
 
     // Build Rust node connected to daemon
+    let _storage = crate::common::temp_storage("test_link_identify_from_python", "node");
     let mut rust_node = ReticulumNodeBuilder::new()
         .enable_transport(false)
         .add_tcp_client(daemon.rns_addr())
+        .storage_path(_storage.path().to_path_buf())
         .build()
         .await
         .expect("build Rust node");

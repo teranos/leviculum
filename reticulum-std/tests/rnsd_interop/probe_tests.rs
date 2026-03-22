@@ -103,6 +103,7 @@ async fn test_rnprobe_reports_correct_hops() {
     // ── Phase 2: Start Rust lnsd (node A) ──────────────────────────────
     let mut config = Config::default();
     config.reticulum.respond_to_probes = true;
+    let _storage = crate::common::temp_storage("test_rnprobe_reports_correct_hops", "node");
     let mut daemon_node = ReticulumNodeBuilder::new()
         .identity(identity)
         .config(config)
@@ -110,6 +111,7 @@ async fn test_rnprobe_reports_correct_hops() {
         .share_instance(true)
         .instance_name(instance_name.clone())
         .add_tcp_server(daemon_tcp_addr)
+        .storage_path(_storage.path().to_path_buf())
         .build()
         .await
         .expect("Failed to build Rust daemon node");
