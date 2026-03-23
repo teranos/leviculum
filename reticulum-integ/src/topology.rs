@@ -100,6 +100,7 @@ pub struct NodeDef {
     #[serde(default = "default_true")]
     pub enable_transport: bool,
     /// Host device path for RNode serial (e.g., "/dev/ttyACM0").
+    /// Mutually exclusive with `rnode_interfaces`.
     #[serde(default)]
     pub rnode: Option<String>,
     /// When true, a lora-proxy process sits between the host device and the
@@ -110,6 +111,25 @@ pub struct NodeDef {
     /// Generates a standalone TCPServerInterface, independent of [links].
     #[serde(default)]
     pub listen_port: Option<u16>,
+    /// Multiple RNode interfaces with per-interface radio parameters.
+    /// Mutually exclusive with `rnode` — use this for multi-frequency nodes.
+    #[serde(default)]
+    pub rnode_interfaces: Option<Vec<RNodeInterfaceDef>>,
+}
+
+/// Per-interface RNode definition with independent radio parameters.
+#[derive(Debug, Clone, Deserialize)]
+pub struct RNodeInterfaceDef {
+    /// Host device path (e.g., "/dev/ttyACM0")
+    pub rnode: String,
+    pub frequency: u64,
+    pub bandwidth: u32,
+    #[serde(alias = "sf")]
+    pub spreading_factor: u8,
+    #[serde(alias = "cr")]
+    pub coding_rate: u8,
+    #[serde(alias = "txpower")]
+    pub tx_power: u8,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -523,6 +543,22 @@ pub fn render_config(
         writeln!(out, "    ingress_control = false").ok();
     }
 
+    // Multi-interface: render one [[RNode Interface N]] per entry.
+    if let Some(ref interfaces) = node.rnode_interfaces {
+        for (i, iface) in interfaces.iter().enumerate() {
+            writeln!(out, "  [[RNode Interface {i}]]").ok();
+            writeln!(out, "    type = RNodeInterface").ok();
+            writeln!(out, "    enabled = yes").ok();
+            writeln!(out, "    port = {}", iface.rnode).ok();
+            writeln!(out, "    frequency = {}", iface.frequency).ok();
+            writeln!(out, "    bandwidth = {}", iface.bandwidth).ok();
+            writeln!(out, "    spreadingfactor = {}", iface.spreading_factor).ok();
+            writeln!(out, "    codingrate = {}", iface.coding_rate).ok();
+            writeln!(out, "    txpower = {}", iface.tx_power).ok();
+            writeln!(out, "    ingress_control = false").ok();
+        }
+    }
+
     if let Some(port) = node.listen_port {
         writeln!(out, "  [[Selftest TCP Server]]").ok();
         writeln!(out, "    type = TCPServerInterface").ok();
@@ -553,12 +589,28 @@ pub fn generate_node_configs(scenario: &TestScenario, base_dir: &Path) -> io::Re
         ));
     }
 
-    // Validate: rnode_proxy requires rnode.
+    // Validate: rnode and rnode_interfaces are mutually exclusive.
+    for (name, node) in &scenario.nodes {
+        if node.rnode.is_some() && node.rnode_interfaces.is_some() {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!("node '{name}': cannot have both rnode and rnode_interfaces"),
+            ));
+        }
+    }
+
+    // Validate: rnode_proxy requires single rnode (not rnode_interfaces).
     for (name, node) in &scenario.nodes {
         if node.rnode_proxy && node.rnode.is_none() {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidData,
                 format!("node '{name}': rnode_proxy requires rnode"),
+            ));
+        }
+        if node.rnode_proxy && node.rnode_interfaces.is_some() {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!("node '{name}': rnode_proxy is not supported with rnode_interfaces"),
             ));
         }
     }
@@ -928,6 +980,7 @@ rnode = "/dev/ttyACM0"
             rnode: Some("/dev/ttyACM0".into()),
             rnode_proxy: false,
             listen_port: None,
+            rnode_interfaces: None,
         };
         let radio = RadioConfig {
             frequency: 868000000,
@@ -1002,6 +1055,7 @@ rnode = "/dev/ttyACM0"
             rnode: None,
             rnode_proxy: false,
             listen_port: Some(4242),
+            rnode_interfaces: None,
         };
         let config = render_config(&node, &[], None);
         assert!(
@@ -1024,6 +1078,7 @@ rnode = "/dev/ttyACM0"
             rnode: Some("/dev/ttyACM0".into()),
             rnode_proxy: false,
             listen_port: Some(4242),
+            rnode_interfaces: None,
         };
         let radio = RadioConfig {
             frequency: 868000000,
@@ -1105,6 +1160,7 @@ alpha-beta = "tcp"
             rnode: None,
             rnode_proxy: false,
             listen_port: None,
+            rnode_interfaces: None,
         };
         let config = render_config(&node, &[], None);
         assert!(
@@ -1232,6 +1288,7 @@ passphrase = "secret456"
             rnode: None,
             rnode_proxy: false,
             listen_port: None,
+            rnode_interfaces: None,
         };
         let ifaces = vec![InterfaceEntry::TcpServer {
             peer: "bob".into(),
@@ -1260,6 +1317,7 @@ passphrase = "secret456"
             rnode: None,
             rnode_proxy: false,
             listen_port: None,
+            rnode_interfaces: None,
         };
         let ifaces = vec![InterfaceEntry::TcpServer {
             peer: "bob".into(),

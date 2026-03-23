@@ -1462,6 +1462,21 @@ mod tests {
     use super::*;
     use serial_test::serial;
 
+    /// Create a TestRunner, skipping (return) if RNodes are missing.
+    /// Panics on any other error from TestRunner::new().
+    macro_rules! require_runner {
+        ($scenario:expr) => {
+            match TestRunner::new($scenario) {
+                Ok(r) => r,
+                Err(RunnerError::InsufficientRNodes(ref msg)) => {
+                    eprintln!("[skip] {msg}");
+                    return;
+                }
+                Err(e) => panic!("TestRunner::new failed: {e}"),
+            }
+        };
+    }
+
     /// Acquire an exclusive file lock to prevent parallel LoRa test execution.
     ///
     /// `serial_test`'s `#[serial]` only works within a single cargo-test process
@@ -1687,7 +1702,7 @@ Reticulum Transport Instance running
         .expect("basic_probe.toml not found");
         let scenario = crate::topology::parse_scenario(&toml_str).expect("parse failed");
 
-        let mut runner = TestRunner::new(scenario).expect("TestRunner::new failed");
+        let mut runner = require_runner!(scenario);
 
         runner.up().expect("up failed");
         runner.wait_ready(30).expect("wait_ready failed");
@@ -1707,7 +1722,7 @@ Reticulum Transport Instance running
         .expect("probe_through_relay.toml not found");
         let scenario = crate::topology::parse_scenario(&toml_str).expect("parse failed");
 
-        let mut runner = TestRunner::new(scenario).expect("TestRunner::new failed");
+        let mut runner = require_runner!(scenario);
 
         runner.up().expect("up failed");
         runner.wait_ready(60).expect("wait_ready failed");
@@ -1727,7 +1742,7 @@ Reticulum Transport Instance running
         .expect("path_self_healing.toml not found");
         let scenario = crate::topology::parse_scenario(&toml_str).expect("parse failed");
 
-        let mut runner = TestRunner::new(scenario).expect("TestRunner::new failed");
+        let mut runner = require_runner!(scenario);
 
         runner.up().expect("up failed");
         runner.wait_ready(60).expect("wait_ready failed");
@@ -1747,7 +1762,7 @@ Reticulum Transport Instance running
         .expect("node_restart_path_recovery.toml not found");
         let scenario = crate::topology::parse_scenario(&toml_str).expect("parse failed");
 
-        let mut runner = TestRunner::new(scenario).expect("TestRunner::new failed");
+        let mut runner = require_runner!(scenario);
 
         runner.up().expect("up failed");
         runner.wait_ready(60).expect("wait_ready failed");
@@ -1767,7 +1782,7 @@ Reticulum Transport Instance running
         .expect("announce_replacement.toml not found");
         let scenario = crate::topology::parse_scenario(&toml_str).expect("parse failed");
 
-        let mut runner = TestRunner::new(scenario).expect("TestRunner::new failed");
+        let mut runner = require_runner!(scenario);
 
         runner.up().expect("up failed");
         runner.wait_ready(60).expect("wait_ready failed");
@@ -1787,7 +1802,7 @@ Reticulum Transport Instance running
         .expect("four_node_chain.toml not found");
         let scenario = crate::topology::parse_scenario(&toml_str).expect("parse failed");
 
-        let mut runner = TestRunner::new(scenario).expect("TestRunner::new failed");
+        let mut runner = require_runner!(scenario);
 
         runner.up().expect("up failed");
         runner.wait_ready(60).expect("wait_ready failed");
@@ -1807,7 +1822,7 @@ Reticulum Transport Instance running
         .expect("rust_relay_python_endpoints.toml not found");
         let scenario = crate::topology::parse_scenario(&toml_str).expect("parse failed");
 
-        let mut runner = TestRunner::new(scenario).expect("TestRunner::new failed");
+        let mut runner = require_runner!(scenario);
 
         runner.up().expect("up failed");
         runner.wait_ready(60).expect("wait_ready failed");
@@ -1827,7 +1842,7 @@ Reticulum Transport Instance running
         .expect("double_restart_identity_persistence.toml not found");
         let scenario = crate::topology::parse_scenario(&toml_str).expect("parse failed");
 
-        let mut runner = TestRunner::new(scenario).expect("TestRunner::new failed");
+        let mut runner = require_runner!(scenario);
 
         runner.up().expect("up failed");
         runner.wait_ready(60).expect("wait_ready failed");
@@ -1847,7 +1862,7 @@ Reticulum Transport Instance running
         .expect("rnstatus_transport_info.toml not found");
         let scenario = crate::topology::parse_scenario(&toml_str).expect("parse failed");
 
-        let mut runner = TestRunner::new(scenario).expect("TestRunner::new failed");
+        let mut runner = require_runner!(scenario);
 
         runner.up().expect("up failed");
         runner.wait_ready(60).expect("wait_ready failed");
@@ -1867,7 +1882,7 @@ Reticulum Transport Instance running
         .expect("rust_probe_through_python_relay.toml not found");
         let scenario = crate::topology::parse_scenario(&toml_str).expect("parse failed");
 
-        let mut runner = TestRunner::new(scenario).expect("TestRunner::new failed");
+        let mut runner = require_runner!(scenario);
 
         runner.up().expect("up failed");
         runner.wait_ready(60).expect("wait_ready failed");
@@ -1887,7 +1902,7 @@ Reticulum Transport Instance running
         .expect("five_node_mesh.toml not found");
         let scenario = crate::topology::parse_scenario(&toml_str).expect("parse failed");
 
-        let mut runner = TestRunner::new(scenario).expect("TestRunner::new failed");
+        let mut runner = require_runner!(scenario);
 
         runner.up().expect("up failed");
         runner.wait_ready(60).expect("wait_ready failed");
@@ -1907,7 +1922,7 @@ Reticulum Transport Instance running
         .expect("link_failure_recovery.toml not found");
         let scenario = crate::topology::parse_scenario(&toml_str).expect("parse failed");
 
-        let mut runner = TestRunner::new(scenario).expect("TestRunner::new failed");
+        let mut runner = require_runner!(scenario);
 
         runner.up().expect("up failed");
         runner.wait_ready(60).expect("wait_ready failed");
@@ -1927,7 +1942,7 @@ Reticulum Transport Instance running
         .expect("non_transport_no_relay.toml not found");
         let scenario = crate::topology::parse_scenario(&toml_str).expect("parse failed");
 
-        let mut runner = TestRunner::new(scenario).expect("TestRunner::new failed");
+        let mut runner = require_runner!(scenario);
 
         runner.up().expect("up failed");
         runner.wait_ready(60).expect("wait_ready failed");
@@ -1947,7 +1962,7 @@ Reticulum Transport Instance running
         .expect("selftest_ratchet_direct.toml not found");
         let scenario = crate::topology::parse_scenario(&toml_str).expect("parse failed");
 
-        let mut runner = TestRunner::new(scenario).expect("TestRunner::new failed");
+        let mut runner = require_runner!(scenario);
 
         runner.up().expect("up failed");
         runner.wait_ready(60).expect("wait_ready failed");
@@ -1967,7 +1982,7 @@ Reticulum Transport Instance running
         .expect("selftest_ratchet_chain.toml not found");
         let scenario = crate::topology::parse_scenario(&toml_str).expect("parse failed");
 
-        let mut runner = TestRunner::new(scenario).expect("TestRunner::new failed");
+        let mut runner = require_runner!(scenario);
 
         runner.up().expect("up failed");
         runner.wait_ready(60).expect("wait_ready failed");
@@ -1987,7 +2002,7 @@ Reticulum Transport Instance running
         .expect("selftest_ratchet_mixed.toml not found");
         let scenario = crate::topology::parse_scenario(&toml_str).expect("parse failed");
 
-        let mut runner = TestRunner::new(scenario).expect("TestRunner::new failed");
+        let mut runner = require_runner!(scenario);
 
         runner.up().expect("up failed");
         runner.wait_ready(60).expect("wait_ready failed");
@@ -2014,7 +2029,7 @@ Reticulum Transport Instance running
         .expect("lora_direct_rust.toml not found");
         let scenario = crate::topology::parse_scenario(&toml_str).expect("parse failed");
 
-        let mut runner = TestRunner::new(scenario).expect("TestRunner::new failed");
+        let mut runner = require_runner!(scenario);
 
         runner.up().expect("up failed");
         runner.wait_ready(60).expect("wait_ready failed");
@@ -2041,7 +2056,7 @@ Reticulum Transport Instance running
         .expect("lora_interop_rust_python.toml not found");
         let scenario = crate::topology::parse_scenario(&toml_str).expect("parse failed");
 
-        let mut runner = TestRunner::new(scenario).expect("TestRunner::new failed");
+        let mut runner = require_runner!(scenario);
 
         runner.up().expect("up failed");
         runner.wait_ready(60).expect("wait_ready failed");
@@ -2066,7 +2081,7 @@ Reticulum Transport Instance running
         .expect("lora_link_rust.toml not found");
         let scenario = crate::topology::parse_scenario(&toml_str).expect("parse failed");
 
-        let mut runner = TestRunner::new(scenario).expect("TestRunner::new failed");
+        let mut runner = require_runner!(scenario);
 
         runner.up().expect("up failed");
         runner.wait_ready(60).expect("wait_ready failed");
@@ -2091,7 +2106,7 @@ Reticulum Transport Instance running
         .expect("lora_link_interop.toml not found");
         let scenario = crate::topology::parse_scenario(&toml_str).expect("parse failed");
 
-        let mut runner = TestRunner::new(scenario).expect("TestRunner::new failed");
+        let mut runner = require_runner!(scenario);
 
         runner.up().expect("up failed");
         runner.wait_ready(60).expect("wait_ready failed");
@@ -2113,7 +2128,7 @@ Reticulum Transport Instance running
         .expect("lora_tcp_bridge_rust_relay.toml not found");
         let scenario = crate::topology::parse_scenario(&toml_str).expect("parse failed");
 
-        let mut runner = TestRunner::new(scenario).expect("TestRunner::new failed");
+        let mut runner = require_runner!(scenario);
 
         runner.up().expect("up failed");
         runner.wait_ready(60).expect("wait_ready failed");
@@ -2135,7 +2150,7 @@ Reticulum Transport Instance running
         .expect("lora_tcp_bridge_python_relay.toml not found");
         let scenario = crate::topology::parse_scenario(&toml_str).expect("parse failed");
 
-        let mut runner = TestRunner::new(scenario).expect("TestRunner::new failed");
+        let mut runner = require_runner!(scenario);
 
         runner.up().expect("up failed");
         runner.wait_ready(60).expect("wait_ready failed");
@@ -2157,7 +2172,7 @@ Reticulum Transport Instance running
         .expect("lora_tcp_bridge_python_selftest.toml not found");
         let scenario = crate::topology::parse_scenario(&toml_str).expect("parse failed");
 
-        let mut runner = TestRunner::new(scenario).expect("TestRunner::new failed");
+        let mut runner = require_runner!(scenario);
 
         runner.up().expect("up failed");
         runner.wait_ready(60).expect("wait_ready failed");
@@ -2179,7 +2194,7 @@ Reticulum Transport Instance running
         .expect("lora_late_announce_2node.toml not found");
         let scenario = crate::topology::parse_scenario(&toml_str).expect("parse failed");
 
-        let mut runner = TestRunner::new(scenario).expect("TestRunner::new failed");
+        let mut runner = require_runner!(scenario);
 
         runner.up().expect("up failed");
         runner.wait_ready(60).expect("wait_ready failed");
@@ -2201,7 +2216,7 @@ Reticulum Transport Instance running
         .expect("lora_late_announce_4node.toml not found");
         let scenario = crate::topology::parse_scenario(&toml_str).expect("parse failed");
 
-        let mut runner = TestRunner::new(scenario).expect("TestRunner::new failed");
+        let mut runner = require_runner!(scenario);
 
         runner.up().expect("up failed");
         runner.wait_ready(60).expect("wait_ready failed");
@@ -2223,7 +2238,7 @@ Reticulum Transport Instance running
         .expect("lora_late_announce_6node.toml not found");
         let scenario = crate::topology::parse_scenario(&toml_str).expect("parse failed");
 
-        let mut runner = TestRunner::new(scenario).expect("TestRunner::new failed");
+        let mut runner = require_runner!(scenario);
 
         runner.up().expect("up failed");
         runner.wait_ready(60).expect("wait_ready failed");
@@ -2245,7 +2260,7 @@ Reticulum Transport Instance running
         .expect("lora_late_announce_8node.toml not found");
         let scenario = crate::topology::parse_scenario(&toml_str).expect("parse failed");
 
-        let mut runner = TestRunner::new(scenario).expect("TestRunner::new failed");
+        let mut runner = require_runner!(scenario);
 
         runner.up().expect("up failed");
         runner.wait_ready(60).expect("wait_ready failed");
@@ -2267,7 +2282,7 @@ Reticulum Transport Instance running
         .expect("lora_late_announce_10node.toml not found");
         let scenario = crate::topology::parse_scenario(&toml_str).expect("parse failed");
 
-        let mut runner = TestRunner::new(scenario).expect("TestRunner::new failed");
+        let mut runner = require_runner!(scenario);
 
         runner.up().expect("up failed");
         runner.wait_ready(120).expect("wait_ready failed");
@@ -2291,7 +2306,7 @@ Reticulum Transport Instance running
         .expect("lora_rpc_after_selftest.toml not found");
         let scenario = crate::topology::parse_scenario(&toml_str).expect("parse failed");
 
-        let mut runner = TestRunner::new(scenario).expect("TestRunner::new failed");
+        let mut runner = require_runner!(scenario);
 
         runner.up().expect("up failed");
         runner.wait_ready(60).expect("wait_ready failed");
@@ -2313,7 +2328,7 @@ Reticulum Transport Instance running
         .expect("lora_dual_cluster_rust.toml not found");
         let scenario = crate::topology::parse_scenario(&toml_str).expect("parse failed");
 
-        let mut runner = TestRunner::new(scenario).expect("TestRunner::new failed");
+        let mut runner = require_runner!(scenario);
 
         runner.up().expect("up failed");
         runner.wait_ready(120).expect("wait_ready failed");
@@ -2335,7 +2350,7 @@ Reticulum Transport Instance running
         .expect("lora_dual_cluster_mixed.toml not found");
         let scenario = crate::topology::parse_scenario(&toml_str).expect("parse failed");
 
-        let mut runner = TestRunner::new(scenario).expect("TestRunner::new failed");
+        let mut runner = require_runner!(scenario);
 
         runner.up().expect("up failed");
         runner.wait_ready(120).expect("wait_ready failed");
@@ -2357,7 +2372,7 @@ Reticulum Transport Instance running
         .expect("lora_proxy_loss.toml not found");
         let scenario = crate::topology::parse_scenario(&toml_str).expect("parse failed");
 
-        let mut runner = TestRunner::new(scenario).expect("TestRunner::new failed");
+        let mut runner = require_runner!(scenario);
 
         runner.up().expect("up failed");
         runner.wait_ready(60).expect("wait_ready failed");
@@ -2379,7 +2394,7 @@ Reticulum Transport Instance running
         .expect("lora_lncp_push.toml not found");
         let scenario = crate::topology::parse_scenario(&toml_str).expect("parse failed");
 
-        let mut runner = TestRunner::new(scenario).expect("TestRunner::new failed");
+        let mut runner = require_runner!(scenario);
 
         runner.up().expect("up failed");
         runner.wait_ready(60).expect("wait_ready failed");
@@ -2401,7 +2416,7 @@ Reticulum Transport Instance running
         .expect("lora_lncp_fetch.toml not found");
         let scenario = crate::topology::parse_scenario(&toml_str).expect("parse failed");
 
-        let mut runner = TestRunner::new(scenario).expect("TestRunner::new failed");
+        let mut runner = require_runner!(scenario);
 
         runner.up().expect("up failed");
         runner.wait_ready(60).expect("wait_ready failed");
@@ -2423,7 +2438,7 @@ Reticulum Transport Instance running
         .expect("lora_lncp_auth.toml not found");
         let scenario = crate::topology::parse_scenario(&toml_str).expect("parse failed");
 
-        let mut runner = TestRunner::new(scenario).expect("TestRunner::new failed");
+        let mut runner = require_runner!(scenario);
 
         runner.up().expect("up failed");
         runner.wait_ready(60).expect("wait_ready failed");
@@ -2445,7 +2460,7 @@ Reticulum Transport Instance running
         .expect("lora_lncp_proxy.toml not found");
         let scenario = crate::topology::parse_scenario(&toml_str).expect("parse failed");
 
-        let mut runner = TestRunner::new(scenario).expect("TestRunner::new failed");
+        let mut runner = require_runner!(scenario);
 
         runner.up().expect("up failed");
         runner.wait_ready(60).expect("wait_ready failed");
@@ -2467,7 +2482,7 @@ Reticulum Transport Instance running
         .expect("lora_lncp_size_sweep.toml not found");
         let scenario = crate::topology::parse_scenario(&toml_str).expect("parse failed");
 
-        let mut runner = TestRunner::new(scenario).expect("TestRunner::new failed");
+        let mut runner = require_runner!(scenario);
 
         runner.up().expect("up failed");
         runner.wait_ready(60).expect("wait_ready failed");
@@ -2489,7 +2504,7 @@ Reticulum Transport Instance running
         .expect("lora_lncp_proxy_4drop.toml not found");
         let scenario = crate::topology::parse_scenario(&toml_str).expect("parse failed");
 
-        let mut runner = TestRunner::new(scenario).expect("TestRunner::new failed");
+        let mut runner = require_runner!(scenario);
 
         runner.up().expect("up failed");
         runner.wait_ready(60).expect("wait_ready failed");
@@ -2511,7 +2526,7 @@ Reticulum Transport Instance running
         .expect("lora_lncp_proxy_6drop.toml not found");
         let scenario = crate::topology::parse_scenario(&toml_str).expect("parse failed");
 
-        let mut runner = TestRunner::new(scenario).expect("TestRunner::new failed");
+        let mut runner = require_runner!(scenario);
 
         runner.up().expect("up failed");
         runner.wait_ready(60).expect("wait_ready failed");
@@ -2533,7 +2548,7 @@ Reticulum Transport Instance running
         .expect("lora_lncp_link_loss.toml not found");
         let scenario = crate::topology::parse_scenario(&toml_str).expect("parse failed");
 
-        let mut runner = TestRunner::new(scenario).expect("TestRunner::new failed");
+        let mut runner = require_runner!(scenario);
 
         runner.up().expect("up failed");
         runner.wait_ready(60).expect("wait_ready failed");
@@ -2555,7 +2570,7 @@ Reticulum Transport Instance running
         .expect("lora_lncp_link_retry.toml not found");
         let scenario = crate::topology::parse_scenario(&toml_str).expect("parse failed");
 
-        let mut runner = TestRunner::new(scenario).expect("TestRunner::new failed");
+        let mut runner = require_runner!(scenario);
 
         runner.up().expect("up failed");
         runner.wait_ready(60).expect("wait_ready failed");
@@ -2577,7 +2592,7 @@ Reticulum Transport Instance running
         .expect("lora_lncp_proof_retry.toml not found");
         let scenario = crate::topology::parse_scenario(&toml_str).expect("parse failed");
 
-        let mut runner = TestRunner::new(scenario).expect("TestRunner::new failed");
+        let mut runner = require_runner!(scenario);
 
         runner.up().expect("up failed");
         runner.wait_ready(60).expect("wait_ready failed");
@@ -2599,7 +2614,7 @@ Reticulum Transport Instance running
         .expect("lora_lrncp_resource_proof_retry.toml not found");
         let scenario = crate::topology::parse_scenario(&toml_str).expect("parse failed");
 
-        let mut runner = TestRunner::new(scenario).expect("TestRunner::new failed");
+        let mut runner = require_runner!(scenario);
 
         runner.up().expect("up failed");
         runner.wait_ready(60).expect("wait_ready failed");
@@ -2621,7 +2636,7 @@ Reticulum Transport Instance running
         .expect("lora_lncp_bidir.toml not found");
         let scenario = crate::topology::parse_scenario(&toml_str).expect("parse failed");
 
-        let mut runner = TestRunner::new(scenario).expect("TestRunner::new failed");
+        let mut runner = require_runner!(scenario);
 
         runner.up().expect("up failed");
         runner.wait_ready(60).expect("wait_ready failed");
@@ -2643,7 +2658,7 @@ Reticulum Transport Instance running
         .expect("lora_lncp_bridge.toml not found");
         let scenario = crate::topology::parse_scenario(&toml_str).expect("parse failed");
 
-        let mut runner = TestRunner::new(scenario).expect("TestRunner::new failed");
+        let mut runner = require_runner!(scenario);
 
         runner.up().expect("up failed");
         runner.wait_ready(60).expect("wait_ready failed");
@@ -2667,7 +2682,7 @@ Reticulum Transport Instance running
         .expect("lora_rncp_push.toml not found");
         let scenario = crate::topology::parse_scenario(&toml_str).expect("parse failed");
 
-        let mut runner = TestRunner::new(scenario).expect("TestRunner::new failed");
+        let mut runner = require_runner!(scenario);
 
         runner.up().expect("up failed");
         runner.wait_ready(60).expect("wait_ready failed");
@@ -2689,7 +2704,7 @@ Reticulum Transport Instance running
         .expect("lora_rncp_fetch.toml not found");
         let scenario = crate::topology::parse_scenario(&toml_str).expect("parse failed");
 
-        let mut runner = TestRunner::new(scenario).expect("TestRunner::new failed");
+        let mut runner = require_runner!(scenario);
 
         runner.up().expect("up failed");
         runner.wait_ready(60).expect("wait_ready failed");
@@ -2711,7 +2726,7 @@ Reticulum Transport Instance running
         .expect("lora_rncp_auth.toml not found");
         let scenario = crate::topology::parse_scenario(&toml_str).expect("parse failed");
 
-        let mut runner = TestRunner::new(scenario).expect("TestRunner::new failed");
+        let mut runner = require_runner!(scenario);
 
         runner.up().expect("up failed");
         runner.wait_ready(60).expect("wait_ready failed");
@@ -2733,7 +2748,7 @@ Reticulum Transport Instance running
         .expect("lora_rncp_proxy.toml not found");
         let scenario = crate::topology::parse_scenario(&toml_str).expect("parse failed");
 
-        let mut runner = TestRunner::new(scenario).expect("TestRunner::new failed");
+        let mut runner = require_runner!(scenario);
 
         runner.up().expect("up failed");
         runner.wait_ready(60).expect("wait_ready failed");
@@ -2755,7 +2770,7 @@ Reticulum Transport Instance running
         .expect("lora_rncp_bridge.toml not found");
         let scenario = crate::topology::parse_scenario(&toml_str).expect("parse failed");
 
-        let mut runner = TestRunner::new(scenario).expect("TestRunner::new failed");
+        let mut runner = require_runner!(scenario);
 
         runner.up().expect("up failed");
         runner.wait_ready(60).expect("wait_ready failed");
@@ -2779,7 +2794,7 @@ Reticulum Transport Instance running
         .expect("lora_lncp_push_to_python.toml not found");
         let scenario = crate::topology::parse_scenario(&toml_str).expect("parse failed");
 
-        let mut runner = TestRunner::new(scenario).expect("TestRunner::new failed");
+        let mut runner = require_runner!(scenario);
 
         runner.up().expect("up failed");
         runner.wait_ready(60).expect("wait_ready failed");
@@ -2801,7 +2816,7 @@ Reticulum Transport Instance running
         .expect("lora_rncp_push_to_rust.toml not found");
         let scenario = crate::topology::parse_scenario(&toml_str).expect("parse failed");
 
-        let mut runner = TestRunner::new(scenario).expect("TestRunner::new failed");
+        let mut runner = require_runner!(scenario);
 
         runner.up().expect("up failed");
         runner.wait_ready(60).expect("wait_ready failed");
@@ -2823,7 +2838,7 @@ Reticulum Transport Instance running
         .expect("lora_lncp_fetch_from_python.toml not found");
         let scenario = crate::topology::parse_scenario(&toml_str).expect("parse failed");
 
-        let mut runner = TestRunner::new(scenario).expect("TestRunner::new failed");
+        let mut runner = require_runner!(scenario);
 
         runner.up().expect("up failed");
         runner.wait_ready(60).expect("wait_ready failed");
@@ -2845,7 +2860,7 @@ Reticulum Transport Instance running
         .expect("lora_rncp_fetch_from_rust.toml not found");
         let scenario = crate::topology::parse_scenario(&toml_str).expect("parse failed");
 
-        let mut runner = TestRunner::new(scenario).expect("TestRunner::new failed");
+        let mut runner = require_runner!(scenario);
 
         runner.up().expect("up failed");
         runner.wait_ready(60).expect("wait_ready failed");
@@ -2867,7 +2882,7 @@ Reticulum Transport Instance running
         .expect("lora_lncp_auth_to_python.toml not found");
         let scenario = crate::topology::parse_scenario(&toml_str).expect("parse failed");
 
-        let mut runner = TestRunner::new(scenario).expect("TestRunner::new failed");
+        let mut runner = require_runner!(scenario);
 
         runner.up().expect("up failed");
         runner.wait_ready(60).expect("wait_ready failed");
@@ -2889,7 +2904,7 @@ Reticulum Transport Instance running
         .expect("lora_lncp_bridge_python_relay.toml not found");
         let scenario = crate::topology::parse_scenario(&toml_str).expect("parse failed");
 
-        let mut runner = TestRunner::new(scenario).expect("TestRunner::new failed");
+        let mut runner = require_runner!(scenario);
 
         runner.up().expect("up failed");
         runner.wait_ready(60).expect("wait_ready failed");
@@ -2913,7 +2928,7 @@ Reticulum Transport Instance running
         .expect("lora_3node_transfer.toml not found");
         let scenario = crate::topology::parse_scenario(&toml_str).expect("parse failed");
 
-        let mut runner = TestRunner::new(scenario).expect("TestRunner::new failed");
+        let mut runner = require_runner!(scenario);
 
         runner.up().expect("up failed");
         runner.wait_ready(60).expect("wait_ready failed");
@@ -2935,7 +2950,7 @@ Reticulum Transport Instance running
         .expect("lora_3node_contention.toml not found");
         let scenario = crate::topology::parse_scenario(&toml_str).expect("parse failed");
 
-        let mut runner = TestRunner::new(scenario).expect("TestRunner::new failed");
+        let mut runner = require_runner!(scenario);
 
         runner.up().expect("up failed");
         runner.wait_ready(60).expect("wait_ready failed");
@@ -2957,7 +2972,7 @@ Reticulum Transport Instance running
         .expect("lora_3node_bidir.toml not found");
         let scenario = crate::topology::parse_scenario(&toml_str).expect("parse failed");
 
-        let mut runner = TestRunner::new(scenario).expect("TestRunner::new failed");
+        let mut runner = require_runner!(scenario);
 
         runner.up().expect("up failed");
         runner.wait_ready(60).expect("wait_ready failed");
@@ -2977,7 +2992,7 @@ Reticulum Transport Instance running
         .expect("selftest_bulk.toml not found");
         let scenario = crate::topology::parse_scenario(&toml_str).expect("parse failed");
 
-        let mut runner = TestRunner::new(scenario).expect("TestRunner::new failed");
+        let mut runner = require_runner!(scenario);
 
         runner.up().expect("up failed");
         runner.wait_ready(60).expect("wait_ready failed");
@@ -2997,7 +3012,7 @@ Reticulum Transport Instance running
         .expect("ifac_basic_probe.toml not found");
         let scenario = crate::topology::parse_scenario(&toml_str).expect("parse failed");
 
-        let mut runner = TestRunner::new(scenario).expect("TestRunner::new failed");
+        let mut runner = require_runner!(scenario);
 
         runner.up().expect("up failed");
         runner.wait_ready(30).expect("wait_ready failed");
@@ -3017,7 +3032,7 @@ Reticulum Transport Instance running
         .expect("ifac_mixed_links.toml not found");
         let scenario = crate::topology::parse_scenario(&toml_str).expect("parse failed");
 
-        let mut runner = TestRunner::new(scenario).expect("TestRunner::new failed");
+        let mut runner = require_runner!(scenario);
 
         runner.up().expect("up failed");
         runner.wait_ready(60).expect("wait_ready failed");
@@ -3037,7 +3052,7 @@ Reticulum Transport Instance running
         .expect("ifac_through_relay.toml not found");
         let scenario = crate::topology::parse_scenario(&toml_str).expect("parse failed");
 
-        let mut runner = TestRunner::new(scenario).expect("TestRunner::new failed");
+        let mut runner = require_runner!(scenario);
 
         runner.up().expect("up failed");
         runner.wait_ready(60).expect("wait_ready failed");
@@ -3057,7 +3072,7 @@ Reticulum Transport Instance running
         .expect("ifac_rust_relay.toml not found");
         let scenario = crate::topology::parse_scenario(&toml_str).expect("parse failed");
 
-        let mut runner = TestRunner::new(scenario).expect("TestRunner::new failed");
+        let mut runner = require_runner!(scenario);
 
         runner.up().expect("up failed");
         runner.wait_ready(60).expect("wait_ready failed");
@@ -3077,7 +3092,7 @@ Reticulum Transport Instance running
         .expect("lncp_baseline.toml not found");
         let scenario = crate::topology::parse_scenario(&toml_str).expect("parse failed");
 
-        let mut runner = TestRunner::new(scenario).expect("TestRunner::new failed");
+        let mut runner = require_runner!(scenario);
 
         runner.up().expect("up failed");
         runner.wait_ready(60).expect("wait_ready failed");
@@ -3097,7 +3112,7 @@ Reticulum Transport Instance running
         .expect("lncp_rust_sender.toml not found");
         let scenario = crate::topology::parse_scenario(&toml_str).expect("parse failed");
 
-        let mut runner = TestRunner::new(scenario).expect("TestRunner::new failed");
+        let mut runner = require_runner!(scenario);
 
         runner.up().expect("up failed");
         runner.wait_ready(60).expect("wait_ready failed");
@@ -3117,7 +3132,7 @@ Reticulum Transport Instance running
         .expect("lncp_rust_edges.toml not found");
         let scenario = crate::topology::parse_scenario(&toml_str).expect("parse failed");
 
-        let mut runner = TestRunner::new(scenario).expect("TestRunner::new failed");
+        let mut runner = require_runner!(scenario);
 
         runner.up().expect("up failed");
         runner.wait_ready(60).expect("wait_ready failed");
@@ -3137,7 +3152,7 @@ Reticulum Transport Instance running
         .expect("lncp_full_rust.toml not found");
         let scenario = crate::topology::parse_scenario(&toml_str).expect("parse failed");
 
-        let mut runner = TestRunner::new(scenario).expect("TestRunner::new failed");
+        let mut runner = require_runner!(scenario);
 
         runner.up().expect("up failed");
         runner.wait_ready(60).expect("wait_ready failed");
@@ -3155,7 +3170,7 @@ Reticulum Transport Instance running
                 .expect("e30_repro.toml not found");
         let scenario = crate::topology::parse_scenario(&toml_str).expect("parse failed");
 
-        let mut runner = TestRunner::new(scenario).expect("TestRunner::new failed");
+        let mut runner = require_runner!(scenario);
 
         runner.up().expect("up failed");
         runner.wait_ready(60).expect("wait_ready failed");
@@ -3173,7 +3188,7 @@ Reticulum Transport Instance running
                 .expect("e31_repro.toml not found");
         let scenario = crate::topology::parse_scenario(&toml_str).expect("parse failed");
 
-        let mut runner = TestRunner::new(scenario).expect("TestRunner::new failed");
+        let mut runner = require_runner!(scenario);
 
         runner.up().expect("up failed");
         runner.wait_ready(60).expect("wait_ready failed");
@@ -3193,7 +3208,7 @@ Reticulum Transport Instance running
         .expect("lncp_fetch.toml not found");
         let scenario = crate::topology::parse_scenario(&toml_str).expect("parse failed");
 
-        let mut runner = TestRunner::new(scenario).expect("TestRunner::new failed");
+        let mut runner = require_runner!(scenario);
 
         runner.up().expect("up failed");
         runner.wait_ready(60).expect("wait_ready failed");
@@ -3211,7 +3226,7 @@ Reticulum Transport Instance running
                 .expect("lncp_auth.toml not found");
         let scenario = crate::topology::parse_scenario(&toml_str).expect("parse failed");
 
-        let mut runner = TestRunner::new(scenario).expect("TestRunner::new failed");
+        let mut runner = require_runner!(scenario);
 
         runner.up().expect("up failed");
         runner.wait_ready(60).expect("wait_ready failed");
@@ -3231,7 +3246,7 @@ Reticulum Transport Instance running
         .expect("lncp_auth_reject.toml not found");
         let scenario = crate::topology::parse_scenario(&toml_str).expect("parse failed");
 
-        let mut runner = TestRunner::new(scenario).expect("TestRunner::new failed");
+        let mut runner = require_runner!(scenario);
 
         runner.up().expect("up failed");
         runner.wait_ready(60).expect("wait_ready failed");
@@ -3251,7 +3266,7 @@ Reticulum Transport Instance running
         .expect("lncp_fetch_auth.toml not found");
         let scenario = crate::topology::parse_scenario(&toml_str).expect("parse failed");
 
-        let mut runner = TestRunner::new(scenario).expect("TestRunner::new failed");
+        let mut runner = require_runner!(scenario);
 
         runner.up().expect("up failed");
         runner.wait_ready(60).expect("wait_ready failed");
@@ -3271,7 +3286,7 @@ Reticulum Transport Instance running
         .expect("lncp_fetch_jail.toml not found");
         let scenario = crate::topology::parse_scenario(&toml_str).expect("parse failed");
 
-        let mut runner = TestRunner::new(scenario).expect("TestRunner::new failed");
+        let mut runner = require_runner!(scenario);
 
         runner.up().expect("up failed");
         runner.wait_ready(60).expect("wait_ready failed");
@@ -3291,7 +3306,7 @@ Reticulum Transport Instance running
         .expect("lncp_fetch_cross.toml not found");
         let scenario = crate::topology::parse_scenario(&toml_str).expect("parse failed");
 
-        let mut runner = TestRunner::new(scenario).expect("TestRunner::new failed");
+        let mut runner = require_runner!(scenario);
 
         runner.up().expect("up failed");
         runner.wait_ready(60).expect("wait_ready failed");

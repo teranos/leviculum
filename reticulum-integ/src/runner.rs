@@ -28,6 +28,7 @@ pub enum RunnerError {
     BinaryNotFound(PathBuf),
     ConfigGeneration(String),
     ProxyError(String),
+    InsufficientRNodes(String),
 }
 
 impl fmt::Display for RunnerError {
@@ -52,6 +53,9 @@ impl fmt::Display for RunnerError {
             }
             RunnerError::ProxyError(msg) => {
                 write!(f, "proxy error: {msg}")
+            }
+            RunnerError::InsufficientRNodes(msg) => {
+                write!(f, "{msg}")
             }
         }
     }
@@ -145,6 +149,10 @@ impl TestRunner {
         // generating configs, so the same TOML can be run with different
         // radio settings.
         apply_radio_overrides(&mut scenario);
+
+        // Resolve RNode device paths (env var overrides) and probe each
+        // with CMD_DETECT. Skips test if devices are missing.
+        resolve_and_probe_rnodes(&mut scenario)?;
 
         let tempdir = TempDir::new()?;
         let base_dir = tempdir.path().join("nodes");
@@ -543,6 +551,162 @@ impl TestRunner {
         let output = cmd.output()?;
         Ok(output)
     }
+}
+
+// ---------------------------------------------------------------------------
+// RNode discovery and probing
+// ---------------------------------------------------------------------------
+
+/// Probe a serial device for RNode CMD_DETECT response.
+///
+/// Two-phase: fast attempt (no settle), then retry with 500ms settle.
+/// Most connected devices respond immediately; cold/sleeping devices
+/// need the settle time.
+fn probe_rnode(path: &str) -> bool {
+    probe_rnode_once(path, false) || probe_rnode_once(path, true)
+}
+
+fn probe_rnode_once(path: &str, with_settle: bool) -> bool {
+    use std::io::{Read, Write};
+
+    const FEND: u8 = 0xC0;
+    const CMD_DETECT: u8 = 0x08;
+    const DETECT_REQ: u8 = 0x73;
+    const DETECT_RESP: u8 = 0x46;
+
+    let mut port = match serialport::new(path, 115_200)
+        .timeout(Duration::from_secs(1))
+        .open()
+    {
+        Ok(p) => p,
+        Err(_) => return false,
+    };
+
+    if with_settle {
+        thread::sleep(Duration::from_millis(500));
+    }
+
+    let query = [FEND, CMD_DETECT, DETECT_REQ, FEND];
+    if port.write_all(&query).is_err() {
+        return false;
+    }
+
+    let mut buf = [0u8; 64];
+    let deadline = Instant::now() + Duration::from_secs(1);
+    while Instant::now() < deadline {
+        match port.read(&mut buf) {
+            Ok(n) if buf[..n].contains(&DETECT_RESP) => return true,
+            Ok(_) => continue,
+            Err(ref e) if e.kind() == io::ErrorKind::TimedOut => continue,
+            Err(_) => return false,
+        }
+    }
+    false
+}
+
+/// Extract numeric suffix from `/dev/ttyACMN` paths.
+fn extract_acm_index(path: &str) -> Option<u32> {
+    let stripped = path.strip_prefix("/dev/ttyACM")?;
+    stripped.parse::<u32>().ok()
+}
+
+/// Resolve RNode device paths via env var overrides and probe for availability.
+///
+/// For each unique rnode path in the scenario:
+/// 1. Extract numeric suffix N from /dev/ttyACMN
+/// 2. Check LEVICULUM_RNODE_N env var — if set, use that path instead
+/// 3. Probe the resolved path with CMD_DETECT
+///
+/// Mutates scenario paths in-place. Returns error if any device is unreachable.
+fn resolve_and_probe_rnodes(scenario: &mut TestScenario) -> Result<(), RunnerError> {
+    // Collect all rnode paths that need resolution
+    let mut paths_to_resolve: Vec<String> = Vec::new();
+
+    for node in scenario.nodes.values() {
+        if let Some(ref path) = node.rnode {
+            if !paths_to_resolve.contains(path) {
+                paths_to_resolve.push(path.clone());
+            }
+        }
+        if let Some(ref interfaces) = node.rnode_interfaces {
+            for iface in interfaces {
+                if !paths_to_resolve.contains(&iface.rnode) {
+                    paths_to_resolve.push(iface.rnode.clone());
+                }
+            }
+        }
+    }
+
+    if paths_to_resolve.is_empty() {
+        return Ok(());
+    }
+
+    // Build resolution map: original_path -> resolved_path
+    let mut resolution: BTreeMap<String, String> = BTreeMap::new();
+    for path in &paths_to_resolve {
+        if let Some(idx) = extract_acm_index(path) {
+            let env_key = format!("LEVICULUM_RNODE_{idx}");
+            if let Ok(override_path) = std::env::var(&env_key) {
+                resolution.insert(path.clone(), override_path);
+                continue;
+            }
+        }
+        resolution.insert(path.clone(), path.clone());
+    }
+
+    // Apply resolution to scenario
+    for node in scenario.nodes.values_mut() {
+        if let Some(ref mut path) = node.rnode {
+            if let Some(resolved) = resolution.get(path.as_str()) {
+                *path = resolved.clone();
+            }
+        }
+        if let Some(ref mut interfaces) = node.rnode_interfaces {
+            for iface in interfaces.iter_mut() {
+                if let Some(resolved) = resolution.get(&iface.rnode) {
+                    iface.rnode = resolved.clone();
+                }
+            }
+        }
+    }
+
+    // Probe each unique resolved path
+    let unique_resolved: Vec<String> = {
+        let mut v: Vec<String> = resolution.values().cloned().collect();
+        v.sort();
+        v.dedup();
+        v
+    };
+
+    let mut available = Vec::new();
+    let mut missing = Vec::new();
+    for path in &unique_resolved {
+        if probe_rnode(path) {
+            available.push(path.clone());
+        } else {
+            missing.push(path.clone());
+        }
+    }
+
+    if !missing.is_empty() {
+        let needed = unique_resolved.len();
+        let found = available.len();
+        let env_hints: Vec<String> = paths_to_resolve
+            .iter()
+            .filter_map(|p| extract_acm_index(p).map(|n| format!("LEVICULUM_RNODE_{n}")))
+            .collect();
+        let hint = if env_hints.is_empty() {
+            String::new()
+        } else {
+            format!(" (set {})", env_hints.join(", "))
+        };
+        return Err(RunnerError::InsufficientRNodes(format!(
+            "Skipping: needs {needed} RNodes, found {found} — missing: {}{hint}",
+            missing.join(", ")
+        )));
+    }
+
+    Ok(())
 }
 
 /// Spawn lora-proxy processes for all nodes with `rnode_proxy = true`.
