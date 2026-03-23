@@ -86,6 +86,13 @@ pub fn generate_compose(
                 writeln!(out, "    devices:").ok();
                 writeln!(out, "      - \"{device}:{device}\"").ok();
             }
+        } else if let Some(ref interfaces) = node.rnode_interfaces {
+            // Multi-interface: pass through all RNode devices.
+            writeln!(out, "    privileged: true").ok();
+            writeln!(out, "    devices:").ok();
+            for iface in interfaces {
+                writeln!(out, "      - \"{}:{}\"", iface.rnode, iface.rnode).ok();
+            }
         }
     }
 
