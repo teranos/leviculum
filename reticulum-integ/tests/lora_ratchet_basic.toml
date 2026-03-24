@@ -1,0 +1,38 @@
+# Ratchet basic test: both destinations enable ratchets (not enforced).
+# Selftest establishes a link, exchanges ratchet-encrypted single packets.
+# Verifies that ratchet key propagation and decryption work over LoRa.
+
+[test]
+name = "lora_ratchet_basic"
+description = "Ratchet-encrypted single packets over direct LoRa"
+timeout_secs = 300
+rust_log = "reticulum_core::transport=debug,reticulum_core::link=debug,reticulum_std::interfaces=debug,info"
+
+[radio]
+frequency = 869525000
+bandwidth = 62500
+sf = 7
+cr = 5
+txpower = 17
+
+[nodes.alpha]
+type = "rust"
+respond_to_probes = true
+rnode = "/dev/ttyACM0"
+listen_port = 4242
+
+[nodes.beta]
+type = "rust"
+respond_to_probes = true
+rnode = "/dev/ttyACM1"
+listen_port = 4242
+
+[[steps]]
+action = "sleep"
+duration_secs = 25
+
+[[steps]]
+action = "exec"
+on = "alpha"
+command = "lns selftest 127.0.0.1:4242 beta:4242 --mode ratchet-basic --discovery-timeout 120"
+expect_exit_code = 0
