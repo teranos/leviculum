@@ -262,6 +262,33 @@ pub enum Step {
         #[serde(default)]
         fetch_path: String,
     },
+    /// Run multiple file transfers simultaneously in separate threads.
+    /// All nodes must be disjoint (no node appears in more than one transfer).
+    #[serde(rename = "parallel_file_transfers")]
+    ParallelFileTransfers {
+        transfers: Vec<ParallelTransferDef>,
+        #[serde(default = "default_transfer_timeout")]
+        timeout_secs: u64,
+    },
+}
+
+/// Simplified transfer definition for parallel execution.
+// Fields read via serde deserialization — compiler cannot
+// see the indirect access through TOML parsing.
+#[allow(dead_code)]
+#[derive(Debug, Clone, Deserialize)]
+pub struct ParallelTransferDef {
+    pub sender: String,
+    pub receiver: String,
+    #[serde(default = "default_sender_tool")]
+    pub sender_tool: String,
+    #[serde(default = "default_receiver_tool")]
+    pub receiver_tool: String,
+    pub file_size: u64,
+    #[serde(default = "default_push_mode")]
+    pub mode: String,
+    #[serde(default = "default_transfer_timeout")]
+    pub timeout_secs: u64,
 }
 
 fn default_mode() -> String {
@@ -286,6 +313,18 @@ fn default_step_timeout() -> u64 {
 
 fn default_expect_success() -> String {
     "success".into()
+}
+
+fn default_push_mode() -> String {
+    "push".to_string()
+}
+
+fn default_sender_tool() -> String {
+    "lncp".to_string()
+}
+
+fn default_receiver_tool() -> String {
+    "lncp".to_string()
 }
 
 // ---------------------------------------------------------------------------

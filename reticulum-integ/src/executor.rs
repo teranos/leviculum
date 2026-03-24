@@ -1,11 +1,12 @@
 use std::collections::BTreeMap;
 use std::fmt;
 use std::io::{BufRead, Write};
+use std::sync::mpsc;
 use std::thread;
 use std::time::{Duration, Instant};
 
 use crate::runner::{RunnerError, TestRunner};
-use crate::topology::{scale_timeout, timeout_scale, Step};
+use crate::topology::{scale_timeout, timeout_scale, ParallelTransferDef, Step};
 
 // ---------------------------------------------------------------------------
 // Error type
@@ -423,6 +424,16 @@ fn execute_step(
                 expect_result,
                 fetch_path,
             )
+        }
+        Step::ParallelFileTransfers {
+            transfers,
+            timeout_secs,
+        } => {
+            println!(
+                "[{step_num}/{total}] parallel_file_transfers ({} transfers)...",
+                transfers.len()
+            );
+            execute_parallel_file_transfers(runner, index, transfers, *timeout_secs)
         }
     }
 }
@@ -1326,6 +1337,137 @@ fn execute_transfer_direction(
     println!("  listener stopped on {recv_node}");
 
     Ok(())
+}
+
+/// Run multiple file transfers simultaneously in separate threads.
+///
+/// Each transfer runs in its own thread via `std::thread::scope()`.
+/// Results are collected via `mpsc::channel` with a hard deadline.
+/// All nodes must be disjoint — no node appears in more than one transfer.
+fn execute_parallel_file_transfers(
+    runner: &TestRunner,
+    step_index: usize,
+    transfers: &[ParallelTransferDef],
+    timeout_secs: u64,
+) -> Result<(), StepError> {
+    // Validate: all nodes must be disjoint
+    let mut seen: BTreeMap<String, (usize, &str)> = BTreeMap::new();
+    for (i, t) in transfers.iter().enumerate() {
+        for (role, name) in [("sender", &t.sender), ("receiver", &t.receiver)] {
+            if let Some((prev_i, prev_role)) = seen.insert(name.clone(), (i, role)) {
+                return Err(StepError::StepFailed {
+                    step_index,
+                    action: "parallel_file_transfers".into(),
+                    detail: format!(
+                        "node '{}' appears as {} in transfer {} and {} in transfer {} \
+                         — shared containers cause file path races",
+                        name, prev_role, prev_i, role, i
+                    ),
+                });
+            }
+        }
+    }
+
+    let deadline = Instant::now() + Duration::from_secs(timeout_secs);
+    let has_rnode = runner
+        .scenario()
+        .nodes
+        .values()
+        .any(|n| n.rnode.is_some() || n.rnode_interfaces.is_some());
+    let n = transfers.len();
+    let (tx, rx) = mpsc::channel();
+
+    let collected = std::thread::scope(|s| {
+        // Spawn all transfer threads
+        for (i, transfer) in transfers.iter().enumerate() {
+            let tx = tx.clone();
+            s.spawn(move || {
+                println!(
+                    "  [{i}] starting: {} -> {}",
+                    transfer.sender, transfer.receiver
+                );
+                let mut results = Vec::new();
+                let r = execute_transfer_direction(
+                    runner,
+                    step_index,
+                    &transfer.sender,
+                    &transfer.receiver,
+                    &transfer.sender_tool,
+                    &transfer.receiver_tool,
+                    &[transfer.file_size],
+                    1,
+                    transfer.timeout_secs,
+                    &transfer.mode,
+                    "",
+                    "",
+                    None,
+                    "success",
+                    "",
+                    &mut results,
+                    has_rnode,
+                );
+                let _ = tx.send((i, r.map(|_| results)));
+            });
+        }
+        drop(tx);
+
+        // Collect results with hard deadline
+        let mut collected: Vec<(usize, Result<Vec<TransferResult>, StepError>)> = Vec::new();
+        for _ in 0..n {
+            let remaining = deadline.saturating_duration_since(Instant::now());
+            match rx.recv_timeout(remaining) {
+                Ok(result) => collected.push(result),
+                Err(_) => break,
+            }
+        }
+        collected
+    });
+
+    // Report all results
+    let mut any_failed = false;
+    let collected_indices: Vec<usize> = collected.iter().map(|(i, _)| *i).collect();
+
+    for (i, result) in &collected {
+        let t = &transfers[*i];
+        match result {
+            Ok(transfer_results) => {
+                for tr in transfer_results {
+                    println!(
+                        "  [{i}] {} -> {}: {:.2}s ok",
+                        t.sender,
+                        t.receiver,
+                        tr.duration.as_secs_f64()
+                    );
+                }
+            }
+            Err(e) => {
+                println!("  [{i}] {} -> {}: FAILED: {e}", t.sender, t.receiver);
+                any_failed = true;
+            }
+        }
+    }
+
+    // Report timed-out transfers
+    for i in 0..n {
+        if !collected_indices.contains(&i) {
+            let t = &transfers[i];
+            println!(
+                "  [{i}] {} -> {}: TIMEOUT (no result within {timeout_secs}s)",
+                t.sender, t.receiver
+            );
+            any_failed = true;
+        }
+    }
+
+    if any_failed {
+        Err(StepError::StepFailed {
+            step_index,
+            action: "parallel_file_transfers".into(),
+            detail: "one or more parallel transfers failed".into(),
+        })
+    } else {
+        Ok(())
+    }
 }
 
 /// Build the listener command string with proper flag handling.
@@ -2524,6 +2666,28 @@ Reticulum Transport Instance running
             "/tests/lora_lncp_auth_fetch.toml"
         ))
         .expect("lora_lncp_auth_fetch.toml not found");
+        let scenario = crate::topology::parse_scenario(&toml_str).expect("parse failed");
+
+        let mut runner = require_runner!(scenario);
+
+        runner.up().expect("up failed");
+        runner.wait_ready(60).expect("wait_ready failed");
+
+        let result = execute_steps(&runner);
+        runner.down().expect("down failed");
+        result.expect("execute_steps should succeed");
+    }
+
+    #[test]
+    #[ignore] // Requires 4 RNode devices
+    #[serial(lora)]
+    fn lora_4node_contention() {
+        let _lock = acquire_lora_lock();
+        let toml_str = std::fs::read_to_string(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/tests/lora_4node_contention.toml"
+        ))
+        .expect("lora_4node_contention.toml not found");
         let scenario = crate::topology::parse_scenario(&toml_str).expect("parse failed");
 
         let mut runner = require_runner!(scenario);
