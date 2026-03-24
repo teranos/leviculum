@@ -1,0 +1,57 @@
+# Link teardown and re-establishment test over LoRa.
+#
+# First selftest: establish link, exchange bidirectional channel
+# messages, explicitly close the link (close packet sent to peer).
+#
+# 5s sleep: allows close packet to propagate over LoRa. No mandatory
+# cooldown — close_link() removes the link synchronously. The sleep
+# just ensures the peer receives the close notification.
+#
+# Second selftest: proves link teardown was clean — a new link
+# establishes without stale state interference. Fresh ephemeral keys,
+# new link_id, full discovery→link→data→close cycle again.
+
+[test]
+name = "lora_link_teardown"
+description = "Link close and re-establishment over direct LoRa"
+timeout_secs = 420
+rust_log = "reticulum_core::transport=debug,reticulum_core::link=debug,reticulum_std::interfaces=debug,info"
+
+[radio]
+frequency = 869525000
+bandwidth = 62500
+sf = 7
+cr = 5
+txpower = 17
+
+[nodes.alpha]
+type = "rust"
+respond_to_probes = true
+rnode = "/dev/ttyACM0"
+listen_port = 4242
+
+[nodes.beta]
+type = "rust"
+respond_to_probes = true
+rnode = "/dev/ttyACM1"
+listen_port = 4242
+
+[[steps]]
+action = "sleep"
+duration_secs = 25
+
+[[steps]]
+action = "exec"
+on = "alpha"
+command = "lns selftest 127.0.0.1:4242 beta:4242 --mode link --discovery-timeout 120"
+expect_exit_code = 0
+
+[[steps]]
+action = "sleep"
+duration_secs = 5
+
+[[steps]]
+action = "exec"
+on = "alpha"
+command = "lns selftest 127.0.0.1:4242 beta:4242 --mode link --discovery-timeout 120"
+expect_exit_code = 0

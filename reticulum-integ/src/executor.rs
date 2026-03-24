@@ -2495,6 +2495,28 @@ Reticulum Transport Instance running
     #[test]
     #[ignore] // Requires RNode hardware
     #[serial(lora)]
+    fn lora_link_teardown() {
+        let _lock = acquire_lora_lock();
+        let toml_str = std::fs::read_to_string(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/tests/lora_link_teardown.toml"
+        ))
+        .expect("lora_link_teardown.toml not found");
+        let scenario = crate::topology::parse_scenario(&toml_str).expect("parse failed");
+
+        let mut runner = require_runner!(scenario);
+
+        runner.up().expect("up failed");
+        runner.wait_ready(60).expect("wait_ready failed");
+
+        let result = execute_steps(&runner);
+        runner.down().expect("down failed");
+        result.expect("execute_steps should succeed");
+    }
+
+    #[test]
+    #[ignore] // Requires RNode hardware
+    #[serial(lora)]
     fn lora_dual_cluster_rust() {
         let _lock = acquire_lora_lock();
         let toml_str = std::fs::read_to_string(concat!(
