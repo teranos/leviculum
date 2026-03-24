@@ -3387,16 +3387,16 @@ impl<C: Clock, S: Storage> Transport<C, S> {
                 destination_hash: requested_hash,
                 requesting_interface: interface_index,
             });
-            // Set up AnnounceEntry placeholder with the 400ms grace period.
-            // NodeCore will replace raw_packet with fresh announce bytes.
-            // If no cached announce exists yet, use empty raw — NodeCore will fill it.
+            // Schedule deferred path response only if we have a cached announce.
+            // Without a cache, there's nothing to rebroadcast — NodeCore will
+            // generate a fresh announce in response to the PathRequestReceived
+            // event, which populates the cache for future requests.
+            if let Some(cached_raw) = self
+                .storage
+                .get_announce_cache(&requested_hash)
+                .cloned()
             {
                 let now = self.clock.now_ms();
-                let cached_raw = self
-                    .storage
-                    .get_announce_cache(&requested_hash)
-                    .cloned()
-                    .unwrap_or_default();
                 let hops = Packet::unpack(&cached_raw).map(|p| p.hops).unwrap_or(0);
                 tracing::debug!(
                     "Setting up deferred path response for local dest <{}>",
@@ -6980,6 +6980,165 @@ mod tests {
             assert!(
                 broadcasts.is_empty(),
                 "Local dest path response should not broadcast"
+            );
+        }
+
+        // ─── Issue #13: Deferred path response with no cached announce ──
+
+        #[test]
+        fn test_path_request_local_dest_no_cache_no_announce_entry() {
+            let mut transport = make_transport_enabled();
+            let _idx0 = transport.register_interface(Box::new(MockInterface::new("if0", 1)));
+
+            let dest_hash = [0x42; TRUNCATED_HASHBYTES];
+            transport.register_destination(dest_hash);
+            // NO announce cache set — this is the bug trigger
+
+            // Build path request
+            let path_req_hash = transport.path_request_hash;
+            let mut data = Vec::new();
+            data.extend_from_slice(&dest_hash);
+            data.extend_from_slice(&[0xBB; TRUNCATED_HASHBYTES]);
+            data.extend_from_slice(&[0xCC; TRUNCATED_HASHBYTES]);
+
+            let packet = Packet {
+                flags: PacketFlags {
+                    ifac_flag: false,
+                    header_type: HeaderType::Type1,
+                    context_flag: false,
+                    transport_type: TransportType::Broadcast,
+                    dest_type: crate::destination::DestinationType::Plain,
+                    packet_type: PacketType::Data,
+                },
+                hops: 0,
+                transport_id: None,
+                destination_hash: path_req_hash,
+                context: PacketContext::None,
+                data: PacketData::Owned(data),
+            };
+
+            let mut buf = [0u8; 500];
+            let len = packet.pack(&mut buf).unwrap();
+            transport.process_incoming(0, &buf[..len]).unwrap();
+
+            // PathRequestReceived event must be emitted
+            let events: Vec<_> = transport.drain_events().collect();
+            assert!(
+                events.iter().any(|e| matches!(
+                    e,
+                    TransportEvent::PathRequestReceived { destination_hash, .. }
+                        if *destination_hash == dest_hash
+                )),
+                "Must emit PathRequestReceived"
+            );
+
+            // announce table must NOT have an entry (no cache = nothing to rebroadcast)
+            assert!(
+                transport.storage().get_announce(&dest_hash).is_none(),
+                "Must not create AnnounceEntry when no announce cache exists"
+            );
+        }
+
+        #[test]
+        fn test_path_request_local_dest_with_cache_creates_entry() {
+            let mut transport = make_transport_enabled();
+            let _idx0 = transport.register_interface(Box::new(MockInterface::new("if0", 1)));
+
+            let dest_hash = [0x42; TRUNCATED_HASHBYTES];
+            transport.register_destination(dest_hash);
+
+            // Populate announce cache
+            let (raw, _) = make_announce_raw(0, PacketContext::None);
+            transport
+                .storage_mut()
+                .set_announce_cache(dest_hash, raw.clone());
+
+            // Build and send path request
+            let path_req_hash = transport.path_request_hash;
+            let mut data = Vec::new();
+            data.extend_from_slice(&dest_hash);
+            data.extend_from_slice(&[0xBB; TRUNCATED_HASHBYTES]);
+            data.extend_from_slice(&[0xCC; TRUNCATED_HASHBYTES]);
+
+            let packet = Packet {
+                flags: PacketFlags {
+                    ifac_flag: false,
+                    header_type: HeaderType::Type1,
+                    context_flag: false,
+                    transport_type: TransportType::Broadcast,
+                    dest_type: crate::destination::DestinationType::Plain,
+                    packet_type: PacketType::Data,
+                },
+                hops: 0,
+                transport_id: None,
+                destination_hash: path_req_hash,
+                context: PacketContext::None,
+                data: PacketData::Owned(data),
+            };
+
+            let mut buf = [0u8; 500];
+            let len = packet.pack(&mut buf).unwrap();
+            transport.process_incoming(0, &buf[..len]).unwrap();
+
+            // Event emitted
+            let events: Vec<_> = transport.drain_events().collect();
+            assert!(
+                events
+                    .iter()
+                    .any(|e| matches!(e, TransportEvent::PathRequestReceived { .. })),
+                "Must emit PathRequestReceived"
+            );
+
+            // AnnounceEntry created with correct data
+            let entry = transport
+                .storage()
+                .get_announce(&dest_hash)
+                .expect("Must create AnnounceEntry when cache exists");
+            assert!(!entry.raw_packet.is_empty(), "raw_packet must not be empty");
+            assert_eq!(entry.raw_packet, raw, "raw_packet must match cached announce");
+            assert_eq!(
+                entry.target_interface,
+                Some(0),
+                "must target requesting interface"
+            );
+            assert!(entry.block_rebroadcasts, "must block rebroadcasts");
+        }
+
+        #[test]
+        fn test_announce_rebroadcast_empty_packet_is_silent() {
+            let mut transport = make_transport_enabled();
+            let _idx0 = transport.register_interface(Box::new(MockInterface::new("if0", 1)));
+
+            let dest_hash = [0x42; TRUNCATED_HASHBYTES];
+
+            // Insert bogus AnnounceEntry with empty raw_packet and past retransmit
+            transport.storage_mut().set_announce(
+                dest_hash,
+                AnnounceEntry {
+                    timestamp_ms: TEST_TIME_MS,
+                    hops: 0,
+                    retries: 0,
+                    retransmit_at_ms: Some(TEST_TIME_MS - 1),
+                    raw_packet: Vec::new(),
+                    receiving_interface_index: 0,
+                    target_interface: Some(0),
+                    local_rebroadcasts: 0,
+                    block_rebroadcasts: false,
+                },
+            );
+
+            // Advance clock and poll — must not panic or emit broadcast
+            transport.clock.advance(1);
+            transport.poll();
+
+            let actions = transport.drain_actions();
+            let broadcasts: Vec<_> = actions
+                .iter()
+                .filter(|a| matches!(a, Action::SendPacket { .. } | Action::Broadcast { .. }))
+                .collect();
+            assert!(
+                broadcasts.is_empty(),
+                "Empty raw_packet must not produce any broadcast action"
             );
         }
 
