@@ -428,12 +428,27 @@ fn execute_step(
         Step::ParallelFileTransfers {
             transfers,
             timeout_secs,
+            expect_result,
         } => {
             println!(
                 "[{step_num}/{total}] parallel_file_transfers ({} transfers)...",
                 transfers.len()
             );
-            execute_parallel_file_transfers(runner, index, transfers, *timeout_secs)
+            let result =
+                execute_parallel_file_transfers(runner, index, transfers, *timeout_secs);
+            let expect_fail = expect_result == "failure";
+            match (expect_fail, &result) {
+                (true, Err(_)) => {
+                    println!("  parallel transfers failed as expected");
+                    Ok(())
+                }
+                (true, Ok(())) => Err(StepError::StepFailed {
+                    step_index: index,
+                    action: "parallel_file_transfers".into(),
+                    detail: "expected failure but all transfers succeeded".into(),
+                }),
+                (false, _) => result,
+            }
         }
     }
 }
@@ -2681,13 +2696,79 @@ Reticulum Transport Instance running
     #[test]
     #[ignore] // Requires 4 RNode devices
     #[serial(lora)]
-    fn lora_4node_contention() {
+    fn lora_4node_contention_rust() {
         let _lock = acquire_lora_lock();
         let toml_str = std::fs::read_to_string(concat!(
             env!("CARGO_MANIFEST_DIR"),
-            "/tests/lora_4node_contention.toml"
+            "/tests/lora_4node_contention_rust.toml"
         ))
-        .expect("lora_4node_contention.toml not found");
+        .expect("lora_4node_contention_rust.toml not found");
+        let scenario = crate::topology::parse_scenario(&toml_str).expect("parse failed");
+
+        let mut runner = require_runner!(scenario);
+
+        runner.up().expect("up failed");
+        runner.wait_ready(60).expect("wait_ready failed");
+
+        let result = execute_steps(&runner);
+        runner.down().expect("down failed");
+        result.expect("execute_steps should succeed");
+    }
+
+    #[test]
+    #[ignore] // Requires 4 RNode devices
+    #[serial(lora)]
+    fn lora_4node_contention_python() {
+        let _lock = acquire_lora_lock();
+        let toml_str = std::fs::read_to_string(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/tests/lora_4node_contention_python.toml"
+        ))
+        .expect("lora_4node_contention_python.toml not found");
+        let scenario = crate::topology::parse_scenario(&toml_str).expect("parse failed");
+
+        let mut runner = require_runner!(scenario);
+
+        runner.up().expect("up failed");
+        runner.wait_ready(60).expect("wait_ready failed");
+
+        let result = execute_steps(&runner);
+        runner.down().expect("down failed");
+        result.expect("execute_steps should succeed");
+    }
+
+    #[test]
+    #[ignore] // Requires 4 RNode devices
+    #[serial(lora)]
+    fn lora_4node_contention_mixed() {
+        let _lock = acquire_lora_lock();
+        let toml_str = std::fs::read_to_string(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/tests/lora_4node_contention_mixed.toml"
+        ))
+        .expect("lora_4node_contention_mixed.toml not found");
+        let scenario = crate::topology::parse_scenario(&toml_str).expect("parse failed");
+
+        let mut runner = require_runner!(scenario);
+
+        runner.up().expect("up failed");
+        runner.wait_ready(60).expect("wait_ready failed");
+
+        let result = execute_steps(&runner);
+        runner.down().expect("down failed");
+        result.expect("execute_steps should succeed");
+    }
+
+    #[test]
+    #[ignore] // Requires 4 RNode devices
+    #[serial(lora)]
+    fn lora_4node_sequential_python() {
+        let _lock = acquire_lora_lock();
+        let toml_str = std::fs::read_to_string(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/tests/lora_4node_sequential_python.toml"
+        ))
+        .expect("lora_4node_sequential_python.toml not found");
         let scenario = crate::topology::parse_scenario(&toml_str).expect("parse failed");
 
         let mut runner = require_runner!(scenario);

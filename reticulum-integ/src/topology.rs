@@ -269,6 +269,8 @@ pub enum Step {
         transfers: Vec<ParallelTransferDef>,
         #[serde(default = "default_transfer_timeout")]
         timeout_secs: u64,
+        #[serde(default = "default_expect_success")]
+        expect_result: String,
     },
 }
 
