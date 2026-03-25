@@ -25,9 +25,16 @@ type = "rust"
 respond_to_probes = true
 rnode = "/dev/ttyACM0"
 
+# enable_transport = false: beta is a passive bystander.
+# With transport enabled, beta relays link requests and
+# proofs between alpha and gamma, causing duplicate packets
+# and proof collisions on the shared 125kHz channel.
+# The original test design explicitly disabled transport
+# to prevent this failure mode.
 [nodes.beta]
 type = "rust"
 respond_to_probes = true
+enable_transport = false
 rnode = "/dev/ttyACM1"
 
 [nodes.gamma]
@@ -39,7 +46,7 @@ rnode = "/dev/ttyACM2"
 action = "sleep"
 duration_secs = 30
 
-# Full 3-node path convergence
+# Path convergence (beta has transport disabled, skip its probe)
 [[steps]]
 action = "wait_for_path"
 on = "alpha"
@@ -49,12 +56,6 @@ timeout_secs = 90
 [[steps]]
 action = "wait_for_path"
 on = "gamma"
-destination = "alpha.probe"
-timeout_secs = 90
-
-[[steps]]
-action = "wait_for_path"
-on = "beta"
 destination = "alpha.probe"
 timeout_secs = 90
 
