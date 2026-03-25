@@ -449,6 +449,9 @@ async fn rnode_io_task(
     counters: Arc<InterfaceCounters>,
     flow_control: bool,
     jitter_max_ms: u64,
+    bandwidth_hz: u32,
+    sf: u8,
+    cr: u8,
 ) -> mpsc::Receiver<OutgoingPacket> {
     let mut deframer = KissDeframer::with_max_payload(rnode::HW_MTU);
     let mut buf = [0u8; IO_READ_BUF];
@@ -680,10 +683,19 @@ async fn rnode_io_task(
                     interface_ready = false;
                 }
 
-                // Schedule next if queue not empty
+                // Schedule next with CSMA-fair pacing: wait at least airtime +
+                // DIFS + max CW so the firmware queue has at most one frame.
+                // This prevents flush_queue() from sending multiple frames
+                // back-to-back without CSMA between them.
                 if !send_queue.is_empty() {
+                    let spacing = rnode::compute_spacing_ms(
+                        queued.payload_len as u32,
+                        bandwidth_hz,
+                        sf,
+                        cr,
+                    );
                     send_timer = Some(Box::pin(tokio::time::sleep(Duration::from_millis(
-                        rnode::MIN_SPACING_MS,
+                        spacing,
                     ))));
                 }
             } else {
@@ -762,6 +774,9 @@ async fn rnode_reconnect_task(
                     Arc::clone(&counters),
                     config.flow_control,
                     jitter_max_ms,
+                    radio.bandwidth,
+                    radio.sf,
+                    radio.cr,
                 )
                 .await;
 

@@ -559,10 +559,87 @@ pub fn compute_bitrate(sf: u8, cr: u8, bandwidth: u32) -> u32 {
 /// Matches Python's PATHFINDER_RW = 0.5s.
 pub const JITTER_MAX_MS: u64 = 500;
 
-/// Minimum spacing (ms) between consecutive transmissions.
+/// Minimum spacing (ms) between consecutive serial writes.
 /// Prevents overrunning the serial buffer (508 bytes at 115200 baud ≈ 44ms).
-/// RNode firmware CSMA handles radio-level collision avoidance.
+/// For CSMA-fair pacing, use `compute_spacing_ms()` instead — this constant
+/// is only the serial-level floor.
 pub const MIN_SPACING_MS: u64 = 50;
+
+/// Firmware CSMA DIFS time (ms). The firmware waits this long with the channel
+/// clear before starting the contention window. From RNode_Firmware Config.h.
+pub const CSMA_DIFS_MS: u64 = 48;
+
+/// Firmware CSMA maximum contention window (ms). 15 slots × 24ms = 360ms.
+/// From RNode_Firmware Config.h: csma_slot_ms=24, cw_max=15.
+pub const CSMA_MAX_CW_MS: u64 = 360;
+
+/// Safety margin (ms) added to airtime-based pacing to absorb firmware
+/// processing jitter and serial I/O overhead.
+pub const PACING_MARGIN_MS: u64 = 100;
+
+/// Compute LoRa airtime in milliseconds for a given payload.
+///
+/// Uses the SX127x formula from Semtech AN1200.13. Parameters:
+/// - `payload_bytes`: total bytes on the wire (header + data)
+/// - `bandwidth_hz`: signal bandwidth in Hz (e.g., 62500, 125000, 250000)
+/// - `sf`: spreading factor (6-12)
+/// - `cr`: coding rate denominator (5-8, meaning 4/5 through 4/8)
+///
+/// Returns airtime in milliseconds, rounded up.
+pub fn airtime_ms(payload_bytes: u32, bandwidth_hz: u32, sf: u8, cr: u8) -> u64 {
+    // Symbol time: T_sym = 2^SF / BW (in seconds)
+    // We compute in microseconds to avoid floating point.
+    // T_sym_us = 2^SF * 1_000_000 / BW
+    let sf = sf as u64;
+    let bw = bandwidth_hz as u64;
+    let t_sym_us = (1u64 << sf) * 1_000_000 / bw;
+
+    // Preamble: 8 symbols + 4.25 symbols = 12.25 symbols
+    // In microseconds: 12.25 * T_sym = (49 * T_sym) / 4
+    let t_preamble_us = 49 * t_sym_us / 4;
+
+    // Payload symbol count (explicit header mode, CRC on):
+    //   n_payload = 8 + max(ceil((8*PL - 4*SF + 28 + 16) / (4*(SF-2*DE))) * (CR-4+4), 0)
+    // where DE=0 for SF<11, DE=1 for SF>=11
+    // CR parameter is denominator (5-8), so (CR-4) gives 1-4
+    let de: u64 = if sf >= 11 { 1 } else { 0 };
+    let pl = payload_bytes as i64;
+    let sf_i = sf as i64;
+    let cr_factor = (cr as i64 - 4).max(1) as u64; // 1-4
+
+    let numerator = 8 * pl - 4 * sf_i + 28 + 16;
+    let denominator = 4 * (sf_i - 2 * de as i64);
+
+    let n_extra = if numerator > 0 && denominator > 0 {
+        let ceil_div = (numerator + denominator - 1) / denominator;
+        (ceil_div as u64) * (cr_factor + 4)
+    } else {
+        0
+    };
+    let n_payload = 8 + n_extra;
+
+    let t_payload_us = n_payload * t_sym_us;
+
+    // Total airtime
+    let total_us = t_preamble_us + t_payload_us;
+
+    // Convert to ms, round up
+    (total_us + 999) / 1000
+}
+
+/// Compute CSMA-fair inter-frame spacing in milliseconds.
+///
+/// Ensures the firmware's TX queue has at most one frame, so `flush_queue()`
+/// (which sends all queued frames back-to-back without CSMA) only sends one
+/// frame per CSMA contest.
+///
+/// spacing = airtime(frame) + DIFS + max_CW + margin
+pub fn compute_spacing_ms(payload_bytes: u32, bandwidth_hz: u32, sf: u8, cr: u8) -> u64 {
+    let air = airtime_ms(payload_bytes, bandwidth_hz, sf, cr);
+    let spacing = air + CSMA_DIFS_MS + CSMA_MAX_CW_MS + PACING_MARGIN_MS;
+    // Never go below the serial-level floor
+    spacing.max(MIN_SPACING_MS)
+}
 
 // ---------------------------------------------------------------------------
 // Tests
@@ -1052,5 +1129,61 @@ mod tests {
         // 7 * (4.0/5) / (128 / 500) * 1000 = 7 * 0.8 / 0.256 * 1000 = 21875
         let br = compute_bitrate(7, 5, 500_000);
         assert_eq!(br, 21875);
+    }
+
+    // ── Airtime tests ───────────────────────────────────────────────
+
+    #[test]
+    fn test_airtime_491b_bw62500_sf7_cr5() {
+        // 491-byte resource data segment at 62.5kHz SF7 CR5
+        // Semtech calculator: ~1440ms
+        let ms = airtime_ms(491, 62_500, 7, 5);
+        assert!(ms >= 1400 && ms <= 1500, "airtime={ms}ms, expected ~1440ms");
+    }
+
+    #[test]
+    fn test_airtime_491b_bw125000_sf7_cr5() {
+        // Same payload at 125kHz — should be ~half
+        let ms = airtime_ms(491, 125_000, 7, 5);
+        assert!(ms >= 700 && ms <= 800, "airtime={ms}ms, expected ~750ms");
+    }
+
+    #[test]
+    fn test_airtime_491b_bw250000_sf7_cr5() {
+        // Same payload at 250kHz — should be ~quarter
+        let ms = airtime_ms(491, 250_000, 7, 5);
+        assert!(ms >= 350 && ms <= 420, "airtime={ms}ms, expected ~380ms");
+    }
+
+    #[test]
+    fn test_airtime_small_packet() {
+        // 20-byte keepalive at 62.5kHz SF7 CR5
+        let ms = airtime_ms(20, 62_500, 7, 5);
+        assert!(ms > 0 && ms < 500, "airtime={ms}ms, expected <500ms for small packet");
+    }
+
+    #[test]
+    fn test_airtime_sf12_long_range() {
+        // 100 bytes at SF12 125kHz CR8 — very slow long range
+        let ms = airtime_ms(100, 125_000, 12, 8);
+        assert!(ms >= 2000, "airtime={ms}ms, expected >2000ms for SF12");
+    }
+
+    #[test]
+    fn test_compute_spacing_includes_csma_overhead() {
+        let air = airtime_ms(491, 62_500, 7, 5);
+        let spacing = compute_spacing_ms(491, 62_500, 7, 5);
+        assert_eq!(
+            spacing,
+            air + CSMA_DIFS_MS + CSMA_MAX_CW_MS + PACING_MARGIN_MS,
+            "spacing must be airtime + DIFS + max CW + margin"
+        );
+    }
+
+    #[test]
+    fn test_compute_spacing_floor() {
+        // Tiny packet with huge bandwidth — airtime < MIN_SPACING_MS
+        let spacing = compute_spacing_ms(1, 500_000, 7, 5);
+        assert!(spacing >= MIN_SPACING_MS, "spacing must never go below MIN_SPACING_MS");
     }
 }
