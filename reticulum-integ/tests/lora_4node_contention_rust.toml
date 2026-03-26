@@ -4,17 +4,15 @@
 #   alpha → beta   (10KB, thread 1)
 #   gamma → delta  (10KB, thread 2)
 #
-# All 4 nodes share 869.525 MHz / 62.5 kHz / SF7. Both transfers
-# run in parallel threads. If CSMA backoff is broken, collisions
-# cause retransmit storms and timeouts. If dedup or link routing
-# misroutes interleaved packets, transfers corrupt.
+# 10KB: reliable under 4-node contention. 20KB exceeds firmware
+# queue depth at 62.5kHz — see Codeberg issue #36.
 #
 # Requires 4 RNode devices at /dev/ttyACM0..3.
 
 [test]
 name = "lora_4node_contention_rust"
 description = "Two simultaneous 10KB Rust transfers on shared LoRa medium"
-timeout_secs = 900
+timeout_secs = 600
 rust_log = "reticulum_core::transport=debug,reticulum_core::link=debug,reticulum_std::interfaces=debug,info"
 
 [radio]
@@ -63,20 +61,18 @@ destination = "delta.probe"
 timeout_secs = 90
 
 # Two simultaneous transfers competing for the same LoRa channel.
-# Per-transfer timeout 540s: E34 retry (~31s) + CSMA-fair pacing
-# (~175s per 20KB under 50% contention) + retransmit budget.
 [[steps]]
 action = "parallel_file_transfers"
-timeout_secs = 600
+timeout_secs = 360
 
 [[steps.transfers]]
 sender = "alpha"
 receiver = "beta"
 file_size = 10240
-timeout_secs = 540
+timeout_secs = 300
 
 [[steps.transfers]]
 sender = "gamma"
 receiver = "delta"
 file_size = 10240
-timeout_secs = 540
+timeout_secs = 300
