@@ -1109,11 +1109,20 @@ impl<C: Clock, S: Storage> Transport<C, S> {
         // it simply re-sends the cached proof. No routing loop risk: CacheRequests
         // are link-addressed (dest_type=Link) and never forwarded via path table.
         let is_cache_request = packet.context == PacketContext::CacheRequest;
+        // LRPROOFs for our own links skip dedup: E34 retries generate
+        // identical proofs (deterministic for same link_id). Without
+        // this exemption, the first proof's hash is cached and all
+        // E34 retry proofs are dropped as duplicates, causing link
+        // establishment to fail under RF contention.
+        // Same rationale as is_link_request_for_us and is_cache_request.
+        let is_lrproof_for_us = packet.context == PacketContext::Lrproof
+            && self.local_destinations.contains(&packet.destination_hash);
         if !is_single_announce
             && !is_local_link_relay
             && !is_local_client_link_request
             && !is_link_request_for_us
             && !is_cache_request
+            && !is_lrproof_for_us
             && self.storage.has_packet_hash(&full_packet_hash)
         {
             if packet.context == PacketContext::Lrproof {
@@ -7139,6 +7148,62 @@ mod tests {
             assert!(
                 broadcasts.is_empty(),
                 "Empty raw_packet must not produce any broadcast action"
+            );
+        }
+
+        // ─── LRPROOF dedup exemption ──────────────────────────────────
+
+        #[test]
+        fn test_lrproof_dedup_exemption_for_local_destination() {
+            let mut transport = make_transport_enabled();
+            let _idx0 = transport.register_interface(Box::new(MockInterface::new("if0", 1)));
+
+            // Register a link_id as a local destination (simulates connect())
+            let link_id = [0xDD; TRUNCATED_HASHBYTES];
+            transport.register_destination(link_id);
+
+            // Build an LRPROOF packet for this link_id
+            // LRPROOF format: proof data = sig(64) + X25519(32) = 96 bytes
+            let proof_data = [0x42u8; 96];
+            let packet = Packet {
+                flags: PacketFlags {
+                    ifac_flag: false,
+                    header_type: HeaderType::Type1,
+                    context_flag: true,
+                    transport_type: TransportType::Broadcast,
+                    dest_type: crate::destination::DestinationType::Single,
+                    packet_type: PacketType::Proof,
+                },
+                hops: 1,
+                transport_id: None,
+                destination_hash: link_id,
+                context: PacketContext::Lrproof,
+                data: PacketData::Owned(proof_data.to_vec()),
+            };
+
+            let mut buf = [0u8; 500];
+            let len = packet.pack(&mut buf).unwrap();
+            let raw = buf[..len].to_vec();
+
+            // First LRPROOF — must produce a PacketReceived event
+            transport.process_incoming(0, &raw).unwrap();
+            let events1: Vec<_> = transport.drain_events().collect();
+            let got_event_1 = events1
+                .iter()
+                .any(|e| matches!(e, TransportEvent::PacketReceived { .. }));
+            assert!(got_event_1, "First LRPROOF must produce PacketReceived event");
+
+            // Second identical LRPROOF — must NOT be dropped as duplicate.
+            // Under E34, the responder re-sends the same proof. If dedup
+            // drops it, link establishment fails under RF contention.
+            transport.process_incoming(0, &raw).unwrap();
+            let events2: Vec<_> = transport.drain_events().collect();
+            let got_event_2 = events2
+                .iter()
+                .any(|e| matches!(e, TransportEvent::PacketReceived { .. }));
+            assert!(
+                got_event_2,
+                "Duplicate LRPROOF for local destination must NOT be dropped by dedup"
             );
         }
 

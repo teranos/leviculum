@@ -63,21 +63,20 @@ destination = "delta.probe"
 timeout_secs = 90
 
 # Two simultaneous transfers competing for the same LoRa channel.
-# Per-transfer timeout 360s: E34 retry can consume ~31s before link
-# establishes, leaving 300s+ for the actual resource transfer under
-# heavy CSMA contention.
+# Per-transfer timeout 540s: E34 retry (~31s) + CSMA-fair pacing
+# (~175s per 20KB under 50% contention) + retransmit budget.
 [[steps]]
 action = "parallel_file_transfers"
-timeout_secs = 540
+timeout_secs = 600
 
 [[steps.transfers]]
 sender = "alpha"
 receiver = "beta"
 file_size = 20480
-timeout_secs = 480
+timeout_secs = 540
 
 [[steps.transfers]]
 sender = "gamma"
 receiver = "delta"
 file_size = 20480
-timeout_secs = 480
+timeout_secs = 540
