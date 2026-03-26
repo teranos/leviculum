@@ -648,6 +648,10 @@ impl Destination {
 
         // If ratchets are enforced and we decrypted without a ratchet, reject
         if self.enforce_ratchets && ratchet_id.is_none() {
+            tracing::debug!(
+                "Packet rejected: ratchet enforcement active, \
+                 packet encrypted without ratchet key"
+            );
             return Err(DestinationError::RatchetRequired);
         }
 
