@@ -2595,12 +2595,16 @@ impl<C: Clock, S: Storage> Transport<C, S> {
                     // because dest_hash is in link_table. Insert now that we've
                     // validated direction and will forward (Python Transport.py:1543).
                     //
-                    // Skip for local-client traffic: resource retransmissions produce
-                    // identical raw bytes, so caching the hash would block future
-                    // retransmits from the same client. In Python the daemon never
-                    // runs outbound traffic through process_incoming, so this doesn't
-                    // arise there.
-                    if !self.is_local_client(interface_index) {
+                    // Skip hash caching for:
+                    // 1. Local client traffic: resource retransmissions produce
+                    //    identical raw bytes, caching would block future retransmits.
+                    // 2. Link-table-routed data: relay nodes must forward retransmitted
+                    //    resource segments (identical bytes) to the other side of the
+                    //    link. No dedup needed — link-addressed packets follow a fixed
+                    //    link_table path with no routing loop risk.
+                    let is_link_routed = self.storage.has_link_entry(&dest_hash)
+                        && packet.flags.dest_type == DestinationType::Link;
+                    if !self.is_local_client(interface_index) && !is_link_routed {
                         self.storage.add_packet_hash(full_packet_hash);
                     }
 
@@ -7204,6 +7208,82 @@ mod tests {
             assert!(
                 got_event_2,
                 "Duplicate LRPROOF for local destination must NOT be dropped by dedup"
+            );
+        }
+
+        // ─── Relay data retransmit dedup ────────────────────────────────
+
+        #[test]
+        fn test_relay_forwards_retransmitted_link_data() {
+            // Simulate a relay node with two interfaces (Ch.A = if0, Ch.B = if1).
+            // A link-addressed data packet arrives on if0 and is forwarded to if1.
+            // The same packet arrives again (resource retransmit) — must NOT be
+            // dropped by dedup. Link-addressed packets follow a fixed link_table
+            // path with no routing loop risk.
+            let mut transport = make_transport_enabled();
+            let _idx0 = transport.register_interface(Box::new(MockInterface::new("if0", 1)));
+            let _idx1 = transport.register_interface(Box::new(MockInterface::new("if1", 2)));
+
+            let link_id = [0xEE; TRUNCATED_HASHBYTES];
+            let now = transport.clock.now_ms();
+
+            // Set up a validated link_table entry: if0 (initiator side) → if1 (destination side)
+            transport.storage_mut().set_link_entry(
+                link_id,
+                crate::storage_types::LinkEntry {
+                    timestamp_ms: now,
+                    next_hop_interface_index: 1, // if1 = toward destination
+                    remaining_hops: 1,
+                    received_interface_index: 0, // if0 = toward initiator
+                    hops: 1,
+                    validated: true,
+                    proof_timeout_ms: now + 900_000,
+                    destination_hash: [0x00; TRUNCATED_HASHBYTES],
+                    peer_signing_key: None,
+                },
+            );
+
+            // Build a link-addressed data packet (resource segment).
+            // Wire hops = 0 because process_incoming() increments to 1,
+            // which must match link_entry.hops for initiator-side routing.
+            let payload = [0x42u8; 100];
+            let packet = Packet {
+                flags: PacketFlags {
+                    ifac_flag: false,
+                    header_type: HeaderType::Type1,
+                    context_flag: true,
+                    transport_type: TransportType::Broadcast,
+                    dest_type: crate::destination::DestinationType::Link,
+                    packet_type: PacketType::Data,
+                },
+                hops: 0,
+                transport_id: None,
+                destination_hash: link_id,
+                context: PacketContext::Resource,
+                data: PacketData::Owned(payload.to_vec()),
+            };
+
+            let mut buf = [0u8; 500];
+            let len = packet.pack(&mut buf).unwrap();
+            let raw = buf[..len].to_vec();
+
+            // First arrival on if0 — must be forwarded (produces SendPacket to if1)
+            transport.process_incoming(0, &raw).unwrap();
+            let actions1 = transport.drain_actions();
+            let forwarded_1 = actions1
+                .iter()
+                .any(|a| matches!(a, Action::SendPacket { .. }));
+            assert!(forwarded_1, "First data packet must be forwarded via link table");
+
+            // Second arrival (retransmit) on if0 — must also be forwarded
+            transport.process_incoming(0, &raw).unwrap();
+            let actions2 = transport.drain_actions();
+            let forwarded_2 = actions2
+                .iter()
+                .any(|a| matches!(a, Action::SendPacket { .. }));
+            assert!(
+                forwarded_2,
+                "Retransmitted link-addressed data must NOT be dropped by relay dedup"
             );
         }
 
