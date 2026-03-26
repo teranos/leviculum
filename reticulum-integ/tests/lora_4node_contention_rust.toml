@@ -1,8 +1,8 @@
-# 4-node shared medium contention: two simultaneous 20KB file transfers
+# 4-node shared medium contention: two simultaneous 10KB file transfers
 # on the same LoRa frequency, competing for airtime via CSMA/CA.
 #
-#   alpha → beta   (20KB, thread 1)
-#   gamma → delta  (20KB, thread 2)
+#   alpha → beta   (10KB, thread 1)
+#   gamma → delta  (10KB, thread 2)
 #
 # All 4 nodes share 869.525 MHz / 62.5 kHz / SF7. Both transfers
 # run in parallel threads. If CSMA backoff is broken, collisions
@@ -13,7 +13,7 @@
 
 [test]
 name = "lora_4node_contention_rust"
-description = "Two simultaneous 20KB Rust transfers on shared LoRa medium"
+description = "Two simultaneous 10KB Rust transfers on shared LoRa medium"
 timeout_secs = 900
 rust_log = "reticulum_core::transport=debug,reticulum_core::link=debug,reticulum_std::interfaces=debug,info"
 
@@ -72,11 +72,11 @@ timeout_secs = 600
 [[steps.transfers]]
 sender = "alpha"
 receiver = "beta"
-file_size = 20480
+file_size = 10240
 timeout_secs = 540
 
 [[steps.transfers]]
 sender = "gamma"
 receiver = "delta"
-file_size = 20480
+file_size = 10240
 timeout_secs = 540

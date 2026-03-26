@@ -610,13 +610,17 @@ async fn rnode_io_task(
                         } else {
                             send_queue.push_back(queued);
                         }
-                        // High-priority packet at front of queue: bypass jitter entirely.
-                        // Jitter desynchronizes announce rebroadcasts — directed traffic
-                        // (proofs, link requests, data) must not be delayed.
+                        // High-priority packet at front of queue: bypass initial jitter
+                        // ONLY if no CSMA spacing timer is active. The jitter timer
+                        // desynchronizes announce rebroadcasts — directed traffic
+                        // (proofs, link requests, data) should not wait for that.
+                        // But the CSMA spacing timer (set after a TX) must NOT be
+                        // bypassed — it ensures the firmware queue stays at depth 1
+                        // so flush_queue() sends one frame per CSMA contest.
                         if high_priority
                             && send_queue.front().map(|f| f.high_priority).unwrap_or(false)
+                            && send_timer.is_none()
                         {
-                            send_timer = None;
                             timer_ready = true;
                             tracing::debug!(
                                 "{}: send queue: {} packets (priority bypass jitter)",
@@ -673,6 +677,15 @@ async fn rnode_io_task(
                     tracing::warn!("{}: write error: {}", name, e);
                     return outgoing_rx;
                 }
+                // tcdrain: block until firmware has received all bytes.
+                // Without this, write_all() returns as soon as bytes enter
+                // the OS serial buffer — multiple frames accumulate in the
+                // firmware queue and flush_queue() sends them all in one
+                // burst without CSMA between them.
+                if let Err(e) = port.flush().await {
+                    tracing::warn!("{}: flush error: {}", name, e);
+                    return outgoing_rx;
+                }
                 counters
                     .tx_bytes
                     .fetch_add(queued.payload_len, std::sync::atomic::Ordering::Relaxed);
@@ -683,19 +696,15 @@ async fn rnode_io_task(
                     interface_ready = false;
                 }
 
-                // Schedule next with CSMA-fair pacing: wait at least airtime +
-                // DIFS + max CW so the firmware queue has at most one frame.
-                // This prevents flush_queue() from sending multiple frames
-                // back-to-back without CSMA between them.
-                if !send_queue.is_empty() {
-                    let spacing = rnode::compute_spacing_ms(
-                        queued.payload_len as u32,
-                        bandwidth_hz,
-                        sf,
-                        cr,
-                    );
+                // Schedule spacing timer after every TX. The flush() above
+                // ensures the firmware has received this frame before we proceed.
+                // MIN_SPACING_MS gives the firmware time to move the frame from
+                // its serial buffer into the TX queue. The firmware's own CSMA
+                // handles radio-level collision avoidance — we don't simulate
+                // airtime in software.
+                {
                     send_timer = Some(Box::pin(tokio::time::sleep(Duration::from_millis(
-                        spacing,
+                        rnode::MIN_SPACING_MS,
                     ))));
                 }
             } else {
