@@ -53,6 +53,12 @@ pub const RESOURCE_RANDOM_HASH_SIZE: usize = 4;
 /// Maximum efficient resource size: fits in 3-byte length encoding (0xFFFFFF).
 pub const RESOURCE_MAX_EFFICIENT_SIZE: usize = 1_048_575;
 
+/// Maximum incoming resource size in bytes. Resources larger than this
+/// are rejected at advertisement time, before any allocation.
+/// Default: usize::MAX (no limit — preserves Python-parity behavior).
+/// Set lower on embedded via NodeCoreBuilder::max_incoming_resource_size().
+pub const RESOURCE_MAX_INCOMING_SIZE: usize = usize::MAX;
+
 /// Maximum metadata size (16 MiB - 1).
 pub const RESOURCE_METADATA_MAX_SIZE: usize = 16 * 1024 * 1024 - 1;
 
@@ -244,6 +250,8 @@ pub enum ResourceError {
     InvalidProof,
     /// Invalid request data.
     InvalidRequest,
+    /// Advertised resource exceeds the configured size limit.
+    ResourceTooLarge,
 }
 
 impl core::fmt::Display for ResourceError {
@@ -264,6 +272,7 @@ impl core::fmt::Display for ResourceError {
             Self::NoPendingResource => write!(f, "no pending resource advertisement"),
             Self::InvalidProof => write!(f, "invalid resource proof"),
             Self::InvalidRequest => write!(f, "invalid resource request"),
+            Self::ResourceTooLarge => write!(f, "resource exceeds size limit"),
         }
     }
 }

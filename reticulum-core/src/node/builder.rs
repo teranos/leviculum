@@ -5,6 +5,7 @@
 
 use crate::destination::ProofStrategy;
 use crate::identity::Identity;
+use crate::resource::RESOURCE_MAX_INCOMING_SIZE;
 use crate::transport::TransportConfig;
 use rand_core::CryptoRngCore;
 
@@ -39,6 +40,7 @@ pub struct NodeCoreBuilder {
     proof_strategy: ProofStrategy,
     transport_config: TransportConfig,
     respond_to_probes: bool,
+    max_incoming_resource_size: usize,
 }
 
 impl Default for NodeCoreBuilder {
@@ -55,6 +57,7 @@ impl NodeCoreBuilder {
             proof_strategy: ProofStrategy::None,
             transport_config: TransportConfig::default(),
             respond_to_probes: false,
+            max_incoming_resource_size: RESOURCE_MAX_INCOMING_SIZE,
         }
     }
 
@@ -106,6 +109,16 @@ impl NodeCoreBuilder {
         self
     }
 
+    /// Set the maximum incoming resource size in bytes.
+    ///
+    /// Resources advertised with `transfer_size` above this limit are
+    /// rejected before any allocation. Default: `usize::MAX` (no limit).
+    /// On embedded targets with limited heap, set to e.g. `8 * 1024`.
+    pub fn max_incoming_resource_size(mut self, size: usize) -> Self {
+        self.max_incoming_resource_size = size;
+        self
+    }
+
     /// Set the full transport configuration
     pub fn transport_config(mut self, config: TransportConfig) -> Self {
         self.transport_config = config;
@@ -146,6 +159,7 @@ impl NodeCoreBuilder {
             identity,
             self.transport_config,
             self.proof_strategy,
+            self.max_incoming_resource_size,
             rng,
             clock,
             storage,

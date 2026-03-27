@@ -1702,7 +1702,13 @@ impl<R: CryptoRngCore, C: Clock, S: Storage> NodeCore<R, C, S> {
         match strategy {
             ResourceStrategy::AcceptAll => {
                 // Auto-accept: create IncomingResource and send first REQ
-                match IncomingResource::from_advertisement(&adv, link_mdu, sdu, now_ms) {
+                match IncomingResource::from_advertisement(
+                    &adv,
+                    link_mdu,
+                    sdu,
+                    now_ms,
+                    self.max_incoming_resource_size,
+                ) {
                     Ok((incoming, req_payload)) => {
                         // Encrypt and send REQ
                         let req_packet = link.build_data_packet_with_context(

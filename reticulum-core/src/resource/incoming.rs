@@ -95,8 +95,24 @@ impl IncomingResource {
         link_mdu: usize,
         sdu: usize,
         now_ms: u64,
+        max_size: usize,
     ) -> Result<(Self, Vec<u8>), ResourceError> {
+        // Reject oversized resources before allocating
+        if adv.transfer_size as usize > max_size {
+            return Err(ResourceError::ResourceTooLarge);
+        }
+
         let num_parts = adv.num_parts;
+
+        // Validate num_parts consistency: can't have more parts than
+        // ceil(transfer_size / sdu). Prevents num_parts-based OOM with
+        // small transfer_size (two vec![None; num_parts] allocations).
+        if sdu > 0 {
+            let max_parts = (adv.transfer_size as usize).div_ceil(sdu).max(1);
+            if num_parts as usize > max_parts {
+                return Err(ResourceError::InvalidAdvertisement);
+            }
+        }
 
         // Initialize hashmap from advertisement's hashmap_data
         let initial_entries = adv.hashmap_data.len() / RESOURCE_HASHMAP_LEN;
@@ -692,7 +708,8 @@ mod tests {
         let hashmap_data = vec![0x11, 0x22, 0x33, 0x44];
         let adv = make_test_adv(1, hashmap_data);
 
-        let (incoming, req) = IncomingResource::from_advertisement(&adv, 431, 464, 1000).unwrap();
+        let (incoming, req) =
+            IncomingResource::from_advertisement(&adv, 431, 464, 1000, usize::MAX).unwrap();
 
         assert_eq!(incoming.status(), ResourceStatus::Transferring);
         assert_eq!(incoming.num_parts, 1);
@@ -705,7 +722,8 @@ mod tests {
         let hashmap_data = vec![0x11, 0x22, 0x33, 0x44];
         let adv = make_test_adv(1, hashmap_data);
 
-        let (_, req) = IncomingResource::from_advertisement(&adv, 431, 464, 1000).unwrap();
+        let (_, req) =
+            IncomingResource::from_advertisement(&adv, 431, 464, 1000, usize::MAX).unwrap();
 
         // REQ: [0x00 (not exhausted)] [32: resource_hash] [4: requested_hash]
         assert_eq!(req[0], HASHMAP_IS_NOT_EXHAUSTED);
@@ -717,9 +735,11 @@ mod tests {
     fn test_incoming_req_exhausted_format() {
         // 2 parts but only 1 hashmap entry
         let hashmap_data = vec![0x11, 0x22, 0x33, 0x44];
-        let adv = make_test_adv(2, hashmap_data);
+        let mut adv = make_test_adv(2, hashmap_data);
+        adv.transfer_size = 928; // 2 * 464 sdu
 
-        let (_, req) = IncomingResource::from_advertisement(&adv, 431, 464, 1000).unwrap();
+        let (_, req) =
+            IncomingResource::from_advertisement(&adv, 431, 464, 1000, usize::MAX).unwrap();
 
         // Should be exhausted since we only have 1 hash but need 2+ parts
         // Window is 4 (initial), so parts 0 and 1 will be scanned
@@ -734,9 +754,11 @@ mod tests {
     #[test]
     fn test_incoming_progress() {
         let hashmap_data = vec![0x11, 0x22, 0x33, 0x44, 0x55, 0x66, 0x77, 0x88];
-        let adv = make_test_adv(2, hashmap_data);
+        let mut adv = make_test_adv(2, hashmap_data);
+        adv.transfer_size = 928; // 2 * 464 sdu
 
-        let (incoming, _) = IncomingResource::from_advertisement(&adv, 431, 464, 1000).unwrap();
+        let (incoming, _) =
+            IncomingResource::from_advertisement(&adv, 431, 464, 1000, usize::MAX).unwrap();
 
         assert_eq!(incoming.progress(), 0.0);
     }
@@ -744,9 +766,11 @@ mod tests {
     #[test]
     fn test_incoming_hmu_parsing() {
         let hashmap_data = vec![0x11, 0x22, 0x33, 0x44];
-        let adv = make_test_adv(3, hashmap_data);
+        let mut adv = make_test_adv(3, hashmap_data);
+        adv.transfer_size = 1392; // 3 * 464 sdu
 
-        let (mut incoming, _) = IncomingResource::from_advertisement(&adv, 431, 464, 1000).unwrap();
+        let (mut incoming, _) =
+            IncomingResource::from_advertisement(&adv, 431, 464, 1000, usize::MAX).unwrap();
 
         assert_eq!(incoming.hashmap_height, 1);
 
@@ -774,7 +798,8 @@ mod tests {
         let hashmap_data = vec![0x11, 0x22, 0x33, 0x44];
         let adv = make_test_adv(1, hashmap_data);
 
-        let (mut incoming, _) = IncomingResource::from_advertisement(&adv, 431, 464, 1000).unwrap();
+        let (mut incoming, _) =
+            IncomingResource::from_advertisement(&adv, 431, 464, 1000, usize::MAX).unwrap();
 
         // State machine fields accessible via accessors
         assert_eq!(incoming.original_hash(), &[0xCC; 32]);
@@ -786,5 +811,37 @@ mod tests {
         // cancel() transitions to Failed
         incoming.cancel();
         assert_eq!(incoming.status(), ResourceStatus::Failed);
+    }
+
+    #[test]
+    fn test_resource_too_large_rejected() {
+        let mut adv = make_test_adv(1, vec![0u8; RESOURCE_HASHMAP_LEN]);
+        adv.transfer_size = 100_000;
+        let result = IncomingResource::from_advertisement(&adv, 431, 400, 1000, 8 * 1024);
+        match result {
+            Err(ResourceError::ResourceTooLarge) => {}
+            Err(e) => panic!("expected ResourceTooLarge, got {e}"),
+            Ok(_) => panic!("expected Err, got Ok"),
+        }
+    }
+
+    #[test]
+    fn test_resource_within_limit_accepted() {
+        let adv = make_test_adv(1, vec![0u8; RESOURCE_HASHMAP_LEN]);
+        // transfer_size = 464, limit = 8KB
+        let result = IncomingResource::from_advertisement(&adv, 431, 400, 1000, 8 * 1024);
+        assert!(result.is_ok(), "expected Ok, got Err");
+    }
+
+    #[test]
+    fn test_inconsistent_num_parts_rejected() {
+        let mut adv = make_test_adv(10_000, vec![0u8; RESOURCE_HASHMAP_LEN]);
+        adv.transfer_size = 100; // 100 bytes can't have 10000 parts
+        let result = IncomingResource::from_advertisement(&adv, 431, 400, 1000, usize::MAX);
+        match result {
+            Err(ResourceError::InvalidAdvertisement) => {}
+            Err(e) => panic!("expected InvalidAdvertisement, got {e}"),
+            Ok(_) => panic!("expected Err, got Ok"),
+        }
     }
 }

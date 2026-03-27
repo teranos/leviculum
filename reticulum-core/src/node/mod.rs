@@ -168,6 +168,9 @@ pub struct NodeCore<R: CryptoRngCore, C: Clock, S: Storage> {
     /// Cleanup: removed on (a) successful proof, (b) all retries exhausted,
     /// (c) remove_link() when the link is torn down.
     link_retry_state: BTreeMap<LinkId, link_management::LinkRetryState>,
+    /// Maximum incoming resource size in bytes. Resources larger than this
+    /// are rejected at advertisement time, before any allocation.
+    max_incoming_resource_size: usize,
 }
 
 impl<R: CryptoRngCore, C: Clock, S: Storage> NodeCore<R, C, S> {
@@ -184,6 +187,7 @@ impl<R: CryptoRngCore, C: Clock, S: Storage> NodeCore<R, C, S> {
         identity: Identity,
         config: TransportConfig,
         proof_strategy: ProofStrategy,
+        max_incoming_resource_size: usize,
         rng: R,
         clock: C,
         storage: S,
@@ -211,6 +215,7 @@ impl<R: CryptoRngCore, C: Clock, S: Storage> NodeCore<R, C, S> {
             request_handlers: BTreeMap::new(),
             pending_requests: BTreeMap::new(),
             link_retry_state: BTreeMap::new(),
+            max_incoming_resource_size,
         }
     }
 
@@ -867,8 +872,13 @@ impl<R: CryptoRngCore, C: Clock, S: Storage> NodeCore<R, C, S> {
         let link_mdu = link.mdu();
         let sdu = crate::resource::resource_sdu(link.negotiated_mtu());
 
-        let (incoming, req_payload) =
-            IncomingResource::from_advertisement(&adv, link_mdu, sdu, now_ms)?;
+        let (incoming, req_payload) = IncomingResource::from_advertisement(
+            &adv,
+            link_mdu,
+            sdu,
+            now_ms,
+            self.max_incoming_resource_size,
+        )?;
 
         let req_packet = link
             .build_data_packet_with_context(&req_payload, PacketContext::ResourceReq, &mut self.rng)
