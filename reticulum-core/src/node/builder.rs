@@ -99,6 +99,20 @@ impl NodeCoreBuilder {
         self
     }
 
+    /// Set the maximum number of queued announces per capped interface.
+    /// Default: 16384. On embedded with limited heap, set to e.g. 32.
+    pub fn max_queued_announces(mut self, n: usize) -> Self {
+        self.transport_config.max_queued_announces = n;
+        self
+    }
+
+    /// Set the maximum number of random blobs retained per path entry.
+    /// Default: 64. On embedded with limited heap, set to e.g. 8.
+    pub fn max_random_blobs(mut self, n: usize) -> Self {
+        self.transport_config.max_random_blobs = n;
+        self
+    }
+
     /// Enable probe responder (rnstransport.probe destination with PROVE_ALL).
     ///
     /// When enabled, the node creates a probe destination from its transport

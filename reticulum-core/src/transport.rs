@@ -323,6 +323,10 @@ pub struct TransportConfig {
     pub announce_rate_grace: u8,
     /// Additional blocking penalty (ms) added to the blocking window. Default 0.
     pub announce_rate_penalty_ms: u64,
+    /// Maximum queued announces per capped interface. Default: 16384.
+    pub max_queued_announces: usize,
+    /// Maximum random blobs retained per path entry for replay detection. Default: 64.
+    pub max_random_blobs: usize,
 }
 
 impl Default for TransportConfig {
@@ -335,6 +339,8 @@ impl Default for TransportConfig {
             announce_rate_target_ms: None,
             announce_rate_grace: ANNOUNCE_RATE_GRACE,
             announce_rate_penalty_ms: ANNOUNCE_RATE_PENALTY_MS,
+            max_queued_announces: MAX_QUEUED_ANNOUNCES_PER_INTERFACE,
+            max_random_blobs: MAX_RANDOM_BLOBS,
         }
     }
 }
@@ -1731,9 +1737,10 @@ impl<C: Clock, S: Storage> Transport<C, S> {
                 .unwrap_or_default();
             random_blobs.push(random_hash);
 
-            // Cap random_blobs to prevent unbounded growth (matches Python MAX_RANDOM_BLOBS)
-            if random_blobs.len() > MAX_RANDOM_BLOBS {
-                let excess = random_blobs.len() - MAX_RANDOM_BLOBS;
+            // Cap random_blobs to prevent unbounded growth
+            let max_blobs = self.config.max_random_blobs;
+            if random_blobs.len() > max_blobs {
+                let excess = random_blobs.len() - max_blobs;
                 random_blobs.drain(..excess);
             }
 
@@ -1957,8 +1964,9 @@ impl<C: Clock, S: Storage> Transport<C, S> {
             if let Some(existing) = self.storage.get_path(&dest_hash) {
                 let mut path = existing.clone();
                 path.random_blobs.push(random_hash);
-                if path.random_blobs.len() > MAX_RANDOM_BLOBS {
-                    let excess = path.random_blobs.len() - MAX_RANDOM_BLOBS;
+                let max_blobs = self.config.max_random_blobs;
+                if path.random_blobs.len() > max_blobs {
+                    let excess = path.random_blobs.len() - max_blobs;
                     path.random_blobs.drain(..excess);
                 }
                 self.storage.set_path(dest_hash, path);
@@ -3404,11 +3412,7 @@ impl<C: Clock, S: Storage> Transport<C, S> {
             // Without a cache, there's nothing to rebroadcast — NodeCore will
             // generate a fresh announce in response to the PathRequestReceived
             // event, which populates the cache for future requests.
-            if let Some(cached_raw) = self
-                .storage
-                .get_announce_cache(&requested_hash)
-                .cloned()
-            {
+            if let Some(cached_raw) = self.storage.get_announce_cache(&requested_hash).cloned() {
                 let now = self.clock.now_ms();
                 let hops = Packet::unpack(&cached_raw).map(|p| p.hops).unwrap_or(0);
                 tracing::debug!(
@@ -3816,7 +3820,7 @@ impl<C: Clock, S: Storage> Transport<C, S> {
                     0
                 };
                 cap.allowed_at_ms = now + wait_ms;
-            } else if cap.queue.len() < MAX_QUEUED_ANNOUNCES_PER_INTERFACE {
+            } else if cap.queue.len() < self.config.max_queued_announces {
                 cap.queue.push_back(QueuedAnnounce {
                     raw: raw.clone(),
                     hops: packet.hops,
@@ -6611,8 +6615,9 @@ mod tests {
         #[test]
         fn test_announce_queue_max_size() {
             extern crate alloc;
-            // Exceed MAX_QUEUED_ANNOUNCES_PER_INTERFACE → oldest dropped.
+            // Exceed max_queued_announces → oldest dropped.
             let mut transport = make_transport_enabled();
+            let max_queued = transport.config.max_queued_announces;
             let _idx0 = transport.register_interface(Box::new(MockInterface::new("if0", 1)));
 
             transport.register_interface_bitrate(0, 1000);
@@ -6622,19 +6627,19 @@ mod tests {
             cap.allowed_at_ms = transport.clock.now_ms() + 1_000_000;
 
             // Fill queue to max
-            for i in 0..MAX_QUEUED_ANNOUNCES_PER_INTERFACE {
+            for i in 0..max_queued {
                 cap.queue.push_back(QueuedAnnounce {
                     raw: alloc::vec![i as u8; 50],
                     hops: 1,
                     queued_at_ms: transport.clock.now_ms() + i as u64,
                 });
             }
-            assert_eq!(cap.queue.len(), MAX_QUEUED_ANNOUNCES_PER_INTERFACE);
+            assert_eq!(cap.queue.len(), max_queued);
 
             // One more should not grow the queue (broadcast_announce_with_caps checks len)
             // We test the queue boundary directly
             let cap = transport.interface_announce_caps.get_mut(&0).unwrap();
-            if cap.queue.len() < MAX_QUEUED_ANNOUNCES_PER_INTERFACE {
+            if cap.queue.len() < max_queued {
                 cap.queue.push_back(QueuedAnnounce {
                     raw: alloc::vec![0xFF; 50],
                     hops: 1,
@@ -6643,7 +6648,7 @@ mod tests {
             }
             assert_eq!(
                 cap.queue.len(),
-                MAX_QUEUED_ANNOUNCES_PER_INTERFACE,
+                max_queued,
                 "queue should not grow beyond max"
             );
         }
@@ -7108,7 +7113,10 @@ mod tests {
                 .get_announce(&dest_hash)
                 .expect("Must create AnnounceEntry when cache exists");
             assert!(!entry.raw_packet.is_empty(), "raw_packet must not be empty");
-            assert_eq!(entry.raw_packet, raw, "raw_packet must match cached announce");
+            assert_eq!(
+                entry.raw_packet, raw,
+                "raw_packet must match cached announce"
+            );
             assert_eq!(
                 entry.target_interface,
                 Some(0),
@@ -7195,7 +7203,10 @@ mod tests {
             let got_event_1 = events1
                 .iter()
                 .any(|e| matches!(e, TransportEvent::PacketReceived { .. }));
-            assert!(got_event_1, "First LRPROOF must produce PacketReceived event");
+            assert!(
+                got_event_1,
+                "First LRPROOF must produce PacketReceived event"
+            );
 
             // Second identical LRPROOF — must NOT be dropped as duplicate.
             // Under E34, the responder re-sends the same proof. If dedup
@@ -7273,7 +7284,10 @@ mod tests {
             let forwarded_1 = actions1
                 .iter()
                 .any(|a| matches!(a, Action::SendPacket { .. }));
-            assert!(forwarded_1, "First data packet must be forwarded via link table");
+            assert!(
+                forwarded_1,
+                "First data packet must be forwarded via link table"
+            );
 
             // Second arrival (retransmit) on if0 — must also be forwarded
             transport.process_incoming(0, &raw).unwrap();
@@ -9501,10 +9515,10 @@ mod tests {
 
         #[test]
         fn test_random_blobs_capped_at_max() {
-            use crate::constants::MAX_RANDOM_BLOBS;
             use crate::destination::{Destination, DestinationType, Direction};
 
             let mut transport = make_transport_enabled();
+            let max_blobs = transport.config.max_random_blobs;
             let _idx0 = transport.register_interface(Box::new(MockInterface::new("if0", 1)));
 
             let identity = Identity::generate(&mut OsRng);
@@ -9518,8 +9532,8 @@ mod tests {
             .unwrap();
             let dest_hash = dest.hash().into_bytes();
 
-            // Inject MAX_RANDOM_BLOBS + 10 announces, advancing clock each time
-            for i in 0..(MAX_RANDOM_BLOBS + 10) {
+            // Inject max_random_blobs + 10 announces, advancing clock each time
+            for i in 0..(max_blobs + 10) {
                 transport.clock.advance(ANNOUNCE_RATE_LIMIT_MS + 1);
                 let now = transport.clock.now_ms();
                 let raw = make_announce_raw_for_dest(&dest, 1, now);
@@ -9533,9 +9547,9 @@ mod tests {
 
             let path = transport.path(&dest_hash).unwrap();
             assert!(
-                path.random_blobs.len() <= MAX_RANDOM_BLOBS,
+                path.random_blobs.len() <= max_blobs,
                 "random_blobs should be capped at {}, got {}",
-                MAX_RANDOM_BLOBS,
+                max_blobs,
                 path.random_blobs.len()
             );
         }

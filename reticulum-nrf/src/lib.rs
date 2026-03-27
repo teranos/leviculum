@@ -17,8 +17,8 @@ use embedded_alloc::LlffHeap as Heap;
 #[global_allocator]
 static HEAP: Heap = Heap::empty();
 
-/// Heap size in bytes (32 KiB — leaves ~224 KiB RAM for stack + BSS)
-const HEAP_SIZE: usize = 32 * 1024;
+/// Heap size in bytes (96 KiB — leaves ~136 KiB of 232 KiB app RAM for stack + BSS)
+const HEAP_SIZE: usize = 96 * 1024;
 
 /// Initialize the heap allocator
 ///
