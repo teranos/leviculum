@@ -463,6 +463,30 @@ impl MemoryStorage {
     }
 }
 
+#[cfg(test)]
+impl MemoryStorage {
+    /// Test-only: count of known ratchets stored
+    pub fn known_ratchet_count(&self) -> usize {
+        self.known_ratchets.len()
+    }
+
+    /// Test-only: check if a destination hash is tracked for a local client interface
+    pub fn has_local_client_dest(
+        &self,
+        iface_id: usize,
+        dest_hash: &[u8; TRUNCATED_HASHBYTES],
+    ) -> bool {
+        self.local_client_dest_map
+            .get(&iface_id)
+            .is_some_and(|set| set.contains(dest_hash))
+    }
+
+    /// Test-only: check if a destination hash is in the known-dest set
+    pub fn has_local_client_known_dest(&self, dest_hash: &[u8; TRUNCATED_HASHBYTES]) -> bool {
+        self.local_client_known_dests.contains_key(dest_hash)
+    }
+}
+
 impl Storage for MemoryStorage {
     // ─── Packet Dedup ───────────────────────────────────────────────────
 
@@ -476,11 +500,6 @@ impl Storage for MemoryStorage {
         if self.packet_cache.len() > self.packet_hash_cap / 2 {
             self.rotate_packet_cache();
         }
-    }
-
-    fn remove_packet_hash(&mut self, hash: &[u8; 32]) {
-        self.packet_cache.remove(hash);
-        self.packet_cache_prev.remove(hash);
     }
 
     // ─── Path Table ─────────────────────────────────────────────────────
@@ -573,10 +592,6 @@ impl Storage for MemoryStorage {
         self.link_table.insert(link_id, entry);
     }
 
-    fn remove_link_entry(&mut self, link_id: &[u8; TRUNCATED_HASHBYTES]) -> Option<LinkEntry> {
-        self.link_table.remove(link_id)
-    }
-
     // ─── Announce Table ─────────────────────────────────────────────────
 
     fn get_announce(&self, dest_hash: &[u8; TRUNCATED_HASHBYTES]) -> Option<&AnnounceEntry> {
@@ -637,10 +652,6 @@ impl Storage for MemoryStorage {
 
     fn set_receipt(&mut self, hash: [u8; TRUNCATED_HASHBYTES], receipt: PacketReceipt) {
         self.receipts.insert(hash, receipt);
-    }
-
-    fn remove_receipt(&mut self, hash: &[u8; TRUNCATED_HASHBYTES]) -> Option<PacketReceipt> {
-        self.receipts.remove(hash)
     }
 
     // ─── Path Requests ──────────────────────────────────────────────────
@@ -832,10 +843,6 @@ impl Storage for MemoryStorage {
             .insert(dest_hash, (ratchet, received_at_ms));
     }
 
-    fn known_ratchet_count(&self) -> usize {
-        self.known_ratchets.len()
-    }
-
     fn expire_known_ratchets(&mut self, now_ms: u64, expiry_ms: u64) -> usize {
         let before = self.known_ratchets.len();
         self.known_ratchets
@@ -860,16 +867,6 @@ impl Storage for MemoryStorage {
         self.local_client_dest_map.remove(&iface_id);
     }
 
-    fn has_local_client_dest(
-        &self,
-        iface_id: usize,
-        dest_hash: &[u8; TRUNCATED_HASHBYTES],
-    ) -> bool {
-        self.local_client_dest_map
-            .get(&iface_id)
-            .is_some_and(|set| set.contains(dest_hash))
-    }
-
     // ─── Local Client Known Destinations ────────────────────────────────
 
     fn set_local_client_known_dest(
@@ -879,10 +876,6 @@ impl Storage for MemoryStorage {
     ) {
         self.local_client_known_dests
             .insert(dest_hash, last_seen_ms);
-    }
-
-    fn has_local_client_known_dest(&self, dest_hash: &[u8; TRUNCATED_HASHBYTES]) -> bool {
-        self.local_client_known_dests.contains_key(dest_hash)
     }
 
     fn local_client_known_dest_hashes(&self) -> Vec<[u8; TRUNCATED_HASHBYTES]> {
@@ -1057,12 +1050,12 @@ mod tests {
                 outbound_interface_index: 1,
             },
         );
-        assert!(s.has_reverse(&hash));
+        assert!(s.get_reverse(&hash).is_some());
         assert_eq!(s.get_reverse(&hash).unwrap().receiving_interface_index, 0);
 
         let count = s.expire_reverses(2000, 500);
         assert_eq!(count, 1);
-        assert!(!s.has_reverse(&hash));
+        assert!(s.get_reverse(&hash).is_none());
     }
 
     #[test]
@@ -1114,12 +1107,10 @@ mod tests {
         let ratchet = [0xbb; RATCHET_SIZE];
 
         assert!(s.get_known_ratchet(&hash).is_none());
-        assert!(!s.has_known_ratchet(&hash));
         assert_eq!(s.known_ratchet_count(), 0);
 
         s.remember_known_ratchet(hash, ratchet, 1000);
         assert_eq!(s.get_known_ratchet(&hash), Some(ratchet));
-        assert!(s.has_known_ratchet(&hash));
         assert_eq!(s.known_ratchet_count(), 1);
 
         // Update replaces

@@ -7338,7 +7338,7 @@ mod tests {
             transport.remove_reverse_entries_for_interface(1);
 
             assert!(
-                !transport.storage().has_reverse(&hash),
+                transport.storage().get_reverse(&hash).is_none(),
                 "Reverse entry should be removed when interface goes down"
             );
         }
@@ -7931,7 +7931,7 @@ mod tests {
             );
             // Reverse table entry should be consumed (removed)
             assert!(
-                !transport.storage().has_reverse(&packet_hash),
+                transport.storage().get_reverse(&packet_hash).is_none(),
                 "Reverse table entry should be consumed after proof routing"
             );
 

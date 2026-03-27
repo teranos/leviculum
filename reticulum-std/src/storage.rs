@@ -470,13 +470,6 @@ impl reticulum_core::traits::Storage for Storage {
         self.packet_hashes_dirty = true;
     }
 
-    fn remove_packet_hash(&mut self, hash: &[u8; 32]) {
-        let removed = self.packet_cache.remove(hash) | self.packet_cache_prev.remove(hash);
-        if removed {
-            self.packet_hashes_dirty = true;
-        }
-    }
-
     // ─── Path Table ──────────────────────────────────────────────────────
     fn get_path(
         &self,
@@ -579,13 +572,6 @@ impl reticulum_core::traits::Storage for Storage {
     ) {
         self.inner.set_link_entry(link_id, entry)
     }
-    fn remove_link_entry(
-        &mut self,
-        link_id: &[u8; TRUNCATED_HASHBYTES],
-    ) -> Option<reticulum_core::storage_types::LinkEntry> {
-        self.inner.remove_link_entry(link_id)
-    }
-
     // ─── Announce Table ──────────────────────────────────────────────────
     fn get_announce(
         &self,
@@ -653,13 +639,6 @@ impl reticulum_core::traits::Storage for Storage {
     ) {
         self.inner.set_receipt(hash, receipt)
     }
-    fn remove_receipt(
-        &mut self,
-        hash: &[u8; TRUNCATED_HASHBYTES],
-    ) -> Option<reticulum_core::storage_types::PacketReceipt> {
-        self.inner.remove_receipt(hash)
-    }
-
     // ─── Path Requests ───────────────────────────────────────────────────
     fn get_path_request_time(&self, dest_hash: &[u8; TRUNCATED_HASHBYTES]) -> Option<u64> {
         self.inner.get_path_request_time(dest_hash)
@@ -881,9 +860,6 @@ impl reticulum_core::traits::Storage for Storage {
             tracing::warn!("Failed to persist known ratchet for {hex_name}: {e}");
         }
     }
-    fn known_ratchet_count(&self) -> usize {
-        self.inner.known_ratchet_count()
-    }
     fn expire_known_ratchets(&mut self, now_ms: u64, expiry_ms: u64) -> usize {
         // Collect hashes that will be expired (before memory expiry removes them)
         let expired_hashes: Vec<[u8; TRUNCATED_HASHBYTES]> = self
@@ -917,14 +893,6 @@ impl reticulum_core::traits::Storage for Storage {
     fn remove_local_client_dests(&mut self, iface_id: usize) {
         self.inner.remove_local_client_dests(iface_id)
     }
-    fn has_local_client_dest(
-        &self,
-        iface_id: usize,
-        dest_hash: &[u8; TRUNCATED_HASHBYTES],
-    ) -> bool {
-        self.inner.has_local_client_dest(iface_id, dest_hash)
-    }
-
     // ─── Local Client Known Destinations ────────────────────────────────
     fn set_local_client_known_dest(
         &mut self,
@@ -933,9 +901,6 @@ impl reticulum_core::traits::Storage for Storage {
     ) {
         self.inner
             .set_local_client_known_dest(dest_hash, last_seen_ms)
-    }
-    fn has_local_client_known_dest(&self, dest_hash: &[u8; TRUNCATED_HASHBYTES]) -> bool {
-        self.inner.has_local_client_known_dest(dest_hash)
     }
     fn local_client_known_dest_hashes(&self) -> Vec<[u8; TRUNCATED_HASHBYTES]> {
         self.inner.local_client_known_dest_hashes()

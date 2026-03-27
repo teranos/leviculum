@@ -187,12 +187,6 @@ pub trait Storage {
     /// Record a packet hash as seen. Implementations handle capacity/eviction.
     fn add_packet_hash(&mut self, hash: [u8; 32]);
 
-    /// Remove a packet hash from the seen set, allowing the same packet to be
-    /// processed again. Used by link request retry (E34) to allow resending
-    /// a link request with identical bytes through a shared-instance daemon
-    /// whose outbound hash caching (E39) would otherwise reject the retry.
-    fn remove_packet_hash(&mut self, hash: &[u8; 32]);
-
     // ─── Path Table ─────────────────────────────────────────────────────────
 
     /// Look up a path by destination hash
@@ -243,11 +237,6 @@ pub trait Storage {
     /// Remove a reverse entry
     fn remove_reverse(&mut self, hash: &[u8; TRUNCATED_HASHBYTES]) -> Option<ReverseEntry>;
 
-    /// Check if a reverse entry exists
-    fn has_reverse(&self, hash: &[u8; TRUNCATED_HASHBYTES]) -> bool {
-        self.get_reverse(hash).is_some()
-    }
-
     // ─── Link Table ─────────────────────────────────────────────────────────
 
     /// Look up a link table entry
@@ -259,9 +248,6 @@ pub trait Storage {
 
     /// Insert or update a link table entry
     fn set_link_entry(&mut self, link_id: [u8; TRUNCATED_HASHBYTES], entry: LinkEntry);
-
-    /// Remove a link table entry
-    fn remove_link_entry(&mut self, link_id: &[u8; TRUNCATED_HASHBYTES]) -> Option<LinkEntry>;
 
     /// Check if a link table entry exists
     fn has_link_entry(&self, link_id: &[u8; TRUNCATED_HASHBYTES]) -> bool {
@@ -315,9 +301,6 @@ pub trait Storage {
     /// Insert or update a receipt
     fn set_receipt(&mut self, hash: [u8; TRUNCATED_HASHBYTES], receipt: PacketReceipt);
 
-    /// Remove a receipt
-    fn remove_receipt(&mut self, hash: &[u8; TRUNCATED_HASHBYTES]) -> Option<PacketReceipt>;
-
     // ─── Path Requests ──────────────────────────────────────────────────────
 
     /// Get the last path request timestamp for a destination
@@ -355,14 +338,6 @@ pub trait Storage {
         received_at_ms: u64,
     );
 
-    /// Check if a known ratchet exists for a destination.
-    fn has_known_ratchet(&self, dest_hash: &[u8; TRUNCATED_HASHBYTES]) -> bool {
-        self.get_known_ratchet(dest_hash).is_some()
-    }
-
-    /// Number of known ratchets stored.
-    fn known_ratchet_count(&self) -> usize;
-
     /// Remove known ratchets older than `expiry_ms`. Returns count removed.
     fn expire_known_ratchets(&mut self, now_ms: u64, expiry_ms: u64) -> usize;
 
@@ -379,10 +354,6 @@ pub trait Storage {
     /// Remove all destination hashes for a local client interface.
     fn remove_local_client_dests(&mut self, iface_id: usize);
 
-    /// Check if a destination hash is tracked for a local client interface.
-    fn has_local_client_dest(&self, iface_id: usize, dest_hash: &[u8; TRUNCATED_HASHBYTES])
-        -> bool;
-
     // ─── Local Client Known Destinations (persist across disconnects) ─
 
     /// Record a destination hash with its last-seen timestamp.
@@ -391,9 +362,6 @@ pub trait Storage {
         dest_hash: [u8; TRUNCATED_HASHBYTES],
         last_seen_ms: u64,
     );
-
-    /// Check if a destination hash is in the known-dest set.
-    fn has_local_client_known_dest(&self, dest_hash: &[u8; TRUNCATED_HASHBYTES]) -> bool;
 
     /// Return all known destination hashes (callers build BTreeSet locally if needed).
     fn local_client_known_dest_hashes(&self) -> Vec<[u8; TRUNCATED_HASHBYTES]>;
@@ -547,7 +515,6 @@ impl Storage for NoStorage {
         false
     }
     fn add_packet_hash(&mut self, _hash: [u8; 32]) {}
-    fn remove_packet_hash(&mut self, _hash: &[u8; 32]) {}
 
     fn get_path(&self, _dest_hash: &[u8; TRUNCATED_HASHBYTES]) -> Option<&PathEntry> {
         None
@@ -597,9 +564,6 @@ impl Storage for NoStorage {
         None
     }
     fn set_link_entry(&mut self, _link_id: [u8; TRUNCATED_HASHBYTES], _entry: LinkEntry) {}
-    fn remove_link_entry(&mut self, _link_id: &[u8; TRUNCATED_HASHBYTES]) -> Option<LinkEntry> {
-        None
-    }
 
     fn get_announce(&self, _dest_hash: &[u8; TRUNCATED_HASHBYTES]) -> Option<&AnnounceEntry> {
         None
@@ -640,9 +604,6 @@ impl Storage for NoStorage {
         None
     }
     fn set_receipt(&mut self, _hash: [u8; TRUNCATED_HASHBYTES], _receipt: PacketReceipt) {}
-    fn remove_receipt(&mut self, _hash: &[u8; TRUNCATED_HASHBYTES]) -> Option<PacketReceipt> {
-        None
-    }
 
     fn get_path_request_time(&self, _dest_hash: &[u8; TRUNCATED_HASHBYTES]) -> Option<u64> {
         None
@@ -671,9 +632,6 @@ impl Storage for NoStorage {
         _received_at_ms: u64,
     ) {
     }
-    fn known_ratchet_count(&self) -> usize {
-        0
-    }
     fn expire_known_ratchets(&mut self, _now_ms: u64, _expiry_ms: u64) -> usize {
         0
     }
@@ -687,13 +645,6 @@ impl Storage for NoStorage {
         false
     }
     fn remove_local_client_dests(&mut self, _iface_id: usize) {}
-    fn has_local_client_dest(
-        &self,
-        _iface_id: usize,
-        _dest_hash: &[u8; TRUNCATED_HASHBYTES],
-    ) -> bool {
-        false
-    }
 
     // ─── Local Client Known Destinations ────────────────────────────────
     fn set_local_client_known_dest(
@@ -701,9 +652,6 @@ impl Storage for NoStorage {
         _dest_hash: [u8; TRUNCATED_HASHBYTES],
         _last_seen_ms: u64,
     ) {
-    }
-    fn has_local_client_known_dest(&self, _dest_hash: &[u8; TRUNCATED_HASHBYTES]) -> bool {
-        false
     }
     fn local_client_known_dest_hashes(&self) -> Vec<[u8; TRUNCATED_HASHBYTES]> {
         Vec::new()
@@ -821,8 +769,6 @@ mod tests {
         let mut storage = NoStorage;
         let hash = [0x42u8; TRUNCATED_HASHBYTES];
         assert!(storage.get_known_ratchet(&hash).is_none());
-        assert!(!storage.has_known_ratchet(&hash));
-        assert_eq!(storage.known_ratchet_count(), 0);
         storage.remember_known_ratchet(hash, [0xaa; 32], 1000);
         assert!(storage.get_known_ratchet(&hash).is_none()); // NoStorage is a no-op
         assert_eq!(storage.expire_known_ratchets(5000, 1000), 0);
@@ -833,10 +779,8 @@ mod tests {
         let mut storage = NoStorage;
         let hash = [0x42u8; TRUNCATED_HASHBYTES];
         assert!(!storage.add_local_client_dest(0, hash));
-        assert!(!storage.has_local_client_dest(0, &hash));
         storage.remove_local_client_dests(0);
         storage.set_local_client_known_dest(hash, 1000);
-        assert!(!storage.has_local_client_known_dest(&hash));
         assert!(storage.local_client_known_dest_hashes().is_empty());
         assert_eq!(storage.expire_local_client_known_dests(5000, 1000), 0);
     }
