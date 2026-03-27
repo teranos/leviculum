@@ -14,6 +14,8 @@ pub mod hdlc;
 pub(crate) mod local;
 #[cfg(feature = "serial")]
 pub(crate) mod rnode;
+#[cfg(feature = "serial")]
+pub(crate) mod serial;
 pub(crate) mod tcp;
 pub(crate) mod udp;
 

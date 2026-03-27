@@ -123,7 +123,7 @@ pub(crate) fn parse_ini(content: &str) -> Result<Config, String> {
         .into_iter()
         .filter(|(name, iface)| match iface.interface_type.as_str() {
             "TCPServerInterface" | "TCPClientInterface" | "UDPInterface" | "AutoInterface"
-            | "RNodeInterface" => true,
+            | "RNodeInterface" | "SerialInterface" => true,
             other => {
                 tracing::info!(
                     "Skipping unsupported interface type '{}' for '{}'",

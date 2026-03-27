@@ -225,6 +225,22 @@ impl Deframer {
         self.escape_next = false;
     }
 
+    /// Whether the deframer is currently inside a frame (waiting for closing FLAG).
+    ///
+    /// Used by serial interfaces to detect stale partial frames: if `is_in_frame()`
+    /// is true and no data arrives for 100ms, the frame should be discarded via
+    /// `reset()` to prevent desynchronization from noise/corruption.
+    pub fn is_in_frame(&self) -> bool {
+        self.in_frame
+    }
+
+    /// Current accumulated buffer length. Used by serial interfaces to enforce
+    /// HW_MTU: if the buffer exceeds the maximum frame size, the partial frame
+    /// is corrupted and should be discarded via `reset()`.
+    pub fn buffer_len(&self) -> usize {
+        self.buffer.len()
+    }
+
     /// Process incoming bytes
     pub fn process(&mut self, data: &[u8]) -> Vec<DeframeResult> {
         let mut results = Vec::new();
