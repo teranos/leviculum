@@ -1,16 +1,26 @@
 //! USB composite device with two CDC-ACM serial ports
 //!
 //! Port 0 (debug): carries human-readable log output from `info!`/`warn!` macros.
-//! Port 1 (transport): reserved for Reticulum transport (idle for now).
+//! Port 1 (transport): Reticulum serial interface with HDLC framing.
 //!
 //! The host sees two `/dev/ttyACM*` devices. The debug port sends log messages
 //! formatted with `\r\n` line endings for terminal compatibility.
 
+extern crate alloc;
+
+use alloc::vec::Vec;
+use embassy_time::Duration;
+
 use embassy_executor::Spawner;
+use embassy_futures::select::{select, Either};
 use embassy_nrf::usb::vbus_detect::HardwareVbusDetect;
 use embassy_nrf::{Peri, bind_interrupts, peripherals, usb};
+use embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex;
+use embassy_sync::channel::{Channel, Receiver, Sender};
+use embassy_time::with_timeout;
 use embassy_usb::class::cdc_acm::{CdcAcmClass, State};
 use embassy_usb::{Builder, Config, UsbDevice};
+use reticulum_core::framing::hdlc::{frame, DeframeResult, Deframer};
 use static_cell::StaticCell;
 
 use crate::log::LOG_CHANNEL;
@@ -27,6 +37,10 @@ static CONTROL_BUF: StaticCell<[u8; 128]> = StaticCell::new();
 static CDC_DEBUG_STATE: StaticCell<State<'static>> = StaticCell::new();
 static CDC_RETIC_STATE: StaticCell<State<'static>> = StaticCell::new();
 
+/// Channels for serial interface: NodeCore ↔ USB CDC-ACM
+static INCOMING_CHANNEL: Channel<CriticalSectionRawMutex, Vec<u8>, 8> = Channel::new();
+static OUTGOING_CHANNEL: Channel<CriticalSectionRawMutex, Vec<u8>, 8> = Channel::new();
+
 /// nRF52840 FICR base address
 const FICR_BASE: u32 = 0x1000_0000;
 /// DEVICEID[0] register offset
@@ -39,8 +53,10 @@ const FICR_DEVICEID1_OFFSET: u32 = 0x064;
 fn serial_number() -> &'static str {
     static SERIAL: StaticCell<[u8; 16]> = StaticCell::new();
     // SAFETY: FICR registers are read-only factory-programmed values, always safe to read
-    let id0 = unsafe { core::ptr::read_volatile((FICR_BASE + FICR_DEVICEID0_OFFSET) as *const u32) };
-    let id1 = unsafe { core::ptr::read_volatile((FICR_BASE + FICR_DEVICEID1_OFFSET) as *const u32) };
+    let id0 =
+        unsafe { core::ptr::read_volatile((FICR_BASE + FICR_DEVICEID0_OFFSET) as *const u32) };
+    let id1 =
+        unsafe { core::ptr::read_volatile((FICR_BASE + FICR_DEVICEID1_OFFSET) as *const u32) };
     let buf = SERIAL.init([0u8; 16]);
     hex_u32(&mut buf[0..8], id0);
     hex_u32(&mut buf[8..16], id1);
@@ -58,13 +74,26 @@ fn hex_u32(buf: &mut [u8], val: u32) {
     }
 }
 
+/// Channel endpoints for the main loop to communicate with the serial task.
+pub struct SerialChannels {
+    /// Receive packets from USB (deframed by serial task)
+    pub incoming_rx: Receiver<'static, CriticalSectionRawMutex, Vec<u8>, 8>,
+    /// Send packets to USB (serial task frames and writes)
+    pub outgoing_tx: Sender<'static, CriticalSectionRawMutex, Vec<u8>, 8>,
+}
+
 /// Initialize USB composite device and spawn driver tasks.
+///
+/// Returns channel endpoints for the Reticulum serial interface.
 ///
 /// Spawns three tasks:
 /// - `usb_task`: drives the USB bus state machine
 /// - `debug_writer_task`: drains log channel to CDC-ACM port 0
-/// - `retic_placeholder_task`: reads and discards data on CDC-ACM port 1
-pub fn init(spawner: &Spawner, usbd: Peri<'static, peripherals::USBD>) {
+/// - `retic_serial_task`: HDLC-framed bidirectional I/O on CDC-ACM port 1
+pub fn init(
+    spawner: &Spawner,
+    usbd: Peri<'static, peripherals::USBD>,
+) -> SerialChannels {
     let driver = usb::Driver::new(usbd, Irqs, HardwareVbusDetect::new(Irqs));
 
     // TODO: register a proper PID at https://pid.codes/
@@ -87,14 +116,23 @@ pub fn init(spawner: &Spawner, usbd: Peri<'static, peripherals::USBD>) {
     // CDC-ACM #0: Debug log output (interfaces 00+01)
     let cdc_debug = CdcAcmClass::new(&mut builder, CDC_DEBUG_STATE.init(State::new()), 64);
 
-    // CDC-ACM #1: Reticulum transport placeholder (interfaces 02+03)
+    // CDC-ACM #1: Reticulum serial interface (interfaces 02+03)
     let cdc_retic = CdcAcmClass::new(&mut builder, CDC_RETIC_STATE.init(State::new()), 64);
 
     let usb_dev = builder.build();
 
     spawner.must_spawn(usb_task(usb_dev));
     spawner.must_spawn(debug_writer_task(cdc_debug));
-    spawner.must_spawn(retic_placeholder_task(cdc_retic));
+    spawner.must_spawn(retic_serial_task(
+        cdc_retic,
+        INCOMING_CHANNEL.sender(),
+        OUTGOING_CHANNEL.receiver(),
+    ));
+
+    SerialChannels {
+        incoming_rx: INCOMING_CHANNEL.receiver(),
+        outgoing_tx: OUTGOING_CHANNEL.sender(),
+    }
 }
 
 type UsbDriver = usb::Driver<'static, HardwareVbusDetect>;
@@ -122,7 +160,9 @@ async fn debug_writer_task(mut cdc: CdcAcmClass<'static, UsbDriver>) {
                 }
             }
             // Send ZLP if last chunk was exactly 64 bytes (signals end of transfer)
-            if ok && !bytes.is_empty() && bytes.len() % 64 == 0
+            if ok
+                && !bytes.is_empty()
+                && bytes.len() % 64 == 0
                 && cdc.write_packet(&[]).await.is_err()
             {
                 break;
@@ -134,14 +174,81 @@ async fn debug_writer_task(mut cdc: CdcAcmClass<'static, UsbDriver>) {
     }
 }
 
+/// Serial HW_MTU (matches Python SerialInterface)
+const SERIAL_HW_MTU: usize = 564;
+
+/// Incomplete frame timeout — matches Python SerialInterface.timeout = 100ms
+const FRAME_TIMEOUT_MS: u64 = 100;
+
+/// Reticulum serial interface task: HDLC-framed bidirectional I/O on USB CDC-ACM.
+///
+/// Read path: CDC read → HDLC deframe → incoming channel → NodeCore
+/// Write path: NodeCore → outgoing channel → HDLC frame → CDC write
 #[embassy_executor::task]
-async fn retic_placeholder_task(mut cdc: CdcAcmClass<'static, UsbDriver>) {
-    // TODO: wire to Reticulum transport interface
-    let mut buf = [0u8; 64];
+async fn retic_serial_task(
+    mut cdc: CdcAcmClass<'static, UsbDriver>,
+    incoming_tx: Sender<'static, CriticalSectionRawMutex, Vec<u8>, 8>,
+    outgoing_rx: Receiver<'static, CriticalSectionRawMutex, Vec<u8>, 8>,
+) {
+    let mut deframer = Deframer::new();
+    let mut read_buf = [0u8; 64];
+    let mut frame_buf = Vec::with_capacity(1200);
+
     loop {
         cdc.wait_connection().await;
-        while cdc.read_packet(&mut buf).await.is_ok() {
-            // discard received data
+        deframer.reset();
+
+        loop {
+            // Conditional timeout: 100ms when mid-frame, ~infinite when idle
+            let timeout_dur = if deframer.is_in_frame() {
+                Duration::from_millis(FRAME_TIMEOUT_MS)
+            } else {
+                Duration::from_secs(3600)
+            };
+
+            match select(
+                with_timeout(timeout_dur, cdc.read_packet(&mut read_buf)),
+                outgoing_rx.receive(),
+            )
+            .await
+            {
+                // Read succeeded within timeout
+                Either::First(Ok(Ok(n))) => {
+                    let results = deframer.process(&read_buf[..n]);
+                    for r in results {
+                        if let DeframeResult::Frame(data) = r {
+                            incoming_tx.send(data).await;
+                        }
+                    }
+                    // HW_MTU enforcement
+                    if deframer.buffer_len() > SERIAL_HW_MTU {
+                        deframer.reset();
+                    }
+                }
+                // USB disconnect
+                Either::First(Ok(Err(_))) => break,
+                // Frame timeout
+                Either::First(Err(_)) => {
+                    if deframer.is_in_frame() {
+                        deframer.reset();
+                    }
+                }
+                // Outgoing packet to send
+                Either::Second(data) => {
+                    frame(&data, &mut frame_buf);
+                    let mut write_ok = true;
+                    for chunk in frame_buf.chunks(64) {
+                        if cdc.write_packet(chunk).await.is_err() {
+                            write_ok = false;
+                            break;
+                        }
+                    }
+                    // ZLP if last chunk was exactly 64 bytes
+                    if write_ok && !frame_buf.is_empty() && frame_buf.len() % 64 == 0 {
+                        let _ = cdc.write_packet(&[]).await;
+                    }
+                }
+            }
         }
     }
 }

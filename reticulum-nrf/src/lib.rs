@@ -8,6 +8,8 @@
 extern crate alloc;
 
 pub mod boards;
+pub mod clock;
+pub mod interface;
 pub mod log;
 pub mod usb;
 

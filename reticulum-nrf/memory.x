@@ -2,13 +2,18 @@
 /* NOTE: FLASH ORIGIN must match --base in tools/uf2-runner.sh */
 MEMORY
 {
-    /* Application starts after SoftDevice S140 v6 at 0x26000 (152K) */
-    /* Bootloader at 0xF4000, app space = 0xF4000 - 0x26000 = 0xCE000 (824K) */
-    FLASH : ORIGIN = 0x00026000, LENGTH = 0xCE000
+    /* Application starts after SoftDevice S140 v6 at 0x26000 (152K).        */
+    /* Heltec reserves 0xED000-0xF4000 (28K) for license/version data        */
+    /* (HARD_VERSION_ADDR, HT_LICENSE_ADDR in variant.h). Bootloader at      */
+    /* 0xF4000. Safe app space = 0xED000 - 0x26000 = 0xC7000 (796K).        */
+    /* Matches vendor/Heltec_nRF52 boards.txt maximum_size = 815104.         */
+    FLASH : ORIGIN = 0x00026000, LENGTH = 0xC7000
 
-    /* SoftDevice S140 v6.1.1 remains active after bootloader handoff.     */
-    /* It reserves RAM from 0x20000000 for its own state (~12 KB).         */
-    /* Application RAM must start after the SoftDevice reserved region.    */
-    /* 0x20003000 = 12 KB reserved; leaves 244 KB for application.         */
-    RAM   : ORIGIN = 0x20003000, LENGTH = 0x3D000
+    /* SoftDevice S140 v6.1.1 remains active after bootloader handoff.       */
+    /* It reserves RAM from 0x20000000 for BLE stack state. Reservation      */
+    /* size depends on ATT table, MTU, concurrent connections. Heltec's      */
+    /* tested linker (nrf52840_s140_v6.ld) reserves 24 KB (origin 0x6000).  */
+    /* Matches vendor/Heltec_nRF52 boards.txt maximum_data_size = 237568.    */
+    /* 0x20006000 = 24 KB reserved; leaves 232 KB for application.           */
+    RAM   : ORIGIN = 0x20006000, LENGTH = 0x3A000
 }

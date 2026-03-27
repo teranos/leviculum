@@ -15,6 +15,7 @@ embassy-nrf = { version = "0.9", features = ["nrf52840", "time-driver-rtc1", "nf
 embassy-time = "0.5"
 embassy-sync = "0.7"
 embassy-usb = "0.5"
+embassy-futures = "0.1"
 
 # Cortex-M support
 cortex-m = { version = "0.7", features = ["critical-section-single-core"] }
