@@ -23,6 +23,7 @@ hkdf.workspace = true
 rand_core.workspace = true
 zeroize.workspace = true
 tracing.workspace = true
+heapless = { version = "0.8", default-features = false }
 libbz2-rs-sys = { workspace = true, optional = true }
 
 [dev-dependencies]

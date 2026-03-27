@@ -67,6 +67,7 @@ pub mod compression;
 pub mod constants;
 pub mod crypto;
 pub(crate) mod destination;
+pub mod embedded_storage;
 pub mod framing;
 mod hex_fmt;
 pub mod identity;
@@ -102,6 +103,7 @@ pub use resource::{
 pub use transport::{Action, InterfaceId, TickOutput, TransportStats};
 
 // Re-export traits
+pub use embedded_storage::EmbeddedStorage;
 pub use memory_storage::MemoryStorage;
 pub use traits::{
     Clock, Interface, InterfaceError, InterfaceMode, NoStorage, Storage, StorageError,
