@@ -9,6 +9,7 @@ Optional, depending on what you want to test:
 
 - Python 3 (for interop tests)
 - Docker (for integration tests)
+- 2-4 RNode modems via USB (for LoRa integration tests)
 
 No system C libraries are required. All cryptography is compiled from Rust source.
 
@@ -25,7 +26,9 @@ sudo apt install python3
 # Integration tests
 sudo apt install docker.io
 sudo usermod -aG docker $USER
-newgrp docker
+
+# LoRa tests and embedded firmware (USB serial access)
+sudo usermod -aG dialout $USER
 ```
 
 ## Build from source
@@ -84,6 +87,49 @@ cargo test-interop
 ```sh
 cargo build --release --bin lnsd --bin lns --bin lncp
 cargo test-integ
+```
+
+**LoRa integration tests** -- require physical RNode modems connected via USB:
+
+LoRa tests are `#[ignore]`d by default and must be run explicitly. They
+exercise real over-the-air transfers between RNode radios running Reticulum
+firmware. Tests are skipped automatically if the required devices are not
+connected.
+
+| Devices needed | Test count | Examples |
+|----------------|-----------|----------|
+| 2 RNodes | 40 | `lora_link_rust`, `lora_lncp_push`, `lora_ratchet_basic` |
+| 3 RNodes | 3 | `lora_3node_transfer`, `lora_3node_contention` |
+| 4 RNodes | 7 | `lora_4node_contention_rust`, `lora_multihop_transfer` |
+
+Hardware setup:
+
+- Connect RNodes via USB. They appear as `/dev/ttyACM0`, `/dev/ttyACM1`, etc.
+- Your user must be in the `dialout` group: `sudo usermod -aG dialout $USER`
+- Override device paths with environment variables if needed:
+  `LEVICULUM_RNODE_0=/dev/ttyUSB0 LEVICULUM_RNODE_1=/dev/ttyUSB1`
+
+Running LoRa tests:
+
+```sh
+# Single test
+cargo test -p reticulum-integ -- --exact executor::tests::lora_link_rust --ignored --nocapture
+
+# All 2-device tests
+cargo test -p reticulum-integ -- lora_ --ignored --nocapture --test-threads=1
+
+# Override radio parameters (bandwidth in Hz)
+LORA_BANDWIDTH=125000 cargo test -p reticulum-integ -- --exact executor::tests::lora_lncp_push --ignored --nocapture
+```
+
+Each LoRa test must pass on all three bandwidth profiles (62.5 kHz, 125 kHz,
+250 kHz). The TOML files define 62.5 kHz; use `LORA_BANDWIDTH` to switch.
+
+Some tests use the `lora-proxy` binary for fault injection (dropping frames
+to test retransmit recovery). Build it before running proxy tests:
+
+```sh
+cargo build --release --bin lora-proxy
 ```
 
 ### Embedded cross-compilation
