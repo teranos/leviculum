@@ -4,6 +4,8 @@
 
 - Rust stable toolchain ([rustup.rs](https://rustup.rs/))
 - Git (for submodules)
+- Python 3 (for interop tests)
+- Docker (for integration tests)
 
 No system C libraries are required. All cryptography is compiled from Rust source.
 
@@ -58,10 +60,10 @@ git submodule update --init vendor/Reticulum
 cargo test-interop
 ```
 
-**Integration tests** -- require Docker:
+**Integration tests** -- require Docker and pre-built release binaries:
 
 ```sh
-cargo build --release --bin lnsd
+cargo build --release --bin lnsd --bin lns --bin lncp
 cargo test-integ
 ```
 
