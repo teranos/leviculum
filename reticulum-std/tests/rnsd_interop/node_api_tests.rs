@@ -355,7 +355,8 @@ async fn test_node_learns_path_from_announce() {
 #[tokio::test]
 async fn test_node_builder_creates_node_without_interfaces() {
     // This tests that the builder works even without daemon (no interfaces)
-    let _storage = crate::common::temp_storage("test_node_builder_creates_node_without_interfaces", "node");
+    let _storage =
+        crate::common::temp_storage("test_node_builder_creates_node_without_interfaces", "node");
     let node = ReticulumNodeBuilder::new()
         .storage_path(_storage.path().to_path_buf())
         .build()

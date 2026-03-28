@@ -1159,7 +1159,10 @@ mod tests {
     fn test_airtime_small_packet() {
         // 20-byte keepalive at 62.5kHz SF7 CR5
         let ms = airtime_ms(20, 62_500, 7, 5);
-        assert!(ms > 0 && ms < 500, "airtime={ms}ms, expected <500ms for small packet");
+        assert!(
+            ms > 0 && ms < 500,
+            "airtime={ms}ms, expected <500ms for small packet"
+        );
     }
 
     #[test]
@@ -1184,6 +1187,9 @@ mod tests {
     fn test_compute_spacing_floor() {
         // Tiny packet with huge bandwidth — airtime < MIN_SPACING_MS
         let spacing = compute_spacing_ms(1, 500_000, 7, 5);
-        assert!(spacing >= MIN_SPACING_MS, "spacing must never go below MIN_SPACING_MS");
+        assert!(
+            spacing >= MIN_SPACING_MS,
+            "spacing must never go below MIN_SPACING_MS"
+        );
     }
 }

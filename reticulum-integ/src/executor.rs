@@ -434,8 +434,7 @@ fn execute_step(
                 "[{step_num}/{total}] parallel_file_transfers ({} transfers)...",
                 transfers.len()
             );
-            let result =
-                execute_parallel_file_transfers(runner, index, transfers, *timeout_secs);
+            let result = execute_parallel_file_transfers(runner, index, transfers, *timeout_secs);
             let expect_fail = expect_result == "failure";
             match (expect_fail, &result) {
                 (true, Err(_)) => {

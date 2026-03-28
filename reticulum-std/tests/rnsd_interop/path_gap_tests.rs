@@ -279,7 +279,8 @@ async fn test_announces_forwarded_through_transport() {
     let daemon_a = TestDaemon::start().await.expect("daemon A");
     let daemon_b = TestDaemon::start().await.expect("daemon B");
 
-    let _storage = crate::common::temp_storage("test_announces_forwarded_through_transport", "node");
+    let _storage =
+        crate::common::temp_storage("test_announces_forwarded_through_transport", "node");
     let mut relay = ReticulumNodeBuilder::new()
         .enable_transport(true)
         .add_tcp_client(daemon_a.rns_addr())

@@ -36,7 +36,8 @@ async fn test_rust_receives_announce_from_python_over_udp() {
         .expect("daemon should have UDP forward addr");
 
     // Rust listens where Python forwards, and forwards where Python listens
-    let _storage = crate::common::temp_storage("test_rust_receives_announce_from_python_over_udp", "node");
+    let _storage =
+        crate::common::temp_storage("test_rust_receives_announce_from_python_over_udp", "node");
     let mut node = ReticulumNodeBuilder::new()
         .add_udp_interface(rust_listen, py_listen)
         .storage_path(_storage.path().to_path_buf())
@@ -103,7 +104,8 @@ async fn test_python_receives_announce_from_rust_over_udp() {
         .udp_forward_addr()
         .expect("daemon should have UDP forward addr");
 
-    let _storage = crate::common::temp_storage("test_python_receives_announce_from_rust_over_udp", "node");
+    let _storage =
+        crate::common::temp_storage("test_python_receives_announce_from_rust_over_udp", "node");
     let mut node = ReticulumNodeBuilder::new()
         .add_udp_interface(rust_listen, py_listen)
         .storage_path(_storage.path().to_path_buf())

@@ -294,8 +294,16 @@ async fn wait_for_python_resource(
 /// TEST 1: Rust sends a small resource (512 bytes), Python receives it.
 #[tokio::test]
 async fn test_rust_sends_resource_python_receives() {
-    let (rust_node, mut event_rx, py_initiator, _py_relay, link_id, _py_link_hash, _dest_hash, _storage) =
-        setup_link(true).await;
+    let (
+        rust_node,
+        mut event_rx,
+        py_initiator,
+        _py_relay,
+        link_id,
+        _py_link_hash,
+        _dest_hash,
+        _storage,
+    ) = setup_link(true).await;
 
     let data = vec![0x42u8; 512];
     rust_node
@@ -322,8 +330,16 @@ async fn test_rust_sends_resource_python_receives() {
 /// TEST 2: Python sends a small resource (512 bytes), Rust receives it.
 #[tokio::test]
 async fn test_python_sends_resource_rust_receives() {
-    let (rust_node, mut event_rx, py_initiator, _py_relay, link_id, py_link_hash, _dest_hash, _storage) =
-        setup_link(false).await;
+    let (
+        rust_node,
+        mut event_rx,
+        py_initiator,
+        _py_relay,
+        link_id,
+        py_link_hash,
+        _dest_hash,
+        _storage,
+    ) = setup_link(false).await;
 
     // Set Rust side to accept all resources
     rust_node
@@ -349,8 +365,16 @@ async fn test_python_sends_resource_rust_receives() {
 /// TEST 3: Rust sends resource with metadata, Python receives and decodes it.
 #[tokio::test]
 async fn test_rust_sends_resource_with_metadata() {
-    let (rust_node, mut event_rx, py_initiator, _py_relay, link_id, _py_link_hash, _dest_hash, _storage) =
-        setup_link(true).await;
+    let (
+        rust_node,
+        mut event_rx,
+        py_initiator,
+        _py_relay,
+        link_id,
+        _py_link_hash,
+        _dest_hash,
+        _storage,
+    ) = setup_link(true).await;
 
     let data = vec![0x42u8; 256];
     let raw_metadata = b"test-meta-123";
@@ -387,8 +411,16 @@ async fn test_rust_sends_resource_with_metadata() {
 /// TEST 4: Python sends resource with metadata, Rust receives msgpack-encoded bytes.
 #[tokio::test]
 async fn test_python_sends_resource_with_metadata() {
-    let (rust_node, mut event_rx, py_initiator, _py_relay, link_id, py_link_hash, _dest_hash, _storage) =
-        setup_link(false).await;
+    let (
+        rust_node,
+        mut event_rx,
+        py_initiator,
+        _py_relay,
+        link_id,
+        py_link_hash,
+        _dest_hash,
+        _storage,
+    ) = setup_link(false).await;
 
     rust_node
         .set_resource_strategy(&link_id, ResourceStrategy::AcceptAll)
@@ -422,8 +454,16 @@ async fn test_python_sends_resource_with_metadata() {
 /// Verifies multi-part transfer with HMU (hashmap update) exchanges.
 #[tokio::test]
 async fn test_rust_sends_large_resource() {
-    let (rust_node, mut event_rx, py_initiator, _py_relay, link_id, _py_link_hash, _dest_hash, _storage) =
-        setup_link(true).await;
+    let (
+        rust_node,
+        mut event_rx,
+        py_initiator,
+        _py_relay,
+        link_id,
+        _py_link_hash,
+        _dest_hash,
+        _storage,
+    ) = setup_link(true).await;
 
     let data = vec![0x42u8; 300_000];
     rust_node
@@ -453,8 +493,16 @@ async fn test_rust_sends_large_resource() {
 /// TEST 6: Python sends a large resource (51KB of varied data), Rust receives it.
 #[tokio::test]
 async fn test_python_sends_large_resource_to_rust() {
-    let (rust_node, mut event_rx, py_initiator, _py_relay, link_id, py_link_hash, _dest_hash, _storage) =
-        setup_link(false).await;
+    let (
+        rust_node,
+        mut event_rx,
+        py_initiator,
+        _py_relay,
+        link_id,
+        py_link_hash,
+        _dest_hash,
+        _storage,
+    ) = setup_link(false).await;
 
     rust_node
         .set_resource_strategy(&link_id, ResourceStrategy::AcceptAll)

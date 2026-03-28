@@ -2,6 +2,7 @@
 /target/
 reticulum-nrf/target/
 reticulum-nrf/Cargo.lock
+rust_out
 **/*.rs.bk
 
 # Generated headers (cbindgen)
@@ -13,6 +14,7 @@ IMPLEMENTATION_PLAN.md
 # Generated/outdated docs
 doc/html/
 doc/ANNOUNCE_API_DESIGN.md
+docs/book/
 
 # IDE
 .idea/

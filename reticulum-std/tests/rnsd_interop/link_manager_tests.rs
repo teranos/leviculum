@@ -1375,12 +1375,18 @@ async fn test_manager_handshake_timeout() {
     // Attempt 1: times out → retry (remaining: 2 → 1)
     clock_handle.advance(12_001);
     let _ = node.handle_timeout();
-    assert!(node.link(&link_id).is_some(), "link should survive first E34 retry");
+    assert!(
+        node.link(&link_id).is_some(),
+        "link should survive first E34 retry"
+    );
 
     // Attempt 2: times out → retry (remaining: 1 → 0)
     clock_handle.advance(12_001);
     let _ = node.handle_timeout();
-    assert!(node.link(&link_id).is_some(), "link should survive second E34 retry");
+    assert!(
+        node.link(&link_id).is_some(),
+        "link should survive second E34 retry"
+    );
 
     // Attempt 3: times out → no retries left → link removed
     clock_handle.advance(12_001);
