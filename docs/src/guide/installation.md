@@ -2,12 +2,31 @@
 
 ## Requirements
 
-- Rust stable toolchain ([rustup.rs](https://rustup.rs/))
-- Git (for submodules)
+- Rust stable toolchain
+- Git
+
+Optional, depending on what you want to test:
+
 - Python 3 (for interop tests)
 - Docker (for integration tests)
 
 No system C libraries are required. All cryptography is compiled from Rust source.
+
+### Debian/Ubuntu setup
+
+```sh
+# Rust toolchain
+curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
+source $HOME/.cargo/env
+
+# Interop tests
+sudo apt install python3
+
+# Integration tests
+sudo apt install docker.io
+sudo usermod -aG docker $USER
+newgrp docker
+```
 
 ## Build from source
 

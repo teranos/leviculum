@@ -20,6 +20,13 @@ steps:
       - cargo clippy --all -- -D warnings
       - cargo test -p reticulum-core --lib
 
+  interop:
+    image: rust:bookworm
+    commands:
+      - apt-get update && apt-get install -y python3
+      - git submodule update --init vendor/Reticulum
+      - cargo test -p reticulum-std --test rnsd_interop
+
   build-book:
     image: alpine:edge
     commands:
