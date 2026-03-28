@@ -11,9 +11,7 @@ reticulum-ffi/*.h
 # Markdown files
 IMPLEMENTATION_PLAN.md
 
-# Generated/outdated docs
-doc/html/
-doc/ANNOUNCE_API_DESIGN.md
+# Generated docs (mdbook output)
 docs/book/
 
 # IDE

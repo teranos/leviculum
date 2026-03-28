@@ -3,10 +3,6 @@
 Deep analysis of every Storage trait method: callers, frequency,
 embedded relevance, and proposed sub-trait groupings.
 
-Date: 2027-03-27
-
----
-
 ## Method Inventory: 71 methods across 15 data categories
 
 ### Group 1: Packet Dedup (3 methods)
