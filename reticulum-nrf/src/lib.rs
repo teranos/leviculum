@@ -40,11 +40,62 @@ pub fn init_heap() {
 mod panic_handler {
     use core::panic::PanicInfo;
 
+    /// Format panic info into a static buffer. Returns the used slice.
+    fn format_panic(info: &PanicInfo, buf: &mut [u8]) -> usize {
+        struct BufWriter<'a> {
+            buf: &'a mut [u8],
+            pos: usize,
+        }
+        impl core::fmt::Write for BufWriter<'_> {
+            fn write_str(&mut self, s: &str) -> core::fmt::Result {
+                let bytes = s.as_bytes();
+                let remaining = self.buf.len() - self.pos;
+                let to_copy = bytes.len().min(remaining);
+                self.buf[self.pos..self.pos + to_copy].copy_from_slice(&bytes[..to_copy]);
+                self.pos += to_copy;
+                Ok(())
+            }
+        }
+        let mut w = BufWriter { buf, pos: 0 };
+        let _ = core::fmt::Write::write_fmt(&mut w, format_args!("[PANIC] {}\r\n", info));
+        w.pos
+    }
+
     #[panic_handler]
-    fn panic(_info: &PanicInfo) -> ! {
-        // TODO: blink LED fast as visual panic indicator
+    fn panic(info: &PanicInfo) -> ! {
+        // Best-effort: write panic info to LOG_CHANNEL. The Embassy
+        // executor is dead so debug_writer_task won't drain it, but
+        // the message is preserved in channel memory for post-mortem.
+        crate::log::log_fmt("[PANIC] ", format_args!("{}", info));
+
+        // Also try: toggle LED rapidly as visual indicator.
+        // P1.03 is the T114 LED (active low).
+        // Write directly to GPIO registers to avoid any alloc.
+        const P1_BASE: u32 = 0x5000_0300;
+        const PIN03: u32 = 1 << 3;
+        const DIRSET: u32 = P1_BASE + 0x518;
+        const OUTSET: u32 = P1_BASE + 0x508;
+        const OUTCLR: u32 = P1_BASE + 0x50C;
+
+        unsafe {
+            // Set P1.03 as output
+            core::ptr::write_volatile(DIRSET as *mut u32, PIN03);
+        }
+
+        // Rapid blink loop — visible panic indicator
         loop {
-            cortex_m::asm::wfi();
+            unsafe {
+                core::ptr::write_volatile(OUTCLR as *mut u32, PIN03); // LED on
+            }
+            for _ in 0..2_000_000u32 {
+                cortex_m::asm::nop();
+            }
+            unsafe {
+                core::ptr::write_volatile(OUTSET as *mut u32, PIN03); // LED off
+            }
+            for _ in 0..2_000_000u32 {
+                cortex_m::asm::nop();
+            }
         }
     }
 }

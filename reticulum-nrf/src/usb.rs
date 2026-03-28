@@ -23,7 +23,7 @@ use embassy_usb::{Builder, Config, UsbDevice};
 use reticulum_core::framing::hdlc::{frame, DeframeResult, Deframer};
 use static_cell::StaticCell;
 
-use crate::log::LOG_CHANNEL;
+use crate::log::{log_fmt, LOG_CHANNEL};
 
 bind_interrupts!(struct Irqs {
     USBD => usb::InterruptHandler<peripherals::USBD>;
@@ -174,6 +174,15 @@ async fn debug_writer_task(mut cdc: CdcAcmClass<'static, UsbDriver>) {
     }
 }
 
+/// Lightweight log helpers for serial task diagnostics (no format_args overhead)
+fn log(msg: &str) {
+    log_fmt("[SER ] ", format_args!("{}", msg));
+}
+
+fn log_u32(msg: &str, val: u32) {
+    log_fmt("[SER ] ", format_args!("{} {}", msg, val));
+}
+
 /// Serial HW_MTU (matches Python SerialInterface)
 const SERIAL_HW_MTU: usize = 564;
 
@@ -195,7 +204,9 @@ async fn retic_serial_task(
     let mut frame_buf = Vec::with_capacity(1200);
 
     loop {
+        log("SER: wait_connection");
         cdc.wait_connection().await;
+        log("SER: connected");
         deframer.reset();
 
         loop {
@@ -214,31 +225,41 @@ async fn retic_serial_task(
             {
                 // Read succeeded within timeout
                 Either::First(Ok(Ok(n))) => {
+                    log_u32("SER: USB read", n as u32);
                     let results = deframer.process(&read_buf[..n]);
                     for r in results {
-                        if let DeframeResult::Frame(data) = r {
-                            incoming_tx.send(data).await;
+                        if let DeframeResult::Frame(ref data) = r {
+                            log_u32("SER: frame complete", data.len() as u32);
+                            incoming_tx.send(data.clone()).await;
                         }
                     }
                     // HW_MTU enforcement
                     if deframer.buffer_len() > SERIAL_HW_MTU {
+                        log("SER: HW_MTU exceeded, reset");
                         deframer.reset();
                     }
                 }
                 // USB disconnect
-                Either::First(Ok(Err(_))) => break,
+                Either::First(Ok(Err(_))) => {
+                    log("SER: USB disconnect");
+                    break;
+                }
                 // Frame timeout
                 Either::First(Err(_)) => {
                     if deframer.is_in_frame() {
+                        log("SER: frame timeout, reset");
                         deframer.reset();
                     }
                 }
                 // Outgoing packet to send
                 Either::Second(data) => {
+                    log_u32("SER: TX", data.len() as u32);
                     frame(&data, &mut frame_buf);
+                    log_u32("SER: HDLC framed", frame_buf.len() as u32);
                     let mut write_ok = true;
                     for chunk in frame_buf.chunks(64) {
                         if cdc.write_packet(chunk).await.is_err() {
+                            log("SER: write_packet failed");
                             write_ok = false;
                             break;
                         }

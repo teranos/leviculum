@@ -1,8 +1,8 @@
 //! Firmware entry point for Heltec Mesh Node T114
 //!
 //! Runs a Reticulum endpoint node with a serial interface over USB CDC-ACM.
-//! The host connects via SerialInterface (HDLC framing) on /dev/ttyACM1.
-//! Debug log output appears on /dev/ttyACM0.
+//! The host connects via SerialInterface (HDLC framing) on the transport port.
+//! Debug log output appears on the debug port.
 
 #![no_std]
 #![no_main]
@@ -17,6 +17,7 @@ use embassy_nrf::rng::Rng;
 use embassy_time::{Instant, Timer};
 
 use reticulum_core::embedded_storage::EmbeddedStorage;
+use reticulum_core::ifac::IfacConfig;
 use reticulum_core::node::NodeCoreBuilder;
 use reticulum_core::traits::Interface;
 use reticulum_core::transport::dispatch_actions;
@@ -49,12 +50,20 @@ async fn main(spawner: Spawner) {
     // Hardware RNG (blocking mode — no interrupt binding needed)
     let rng = Rng::new_blocking(p.RNG);
 
+    // Pre-allocate before NodeCore build (heap fragmentation workaround)
+    let ifac_configs: BTreeMap<usize, IfacConfig> = BTreeMap::new();
+
     // Build NodeCore with embedded-optimized limits
     let mut node = NodeCoreBuilder::new()
         .max_incoming_resource_size(8 * 1024)
         .max_queued_announces(32)
         .max_random_blobs(8)
+        .respond_to_probes(true)
         .build(rng, EmbassyClock, EmbeddedStorage::new());
+
+    // Register interface with NodeCore for routing decisions
+    node.set_interface_name(0, alloc::string::String::from("serial_usb"));
+    node.set_interface_hw_mtu(0, 564);
 
     // Log identity hash
     let hash = node.identity().hash();
@@ -66,31 +75,46 @@ async fn main(spawner: Spawner) {
 
     // Interface adapter for dispatch_actions()
     let mut iface = EmbeddedInterface::new(serial.outgoing_tx);
-    let ifac_configs = BTreeMap::new(); // no IFAC on serial
 
-    // Blink once to signal boot complete
+    // Boot blink
     led.set_level(Level::Low);
-    Timer::after_millis(200).await;
+    for _ in 0..12_000_000u32 {
+        cortex_m::asm::nop();
+    }
     led.set_level(Level::High);
 
     // Event-driven main loop
     loop {
-        // Compute next NodeCore deadline
-        let deadline = node
+        let node_deadline = node
             .next_deadline()
             .map(Instant::from_millis)
             .unwrap_or(Instant::MAX);
+        let heartbeat = Instant::now() + embassy_time::Duration::from_secs(5);
+        let deadline = if node_deadline < heartbeat {
+            node_deadline
+        } else {
+            heartbeat
+        };
 
         match select(serial.incoming_rx.receive(), Timer::at(deadline)).await {
-            // Incoming packet from USB serial
             Either::First(data) => {
+                info!("RX {} bytes", data.len());
                 let output = node.handle_packet(InterfaceId(0), &data);
+                if !output.actions.is_empty() {
+                    info!("TX {} actions", output.actions.len());
+                }
                 let mut ifaces: [&mut dyn Interface; 1] = [&mut iface];
                 dispatch_actions(&mut ifaces, output.actions, &ifac_configs);
             }
-            // Timer deadline reached — run periodic tasks
             Either::Second(()) => {
                 let output = node.handle_timeout();
+                if !output.actions.is_empty() {
+                    info!("timeout: {} actions", output.actions.len());
+                }
+                // Heartbeat blink
+                led.set_level(Level::Low);
+                Timer::after_millis(50).await;
+                led.set_level(Level::High);
                 let mut ifaces: [&mut dyn Interface; 1] = [&mut iface];
                 dispatch_actions(&mut ifaces, output.actions, &ifac_configs);
             }

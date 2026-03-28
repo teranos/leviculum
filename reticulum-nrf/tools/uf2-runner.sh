@@ -113,17 +113,19 @@ find_uf2_drive() {
         fi
     done
 
-    # Try mounting unmounted small removable block devices via udisksctl
-    if command -v udisksctl >/dev/null 2>&1; then
-        for dev in /dev/sd?; do
-            [ -b "$dev" ] || continue
-            # Only consider small devices (< 64MB, typical for UF2 bootloaders)
-            local size
-            size="$(cat "/sys/block/$(basename "$dev")/size" 2>/dev/null || echo 0)"
-            # size is in 512-byte sectors; 64MB = 131072 sectors
-            if [ "$size" -gt 0 ] && [ "$size" -lt 131072 ]; then
-                local part="${dev}1"
-                [ -b "$part" ] || part="$dev"
+    # Try mounting unmounted small removable block devices
+    for dev in /dev/sd?; do
+        [ -b "$dev" ] || continue
+        # Only consider small devices (< 64MB, typical for UF2 bootloaders)
+        local size
+        size="$(cat "/sys/block/$(basename "$dev")/size" 2>/dev/null || echo 0)"
+        # size is in 512-byte sectors; 64MB = 131072 sectors
+        if [ "$size" -gt 0 ] && [ "$size" -lt 131072 ]; then
+            local part="${dev}1"
+            [ -b "$part" ] || part="$dev"
+
+            # Try udisksctl first (user-level, no sudo)
+            if command -v udisksctl >/dev/null 2>&1; then
                 local mount_output
                 mount_output="$(udisksctl mount -b "$part" 2>/dev/null || true)"
                 if [ -n "$mount_output" ]; then
@@ -135,8 +137,17 @@ find_uf2_drive() {
                     fi
                 fi
             fi
-        done
-    fi
+
+            # Fallback: sudo mount to /mnt
+            if sudo -n mount "$part" /mnt 2>/dev/null; then
+                if [ -f /mnt/INFO_UF2.TXT ]; then
+                    echo "/mnt"
+                    return
+                fi
+                sudo -n umount /mnt 2>/dev/null
+            fi
+        fi
+    done
 
     echo ""
 }
@@ -179,9 +190,24 @@ fi
 
 DRIVE_NAME="$(basename "$UF2_DRIVE")"
 echo "==> Found: $UF2_DRIVE ($DRIVE_NAME)"
-echo "==> Deploying firmware.uf2..."
-cp "$UF2_FILE" "$UF2_DRIVE/NEW.UF2"
-sync
+
+# UF2 bootloaders intercept FAT filesystem writes and check each 512-byte
+# sector for UF2 magic. Write the file via cp (same approach as uf2conv.py
+# and the Heltec Arduino toolchain). No sync — the bootloader processes
+# blocks as they arrive and resets when done; explicit sync races with
+# the device disconnect.
+UF2_SIZE="$(stat -c%s "$UF2_FILE")"
+UF2_BLOCKS=$((UF2_SIZE / 512))
+echo "==> Deploying firmware.uf2 (${UF2_SIZE} bytes, ${UF2_BLOCKS} blocks)..."
+if [ -w "$UF2_DRIVE" ]; then
+    cp "$UF2_FILE" "$UF2_DRIVE/NEW.UF2"
+    sync
+else
+    sudo cp "$UF2_FILE" "$UF2_DRIVE/NEW.UF2"
+    sudo sync
+fi
+# sync may return I/O errors because the bootloader resets after
+# processing the last UF2 block — this is normal and expected.
 
 # --- Step 8: Boot verification ----------------------------------------------
 
@@ -285,6 +311,11 @@ else
 fi
 
 # --- Step 11: Clean up ------------------------------------------------------
+
+# Unmount /mnt if we mounted there
+if [ "$UF2_DRIVE" = "/mnt" ]; then
+    sudo -n umount /mnt 2>/dev/null || true
+fi
 
 rm -f "$BIN_FILE"
 
