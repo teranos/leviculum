@@ -1,7 +1,6 @@
 [toolchain]
 channel = "stable"
-targets = [
-    "thumbv7em-none-eabihf", # nRF52840 (ARM Cortex-M4F)
-    "thumbv6m-none-eabi",    # RP2040 (ARM Cortex-M0+)
-]
+# Embedded targets (nRF52840, RP2040) are not listed here to avoid
+# forcing downloads on every developer. Add them manually:
+#   rustup target add thumbv7em-none-eabihf thumbv6m-none-eabi
 # Xtensa targets (ESP32, ESP32-S3) require espup, not rustup.

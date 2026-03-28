@@ -19,16 +19,26 @@ Leviculum is in active development. The protocol implementation is functionally 
 ## Getting started
 
 ```sh
-cargo build --release --bin lnsd --bin lncp
+git clone https://codeberg.org/Lew_Palm/leviculum.git
+cd leviculum
+cargo build --release --bin lnsd --bin lncp --bin lns
 ./target/release/lnsd -v
 ```
 
-This starts the daemon with verbose logging. It reads its config from `~/.reticulum/config`, the same location as Python Reticulum. To run the interop test suite against the Python reference:
+No system C libraries are required. To run unit tests:
 
 ```sh
-git submodule update --init
-cargo test -p reticulum-std --test rnsd_interop
+cargo test-core
 ```
+
+To run the interop test suite against Python Reticulum:
+
+```sh
+git submodule update --init vendor/Reticulum
+cargo test-interop
+```
+
+See the [installation guide](https://codeberg.org/Lew_Palm/leviculum/src/branch/master/docs/src/guide/installation.md) for all cargo aliases and test levels.
 
 ## License
 

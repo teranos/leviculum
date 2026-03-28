@@ -1,9 +1,15 @@
 [alias]
+# Development workflow
+test-core = "test -p reticulum-core --lib"
+test-std = "test -p reticulum-std --lib"
+test-interop = "test -p reticulum-std --test rnsd_interop"
+test-integ = "test -p reticulum-integ -- --nocapture"
+lint = "clippy --all"
+
+# Embedded cross-compilation (requires: rustup target add <target>)
 check-nrf52 = "build -p reticulum-core --target thumbv7em-none-eabihf"
 check-rp2040 = "build -p reticulum-core --target thumbv6m-none-eabi"
 check-esp32s3 = "build -p reticulum-core --target xtensa-esp32s3-none-elf"
-
-# Build for all stock rustup targets (no espup required)
 check-embedded = "build -p reticulum-core --target thumbv7em-none-eabihf --target thumbv6m-none-eabi"
 
 [target.aarch64-unknown-linux-gnu]
