@@ -22,6 +22,51 @@ static HEAP: Heap = Heap::empty();
 /// Heap size in bytes (96 KiB — leaves ~136 KiB of 232 KiB app RAM for stack + BSS)
 const HEAP_SIZE: usize = 96 * 1024;
 
+/// Return (used, free) heap bytes at this instant.
+pub fn heap_stats() -> (usize, usize) {
+    (HEAP.used(), HEAP.free())
+}
+
+/// Returns approximate unused stack bytes.
+/// Requires `paint_stack()` to have been called at boot.
+pub fn stack_free() -> usize {
+    extern "C" {
+        static __ebss: u8;
+    }
+    let stack_bottom = core::ptr::addr_of!(__ebss) as *const u32;
+    let stack_top = 0x2004_0000 as *const u32; // RAM end
+    let mut untouched = 0usize;
+    let mut p = stack_bottom;
+    while (p as usize) < (stack_top as usize) {
+        if unsafe { core::ptr::read_volatile(p) } != 0xDEAD_BEEF {
+            break;
+        }
+        untouched += 1;
+        p = unsafe { p.add(1) };
+    }
+    untouched * 4
+}
+
+/// Paint stack with canary pattern. Call once at start of main, before heavy work.
+///
+/// # Safety
+/// Must be called before any concurrent tasks or interrupts use the stack.
+pub unsafe fn paint_stack() {
+    extern "C" {
+        static mut __ebss: u8;
+    }
+    let stack_bottom = core::ptr::addr_of_mut!(__ebss) as *mut u32;
+    let current_sp: u32;
+    core::arch::asm!("mov {}, sp", out(reg) current_sp);
+    // Paint up to 1 KB below current SP (leave headroom for this function)
+    let safe_limit = ((current_sp as usize).saturating_sub(1024)) as *mut u32;
+    let mut p = stack_bottom;
+    while (p as usize) < (safe_limit as usize) {
+        core::ptr::write_volatile(p, 0xDEAD_BEEF);
+        p = p.add(1);
+    }
+}
+
 /// Initialize the heap allocator
 ///
 /// Must be called once before any `alloc` usage (Vec, String, etc.).
@@ -39,27 +84,6 @@ pub fn init_heap() {
 #[cfg(not(test))]
 mod panic_handler {
     use core::panic::PanicInfo;
-
-    /// Format panic info into a static buffer. Returns the used slice.
-    fn format_panic(info: &PanicInfo, buf: &mut [u8]) -> usize {
-        struct BufWriter<'a> {
-            buf: &'a mut [u8],
-            pos: usize,
-        }
-        impl core::fmt::Write for BufWriter<'_> {
-            fn write_str(&mut self, s: &str) -> core::fmt::Result {
-                let bytes = s.as_bytes();
-                let remaining = self.buf.len() - self.pos;
-                let to_copy = bytes.len().min(remaining);
-                self.buf[self.pos..self.pos + to_copy].copy_from_slice(&bytes[..to_copy]);
-                self.pos += to_copy;
-                Ok(())
-            }
-        }
-        let mut w = BufWriter { buf, pos: 0 };
-        let _ = core::fmt::Write::write_fmt(&mut w, format_args!("[PANIC] {}\r\n", info));
-        w.pos
-    }
 
     #[panic_handler]
     fn panic(info: &PanicInfo) -> ! {

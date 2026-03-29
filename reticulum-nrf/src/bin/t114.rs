@@ -9,6 +9,7 @@
 
 extern crate alloc;
 
+use alloc::boxed::Box;
 use alloc::collections::BTreeMap;
 use embassy_executor::Spawner;
 use embassy_futures::select::{select, Either};
@@ -35,6 +36,8 @@ async fn main(spawner: Spawner) {
     let p = embassy_nrf::init(config);
 
     init_heap();
+    // SAFETY: called once before any complex work or concurrent tasks
+    unsafe { reticulum_nrf::paint_stack(); }
 
     // Initialize USB composite device and get serial channel endpoints
     let serial = reticulum_nrf::usb::init(&spawner, p.USBD);
@@ -50,16 +53,20 @@ async fn main(spawner: Spawner) {
     // Hardware RNG (blocking mode — no interrupt binding needed)
     let rng = Rng::new_blocking(p.RNG);
 
-    // Pre-allocate before NodeCore build (heap fragmentation workaround)
     let ifac_configs: BTreeMap<usize, IfacConfig> = BTreeMap::new();
 
-    // Build NodeCore with embedded-optimized limits
-    let mut node = NodeCoreBuilder::new()
-        .max_incoming_resource_size(8 * 1024)
-        .max_queued_announces(32)
-        .max_random_blobs(8)
-        .respond_to_probes(true)
-        .build(rng, EmbassyClock, EmbeddedStorage::new());
+    // Build NodeCore on the heap — the async frame is too large for the stack
+    // when NodeCore (~40 KB with EmbeddedStorage) lives inline. Boxing moves it
+    // to the heap (89 KB free), freeing ~40 KB of stack for the Ed25519 signing
+    // call chain in management announces.
+    let mut node = Box::new(
+        NodeCoreBuilder::new()
+            .max_incoming_resource_size(8 * 1024)
+            .max_queued_announces(32)
+            .max_random_blobs(8)
+            .respond_to_probes(true)
+            .build(rng, EmbassyClock, EmbeddedStorage::new()),
+    );
 
     // Register interface with NodeCore for routing decisions
     node.set_interface_name(0, alloc::string::String::from("serial_usb"));
@@ -72,6 +79,10 @@ async fn main(spawner: Spawner) {
         hash[0], hash[1], hash[2], hash[3], hash[4]
     );
     info!("Serial interface online on USB port 1");
+
+    let (hu, hf) = reticulum_nrf::heap_stats();
+    let sf = reticulum_nrf::stack_free();
+    info!("heap u={} f={} stack f={}", hu, hf, sf);
 
     // Interface adapter for dispatch_actions()
     let mut iface = EmbeddedInterface::new(serial.outgoing_tx);
