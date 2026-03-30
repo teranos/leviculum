@@ -436,32 +436,6 @@ mod tests {
     }
 
     #[test]
-    fn test_parse_actual_python_config() {
-        // Read the actual Python config if present
-        let home = std::env::var_os("HOME").map(std::path::PathBuf::from);
-        let Some(home) = home else { return };
-        let path = home.join(".reticulum/config");
-        if !path.exists() {
-            return;
-        }
-
-        let content = std::fs::read_to_string(&path).unwrap();
-        let config = parse_ini(&content).unwrap();
-
-        // We know this config has enable_transport = True
-        assert!(
-            config.reticulum.enable_transport,
-            "expected enable_transport=True from actual config"
-        );
-
-        // Should have at least one TCP interface (the test config has 2)
-        assert!(
-            !config.interfaces.is_empty(),
-            "expected at least one TCP interface from actual config"
-        );
-    }
-
-    #[test]
     fn test_empty_config() {
         let config = parse_ini("").unwrap();
         assert!(

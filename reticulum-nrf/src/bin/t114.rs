@@ -59,6 +59,7 @@ async fn main(spawner: Spawner) {
     // call chain in management announces.
     let mut node = Box::new(
         NodeCoreBuilder::new()
+            .enable_transport(true)
             .max_incoming_resource_size(8 * 1024)
             .max_queued_announces(32)
             .max_random_blobs(8)
