@@ -3,8 +3,6 @@
 //! Implements a plain serial interface matching Python Reticulum's
 //! `SerialInterface`. Uses HDLC simplified framing (same as TCP and
 //! LocalInterface) over a serial port.
-//!
-//! Behind `#[cfg(feature = "serial")]`.
 
 use std::io;
 use std::sync::atomic::Ordering;

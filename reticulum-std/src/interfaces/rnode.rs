@@ -2,8 +2,6 @@
 //!
 //! Implements the full RNode lifecycle: detect → configure radio → validate →
 //! go online → bidirectional data → reconnect on failure → graceful shutdown.
-//!
-//! Behind `#[cfg(feature = "serial")]`.
 
 use std::collections::VecDeque;
 use std::pin::Pin;

@@ -12,9 +12,7 @@
 pub mod auto_interface;
 pub mod hdlc;
 pub(crate) mod local;
-#[cfg(feature = "serial")]
 pub(crate) mod rnode;
-#[cfg(feature = "serial")]
 pub(crate) mod serial;
 pub(crate) mod tcp;
 pub(crate) mod udp;
@@ -126,7 +124,6 @@ pub(crate) struct OutgoingPacket {
     /// High-priority packets (link requests, proofs, channel data) are sent
     /// before normal-priority packets (announce rebroadcasts) on constrained
     /// interfaces like LoRa. Read by RNode send queue (behind `serial` feature).
-    #[cfg_attr(not(feature = "serial"), allow(dead_code))]
     pub high_priority: bool,
 }
 

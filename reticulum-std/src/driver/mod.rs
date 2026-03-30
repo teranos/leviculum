@@ -492,7 +492,6 @@ impl ReticulumNode {
                         self.auto_peer_count_rx = Some(peer_count_rx);
                         tracing::info!("AutoInterface: starting orchestrator");
                     }
-                    #[cfg(feature = "serial")]
                     "RNodeInterface" => {
                         let port_path = config
                             .port
@@ -572,7 +571,6 @@ impl ReticulumNode {
                     );
                         registry.register(handle);
                     }
-                    #[cfg(feature = "serial")]
                     "SerialInterface" => {
                         let port_path = config
                             .port

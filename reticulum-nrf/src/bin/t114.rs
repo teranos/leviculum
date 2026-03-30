@@ -53,8 +53,6 @@ async fn main(spawner: Spawner) {
     // Hardware RNG (blocking mode — no interrupt binding needed)
     let rng = Rng::new_blocking(p.RNG);
 
-    let ifac_configs: BTreeMap<usize, IfacConfig> = BTreeMap::new();
-
     // Build NodeCore on the heap — the async frame is too large for the stack
     // when NodeCore (~40 KB with EmbeddedStorage) lives inline. Boxing moves it
     // to the heap (89 KB free), freeing ~40 KB of stack for the Ed25519 signing
@@ -84,8 +82,9 @@ async fn main(spawner: Spawner) {
     let sf = reticulum_nrf::stack_free();
     info!("heap u={} f={} stack f={}", hu, hf, sf);
 
-    // Interface adapter for dispatch_actions()
+    // Interface adapter and IFAC config for dispatch_actions()
     let mut iface = EmbeddedInterface::new(serial.outgoing_tx);
+    let ifac_configs: BTreeMap<usize, IfacConfig> = BTreeMap::new();
 
     // Boot blink
     led.set_level(Level::Low);

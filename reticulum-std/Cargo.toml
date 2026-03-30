@@ -8,7 +8,6 @@ description = "Standard library extensions for reticulum - networking, file I/O,
 
 [features]
 default = ["compression"]
-serial = ["dep:tokio-serial"]
 # Enable compression support (uses no_std compatible compression from reticulum-core)
 compression = ["reticulum-core/compression"]
 
@@ -20,7 +19,7 @@ tokio.workspace = true
 if-addrs.workspace = true
 socket2.workspace = true
 libc.workspace = true
-tokio-serial = { workspace = true, optional = true }
+tokio-serial.workspace = true
 tracing = { workspace = true, features = ["std"] }
 serde.workspace = true
 serde-pickle.workspace = true
