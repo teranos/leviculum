@@ -1908,11 +1908,10 @@ impl<C: Clock, S: Storage> Transport<C, S> {
                 self.record_incoming_announce(interface_index);
             }
 
-            // Cache raw announce for path responses (when transport is enabled
-            // or local clients are connected — clients may issue path requests)
-            if self.config.enable_transport || self.has_local_clients() {
-                self.storage.set_announce_cache(dest_hash, raw.to_vec());
-            }
+            // Cache raw announce for path responses. Always cache regardless of
+            // transport mode — local clients may connect later and issue path
+            // requests for destinations announced before the client connected.
+            self.storage.set_announce_cache(dest_hash, raw.to_vec());
 
             // Forward announce to local client interfaces (Python Transport.py:1788-1833).
             // Convert to Header2 with the daemon's own transport_id and receipt-incremented
@@ -12522,8 +12521,10 @@ mod tests {
         }
 
         #[test]
-        fn test_announce_cache_set_with_local_clients_no_transport() {
-            // Even with transport disabled, announce cache should be set if local clients exist
+        fn test_announce_cache_always_populated() {
+            // Announce cache is always populated regardless of transport mode or
+            // local client presence — local clients may connect later and issue
+            // path requests for destinations announced before they connected.
             let clock = MockClock::new(TEST_TIME_MS);
             let identity = Identity::generate(&mut OsRng);
             let config = TransportConfig {
@@ -12533,8 +12534,7 @@ mod tests {
             let mut transport =
                 Transport::new(config, clock, MemoryStorage::with_defaults(), identity);
             transport.set_interface_name(NETWORK_IFACE, "tcp".into());
-            transport.set_interface_name(LOCAL_CLIENT_IFACE, "local".into());
-            transport.set_local_client(LOCAL_CLIENT_IFACE, true);
+            // No local clients registered — cache should still be populated
 
             let (raw, dest_hash) = make_announce_raw(0, crate::packet::PacketContext::None);
             let packet = Packet::unpack(&raw).unwrap();
@@ -12542,7 +12542,7 @@ mod tests {
 
             assert!(
                 transport.storage.get_announce_cache(&dest_hash).is_some(),
-                "Announce cache should be populated when local clients exist"
+                "Announce cache should always be populated"
             );
         }
 
