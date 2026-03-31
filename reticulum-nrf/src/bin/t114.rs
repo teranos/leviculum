@@ -72,7 +72,7 @@ async fn main(spawner: Spawner) {
     node.set_interface_name(0, alloc::string::String::from("serial_usb"));
     node.set_interface_hw_mtu(0, 564);
     node.set_interface_name(1, alloc::string::String::from("lora_sx1262"));
-    node.set_interface_hw_mtu(1, 500);
+    node.set_interface_hw_mtu(1, 255);
 
     let hash = node.identity().hash();
     info!(

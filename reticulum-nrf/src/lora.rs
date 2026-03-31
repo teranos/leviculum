@@ -86,8 +86,10 @@ impl Interface for LoRaInterface {
     }
 
     fn mtu(&self) -> usize {
-        // RNode HW_MTU for LoRa: 500 bytes (matches CLAUDE.md)
-        500
+        // SX1262 FIFO is 256 bytes. Max usable payload is 255 bytes.
+        // dispatch_actions passes raw packets to try_send without
+        // fragmentation, so this must reflect the radio's actual limit.
+        255
     }
 
     fn is_online(&self) -> bool {
