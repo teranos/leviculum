@@ -430,3 +430,16 @@ pub const RANDOM_HASH_TIMESTAMP_SIZE: usize = 5;
 
 /// Offset into timestamp bytes (skip high bytes)
 pub const RANDOM_HASH_TIMESTAMP_OFFSET: usize = 3;
+
+// ─── BLE Interface Constants (Columba Protocol v2.2) ───────────────────────
+
+/// Reticulum BLE GATT service UUID
+pub const BLE_SERVICE_UUID: &str = "37145b00-442d-4a94-917f-8f42c5da28e3";
+/// BLE RX characteristic UUID (write by Central, receives data)
+pub const BLE_RX_CHARACTERISTIC_UUID: &str = "37145b00-442d-4a94-917f-8f42c5da28e5";
+/// BLE TX characteristic UUID (notify to Central, sends data)
+pub const BLE_TX_CHARACTERISTIC_UUID: &str = "37145b00-442d-4a94-917f-8f42c5da28e4";
+/// BLE Identity characteristic UUID (read, 16-byte transport identity hash)
+pub const BLE_IDENTITY_CHARACTERISTIC_UUID: &str = "37145b00-442d-4a94-917f-8f42c5da28e6";
+/// Maximum simultaneous BLE peer connections (nRF52840 hardware limit ~8)
+pub const BLE_MAX_CONNECTIONS: usize = 7;

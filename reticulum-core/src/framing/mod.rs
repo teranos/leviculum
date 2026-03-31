@@ -45,6 +45,7 @@
 //! [`frame_to_slice`] and [`crc16`] work without `alloc`.
 //! [`Deframer`] and [`frame`] require `alloc`.
 
+pub mod ble;
 pub mod hdlc;
 pub mod kiss;
 
