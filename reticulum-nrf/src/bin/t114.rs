@@ -36,6 +36,7 @@ async fn main(spawner: Spawner) {
     let p = embassy_nrf::init(config);
 
     init_heap();
+    reticulum_nrf::init_tracing();
     // SAFETY: called once before any complex work or concurrent tasks
     unsafe { reticulum_nrf::paint_stack(); }
 
@@ -79,6 +80,13 @@ async fn main(spawner: Spawner) {
     );
     info!("Serial interface online on USB port 1");
 
+    // Initialize SX1262 LoRa radio
+    let _lora = reticulum_nrf::lora::init(
+        p.SPI3, p.P0_19, p.P0_22, p.P0_23, p.P0_24, p.P0_25, p.P0_17, p.P0_20,
+    )
+    .await;
+    info!("SX1262 ready");
+
     let (hu, hf) = reticulum_nrf::heap_stats();
     let sf = reticulum_nrf::stack_free();
     info!("heap u={} f={} stack f={}", hu, hf, sf);
@@ -94,18 +102,14 @@ async fn main(spawner: Spawner) {
     }
     led.set_level(Level::High);
 
-    // Event-driven main loop
+    // Event-driven main loop — sleeps until next protocol deadline or incoming packet.
+    // No heartbeat: a transport relay has no use for a blinking LED, and periodic
+    // wake-ups waste power. The LED blinks once at boot (above) to confirm firmware.
     loop {
-        let node_deadline = node
+        let deadline = node
             .next_deadline()
             .map(Instant::from_millis)
             .unwrap_or(Instant::MAX);
-        let heartbeat = Instant::now() + embassy_time::Duration::from_secs(5);
-        let deadline = if node_deadline < heartbeat {
-            node_deadline
-        } else {
-            heartbeat
-        };
 
         match select(serial.incoming_rx.receive(), Timer::at(deadline)).await {
             Either::First(data) => {
@@ -122,10 +126,6 @@ async fn main(spawner: Spawner) {
                 if !output.actions.is_empty() {
                     info!("timeout: {} actions", output.actions.len());
                 }
-                // Heartbeat blink
-                led.set_level(Level::Low);
-                Timer::after_millis(50).await;
-                led.set_level(Level::High);
                 let mut ifaces: [&mut dyn Interface; 1] = [&mut iface];
                 dispatch_actions(&mut ifaces, output.actions, &ifac_configs);
             }

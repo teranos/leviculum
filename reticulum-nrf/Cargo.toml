@@ -11,11 +11,12 @@ reticulum-core = { path = "../reticulum-core", default-features = false }
 
 # Embassy async runtime
 embassy-executor = { version = "0.9", features = ["arch-cortex-m", "executor-thread"] }
-embassy-nrf = { version = "0.9", features = ["nrf52840", "time-driver-rtc1", "nfc-pins-as-gpio"] }
+embassy-nrf = { version = "0.9", features = ["nrf52840", "time-driver-rtc1", "nfc-pins-as-gpio", "gpiote"] }
 embassy-time = "0.5"
 embassy-sync = "0.7"
 embassy-usb = "0.5"
 embassy-futures = "0.1"
+embassy-embedded-hal = "0.5"
 
 # Cortex-M support
 cortex-m = { version = "0.7", features = ["critical-section-single-core"] }
@@ -26,6 +27,11 @@ embedded-alloc = "0.7"
 
 # Static initialization
 static_cell = "2"
+
+# SX1262 LoRa radio driver
+lora-phy = { version = "3", default-features = false }
+defmt = "0.3"
+tracing-core = { version = "0.1", default-features = false }
 
 [profile.release]
 opt-level = "z"      # optimize for size

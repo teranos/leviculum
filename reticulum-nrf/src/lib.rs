@@ -11,7 +11,34 @@ pub mod boards;
 pub mod clock;
 pub mod interface;
 pub mod log;
+pub mod lora;
 pub mod usb;
+
+/// Install the tracing subscriber that routes `reticulum-core` log events
+/// to the CDC-ACM debug port via LOG_CHANNEL.
+///
+/// Call once at startup before any tracing macros fire. Without this,
+/// all `tracing::debug!()` / `tracing::info!()` etc. from reticulum-core
+/// are silently dropped (no subscriber registered).
+pub fn init_tracing() {
+    use tracing_core::dispatcher;
+    let subscriber = log::TracingSubscriber;
+    let dispatch = dispatcher::Dispatch::new(subscriber);
+    let _ = dispatcher::set_global_default(dispatch);
+}
+
+// No-op defmt logger — required by lora-phy but we use our own CDC-ACM logging.
+// defmt log calls from lora-phy are silently discarded.
+mod defmt_stub {
+    #[defmt::global_logger]
+    struct StubLogger;
+    unsafe impl defmt::Logger for StubLogger {
+        fn acquire() {}
+        unsafe fn flush() {}
+        unsafe fn release() {}
+        unsafe fn write(_bytes: &[u8]) {}
+    }
+}
 
 use core::mem::MaybeUninit;
 use embedded_alloc::LlffHeap as Heap;

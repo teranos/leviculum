@@ -67,3 +67,74 @@ macro_rules! warn {
         $crate::log::log_fmt("[WARN] ", core::format_args!($($arg)*))
     };
 }
+
+/// Minimal tracing subscriber that routes `reticulum-core` log events
+/// to the CDC-ACM debug port via LOG_CHANNEL.
+///
+/// Only processes events (not spans). Formats each event as:
+/// `[LEVEL] message key=value key=value...\r\n`
+pub struct TracingSubscriber;
+
+impl tracing_core::Subscriber for TracingSubscriber {
+    fn enabled(&self, metadata: &tracing_core::Metadata<'_>) -> bool {
+        metadata.level() <= &tracing_core::Level::DEBUG
+    }
+
+    fn new_span(&self, _: &tracing_core::span::Attributes<'_>) -> tracing_core::span::Id {
+        tracing_core::span::Id::from_u64(1)
+    }
+
+    fn record(&self, _: &tracing_core::span::Id, _: &tracing_core::span::Record<'_>) {}
+    fn record_follows_from(&self, _: &tracing_core::span::Id, _: &tracing_core::span::Id) {}
+    fn enter(&self, _: &tracing_core::span::Id) {}
+    fn exit(&self, _: &tracing_core::span::Id) {}
+
+    fn event(&self, event: &tracing_core::Event<'_>) {
+        let metadata = event.metadata();
+        let level = match *metadata.level() {
+            tracing_core::Level::ERROR => "ERROR",
+            tracing_core::Level::WARN => " WARN",
+            tracing_core::Level::INFO => " INFO",
+            tracing_core::Level::DEBUG => "DEBUG",
+            tracing_core::Level::TRACE => "TRACE",
+        };
+
+        let mut msg = LogMessage {
+            buf: [0u8; 256],
+            len: 0,
+        };
+
+        // Format prefix, then visit fields, then append \r\n — all on msg directly
+        {
+            let mut writer = LogWriter(&mut msg);
+            let _ = core::fmt::Write::write_fmt(
+                &mut writer,
+                format_args!("[{}] {}: ", level, metadata.target()),
+            );
+        }
+        event.record(&mut TracingVisitor(&mut msg));
+        {
+            let mut writer = LogWriter(&mut msg);
+            let _ = core::fmt::Write::write_str(&mut writer, "\r\n");
+        }
+
+        let _ = LOG_CHANNEL.try_send(msg);
+    }
+}
+
+/// Visitor that formats tracing event fields into the LogMessage buffer.
+struct TracingVisitor<'a>(&'a mut LogMessage);
+
+impl tracing_core::field::Visit for TracingVisitor<'_> {
+    fn record_debug(&mut self, field: &tracing_core::field::Field, value: &dyn core::fmt::Debug) {
+        let mut writer = LogWriter(self.0);
+        if field.name() == "message" {
+            let _ = core::fmt::Write::write_fmt(&mut writer, format_args!("{:?}", value));
+        } else {
+            let _ = core::fmt::Write::write_fmt(
+                &mut writer,
+                format_args!(" {}={:?}", field.name(), value),
+            );
+        }
+    }
+}
