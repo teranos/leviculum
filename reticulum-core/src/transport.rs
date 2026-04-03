@@ -584,6 +584,11 @@ pub struct Transport<C: Clock, S: Storage> {
     /// Well-known hash for path request destination (rnstransport.path.request)
     path_request_hash: [u8; TRUNCATED_HASHBYTES],
 
+    /// Well-known hash for tunnel synthesize destination (rnstransport.tunnel.synthesize).
+    /// Not implemented in Rust, but Python nodes send these packets. We must
+    /// recognize them as control traffic, not forward them as plain broadcasts.
+    tunnel_synthesize_hash: [u8; TRUNCATED_HASHBYTES],
+
     /// Cached raw announce bytes for path responses: dest_hash -> raw bytes
     // announce_cache: migrated to Storage trait
 
@@ -641,6 +646,7 @@ impl<C: Clock, S: Storage> Transport<C, S> {
     /// Create a new Transport instance
     pub fn new(config: TransportConfig, clock: C, storage: S, identity: Identity) -> Self {
         let path_request_hash = Self::compute_path_request_hash();
+        let tunnel_synthesize_hash = Self::compute_tunnel_synthesize_hash();
         Self {
             config,
             clock,
@@ -656,6 +662,7 @@ impl<C: Clock, S: Storage> Transport<C, S> {
             events: Vec::new(),
             stats: TransportStats::default(),
             path_request_hash,
+            tunnel_synthesize_hash,
             // announce_cache: migrated to Storage
             // announce_rate_table: migrated to Storage
             interface_announce_caps: BTreeMap::new(),
@@ -2501,7 +2508,7 @@ impl<C: Clock, S: Storage> Transport<C, S> {
 
     fn handle_data(
         &mut self,
-        packet: Packet,
+        mut packet: Packet,
         interface_index: usize,
         full_packet_hash: [u8; 32],
         truncated_hash: [u8; TRUNCATED_HASHBYTES],
@@ -2523,6 +2530,69 @@ impl<C: Clock, S: Storage> Transport<C, S> {
                 self.iface_name(interface_index)
             );
             return self.handle_path_request(packet, interface_index);
+        }
+
+        // Plain broadcast forwarding through shared instance
+        // (Python Transport.py:1384-1398). Plain broadcasts bypass transport
+        // routing — they are forwarded directly between local clients and
+        // network interfaces. Control destinations (path requests, tunnel
+        // synthesis) are excluded — they have their own handlers.
+        // Codeberg issue #24.
+        let is_control_dest = dest_hash == self.path_request_hash
+            || dest_hash == self.tunnel_synthesize_hash;
+        if packet.flags.dest_type == DestinationType::Plain
+            && packet.flags.transport_type == TransportType::Broadcast
+            && !is_control_dest
+        {
+            let from_local = self.is_local_client(interface_index);
+            if from_local {
+                // Local client → broadcast on all interfaces except sender
+                tracing::debug!(
+                    "Plain broadcast from local client on {}, forwarding to all interfaces",
+                    self.iface_name(interface_index)
+                );
+                self.forward_on_all_except(interface_index, &mut packet);
+            } else if self.has_local_clients() {
+                // Network → forward only to local client interfaces
+                tracing::debug!(
+                    "Plain broadcast from {} for <{}>, forwarding to local clients",
+                    self.iface_name(interface_index),
+                    HexShort(&dest_hash)
+                );
+                let size = packet.packed_size();
+                let mut buf = alloc::vec![0u8; size];
+                if let Ok(len) = packet.pack(&mut buf) {
+                    for &client_iface in &self.local_client_interfaces {
+                        if client_iface != interface_index {
+                            self.pending_actions.push(Action::SendPacket {
+                                iface: InterfaceId(client_iface),
+                                data: buf[..len].to_vec(),
+                            });
+                        }
+                    }
+                    self.stats.packets_forwarded += 1;
+                }
+            }
+
+            // Also deliver locally if destination is registered on this node
+            if self.local_destinations.contains(&dest_hash) {
+                self.storage.add_packet_hash(full_packet_hash);
+                self.events.push(TransportEvent::PacketReceived {
+                    destination_hash: dest_hash,
+                    packet: Box::new(packet),
+                    interface_index,
+                    raw_hash: Some(full_packet_hash),
+                });
+                self.events.push(TransportEvent::ProofRequested {
+                    packet_hash: full_packet_hash,
+                    destination_hash: dest_hash,
+                    interface_index,
+                });
+            }
+            // Early return: Python falls through to "general transport handling"
+            // (Transport.py:1404) but that path is a no-op for PLAIN broadcasts —
+            // for_local_client is always False (no path table entry for PLAIN dests).
+            return Ok(());
         }
 
         // Check if we have this destination registered
@@ -3333,6 +3403,18 @@ impl<C: Clock, S: Storage> Transport<C, S> {
     /// Hash = full_hash(name_hash)[:16], matching Python Reticulum.
     fn compute_path_request_hash() -> [u8; TRUNCATED_HASHBYTES] {
         let name_hash = Destination::compute_name_hash("rnstransport", &["path", "request"]);
+        truncated_hash(&name_hash)
+    }
+
+    /// Compute the well-known tunnel synthesize destination hash.
+    ///
+    /// PLAIN destination with name "rnstransport.tunnel.synthesize".
+    /// Tunnels are not implemented in Rust, but Python nodes send these
+    /// control packets. We must recognize them to avoid forwarding them
+    /// as plain broadcasts (Python Transport.py:1387 control_hashes check).
+    fn compute_tunnel_synthesize_hash() -> [u8; TRUNCATED_HASHBYTES] {
+        let name_hash =
+            Destination::compute_name_hash("rnstransport", &["tunnel", "synthesize"]);
         truncated_hash(&name_hash)
     }
 
@@ -13597,6 +13679,393 @@ mod tests {
             assert!(
                 transport.storage.get_announce_cache(&dest_hash).is_some(),
                 "Refreshed dest's announce cache should survive cleanup"
+            );
+        }
+
+        // ─── Plain Broadcast Forwarding ─────────────────────────────────
+
+        /// Helper: build a raw PLAIN BROADCAST data packet.
+        fn make_plain_broadcast_raw(
+            dest_hash: [u8; TRUNCATED_HASHBYTES],
+            data: &[u8],
+        ) -> Vec<u8> {
+            let packet = Packet {
+                flags: PacketFlags {
+                    ifac_flag: false,
+                    header_type: HeaderType::Type1,
+                    context_flag: false,
+                    transport_type: TransportType::Broadcast,
+                    dest_type: DestinationType::Plain,
+                    packet_type: PacketType::Data,
+                },
+                hops: 0,
+                transport_id: None,
+                destination_hash: dest_hash,
+                context: PacketContext::None,
+                data: PacketData::Owned(data.to_vec()),
+            };
+            let size = packet.packed_size();
+            let mut buf = alloc::vec![0u8; size];
+            packet.pack(&mut buf).expect("pack");
+            buf
+        }
+
+        #[test]
+        fn test_plain_broadcast_from_local_client_forwards_to_all() {
+            // A PLAIN BROADCAST from a local client should be forwarded to
+            // ALL interfaces (Action::Broadcast) except the sender.
+            // Python Transport.py:1390-1393.
+            let mut transport = make_transport_with_local_client();
+            let dest_hash = [0xAB; TRUNCATED_HASHBYTES];
+            let raw = make_plain_broadcast_raw(dest_hash, b"broadcast from local");
+
+            transport
+                .process_incoming(LOCAL_CLIENT_IFACE, &raw)
+                .expect("process_incoming");
+
+            let actions = transport.drain_actions();
+            let has_broadcast = actions.iter().any(|a| {
+                matches!(
+                    a,
+                    Action::Broadcast {
+                        exclude_iface: Some(iface),
+                        ..
+                    } if iface.0 == LOCAL_CLIENT_IFACE
+                )
+            });
+            assert!(
+                has_broadcast,
+                "Expected Action::Broadcast excluding local client iface, got: {:?}",
+                actions
+            );
+        }
+
+        #[test]
+        fn test_plain_broadcast_from_network_forwards_to_local_clients() {
+            // A PLAIN BROADCAST from a network interface should be forwarded
+            // ONLY to local client interfaces (Action::SendPacket).
+            // Python Transport.py:1396-1398.
+            let mut transport = make_transport_with_local_client();
+            let dest_hash = [0xCD; TRUNCATED_HASHBYTES];
+            let raw = make_plain_broadcast_raw(dest_hash, b"broadcast from network");
+
+            transport
+                .process_incoming(NETWORK_IFACE, &raw)
+                .expect("process_incoming");
+
+            let actions = transport.drain_actions();
+            let has_send_to_local = actions.iter().any(|a| {
+                matches!(
+                    a,
+                    Action::SendPacket { iface, .. } if iface.0 == LOCAL_CLIENT_IFACE
+                )
+            });
+            assert!(
+                has_send_to_local,
+                "Expected Action::SendPacket to local client iface, got: {:?}",
+                actions
+            );
+
+            // Should NOT have a Broadcast action (that would also hit network ifaces)
+            let has_broadcast = actions.iter().any(|a| matches!(a, Action::Broadcast { .. }));
+            assert!(
+                !has_broadcast,
+                "Network→local should use SendPacket, not Broadcast"
+            );
+        }
+
+        #[test]
+        fn test_plain_broadcast_no_local_clients_no_forward() {
+            // With no local clients, a network PLAIN BROADCAST produces no
+            // forwarding actions (packet is only delivered locally if dest exists).
+            let clock = MockClock::new(TEST_TIME_MS);
+            let identity = Identity::generate(&mut OsRng);
+            let config = TransportConfig {
+                enable_transport: true,
+                ..TransportConfig::default()
+            };
+            let mut transport =
+                Transport::new(config, clock, MemoryStorage::with_defaults(), identity);
+            transport.set_interface_name(NETWORK_IFACE, "tcp_server/127.0.0.1".into());
+            // No local clients registered
+
+            let dest_hash = [0xEF; TRUNCATED_HASHBYTES];
+            let raw = make_plain_broadcast_raw(dest_hash, b"broadcast no clients");
+
+            transport
+                .process_incoming(NETWORK_IFACE, &raw)
+                .expect("process_incoming");
+
+            let actions = transport.drain_actions();
+            let has_forward = actions.iter().any(|a| {
+                matches!(a, Action::SendPacket { .. } | Action::Broadcast { .. })
+            });
+            assert!(
+                !has_forward,
+                "No forwarding should happen without local clients, got: {:?}",
+                actions
+            );
+        }
+
+        #[test]
+        fn test_plain_broadcast_delivers_locally_and_forwards() {
+            // When the daemon itself has a matching PLAIN destination AND
+            // has local clients, a network broadcast should both deliver
+            // locally (PacketReceived event) and forward to local clients.
+            let mut transport = make_transport_with_local_client();
+
+            // Register a local PLAIN destination
+            let dest = Destination::new(
+                None,
+                Direction::In,
+                DestinationType::Plain,
+                "plaintest",
+                &["localdeliver"],
+            )
+            .unwrap();
+            let dest_hash = dest.hash().as_bytes();
+            transport.register_destination(*dest_hash);
+
+            let raw = make_plain_broadcast_raw(*dest_hash, b"deliver and forward");
+
+            transport
+                .process_incoming(NETWORK_IFACE, &raw)
+                .expect("process_incoming");
+
+            // Check forwarding to local client
+            let actions = transport.drain_actions();
+            let has_send_to_local = actions.iter().any(|a| {
+                matches!(
+                    a,
+                    Action::SendPacket { iface, .. } if iface.0 == LOCAL_CLIENT_IFACE
+                )
+            });
+            assert!(
+                has_send_to_local,
+                "Should forward to local client even when delivering locally"
+            );
+
+            // Check local delivery
+            let events: Vec<_> = transport.drain_events().collect();
+            let has_delivery = events.iter().any(|e| {
+                matches!(
+                    e,
+                    TransportEvent::PacketReceived {
+                        destination_hash, ..
+                    } if *destination_hash == *dest_hash
+                )
+            });
+            assert!(
+                has_delivery,
+                "Should deliver locally to registered PLAIN destination"
+            );
+        }
+
+        #[test]
+        fn test_plain_broadcast_control_dest_not_forwarded() {
+            // tunnel_synthesize is a PLAIN BROADCAST control destination.
+            // It must NOT enter the broadcast forwarding block.
+            // Regression test: omitting this exclusion caused
+            // test_node_receives_announce_from_daemon to fail 1/5 under RUST_LOG=debug.
+            let mut transport = make_transport_with_local_client();
+            let tunnel_hash =
+                Transport::<MockClock, MemoryStorage>::compute_tunnel_synthesize_hash();
+            let raw = make_plain_broadcast_raw(tunnel_hash, b"tunnel synthesize");
+
+            transport
+                .process_incoming(NETWORK_IFACE, &raw)
+                .expect("process_incoming");
+
+            // Must NOT produce any forwarding actions
+            let actions = transport.drain_actions();
+            let has_forward = actions
+                .iter()
+                .any(|a| matches!(a, Action::SendPacket { .. } | Action::Broadcast { .. }));
+            assert!(
+                !has_forward,
+                "Control dest (tunnel_synthesize) must not be broadcast-forwarded, got: {:?}",
+                actions
+            );
+
+            // Also verify: no PacketReceived event (tunnel_synthesize is not registered locally)
+            let events: Vec<_> = transport.drain_events().collect();
+            let has_delivery = events
+                .iter()
+                .any(|e| matches!(e, TransportEvent::PacketReceived { .. }));
+            assert!(
+                !has_delivery,
+                "tunnel_synthesize should not be delivered locally either"
+            );
+        }
+
+        #[test]
+        fn test_plain_broadcast_multiple_local_clients() {
+            // Two local clients (iface 10, iface 11). Network broadcast on iface 0
+            // must produce SendPacket to BOTH.
+            let mut transport = make_transport_with_local_client(); // has iface 0 + iface 10
+            const LOCAL_CLIENT_2: usize = 11;
+            transport.set_interface_name(LOCAL_CLIENT_2, "Local[rns/default]/1".into());
+            transport.set_local_client(LOCAL_CLIENT_2, true);
+
+            let dest_hash = [0xBB; TRUNCATED_HASHBYTES];
+            let raw = make_plain_broadcast_raw(dest_hash, b"multi client");
+
+            transport
+                .process_incoming(NETWORK_IFACE, &raw)
+                .expect("process_incoming");
+
+            let actions = transport.drain_actions();
+            let send_targets: Vec<usize> = actions
+                .iter()
+                .filter_map(|a| match a {
+                    Action::SendPacket { iface, .. } => Some(iface.0),
+                    _ => None,
+                })
+                .collect();
+
+            assert!(
+                send_targets.contains(&LOCAL_CLIENT_IFACE),
+                "Broadcast must reach local client 1 (iface {}), got targets: {:?}",
+                LOCAL_CLIENT_IFACE,
+                send_targets
+            );
+            assert!(
+                send_targets.contains(&LOCAL_CLIENT_2),
+                "Broadcast must reach local client 2 (iface {}), got targets: {:?}",
+                LOCAL_CLIENT_2,
+                send_targets
+            );
+            // Must NOT have a Broadcast action (would leak to network)
+            assert!(
+                !actions
+                    .iter()
+                    .any(|a| matches!(a, Action::Broadcast { .. })),
+                "Network→local must use targeted SendPacket, not Broadcast"
+            );
+        }
+
+        #[test]
+        fn test_plain_broadcast_local_to_local_client() {
+            // Local client A (iface 10) sends broadcast.
+            // forward_on_all_except emits Action::Broadcast excluding iface 10.
+            // The driver dispatches to all interfaces including local client B (iface 11).
+            let mut transport = make_transport_with_local_client(); // iface 0 + iface 10
+            const LOCAL_CLIENT_2: usize = 11;
+            transport.set_interface_name(LOCAL_CLIENT_2, "Local[rns/default]/1".into());
+            transport.set_local_client(LOCAL_CLIENT_2, true);
+
+            let dest_hash = [0xCC; TRUNCATED_HASHBYTES];
+            let raw = make_plain_broadcast_raw(dest_hash, b"client to client");
+
+            transport
+                .process_incoming(LOCAL_CLIENT_IFACE, &raw)
+                .expect("process_incoming");
+
+            let actions = transport.drain_actions();
+            // Should get a Broadcast action excluding sender (iface 10)
+            let has_broadcast = actions.iter().any(|a| {
+                matches!(
+                    a,
+                    Action::Broadcast {
+                        exclude_iface: Some(iface),
+                        ..
+                    } if iface.0 == LOCAL_CLIENT_IFACE
+                )
+            });
+            assert!(
+                has_broadcast,
+                "Local client broadcast should emit Action::Broadcast excluding sender, got: {:?}",
+                actions
+            );
+        }
+
+        #[test]
+        fn test_plain_broadcast_duplicate_suppressed() {
+            // Send same plain broadcast twice. Second should be dropped by dedup.
+            let mut transport = make_transport_with_local_client();
+            let dest_hash = [0xDD; TRUNCATED_HASHBYTES];
+            let raw = make_plain_broadcast_raw(dest_hash, b"dedup test");
+
+            // First: should produce forwarding action
+            transport
+                .process_incoming(NETWORK_IFACE, &raw)
+                .expect("first");
+            let actions1 = transport.drain_actions();
+            assert!(
+                actions1
+                    .iter()
+                    .any(|a| matches!(a, Action::SendPacket { .. })),
+                "First broadcast should be forwarded"
+            );
+
+            // Second: identical packet, should be dropped as duplicate
+            transport
+                .process_incoming(NETWORK_IFACE, &raw)
+                .expect("second");
+            let actions2 = transport.drain_actions();
+            assert!(
+                !actions2
+                    .iter()
+                    .any(|a| matches!(a, Action::SendPacket { .. } | Action::Broadcast { .. })),
+                "Duplicate broadcast must be suppressed, got: {:?}",
+                actions2
+            );
+        }
+
+        #[test]
+        fn test_plain_broadcast_local_delivery_without_local_clients() {
+            // No local clients, but daemon has the PLAIN destination registered.
+            // Broadcast from network should deliver locally (PacketReceived).
+            let clock = MockClock::new(TEST_TIME_MS);
+            let identity = Identity::generate(&mut OsRng);
+            let config = TransportConfig {
+                enable_transport: true,
+                ..TransportConfig::default()
+            };
+            let mut transport =
+                Transport::new(config, clock, MemoryStorage::with_defaults(), identity);
+            transport.set_interface_name(NETWORK_IFACE, "tcp_server/127.0.0.1".into());
+
+            // Register a local PLAIN destination
+            let dest = Destination::new(
+                None,
+                Direction::In,
+                DestinationType::Plain,
+                "plaintest",
+                &["nolocal"],
+            )
+            .unwrap();
+            let dest_hash = dest.hash().as_bytes();
+            transport.register_destination(*dest_hash);
+
+            let raw = make_plain_broadcast_raw(*dest_hash, b"deliver without clients");
+
+            transport
+                .process_incoming(NETWORK_IFACE, &raw)
+                .expect("process_incoming");
+
+            // No forwarding (no local clients)
+            let actions = transport.drain_actions();
+            assert!(
+                !actions
+                    .iter()
+                    .any(|a| matches!(a, Action::SendPacket { .. } | Action::Broadcast { .. })),
+                "No forwarding without local clients"
+            );
+
+            // But local delivery SHOULD happen
+            let events: Vec<_> = transport.drain_events().collect();
+            let has_delivery = events.iter().any(|e| {
+                matches!(
+                    e,
+                    TransportEvent::PacketReceived {
+                        destination_hash, ..
+                    } if *destination_hash == *dest_hash
+                )
+            });
+            assert!(
+                has_delivery,
+                "Daemon should deliver broadcast locally even without local clients"
             );
         }
     }

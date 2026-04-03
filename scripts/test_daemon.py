@@ -120,6 +120,8 @@ class TestDaemon:
         self.links = {}  # link_hash -> link
         self.received_packets = []  # [(timestamp, link, data)]
         self.received_single_packets = []  # [(timestamp, dest_hash, data_hex)]
+        self.plain_destinations = {}  # hash -> destination (PLAIN type, no identity)
+        self.received_plain_packets = []  # [(timestamp, dest_hash, data_hex)]
         self.client_interfaces = {}  # name -> TCPClientInterface
         self.inbound_trace = []  # [(timestamp, flags, packet_type, dest_hash_hex, transport_id_hex)]
         self.received_resources = []  # [{resource_hash, data, metadata, status}]
@@ -1184,6 +1186,65 @@ class TestDaemon:
             except Exception as e:
                 return {"error": f"Failed to send single packet: {str(e)}"}
 
+        elif method == "register_plain_destination":
+            # Create a PLAIN destination (no identity, unencrypted broadcast)
+            app_name = params.get("app_name", "test")
+            aspects = params.get("aspects", [])
+
+            dest = RNS.Destination(
+                None,
+                RNS.Destination.IN,
+                RNS.Destination.PLAIN,
+                app_name,
+                *aspects
+            )
+
+            dest.set_packet_callback(
+                lambda data, pkt, d=dest: self._on_plain_packet(d, data, pkt)
+            )
+
+            dest_hash = dest.hash.hex()
+            self.plain_destinations[dest_hash] = dest
+
+            return {
+                "result": {
+                    "hash": dest_hash,
+                }
+            }
+
+        elif method == "send_plain_packet":
+            # Send a plain broadcast packet (unencrypted, no identity)
+            app_name = params.get("app_name", "test")
+            aspects = params.get("aspects", [])
+            data_hex = params.get("data", "")
+
+            try:
+                dest = RNS.Destination(
+                    None,
+                    RNS.Destination.OUT,
+                    RNS.Destination.PLAIN,
+                    app_name,
+                    *aspects
+                )
+
+                data_bytes = bytes.fromhex(data_hex)
+                packet = RNS.Packet(dest, data_bytes)
+                packet.send()
+
+                return {"result": {"sent": True, "hash": dest.hash.hex()}}
+            except Exception as e:
+                return {"error": f"Failed to send plain packet: {str(e)}"}
+
+        elif method == "get_received_plain_packets":
+            packets = []
+            for ts, dest_hash, data_hex in self.received_plain_packets:
+                packets.append({
+                    "timestamp": ts,
+                    "dest_hash": dest_hash,
+                    "data": data_hex,
+                })
+            return {"result": packets}
+
         elif method == "shutdown":
             self.running = False
             return {"result": "shutting_down"}
@@ -1197,6 +1258,17 @@ class TestDaemon:
             print(f"Single packet received at {dest.hash.hex()}: {len(data)} bytes")
 
         self.received_single_packets.append((
+            time.time(),
+            dest.hash.hex(),
+            data.hex() if isinstance(data, bytes) else data.encode().hex(),
+        ))
+
+    def _on_plain_packet(self, dest, data, packet):
+        """Called when a plain broadcast packet is received."""
+        if self.verbose:
+            print(f"Plain packet received at {dest.hash.hex()}: {len(data)} bytes")
+
+        self.received_plain_packets.append((
             time.time(),
             dest.hash.hex(),
             data.hex() if isinstance(data, bytes) else data.encode().hex(),

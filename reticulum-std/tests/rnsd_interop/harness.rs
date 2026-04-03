@@ -1035,6 +1035,80 @@ impl TestDaemon {
         Ok(())
     }
 
+    /// Register a PLAIN destination (no identity, unencrypted broadcast).
+    ///
+    /// Returns the destination hash (hex string).
+    pub async fn register_plain_destination(
+        &self,
+        app_name: &str,
+        aspects: &[&str],
+    ) -> Result<String, HarnessError> {
+        let result = self
+            .query(
+                "register_plain_destination",
+                serde_json::json!({
+                    "app_name": app_name,
+                    "aspects": aspects,
+                }),
+            )
+            .await?;
+
+        let hash = result
+            .get("hash")
+            .and_then(|v| v.as_str())
+            .ok_or_else(|| HarnessError::ParseError("Missing hash".to_string()))?
+            .to_string();
+
+        Ok(hash)
+    }
+
+    /// Send a plain broadcast packet (unencrypted, no identity).
+    pub async fn send_plain_packet(
+        &self,
+        app_name: &str,
+        aspects: &[&str],
+        data: &[u8],
+    ) -> Result<(), HarnessError> {
+        self.query(
+            "send_plain_packet",
+            serde_json::json!({
+                "app_name": app_name,
+                "aspects": aspects,
+                "data": hex::encode(data),
+            }),
+        )
+        .await?;
+        Ok(())
+    }
+
+    /// Get plain broadcast packets received at PLAIN destinations.
+    pub async fn get_received_plain_packets(
+        &self,
+    ) -> Result<Vec<ReceivedSinglePacket>, HarnessError> {
+        let result = self
+            .query("get_received_plain_packets", serde_json::json!({}))
+            .await?;
+        let mut packets = Vec::new();
+
+        if let serde_json::Value::Array(arr) = result {
+            for entry in arr {
+                let dest_hash = entry
+                    .get("dest_hash")
+                    .and_then(|v| v.as_str())
+                    .map(|s| s.to_string());
+                let data = entry
+                    .get("data")
+                    .and_then(|v| v.as_str())
+                    .map(|s| hex::decode(s).unwrap_or_default())
+                    .unwrap_or_default();
+
+                packets.push(ReceivedSinglePacket { dest_hash, data });
+            }
+        }
+
+        Ok(packets)
+    }
+
     /// Send data on an existing link (Python as sender).
     ///
     /// # Arguments
