@@ -14,7 +14,7 @@ use embassy_time::Duration;
 use embassy_executor::Spawner;
 use embassy_futures::select::{select, Either};
 use embassy_nrf::usb::vbus_detect::HardwareVbusDetect;
-use embassy_nrf::{Peri, bind_interrupts, peripherals, usb};
+use embassy_nrf::{Peri, peripherals, usb};
 use embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex;
 use embassy_sync::channel::{Channel, Receiver, Sender};
 use embassy_time::with_timeout;
@@ -25,10 +25,8 @@ use static_cell::StaticCell;
 
 use crate::log::{log_fmt, LOG_CHANNEL};
 
-bind_interrupts!(struct Irqs {
-    USBD => usb::InterruptHandler<peripherals::USBD>;
-    CLOCK_POWER => usb::vbus_detect::InterruptHandler;
-});
+// Interrupt bindings are centralized in ble.rs (CLOCK_POWER shared with MPSL)
+use crate::ble::Irqs;
 
 static CONFIG_DESC: StaticCell<[u8; 256]> = StaticCell::new();
 static BOS_DESC: StaticCell<[u8; 256]> = StaticCell::new();

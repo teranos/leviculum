@@ -7,11 +7,13 @@
 
 extern crate alloc;
 
+pub mod ble;
 pub mod boards;
 pub mod clock;
 pub mod interface;
 pub mod log;
 pub mod lora;
+pub mod rng;
 pub mod usb;
 
 /// Install the tracing subscriber that routes `reticulum-core` log events

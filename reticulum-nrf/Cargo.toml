@@ -19,7 +19,10 @@ embassy-futures = "0.1"
 embassy-embedded-hal = "0.5"
 
 # Cortex-M support
-cortex-m = { version = "0.7", features = ["critical-section-single-core"] }
+# critical-section-single-core REMOVED: it uses cpsid/cpsie which blocks
+# MPSL's high-priority radio interrupts. nrf-mpsl provides its own
+# critical-section impl that masks only application-priority interrupts.
+cortex-m = "0.7"
 cortex-m-rt = "0.7"
 
 # Heap allocator for alloc
@@ -32,6 +35,12 @@ static_cell = "2"
 lora-phy = { version = "3", default-features = false }
 defmt = "0.3"
 tracing-core = { version = "0.1", default-features = false }
+rand_core = { version = "0.6", default-features = false }
+
+# BLE stack — pinned to trouble's known-working combination for embassy-nrf 0.9 + bt-hci 0.8
+nrf-mpsl = { git = "https://github.com/alexmoon/nrf-sdc", rev = "df7e3b4", features = ["nrf52840", "critical-section-impl"] }
+nrf-sdc = { git = "https://github.com/alexmoon/nrf-sdc", rev = "df7e3b4", features = ["nrf52840", "peripheral"] }
+trouble-host = { git = "https://github.com/embassy-rs/trouble", branch = "main", default-features = false, features = ["peripheral", "derive", "gatt", "default-packet-pool"] }
 
 [profile.release]
 opt-level = "z"      # optimize for size

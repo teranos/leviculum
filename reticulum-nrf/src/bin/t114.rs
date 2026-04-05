@@ -16,7 +16,6 @@ use alloc::collections::BTreeMap;
 use embassy_executor::Spawner;
 use embassy_futures::select::{select3, Either3};
 use embassy_nrf::gpio::{Level, Output, OutputDrive};
-use embassy_nrf::rng::Rng;
 use embassy_time::{Instant, Timer};
 
 use reticulum_core::embedded_storage::EmbeddedStorage;
@@ -54,8 +53,9 @@ async fn main(spawner: Spawner) {
     // Boot blink LED (active low)
     let mut led = t114::led(p.P1_03);
 
-    // Hardware RNG (blocking mode — no interrupt binding needed)
-    let rng = Rng::new_blocking(p.RNG);
+    // Hardware RNG via direct register access — the embassy Rng peripheral
+    // token (p.RNG) is reserved for the BLE SoftDevice Controller.
+    let rng = reticulum_nrf::rng::RawHwRng::new();
 
     // Build NodeCore on the heap
     let mut node = Box::new(
@@ -101,6 +101,21 @@ async fn main(spawner: Spawner) {
     let lora_channels = reticulum_nrf::lora::channels();
     spawner.must_spawn(reticulum_nrf::lora::lora_task(lora, radio_cfg));
 
+    // Initialize BLE peripheral (spawns MPSL + BLE tasks, returns immediately)
+    info!("BLE init starting");
+    let identity_hash = *node.identity().hash();
+    reticulum_nrf::ble::init(
+        &spawner, identity_hash,
+        // MPSL peripherals
+        p.RTC0, p.TIMER0, p.TEMP, p.PPI_CH19, p.PPI_CH30, p.PPI_CH31,
+        // SDC peripherals
+        p.PPI_CH17, p.PPI_CH18, p.PPI_CH20, p.PPI_CH21, p.PPI_CH22, p.PPI_CH23,
+        p.PPI_CH24, p.PPI_CH25, p.PPI_CH26, p.PPI_CH27, p.PPI_CH28, p.PPI_CH29,
+        // RNG for SDC crypto
+        p.RNG,
+    );
+
+    info!("BLE init done");
     let (hu, hf) = reticulum_nrf::heap_stats();
     let sf = reticulum_nrf::stack_free();
     info!("heap u={} f={} stack f={}", hu, hf, sf);

@@ -6,3 +6,7 @@ rustflags = ["-C", "link-arg=-Tlink.x"]
 
 [build]
 target = "thumbv7em-none-eabihf"
+
+[env]
+# ARM bare-metal headers for nrf-sdc-sys bindgen (needs stdint.h)
+C_INCLUDE_PATH = "/usr/lib/gcc/arm-none-eabi/14.2.1/include"
