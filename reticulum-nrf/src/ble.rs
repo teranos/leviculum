@@ -107,7 +107,6 @@ async fn ble_task(
 
     let _ = server.set(&server.reticulum_service.identity, &identity_hash);
 
-    // Reduce boot log spam — only essential BLE messages
     let _ = join(
         // Host runner (processes HCI events)
         async {
@@ -116,7 +115,9 @@ async fn ble_task(
                     Err(e) => {
                         crate::log::log_fmt("[BLE ] ", format_args!("runner err: {:?}", e));
                     }
-                    Ok(()) => {}
+                    Ok(()) => {
+                        crate::info!("BLE: runner returned Ok");
+                    }
                 }
             }
         },
@@ -128,7 +129,7 @@ async fn ble_task(
                         gatt_events(&server, &conn).await;
                     }
                     Err(e) => {
-                        crate::log::log_fmt("[BLE ] ", format_args!("advertise err: {:?}", e));
+                        crate::log::log_fmt("[BLE ] ", format_args!("adv err: {:?}", e));
                         embassy_time::Timer::after_millis(1000).await;
                     }
                 }
@@ -215,31 +216,57 @@ async fn advertise<'values, 'server, C: Controller>(
     peripheral: &mut Peripheral<'values, C, DefaultPacketPool>,
     server: &'server ReticulumServer<'values>,
 ) -> Result<GattConnection<'values, 'server, DefaultPacketPool>, BleHostError<C::Error>> {
-    // Minimal advertising data: just flags + name (debug: isolate stack vs encoding)
+    // Advertising data: flags + 128-bit service UUID
     let mut adv_data = [0; 31];
-    let len = AdStructure::encode_slice(
+    let uuid_bytes: [u8; 16] = [
+        0xe3, 0x28, 0xda, 0xc5, 0x42, 0x8f, 0x7f, 0x91,
+        0x94, 0x4a, 0x2d, 0x44, 0x00, 0x5b, 0x14, 0x37,
+    ];
+    let adv_len = AdStructure::encode_slice(
         &[
             AdStructure::Flags(LE_GENERAL_DISCOVERABLE | BR_EDR_NOT_SUPPORTED),
-            AdStructure::CompleteLocalName(b"leviculum"),
+            AdStructure::CompleteServiceUuids128(&[uuid_bytes]),
         ],
         &mut adv_data[..],
     )?;
 
-    crate::info!("BLE: calling advertise()");
+    // Scan response: complete local name (Android sends SCAN_REQ before CONNECT_REQ)
+    let mut scan_data = [0; 31];
+    let scan_len = AdStructure::encode_slice(
+        &[AdStructure::CompleteLocalName(b"leviculum")],
+        &mut scan_data[..],
+    )?;
+
+    let params = AdvertisementParameters {
+        interval_min: embassy_time::Duration::from_millis(100),
+        interval_max: embassy_time::Duration::from_millis(200),
+        ..Default::default()
+    };
+
+    crate::info!("BLE: advertise adv={}B scan={}B", adv_len, scan_len);
     let advertiser = peripheral
         .advertise(
-            &Default::default(),
+            &params,
             Advertisement::ConnectableScannableUndirected {
-                adv_data: &adv_data[..len],
-                scan_data: &[],
+                adv_data: &adv_data[..adv_len],
+                scan_data: &scan_data[..scan_len],
             },
         )
         .await?;
 
-    crate::info!("BLE: adv ok, waiting for connection");
-    let conn = advertiser.accept().await?.with_attribute_server(server)?;
-    crate::info!("BLE: peer connected");
-    Ok(conn)
+    crate::info!("BLE: waiting for connection");
+    match advertiser.accept().await {
+        Ok(conn) => {
+            crate::info!("BLE: accepted, setting up GATT");
+            let gatt = conn.with_attribute_server(server)?;
+            crate::info!("BLE: peer connected");
+            Ok(gatt)
+        }
+        Err(e) => {
+            crate::log::log_fmt("[BLE ] ", format_args!("accept err: {:?}", e));
+            Err(e.into())
+        }
+    }
 }
 
 // ─── GATT event handling ───────────────────────────────────────────────────
@@ -251,25 +278,41 @@ async fn gatt_events(
     let rx = server.reticulum_service.rx;
     loop {
         match conn.next().await {
-            GattConnectionEvent::Disconnected { .. } => {
-                crate::info!("BLE: peer disconnected");
+            GattConnectionEvent::Disconnected { reason } => {
+                crate::log::log_fmt("[BLE ] ", format_args!("disconnected: {:?}", reason));
                 break;
             }
             GattConnectionEvent::Gatt { event } => {
                 match &event {
                     GattEvent::Write(write) => {
-                        if write.handle() == rx.handle {
-                            crate::info!("BLE: RX {} bytes", write.data().len());
-                        }
+                        crate::info!("BLE: write h={} {}B", write.handle(), write.data().len());
                     }
-                    _ => {}
+                    GattEvent::Read(read) => {
+                        crate::info!("BLE: read h={}", read.handle());
+                    }
+                    GattEvent::Other(_) => {
+                        crate::info!("BLE: gatt other");
+                    }
+                    GattEvent::NotAllowed(ref na) => {
+                        crate::info!("BLE: gatt not_allowed h={}", na.handle());
+                    }
                 }
                 match event.accept() {
                     Ok(reply) => reply.send().await,
-                    Err(_) => {}
+                    Err(_) => {
+                        crate::info!("BLE: accept err");
+                    }
                 }
             }
-            _ => {}
+            GattConnectionEvent::PhyUpdated { .. } => {
+                crate::info!("BLE: phy updated");
+            }
+            GattConnectionEvent::DataLengthUpdated { .. } => {
+                crate::info!("BLE: data length updated");
+            }
+            _ => {
+                crate::info!("BLE: other conn event");
+            }
         }
     }
 }
