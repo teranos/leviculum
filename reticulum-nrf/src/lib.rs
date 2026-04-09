@@ -10,6 +10,7 @@ extern crate alloc;
 pub mod ble;
 pub mod boards;
 pub mod clock;
+pub mod flash;
 pub mod interface;
 pub mod log;
 pub mod lora;

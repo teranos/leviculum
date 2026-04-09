@@ -5,9 +5,9 @@ MEMORY
     /* Application starts after SoftDevice S140 v6 at 0x26000 (152K).        */
     /* Heltec reserves 0xED000-0xF4000 (28K) for license/version data        */
     /* (HARD_VERSION_ADDR, HT_LICENSE_ADDR in variant.h). Bootloader at      */
-    /* 0xF4000. Safe app space = 0xED000 - 0x26000 = 0xC7000 (796K).        */
-    /* Matches vendor/Heltec_nRF52 boards.txt maximum_size = 815104.         */
-    FLASH : ORIGIN = 0x00026000, LENGTH = 0xC7000
+    /* 0xF4000. Last app page (0xEC000) reserved for identity persistence.  */
+    /* Safe app space = 0xEC000 - 0x26000 = 0xC6000 (792K).                 */
+    FLASH : ORIGIN = 0x00026000, LENGTH = 0xC6000
 
     /* SoftDevice S140 v6.1.1 remains active after bootloader handoff.       */
     /* It reserves RAM from 0x20000000 for BLE stack state. Reservation      */

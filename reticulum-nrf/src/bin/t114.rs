@@ -55,15 +55,31 @@ async fn main(spawner: Spawner) {
 
     let rng = reticulum_nrf::rng::RawHwRng::new();
 
-    let mut node = Box::new(
-        NodeCoreBuilder::new()
-            .enable_transport(true)
-            .max_incoming_resource_size(8 * 1024)
-            .max_queued_announces(32)
-            .max_random_blobs(8)
-            .respond_to_probes(true)
-            .build(rng, EmbassyClock, EmbeddedStorage::new()),
-    );
+    // Load or generate persistent identity from internal flash
+    let mut nvmc = embassy_nrf::nvmc::Nvmc::new(p.NVMC);
+
+    let mut builder = NodeCoreBuilder::new()
+        .enable_transport(true)
+        .max_incoming_resource_size(8 * 1024)
+        .max_queued_announces(32)
+        .max_random_blobs(8)
+        .respond_to_probes(true);
+
+    let identity_loaded = if let Some(identity) = reticulum_nrf::flash::load_identity(&mut nvmc) {
+        info!("Identity loaded from flash");
+        builder = builder.identity(identity);
+        true
+    } else {
+        info!("No identity in flash, generating new");
+        false
+    };
+
+    let mut node = Box::new(builder.build(rng, EmbassyClock, EmbeddedStorage::new()));
+
+    if !identity_loaded {
+        reticulum_nrf::flash::save_identity(&mut nvmc, node.identity());
+        info!("Identity saved to flash");
+    }
 
     // Register all three interfaces
     node.set_interface_name(0, alloc::string::String::from("serial_usb"));
