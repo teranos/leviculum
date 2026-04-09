@@ -36,6 +36,7 @@ lora-phy = { version = "3", default-features = false }
 defmt = "0.3"
 tracing-core = { version = "0.1", default-features = false }
 rand_core = { version = "0.6", default-features = false }
+heapless = { version = "0.9", default-features = false }
 
 # BLE stack — pinned to trouble's known-working combination for embassy-nrf 0.9 + bt-hci 0.8
 nrf-mpsl = { git = "https://github.com/alexmoon/nrf-sdc", rev = "df7e3b4", features = ["nrf52840", "critical-section-impl"] }

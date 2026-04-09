@@ -1,23 +1,31 @@
 //! BLE Peripheral interface for T114 using trouble-host + nrf-sdc.
 //!
-//! Phase A: GATT service, advertising, connection handling, identity read.
-//! No data pipeline — just prove the BLE stack works.
+//! Implements Columba Protocol v2.2: GATT service with RX/TX/Identity,
+//! BLE fragmentation, keepalives, and identity handshake.
 
 extern crate alloc;
 
+use alloc::vec::Vec;
 use embassy_executor::Spawner;
 use embassy_futures::join::join;
 use embassy_nrf::peripherals;
 use embassy_nrf::{bind_interrupts, rng, Peri};
+use embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex;
+use embassy_sync::channel::{Channel, Receiver, Sender};
+use embassy_time::{Instant, Timer};
 use nrf_sdc::mpsl::MultiprotocolServiceLayer;
 use nrf_sdc::{self as sdc, mpsl};
+use reticulum_core::framing::ble::{
+    self as ble_framing, BleDefragmenter, DefragResult, FRAGMENT_HEADER_SIZE, KEEPALIVE_BYTE,
+    KEEPALIVE_INTERVAL_MS,
+};
+use reticulum_core::traits::{Interface, InterfaceError};
+use reticulum_core::InterfaceId;
 use static_cell::StaticCell;
 use trouble_host::prelude::*;
 
-// ─── Interrupt bindings (matches trouble nrf52 example) ────────────────────
+// ─── Interrupt bindings ────────────────────────────────────────────────────
 
-// All interrupt bindings in one place — MPSL, SDC, USB, and RNG share
-// some interrupts (CLOCK_POWER is used by both MPSL and USB VBUS detect).
 bind_interrupts!(pub struct Irqs {
     RNG => rng::InterruptHandler<peripherals::RNG>;
     USBD => embassy_nrf::usb::InterruptHandler<peripherals::USBD>;
@@ -37,23 +45,56 @@ struct ReticulumServer {
 
 #[gatt_service(uuid = "37145b00-442d-4a94-917f-8f42c5da28e3")]
 struct ReticulumService {
-    /// RX: peer writes data to us
     #[characteristic(uuid = "37145b00-442d-4a94-917f-8f42c5da28e5", write, write_without_response)]
-    rx: [u8; 32],
+    rx: heapless::Vec<u8, 251>,
 
-    /// TX: we send data to peer via notify
     #[characteristic(uuid = "37145b00-442d-4a94-917f-8f42c5da28e4", read, notify)]
-    tx: [u8; 32],
+    tx: heapless::Vec<u8, 251>,
 
-    /// Identity: static 16-byte transport identity hash
     #[characteristic(uuid = "37145b00-442d-4a94-917f-8f42c5da28e6", read)]
     identity: [u8; 16],
 }
 
-// ─── SDC builder ───────────────────────────────────────────────────────────
+// ─── Channels ──────────────────────────────────────────────────────────────
 
-const L2CAP_TXQ: u8 = 3;
-const L2CAP_RXQ: u8 = 3;
+static BLE_INCOMING: Channel<CriticalSectionRawMutex, Vec<u8>, 4> = Channel::new();
+static BLE_OUTGOING: Channel<CriticalSectionRawMutex, Vec<u8>, 4> = Channel::new();
+
+pub struct BleChannels {
+    pub incoming_rx: Receiver<'static, CriticalSectionRawMutex, Vec<u8>, 4>,
+    pub outgoing_tx: Sender<'static, CriticalSectionRawMutex, Vec<u8>, 4>,
+}
+
+pub fn channels() -> BleChannels {
+    BleChannels {
+        incoming_rx: BLE_INCOMING.receiver(),
+        outgoing_tx: BLE_OUTGOING.sender(),
+    }
+}
+
+// ─── BleInterface ──────────────────────────────────────────────────────────
+
+pub struct BleInterface {
+    sender: Sender<'static, CriticalSectionRawMutex, Vec<u8>, 4>,
+}
+
+impl BleInterface {
+    pub fn new(sender: Sender<'static, CriticalSectionRawMutex, Vec<u8>, 4>) -> Self {
+        Self { sender }
+    }
+}
+
+impl Interface for BleInterface {
+    fn id(&self) -> InterfaceId { InterfaceId(2) }
+    fn name(&self) -> &str { "ble" }
+    fn mtu(&self) -> usize { 564 }
+    fn is_online(&self) -> bool { true }
+    fn try_send(&mut self, data: &[u8]) -> Result<(), InterfaceError> {
+        self.sender.try_send(data.to_vec()).map_err(|_| InterfaceError::BufferFull)
+    }
+}
+
+// ─── SDC builder ───────────────────────────────────────────────────────────
 
 fn build_sdc<'d, const N: usize>(
     p: sdc::Peripherals<'d>,
@@ -65,12 +106,7 @@ fn build_sdc<'d, const N: usize>(
         .support_adv()
         .support_peripheral()
         .peripheral_count(1)?
-        .buffer_cfg(
-            DefaultPacketPool::MTU as u16,
-            DefaultPacketPool::MTU as u16,
-            L2CAP_TXQ,
-            L2CAP_RXQ,
-        )?
+        .buffer_cfg(DefaultPacketPool::MTU as u16, DefaultPacketPool::MTU as u16, 3, 3)?
         .build(p, rng, mpsl, mem)
 }
 
@@ -78,103 +114,68 @@ fn build_sdc<'d, const N: usize>(
 
 #[embassy_executor::task]
 async fn mpsl_task(mpsl: &'static MultiprotocolServiceLayer<'static>) -> ! {
-    crate::info!("BLE: mpsl_task running");
     mpsl.run().await
 }
 
 #[embassy_executor::task]
-async fn ble_task(
-    sdc: sdc::SoftdeviceController<'static>,
-    identity_hash: [u8; 16],
-) {
-    let address = Address::random([0xDE, 0xAD, 0xBE, 0xEF, 0xBA, 0xD1]);
+async fn ble_task(sdc: sdc::SoftdeviceController<'static>, identity_hash: [u8; 16]) {
+    // Derive BLE address from identity hash — new identity per flash = new address
+    // = clean GATT discovery on Android (no stale cache from previous firmware)
+    let mut addr = [0u8; 6];
+    addr.copy_from_slice(&identity_hash[..6]);
+    addr[5] |= 0xC0; // bits 7:6 = 11 → valid random static address
+    let address = Address::random(addr);
 
     static RESOURCES: StaticCell<HostResources<DefaultPacketPool, 1, 2, 1>> = StaticCell::new();
     let resources = RESOURCES.init(HostResources::new());
 
     let stack = trouble_host::new(sdc, resources).set_random_address(address);
-    let Host {
-        mut peripheral,
-        mut runner,
-        ..
-    } = stack.build();
+    let Host { mut peripheral, mut runner, .. } = stack.build();
 
     let server = ReticulumServer::new_with_config(GapConfig::Peripheral(PeripheralConfig {
         name: "leviculum",
         appearance: &appearance::TAG,
-    }))
-    .expect("GATT server");
+    })).expect("GATT server");
 
     let _ = server.set(&server.reticulum_service.identity, &identity_hash);
 
+    let outgoing_rx = BLE_OUTGOING.receiver();
+    let incoming_tx = BLE_INCOMING.sender();
+
     let _ = join(
-        // Host runner (processes HCI events)
-        async {
-            loop {
-                match runner.run().await {
-                    Err(e) => {
-                        crate::log::log_fmt("[BLE ] ", format_args!("runner err: {:?}", e));
-                    }
-                    Ok(()) => {
-                        crate::info!("BLE: runner returned Ok");
-                    }
-                }
-            }
-        },
-        // Peripheral advertising loop
+        async { loop { let _ = runner.run().await; } },
         async {
             loop {
                 match advertise(&mut peripheral, &server).await {
                     Ok(conn) => {
-                        gatt_events(&server, &conn).await;
+                        gatt_events(&server, &conn, &incoming_tx, &outgoing_rx).await;
                     }
-                    Err(e) => {
-                        crate::log::log_fmt("[BLE ] ", format_args!("adv err: {:?}", e));
-                        embassy_time::Timer::after_millis(1000).await;
+                    Err(_) => {
+                        Timer::after_millis(1000).await;
                     }
                 }
             }
         },
-    )
-    .await;
+    ).await;
 }
 
 // ─── Init ──────────────────────────────────────────────────────────────────
 
-/// Initialize MPSL + SDC and spawn the BLE task.
-///
-/// Returns immediately after spawning. The BLE task handles advertising,
-/// connections, and GATT events in the background.
 pub fn init(
-    spawner: &Spawner,
-    identity_hash: [u8; 16],
-    // MPSL peripherals
-    rtc0: Peri<'static, peripherals::RTC0>,
-    timer0: Peri<'static, peripherals::TIMER0>,
+    spawner: &Spawner, identity_hash: [u8; 16],
+    rtc0: Peri<'static, peripherals::RTC0>, timer0: Peri<'static, peripherals::TIMER0>,
     temp: Peri<'static, peripherals::TEMP>,
-    ppi_ch19: Peri<'static, peripherals::PPI_CH19>,
-    ppi_ch30: Peri<'static, peripherals::PPI_CH30>,
+    ppi_ch19: Peri<'static, peripherals::PPI_CH19>, ppi_ch30: Peri<'static, peripherals::PPI_CH30>,
     ppi_ch31: Peri<'static, peripherals::PPI_CH31>,
-    // SDC peripherals
-    ppi_ch17: Peri<'static, peripherals::PPI_CH17>,
-    ppi_ch18: Peri<'static, peripherals::PPI_CH18>,
-    ppi_ch20: Peri<'static, peripherals::PPI_CH20>,
-    ppi_ch21: Peri<'static, peripherals::PPI_CH21>,
-    ppi_ch22: Peri<'static, peripherals::PPI_CH22>,
-    ppi_ch23: Peri<'static, peripherals::PPI_CH23>,
-    ppi_ch24: Peri<'static, peripherals::PPI_CH24>,
-    ppi_ch25: Peri<'static, peripherals::PPI_CH25>,
-    ppi_ch26: Peri<'static, peripherals::PPI_CH26>,
-    ppi_ch27: Peri<'static, peripherals::PPI_CH27>,
-    ppi_ch28: Peri<'static, peripherals::PPI_CH28>,
-    ppi_ch29: Peri<'static, peripherals::PPI_CH29>,
-    // RNG
+    ppi_ch17: Peri<'static, peripherals::PPI_CH17>, ppi_ch18: Peri<'static, peripherals::PPI_CH18>,
+    ppi_ch20: Peri<'static, peripherals::PPI_CH20>, ppi_ch21: Peri<'static, peripherals::PPI_CH21>,
+    ppi_ch22: Peri<'static, peripherals::PPI_CH22>, ppi_ch23: Peri<'static, peripherals::PPI_CH23>,
+    ppi_ch24: Peri<'static, peripherals::PPI_CH24>, ppi_ch25: Peri<'static, peripherals::PPI_CH25>,
+    ppi_ch26: Peri<'static, peripherals::PPI_CH26>, ppi_ch27: Peri<'static, peripherals::PPI_CH27>,
+    ppi_ch28: Peri<'static, peripherals::PPI_CH28>, ppi_ch29: Peri<'static, peripherals::PPI_CH29>,
     rng_periph: Peri<'static, peripherals::RNG>,
 ) {
-    // 1. MPSL
     let mpsl_p = mpsl::Peripherals::new(rtc0, timer0, temp, ppi_ch19, ppi_ch30, ppi_ch31);
-    // T114 has no 32.768 kHz LFXO crystal — use internal RC oscillator.
-    // MPSL calibrates the RC periodically via TEMP sensor.
     let lfclk_cfg = mpsl::raw::mpsl_clock_lfclk_cfg_t {
         source: mpsl::raw::MPSL_CLOCK_LF_SRC_RC as u8,
         rc_ctiv: mpsl::raw::MPSL_RECOMMENDED_RC_CTIV as u8,
@@ -182,137 +183,153 @@ pub fn init(
         accuracy_ppm: mpsl::raw::MPSL_DEFAULT_CLOCK_ACCURACY_PPM as u16,
         skip_wait_lfclk_started: mpsl::raw::MPSL_DEFAULT_SKIP_WAIT_LFCLK_STARTED != 0,
     };
-
     static MPSL: StaticCell<MultiprotocolServiceLayer> = StaticCell::new();
-    let mpsl = MPSL.init(
-        mpsl::MultiprotocolServiceLayer::new(mpsl_p, Irqs, lfclk_cfg)
-            .expect("MPSL init"),
-    );
+    let mpsl = MPSL.init(mpsl::MultiprotocolServiceLayer::new(mpsl_p, Irqs, lfclk_cfg).expect("MPSL"));
     spawner.must_spawn(mpsl_task(mpsl));
     crate::info!("BLE: MPSL ok");
 
-    // 2. SDC
     let sdc_p = sdc::Peripherals::new(
         ppi_ch17, ppi_ch18, ppi_ch20, ppi_ch21, ppi_ch22, ppi_ch23,
         ppi_ch24, ppi_ch25, ppi_ch26, ppi_ch27, ppi_ch28, ppi_ch29,
     );
-
     static RNG: StaticCell<rng::Rng<'static, embassy_nrf::mode::Async>> = StaticCell::new();
     let rng = RNG.init(rng::Rng::new(rng_periph, Irqs));
-
     static SDC_MEM: StaticCell<sdc::Mem<4720>> = StaticCell::new();
-    let sdc_mem = SDC_MEM.init(sdc::Mem::new());
-
-    let sdc = build_sdc(sdc_p, rng, mpsl, sdc_mem).expect("SDC build");
+    let sdc = build_sdc(sdc_p, rng, mpsl, SDC_MEM.init(sdc::Mem::new())).expect("SDC");
     crate::info!("BLE: SDC ok");
 
-    // 3. Spawn BLE task (handles host runner + peripheral loop)
     spawner.must_spawn(ble_task(sdc, identity_hash));
 }
 
 // ─── Advertising ───────────────────────────────────────────────────────────
 
-async fn advertise<'values, 'server, C: Controller>(
-    peripheral: &mut Peripheral<'values, C, DefaultPacketPool>,
-    server: &'server ReticulumServer<'values>,
-) -> Result<GattConnection<'values, 'server, DefaultPacketPool>, BleHostError<C::Error>> {
-    // Advertising data: flags + 128-bit service UUID
+async fn advertise<'v, 's, C: Controller>(
+    peripheral: &mut Peripheral<'v, C, DefaultPacketPool>,
+    server: &'s ReticulumServer<'v>,
+) -> Result<GattConnection<'v, 's, DefaultPacketPool>, BleHostError<C::Error>> {
     let mut adv_data = [0; 31];
-    let uuid_bytes: [u8; 16] = [
+    let uuid_le: [u8; 16] = [
         0xe3, 0x28, 0xda, 0xc5, 0x42, 0x8f, 0x7f, 0x91,
         0x94, 0x4a, 0x2d, 0x44, 0x00, 0x5b, 0x14, 0x37,
     ];
     let adv_len = AdStructure::encode_slice(
         &[
             AdStructure::Flags(LE_GENERAL_DISCOVERABLE | BR_EDR_NOT_SUPPORTED),
-            AdStructure::CompleteServiceUuids128(&[uuid_bytes]),
+            AdStructure::CompleteServiceUuids128(&[uuid_le]),
         ],
         &mut adv_data[..],
     )?;
-
-    // Scan response: complete local name (Android sends SCAN_REQ before CONNECT_REQ)
     let mut scan_data = [0; 31];
     let scan_len = AdStructure::encode_slice(
         &[AdStructure::CompleteLocalName(b"leviculum")],
         &mut scan_data[..],
     )?;
 
-    let params = AdvertisementParameters {
-        interval_min: embassy_time::Duration::from_millis(100),
-        interval_max: embassy_time::Duration::from_millis(200),
-        ..Default::default()
-    };
+    let advertiser = peripheral.advertise(
+        &AdvertisementParameters {
+            interval_min: embassy_time::Duration::from_millis(100),
+            interval_max: embassy_time::Duration::from_millis(200),
+            ..Default::default()
+        },
+        Advertisement::ConnectableScannableUndirected {
+            adv_data: &adv_data[..adv_len],
+            scan_data: &scan_data[..scan_len],
+        },
+    ).await?;
 
-    crate::info!("BLE: advertise adv={}B scan={}B", adv_len, scan_len);
-    let advertiser = peripheral
-        .advertise(
-            &params,
-            Advertisement::ConnectableScannableUndirected {
-                adv_data: &adv_data[..adv_len],
-                scan_data: &scan_data[..scan_len],
-            },
-        )
-        .await?;
-
-    crate::info!("BLE: waiting for connection");
-    match advertiser.accept().await {
-        Ok(conn) => {
-            crate::info!("BLE: accepted, setting up GATT");
-            let gatt = conn.with_attribute_server(server)?;
-            crate::info!("BLE: peer connected");
-            Ok(gatt)
-        }
-        Err(e) => {
-            crate::log::log_fmt("[BLE ] ", format_args!("accept err: {:?}", e));
-            Err(e.into())
-        }
-    }
+    crate::info!("BLE: advertising");
+    let conn = advertiser.accept().await?.with_attribute_server(server)?;
+    crate::info!("BLE: connected");
+    Ok(conn)
 }
 
-// ─── GATT event handling ───────────────────────────────────────────────────
+// ─── GATT event loop with data pipeline ────────────────────────────────────
 
 async fn gatt_events(
     server: &ReticulumServer<'_>,
     conn: &GattConnection<'_, '_, DefaultPacketPool>,
+    incoming_tx: &Sender<'static, CriticalSectionRawMutex, Vec<u8>, 4>,
+    outgoing_rx: &Receiver<'static, CriticalSectionRawMutex, Vec<u8>, 4>,
 ) {
-    let rx = server.reticulum_service.rx;
+    let rx_handle = server.reticulum_service.rx.handle;
+    let mut defrag = BleDefragmenter::new();
+    let mut handshake_done = false;
+    let mut last_keepalive = Instant::now();
+
+    // Drain stale outgoing packets from before this connection
+    while outgoing_rx.try_receive().is_ok() {}
+
     loop {
+        // Send outgoing packets (non-blocking drain)
+        while let Ok(packet) = outgoing_rx.try_receive() {
+            let fragments = ble_framing::fragment_packet(&packet, ble_framing::DEFAULT_MTU);
+            for frag in &fragments {
+                if let Ok(hv) = heapless::Vec::<u8, 251>::from_slice(frag) {
+                    let _ = server.reticulum_service.tx.notify(conn, &hv).await;
+                }
+            }
+        }
+
+        // Send keepalive if due (only after handshake)
+        if handshake_done
+            && Instant::now().duration_since(last_keepalive).as_millis() >= KEEPALIVE_INTERVAL_MS
+        {
+            let mut kv = heapless::Vec::<u8, 251>::new();
+            let _ = kv.push(KEEPALIVE_BYTE);
+            let _ = server.reticulum_service.tx.notify(conn, &kv).await;
+            last_keepalive = Instant::now();
+        }
+
+        // Process next GATT event
         match conn.next().await {
-            GattConnectionEvent::Disconnected { reason } => {
-                crate::log::log_fmt("[BLE ] ", format_args!("disconnected: {:?}", reason));
+            GattConnectionEvent::Disconnected { .. } => {
+                crate::info!("BLE: disconnected");
                 break;
             }
             GattConnectionEvent::Gatt { event } => {
-                match &event {
-                    GattEvent::Write(write) => {
-                        crate::info!("BLE: write h={} {}B", write.handle(), write.data().len());
-                    }
-                    GattEvent::Read(read) => {
-                        crate::info!("BLE: read h={}", read.handle());
-                    }
-                    GattEvent::Other(_) => {
-                        crate::info!("BLE: gatt other");
-                    }
-                    GattEvent::NotAllowed(ref na) => {
-                        crate::info!("BLE: gatt not_allowed h={}", na.handle());
+                if let GattEvent::Write(ref write) = event {
+                    if write.handle() == rx_handle {
+                        let data = write.data();
+
+                        if !handshake_done && data.len() == 16 {
+                            // Identity handshake
+                            crate::log::log_fmt("[BLE ] ", format_args!(
+                                "peer id: {:02x}{:02x}{:02x}{:02x}",
+                                data[0], data[1], data[2], data[3]
+                            ));
+                            handshake_done = true;
+                            last_keepalive = Instant::now();
+                            match event.accept() {
+                                Ok(reply) => reply.send().await,
+                                Err(_) => {}
+                            }
+                            // Send first keepalive immediately
+                            let mut kv = heapless::Vec::<u8, 251>::new();
+                            let _ = kv.push(KEEPALIVE_BYTE);
+                            let _ = server.reticulum_service.tx.notify(conn, &kv).await;
+                            continue;
+                        } else if data.len() < FRAGMENT_HEADER_SIZE {
+                            // Keepalive (1-byte 0x00) — accept and skip
+                        } else {
+                            // Data fragment
+                            let now = Instant::now().as_millis();
+                            match defrag.process(data, now) {
+                                DefragResult::Complete(packet) => {
+                                    crate::info!("BLE: RX {}B", packet.len());
+                                    incoming_tx.send(packet).await;
+                                }
+                                DefragResult::NeedMore => {}
+                                DefragResult::Error => { defrag.reset(); }
+                            }
+                        }
                     }
                 }
                 match event.accept() {
                     Ok(reply) => reply.send().await,
-                    Err(_) => {
-                        crate::info!("BLE: accept err");
-                    }
+                    Err(_) => {}
                 }
             }
-            GattConnectionEvent::PhyUpdated { .. } => {
-                crate::info!("BLE: phy updated");
-            }
-            GattConnectionEvent::DataLengthUpdated { .. } => {
-                crate::info!("BLE: data length updated");
-            }
-            _ => {
-                crate::info!("BLE: other conn event");
-            }
+            _ => {}
         }
     }
 }
