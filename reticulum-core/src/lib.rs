@@ -73,6 +73,7 @@ mod hex_fmt;
 pub mod identity;
 pub mod identity_store;
 pub mod ifac;
+pub mod known_destinations;
 pub mod link;
 pub mod memory_storage;
 pub mod node;

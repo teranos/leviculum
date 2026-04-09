@@ -9,26 +9,10 @@
 use std::collections::BTreeMap;
 
 use crate::error::{Error, Result};
+use reticulum_core::constants::{IDENTITY_KEY_SIZE, TRUNCATED_HASHBYTES};
+pub(crate) use reticulum_core::known_destinations::{KnownDestEntry, PACKET_HASH_LEN};
 
 pub(crate) const KNOWN_DESTINATIONS_FILE: &str = "known_destinations";
-const DEST_HASH_LEN: usize = 16;
-pub(crate) const PUBLIC_KEY_LEN: usize = 64;
-pub(crate) const PACKET_HASH_LEN: usize = 32;
-
-/// A single entry in the known_destinations persistence format.
-///
-/// Mirrors Python: `[timestamp, packet_hash, public_key, app_data]`
-#[derive(Clone)]
-pub(crate) struct KnownDestEntry {
-    /// Seconds since epoch (Python `time.time()`)
-    pub(crate) timestamp: f64,
-    /// Original announce packet hash (32 bytes)
-    pub(crate) packet_hash: Vec<u8>,
-    /// Combined public key: X25519(32) | Ed25519(32) = 64 bytes
-    pub(crate) public_key: [u8; PUBLIC_KEY_LEN],
-    /// Optional application data from the announce
-    pub(crate) app_data: Option<Vec<u8>>,
-}
 
 /// Decode a known_destinations msgpack blob into entries.
 ///
@@ -36,7 +20,7 @@ pub(crate) struct KnownDestEntry {
 /// and values are arrays: [f64, bin32, bin64, bin_or_nil].
 pub(crate) fn decode_known_destinations(
     data: &[u8],
-) -> Result<BTreeMap<[u8; DEST_HASH_LEN], KnownDestEntry>> {
+) -> Result<BTreeMap<[u8; TRUNCATED_HASHBYTES], KnownDestEntry>> {
     let value: rmpv::Value = rmpv::decode::read_value(&mut &data[..])
         .map_err(|e| Error::Serialization(format!("msgpack decode error: {e}")))?;
 
@@ -48,8 +32,8 @@ pub(crate) fn decode_known_destinations(
     for (key, val) in map {
         // Key: 16-byte binary
         let key_bytes = match key.as_slice() {
-            Some(b) if b.len() == DEST_HASH_LEN => {
-                let mut arr = [0u8; DEST_HASH_LEN];
+            Some(b) if b.len() == TRUNCATED_HASHBYTES => {
+                let mut arr = [0u8; TRUNCATED_HASHBYTES];
                 arr.copy_from_slice(b);
                 arr
             }
@@ -78,8 +62,8 @@ pub(crate) fn decode_known_destinations(
 
         // [2] public_key: binary (64 bytes)
         let public_key = match arr[2].as_slice() {
-            Some(b) if b.len() == PUBLIC_KEY_LEN => {
-                let mut arr = [0u8; PUBLIC_KEY_LEN];
+            Some(b) if b.len() == IDENTITY_KEY_SIZE => {
+                let mut arr = [0u8; IDENTITY_KEY_SIZE];
                 arr.copy_from_slice(b);
                 arr
             }
@@ -115,7 +99,7 @@ pub(crate) fn decode_known_destinations(
 
 /// Encode entries into Python-compatible msgpack format.
 pub(crate) fn encode_known_destinations(
-    entries: &BTreeMap<[u8; DEST_HASH_LEN], KnownDestEntry>,
+    entries: &BTreeMap<[u8; TRUNCATED_HASHBYTES], KnownDestEntry>,
 ) -> Result<Vec<u8>> {
     use rmpv::Value;
 
@@ -157,7 +141,7 @@ mod tests {
 
     /// Test-only helper matching the old KnownDestinationsStore.
     struct KnownDestinationsStore {
-        entries: BTreeMap<[u8; DEST_HASH_LEN], KnownDestEntry>,
+        entries: BTreeMap<[u8; TRUNCATED_HASHBYTES], KnownDestEntry>,
     }
 
     impl KnownDestinationsStore {
@@ -196,8 +180,8 @@ mod tests {
 
         fn update_from_announce(
             &mut self,
-            dest_hash: &[u8; DEST_HASH_LEN],
-            public_key: &[u8; PUBLIC_KEY_LEN],
+            dest_hash: &[u8; TRUNCATED_HASHBYTES],
+            public_key: &[u8; IDENTITY_KEY_SIZE],
             app_data: &[u8],
         ) {
             let timestamp = SystemTime::now()
@@ -221,7 +205,7 @@ mod tests {
 
         fn merge_from_storage<'a>(
             &mut self,
-            iter: impl Iterator<Item = (&'a [u8; DEST_HASH_LEN], &'a Identity)>,
+            iter: impl Iterator<Item = (&'a [u8; TRUNCATED_HASHBYTES], &'a Identity)>,
         ) {
             let timestamp = SystemTime::now()
                 .duration_since(UNIX_EPOCH)
@@ -252,7 +236,7 @@ mod tests {
     #[test]
     fn test_encode_decode_round_trip() {
         let mut entries = BTreeMap::new();
-        let hash = [0xAA; DEST_HASH_LEN];
+        let hash = [0xAA; TRUNCATED_HASHBYTES];
         let identity = Identity::generate(&mut rand_core::OsRng);
         entries.insert(
             hash,
@@ -278,7 +262,7 @@ mod tests {
     #[test]
     fn test_encode_decode_nil_app_data() {
         let mut entries = BTreeMap::new();
-        let hash = [0xCC; DEST_HASH_LEN];
+        let hash = [0xCC; TRUNCATED_HASHBYTES];
         let identity = Identity::generate(&mut rand_core::OsRng);
         entries.insert(
             hash,
@@ -300,8 +284,8 @@ mod tests {
         let mut entries = BTreeMap::new();
         let id1 = Identity::generate(&mut rand_core::OsRng);
         let id2 = Identity::generate(&mut rand_core::OsRng);
-        let hash1 = [0x01; DEST_HASH_LEN];
-        let hash2 = [0x02; DEST_HASH_LEN];
+        let hash1 = [0x01; TRUNCATED_HASHBYTES];
+        let hash2 = [0x02; TRUNCATED_HASHBYTES];
 
         entries.insert(
             hash1,
@@ -333,7 +317,7 @@ mod tests {
             entries: BTreeMap::new(),
         };
         let id = Identity::generate(&mut rand_core::OsRng);
-        let hash = [0xDD; DEST_HASH_LEN];
+        let hash = [0xDD; TRUNCATED_HASHBYTES];
         let pubkey = id.public_key_bytes();
 
         store.update_from_announce(&hash, &pubkey, b"my_app");
@@ -350,14 +334,14 @@ mod tests {
 
         // Pre-existing entry
         let existing_id = Identity::generate(&mut rand_core::OsRng);
-        let existing_hash = [0x01; DEST_HASH_LEN];
+        let existing_hash = [0x01; TRUNCATED_HASHBYTES];
         store.update_from_announce(&existing_hash, &existing_id.public_key_bytes(), b"");
 
         // New identity from storage
         let new_id = Identity::generate(&mut rand_core::OsRng);
-        let new_hash = [0x02; DEST_HASH_LEN];
-        let storage_identities: Vec<([u8; DEST_HASH_LEN], Identity)> = vec![(new_hash, new_id)];
-        let refs: Vec<(&[u8; DEST_HASH_LEN], &Identity)> =
+        let new_hash = [0x02; TRUNCATED_HASHBYTES];
+        let storage_identities: Vec<([u8; TRUNCATED_HASHBYTES], Identity)> = vec![(new_hash, new_id)];
+        let refs: Vec<(&[u8; TRUNCATED_HASHBYTES], &Identity)> =
             storage_identities.iter().map(|(h, i)| (h, i)).collect();
 
         store.merge_from_storage(refs.into_iter());
@@ -371,12 +355,12 @@ mod tests {
         };
 
         let id = Identity::generate(&mut rand_core::OsRng);
-        let hash = [0x01; DEST_HASH_LEN];
+        let hash = [0x01; TRUNCATED_HASHBYTES];
         store.update_from_announce(&hash, &id.public_key_bytes(), b"original_app");
 
         // Merge with the same hash from storage — should NOT overwrite
-        let storage_entries: Vec<([u8; DEST_HASH_LEN], Identity)> = vec![(hash, id)];
-        let refs: Vec<(&[u8; DEST_HASH_LEN], &Identity)> =
+        let storage_entries: Vec<([u8; TRUNCATED_HASHBYTES], Identity)> = vec![(hash, id)];
+        let refs: Vec<(&[u8; TRUNCATED_HASHBYTES], &Identity)> =
             storage_entries.iter().map(|(h, i)| (h, i)).collect();
 
         store.merge_from_storage(refs.into_iter());
@@ -407,8 +391,8 @@ mod tests {
 
         // Verify all entries have valid structure
         for (hash, entry) in &entries {
-            assert_eq!(hash.len(), DEST_HASH_LEN);
-            assert_eq!(entry.public_key.len(), PUBLIC_KEY_LEN);
+            assert_eq!(hash.len(), TRUNCATED_HASHBYTES);
+            assert_eq!(entry.public_key.len(), IDENTITY_KEY_SIZE);
             assert!(entry.timestamp > 0.0);
         }
 
@@ -440,7 +424,7 @@ mod tests {
             entries: BTreeMap::new(),
         };
         let id = Identity::generate(&mut rand_core::OsRng);
-        let hash = [0xEE; DEST_HASH_LEN];
+        let hash = [0xEE; TRUNCATED_HASHBYTES];
         store.update_from_announce(&hash, &id.public_key_bytes(), b"test");
         store.save(&storage).unwrap();
 
