@@ -4,7 +4,6 @@
 //! `SerialInterface`. Uses HDLC simplified framing (same as TCP and
 //! LocalInterface) over a serial port.
 
-use std::io;
 use std::sync::atomic::Ordering;
 use std::sync::Arc;
 use std::time::Duration;

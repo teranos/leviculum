@@ -447,9 +447,9 @@ async fn rnode_io_task(
     counters: Arc<InterfaceCounters>,
     flow_control: bool,
     jitter_max_ms: u64,
-    bandwidth_hz: u32,
-    sf: u8,
-    cr: u8,
+    _bandwidth_hz: u32,
+    _sf: u8,
+    _cr: u8,
 ) -> mpsc::Receiver<OutgoingPacket> {
     let mut deframer = KissDeframer::with_max_payload(rnode::HW_MTU);
     let mut buf = [0u8; IO_READ_BUF];
