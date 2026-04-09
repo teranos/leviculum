@@ -8,11 +8,12 @@ extern crate alloc;
 use alloc::vec::Vec;
 use embassy_executor::Spawner;
 use embassy_futures::join::join;
+use embassy_futures::select::{select3, Either3};
 use embassy_nrf::peripherals;
 use embassy_nrf::{bind_interrupts, rng, Peri};
 use embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex;
 use embassy_sync::channel::{Channel, Receiver, Sender};
-use embassy_time::{Instant, Timer};
+use embassy_time::{Duration, Instant, Timer};
 use nrf_sdc::mpsl::MultiprotocolServiceLayer;
 use nrf_sdc::{self as sdc, mpsl};
 use reticulum_core::framing::ble::{
@@ -122,7 +123,7 @@ async fn ble_task(sdc: sdc::SoftdeviceController<'static>, identity_hash: [u8; 1
     // Derive BLE address from identity hash — new identity per flash = new address
     // = clean GATT discovery on Android (no stale cache from previous firmware)
     let mut addr = [0u8; 6];
-    addr.copy_from_slice(&identity_hash[..6]);
+    addr.copy_from_slice(&identity_hash[2..8]);
     addr[5] |= 0xC0; // bits 7:6 = 11 → valid random static address
     let address = Address::random(addr);
 
@@ -260,76 +261,81 @@ async fn gatt_events(
     while outgoing_rx.try_receive().is_ok() {}
 
     loop {
-        // Send outgoing packets (non-blocking drain)
-        while let Ok(packet) = outgoing_rx.try_receive() {
-            let fragments = ble_framing::fragment_packet(&packet, ble_framing::DEFAULT_MTU);
-            for frag in &fragments {
-                if let Ok(hv) = heapless::Vec::<u8, 251>::from_slice(frag) {
-                    let _ = server.reticulum_service.tx.notify(conn, &hv).await;
-                }
-            }
-        }
+        let keepalive_deadline = if handshake_done {
+            Timer::at(last_keepalive + Duration::from_millis(KEEPALIVE_INTERVAL_MS))
+        } else {
+            Timer::at(Instant::MAX) // never fires before handshake
+        };
 
-        // Send keepalive if due (only after handshake)
-        if handshake_done
-            && Instant::now().duration_since(last_keepalive).as_millis() >= KEEPALIVE_INTERVAL_MS
-        {
-            let mut kv = heapless::Vec::<u8, 251>::new();
-            let _ = kv.push(KEEPALIVE_BYTE);
-            let _ = server.reticulum_service.tx.notify(conn, &kv).await;
-            last_keepalive = Instant::now();
-        }
+        match select3(conn.next(), outgoing_rx.receive(), keepalive_deadline).await {
+            Either3::First(event) => {
+                // GATT event
+                match event {
+                    GattConnectionEvent::Disconnected { .. } => {
+                        crate::info!("BLE: disconnected");
+                        break;
+                    }
+                    GattConnectionEvent::Gatt { event } => {
+                        if let GattEvent::Write(ref write) = event {
+                            if write.handle() == rx_handle {
+                                let data = write.data();
 
-        // Process next GATT event
-        match conn.next().await {
-            GattConnectionEvent::Disconnected { .. } => {
-                crate::info!("BLE: disconnected");
-                break;
-            }
-            GattConnectionEvent::Gatt { event } => {
-                if let GattEvent::Write(ref write) = event {
-                    if write.handle() == rx_handle {
-                        let data = write.data();
-
-                        if !handshake_done && data.len() == 16 {
-                            // Identity handshake
-                            crate::log::log_fmt("[BLE ] ", format_args!(
-                                "peer id: {:02x}{:02x}{:02x}{:02x}",
-                                data[0], data[1], data[2], data[3]
-                            ));
-                            handshake_done = true;
-                            last_keepalive = Instant::now();
-                            match event.accept() {
-                                Ok(reply) => reply.send().await,
-                                Err(_) => {}
-                            }
-                            // Send first keepalive immediately
-                            let mut kv = heapless::Vec::<u8, 251>::new();
-                            let _ = kv.push(KEEPALIVE_BYTE);
-                            let _ = server.reticulum_service.tx.notify(conn, &kv).await;
-                            continue;
-                        } else if data.len() < FRAGMENT_HEADER_SIZE {
-                            // Keepalive (1-byte 0x00) — accept and skip
-                        } else {
-                            // Data fragment
-                            let now = Instant::now().as_millis();
-                            match defrag.process(data, now) {
-                                DefragResult::Complete(packet) => {
-                                    crate::info!("BLE: RX {}B", packet.len());
-                                    incoming_tx.send(packet).await;
+                                if !handshake_done && data.len() == 16 {
+                                    // Identity handshake
+                                    crate::log::log_fmt("[BLE ] ", format_args!(
+                                        "peer id: {:02x}{:02x}{:02x}{:02x}",
+                                        data[0], data[1], data[2], data[3]
+                                    ));
+                                    handshake_done = true;
+                                    last_keepalive = Instant::now();
+                                    match event.accept() {
+                                        Ok(reply) => reply.send().await,
+                                        Err(_) => {}
+                                    }
+                                    // Don't send keepalive immediately — Columba needs
+                                    // time to finish its handshake. The keepalive timer
+                                    // will fire after KEEPALIVE_INTERVAL_MS.
+                                    continue;
+                                } else if data.len() < FRAGMENT_HEADER_SIZE {
+                                    // Keepalive (1-byte 0x00) — accept and skip
+                                } else {
+                                    // Data fragment
+                                    let now = Instant::now().as_millis();
+                                    match defrag.process(data, now) {
+                                        DefragResult::Complete(packet) => {
+                                            crate::info!("BLE: RX {}B", packet.len());
+                                            incoming_tx.send(packet).await;
+                                        }
+                                        DefragResult::NeedMore => {}
+                                        DefragResult::Error => { defrag.reset(); }
+                                    }
                                 }
-                                DefragResult::NeedMore => {}
-                                DefragResult::Error => { defrag.reset(); }
                             }
                         }
+                        match event.accept() {
+                            Ok(reply) => reply.send().await,
+                            Err(_) => {}
+                        }
                     }
-                }
-                match event.accept() {
-                    Ok(reply) => reply.send().await,
-                    Err(_) => {}
+                    _ => {}
                 }
             }
-            _ => {}
+            Either3::Second(packet) => {
+                // Outgoing packet — fragment and notify
+                let fragments = ble_framing::fragment_packet(&packet, ble_framing::DEFAULT_MTU);
+                for frag in &fragments {
+                    if let Ok(hv) = heapless::Vec::<u8, 251>::from_slice(frag) {
+                        let _ = server.reticulum_service.tx.notify(conn, &hv).await;
+                    }
+                }
+            }
+            Either3::Third(()) => {
+                // Keepalive timer fired
+                let mut kv = heapless::Vec::<u8, 251>::new();
+                let _ = kv.push(KEEPALIVE_BYTE);
+                let _ = server.reticulum_service.tx.notify(conn, &kv).await;
+                last_keepalive = Instant::now();
+            }
         }
     }
 }
