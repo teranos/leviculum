@@ -56,7 +56,9 @@ async fn main(spawner: Spawner) {
     let rng = reticulum_nrf::rng::RawHwRng::new();
 
     // Load or generate persistent identity from internal flash
-    let mut nvmc = embassy_nrf::nvmc::Nvmc::new(p.NVMC);
+    let mut id_store = reticulum_nrf::flash::NvmcIdentityStore::new(
+        embassy_nrf::nvmc::Nvmc::new(p.NVMC),
+    );
 
     let mut builder = NodeCoreBuilder::new()
         .enable_transport(true)
@@ -65,19 +67,23 @@ async fn main(spawner: Spawner) {
         .max_random_blobs(8)
         .respond_to_probes(true);
 
-    let identity_loaded = if let Some(identity) = reticulum_nrf::flash::load_identity(&mut nvmc) {
-        info!("Identity loaded from flash");
-        builder = builder.identity(identity);
-        true
-    } else {
-        info!("No identity in flash, generating new");
-        false
+    let identity_loaded = {
+        use reticulum_core::identity_store::IdentityStore;
+        if let Ok(Some(identity)) = id_store.load() {
+            info!("Identity loaded from flash");
+            builder = builder.identity(identity);
+            true
+        } else {
+            info!("No identity in flash, generating new");
+            false
+        }
     };
 
     let mut node = Box::new(builder.build(rng, EmbassyClock, EmbeddedStorage::new()));
 
     if !identity_loaded {
-        reticulum_nrf::flash::save_identity(&mut nvmc, node.identity());
+        use reticulum_core::identity_store::IdentityStore;
+        let _ = id_store.save(node.identity());
         info!("Identity saved to flash");
     }
 

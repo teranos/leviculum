@@ -71,6 +71,7 @@ pub mod embedded_storage;
 pub mod framing;
 mod hex_fmt;
 pub mod identity;
+pub mod identity_store;
 pub mod ifac;
 pub mod link;
 pub mod memory_storage;
