@@ -15,6 +15,7 @@
 pub(crate) mod clock;
 pub mod config;
 pub mod driver;
+pub mod file_identity_store;
 pub mod error;
 pub(crate) mod ini_config;
 pub mod interfaces;

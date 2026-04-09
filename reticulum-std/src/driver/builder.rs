@@ -411,18 +411,31 @@ impl ReticulumNodeBuilder {
         let mut interfaces = config.interfaces.into_values().collect::<Vec<_>>();
         interfaces.extend(self.interfaces);
 
-        // Load or generate transport identity (unless explicitly set)
+        // Load or generate transport identity via FileIdentityStore
+        let mut id_store = crate::file_identity_store::FileIdentityStore::new(&storage_path);
         let core_builder = if self.core_builder.identity_ref().is_none() {
-            let identity = load_or_generate_transport_identity(&storage)?;
+            use reticulum_core::identity_store::IdentityStore;
+            let identity = match id_store.load() {
+                Ok(Some(id)) => {
+                    tracing::info!("Loaded transport identity: {}", hex_short(id.hash()));
+                    id
+                }
+                Ok(None) => {
+                    let id = Identity::generate(&mut rand_core::OsRng);
+                    id_store
+                        .save(&id)
+                        .map_err(|e| Error::Storage(format!("failed to save identity: {e}")))?;
+                    tracing::info!("Generated new transport identity: {}", hex_short(id.hash()));
+                    id
+                }
+                Err(e) => return Err(Error::Storage(format!("failed to load identity: {e}"))),
+            };
             self.core_builder.identity(identity)
         } else {
-            // Explicit identity provided — write it to storage so Python tools
-            // (rnprobe, rnpath, rnstatus) can derive the same RPC HMAC auth key
-            // from {storage_path}/transport_identity.
+            // Explicit identity — write to file so Python tools can read it
+            use reticulum_core::identity_store::IdentityStore;
             if let Some(id) = self.core_builder.identity_ref() {
-                if let Ok(bytes) = id.private_key_bytes() {
-                    let _ = storage.write_root(IDENTITY_FILE, &bytes);
-                }
+                let _ = id_store.save(id);
             }
             self.core_builder
         };
@@ -461,35 +474,6 @@ impl ReticulumNodeBuilder {
     }
 }
 
-const IDENTITY_FILE: &str = "transport_identity";
-
-/// Load an existing transport identity from storage, or generate and persist a new one.
-///
-/// The identity is stored as 64 raw bytes (32 X25519 private + 32 Ed25519 private)
-/// in the storage root, matching the Python Reticulum format exactly.
-fn load_or_generate_transport_identity(storage: &Storage) -> Result<Identity, Error> {
-    match storage.read_root(IDENTITY_FILE) {
-        Ok(bytes) if bytes.len() == 64 => {
-            let id = Identity::from_private_key_bytes(&bytes)
-                .map_err(|e| Error::Storage(format!("invalid transport_identity: {e}")))?;
-            tracing::info!("Loaded transport identity: {}", hex_short(id.hash()),);
-            Ok(id)
-        }
-        Ok(bytes) => Err(Error::Storage(format!(
-            "transport_identity has wrong size: {} (expected 64)",
-            bytes.len()
-        ))),
-        Err(_) => {
-            let id = Identity::generate(&mut rand_core::OsRng);
-            let bytes = id
-                .private_key_bytes()
-                .map_err(|e| Error::Storage(format!("failed to serialize identity: {e}")))?;
-            storage.write_root(IDENTITY_FILE, &bytes)?;
-            tracing::info!("Generated new transport identity: {}", hex_short(id.hash()),);
-            Ok(id)
-        }
-    }
-}
 
 /// Format the first 8 bytes of a hash as hex for logging
 fn hex_short(hash: &[u8]) -> String {
@@ -610,16 +594,16 @@ mod tests {
 
     #[test]
     fn test_identity_round_trip() {
+        use reticulum_core::identity_store::IdentityStore;
         let path = temp_storage_path().join("rt");
         let _ = std::fs::remove_dir_all(&path);
-        let storage = Storage::new(&path).unwrap();
+        std::fs::create_dir_all(&path).unwrap();
 
+        let mut store = crate::file_identity_store::FileIdentityStore::new(&path);
         let id = Identity::generate(&mut rand_core::OsRng);
-        let bytes = id.private_key_bytes().unwrap();
-        storage.write_root(IDENTITY_FILE, &bytes).unwrap();
+        store.save(&id).unwrap();
 
-        let loaded_bytes = storage.read_root(IDENTITY_FILE).unwrap();
-        let loaded = Identity::from_private_key_bytes(&loaded_bytes).unwrap();
+        let loaded = store.load().unwrap().expect("should load saved identity");
         assert_eq!(id.hash(), loaded.hash());
 
         let _ = std::fs::remove_dir_all(&path);
@@ -627,14 +611,18 @@ mod tests {
 
     #[test]
     fn test_first_run_creates_identity_file() {
+        use reticulum_core::identity_store::IdentityStore;
         let path = temp_storage_path().join("first_run");
         let _ = std::fs::remove_dir_all(&path);
-        let storage = Storage::new(&path).unwrap();
+        std::fs::create_dir_all(&path).unwrap();
 
-        let id = load_or_generate_transport_identity(&storage).unwrap();
-        assert!(id.has_private_keys());
+        let mut store = crate::file_identity_store::FileIdentityStore::new(&path);
+        assert!(store.load().unwrap().is_none());
 
-        let file_path = path.join(IDENTITY_FILE);
+        let id = Identity::generate(&mut rand_core::OsRng);
+        store.save(&id).unwrap();
+
+        let file_path = path.join("transport_identity");
         assert!(file_path.exists(), "identity file should be created");
         let bytes = std::fs::read(&file_path).unwrap();
         assert_eq!(bytes.len(), 64);
@@ -644,12 +632,16 @@ mod tests {
 
     #[test]
     fn test_second_run_loads_same_identity() {
+        use reticulum_core::identity_store::IdentityStore;
         let path = temp_storage_path().join("second_run");
         let _ = std::fs::remove_dir_all(&path);
-        let storage = Storage::new(&path).unwrap();
+        std::fs::create_dir_all(&path).unwrap();
 
-        let id1 = load_or_generate_transport_identity(&storage).unwrap();
-        let id2 = load_or_generate_transport_identity(&storage).unwrap();
+        let mut store = crate::file_identity_store::FileIdentityStore::new(&path);
+        let id1 = Identity::generate(&mut rand_core::OsRng);
+        store.save(&id1).unwrap();
+
+        let id2 = store.load().unwrap().expect("should load saved identity");
         assert_eq!(id1.hash(), id2.hash());
 
         let _ = std::fs::remove_dir_all(&path);
@@ -671,13 +663,12 @@ mod tests {
 
         assert_eq!(node.identity_hash(), explicit_hash);
 
-        // transport_identity file should be written so Python tools can derive
-        // the same RPC HMAC auth key from {storage_path}/transport_identity.
+        let id_file = path.join("transport_identity");
         assert!(
-            path.join(IDENTITY_FILE).exists(),
+            id_file.exists(),
             "explicit identity should write transport_identity for Python tool compatibility"
         );
-        let bytes = std::fs::read(path.join(IDENTITY_FILE)).unwrap();
+        let bytes = std::fs::read(&id_file).unwrap();
         let loaded = Identity::from_private_key_bytes(&bytes).unwrap();
         assert_eq!(loaded.hash(), &explicit_hash);
 
@@ -707,19 +698,18 @@ mod tests {
     }
 
     #[test]
-    fn test_wrong_size_identity_file_errors() {
+    fn test_wrong_size_identity_file_returns_none() {
+        use reticulum_core::identity_store::IdentityStore;
         let path = temp_storage_path().join("wrong_size");
         let _ = std::fs::remove_dir_all(&path);
-        let storage = Storage::new(&path).unwrap();
+        std::fs::create_dir_all(&path).unwrap();
 
-        storage.write_root(IDENTITY_FILE, b"too_short").unwrap();
-        let result = load_or_generate_transport_identity(&storage);
-        assert!(result.is_err());
-        let err_msg = format!("{}", result.err().expect("should be an error"));
-        assert!(
-            err_msg.contains("wrong size"),
-            "error should mention wrong size: {err_msg}"
-        );
+        // Write a too-short file
+        std::fs::write(path.join("transport_identity"), b"too_short").unwrap();
+
+        let mut store = crate::file_identity_store::FileIdentityStore::new(&path);
+        let result = store.load().unwrap();
+        assert!(result.is_none(), "wrong-size file should return None");
 
         let _ = std::fs::remove_dir_all(&path);
     }

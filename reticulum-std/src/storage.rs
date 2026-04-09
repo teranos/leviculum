@@ -175,7 +175,9 @@ impl Storage {
         Ok(path)
     }
 
-    /// Read raw bytes from the storage root (no category subdirectory)
+    /// Read raw bytes from the storage root (no category subdirectory).
+    /// Used by tests and potentially by future persistence code.
+    #[allow(dead_code)]
     pub(crate) fn read_root(&self, name: &str) -> Result<Vec<u8>> {
         let path = self.base_path.join(name);
         std::fs::read(&path)
