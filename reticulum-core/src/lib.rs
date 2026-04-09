@@ -74,6 +74,8 @@ pub mod identity;
 pub mod identity_store;
 pub mod ifac;
 pub mod known_destinations;
+pub mod packet_hash_store;
+pub mod ratchet_store;
 pub mod link;
 pub mod memory_storage;
 pub mod node;
