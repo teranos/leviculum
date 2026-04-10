@@ -6,6 +6,7 @@
 //!
 //! Messages are silently dropped if the channel is full (host not reading).
 
+use core::sync::atomic::{AtomicU32, Ordering};
 use embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex;
 use embassy_sync::channel::Channel;
 
@@ -22,8 +23,11 @@ impl LogMessage {
     }
 }
 
-/// Bounded channel for log messages. Capacity 16 — if full, messages are dropped.
-pub static LOG_CHANNEL: Channel<CriticalSectionRawMutex, LogMessage, 16> = Channel::new();
+/// Bounded channel for log messages. Capacity 32 (8 KB RAM).
+pub static LOG_CHANNEL: Channel<CriticalSectionRawMutex, LogMessage, 32> = Channel::new();
+
+/// Count of messages dropped due to full channel.
+static LOG_DROPPED: AtomicU32 = AtomicU32::new(0);
 
 /// Format and enqueue a log message. Non-blocking: drops if channel is full.
 pub fn log_fmt(prefix: &str, args: core::fmt::Arguments) {
@@ -31,13 +35,25 @@ pub fn log_fmt(prefix: &str, args: core::fmt::Arguments) {
         buf: [0u8; 256],
         len: 0,
     };
+
+    // If messages were dropped, prepend a warning
+    let dropped = LOG_DROPPED.swap(0, Ordering::Relaxed);
+    if dropped > 0 {
+        let mut writer = LogWriter(&mut msg);
+        let _ = core::fmt::Write::write_fmt(
+            &mut writer,
+            format_args!("[!!! {} log messages dropped !!!]\r\n", dropped),
+        );
+    }
+
     let mut writer = LogWriter(&mut msg);
     let _ = core::fmt::Write::write_str(&mut writer, prefix);
     let _ = core::fmt::Write::write_fmt(&mut writer, args);
     let _ = core::fmt::Write::write_str(&mut writer, "\r\n");
 
-    // Non-blocking send — silently drop if channel is full
-    let _ = LOG_CHANNEL.try_send(msg);
+    if LOG_CHANNEL.try_send(msg).is_err() {
+        LOG_DROPPED.fetch_add(1, Ordering::Relaxed);
+    }
 }
 
 struct LogWriter<'a>(&'a mut LogMessage);
@@ -118,7 +134,9 @@ impl tracing_core::Subscriber for TracingSubscriber {
             let _ = core::fmt::Write::write_str(&mut writer, "\r\n");
         }
 
-        let _ = LOG_CHANNEL.try_send(msg);
+        if LOG_CHANNEL.try_send(msg).is_err() {
+            LOG_DROPPED.fetch_add(1, Ordering::Relaxed);
+        }
     }
 }
 

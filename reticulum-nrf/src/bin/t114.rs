@@ -101,11 +101,10 @@ async fn main(spawner: Spawner) {
         hash[0], hash[1], hash[2], hash[3], hash[4]
     );
 
-    // LoRa
+    // LoRa (SPIM2 — SPIM3 has a MISO read bug on T114)
     let lora = reticulum_nrf::lora::init(
-        p.SPI3, p.P0_19, p.P0_22, p.P0_23, p.P0_24, p.P0_25, p.P0_17, p.P0_20,
-    )
-    .await;
+        p.SPI2, p.P0_19, p.P0_22, p.P0_23, p.P0_24, p.P0_25, p.P0_17, p.P0_20,
+    ).await;
     info!("SX1262 ready");
 
     let radio_cfg = reticulum_nrf::lora::RadioConfig::eu_medium();

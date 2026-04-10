@@ -17,6 +17,7 @@ embassy-sync = "0.7"
 embassy-usb = "0.5"
 embassy-futures = "0.1"
 embassy-embedded-hal = "0.5"
+embedded-hal-async = "1"
 
 # Cortex-M support
 # critical-section-single-core REMOVED: it uses cpsid/cpsie which blocks
@@ -31,9 +32,6 @@ embedded-alloc = "0.7"
 # Static initialization
 static_cell = "2"
 
-# SX1262 LoRa radio driver
-lora-phy = { version = "3", default-features = false }
-defmt = "0.3"
 tracing-core = { version = "0.1", default-features = false }
 rand_core = { version = "0.6", default-features = false }
 heapless = { version = "0.9", default-features = false }
