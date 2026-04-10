@@ -111,6 +111,9 @@ pub struct TestRunner {
     /// Background `dmesg --follow` process for capturing USB/kernel events.
     /// Started in `up()`, killed in `down()`.
     dmesg_process: Option<Child>,
+    /// Number of active debug capture threads (informational only, threads stop on port close).
+    #[allow(dead_code)]
+    debug_capture_count: usize,
 }
 
 impl TestRunner {
@@ -181,6 +184,7 @@ impl TestRunner {
             proxy_processes,
             proxy_sockets,
             dmesg_process: None,
+            debug_capture_count: 0,
         })
     }
 
@@ -209,6 +213,12 @@ impl TestRunner {
 
     /// Bring up containers in detached mode, building images first.
     pub fn up(&mut self) -> Result<(), RunnerError> {
+        // Start debug serial captures BEFORE containers start.
+        // The T114 debug port blocks on write_packet if no reader is
+        // present, so we must have a reader ready before lnsd connects
+        // to the transport port and triggers T114 activity.
+        self.start_debug_captures();
+
         let output = self.compose_cmd().args(["up", "-d", "--build"]).output()?;
 
         if !output.status.success() {
@@ -382,11 +392,17 @@ impl TestRunner {
     }
 
     /// Bring down containers with a 10-second timeout. No-op if not up.
-    /// Also kills any running proxy processes.
+    /// Always saves container logs before teardown.
     pub fn down(&mut self) -> Result<(), RunnerError> {
         if !self.is_up {
             self.kill_proxies();
             return Ok(());
+        }
+
+        // Save logs BEFORE tearing down containers
+        match self.collect_logs() {
+            Ok(path) => eprintln!("Logs saved to: {}", path.display()),
+            Err(e) => eprintln!("Failed to save logs: {e}"),
         }
 
         let output = self
@@ -399,12 +415,14 @@ impl TestRunner {
         self.stop_dmesg_logger();
 
         if !output.status.success() {
+            check_stale_resources(&self.scenario);
             return Err(RunnerError::Compose {
                 action: "down --timeout 10".into(),
                 stderr: String::from_utf8_lossy(&output.stderr).into_owned(),
             });
         }
 
+        check_stale_resources(&self.scenario);
         Ok(())
     }
 
@@ -484,6 +502,80 @@ impl TestRunner {
         }
     }
 
+    /// Start background serial debug capture for nodes with `debug_serial`.
+    /// Uses serialport crate for reliable reading (not `cat` which exits on device reset).
+    fn start_debug_captures(&mut self) {
+        let logs_dir = Self::logs_dir();
+        let _ = fs::create_dir_all(&logs_dir);
+        let ts = Self::utc_timestamp();
+
+        for (name, node) in &self.scenario.nodes {
+            if let Some(ref port) = node.debug_serial {
+                let log_path = logs_dir.join(format!(
+                    "{}_{}_debug_{}.log",
+                    self.scenario.test.name, name, ts
+                ));
+                let port = port.clone();
+
+                match fs::File::create(&log_path) {
+                    Ok(mut file) => {
+                        // Open port with serialport to assert DTR (CDC-ACM
+                        // only sends when DTR is asserted), then hand off to
+                        // a background reader thread.
+                        match serialport::new(&port, 115_200)
+                            .timeout(Duration::from_secs(2))
+                            .open()
+                        {
+                            Ok(mut serial) => {
+                                let _ = serial.write_data_terminal_ready(true);
+                                let _ = serial.write_request_to_send(true);
+                                eprintln!("[debug-capture] {port} → {}", log_path.display());
+                                // Spawn reader thread with reconnection
+                                let port_path = port.clone();
+                                let _ = thread::spawn(move || {
+                                    use std::io::{Read, Write};
+                                    let mut buf = [0u8; 1024];
+                                    loop {
+                                        match serial.read(&mut buf) {
+                                            Ok(n) if n > 0 => {
+                                                let _ = file.write_all(&buf[..n]);
+                                                let _ = file.flush();
+                                            }
+                                            Ok(_) => {}
+                                            Err(ref e) if e.kind() == io::ErrorKind::TimedOut => continue,
+                                            Err(_) => {
+                                                // Port lost — try to reconnect
+                                                thread::sleep(Duration::from_secs(1));
+                                                match serialport::new(&port_path, 115_200)
+                                                    .timeout(Duration::from_secs(2))
+                                                    .open()
+                                                {
+                                                    Ok(mut new_serial) => {
+                                                        let _ = new_serial.write_data_terminal_ready(true);
+                                                        serial = new_serial;
+                                                    }
+                                                    Err(_) => break,
+                                                }
+                                            }
+                                        }
+                                    }
+                                });
+                            }
+                            Err(e) => {
+                                eprintln!("[debug-capture] FAILED to open {port}: {e}");
+                            }
+                        }
+                    }
+                    Err(e) => {
+                        eprintln!("[debug-capture] cannot create {}: {e}", log_path.display());
+                    }
+                }
+            }
+        }
+    }
+
+    // Debug capture threads stop automatically when the serial port closes.
+
     /// Stop the background dmesg logger (if running).
     fn stop_dmesg_logger(&mut self) {
         if let Some(mut child) = self.dmesg_process.take() {
@@ -558,22 +650,24 @@ impl TestRunner {
 // ---------------------------------------------------------------------------
 
 /// Probe a serial device for RNode CMD_DETECT response.
-///
-/// Two-phase: fast attempt (no settle), then retry with 500ms settle.
-/// Most connected devices respond immediately; cold/sleeping devices
-/// need the settle time.
-fn probe_rnode(path: &str) -> bool {
-    // Three attempts with increasing settle times to handle slow USB-serial
-    // chips (CH9102F, CH340) that need time after port open.
+/// Returns Ok(()) if detected, Err(reason) if not.
+fn probe_rnode(path: &str) -> Result<(), String> {
+    if !std::path::Path::new(path).exists() {
+        return Err("device does not exist".into());
+    }
+    // Three attempts with increasing settle times
     for settle_ms in [0, 500, 1500] {
-        if probe_rnode_once(path, settle_ms) {
-            return true;
+        match probe_rnode_once(path, settle_ms) {
+            Ok(true) => return Ok(()),
+            Ok(false) => continue, // no detect response, try again
+            Err(e) => return Err(e), // can't open — don't retry
         }
     }
-    false
+    Err("no CMD_DETECT response after 3 attempts".into())
 }
 
-fn probe_rnode_once(path: &str, settle_ms: u64) -> bool {
+/// Returns Ok(true) if RNode detected, Ok(false) if no response, Err if can't open.
+fn probe_rnode_once(path: &str, settle_ms: u64) -> Result<bool, String> {
     use std::io::{Read, Write};
 
     const FEND: u8 = 0xC0;
@@ -586,7 +680,7 @@ fn probe_rnode_once(path: &str, settle_ms: u64) -> bool {
         .open()
     {
         Ok(p) => p,
-        Err(_) => return false,
+        Err(e) => return Err(format!("cannot open: {e}")),
     };
 
     if settle_ms > 0 {
@@ -598,20 +692,94 @@ fn probe_rnode_once(path: &str, settle_ms: u64) -> bool {
 
     let query = [FEND, CMD_DETECT, DETECT_REQ, FEND];
     if port.write_all(&query).is_err() {
-        return false;
+        return Ok(false);
     }
 
     let mut buf = [0u8; 128];
     let deadline = Instant::now() + Duration::from_secs(2);
     while Instant::now() < deadline {
         match port.read(&mut buf) {
-            Ok(n) if buf[..n].contains(&DETECT_RESP) => return true,
+            Ok(n) if buf[..n].contains(&DETECT_RESP) => return Ok(true),
             Ok(_) => continue,
             Err(ref e) if e.kind() == io::ErrorKind::TimedOut => continue,
-            Err(_) => return false,
+            Err(_) => return Ok(false),
         }
     }
-    false
+    Ok(false)
+}
+
+/// Check that a device file exists, can be opened, and is not held by another process.
+/// Returns Ok(()) if accessible, Err(reason) if not.
+fn check_device_accessible(path: &str) -> Result<(), String> {
+    if !std::path::Path::new(path).exists() {
+        return Err("does not exist".into());
+    }
+    // Try to open it briefly to check it's not busy
+    match serialport::new(path, 115_200)
+        .timeout(Duration::from_millis(100))
+        .open()
+    {
+        Ok(_port) => Ok(()), // opened successfully, drop closes it
+        Err(e) => {
+            // Check if another process holds it
+            let lsof = Command::new("lsof")
+                .arg(path)
+                .output()
+                .ok()
+                .and_then(|o| {
+                    if o.status.success() {
+                        String::from_utf8(o.stdout).ok()
+                    } else {
+                        None
+                    }
+                });
+            let holder = lsof
+                .as_deref()
+                .and_then(|s| s.lines().nth(1)) // skip header
+                .unwrap_or("unknown");
+            Err(format!("cannot open ({e}), held by: {holder}"))
+        }
+    }
+}
+
+/// Check for stale Docker containers or processes holding test devices.
+/// Called after test teardown. Prints warnings but doesn't fail.
+fn check_stale_resources(scenario: &TestScenario) {
+    // Check for stale Docker containers
+    if let Ok(output) = Command::new("docker")
+        .args(["ps", "-a", "--filter", "name=integ-", "--format", "{{.Names}} {{.Status}}"])
+        .output()
+    {
+        let text = String::from_utf8_lossy(&output.stdout);
+        for line in text.lines() {
+            if !line.is_empty() {
+                eprintln!("[WARN] stale container: {line}");
+            }
+        }
+    }
+
+    // Check all device ports are released
+    let mut ports: Vec<&str> = Vec::new();
+    for node in scenario.nodes.values() {
+        if let Some(ref p) = node.rnode { ports.push(p); }
+        if let Some(ref p) = node.serial { ports.push(p); }
+        if let Some(ref p) = node.debug_serial { ports.push(p); }
+        if let Some(ref ifaces) = node.rnode_interfaces {
+            for iface in ifaces { ports.push(&iface.rnode); }
+        }
+    }
+    for port in ports {
+        if let Ok(output) = Command::new("lsof").arg(port).output() {
+            let text = String::from_utf8_lossy(&output.stdout);
+            if text.lines().count() > 1 {
+                // lsof header + at least one process
+                eprintln!("[WARN] device {port} still held after teardown:");
+                for line in text.lines().skip(1) {
+                    eprintln!("  {line}");
+                }
+            }
+        }
+    }
 }
 
 /// Extract numeric suffix from `/dev/ttyACMN` paths.
@@ -717,18 +885,20 @@ fn resolve_and_probe_rnodes(scenario: &mut TestScenario) -> Result<(), RunnerErr
     };
 
     let mut available = Vec::new();
-    let mut missing = Vec::new();
+    let mut failures: Vec<(String, String)> = Vec::new();
     for path in &unique_resolved {
-        if probe_rnode(path) {
-            available.push(path.clone());
-        } else {
-            missing.push(path.clone());
+        match probe_rnode(path) {
+            Ok(()) => available.push(path.clone()),
+            Err(reason) => failures.push((path.clone(), reason)),
         }
     }
 
-    if !missing.is_empty() {
+    if !failures.is_empty() {
         let needed = unique_resolved.len();
         let found = available.len();
+        let details: Vec<String> = failures.iter()
+            .map(|(p, r)| format!("{p}: {r}"))
+            .collect();
         let env_hints: Vec<String> = paths_to_resolve
             .iter()
             .filter_map(|p| extract_acm_index(p).map(|n| format!("LEVICULUM_RNODE_{n}")))
@@ -739,20 +909,37 @@ fn resolve_and_probe_rnodes(scenario: &mut TestScenario) -> Result<(), RunnerErr
             format!(" (set {})", env_hints.join(", "))
         };
         return Err(RunnerError::InsufficientRNodes(format!(
-            "Skipping: needs {needed} RNodes, found {found} — missing: {}{hint}",
-            missing.join(", ")
+            "Skipping: needs {needed} RNodes, found {found}{hint}\n  {}",
+            details.join("\n  ")
         )));
     }
 
-    // Check serial devices exist (no CMD_DETECT — they're not RNodes)
+    // Check serial devices: must exist AND be openable (not held by another process)
     for (orig, resolved) in &serial_resolution {
-        if !std::path::Path::new(resolved).exists() {
-            let env_hint = extract_acm_index(orig)
-                .map(|n| format!(" (set LEVICULUM_SERIAL_{n})"))
-                .unwrap_or_default();
-            return Err(RunnerError::InsufficientRNodes(format!(
-                "Serial device not found: {resolved}{env_hint}"
-            )));
+        match check_device_accessible(resolved) {
+            Ok(()) => {}
+            Err(reason) => {
+                let env_hint = extract_acm_index(orig)
+                    .map(|n| format!(" (set LEVICULUM_SERIAL_{n})"))
+                    .unwrap_or_default();
+                return Err(RunnerError::InsufficientRNodes(format!(
+                    "Serial device {resolved}: {reason}{env_hint}"
+                )));
+            }
+        }
+    }
+
+    // Check debug_serial devices: must exist and be openable
+    for node in scenario.nodes.values() {
+        if let Some(ref port) = node.debug_serial {
+            match check_device_accessible(port) {
+                Ok(()) => {}
+                Err(reason) => {
+                    return Err(RunnerError::InsufficientRNodes(format!(
+                        "Debug serial device {port}: {reason}"
+                    )));
+                }
+            }
         }
     }
 

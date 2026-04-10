@@ -120,6 +120,10 @@ pub struct NodeDef {
     /// The LNode handles its own radio — no radio config needed from lnsd.
     #[serde(default)]
     pub serial: Option<String>,
+    /// Debug serial port for an LNode (e.g., T114 debug CDC-ACM port).
+    /// Not passed to Docker — captured by the test runner to a log file.
+    #[serde(default)]
+    pub debug_serial: Option<String>,
 }
 
 /// Per-interface RNode definition with independent radio parameters.
@@ -1039,6 +1043,7 @@ rnode = "/dev/ttyACM0"
             listen_port: None,
             rnode_interfaces: None,
             serial: None,
+            debug_serial: None,
         };
         let radio = RadioConfig {
             frequency: 868000000,
@@ -1115,6 +1120,7 @@ rnode = "/dev/ttyACM0"
             listen_port: Some(4242),
             rnode_interfaces: None,
             serial: None,
+            debug_serial: None,
         };
         let config = render_config(&node, &[], None);
         assert!(
@@ -1139,6 +1145,7 @@ rnode = "/dev/ttyACM0"
             listen_port: Some(4242),
             rnode_interfaces: None,
             serial: None,
+            debug_serial: None,
         };
         let radio = RadioConfig {
             frequency: 868000000,
@@ -1222,6 +1229,7 @@ alpha-beta = "tcp"
             listen_port: None,
             rnode_interfaces: None,
             serial: None,
+            debug_serial: None,
         };
         let config = render_config(&node, &[], None);
         assert!(
@@ -1351,6 +1359,7 @@ passphrase = "secret456"
             listen_port: None,
             rnode_interfaces: None,
             serial: None,
+            debug_serial: None,
         };
         let ifaces = vec![InterfaceEntry::TcpServer {
             peer: "bob".into(),
@@ -1381,6 +1390,7 @@ passphrase = "secret456"
             listen_port: None,
             rnode_interfaces: None,
             serial: None,
+            debug_serial: None,
         };
         let ifaces = vec![InterfaceEntry::TcpServer {
             peer: "bob".into(),
