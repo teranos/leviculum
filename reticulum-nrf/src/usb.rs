@@ -23,7 +23,7 @@ use embassy_usb::{Builder, Config, UsbDevice};
 use reticulum_core::framing::hdlc::{frame, DeframeResult, Deframer};
 use static_cell::StaticCell;
 
-use crate::log::{log_fmt, LOG_CHANNEL};
+use crate::log::{log_fmt, LOG_RING, LOG_SIGNAL};
 
 // Interrupt bindings are centralized in ble.rs (CLOCK_POWER shared with MPSL)
 use crate::ble::Irqs;
@@ -142,31 +142,27 @@ async fn usb_task(mut usb: UsbDevice<'static, UsbDriver>) {
 
 #[embassy_executor::task]
 async fn debug_writer_task(mut cdc: CdcAcmClass<'static, UsbDriver>) {
+    use embassy_time::{with_timeout, Duration};
+
+    let mut chunk = [0u8; 64];
     loop {
-        cdc.wait_connection().await;
+        // Wait for new data or check every 100ms (catches DTR changes)
+        let _ = with_timeout(Duration::from_millis(100), LOG_SIGNAL.wait()).await;
+
+        // Only send if host has the port open
+        if !cdc.dtr() {
+            continue;
+        }
+
+        // Drain ring buffer to USB
         loop {
-            let msg = LOG_CHANNEL.receive().await;
-            let bytes = msg.as_bytes();
-            let mut ok = true;
-            for chunk in bytes.chunks(64) {
-                match cdc.write_packet(chunk).await {
-                    Ok(()) => {}
-                    Err(_) => {
-                        ok = false;
-                        break;
-                    }
-                }
-            }
-            // Send ZLP if last chunk was exactly 64 bytes (signals end of transfer)
-            if ok
-                && !bytes.is_empty()
-                && bytes.len() % 64 == 0
-                && cdc.write_packet(&[]).await.is_err()
-            {
+            let n = LOG_RING.read(&mut chunk);
+            if n == 0 {
                 break;
             }
-            if !ok {
-                break;
+            match with_timeout(Duration::from_millis(50), cdc.write_packet(&chunk[..n])).await {
+                Ok(Ok(())) => {}
+                _ => break, // USB error or timeout
             }
         }
     }
@@ -184,8 +180,10 @@ fn log_u32(msg: &str, val: u32) {
 /// Serial HW_MTU (matches Python SerialInterface)
 const SERIAL_HW_MTU: usize = 564;
 
-/// Incomplete frame timeout — matches Python SerialInterface.timeout = 100ms
-const FRAME_TIMEOUT_MS: u64 = 100;
+/// Incomplete frame timeout. Python uses 100ms but also sets low_latency mode
+/// so frames arrive as bulk USB packets. Without low_latency, byte-by-byte USB
+/// delivery needs more time. 500ms gives 33x margin for a 167-byte frame at 115200.
+const FRAME_TIMEOUT_MS: u64 = 500;
 
 /// Reticulum serial interface task: HDLC-framed bidirectional I/O on USB CDC-ACM.
 ///

@@ -1,72 +1,109 @@
 //! Debug logging via USB CDC-ACM
 //!
-//! Provides `info!` and `warn!` macros that format messages into a fixed-size
-//! buffer and send them over a bounded channel. The USB debug writer task
-//! drains this channel and sends messages to the host.
+//! All log output goes into a static ring buffer (`LOG_RING`). The USB debug
+//! writer task drains the ring buffer to the host when DTR is asserted.
 //!
-//! Messages are silently dropped if the channel is full (host not reading).
+//! This design never blocks, never drops messages for the reader, and works
+//! regardless of when the host opens the port. Old data is overwritten when
+//! the ring buffer is full (like Linux `dmesg` / `printk`).
 
-use core::sync::atomic::{AtomicU32, Ordering};
+use core::sync::atomic::{AtomicUsize, Ordering};
 use embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex;
-use embassy_sync::channel::Channel;
+use embassy_sync::signal::Signal;
 
-/// Fixed-size log message buffer (no heap allocation in log path).
-pub struct LogMessage {
-    buf: [u8; 256],
-    len: usize,
+// ─── Ring buffer ───────────────────────────────────────────────────────────
+
+const LOG_RING_SIZE: usize = 4096; // 4 KB — fits ~15-20 log lines
+
+/// Lock-free ring buffer for log output.
+/// Single producer (log_fmt / tracing subscriber), single consumer (USB debug writer).
+pub struct LogRing {
+    buf: core::cell::UnsafeCell<[u8; LOG_RING_SIZE]>,
+    write_pos: AtomicUsize,
+    read_pos: AtomicUsize,
 }
 
-impl LogMessage {
-    /// Return the formatted message bytes.
-    pub fn as_bytes(&self) -> &[u8] {
-        &self.buf[..self.len]
+// Safety: Embassy is single-threaded (cooperative executor on one core).
+// One producer (log_fmt, called from any task), one consumer (debug_writer_task).
+unsafe impl Sync for LogRing {}
+
+impl LogRing {
+    pub const fn new() -> Self {
+        Self {
+            buf: core::cell::UnsafeCell::new([0u8; LOG_RING_SIZE]),
+            write_pos: AtomicUsize::new(0),
+            read_pos: AtomicUsize::new(0),
+        }
+    }
+
+    /// Write bytes into the ring buffer. Overwrites oldest data if full.
+    pub fn write(&self, data: &[u8]) {
+        let buf = unsafe { &mut *self.buf.get() };
+        let mut wp = self.write_pos.load(Ordering::Relaxed);
+        for &byte in data {
+            buf[wp % LOG_RING_SIZE] = byte;
+            wp = wp.wrapping_add(1);
+        }
+        self.write_pos.store(wp, Ordering::Release);
+
+        // If writer has lapped reader, advance reader to oldest available data
+        let rp = self.read_pos.load(Ordering::Relaxed);
+        if wp.wrapping_sub(rp) > LOG_RING_SIZE {
+            self.read_pos.store(wp - LOG_RING_SIZE, Ordering::Release);
+        }
+    }
+
+    /// Read up to `out.len()` bytes. Returns number of bytes read.
+    pub fn read(&self, out: &mut [u8]) -> usize {
+        let buf = unsafe { &*self.buf.get() };
+        let wp = self.write_pos.load(Ordering::Acquire);
+        let mut rp = self.read_pos.load(Ordering::Relaxed);
+        let avail = wp.wrapping_sub(rp);
+        let to_read = avail.min(out.len());
+        for i in 0..to_read {
+            out[i] = buf[rp % LOG_RING_SIZE];
+            rp = rp.wrapping_add(1);
+        }
+        self.read_pos.store(rp, Ordering::Release);
+        to_read
     }
 }
 
-/// Bounded channel for log messages. Capacity 32 (8 KB RAM).
-pub static LOG_CHANNEL: Channel<CriticalSectionRawMutex, LogMessage, 32> = Channel::new();
+/// Global ring buffer for all log output.
+pub static LOG_RING: LogRing = LogRing::new();
 
-/// Count of messages dropped due to full channel.
-static LOG_DROPPED: AtomicU32 = AtomicU32::new(0);
+/// Signal to wake the USB debug writer when new data is available.
+pub static LOG_SIGNAL: Signal<CriticalSectionRawMutex, ()> = Signal::new();
 
-/// Format and enqueue a log message. Non-blocking: drops if channel is full.
+// ─── Log formatting ────────────────────────────────────────────────────────
+
+/// Format and write a log message to the ring buffer. Never blocks.
 pub fn log_fmt(prefix: &str, args: core::fmt::Arguments) {
-    let mut msg = LogMessage {
-        buf: [0u8; 256],
-        len: 0,
-    };
+    let mut buf = [0u8; 256];
+    let mut len = 0usize;
 
-    // If messages were dropped, prepend a warning
-    let dropped = LOG_DROPPED.swap(0, Ordering::Relaxed);
-    if dropped > 0 {
-        let mut writer = LogWriter(&mut msg);
-        let _ = core::fmt::Write::write_fmt(
-            &mut writer,
-            format_args!("[!!! {} log messages dropped !!!]\r\n", dropped),
-        );
+    // Format prefix + message + \r\n into stack buffer
+    struct BufWriter<'a> { buf: &'a mut [u8], len: &'a mut usize }
+    impl core::fmt::Write for BufWriter<'_> {
+        fn write_str(&mut self, s: &str) -> core::fmt::Result {
+            let remaining = self.buf.len() - *self.len;
+            let to_copy = s.len().min(remaining);
+            self.buf[*self.len..*self.len + to_copy].copy_from_slice(&s.as_bytes()[..to_copy]);
+            *self.len += to_copy;
+            Ok(())
+        }
     }
 
-    let mut writer = LogWriter(&mut msg);
-    let _ = core::fmt::Write::write_str(&mut writer, prefix);
-    let _ = core::fmt::Write::write_fmt(&mut writer, args);
-    let _ = core::fmt::Write::write_str(&mut writer, "\r\n");
+    let mut w = BufWriter { buf: &mut buf, len: &mut len };
+    let _ = core::fmt::Write::write_str(&mut w, prefix);
+    let _ = core::fmt::Write::write_fmt(&mut w, args);
+    let _ = core::fmt::Write::write_str(&mut w, "\r\n");
 
-    if LOG_CHANNEL.try_send(msg).is_err() {
-        LOG_DROPPED.fetch_add(1, Ordering::Relaxed);
-    }
+    LOG_RING.write(&buf[..len]);
+    LOG_SIGNAL.signal(());
 }
 
-struct LogWriter<'a>(&'a mut LogMessage);
-
-impl core::fmt::Write for LogWriter<'_> {
-    fn write_str(&mut self, s: &str) -> core::fmt::Result {
-        let remaining = 256 - self.0.len;
-        let to_copy = s.len().min(remaining);
-        self.0.buf[self.0.len..self.0.len + to_copy].copy_from_slice(&s.as_bytes()[..to_copy]);
-        self.0.len += to_copy;
-        Ok(())
-    }
-}
+// ─── Macros ────────────────────────────────────────────────────────────────
 
 /// Log an informational message over USB CDC-ACM debug port.
 #[macro_export]
@@ -84,11 +121,10 @@ macro_rules! warn {
     };
 }
 
+// ─── Tracing subscriber ───────────────────────────────────────────────────
+
 /// Minimal tracing subscriber that routes `reticulum-core` log events
-/// to the CDC-ACM debug port via LOG_CHANNEL.
-///
-/// Only processes events (not spans). Formats each event as:
-/// `[LEVEL] message key=value key=value...\r\n`
+/// to the ring buffer via log_fmt.
 pub struct TracingSubscriber;
 
 impl tracing_core::Subscriber for TracingSubscriber {
@@ -115,42 +151,62 @@ impl tracing_core::Subscriber for TracingSubscriber {
             tracing_core::Level::TRACE => "TRACE",
         };
 
-        let mut msg = LogMessage {
-            buf: [0u8; 256],
-            len: 0,
-        };
+        let mut buf = [0u8; 256];
+        let mut len = 0usize;
 
-        // Format prefix, then visit fields, then append \r\n — all on msg directly
+        struct BufWriter<'a> { buf: &'a mut [u8], len: &'a mut usize }
+        impl core::fmt::Write for BufWriter<'_> {
+            fn write_str(&mut self, s: &str) -> core::fmt::Result {
+                let remaining = self.buf.len() - *self.len;
+                let to_copy = s.len().min(remaining);
+                self.buf[*self.len..*self.len + to_copy].copy_from_slice(&s.as_bytes()[..to_copy]);
+                *self.len += to_copy;
+                Ok(())
+            }
+        }
+
         {
-            let mut writer = LogWriter(&mut msg);
+            let mut w = BufWriter { buf: &mut buf, len: &mut len };
             let _ = core::fmt::Write::write_fmt(
-                &mut writer,
+                &mut w,
                 format_args!("[{}] {}: ", level, metadata.target()),
             );
         }
-        event.record(&mut TracingVisitor(&mut msg));
+        event.record(&mut TracingVisitor { buf: &mut buf, len: &mut len });
         {
-            let mut writer = LogWriter(&mut msg);
-            let _ = core::fmt::Write::write_str(&mut writer, "\r\n");
+            let mut w = BufWriter { buf: &mut buf, len: &mut len };
+            let _ = core::fmt::Write::write_str(&mut w, "\r\n");
         }
 
-        if LOG_CHANNEL.try_send(msg).is_err() {
-            LOG_DROPPED.fetch_add(1, Ordering::Relaxed);
-        }
+        LOG_RING.write(&buf[..len]);
+        LOG_SIGNAL.signal(());
     }
 }
 
-/// Visitor that formats tracing event fields into the LogMessage buffer.
-struct TracingVisitor<'a>(&'a mut LogMessage);
+/// Visitor that formats tracing event fields into a buffer.
+struct TracingVisitor<'a> {
+    buf: &'a mut [u8],
+    len: &'a mut usize,
+}
 
 impl tracing_core::field::Visit for TracingVisitor<'_> {
     fn record_debug(&mut self, field: &tracing_core::field::Field, value: &dyn core::fmt::Debug) {
-        let mut writer = LogWriter(self.0);
+        struct BufWriter<'a> { buf: &'a mut [u8], len: &'a mut usize }
+        impl core::fmt::Write for BufWriter<'_> {
+            fn write_str(&mut self, s: &str) -> core::fmt::Result {
+                let remaining = self.buf.len() - *self.len;
+                let to_copy = s.len().min(remaining);
+                self.buf[*self.len..*self.len + to_copy].copy_from_slice(&s.as_bytes()[..to_copy]);
+                *self.len += to_copy;
+                Ok(())
+            }
+        }
+        let mut w = BufWriter { buf: self.buf, len: self.len };
         if field.name() == "message" {
-            let _ = core::fmt::Write::write_fmt(&mut writer, format_args!("{:?}", value));
+            let _ = core::fmt::Write::write_fmt(&mut w, format_args!("{:?}", value));
         } else {
             let _ = core::fmt::Write::write_fmt(
-                &mut writer,
+                &mut w,
                 format_args!(" {}={:?}", field.name(), value),
             );
         }

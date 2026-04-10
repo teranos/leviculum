@@ -160,10 +160,9 @@ async fn main(spawner: Spawner) {
         .await
         {
             Either4::First(data) => {
+                info!("SER RX {} bytes", data.len());
                 let output = node.handle_packet(InterfaceId(0), &data);
-                if !output.actions.is_empty() {
-                    info!("SER RX -> {} actions", output.actions.len());
-                }
+                info!("SER RX -> {} actions", output.actions.len());
                 let mut ifaces: [&mut dyn Interface; 3] =
                     [&mut serial_iface, &mut lora_iface, &mut ble_iface];
                 dispatch_actions(&mut ifaces, output.actions, &ifac_configs);

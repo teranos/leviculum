@@ -164,6 +164,7 @@ pub async fn lora_task(mut radio: Radio, config: RadioConfig) {
     crate::log::log_fmt("[LORA] ", format_args!("task started"));
 
     let mut rx_buf = [0u8; 255];
+    let mut rx_timeout_count: u32 = 0;
 
     loop {
         // Drain outgoing packets (non-blocking)
@@ -189,7 +190,10 @@ pub async fn lora_task(mut radio: Radio, config: RadioConfig) {
                 incoming_tx.send(data).await;
             }
             Err(crate::sx1262::Error::Timeout) => {
-                // Normal — no packet received, loop back
+                rx_timeout_count += 1;
+                if rx_timeout_count % 60 == 0 {
+                    crate::log::log_fmt("[LORA] ", format_args!("RX idle ({})", rx_timeout_count));
+                }
             }
             Err(e) => {
                 crate::log::log_fmt("[LORA] ", format_args!("RX err: {:?}", e));
