@@ -105,6 +105,14 @@ async fn serial_reconnect_task(
 ) {
     let mut has_connected_before = false;
     loop {
+        // Set low_latency mode so the kernel batches USB CDC-ACM writes into
+        // 64-byte bulk transfers instead of sending byte-by-byte. Without this,
+        // HDLC frames arrive one byte at a time and the receiver's frame timeout
+        // discards most frames. pyserial does this via set_low_latency_mode().
+        let _ = std::process::Command::new("stty")
+            .args(["-F", &config.port, "low_latency"])
+            .output();
+
         let builder = tokio_serial::new(&config.port, config.speed)
             .data_bits(config.data_bits)
             .stop_bits(config.stop_bits)
@@ -233,6 +241,7 @@ async fn serial_io_task(
             msg = outgoing_rx.recv() => {
                 match msg {
                     Some(pkt) => {
+                        tracing::debug!("Serial interface {} TX {} bytes", name, pkt.data.len());
                         frame(&pkt.data, &mut frame_buf);
                         if let Err(e) = port.write_all(&frame_buf).await {
                             tracing::debug!("Serial interface {} write error: {}", name, e);
