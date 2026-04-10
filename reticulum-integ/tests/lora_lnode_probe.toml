@@ -1,0 +1,63 @@
+# LoRa RX verification: RNode ↔ T114 LNode
+# Requires one RNode (ESP32) and one T114 with LNode firmware.
+# RNode at /dev/ttyACM4 (override with LEVICULUM_RNODE_4)
+# T114 serial at /dev/ttyACM1 (override with LEVICULUM_SERIAL_1)
+
+[test]
+name = "lora_lnode_probe"
+description = "RNode and T114 LNode exchange announces and probes over LoRa"
+timeout_secs = 180
+rust_log = "reticulum_core::transport=debug,reticulum_std::interfaces=debug,info"
+
+[radio]
+# Must match T114's RadioConfig::eu_medium() in lora.rs
+frequency = 869525000
+bandwidth = 125000
+sf = 7
+cr = 5
+txpower = 17
+
+[nodes.rnode]
+type = "rust"
+respond_to_probes = true
+rnode = "/dev/ttyACM4"
+
+[nodes.lnode]
+type = "rust"
+respond_to_probes = true
+serial = "/dev/ttyACM1"
+
+# No [links] — communication is over LoRa (broadcast medium)
+
+[[steps]]
+action = "sleep"
+duration_secs = 25
+
+# Wait for announces to propagate over LoRa
+[[steps]]
+action = "wait_for_path"
+on = "rnode"
+destination = "lnode.probe"
+timeout_secs = 90
+
+[[steps]]
+action = "wait_for_path"
+on = "lnode"
+destination = "rnode.probe"
+timeout_secs = 90
+
+# Probe from RNode → LNode (tests LNode LoRa RX + TX reply)
+[[steps]]
+action = "rnprobe"
+from = "rnode"
+to = "lnode.probe"
+expect_result = "success"
+timeout_secs = 90
+
+# Probe from LNode → RNode (tests LNode LoRa TX + RX reply)
+[[steps]]
+action = "rnprobe"
+from = "lnode"
+to = "rnode.probe"
+expect_result = "success"
+timeout_secs = 90

@@ -94,6 +94,16 @@ pub fn generate_compose(
                 writeln!(out, "      - \"{}:{}\"", iface.rnode, iface.rnode).ok();
             }
         }
+
+        if let Some(device) = &node.serial {
+            // Serial LNode (e.g., T114): pass device into container.
+            // If rnode already set privileged+devices, this adds the serial device.
+            if node.rnode.is_none() && node.rnode_interfaces.is_none() {
+                writeln!(out, "    privileged: true").ok();
+                writeln!(out, "    devices:").ok();
+            }
+            writeln!(out, "      - \"{device}:{device}\"").ok();
+        }
     }
 
     out

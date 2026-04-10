@@ -115,6 +115,11 @@ pub struct NodeDef {
     /// Mutually exclusive with `rnode` — use this for multi-frequency nodes.
     #[serde(default)]
     pub rnode_interfaces: Option<Vec<RNodeInterfaceDef>>,
+    /// Host serial device for direct HDLC connection to an LNode (e.g., T114).
+    /// Generates a SerialInterface config instead of RNodeInterface.
+    /// The LNode handles its own radio — no radio config needed from lnsd.
+    #[serde(default)]
+    pub serial: Option<String>,
 }
 
 /// Per-interface RNode definition with independent radio parameters.
@@ -600,6 +605,17 @@ pub fn render_config(
         }
     }
 
+    if let Some(ref port) = node.serial {
+        writeln!(out, "  [[Serial LNode]]").ok();
+        writeln!(out, "    type = SerialInterface").ok();
+        writeln!(out, "    enabled = yes").ok();
+        writeln!(out, "    port = {port}").ok();
+        writeln!(out, "    speed = 115200").ok();
+        writeln!(out, "    databits = 8").ok();
+        writeln!(out, "    parity = N").ok();
+        writeln!(out, "    stopbits = 1").ok();
+    }
+
     if let Some(port) = node.listen_port {
         writeln!(out, "  [[Selftest TCP Server]]").ok();
         writeln!(out, "    type = TCPServerInterface").ok();
@@ -1022,6 +1038,7 @@ rnode = "/dev/ttyACM0"
             rnode_proxy: false,
             listen_port: None,
             rnode_interfaces: None,
+            serial: None,
         };
         let radio = RadioConfig {
             frequency: 868000000,
@@ -1097,6 +1114,7 @@ rnode = "/dev/ttyACM0"
             rnode_proxy: false,
             listen_port: Some(4242),
             rnode_interfaces: None,
+            serial: None,
         };
         let config = render_config(&node, &[], None);
         assert!(
@@ -1120,6 +1138,7 @@ rnode = "/dev/ttyACM0"
             rnode_proxy: false,
             listen_port: Some(4242),
             rnode_interfaces: None,
+            serial: None,
         };
         let radio = RadioConfig {
             frequency: 868000000,
@@ -1202,6 +1221,7 @@ alpha-beta = "tcp"
             rnode_proxy: false,
             listen_port: None,
             rnode_interfaces: None,
+            serial: None,
         };
         let config = render_config(&node, &[], None);
         assert!(
@@ -1330,6 +1350,7 @@ passphrase = "secret456"
             rnode_proxy: false,
             listen_port: None,
             rnode_interfaces: None,
+            serial: None,
         };
         let ifaces = vec![InterfaceEntry::TcpServer {
             peer: "bob".into(),
@@ -1359,6 +1380,7 @@ passphrase = "secret456"
             rnode_proxy: false,
             listen_port: None,
             rnode_interfaces: None,
+            serial: None,
         };
         let ifaces = vec![InterfaceEntry::TcpServer {
             peer: "bob".into(),

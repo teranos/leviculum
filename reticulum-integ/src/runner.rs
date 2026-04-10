@@ -563,10 +563,17 @@ impl TestRunner {
 /// Most connected devices respond immediately; cold/sleeping devices
 /// need the settle time.
 fn probe_rnode(path: &str) -> bool {
-    probe_rnode_once(path, false) || probe_rnode_once(path, true)
+    // Three attempts with increasing settle times to handle slow USB-serial
+    // chips (CH9102F, CH340) that need time after port open.
+    for settle_ms in [0, 500, 1500] {
+        if probe_rnode_once(path, settle_ms) {
+            return true;
+        }
+    }
+    false
 }
 
-fn probe_rnode_once(path: &str, with_settle: bool) -> bool {
+fn probe_rnode_once(path: &str, settle_ms: u64) -> bool {
     use std::io::{Read, Write};
 
     const FEND: u8 = 0xC0;
@@ -582,17 +589,20 @@ fn probe_rnode_once(path: &str, with_settle: bool) -> bool {
         Err(_) => return false,
     };
 
-    if with_settle {
-        thread::sleep(Duration::from_millis(500));
+    if settle_ms > 0 {
+        thread::sleep(Duration::from_millis(settle_ms));
     }
+
+    // Drain any pending data from the RNode (status frames, etc.)
+    let _ = port.clear(serialport::ClearBuffer::Input);
 
     let query = [FEND, CMD_DETECT, DETECT_REQ, FEND];
     if port.write_all(&query).is_err() {
         return false;
     }
 
-    let mut buf = [0u8; 64];
-    let deadline = Instant::now() + Duration::from_secs(1);
+    let mut buf = [0u8; 128];
+    let deadline = Instant::now() + Duration::from_secs(2);
     while Instant::now() < deadline {
         match port.read(&mut buf) {
             Ok(n) if buf[..n].contains(&DETECT_RESP) => return true,
@@ -637,11 +647,21 @@ fn resolve_and_probe_rnodes(scenario: &mut TestScenario) -> Result<(), RunnerErr
         }
     }
 
-    if paths_to_resolve.is_empty() {
+    // Collect serial device paths (LNode devices, not RNodes)
+    let mut serial_paths: Vec<String> = Vec::new();
+    for node in scenario.nodes.values() {
+        if let Some(ref path) = node.serial {
+            if !serial_paths.contains(path) {
+                serial_paths.push(path.clone());
+            }
+        }
+    }
+
+    if paths_to_resolve.is_empty() && serial_paths.is_empty() {
         return Ok(());
     }
 
-    // Build resolution map: original_path -> resolved_path
+    // Build resolution map for RNodes: original_path -> resolved_path
     let mut resolution: BTreeMap<String, String> = BTreeMap::new();
     for path in &paths_to_resolve {
         if let Some(idx) = extract_acm_index(path) {
@@ -652,6 +672,19 @@ fn resolve_and_probe_rnodes(scenario: &mut TestScenario) -> Result<(), RunnerErr
             }
         }
         resolution.insert(path.clone(), path.clone());
+    }
+
+    // Build resolution map for serial devices: LEVICULUM_SERIAL_N overrides
+    let mut serial_resolution: BTreeMap<String, String> = BTreeMap::new();
+    for path in &serial_paths {
+        if let Some(idx) = extract_acm_index(path) {
+            let env_key = format!("LEVICULUM_SERIAL_{idx}");
+            if let Ok(override_path) = std::env::var(&env_key) {
+                serial_resolution.insert(path.clone(), override_path);
+                continue;
+            }
+        }
+        serial_resolution.insert(path.clone(), path.clone());
     }
 
     // Apply resolution to scenario
@@ -668,9 +701,14 @@ fn resolve_and_probe_rnodes(scenario: &mut TestScenario) -> Result<(), RunnerErr
                 }
             }
         }
+        if let Some(ref mut path) = node.serial {
+            if let Some(resolved) = serial_resolution.get(path.as_str()) {
+                *path = resolved.clone();
+            }
+        }
     }
 
-    // Probe each unique resolved path
+    // Probe each unique resolved RNode path (CMD_DETECT)
     let unique_resolved: Vec<String> = {
         let mut v: Vec<String> = resolution.values().cloned().collect();
         v.sort();
@@ -704,6 +742,18 @@ fn resolve_and_probe_rnodes(scenario: &mut TestScenario) -> Result<(), RunnerErr
             "Skipping: needs {needed} RNodes, found {found} — missing: {}{hint}",
             missing.join(", ")
         )));
+    }
+
+    // Check serial devices exist (no CMD_DETECT — they're not RNodes)
+    for (orig, resolved) in &serial_resolution {
+        if !std::path::Path::new(resolved).exists() {
+            let env_hint = extract_acm_index(orig)
+                .map(|n| format!(" (set LEVICULUM_SERIAL_{n})"))
+                .unwrap_or_default();
+            return Err(RunnerError::InsufficientRNodes(format!(
+                "Serial device not found: {resolved}{env_hint}"
+            )));
+        }
     }
 
     Ok(())
