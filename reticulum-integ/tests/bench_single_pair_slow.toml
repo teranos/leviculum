@@ -1,7 +1,7 @@
 [test]
 name = "bench_single_pair_slow"
 description = "Single-pair probe throughput baseline (SF10/BW125/CR4/8)"
-timeout_secs = 600
+timeout_secs = 900
 
 [radio]
 frequency = 869525000
@@ -20,18 +20,20 @@ type = "rust"
 respond_to_probes = true
 serial = true
 
+# SF10/BW125/CR4/8: ~6.8s airtime per packet direction.
+# Announces need ~70s+ to propagate reliably.
 [[steps]]
 action = "sleep"
-duration_secs = 30
+duration_secs = 90
 
 [[steps]]
 action = "wait_for_path"
 on = "sender"
 destination = "receiver.probe"
-timeout_secs = 120
+timeout_secs = 180
 
 [[steps]]
 action = "benchmark"
 pairs = [{ from = "sender", to = "receiver.probe" }]
-duration_secs = 60
+duration_secs = 120
 label = "single_pair_slow"

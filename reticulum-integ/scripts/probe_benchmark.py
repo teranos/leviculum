@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Probe throughput benchmark: send rnprobe in a loop, output JSON stats.
 
-Usage: python3 probe_benchmark.py <config_path> <dest_hash> <duration_secs> <min_interval_secs>
+Usage: python3 probe_benchmark.py <config_path> <dest_hash> <duration_secs> <min_interval_secs> [probe_timeout_secs]
 
 Output (one JSON line on stdout):
   {"sent":N,"received":N,"lost":N,"pdr":0.XX,
@@ -17,12 +17,13 @@ config_path = sys.argv[1]       # /root/.reticulum
 dest_hash = sys.argv[2]         # hex destination hash (e.g., "lnode.probe" resolved hash)
 duration = int(sys.argv[3])     # seconds
 min_interval = float(sys.argv[4])  # minimum seconds between probes
+probe_timeout = int(sys.argv[5]) if len(sys.argv) > 5 else 15  # per-probe timeout
 
 sent = 0
 received = 0
 rtts = []
 
-print(f"benchmark: probing {dest_hash} for {duration}s, interval >= {min_interval}s",
+print(f"benchmark: probing {dest_hash} for {duration}s, interval >= {min_interval}s, timeout {probe_timeout}s",
       file=sys.stderr, flush=True)
 
 deadline = time.time() + duration
@@ -32,8 +33,8 @@ while time.time() < deadline:
     try:
         result = subprocess.run(
             ["rnprobe", "rnstransport.probe", dest_hash,
-             "--config", config_path, "-t", "30"],
-            capture_output=True, text=True, timeout=35
+             "--config", config_path, "-t", str(probe_timeout)],
+            capture_output=True, text=True, timeout=probe_timeout + 5
         )
         if result.returncode == 0:
             received += 1

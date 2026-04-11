@@ -1,7 +1,7 @@
 [test]
 name = "bench_dual_pair_slow"
 description = "Dual-pair probe throughput under contention (SF10/BW125/CR4/8)"
-timeout_secs = 600
+timeout_secs = 900
 
 [radio]
 frequency = 869525000
@@ -30,21 +30,23 @@ type = "rust"
 respond_to_probes = true
 serial = true
 
+# SF10/BW125/CR4/8: ~6.8s airtime per packet direction.
+# With 4 devices, announces need even longer to propagate.
 [[steps]]
 action = "sleep"
-duration_secs = 30
+duration_secs = 90
 
 [[steps]]
 action = "wait_for_path"
 on = "rnode_a"
 destination = "lnode_a.probe"
-timeout_secs = 120
+timeout_secs = 180
 
 [[steps]]
 action = "wait_for_path"
 on = "rnode_b"
 destination = "lnode_b.probe"
-timeout_secs = 120
+timeout_secs = 180
 
 [[steps]]
 action = "benchmark"
@@ -52,5 +54,5 @@ pairs = [
   { from = "rnode_a", to = "lnode_a.probe" },
   { from = "rnode_b", to = "lnode_b.probe" },
 ]
-duration_secs = 60
+duration_secs = 120
 label = "dual_pair_slow"

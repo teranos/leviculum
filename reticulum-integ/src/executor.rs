@@ -552,14 +552,26 @@ fn execute_benchmark(
 ) -> Result<(), StepError> {
     let radio = runner.scenario().radio.as_ref();
 
-    // Compute min probe interval from airtime (request + response + margin)
+    // Compute min probe interval: airtime × 6 accounts for request + response
+    // airtimes plus serial/USB/subprocess overhead (~300ms fixed). Floor at 1500ms
+    // to avoid half-duplex collisions from overlapping probes.
     let min_interval_ms = if let Some(r) = radio {
-        reticulum_core::rnode::airtime_ms(500, r.bandwidth, r.spreading_factor, r.coding_rate) * 3
+        let airtime = reticulum_core::rnode::airtime_ms(500, r.bandwidth, r.spreading_factor, r.coding_rate);
+        (airtime * 6).max(1500)
     } else {
         3000
     };
+    // Per-probe timeout: enough for a full round-trip + margin, but not so long
+    // that a single timeout wastes the entire benchmark window.
+    let probe_timeout_s = if let Some(r) = radio {
+        let airtime = reticulum_core::rnode::airtime_ms(500, r.bandwidth, r.spreading_factor, r.coding_rate);
+        ((airtime * 10) / 1000).max(10) // 10x airtime, minimum 10s
+    } else {
+        15
+    };
+
     let min_interval_s = min_interval_ms as f64 / 1000.0;
-    println!("  min probe interval: {min_interval_s:.1}s (airtime-based)");
+    println!("  min probe interval: {min_interval_s:.1}s, probe timeout: {probe_timeout_s}s");
 
     // Resolve destination hashes
     let mut dest_cache = BTreeMap::new();
@@ -587,6 +599,7 @@ fn execute_benchmark(
                         hash,
                         &duration_secs.to_string(),
                         &format!("{min_interval_s:.1}"),
+                        &probe_timeout_s.to_string(),
                     ],
                 );
                 let _ = tx.send((i, output));
