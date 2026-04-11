@@ -525,7 +525,227 @@ fn execute_step(
                 (false, _) => result,
             }
         }
+        Step::Benchmark {
+            pairs,
+            duration_secs,
+            label,
+        } => {
+            let profile = label.as_str();
+            println!(
+                "[{step_num}/{total}] benchmark: {} pairs, {}s, profile={}",
+                pairs.len(),
+                duration_secs,
+                if profile.is_empty() { "default" } else { profile }
+            );
+            execute_benchmark(runner, index, pairs, *duration_secs, label)
+        }
     }
+}
+
+/// Run probe throughput benchmark: spawn parallel probe loops, collect stats.
+fn execute_benchmark(
+    runner: &TestRunner,
+    _step_index: usize,
+    pairs: &[crate::topology::BenchmarkPair],
+    duration_secs: u64,
+    label: &str,
+) -> Result<(), StepError> {
+    let radio = runner.scenario().radio.as_ref();
+
+    // Compute min probe interval from airtime (request + response + margin)
+    let min_interval_ms = if let Some(r) = radio {
+        reticulum_core::rnode::airtime_ms(500, r.bandwidth, r.spreading_factor, r.coding_rate) * 3
+    } else {
+        3000
+    };
+    let min_interval_s = min_interval_ms as f64 / 1000.0;
+    println!("  min probe interval: {min_interval_s:.1}s (airtime-based)");
+
+    // Resolve destination hashes
+    let mut dest_cache = BTreeMap::new();
+    let mut resolved_pairs: Vec<(&str, &str, String)> = Vec::new();
+    for pair in pairs {
+        let hash = resolve_destination(runner, &pair.to, &mut dest_cache)?;
+        resolved_pairs.push((&pair.from, &pair.to, hash));
+    }
+
+    // Spawn benchmark threads in parallel
+    let n = pairs.len();
+    let (tx, rx) = mpsc::channel();
+    let timeout = Duration::from_secs(duration_secs + 120);
+
+    std::thread::scope(|s| {
+        for (i, (from, _to, hash)) in resolved_pairs.iter().enumerate() {
+            let tx = tx.clone();
+            s.spawn(move || {
+                let output = runner.docker_exec(
+                    from,
+                    &[
+                        "python3",
+                        "/opt/integ-scripts/probe_benchmark.py",
+                        "/root/.reticulum",
+                        hash,
+                        &duration_secs.to_string(),
+                        &format!("{min_interval_s:.1}"),
+                    ],
+                );
+                let _ = tx.send((i, output));
+            });
+        }
+        drop(tx);
+
+        // Collect results
+        let mut results: Vec<(usize, Option<serde_json::Value>)> = Vec::new();
+        for _ in 0..n {
+            match rx.recv_timeout(timeout) {
+                Ok((i, Ok(output))) => {
+                    let stdout = String::from_utf8_lossy(&output.stdout);
+                    // Find the last JSON line in stdout
+                    let json_val = stdout
+                        .lines()
+                        .rev()
+                        .find_map(|line| serde_json::from_str::<serde_json::Value>(line).ok());
+                    results.push((i, json_val));
+                }
+                Ok((i, Err(e))) => {
+                    eprintln!("  pair {i}: docker_exec error: {e}");
+                    results.push((i, None));
+                }
+                Err(_) => break,
+            }
+        }
+        results.sort_by_key(|(i, _)| *i);
+
+        // Print results table
+        let profile_label = if label.is_empty() { "default" } else { label };
+        println!(
+            "\n=== Benchmark: probe_throughput ({}s, {}) ===",
+            duration_secs, profile_label
+        );
+        println!(
+            "{:<22} {:>5} {:>5} {:>5} {:>6} {:>9} {:>9}",
+            "Pair", "Sent", "Recv", "Lost", "PDR", "Avg RTT", "P95 RTT"
+        );
+
+        let mut total_sent = 0u64;
+        let mut total_recv = 0u64;
+        let mut all_rtts: Vec<f64> = Vec::new();
+
+        for (i, (_, json)) in results.iter().enumerate() {
+            let from = resolved_pairs[i].0;
+            let to = resolved_pairs[i].1;
+            let pair_name = format!("{from} -> {to}");
+
+            if let Some(val) = json {
+                let sent = val["sent"].as_u64().unwrap_or(0);
+                let recv = val["received"].as_u64().unwrap_or(0);
+                let lost = val["lost"].as_u64().unwrap_or(0);
+                let pdr = if sent > 0 {
+                    recv as f64 / sent as f64 * 100.0
+                } else {
+                    0.0
+                };
+                let avg_rtt = val["avg_rtt_ms"].as_f64().unwrap_or(0.0);
+                let p95_rtt = val["p95_rtt_ms"].as_f64().unwrap_or(0.0);
+
+                total_sent += sent;
+                total_recv += recv;
+                if let Some(rtts) = val["rtts_ms"].as_array() {
+                    for r in rtts {
+                        if let Some(v) = r.as_f64() {
+                            all_rtts.push(v);
+                        }
+                    }
+                }
+
+                println!(
+                    "{:<22} {:>5} {:>5} {:>5} {:>5.1}% {:>7.0}ms {:>7.0}ms",
+                    pair_name, sent, recv, lost, pdr, avg_rtt, p95_rtt
+                );
+            } else {
+                println!("{:<22}  ERROR — no results", pair_name);
+            }
+        }
+
+        // Total row
+        if results.len() > 1 {
+            let total_pdr = if total_sent > 0 {
+                total_recv as f64 / total_sent as f64 * 100.0
+            } else {
+                0.0
+            };
+            all_rtts.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+            let avg_rtt = if all_rtts.is_empty() {
+                0.0
+            } else {
+                all_rtts.iter().sum::<f64>() / all_rtts.len() as f64
+            };
+            let p95_rtt = if all_rtts.is_empty() {
+                0.0
+            } else {
+                let idx = ((all_rtts.len() as f64) * 0.95) as usize;
+                all_rtts[idx.min(all_rtts.len() - 1)]
+            };
+            println!("{}", "-".repeat(70));
+            println!(
+                "{:<22} {:>5} {:>5} {:>5} {:>5.1}% {:>7.0}ms {:>7.0}ms",
+                "Total",
+                total_sent,
+                total_recv,
+                total_sent - total_recv,
+                total_pdr,
+                avg_rtt,
+                p95_rtt
+            );
+        }
+        println!();
+
+        // Save JSON results
+        let benchmarks_dir = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("benchmarks");
+        let _ = std::fs::create_dir_all(&benchmarks_dir);
+        let ts = chrono_timestamp();
+        let filename = format!("bench_{profile_label}_{ts}.json");
+        let json_results: Vec<_> = results
+            .iter()
+            .enumerate()
+            .map(|(i, (_, json))| {
+                serde_json::json!({
+                    "pair": format!("{} -> {}", resolved_pairs[i].0, resolved_pairs[i].1),
+                    "results": json,
+                })
+            })
+            .collect();
+        let output_json = serde_json::json!({
+            "label": profile_label,
+            "duration_secs": duration_secs,
+            "min_interval_ms": min_interval_ms,
+            "radio": radio.map(|r| serde_json::json!({
+                "frequency": r.frequency,
+                "bandwidth": r.bandwidth,
+                "sf": r.spreading_factor,
+                "cr": r.coding_rate,
+                "txpower": r.tx_power,
+            })),
+            "pairs": json_results,
+        });
+        let path = benchmarks_dir.join(&filename);
+        if let Ok(json_str) = serde_json::to_string_pretty(&output_json) {
+            let _ = std::fs::write(&path, json_str);
+            println!("  results saved to {}", path.display());
+        }
+    });
+
+    // Check that at least some probes succeeded
+    Ok(())
+}
+
+fn chrono_timestamp() -> String {
+    use std::time::SystemTime;
+    let secs = SystemTime::now()
+        .duration_since(SystemTime::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs();
+    format!("{secs}")
 }
 
 /// Add or delete iptables DROP rules to block/restore traffic between containers.
@@ -3452,6 +3672,98 @@ Reticulum Transport Instance running
 
         let mut runner = require_runner!(scenario);
 
+        run_test(&mut runner).expect("test failed");
+    }
+
+    // ── Benchmark tests ──────────────────────────────────────────────────
+
+    #[test]
+    #[ignore] // Requires RNode + T114 hardware
+    #[serial(lora)]
+    fn bench_single_pair_fast() {
+        let _lock = acquire_lora_lock();
+        let toml_str = std::fs::read_to_string(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/tests/bench_single_pair_fast.toml"
+        ))
+        .expect("bench_single_pair_fast.toml not found");
+        let scenario = crate::topology::parse_scenario(&toml_str).expect("parse failed");
+        let mut runner = require_runner!(scenario);
+        run_test(&mut runner).expect("test failed");
+    }
+
+    #[test]
+    #[ignore] // Requires RNode + T114 hardware
+    #[serial(lora)]
+    fn bench_single_pair_medium() {
+        let _lock = acquire_lora_lock();
+        let toml_str = std::fs::read_to_string(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/tests/bench_single_pair_medium.toml"
+        ))
+        .expect("bench_single_pair_medium.toml not found");
+        let scenario = crate::topology::parse_scenario(&toml_str).expect("parse failed");
+        let mut runner = require_runner!(scenario);
+        run_test(&mut runner).expect("test failed");
+    }
+
+    #[test]
+    #[ignore] // Requires RNode + T114 hardware
+    #[serial(lora)]
+    fn bench_single_pair_slow() {
+        let _lock = acquire_lora_lock();
+        let toml_str = std::fs::read_to_string(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/tests/bench_single_pair_slow.toml"
+        ))
+        .expect("bench_single_pair_slow.toml not found");
+        let scenario = crate::topology::parse_scenario(&toml_str).expect("parse failed");
+        let mut runner = require_runner!(scenario);
+        run_test(&mut runner).expect("test failed");
+    }
+
+    #[test]
+    #[ignore] // Requires 2x RNode + 2x T114 hardware
+    #[serial(lora)]
+    fn bench_dual_pair_fast() {
+        let _lock = acquire_lora_lock();
+        let toml_str = std::fs::read_to_string(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/tests/bench_dual_pair_fast.toml"
+        ))
+        .expect("bench_dual_pair_fast.toml not found");
+        let scenario = crate::topology::parse_scenario(&toml_str).expect("parse failed");
+        let mut runner = require_runner!(scenario);
+        run_test(&mut runner).expect("test failed");
+    }
+
+    #[test]
+    #[ignore] // Requires 2x RNode + 2x T114 hardware
+    #[serial(lora)]
+    fn bench_dual_pair_medium() {
+        let _lock = acquire_lora_lock();
+        let toml_str = std::fs::read_to_string(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/tests/bench_dual_pair_medium.toml"
+        ))
+        .expect("bench_dual_pair_medium.toml not found");
+        let scenario = crate::topology::parse_scenario(&toml_str).expect("parse failed");
+        let mut runner = require_runner!(scenario);
+        run_test(&mut runner).expect("test failed");
+    }
+
+    #[test]
+    #[ignore] // Requires 2x RNode + 2x T114 hardware
+    #[serial(lora)]
+    fn bench_dual_pair_slow() {
+        let _lock = acquire_lora_lock();
+        let toml_str = std::fs::read_to_string(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/tests/bench_dual_pair_slow.toml"
+        ))
+        .expect("bench_dual_pair_slow.toml not found");
+        let scenario = crate::topology::parse_scenario(&toml_str).expect("parse failed");
+        let mut runner = require_runner!(scenario);
         run_test(&mut runner).expect("test failed");
     }
 }

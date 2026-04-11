@@ -37,6 +37,16 @@ const FRAME_TIMEOUT: Duration = Duration::from_millis(100);
 /// Reconnect interval after serial port loss
 const RECONNECT_INTERVAL: Duration = Duration::from_secs(5);
 
+/// Radio configuration to send to LNode firmware over serial (test infrastructure).
+pub(crate) struct SerialRadioConfig {
+    pub frequency: u64,
+    pub bandwidth: u32,
+    pub spreading_factor: u8,
+    pub coding_rate: u8,
+    pub tx_power: i8,
+    pub preamble_len: u16,
+}
+
 /// Configuration for a serial interface.
 pub(crate) struct SerialInterfaceConfig {
     pub id: InterfaceId,
@@ -48,6 +58,7 @@ pub(crate) struct SerialInterfaceConfig {
     pub stop_bits: tokio_serial::StopBits,
     pub buffer_size: usize,
     pub reconnect_notify: Option<mpsc::Sender<InterfaceId>>,
+    pub radio_config: Option<SerialRadioConfig>,
 }
 
 /// Spawn a serial interface with automatic reconnection.
@@ -91,6 +102,81 @@ pub(crate) fn spawn_serial_interface(config: SerialInterfaceConfig) -> Interface
     }
 }
 
+/// Send a radio config frame to the LNode firmware and wait for ACK.
+///
+/// Retries up to 3 times with 2-second ACK timeout each. Returns true on success.
+/// This is test infrastructure — normal usage never calls this.
+async fn send_radio_config(
+    port: &mut tokio_serial::SerialStream,
+    config: &SerialRadioConfig,
+    name: &str,
+) -> bool {
+    use reticulum_core::rnode::{RadioConfigWire, RADIO_CONFIG_ACK};
+
+    let wire = RadioConfigWire {
+        frequency_hz: config.frequency as u32,
+        bandwidth_hz: config.bandwidth,
+        sf: config.spreading_factor,
+        cr: config.coding_rate,
+        tx_power_dbm: config.tx_power,
+        preamble_len: config.preamble_len,
+    };
+    let payload = reticulum_core::rnode::build_radio_config_frame(&wire);
+    let mut frame_buf = Vec::new();
+    frame(&payload, &mut frame_buf);
+
+    for attempt in 1..=3u8 {
+        tracing::info!(
+            "Serial {}: sending radio config (attempt {}/3): freq={} sf={} bw={} cr={} txp={}",
+            name, attempt, config.frequency, config.spreading_factor,
+            config.bandwidth, config.coding_rate, config.tx_power
+        );
+        if let Err(e) = port.write_all(&frame_buf).await {
+            tracing::warn!("Serial {}: config write failed: {}", name, e);
+            continue;
+        }
+        if let Err(e) = port.flush().await {
+            tracing::warn!("Serial {}: config flush failed: {}", name, e);
+            continue;
+        }
+
+        // Wait for ACK
+        let mut deframer = Deframer::new();
+        let mut buf = [0u8; 64];
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(2);
+
+        loop {
+            let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
+            if remaining.is_zero() {
+                tracing::warn!("Serial {}: config ACK timeout (attempt {})", name, attempt);
+                break;
+            }
+            match tokio::time::timeout(remaining, port.read(&mut buf)).await {
+                Ok(Ok(n)) if n > 0 => {
+                    for r in deframer.process(&buf[..n]) {
+                        if let DeframeResult::Frame(data) = r {
+                            if data.len() == RADIO_CONFIG_ACK.len()
+                                && data[..] == RADIO_CONFIG_ACK[..]
+                            {
+                                tracing::info!("Serial {}: radio config ACK received", name);
+                                return true;
+                            }
+                        }
+                    }
+                }
+                Ok(Ok(_)) => break,   // EOF
+                Ok(Err(e)) => {
+                    tracing::warn!("Serial {}: config ACK read error: {}", name, e);
+                    break;
+                }
+                Err(_) => break,       // timeout
+            }
+        }
+    }
+    tracing::error!("Serial {}: radio config failed after 3 attempts", name);
+    false
+}
+
 /// Reconnect wrapper for serial port connections.
 ///
 /// Owns channel endpoints across reconnection cycles. On port loss, waits
@@ -120,7 +206,7 @@ async fn serial_reconnect_task(
             .flow_control(tokio_serial::FlowControl::None);
 
         match tokio_serial::SerialStream::open(&builder) {
-            Ok(port) => {
+            Ok(mut port) => {
                 let is_reconnect = has_connected_before;
                 has_connected_before = true;
                 tracing::info!("Serial interface {} online on {}", name, config.port);
@@ -128,6 +214,16 @@ async fn serial_reconnect_task(
                 if is_reconnect {
                     if let Some(ref notify) = config.reconnect_notify {
                         let _ = notify.try_send(id);
+                    }
+                }
+
+                // Send radio config if configured (test infrastructure)
+                if let Some(ref radio_cfg) = config.radio_config {
+                    if !send_radio_config(&mut port, radio_cfg, &name).await {
+                        tracing::warn!(
+                            "Serial {}: radio config not acknowledged, T114 uses defaults",
+                            name
+                        );
                     }
                 }
 

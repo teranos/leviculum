@@ -642,6 +642,75 @@ pub fn compute_spacing_ms(payload_bytes: u32, bandwidth_hz: u32, sf: u8, cr: u8)
 }
 
 // ---------------------------------------------------------------------------
+// Radio config wire protocol (for runtime config override via serial)
+// ---------------------------------------------------------------------------
+
+/// Magic prefix for radio config frames (distinguishes from Reticulum packets).
+pub const RADIO_CONFIG_MAGIC: [u8; 2] = [0xA4, 0xA4];
+
+/// Total config frame payload length (2 magic + 13 parameter bytes).
+pub const RADIO_CONFIG_FRAME_LEN: usize = 15;
+
+/// ACK payload sent by T114 after applying radio config.
+pub const RADIO_CONFIG_ACK: [u8; 3] = [0xA4, 0xA4, 0x01];
+
+/// Parsed radio config from the wire format.
+/// All values are in human-readable units (Hz, denominator).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct RadioConfigWire {
+    pub frequency_hz: u32,
+    pub bandwidth_hz: u32,
+    pub sf: u8,
+    pub cr: u8,           // coding rate denominator (5-8)
+    pub tx_power_dbm: i8,
+    pub preamble_len: u16,
+}
+
+/// Parse a radio config from wire bytes (13 bytes, after magic stripped).
+///
+/// Wire layout: freq_hz(4 BE) + bw_hz(4 BE) + sf(1) + cr(1) + tx_power(1) + preamble(2 BE)
+pub fn parse_radio_config(data: &[u8]) -> Option<RadioConfigWire> {
+    if data.len() != 13 {
+        return None;
+    }
+    let frequency_hz = u32::from_be_bytes([data[0], data[1], data[2], data[3]]);
+    let bandwidth_hz = u32::from_be_bytes([data[4], data[5], data[6], data[7]]);
+    let sf = data[8];
+    let cr = data[9];
+    let tx_power_dbm = data[10] as i8;
+    let preamble_len = u16::from_be_bytes([data[11], data[12]]);
+
+    if sf < 5 || sf > 12 {
+        return None;
+    }
+    if cr < 5 || cr > 8 {
+        return None;
+    }
+
+    Some(RadioConfigWire {
+        frequency_hz,
+        bandwidth_hz,
+        sf,
+        cr,
+        tx_power_dbm,
+        preamble_len,
+    })
+}
+
+/// Build a radio config frame payload (15 bytes including magic prefix).
+pub fn build_radio_config_frame(cfg: &RadioConfigWire) -> Vec<u8> {
+    let mut out = Vec::with_capacity(RADIO_CONFIG_FRAME_LEN);
+    out.extend_from_slice(&RADIO_CONFIG_MAGIC);
+    out.extend_from_slice(&cfg.frequency_hz.to_be_bytes());
+    out.extend_from_slice(&cfg.bandwidth_hz.to_be_bytes());
+    out.push(cfg.sf);
+    out.push(cfg.cr);
+    out.push(cfg.tx_power_dbm as u8);
+    out.extend_from_slice(&cfg.preamble_len.to_be_bytes());
+    out
+}
+
+// ---------------------------------------------------------------------------
 // LoRa frame header: split protocol
 // ---------------------------------------------------------------------------
 
@@ -1555,5 +1624,161 @@ mod tests {
         // Second half with same seq — treated as NEW first half (buffer was cleared)
         let split2 = vec![0x30 | FLAG_SPLIT, 0xBB];
         assert_eq!(r.feed(&split2, 2), None);
+    }
+
+    // ── Radio config wire protocol tests ─────────────────────────────────
+
+    fn medium_profile() -> RadioConfigWire {
+        RadioConfigWire {
+            frequency_hz: 869_525_000,
+            bandwidth_hz: 125_000,
+            sf: 7,
+            cr: 5,
+            tx_power_dbm: 17,
+            preamble_len: 24,
+        }
+    }
+
+    fn fast_profile() -> RadioConfigWire {
+        RadioConfigWire {
+            frequency_hz: 869_525_000,
+            bandwidth_hz: 500_000,
+            sf: 7,
+            cr: 5,
+            tx_power_dbm: 17,
+            preamble_len: 24,
+        }
+    }
+
+    fn slow_profile() -> RadioConfigWire {
+        RadioConfigWire {
+            frequency_hz: 869_525_000,
+            bandwidth_hz: 125_000,
+            sf: 10,
+            cr: 8,
+            tx_power_dbm: 17,
+            preamble_len: 24,
+        }
+    }
+
+    #[test]
+    fn radio_config_round_trip_medium() {
+        let cfg = medium_profile();
+        let frame = build_radio_config_frame(&cfg);
+        assert_eq!(frame.len(), RADIO_CONFIG_FRAME_LEN);
+        assert_eq!(&frame[0..2], &RADIO_CONFIG_MAGIC);
+        let parsed = parse_radio_config(&frame[2..]).unwrap();
+        assert_eq!(parsed, cfg);
+    }
+
+    #[test]
+    fn radio_config_round_trip_fast() {
+        let cfg = fast_profile();
+        let frame = build_radio_config_frame(&cfg);
+        let parsed = parse_radio_config(&frame[2..]).unwrap();
+        assert_eq!(parsed, cfg);
+    }
+
+    #[test]
+    fn radio_config_round_trip_slow() {
+        let cfg = slow_profile();
+        let frame = build_radio_config_frame(&cfg);
+        let parsed = parse_radio_config(&frame[2..]).unwrap();
+        assert_eq!(parsed, cfg);
+    }
+
+    #[test]
+    fn radio_config_byte_layout() {
+        let cfg = medium_profile();
+        let frame = build_radio_config_frame(&cfg);
+        // magic
+        assert_eq!(frame[0], 0xA4);
+        assert_eq!(frame[1], 0xA4);
+        // freq 869525000 = 0x33D3_E608
+        assert_eq!(&frame[2..6], &[0x33, 0xD3, 0xE6, 0x08]);
+        // bw 125000 = 0x0001_E848
+        assert_eq!(&frame[6..10], &[0x00, 0x01, 0xE8, 0x48]);
+        // sf=7, cr=5, txp=17
+        assert_eq!(frame[10], 7);
+        assert_eq!(frame[11], 5);
+        assert_eq!(frame[12], 17);
+        // preamble 24 = 0x0018
+        assert_eq!(&frame[13..15], &[0x00, 0x18]);
+    }
+
+    #[test]
+    fn radio_config_parse_too_short() {
+        assert!(parse_radio_config(&[0; 12]).is_none());
+    }
+
+    #[test]
+    fn radio_config_parse_too_long() {
+        assert!(parse_radio_config(&[0; 14]).is_none());
+    }
+
+    #[test]
+    fn radio_config_parse_invalid_sf() {
+        let cfg = medium_profile();
+        let frame = build_radio_config_frame(&cfg);
+        let mut data = frame[2..].to_vec();
+        data[8] = 13; // SF out of range
+        assert!(parse_radio_config(&data).is_none());
+    }
+
+    #[test]
+    fn radio_config_parse_invalid_cr() {
+        let cfg = medium_profile();
+        let frame = build_radio_config_frame(&cfg);
+        let mut data = frame[2..].to_vec();
+        data[9] = 4; // CR too low
+        assert!(parse_radio_config(&data).is_none());
+        data[9] = 9; // CR too high
+        assert!(parse_radio_config(&data).is_none());
+    }
+
+    #[test]
+    fn radio_config_negative_tx_power() {
+        let cfg = RadioConfigWire {
+            tx_power_dbm: -3,
+            ..medium_profile()
+        };
+        let frame = build_radio_config_frame(&cfg);
+        let parsed = parse_radio_config(&frame[2..]).unwrap();
+        assert_eq!(parsed.tx_power_dbm, -3);
+    }
+
+    #[test]
+    fn radio_config_all_bandwidths() {
+        for &bw in &[7_810u32, 10_420, 15_630, 20_830, 31_250, 41_670, 62_500, 125_000, 250_000, 500_000] {
+            let cfg = RadioConfigWire { bandwidth_hz: bw, ..medium_profile() };
+            let frame = build_radio_config_frame(&cfg);
+            let parsed = parse_radio_config(&frame[2..]).unwrap();
+            assert_eq!(parsed.bandwidth_hz, bw);
+        }
+    }
+
+    #[test]
+    fn radio_config_all_coding_rates() {
+        for cr in 5..=8u8 {
+            let cfg = RadioConfigWire { cr, ..medium_profile() };
+            let frame = build_radio_config_frame(&cfg);
+            let parsed = parse_radio_config(&frame[2..]).unwrap();
+            assert_eq!(parsed.cr, cr);
+        }
+    }
+
+    #[test]
+    fn radio_config_sf_boundaries() {
+        for sf in 5..=12u8 {
+            let cfg = RadioConfigWire { sf, ..medium_profile() };
+            let frame = build_radio_config_frame(&cfg);
+            let parsed = parse_radio_config(&frame[2..]).unwrap();
+            assert_eq!(parsed.sf, sf);
+        }
+    }
+
+    #[test]
+    fn radio_config_ack_format() {
+        assert_eq!(RADIO_CONFIG_ACK, [0xA4, 0xA4, 0x01]);
     }
 }

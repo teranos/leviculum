@@ -36,6 +36,7 @@ pub type Radio = Sx1262<Spi>;
 
 static LORA_INCOMING: Channel<CriticalSectionRawMutex, Vec<u8>, 4> = Channel::new();
 static LORA_OUTGOING: Channel<CriticalSectionRawMutex, Vec<u8>, 4> = Channel::new();
+static LORA_CONFIG: Channel<CriticalSectionRawMutex, RadioConfig, 1> = Channel::new();
 
 pub struct LoRaChannels {
     pub incoming_rx: Receiver<'static, CriticalSectionRawMutex, Vec<u8>, 4>,
@@ -47,6 +48,11 @@ pub fn channels() -> LoRaChannels {
         incoming_rx: LORA_INCOMING.receiver(),
         outgoing_tx: LORA_OUTGOING.sender(),
     }
+}
+
+/// Get the sender for runtime radio config overrides (used by serial task).
+pub fn config_sender() -> Sender<'static, CriticalSectionRawMutex, RadioConfig, 1> {
+    LORA_CONFIG.sender()
 }
 
 // ─── LoRaInterface for NodeCore dispatch ───────────────────────────────────
@@ -73,13 +79,22 @@ impl Interface for LoRaInterface {
 
 // ─── Radio configuration ───────────────────────────────────────────────────
 
+// Re-export wire protocol constants from core for use by usb.rs
+pub use reticulum_core::rnode::{
+    RADIO_CONFIG_ACK as CONFIG_ACK,
+    RADIO_CONFIG_FRAME_LEN as CONFIG_FRAME_LEN,
+    RADIO_CONFIG_MAGIC as CONFIG_MAGIC,
+};
+
 pub struct RadioConfig {
     pub frequency_hz: u32,
     pub sf: u8,
-    pub bw: u8,       // SX1262 bandwidth code: 0x04 = 125kHz
-    pub cr: u8,       // SX1262 coding rate code: 0x01 = 4/5
+    pub bw: u8,           // SX1262 bandwidth register code
+    pub cr: u8,           // SX1262 coding rate register code
     pub tx_power_dbm: i8,
     pub preamble_len: u16,
+    pub bw_hz: u32,       // human-readable bandwidth in Hz (for logging)
+    pub cr_denom: u8,     // human-readable coding rate denominator 5-8 (for logging)
 }
 
 impl RadioConfig {
@@ -88,11 +103,49 @@ impl RadioConfig {
         Self {
             frequency_hz: 869_525_000,
             sf: 7,
-            bw: 0x04,       // 125 kHz
-            cr: 0x01,       // 4/5
+            bw: 0x04,
+            cr: 0x01,
             tx_power_dbm: 17,
             preamble_len: 24,
+            bw_hz: 125_000,
+            cr_denom: 5,
         }
+    }
+
+    /// Parse a radio config from wire format (13 bytes, after 2-byte magic stripped).
+    ///
+    /// Returns `None` for invalid data (wrong length, unknown bandwidth).
+    pub fn from_wire(data: &[u8]) -> Option<Self> {
+        let wire = reticulum_core::rnode::parse_radio_config(data)?;
+
+        // SX1262 bandwidth register codes (datasheet Table 14-47)
+        let bw = match wire.bandwidth_hz {
+            7_810 => 0x00,
+            10_420 => 0x08,
+            15_630 => 0x01,
+            20_830 => 0x09,
+            31_250 => 0x02,
+            41_670 => 0x0A,
+            62_500 => 0x03,
+            125_000 => 0x04,
+            250_000 => 0x05,
+            500_000 => 0x06,
+            _ => return None,
+        };
+
+        // CR denominator (5-8) to SX1262 code (1-4)
+        let cr = wire.cr - 4;
+
+        Some(Self {
+            frequency_hz: wire.frequency_hz,
+            sf: wire.sf,
+            bw,
+            cr,
+            tx_power_dbm: wire.tx_power_dbm,
+            preamble_len: wire.preamble_len,
+            bw_hz: wire.bandwidth_hz,
+            cr_denom: wire.cr,
+        })
     }
 }
 
@@ -132,6 +185,7 @@ pub async fn init(
 pub async fn lora_task(mut radio: Radio, config: RadioConfig) {
     let outgoing_rx = LORA_OUTGOING.receiver();
     let incoming_tx = LORA_INCOMING.sender();
+    let config_rx = LORA_CONFIG.receiver();
 
     // Init radio
     radio.reset().await;
@@ -152,8 +206,8 @@ pub async fn lora_task(mut radio: Radio, config: RadioConfig) {
         config.tx_power_dbm, config.preamble_len,
     ).await {
         Ok(()) => crate::log::log_fmt("[LORA] ", format_args!(
-            "configured: {}Hz SF{} BW{} CR{} {}dBm",
-            config.frequency_hz, config.sf, config.bw, config.cr, config.tx_power_dbm
+            "active config: freq={} sf={} bw={} cr={} txp={}",
+            config.frequency_hz, config.sf, config.bw_hz, config.cr_denom, config.tx_power_dbm
         )),
         Err(e) => {
             crate::log::log_fmt("[LORA] ", format_args!("configure FAILED: {:?}", e));
@@ -169,6 +223,23 @@ pub async fn lora_task(mut radio: Radio, config: RadioConfig) {
     let mut reassembler = reticulum_core::rnode::SplitReassembler::new();
 
     loop {
+        // Check for runtime radio config override (test infrastructure)
+        if let Ok(new_cfg) = config_rx.try_receive() {
+            match radio.configure_lora(
+                new_cfg.frequency_hz, new_cfg.sf, new_cfg.bw, new_cfg.cr,
+                new_cfg.tx_power_dbm, new_cfg.preamble_len,
+            ).await {
+                Ok(()) => crate::log::log_fmt("[LORA] ", format_args!(
+                    "active config: freq={} sf={} bw={} cr={} txp={}",
+                    new_cfg.frequency_hz, new_cfg.sf, new_cfg.bw_hz,
+                    new_cfg.cr_denom, new_cfg.tx_power_dbm
+                )),
+                Err(e) => crate::log::log_fmt("[LORA] ", format_args!(
+                    "reconfig FAILED: {:?}", e
+                )),
+            }
+        }
+
         // Drain outgoing packets (non-blocking)
         while let Ok(data) = outgoing_rx.try_receive() {
             rng_state ^= rng_state << 13;

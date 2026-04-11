@@ -286,6 +286,27 @@ pub enum Step {
         #[serde(default = "default_expect_success")]
         expect_result: String,
     },
+    /// Probe throughput benchmark: send probes between pairs for a duration.
+    #[serde(rename = "benchmark")]
+    Benchmark {
+        pairs: Vec<BenchmarkPair>,
+        #[serde(default = "default_benchmark_duration")]
+        duration_secs: u64,
+        #[serde(default)]
+        label: String,
+    },
+}
+
+/// Benchmark pair: probe from one node to another.
+#[allow(dead_code)]
+#[derive(Debug, Clone, Deserialize)]
+pub struct BenchmarkPair {
+    pub from: String,
+    pub to: String,
+}
+
+fn default_benchmark_duration() -> u64 {
+    60
 }
 
 /// Simplified transfer definition for parallel execution.
@@ -621,6 +642,13 @@ pub fn render_config(
         writeln!(out, "    databits = 8").ok();
         writeln!(out, "    parity = N").ok();
         writeln!(out, "    stopbits = 1").ok();
+        if let Some(r) = radio {
+            writeln!(out, "    frequency = {}", r.frequency).ok();
+            writeln!(out, "    bandwidth = {}", r.bandwidth).ok();
+            writeln!(out, "    spreadingfactor = {}", r.spreading_factor).ok();
+            writeln!(out, "    codingrate = {}", r.coding_rate).ok();
+            writeln!(out, "    txpower = {}", r.tx_power).ok();
+        }
     }
 
     if let Some(port) = node.listen_port {

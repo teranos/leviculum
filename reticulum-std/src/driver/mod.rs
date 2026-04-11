@@ -596,6 +596,19 @@ impl ReticulumNode {
                         let iface_name = format!("serial_{}", idx);
                         let id = InterfaceId(idx);
 
+                        let radio_config = if config.frequency.is_some() {
+                            Some(crate::interfaces::serial::SerialRadioConfig {
+                                frequency: config.frequency.unwrap_or(869_525_000),
+                                bandwidth: config.bandwidth.unwrap_or(125_000),
+                                spreading_factor: config.spreading_factor.unwrap_or(7),
+                                coding_rate: config.coding_rate.unwrap_or(5),
+                                tx_power: config.tx_power.unwrap_or(17),
+                                preamble_len: 24,
+                            })
+                        } else {
+                            None
+                        };
+
                         let mut handle = crate::interfaces::serial::spawn_serial_interface(
                             crate::interfaces::serial::SerialInterfaceConfig {
                                 id,
@@ -607,6 +620,7 @@ impl ReticulumNode {
                                 stop_bits,
                                 buffer_size,
                                 reconnect_notify: Some(reconnect_tx.clone()),
+                                radio_config,
                             },
                         );
                         handle.info.bitrate = Some(speed);

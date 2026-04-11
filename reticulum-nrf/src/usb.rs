@@ -125,6 +125,7 @@ pub fn init(
         cdc_retic,
         INCOMING_CHANNEL.sender(),
         OUTGOING_CHANNEL.receiver(),
+        crate::lora::config_sender(),
     ));
 
     SerialChannels {
@@ -194,6 +195,7 @@ async fn retic_serial_task(
     mut cdc: CdcAcmClass<'static, UsbDriver>,
     incoming_tx: Sender<'static, CriticalSectionRawMutex, Vec<u8>, 8>,
     outgoing_rx: Receiver<'static, CriticalSectionRawMutex, Vec<u8>, 8>,
+    config_tx: Sender<'static, CriticalSectionRawMutex, crate::lora::RadioConfig, 1>,
 ) {
     let mut deframer = Deframer::new();
     let mut read_buf = [0u8; 64];
@@ -225,8 +227,34 @@ async fn retic_serial_task(
                     let results = deframer.process(&read_buf[..n]);
                     for r in results {
                         if let DeframeResult::Frame(ref data) = r {
-                            log_u32("SER: frame complete", data.len() as u32);
-                            incoming_tx.send(data.clone()).await;
+                            // Check for radio config frame (test infrastructure)
+                            if data.len() == crate::lora::CONFIG_FRAME_LEN
+                                && data[0] == crate::lora::CONFIG_MAGIC[0]
+                                && data[1] == crate::lora::CONFIG_MAGIC[1]
+                            {
+                                if let Some(cfg) = crate::lora::RadioConfig::from_wire(&data[2..]) {
+                                    log("SER: radio config received");
+                                    config_tx.send(cfg).await;
+                                    // Send ACK back over serial
+                                    frame(&crate::lora::CONFIG_ACK[..], &mut frame_buf);
+                                    let mut ack_ok = true;
+                                    for chunk in frame_buf.chunks(64) {
+                                        if cdc.write_packet(chunk).await.is_err() {
+                                            log("SER: config ACK write failed");
+                                            ack_ok = false;
+                                            break;
+                                        }
+                                    }
+                                    if ack_ok && !frame_buf.is_empty() && frame_buf.len() % 64 == 0 {
+                                        let _ = cdc.write_packet(&[]).await;
+                                    }
+                                } else {
+                                    log("SER: invalid config frame");
+                                }
+                            } else {
+                                log_u32("SER: frame complete", data.len() as u32);
+                                incoming_tx.send(data.clone()).await;
+                            }
                         }
                     }
                     // HW_MTU enforcement

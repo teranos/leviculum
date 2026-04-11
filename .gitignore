@@ -29,6 +29,7 @@ Thumbs.db
 *.log
 *.tmp
 reticulum-integ/logs/
+reticulum-integ/benchmarks/
 
 # Coverage reports
 /coverage/
