@@ -17,12 +17,12 @@ txpower = 17
 [nodes.alpha]
 type = "rust"
 respond_to_probes = true
-rnode = "/dev/ttyACM0"
+rnode = true
 
 [nodes.beta]
 type = "rust"
 respond_to_probes = true
-rnode = "/dev/ttyACM1"
+rnode = true
 
 [[steps]]
 action = "sleep"

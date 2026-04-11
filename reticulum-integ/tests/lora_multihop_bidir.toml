@@ -18,7 +18,6 @@ type = "rust"
 respond_to_probes = true
 
 [[nodes.alpha.rnode_interfaces]]
-rnode = "/dev/ttyACM0"
 frequency = 869525000
 bandwidth = 62500
 sf = 7
@@ -31,7 +30,6 @@ respond_to_probes = true
 enable_transport = true
 
 [[nodes.relay.rnode_interfaces]]
-rnode = "/dev/ttyACM1"
 frequency = 869525000
 bandwidth = 62500
 sf = 7
@@ -39,7 +37,6 @@ cr = 5
 txpower = 17
 
 [[nodes.relay.rnode_interfaces]]
-rnode = "/dev/ttyACM2"
 frequency = 868100000
 bandwidth = 125000
 sf = 7
@@ -51,7 +48,6 @@ type = "rust"
 respond_to_probes = true
 
 [[nodes.beta.rnode_interfaces]]
-rnode = "/dev/ttyACM3"
 frequency = 868100000
 bandwidth = 125000
 sf = 7

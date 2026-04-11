@@ -502,7 +502,7 @@ impl TestRunner {
         }
     }
 
-    /// Start background serial debug capture for nodes with `debug_serial`.
+    /// Start background serial debug capture for nodes with a debug serial port.
     /// Uses serialport crate for reliable reading (not `cat` which exits on device reset).
     fn start_debug_captures(&mut self) {
         let logs_dir = Self::logs_dir();
@@ -510,7 +510,7 @@ impl TestRunner {
         let ts = Self::utc_timestamp();
 
         for (name, node) in &self.scenario.nodes {
-            if let Some(ref port) = node.debug_serial {
+            if let Some(ref port) = node.debug_serial_path {
                 let log_path = logs_dir.join(format!(
                     "{}_{}_debug_{}.log",
                     self.scenario.test.name, name, ts
@@ -646,6 +646,143 @@ impl TestRunner {
 }
 
 // ---------------------------------------------------------------------------
+// USB device auto-discovery
+// ---------------------------------------------------------------------------
+
+/// A discovered LNode (T114) with its two CDC-ACM ports.
+#[derive(Debug, Clone)]
+struct LNodeDevice {
+    /// Debug log port (USB interface 00)
+    debug_port: String,
+    /// Reticulum serial data port (USB interface 02)
+    data_port: String,
+    /// USB serial number for deterministic ordering
+    usb_serial: String,
+}
+
+/// Result of scanning all connected USB serial devices.
+#[derive(Debug, Clone)]
+struct DiscoveredDevices {
+    /// T114 LNode devices, sorted by USB serial number
+    lnodes: Vec<LNodeDevice>,
+    /// Candidate RNode device paths (confirmed by CMD_DETECT), sorted
+    rnodes: Vec<String>,
+}
+
+/// Cached discovery result. CMD_DETECT probing is expensive (up to 6s per
+/// candidate with retries), so we run it once per process and reuse.
+static DISCOVERED: std::sync::OnceLock<DiscoveredDevices> = std::sync::OnceLock::new();
+
+fn get_discovered_devices() -> &'static DiscoveredDevices {
+    DISCOVERED.get_or_init(discover_devices)
+}
+
+/// Query udevadm properties for a device path.
+/// Returns a map of key=value pairs.
+fn udevadm_properties(path: &str) -> BTreeMap<String, String> {
+    let output = Command::new("udevadm")
+        .args(["info", "--query=property", path])
+        .output();
+    let mut props = BTreeMap::new();
+    if let Ok(out) = output {
+        let text = String::from_utf8_lossy(&out.stdout);
+        for line in text.lines() {
+            if let Some((k, v)) = line.split_once('=') {
+                props.insert(k.to_string(), v.to_string());
+            }
+        }
+    }
+    props
+}
+
+/// Scan all /dev/ttyACM* devices, classify them by USB properties, and
+/// confirm RNode candidates with CMD_DETECT.
+fn discover_devices() -> DiscoveredDevices {
+    // Collect all ttyACM devices
+    let mut acm_paths: Vec<String> = Vec::new();
+    for entry in fs::read_dir("/dev").into_iter().flatten() {
+        if let Ok(e) = entry {
+            let name = e.file_name();
+            let name = name.to_string_lossy();
+            if name.starts_with("ttyACM") || name.starts_with("ttyUSB") {
+                acm_paths.push(format!("/dev/{name}"));
+            }
+        }
+    }
+    acm_paths.sort();
+
+    // Classify each device by USB vendor
+    let mut lnode_ports: BTreeMap<String, (Option<String>, Option<String>)> = BTreeMap::new(); // serial -> (debug, data)
+    let mut rnode_candidates: Vec<String> = Vec::new();
+
+    for path in &acm_paths {
+        let props = udevadm_properties(path);
+        let vendor = props.get("ID_VENDOR").map(|s| s.as_str()).unwrap_or("");
+        let iface_num = props.get("ID_USB_INTERFACE_NUM").map(|s| s.as_str()).unwrap_or("");
+        let usb_serial = props.get("ID_SERIAL_SHORT").cloned().unwrap_or_default();
+
+        if vendor == "leviculum" {
+            // T114 LNode: interface 00 = debug, interface 02 = data
+            let entry = lnode_ports.entry(usb_serial).or_insert((None, None));
+            match iface_num {
+                "00" => entry.0 = Some(path.clone()),
+                "02" => entry.1 = Some(path.clone()),
+                _ => {}
+            }
+        } else {
+            // Potential RNode — will be confirmed by CMD_DETECT probe
+            rnode_candidates.push(path.clone());
+        }
+    }
+
+    // Build LNode list (only include devices where both ports were found)
+    let mut lnodes: Vec<LNodeDevice> = Vec::new();
+    for (serial, (debug, data)) in &lnode_ports {
+        if let (Some(debug_port), Some(data_port)) = (debug, data) {
+            lnodes.push(LNodeDevice {
+                debug_port: debug_port.clone(),
+                data_port: data_port.clone(),
+                usb_serial: serial.clone(),
+            });
+        } else {
+            eprintln!(
+                "[discovery] T114 {} incomplete: debug={:?} data={:?}",
+                serial, debug, data
+            );
+        }
+    }
+    lnodes.sort_by(|a, b| a.usb_serial.cmp(&b.usb_serial));
+
+    // Probe RNode candidates with CMD_DETECT
+    let mut confirmed_rnodes: Vec<String> = Vec::new();
+    for path in &rnode_candidates {
+        match probe_rnode(path) {
+            Ok(()) => confirmed_rnodes.push(path.clone()),
+            Err(_) => {} // not an RNode, silently skip
+        }
+    }
+    confirmed_rnodes.sort();
+
+    let n_lnodes = lnodes.len();
+    let n_rnodes = confirmed_rnodes.len();
+    eprintln!("[discovery] found {n_lnodes} LNode(s), {n_rnodes} RNode(s)");
+    for (i, ln) in lnodes.iter().enumerate() {
+        eprintln!(
+            "[discovery]   LNode {i}: debug={} data={} serial={}",
+            ln.debug_port, ln.data_port, ln.usb_serial
+        );
+    }
+    for (i, rn) in confirmed_rnodes.iter().enumerate() {
+        eprintln!("[discovery]   RNode {i}: {rn}");
+    }
+
+    DiscoveredDevices {
+        lnodes,
+        rnodes: confirmed_rnodes,
+    }
+}
+
+// ---------------------------------------------------------------------------
 // RNode discovery and probing
 // ---------------------------------------------------------------------------
 
@@ -761,11 +898,13 @@ fn check_stale_resources(scenario: &TestScenario) {
     // Check all device ports are released
     let mut ports: Vec<&str> = Vec::new();
     for node in scenario.nodes.values() {
-        if let Some(ref p) = node.rnode { ports.push(p); }
-        if let Some(ref p) = node.serial { ports.push(p); }
-        if let Some(ref p) = node.debug_serial { ports.push(p); }
+        if let Some(ref p) = node.rnode_path { ports.push(p); }
+        if let Some(ref p) = node.serial_path { ports.push(p); }
+        if let Some(ref p) = node.debug_serial_path { ports.push(p); }
         if let Some(ref ifaces) = node.rnode_interfaces {
-            for iface in ifaces { ports.push(&iface.rnode); }
+            for iface in ifaces {
+                if let Some(ref p) = iface.rnode_path { ports.push(p); }
+            }
         }
     }
     for port in ports {
@@ -782,176 +921,131 @@ fn check_stale_resources(scenario: &TestScenario) {
     }
 }
 
-/// Extract numeric suffix from `/dev/ttyACMN` paths.
-fn extract_acm_index(path: &str) -> Option<u32> {
-    let stripped = path.strip_prefix("/dev/ttyACM")?;
-    stripped.parse::<u32>().ok()
+/// Kill all `integ-*` Docker containers left over from previous test runs.
+///
+/// Called at the start of every test to ensure no zombie containers hold
+/// USB devices or ports. Logs what it kills but never fails — stale
+/// containers are best-effort cleanup.
+fn cleanup_stale_containers() {
+    let output = Command::new("docker")
+        .args(["ps", "-a", "--filter", "name=integ-", "--format", "{{.Names}}"])
+        .output();
+    let names: Vec<String> = match output {
+        Ok(ref o) if o.status.success() => {
+            String::from_utf8_lossy(&o.stdout)
+                .lines()
+                .filter(|l| !l.is_empty())
+                .map(|l| l.to_string())
+                .collect()
+        }
+        _ => return,
+    };
+    if names.is_empty() {
+        return;
+    }
+    eprintln!("[cleanup] killing {} stale container(s)", names.len());
+    for name in &names {
+        eprintln!("[cleanup]   {name}");
+    }
+    let mut args = vec!["rm".to_string(), "-f".to_string()];
+    args.extend(names);
+    let _ = Command::new("docker")
+        .args(&args)
+        .output();
 }
 
-/// Resolve RNode device paths via env var overrides and probe for availability.
+/// Discover USB devices and assign them to nodes that need hardware.
 ///
-/// For each unique rnode path in the scenario:
-/// 1. Extract numeric suffix N from /dev/ttyACMN
-/// 2. Check LEVICULUM_RNODE_N env var — if set, use that path instead
-/// 3. Probe the resolved path with CMD_DETECT
-///
-/// Mutates scenario paths in-place. Returns error if any device is unreachable.
+/// Counts required RNodes and LNodes from the node definitions, compares
+/// against discovered devices, and skips the test if not enough hardware
+/// is available. Otherwise assigns device paths to nodes with
+/// `rnode = true`, `serial = true`, or `rnode_interfaces`.
 fn resolve_and_probe_rnodes(scenario: &mut TestScenario) -> Result<(), RunnerError> {
-    // Collect all rnode paths that need resolution
-    let mut paths_to_resolve: Vec<String> = Vec::new();
+    let needed_rnodes = scenario.nodes.values()
+        .filter(|n| n.rnode)
+        .count()
+        + scenario.nodes.values()
+            .filter_map(|n| n.rnode_interfaces.as_ref())
+            .map(|ifaces| ifaces.len())
+            .sum::<usize>();
+    let needed_lnodes = scenario.nodes.values()
+        .filter(|n| n.serial)
+        .count();
 
-    for node in scenario.nodes.values() {
-        if let Some(ref path) = node.rnode {
-            if !paths_to_resolve.contains(path) {
-                paths_to_resolve.push(path.clone());
-            }
-        }
-        if let Some(ref interfaces) = node.rnode_interfaces {
-            for iface in interfaces {
-                if !paths_to_resolve.contains(&iface.rnode) {
-                    paths_to_resolve.push(iface.rnode.clone());
-                }
-            }
-        }
-    }
+    // Kill stale containers from previous runs that may hold USB devices.
+    cleanup_stale_containers();
 
-    // Collect serial device paths (LNode devices, not RNodes)
-    let mut serial_paths: Vec<String> = Vec::new();
-    for node in scenario.nodes.values() {
-        if let Some(ref path) = node.serial {
-            if !serial_paths.contains(path) {
-                serial_paths.push(path.clone());
-            }
-        }
-    }
-
-    // Resolve debug_serial paths (LEVICULUM_DEBUG_SERIAL_N env override)
-    for node in scenario.nodes.values_mut() {
-        if let Some(ref mut path) = node.debug_serial {
-            if let Some(idx) = extract_acm_index(path) {
-                let env_key = format!("LEVICULUM_DEBUG_SERIAL_{idx}");
-                if let Ok(override_path) = std::env::var(&env_key) {
-                    *path = override_path;
-                }
-            }
-        }
-    }
-
-    if paths_to_resolve.is_empty() && serial_paths.is_empty() {
+    if needed_rnodes == 0 && needed_lnodes == 0 {
         return Ok(());
     }
 
-    // Build resolution map for RNodes: original_path -> resolved_path
-    let mut resolution: BTreeMap<String, String> = BTreeMap::new();
-    for path in &paths_to_resolve {
-        if let Some(idx) = extract_acm_index(path) {
-            let env_key = format!("LEVICULUM_RNODE_{idx}");
-            if let Ok(override_path) = std::env::var(&env_key) {
-                resolution.insert(path.clone(), override_path);
-                continue;
-            }
-        }
-        resolution.insert(path.clone(), path.clone());
-    }
+    let discovered = get_discovered_devices();
 
-    // Build resolution map for serial devices: LEVICULUM_SERIAL_N overrides
-    let mut serial_resolution: BTreeMap<String, String> = BTreeMap::new();
-    for path in &serial_paths {
-        if let Some(idx) = extract_acm_index(path) {
-            let env_key = format!("LEVICULUM_SERIAL_{idx}");
-            if let Ok(override_path) = std::env::var(&env_key) {
-                serial_resolution.insert(path.clone(), override_path);
-                continue;
-            }
-        }
-        serial_resolution.insert(path.clone(), path.clone());
-    }
-
-    // Apply resolution to scenario
-    for node in scenario.nodes.values_mut() {
-        if let Some(ref mut path) = node.rnode {
-            if let Some(resolved) = resolution.get(path.as_str()) {
-                *path = resolved.clone();
-            }
-        }
-        if let Some(ref mut interfaces) = node.rnode_interfaces {
-            for iface in interfaces.iter_mut() {
-                if let Some(resolved) = resolution.get(&iface.rnode) {
-                    iface.rnode = resolved.clone();
-                }
-            }
-        }
-        if let Some(ref mut path) = node.serial {
-            if let Some(resolved) = serial_resolution.get(path.as_str()) {
-                *path = resolved.clone();
-            }
-        }
-    }
-
-    // Probe each unique resolved RNode path (CMD_DETECT)
-    let unique_resolved: Vec<String> = {
-        let mut v: Vec<String> = resolution.values().cloned().collect();
-        v.sort();
-        v.dedup();
-        v
-    };
-
-    let mut available = Vec::new();
-    let mut failures: Vec<(String, String)> = Vec::new();
-    for path in &unique_resolved {
-        match probe_rnode(path) {
-            Ok(()) => available.push(path.clone()),
-            Err(reason) => failures.push((path.clone(), reason)),
-        }
-    }
-
-    if !failures.is_empty() {
-        let needed = unique_resolved.len();
-        let found = available.len();
-        let details: Vec<String> = failures.iter()
-            .map(|(p, r)| format!("{p}: {r}"))
-            .collect();
-        let env_hints: Vec<String> = paths_to_resolve
-            .iter()
-            .filter_map(|p| extract_acm_index(p).map(|n| format!("LEVICULUM_RNODE_{n}")))
-            .collect();
-        let hint = if env_hints.is_empty() {
-            String::new()
-        } else {
-            format!(" (set {})", env_hints.join(", "))
-        };
+    // Pre-check: enough hardware available?
+    if discovered.rnodes.len() < needed_rnodes || discovered.lnodes.len() < needed_lnodes {
         return Err(RunnerError::InsufficientRNodes(format!(
-            "Skipping: needs {needed} RNodes, found {found}{hint}\n  {}",
-            details.join("\n  ")
+            "needs {} RNode(s) and {} LNode(s), found {} RNode(s) and {} LNode(s)",
+            needed_rnodes, needed_lnodes,
+            discovered.rnodes.len(), discovered.lnodes.len()
         )));
     }
 
-    // Check serial devices: must exist AND be openable (not held by another process)
-    for (orig, resolved) in &serial_resolution {
-        match check_device_accessible(resolved) {
-            Ok(()) => {}
-            Err(reason) => {
-                let env_hint = extract_acm_index(orig)
-                    .map(|n| format!(" (set LEVICULUM_SERIAL_{n})"))
-                    .unwrap_or_default();
-                return Err(RunnerError::InsufficientRNodes(format!(
-                    "Serial device {resolved}: {reason}{env_hint}"
-                )));
+    // Assign discovered devices to nodes
+    let mut rnode_idx: usize = 0;
+    let mut lnode_idx: usize = 0;
+
+    for (name, node) in scenario.nodes.iter_mut() {
+        // Assign LNode (serial + debug)
+        if node.serial {
+            let lnode = &discovered.lnodes[lnode_idx];
+            node.serial_path = Some(lnode.data_port.clone());
+            node.debug_serial_path = Some(lnode.debug_port.clone());
+            eprintln!(
+                "[discovery] node '{}' -> LNode {} (data={}, debug={})",
+                name, lnode_idx, lnode.data_port, lnode.debug_port
+            );
+            lnode_idx += 1;
+        }
+
+        // Assign single RNode
+        if node.rnode {
+            node.rnode_path = Some(discovered.rnodes[rnode_idx].clone());
+            eprintln!(
+                "[discovery] node '{}' -> RNode {} ({})",
+                name, rnode_idx, discovered.rnodes[rnode_idx]
+            );
+            rnode_idx += 1;
+        }
+
+        // Assign rnode_interfaces
+        if let Some(ref mut interfaces) = node.rnode_interfaces {
+            for iface in interfaces.iter_mut() {
+                iface.rnode_path = Some(discovered.rnodes[rnode_idx].clone());
+                eprintln!(
+                    "[discovery] node '{}' rnode_interface -> RNode {} ({})",
+                    name, rnode_idx, discovered.rnodes[rnode_idx]
+                );
+                rnode_idx += 1;
             }
         }
     }
 
-    // Check debug_serial devices: must exist and be openable
+    // Verify assigned devices are accessible
     for node in scenario.nodes.values() {
-        if let Some(ref port) = node.debug_serial {
-            match check_device_accessible(port) {
-                Ok(()) => {}
-                Err(reason) => {
-                    return Err(RunnerError::InsufficientRNodes(format!(
-                        "Debug serial device {port}: {reason}"
-                    )));
-                }
-            }
+        if let Some(ref port) = node.serial_path {
+            check_device_accessible(port).map_err(|reason| {
+                RunnerError::InsufficientRNodes(format!("Serial device {port}: {reason}"))
+            })?;
+        }
+        if let Some(ref port) = node.debug_serial_path {
+            check_device_accessible(port).map_err(|reason| {
+                RunnerError::InsufficientRNodes(format!("Debug serial {port}: {reason}"))
+            })?;
+        }
+        if let Some(ref port) = node.rnode_path {
+            check_device_accessible(port).map_err(|reason| {
+                RunnerError::InsufficientRNodes(format!("RNode device {port}: {reason}"))
+            })?;
         }
     }
 
@@ -984,8 +1078,8 @@ fn spawn_proxies(
         if !node.rnode_proxy {
             continue;
         }
-        let device = node.rnode.as_ref().ok_or_else(|| {
-            RunnerError::ProxyError(format!("node '{name}': rnode_proxy requires rnode"))
+        let device = node.rnode_path.as_ref().ok_or_else(|| {
+            RunnerError::ProxyError(format!("node '{name}': rnode_proxy requires rnode (no device assigned)"))
         })?;
 
         let pty_path = PathBuf::from(format!(

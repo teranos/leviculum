@@ -1,10 +1,7 @@
 # Serial frame delivery test: verify HDLC frames from lnsd arrive at T114 intact.
 # The T114 should receive lnsd's announce via serial and relay it to LoRa.
 # If the RNode receives the relayed announce, serial delivery works.
-#
-# RNode at /dev/ttyACM4 (override with LEVICULUM_RNODE_4)
-# T114 transport at /dev/ttyACM1 (override with LEVICULUM_SERIAL_1)
-# T114 debug at /dev/ttyACM0
+# Devices are auto-discovered by USB vendor ID and CMD_DETECT probe.
 
 [test]
 name = "lora_lnode_serial_relay"
@@ -22,13 +19,12 @@ txpower = 17
 [nodes.rnode]
 type = "rust"
 respond_to_probes = true
-rnode = "/dev/ttyACM4"
+rnode = true
 
 [nodes.lnode]
 type = "rust"
 respond_to_probes = true
-serial = "/dev/ttyACM1"
-debug_serial = "/dev/ttyACM0"
+serial = true
 
 [[steps]]
 action = "sleep"

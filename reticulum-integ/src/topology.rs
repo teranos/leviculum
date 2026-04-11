@@ -99,10 +99,9 @@ pub struct NodeDef {
     pub respond_to_probes: bool,
     #[serde(default = "default_true")]
     pub enable_transport: bool,
-    /// Host device path for RNode serial (e.g., "/dev/ttyACM0").
-    /// Mutually exclusive with `rnode_interfaces`.
+    /// This node needs an RNode device. Mutually exclusive with `rnode_interfaces`.
     #[serde(default)]
-    pub rnode: Option<String>,
+    pub rnode: bool,
     /// When true, a lora-proxy process sits between the host device and the
     /// container, enabling fault-injection steps (proxy_rule, proxy_stats).
     #[serde(default)]
@@ -115,22 +114,24 @@ pub struct NodeDef {
     /// Mutually exclusive with `rnode` — use this for multi-frequency nodes.
     #[serde(default)]
     pub rnode_interfaces: Option<Vec<RNodeInterfaceDef>>,
-    /// Host serial device for direct HDLC connection to an LNode (e.g., T114).
-    /// Generates a SerialInterface config instead of RNodeInterface.
-    /// The LNode handles its own radio — no radio config needed from lnsd.
+    /// This node needs an LNode serial connection (e.g., T114).
+    /// Debug serial port is auto-assigned from the same LNode.
     #[serde(default)]
-    pub serial: Option<String>,
-    /// Debug serial port for an LNode (e.g., T114 debug CDC-ACM port).
-    /// Not passed to Docker — captured by the test runner to a log file.
-    #[serde(default)]
-    pub debug_serial: Option<String>,
+    pub serial: bool,
+
+    // Resolved device paths (filled by runner, not in TOML)
+    #[serde(skip)]
+    pub rnode_path: Option<String>,
+    #[serde(skip)]
+    pub serial_path: Option<String>,
+    #[serde(skip)]
+    pub debug_serial_path: Option<String>,
 }
 
 /// Per-interface RNode definition with independent radio parameters.
+/// Device paths are auto-assigned by the runner from discovered RNodes.
 #[derive(Debug, Clone, Deserialize)]
 pub struct RNodeInterfaceDef {
-    /// Host device path (e.g., "/dev/ttyACM0")
-    pub rnode: String,
     pub frequency: u64,
     pub bandwidth: u32,
     #[serde(alias = "sf")]
@@ -139,6 +140,10 @@ pub struct RNodeInterfaceDef {
     pub coding_rate: u8,
     #[serde(alias = "txpower")]
     pub tx_power: u8,
+
+    /// Resolved device path (filled by runner, not in TOML).
+    #[serde(skip)]
+    pub rnode_path: Option<String>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -572,10 +577,7 @@ pub fn render_config(
         }
     }
 
-    if let (Some(port), Some(radio)) = (&node.rnode, radio) {
-        // When rnode_proxy is active, the container uses /dev/rnode_proxy
-        // instead of the real device path, preventing the container from
-        // accessing the real serial device in privileged mode.
+    if let (Some(ref port), Some(radio)) = (&node.rnode_path, radio) {
         let device_path = if node.rnode_proxy {
             "/dev/rnode_proxy".to_string()
         } else {
@@ -596,10 +598,11 @@ pub fn render_config(
     // Multi-interface: render one [[RNode Interface N]] per entry.
     if let Some(ref interfaces) = node.rnode_interfaces {
         for (i, iface) in interfaces.iter().enumerate() {
+            let port = iface.rnode_path.as_deref().unwrap_or("UNRESOLVED");
             writeln!(out, "  [[RNode Interface {i}]]").ok();
             writeln!(out, "    type = RNodeInterface").ok();
             writeln!(out, "    enabled = yes").ok();
-            writeln!(out, "    port = {}", iface.rnode).ok();
+            writeln!(out, "    port = {port}").ok();
             writeln!(out, "    frequency = {}", iface.frequency).ok();
             writeln!(out, "    bandwidth = {}", iface.bandwidth).ok();
             writeln!(out, "    spreadingfactor = {}", iface.spreading_factor).ok();
@@ -609,7 +612,7 @@ pub fn render_config(
         }
     }
 
-    if let Some(ref port) = node.serial {
+    if let Some(ref port) = node.serial_path {
         writeln!(out, "  [[Serial LNode]]").ok();
         writeln!(out, "    type = SerialInterface").ok();
         writeln!(out, "    enabled = yes").ok();
@@ -642,7 +645,7 @@ pub fn generate_node_configs(scenario: &TestScenario, base_dir: &Path) -> io::Re
         .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
 
     // Validate: if any node has rnode set, [radio] must be present.
-    let has_rnode = scenario.nodes.values().any(|n| n.rnode.is_some());
+    let has_rnode = scenario.nodes.values().any(|n| n.rnode);
     if has_rnode && scenario.radio.is_none() {
         return Err(io::Error::new(
             io::ErrorKind::InvalidData,
@@ -652,7 +655,7 @@ pub fn generate_node_configs(scenario: &TestScenario, base_dir: &Path) -> io::Re
 
     // Validate: rnode and rnode_interfaces are mutually exclusive.
     for (name, node) in &scenario.nodes {
-        if node.rnode.is_some() && node.rnode_interfaces.is_some() {
+        if node.rnode && node.rnode_interfaces.is_some() {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidData,
                 format!("node '{name}': cannot have both rnode and rnode_interfaces"),
@@ -662,7 +665,7 @@ pub fn generate_node_configs(scenario: &TestScenario, base_dir: &Path) -> io::Re
 
     // Validate: rnode_proxy requires single rnode (not rnode_interfaces).
     for (name, node) in &scenario.nodes {
-        if node.rnode_proxy && node.rnode.is_none() {
+        if node.rnode_proxy && !node.rnode {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidData,
                 format!("node '{name}': rnode_proxy requires rnode"),
@@ -1017,7 +1020,7 @@ txpower = 17
 [nodes.alpha]
 type = "rust"
 respond_to_probes = true
-rnode = "/dev/ttyACM0"
+rnode = true
 "#;
         let scenario = parse_scenario(toml_str).unwrap();
         let radio = scenario.radio.as_ref().expect("radio should be present");
@@ -1026,10 +1029,7 @@ rnode = "/dev/ttyACM0"
         assert_eq!(radio.spreading_factor, 7);
         assert_eq!(radio.coding_rate, 5);
         assert_eq!(radio.tx_power, 17);
-        assert_eq!(
-            scenario.nodes["alpha"].rnode.as_deref(),
-            Some("/dev/ttyACM0")
-        );
+        assert!(scenario.nodes["alpha"].rnode);
     }
 
     #[test]
@@ -1038,12 +1038,14 @@ rnode = "/dev/ttyACM0"
             node_type: "rust".into(),
             respond_to_probes: true,
             enable_transport: true,
-            rnode: Some("/dev/ttyACM0".into()),
+            rnode: true,
             rnode_proxy: false,
             listen_port: None,
             rnode_interfaces: None,
-            serial: None,
-            debug_serial: None,
+            serial: false,
+            rnode_path: Some("/dev/ttyACM0".into()),
+            serial_path: None,
+            debug_serial_path: None,
         };
         let radio = RadioConfig {
             frequency: 868000000,
@@ -1077,7 +1079,7 @@ name = "missing_radio"
 [nodes.alpha]
 type = "rust"
 respond_to_probes = true
-rnode = "/dev/ttyACM0"
+rnode = true
 "#;
         let scenario = parse_scenario(toml_str).unwrap();
         let tmp = TempDir::new().unwrap();
@@ -1095,7 +1097,7 @@ rnode = "/dev/ttyACM0"
         // Verify that radio: None doesn't affect existing TCP-only scenarios.
         let scenario = load_basic_probe();
         assert!(scenario.radio.is_none());
-        assert!(scenario.nodes["alice"].rnode.is_none());
+        assert!(!scenario.nodes["alice"].rnode);
 
         let tmp = TempDir::new().unwrap();
         generate_node_configs(&scenario, tmp.path()).unwrap();
@@ -1115,12 +1117,14 @@ rnode = "/dev/ttyACM0"
             node_type: "rust".into(),
             respond_to_probes: true,
             enable_transport: true,
-            rnode: None,
+            rnode: false,
             rnode_proxy: false,
             listen_port: Some(4242),
             rnode_interfaces: None,
-            serial: None,
-            debug_serial: None,
+            serial: false,
+            rnode_path: None,
+            serial_path: None,
+            debug_serial_path: None,
         };
         let config = render_config(&node, &[], None);
         assert!(
@@ -1140,12 +1144,14 @@ rnode = "/dev/ttyACM0"
             node_type: "rust".into(),
             respond_to_probes: true,
             enable_transport: true,
-            rnode: Some("/dev/ttyACM0".into()),
+            rnode: true,
             rnode_proxy: false,
             listen_port: Some(4242),
             rnode_interfaces: None,
-            serial: None,
-            debug_serial: None,
+            serial: false,
+            rnode_path: Some("/dev/ttyACM0".into()),
+            serial_path: None,
+            debug_serial_path: None,
         };
         let radio = RadioConfig {
             frequency: 868000000,
@@ -1224,12 +1230,14 @@ alpha-beta = "tcp"
             node_type: "rust".into(),
             respond_to_probes: true,
             enable_transport: true,
-            rnode: None,
+            rnode: false,
             rnode_proxy: false,
             listen_port: None,
             rnode_interfaces: None,
-            serial: None,
-            debug_serial: None,
+            serial: false,
+            rnode_path: None,
+            serial_path: None,
+            debug_serial_path: None,
         };
         let config = render_config(&node, &[], None);
         assert!(
@@ -1354,12 +1362,14 @@ passphrase = "secret456"
             node_type: "rust".into(),
             respond_to_probes: true,
             enable_transport: true,
-            rnode: None,
+            rnode: false,
             rnode_proxy: false,
             listen_port: None,
             rnode_interfaces: None,
-            serial: None,
-            debug_serial: None,
+            serial: false,
+            rnode_path: None,
+            serial_path: None,
+            debug_serial_path: None,
         };
         let ifaces = vec![InterfaceEntry::TcpServer {
             peer: "bob".into(),
@@ -1385,12 +1395,14 @@ passphrase = "secret456"
             node_type: "rust".into(),
             respond_to_probes: true,
             enable_transport: true,
-            rnode: None,
+            rnode: false,
             rnode_proxy: false,
             listen_port: None,
             rnode_interfaces: None,
-            serial: None,
-            debug_serial: None,
+            serial: false,
+            rnode_path: None,
+            serial_path: None,
+            debug_serial_path: None,
         };
         let ifaces = vec![InterfaceEntry::TcpServer {
             peer: "bob".into(),

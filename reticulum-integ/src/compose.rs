@@ -74,7 +74,7 @@ pub fn generate_compose(
         )
         .ok();
 
-        if let Some(device) = &node.rnode {
+        if let Some(ref device) = node.rnode_path {
             if let Some(pty_path) = proxy_devices.get(name) {
                 // Proxy node: bind-mount PTY slave to /dev/rnode_proxy via
                 // volumes (not devices) to ensure it works in privileged mode.
@@ -91,14 +91,15 @@ pub fn generate_compose(
             writeln!(out, "    privileged: true").ok();
             writeln!(out, "    devices:").ok();
             for iface in interfaces {
-                writeln!(out, "      - \"{}:{}\"", iface.rnode, iface.rnode).ok();
+                if let Some(ref dev) = iface.rnode_path {
+                    writeln!(out, "      - \"{dev}:{dev}\"").ok();
+                }
             }
         }
 
-        if let Some(device) = &node.serial {
+        if let Some(ref device) = node.serial_path {
             // Serial LNode (e.g., T114): pass device into container.
-            // If rnode already set privileged+devices, this adds the serial device.
-            if node.rnode.is_none() && node.rnode_interfaces.is_none() {
+            if !node.rnode && node.rnode_interfaces.is_none() {
                 writeln!(out, "    privileged: true").ok();
                 writeln!(out, "    devices:").ok();
             }
@@ -299,13 +300,15 @@ txpower = 17
 [nodes.alpha]
 type = "rust"
 respond_to_probes = true
-rnode = "/dev/ttyACM0"
+rnode = true
 
 [nodes.beta]
 type = "rust"
 respond_to_probes = true
 "#;
-        let scenario = parse_scenario(toml_str).expect("parse failed");
+        let mut scenario = parse_scenario(toml_str).expect("parse failed");
+        // Simulate runner device assignment
+        scenario.nodes.get_mut("alpha").unwrap().rnode_path = Some("/dev/ttyACM0".into());
         let (base_dir, repo_root) = sample_paths();
         let yaml = generate_compose(&scenario, 0, &base_dir, &repo_root, &BTreeMap::new());
 

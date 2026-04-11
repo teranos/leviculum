@@ -25,22 +25,22 @@ txpower = 17
 [nodes.alpha]
 type = "rust"
 respond_to_probes = true
-rnode = "/dev/ttyACM0"
+rnode = true
 
 [nodes.beta]
 type = "rust"
 respond_to_probes = true
-rnode = "/dev/ttyACM1"
+rnode = true
 
 [nodes.gamma]
 type = "rust"
 respond_to_probes = true
-rnode = "/dev/ttyACM2"
+rnode = true
 
 [nodes.delta]
 type = "rust"
 respond_to_probes = true
-rnode = "/dev/ttyACM3"
+rnode = true
 
 # Announce convergence for 4 nodes on shared medium
 [[steps]]

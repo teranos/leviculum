@@ -23,13 +23,13 @@ txpower = 17
 [nodes.alpha]
 type = "rust"
 respond_to_probes = true
-rnode = "/dev/ttyACM0"
+rnode = true
 listen_port = 5555
 
 [nodes.beta]
 type = "rust"
 respond_to_probes = true
-rnode = "/dev/ttyACM1"
+rnode = true
 listen_port = 5555
 
 # Phase 0: Let announces settle

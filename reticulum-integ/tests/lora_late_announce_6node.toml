@@ -29,12 +29,12 @@ txpower = 17
 [nodes.hub_a]
 type = "rust"
 respond_to_probes = true
-rnode = "/dev/ttyACM0"
+rnode = true
 
 [nodes.hub_b]
 type = "python"
 respond_to_probes = true
-rnode = "/dev/ttyACM1"
+rnode = true
 
 [nodes.a1]
 type = "rust"

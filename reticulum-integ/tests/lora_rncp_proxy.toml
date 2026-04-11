@@ -13,13 +13,13 @@ txpower = 17
 [nodes.alpha]
 type = "python"
 respond_to_probes = true
-rnode = "/dev/ttyACM0"
+rnode = true
 rnode_proxy = true
 
 [nodes.beta]
 type = "python"
 respond_to_probes = true
-rnode = "/dev/ttyACM1"
+rnode = true
 
 [[steps]]
 action = "sleep"

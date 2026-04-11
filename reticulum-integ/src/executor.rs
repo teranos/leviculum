@@ -174,6 +174,82 @@ fn scale_command_timeouts(command: &str) -> String {
 // Step execution
 // ---------------------------------------------------------------------------
 
+/// Run a complete test lifecycle with a guaranteed timeout.
+///
+/// Brings containers up, waits for readiness, executes all steps, then
+/// tears down — even if the timeout fires. Logs are always saved before
+/// teardown. The timeout comes from `scenario.test.timeout_secs`.
+///
+/// This replaces the pattern of calling `runner.up()`, `execute_steps()`,
+/// `runner.down()` separately in each test function. By keeping everything
+/// in one place, we guarantee that `runner.down()` is always called, even
+/// when a step hangs past the deadline.
+pub fn run_test(runner: &mut TestRunner) -> Result<(), StepError> {
+    let timeout = Duration::from_secs(runner.scenario().test.timeout_secs);
+    let deadline = Instant::now() + timeout;
+
+    runner.up().map_err(|e| StepError::StepFailed {
+        step_index: 0,
+        action: "up".into(),
+        detail: e.to_string(),
+    })?;
+
+    let ready_timeout = 60.min(timeout.as_secs());
+    runner.wait_ready(ready_timeout).map_err(|e| {
+        let _ = runner.down();
+        StepError::StepFailed {
+            step_index: 0,
+            action: "wait_ready".into(),
+            detail: e.to_string(),
+        }
+    })?;
+
+    let result = execute_steps_with_deadline(runner, deadline);
+
+    // Always tear down, even after failure or timeout.
+    if let Err(e) = runner.down() {
+        eprintln!("[run_test] down failed: {e}");
+    }
+
+    result
+}
+
+/// Execute steps with a hard deadline. If the deadline passes between steps,
+/// the remaining steps are skipped and an error is returned.
+fn execute_steps_with_deadline(
+    runner: &TestRunner,
+    deadline: Instant,
+) -> Result<(), StepError> {
+    let steps = runner.scenario().steps.clone();
+    let total = steps.len();
+    let mut cache = BTreeMap::new();
+
+    for (i, step) in steps.iter().enumerate() {
+        if Instant::now() >= deadline {
+            let _ = runner.collect_logs();
+            return Err(StepError::StepFailed {
+                step_index: i,
+                action: format!("{:?}", step),
+                detail: format!(
+                    "test timeout ({}s) expired before step {}/{}",
+                    runner.scenario().test.timeout_secs,
+                    i + 1,
+                    total
+                ),
+            });
+        }
+
+        let step_num = i + 1;
+        if let Err(e) = execute_step(runner, i, step, &mut cache, step_num, total) {
+            report_failure(runner, step_num, total, step, &e);
+            return Err(e);
+        }
+    }
+
+    let _ = runner.collect_logs();
+    Ok(())
+}
+
 /// Execute all steps from the scenario against running containers.
 pub fn execute_steps(runner: &TestRunner) -> Result<(), StepError> {
     let steps = runner.scenario().steps.clone();
@@ -918,7 +994,7 @@ fn execute_file_transfer(
         None
     };
 
-    let has_rnode = runner.scenario().nodes.values().any(|n| n.rnode.is_some());
+    let has_rnode = runner.scenario().nodes.values().any(|n| n.rnode || n.rnode_interfaces.is_some());
     let mut results = Vec::new();
 
     match direction {
@@ -1387,7 +1463,7 @@ fn execute_parallel_file_transfers(
         .scenario()
         .nodes
         .values()
-        .any(|n| n.rnode.is_some() || n.rnode_interfaces.is_some());
+        .any(|n| n.rnode || n.rnode_interfaces.is_some());
     let n = transfers.len();
     let (tx, rx) = mpsc::channel();
 
@@ -1860,12 +1936,7 @@ Reticulum Transport Instance running
 
         let mut runner = require_runner!(scenario);
 
-        runner.up().expect("up failed");
-        runner.wait_ready(30).expect("wait_ready failed");
-
-        let result = execute_steps(&runner);
-        runner.down().expect("down failed");
-        result.expect("execute_steps should succeed");
+        run_test(&mut runner).expect("test failed");
     }
 
     #[test]
@@ -1880,12 +1951,7 @@ Reticulum Transport Instance running
 
         let mut runner = require_runner!(scenario);
 
-        runner.up().expect("up failed");
-        runner.wait_ready(60).expect("wait_ready failed");
-
-        let result = execute_steps(&runner);
-        runner.down().expect("down failed");
-        result.expect("execute_steps should succeed");
+        run_test(&mut runner).expect("test failed");
     }
 
     #[test]
@@ -1900,12 +1966,7 @@ Reticulum Transport Instance running
 
         let mut runner = require_runner!(scenario);
 
-        runner.up().expect("up failed");
-        runner.wait_ready(60).expect("wait_ready failed");
-
-        let result = execute_steps(&runner);
-        runner.down().expect("down failed");
-        result.expect("execute_steps should succeed");
+        run_test(&mut runner).expect("test failed");
     }
 
     #[test]
@@ -1920,12 +1981,7 @@ Reticulum Transport Instance running
 
         let mut runner = require_runner!(scenario);
 
-        runner.up().expect("up failed");
-        runner.wait_ready(60).expect("wait_ready failed");
-
-        let result = execute_steps(&runner);
-        runner.down().expect("down failed");
-        result.expect("execute_steps should succeed");
+        run_test(&mut runner).expect("test failed");
     }
 
     #[test]
@@ -1940,12 +1996,7 @@ Reticulum Transport Instance running
 
         let mut runner = require_runner!(scenario);
 
-        runner.up().expect("up failed");
-        runner.wait_ready(60).expect("wait_ready failed");
-
-        let result = execute_steps(&runner);
-        runner.down().expect("down failed");
-        result.expect("execute_steps should succeed");
+        run_test(&mut runner).expect("test failed");
     }
 
     #[test]
@@ -1960,12 +2011,7 @@ Reticulum Transport Instance running
 
         let mut runner = require_runner!(scenario);
 
-        runner.up().expect("up failed");
-        runner.wait_ready(60).expect("wait_ready failed");
-
-        let result = execute_steps(&runner);
-        runner.down().expect("down failed");
-        result.expect("execute_steps should succeed");
+        run_test(&mut runner).expect("test failed");
     }
 
     #[test]
@@ -1980,12 +2026,7 @@ Reticulum Transport Instance running
 
         let mut runner = require_runner!(scenario);
 
-        runner.up().expect("up failed");
-        runner.wait_ready(60).expect("wait_ready failed");
-
-        let result = execute_steps(&runner);
-        runner.down().expect("down failed");
-        result.expect("execute_steps should succeed");
+        run_test(&mut runner).expect("test failed");
     }
 
     #[test]
@@ -2000,12 +2041,7 @@ Reticulum Transport Instance running
 
         let mut runner = require_runner!(scenario);
 
-        runner.up().expect("up failed");
-        runner.wait_ready(60).expect("wait_ready failed");
-
-        let result = execute_steps(&runner);
-        runner.down().expect("down failed");
-        result.expect("execute_steps should succeed");
+        run_test(&mut runner).expect("test failed");
     }
 
     #[test]
@@ -2020,12 +2056,7 @@ Reticulum Transport Instance running
 
         let mut runner = require_runner!(scenario);
 
-        runner.up().expect("up failed");
-        runner.wait_ready(60).expect("wait_ready failed");
-
-        let result = execute_steps(&runner);
-        runner.down().expect("down failed");
-        result.expect("execute_steps should succeed");
+        run_test(&mut runner).expect("test failed");
     }
 
     #[test]
@@ -2040,12 +2071,7 @@ Reticulum Transport Instance running
 
         let mut runner = require_runner!(scenario);
 
-        runner.up().expect("up failed");
-        runner.wait_ready(60).expect("wait_ready failed");
-
-        let result = execute_steps(&runner);
-        runner.down().expect("down failed");
-        result.expect("execute_steps should succeed");
+        run_test(&mut runner).expect("test failed");
     }
 
     #[test]
@@ -2060,12 +2086,7 @@ Reticulum Transport Instance running
 
         let mut runner = require_runner!(scenario);
 
-        runner.up().expect("up failed");
-        runner.wait_ready(60).expect("wait_ready failed");
-
-        let result = execute_steps(&runner);
-        runner.down().expect("down failed");
-        result.expect("execute_steps should succeed");
+        run_test(&mut runner).expect("test failed");
     }
 
     #[test]
@@ -2080,12 +2101,7 @@ Reticulum Transport Instance running
 
         let mut runner = require_runner!(scenario);
 
-        runner.up().expect("up failed");
-        runner.wait_ready(60).expect("wait_ready failed");
-
-        let result = execute_steps(&runner);
-        runner.down().expect("down failed");
-        result.expect("execute_steps should succeed");
+        run_test(&mut runner).expect("test failed");
     }
 
     #[test]
@@ -2100,12 +2116,7 @@ Reticulum Transport Instance running
 
         let mut runner = require_runner!(scenario);
 
-        runner.up().expect("up failed");
-        runner.wait_ready(60).expect("wait_ready failed");
-
-        let result = execute_steps(&runner);
-        runner.down().expect("down failed");
-        result.expect("execute_steps should succeed");
+        run_test(&mut runner).expect("test failed");
     }
 
     #[test]
@@ -2120,12 +2131,7 @@ Reticulum Transport Instance running
 
         let mut runner = require_runner!(scenario);
 
-        runner.up().expect("up failed");
-        runner.wait_ready(60).expect("wait_ready failed");
-
-        let result = execute_steps(&runner);
-        runner.down().expect("down failed");
-        result.expect("execute_steps should succeed");
+        run_test(&mut runner).expect("test failed");
     }
 
     #[test]
@@ -2140,12 +2146,7 @@ Reticulum Transport Instance running
 
         let mut runner = require_runner!(scenario);
 
-        runner.up().expect("up failed");
-        runner.wait_ready(60).expect("wait_ready failed");
-
-        let result = execute_steps(&runner);
-        runner.down().expect("down failed");
-        result.expect("execute_steps should succeed");
+        run_test(&mut runner).expect("test failed");
     }
 
     #[test]
@@ -2160,12 +2161,7 @@ Reticulum Transport Instance running
 
         let mut runner = require_runner!(scenario);
 
-        runner.up().expect("up failed");
-        runner.wait_ready(60).expect("wait_ready failed");
-
-        let result = execute_steps(&runner);
-        runner.down().expect("down failed");
-        result.expect("execute_steps should succeed");
+        run_test(&mut runner).expect("test failed");
     }
 
     #[test]
@@ -2187,12 +2183,7 @@ Reticulum Transport Instance running
 
         let mut runner = require_runner!(scenario);
 
-        runner.up().expect("up failed");
-        runner.wait_ready(60).expect("wait_ready failed");
-
-        let result = execute_steps(&runner);
-        runner.down().expect("down failed");
-        result.expect("execute_steps should succeed");
+        run_test(&mut runner).expect("test failed");
     }
 
     #[test]
@@ -2214,12 +2205,7 @@ Reticulum Transport Instance running
 
         let mut runner = require_runner!(scenario);
 
-        runner.up().expect("up failed");
-        runner.wait_ready(60).expect("wait_ready failed");
-
-        let result = execute_steps(&runner);
-        runner.down().expect("down failed");
-        result.expect("execute_steps should succeed");
+        run_test(&mut runner).expect("test failed");
     }
 
     #[test]
@@ -2239,12 +2225,7 @@ Reticulum Transport Instance running
 
         let mut runner = require_runner!(scenario);
 
-        runner.up().expect("up failed");
-        runner.wait_ready(60).expect("wait_ready failed");
-
-        let result = execute_steps(&runner);
-        runner.down().expect("down failed");
-        result.expect("execute_steps should succeed");
+        run_test(&mut runner).expect("test failed");
     }
 
     #[test]
@@ -2264,12 +2245,7 @@ Reticulum Transport Instance running
 
         let mut runner = require_runner!(scenario);
 
-        runner.up().expect("up failed");
-        runner.wait_ready(60).expect("wait_ready failed");
-
-        let result = execute_steps(&runner);
-        runner.down().expect("down failed");
-        result.expect("execute_steps should succeed");
+        run_test(&mut runner).expect("test failed");
     }
 
     #[test]
@@ -2286,12 +2262,7 @@ Reticulum Transport Instance running
 
         let mut runner = require_runner!(scenario);
 
-        runner.up().expect("up failed");
-        runner.wait_ready(60).expect("wait_ready failed");
-
-        let result = execute_steps(&runner);
-        runner.down().expect("down failed");
-        result.expect("execute_steps should succeed");
+        run_test(&mut runner).expect("test failed");
     }
 
     #[test]
@@ -2308,12 +2279,7 @@ Reticulum Transport Instance running
 
         let mut runner = require_runner!(scenario);
 
-        runner.up().expect("up failed");
-        runner.wait_ready(60).expect("wait_ready failed");
-
-        let result = execute_steps(&runner);
-        runner.down().expect("down failed");
-        result.expect("execute_steps should succeed");
+        run_test(&mut runner).expect("test failed");
     }
 
     #[test]
@@ -2330,12 +2296,7 @@ Reticulum Transport Instance running
 
         let mut runner = require_runner!(scenario);
 
-        runner.up().expect("up failed");
-        runner.wait_ready(60).expect("wait_ready failed");
-
-        let result = execute_steps(&runner);
-        runner.down().expect("down failed");
-        result.expect("execute_steps should succeed");
+        run_test(&mut runner).expect("test failed");
     }
 
     #[test]
@@ -2352,12 +2313,7 @@ Reticulum Transport Instance running
 
         let mut runner = require_runner!(scenario);
 
-        runner.up().expect("up failed");
-        runner.wait_ready(60).expect("wait_ready failed");
-
-        let result = execute_steps(&runner);
-        runner.down().expect("down failed");
-        result.expect("execute_steps should succeed");
+        run_test(&mut runner).expect("test failed");
     }
 
     #[test]
@@ -2374,12 +2330,7 @@ Reticulum Transport Instance running
 
         let mut runner = require_runner!(scenario);
 
-        runner.up().expect("up failed");
-        runner.wait_ready(60).expect("wait_ready failed");
-
-        let result = execute_steps(&runner);
-        runner.down().expect("down failed");
-        result.expect("execute_steps should succeed");
+        run_test(&mut runner).expect("test failed");
     }
 
     #[test]
@@ -2396,12 +2347,7 @@ Reticulum Transport Instance running
 
         let mut runner = require_runner!(scenario);
 
-        runner.up().expect("up failed");
-        runner.wait_ready(60).expect("wait_ready failed");
-
-        let result = execute_steps(&runner);
-        runner.down().expect("down failed");
-        result.expect("execute_steps should succeed");
+        run_test(&mut runner).expect("test failed");
     }
 
     #[test]
@@ -2418,12 +2364,7 @@ Reticulum Transport Instance running
 
         let mut runner = require_runner!(scenario);
 
-        runner.up().expect("up failed");
-        runner.wait_ready(60).expect("wait_ready failed");
-
-        let result = execute_steps(&runner);
-        runner.down().expect("down failed");
-        result.expect("execute_steps should succeed");
+        run_test(&mut runner).expect("test failed");
     }
 
     #[test]
@@ -2440,14 +2381,7 @@ Reticulum Transport Instance running
 
         let mut runner = require_runner!(scenario);
 
-        runner.up().expect("up failed");
-        runner.wait_ready(120).expect("wait_ready failed");
-
-        let result = execute_steps(&runner);
-        // Collect logs before teardown (even on success) for LoRa analysis
-        let _ = runner.collect_logs();
-        runner.down().expect("down failed");
-        result.expect("execute_steps should succeed");
+        run_test(&mut runner).expect("test failed");
     }
 
     #[test]
@@ -2464,12 +2398,7 @@ Reticulum Transport Instance running
 
         let mut runner = require_runner!(scenario);
 
-        runner.up().expect("up failed");
-        runner.wait_ready(60).expect("wait_ready failed");
-
-        let result = execute_steps(&runner);
-        runner.down().expect("down failed");
-        result.expect("execute_steps should succeed");
+        run_test(&mut runner).expect("test failed");
     }
 
     #[test]
@@ -2486,12 +2415,7 @@ Reticulum Transport Instance running
 
         let mut runner = require_runner!(scenario);
 
-        runner.up().expect("up failed");
-        runner.wait_ready(60).expect("wait_ready failed");
-
-        let result = execute_steps(&runner);
-        runner.down().expect("down failed");
-        result.expect("execute_steps should succeed");
+        run_test(&mut runner).expect("test failed");
     }
 
     #[test]
@@ -2508,12 +2432,7 @@ Reticulum Transport Instance running
 
         let mut runner = require_runner!(scenario);
 
-        runner.up().expect("up failed");
-        runner.wait_ready(60).expect("wait_ready failed");
-
-        let result = execute_steps(&runner);
-        runner.down().expect("down failed");
-        result.expect("execute_steps should succeed");
+        run_test(&mut runner).expect("test failed");
     }
 
     #[test]
@@ -2530,12 +2449,7 @@ Reticulum Transport Instance running
 
         let mut runner = require_runner!(scenario);
 
-        runner.up().expect("up failed");
-        runner.wait_ready(60).expect("wait_ready failed");
-
-        let result = execute_steps(&runner);
-        runner.down().expect("down failed");
-        result.expect("execute_steps should succeed");
+        run_test(&mut runner).expect("test failed");
     }
 
     #[test]
@@ -2552,12 +2466,7 @@ Reticulum Transport Instance running
 
         let mut runner = require_runner!(scenario);
 
-        runner.up().expect("up failed");
-        runner.wait_ready(60).expect("wait_ready failed");
-
-        let result = execute_steps(&runner);
-        runner.down().expect("down failed");
-        result.expect("execute_steps should succeed");
+        run_test(&mut runner).expect("test failed");
     }
 
     #[test]
@@ -2574,12 +2483,7 @@ Reticulum Transport Instance running
 
         let mut runner = require_runner!(scenario);
 
-        runner.up().expect("up failed");
-        runner.wait_ready(60).expect("wait_ready failed");
-
-        let result = execute_steps(&runner);
-        runner.down().expect("down failed");
-        result.expect("execute_steps should succeed");
+        run_test(&mut runner).expect("test failed");
     }
 
     #[test]
@@ -2596,12 +2500,7 @@ Reticulum Transport Instance running
 
         let mut runner = require_runner!(scenario);
 
-        runner.up().expect("up failed");
-        runner.wait_ready(60).expect("wait_ready failed");
-
-        let result = execute_steps(&runner);
-        runner.down().expect("done failed");
-        result.expect("execute_steps should succeed");
+        run_test(&mut runner).expect("test failed");
     }
 
     #[test]
@@ -2618,12 +2517,7 @@ Reticulum Transport Instance running
 
         let mut runner = require_runner!(scenario);
 
-        runner.up().expect("up failed");
-        runner.wait_ready(60).expect("wait_ready failed");
-
-        let result = execute_steps(&runner);
-        runner.down().expect("down failed");
-        result.expect("execute_steps should succeed");
+        run_test(&mut runner).expect("test failed");
     }
 
     #[test]
@@ -2640,12 +2534,7 @@ Reticulum Transport Instance running
 
         let mut runner = require_runner!(scenario);
 
-        runner.up().expect("up failed");
-        runner.wait_ready(60).expect("wait_ready failed");
-
-        let result = execute_steps(&runner);
-        runner.down().expect("down failed");
-        result.expect("execute_steps should succeed");
+        run_test(&mut runner).expect("test failed");
     }
 
     #[test]
@@ -2662,12 +2551,7 @@ Reticulum Transport Instance running
 
         let mut runner = require_runner!(scenario);
 
-        runner.up().expect("up failed");
-        runner.wait_ready(60).expect("wait_ready failed");
-
-        let result = execute_steps(&runner);
-        runner.down().expect("down failed");
-        result.expect("execute_steps should succeed");
+        run_test(&mut runner).expect("test failed");
     }
 
     #[test]
@@ -2684,12 +2568,7 @@ Reticulum Transport Instance running
 
         let mut runner = require_runner!(scenario);
 
-        runner.up().expect("up failed");
-        runner.wait_ready(60).expect("wait_ready failed");
-
-        let result = execute_steps(&runner);
-        runner.down().expect("down failed");
-        result.expect("execute_steps should succeed");
+        run_test(&mut runner).expect("test failed");
     }
 
     #[test]
@@ -2706,12 +2585,7 @@ Reticulum Transport Instance running
 
         let mut runner = require_runner!(scenario);
 
-        runner.up().expect("up failed");
-        runner.wait_ready(60).expect("wait_ready failed");
-
-        let result = execute_steps(&runner);
-        runner.down().expect("down failed");
-        result.expect("execute_steps should succeed");
+        run_test(&mut runner).expect("test failed");
     }
 
     #[test]
@@ -2728,12 +2602,7 @@ Reticulum Transport Instance running
 
         let mut runner = require_runner!(scenario);
 
-        runner.up().expect("up failed");
-        runner.wait_ready(60).expect("wait_ready failed");
-
-        let result = execute_steps(&runner);
-        runner.down().expect("down failed");
-        result.expect("execute_steps should succeed");
+        run_test(&mut runner).expect("test failed");
     }
 
     #[test]
@@ -2750,12 +2619,7 @@ Reticulum Transport Instance running
 
         let mut runner = require_runner!(scenario);
 
-        runner.up().expect("up failed");
-        runner.wait_ready(60).expect("wait_ready failed");
-
-        let result = execute_steps(&runner);
-        runner.down().expect("down failed");
-        result.expect("execute_steps should succeed");
+        run_test(&mut runner).expect("test failed");
     }
 
     #[test]
@@ -2772,12 +2636,7 @@ Reticulum Transport Instance running
 
         let mut runner = require_runner!(scenario);
 
-        runner.up().expect("up failed");
-        runner.wait_ready(60).expect("wait_ready failed");
-
-        let result = execute_steps(&runner);
-        runner.down().expect("down failed");
-        result.expect("execute_steps should succeed");
+        run_test(&mut runner).expect("test failed");
     }
 
     #[test]
@@ -2794,12 +2653,7 @@ Reticulum Transport Instance running
 
         let mut runner = require_runner!(scenario);
 
-        runner.up().expect("up failed");
-        runner.wait_ready(120).expect("wait_ready failed");
-
-        let result = execute_steps(&runner);
-        runner.down().expect("down failed");
-        result.expect("execute_steps should succeed");
+        run_test(&mut runner).expect("test failed");
     }
 
     #[test]
@@ -2816,12 +2670,7 @@ Reticulum Transport Instance running
 
         let mut runner = require_runner!(scenario);
 
-        runner.up().expect("up failed");
-        runner.wait_ready(120).expect("wait_ready failed");
-
-        let result = execute_steps(&runner);
-        runner.down().expect("down failed");
-        result.expect("execute_steps should succeed");
+        run_test(&mut runner).expect("test failed");
     }
 
     #[test]
@@ -2838,12 +2687,7 @@ Reticulum Transport Instance running
 
         let mut runner = require_runner!(scenario);
 
-        runner.up().expect("up failed");
-        runner.wait_ready(60).expect("wait_ready failed");
-
-        let result = execute_steps(&runner);
-        runner.down().expect("down failed");
-        result.expect("execute_steps should succeed");
+        run_test(&mut runner).expect("test failed");
     }
 
     #[test]
@@ -2860,12 +2704,7 @@ Reticulum Transport Instance running
 
         let mut runner = require_runner!(scenario);
 
-        runner.up().expect("up failed");
-        runner.wait_ready(60).expect("wait_ready failed");
-
-        let result = execute_steps(&runner);
-        runner.down().expect("down failed");
-        result.expect("execute_steps should succeed");
+        run_test(&mut runner).expect("test failed");
     }
 
     #[test]
@@ -2882,12 +2721,7 @@ Reticulum Transport Instance running
 
         let mut runner = require_runner!(scenario);
 
-        runner.up().expect("up failed");
-        runner.wait_ready(60).expect("wait_ready failed");
-
-        let result = execute_steps(&runner);
-        runner.down().expect("down failed");
-        result.expect("execute_steps should succeed");
+        run_test(&mut runner).expect("test failed");
     }
 
     #[test]
@@ -2904,12 +2738,7 @@ Reticulum Transport Instance running
 
         let mut runner = require_runner!(scenario);
 
-        runner.up().expect("up failed");
-        runner.wait_ready(60).expect("wait_ready failed");
-
-        let result = execute_steps(&runner);
-        runner.down().expect("down failed");
-        result.expect("execute_steps should succeed");
+        run_test(&mut runner).expect("test failed");
     }
 
     #[test]
@@ -2926,12 +2755,7 @@ Reticulum Transport Instance running
 
         let mut runner = require_runner!(scenario);
 
-        runner.up().expect("up failed");
-        runner.wait_ready(60).expect("wait_ready failed");
-
-        let result = execute_steps(&runner);
-        runner.down().expect("down failed");
-        result.expect("execute_steps should succeed");
+        run_test(&mut runner).expect("test failed");
     }
 
     #[test]
@@ -2948,12 +2772,7 @@ Reticulum Transport Instance running
 
         let mut runner = require_runner!(scenario);
 
-        runner.up().expect("up failed");
-        runner.wait_ready(60).expect("wait_ready failed");
-
-        let result = execute_steps(&runner);
-        runner.down().expect("down failed");
-        result.expect("execute_steps should succeed");
+        run_test(&mut runner).expect("test failed");
     }
 
     #[test]
@@ -2970,12 +2789,7 @@ Reticulum Transport Instance running
 
         let mut runner = require_runner!(scenario);
 
-        runner.up().expect("up failed");
-        runner.wait_ready(60).expect("wait_ready failed");
-
-        let result = execute_steps(&runner);
-        runner.down().expect("down failed");
-        result.expect("execute_steps should succeed");
+        run_test(&mut runner).expect("test failed");
     }
 
     #[test]
@@ -2992,12 +2806,7 @@ Reticulum Transport Instance running
 
         let mut runner = require_runner!(scenario);
 
-        runner.up().expect("up failed");
-        runner.wait_ready(60).expect("wait_ready failed");
-
-        let result = execute_steps(&runner);
-        runner.down().expect("down failed");
-        result.expect("execute_steps should succeed");
+        run_test(&mut runner).expect("test failed");
     }
 
     #[test]
@@ -3014,12 +2823,7 @@ Reticulum Transport Instance running
 
         let mut runner = require_runner!(scenario);
 
-        runner.up().expect("up failed");
-        runner.wait_ready(60).expect("wait_ready failed");
-
-        let result = execute_steps(&runner);
-        runner.down().expect("down failed");
-        result.expect("execute_steps should succeed");
+        run_test(&mut runner).expect("test failed");
     }
 
     #[test]
@@ -3036,12 +2840,7 @@ Reticulum Transport Instance running
 
         let mut runner = require_runner!(scenario);
 
-        runner.up().expect("up failed");
-        runner.wait_ready(60).expect("wait_ready failed");
-
-        let result = execute_steps(&runner);
-        runner.down().expect("down failed");
-        result.expect("execute_steps should succeed");
+        run_test(&mut runner).expect("test failed");
     }
 
     #[test]
@@ -3058,12 +2857,7 @@ Reticulum Transport Instance running
 
         let mut runner = require_runner!(scenario);
 
-        runner.up().expect("up failed");
-        runner.wait_ready(60).expect("wait_ready failed");
-
-        let result = execute_steps(&runner);
-        runner.down().expect("down failed");
-        result.expect("execute_steps should succeed");
+        run_test(&mut runner).expect("test failed");
     }
 
     #[test]
@@ -3080,12 +2874,7 @@ Reticulum Transport Instance running
 
         let mut runner = require_runner!(scenario);
 
-        runner.up().expect("up failed");
-        runner.wait_ready(60).expect("wait_ready failed");
-
-        let result = execute_steps(&runner);
-        runner.down().expect("down failed");
-        result.expect("execute_steps should succeed");
+        run_test(&mut runner).expect("test failed");
     }
 
     #[test]
@@ -3102,12 +2891,7 @@ Reticulum Transport Instance running
 
         let mut runner = require_runner!(scenario);
 
-        runner.up().expect("up failed");
-        runner.wait_ready(60).expect("wait_ready failed");
-
-        let result = execute_steps(&runner);
-        runner.down().expect("down failed");
-        result.expect("execute_steps should succeed");
+        run_test(&mut runner).expect("test failed");
     }
 
     #[test]
@@ -3124,12 +2908,7 @@ Reticulum Transport Instance running
 
         let mut runner = require_runner!(scenario);
 
-        runner.up().expect("up failed");
-        runner.wait_ready(60).expect("wait_ready failed");
-
-        let result = execute_steps(&runner);
-        runner.down().expect("down failed");
-        result.expect("execute_steps should succeed");
+        run_test(&mut runner).expect("test failed");
     }
 
     // Python-to-Python LoRa tests
@@ -3148,12 +2927,7 @@ Reticulum Transport Instance running
 
         let mut runner = require_runner!(scenario);
 
-        runner.up().expect("up failed");
-        runner.wait_ready(60).expect("wait_ready failed");
-
-        let result = execute_steps(&runner);
-        runner.down().expect("down failed");
-        result.expect("execute_steps should succeed");
+        run_test(&mut runner).expect("test failed");
     }
 
     #[test]
@@ -3170,12 +2944,7 @@ Reticulum Transport Instance running
 
         let mut runner = require_runner!(scenario);
 
-        runner.up().expect("up failed");
-        runner.wait_ready(60).expect("wait_ready failed");
-
-        let result = execute_steps(&runner);
-        runner.down().expect("down failed");
-        result.expect("execute_steps should succeed");
+        run_test(&mut runner).expect("test failed");
     }
 
     #[test]
@@ -3192,12 +2961,7 @@ Reticulum Transport Instance running
 
         let mut runner = require_runner!(scenario);
 
-        runner.up().expect("up failed");
-        runner.wait_ready(60).expect("wait_ready failed");
-
-        let result = execute_steps(&runner);
-        runner.down().expect("down failed");
-        result.expect("execute_steps should succeed");
+        run_test(&mut runner).expect("test failed");
     }
 
     #[test]
@@ -3214,12 +2978,7 @@ Reticulum Transport Instance running
 
         let mut runner = require_runner!(scenario);
 
-        runner.up().expect("up failed");
-        runner.wait_ready(60).expect("wait_ready failed");
-
-        let result = execute_steps(&runner);
-        runner.down().expect("down failed");
-        result.expect("execute_steps should succeed");
+        run_test(&mut runner).expect("test failed");
     }
 
     #[test]
@@ -3236,12 +2995,7 @@ Reticulum Transport Instance running
 
         let mut runner = require_runner!(scenario);
 
-        runner.up().expect("up failed");
-        runner.wait_ready(60).expect("wait_ready failed");
-
-        let result = execute_steps(&runner);
-        runner.down().expect("down failed");
-        result.expect("execute_steps should succeed");
+        run_test(&mut runner).expect("test failed");
     }
 
     // Cross-implementation LoRa tests
@@ -3260,12 +3014,7 @@ Reticulum Transport Instance running
 
         let mut runner = require_runner!(scenario);
 
-        runner.up().expect("up failed");
-        runner.wait_ready(60).expect("wait_ready failed");
-
-        let result = execute_steps(&runner);
-        runner.down().expect("down failed");
-        result.expect("execute_steps should succeed");
+        run_test(&mut runner).expect("test failed");
     }
 
     #[test]
@@ -3282,12 +3031,7 @@ Reticulum Transport Instance running
 
         let mut runner = require_runner!(scenario);
 
-        runner.up().expect("up failed");
-        runner.wait_ready(60).expect("wait_ready failed");
-
-        let result = execute_steps(&runner);
-        runner.down().expect("down failed");
-        result.expect("execute_steps should succeed");
+        run_test(&mut runner).expect("test failed");
     }
 
     #[test]
@@ -3304,12 +3048,7 @@ Reticulum Transport Instance running
 
         let mut runner = require_runner!(scenario);
 
-        runner.up().expect("up failed");
-        runner.wait_ready(60).expect("wait_ready failed");
-
-        let result = execute_steps(&runner);
-        runner.down().expect("down failed");
-        result.expect("execute_steps should succeed");
+        run_test(&mut runner).expect("test failed");
     }
 
     #[test]
@@ -3326,12 +3065,7 @@ Reticulum Transport Instance running
 
         let mut runner = require_runner!(scenario);
 
-        runner.up().expect("up failed");
-        runner.wait_ready(60).expect("wait_ready failed");
-
-        let result = execute_steps(&runner);
-        runner.down().expect("down failed");
-        result.expect("execute_steps should succeed");
+        run_test(&mut runner).expect("test failed");
     }
 
     #[test]
@@ -3348,12 +3082,7 @@ Reticulum Transport Instance running
 
         let mut runner = require_runner!(scenario);
 
-        runner.up().expect("up failed");
-        runner.wait_ready(60).expect("wait_ready failed");
-
-        let result = execute_steps(&runner);
-        runner.down().expect("down failed");
-        result.expect("execute_steps should succeed");
+        run_test(&mut runner).expect("test failed");
     }
 
     #[test]
@@ -3370,12 +3099,7 @@ Reticulum Transport Instance running
 
         let mut runner = require_runner!(scenario);
 
-        runner.up().expect("up failed");
-        runner.wait_ready(60).expect("wait_ready failed");
-
-        let result = execute_steps(&runner);
-        runner.down().expect("down failed");
-        result.expect("execute_steps should succeed");
+        run_test(&mut runner).expect("test failed");
     }
 
     // 3-node shared medium LoRa tests (require 3 RNode devices)
@@ -3394,12 +3118,7 @@ Reticulum Transport Instance running
 
         let mut runner = require_runner!(scenario);
 
-        runner.up().expect("up failed");
-        runner.wait_ready(60).expect("wait_ready failed");
-
-        let result = execute_steps(&runner);
-        runner.down().expect("down failed");
-        result.expect("execute_steps should succeed");
+        run_test(&mut runner).expect("test failed");
     }
 
     #[test]
@@ -3416,12 +3135,7 @@ Reticulum Transport Instance running
 
         let mut runner = require_runner!(scenario);
 
-        runner.up().expect("up failed");
-        runner.wait_ready(60).expect("wait_ready failed");
-
-        let result = execute_steps(&runner);
-        runner.down().expect("down failed");
-        result.expect("execute_steps should succeed");
+        run_test(&mut runner).expect("test failed");
     }
 
     #[test]
@@ -3438,12 +3152,7 @@ Reticulum Transport Instance running
 
         let mut runner = require_runner!(scenario);
 
-        runner.up().expect("up failed");
-        runner.wait_ready(60).expect("wait_ready failed");
-
-        let result = execute_steps(&runner);
-        runner.down().expect("down failed");
-        result.expect("execute_steps should succeed");
+        run_test(&mut runner).expect("test failed");
     }
 
     #[test]
@@ -3460,12 +3169,7 @@ Reticulum Transport Instance running
 
         let mut runner = require_runner!(scenario);
 
-        runner.up().expect("up failed");
-        runner.wait_ready(60).expect("wait_ready failed");
-
-        let result = execute_steps(&runner);
-        runner.down().expect("down failed");
-        result.expect("execute_steps should succeed");
+        run_test(&mut runner).expect("test failed");
     }
 
     #[test]
@@ -3482,12 +3186,7 @@ Reticulum Transport Instance running
 
         let mut runner = require_runner!(scenario);
 
-        runner.up().expect("up failed");
-        runner.wait_ready(60).expect("wait_ready failed");
-
-        let result = execute_steps(&runner);
-        runner.down().expect("down failed");
-        result.expect("execute_steps should succeed");
+        run_test(&mut runner).expect("test failed");
     }
 
     #[test]
@@ -3502,12 +3201,7 @@ Reticulum Transport Instance running
 
         let mut runner = require_runner!(scenario);
 
-        runner.up().expect("up failed");
-        runner.wait_ready(60).expect("wait_ready failed");
-
-        let result = execute_steps(&runner);
-        runner.down().expect("down failed");
-        result.expect("execute_steps should succeed");
+        run_test(&mut runner).expect("test failed");
     }
 
     #[test]
@@ -3522,12 +3216,7 @@ Reticulum Transport Instance running
 
         let mut runner = require_runner!(scenario);
 
-        runner.up().expect("up failed");
-        runner.wait_ready(30).expect("wait_ready failed");
-
-        let result = execute_steps(&runner);
-        runner.down().expect("down failed");
-        result.expect("execute_steps should succeed");
+        run_test(&mut runner).expect("test failed");
     }
 
     #[test]
@@ -3542,12 +3231,7 @@ Reticulum Transport Instance running
 
         let mut runner = require_runner!(scenario);
 
-        runner.up().expect("up failed");
-        runner.wait_ready(60).expect("wait_ready failed");
-
-        let result = execute_steps(&runner);
-        runner.down().expect("down failed");
-        result.expect("execute_steps should succeed");
+        run_test(&mut runner).expect("test failed");
     }
 
     #[test]
@@ -3562,12 +3246,7 @@ Reticulum Transport Instance running
 
         let mut runner = require_runner!(scenario);
 
-        runner.up().expect("up failed");
-        runner.wait_ready(60).expect("wait_ready failed");
-
-        let result = execute_steps(&runner);
-        runner.down().expect("down failed");
-        result.expect("execute_steps should succeed");
+        run_test(&mut runner).expect("test failed");
     }
 
     #[test]
@@ -3582,12 +3261,7 @@ Reticulum Transport Instance running
 
         let mut runner = require_runner!(scenario);
 
-        runner.up().expect("up failed");
-        runner.wait_ready(60).expect("wait_ready failed");
-
-        let result = execute_steps(&runner);
-        runner.down().expect("down failed");
-        result.expect("execute_steps should succeed");
+        run_test(&mut runner).expect("test failed");
     }
 
     #[test]
@@ -3602,12 +3276,7 @@ Reticulum Transport Instance running
 
         let mut runner = require_runner!(scenario);
 
-        runner.up().expect("up failed");
-        runner.wait_ready(60).expect("wait_ready failed");
-
-        let result = execute_steps(&runner);
-        runner.down().expect("down failed");
-        result.expect("execute_steps should succeed");
+        run_test(&mut runner).expect("test failed");
     }
 
     #[test]
@@ -3622,12 +3291,7 @@ Reticulum Transport Instance running
 
         let mut runner = require_runner!(scenario);
 
-        runner.up().expect("up failed");
-        runner.wait_ready(60).expect("wait_ready failed");
-
-        let result = execute_steps(&runner);
-        runner.down().expect("down failed");
-        result.expect("execute_steps should succeed");
+        run_test(&mut runner).expect("test failed");
     }
 
     #[test]
@@ -3642,12 +3306,7 @@ Reticulum Transport Instance running
 
         let mut runner = require_runner!(scenario);
 
-        runner.up().expect("up failed");
-        runner.wait_ready(60).expect("wait_ready failed");
-
-        let result = execute_steps(&runner);
-        runner.down().expect("down failed");
-        result.expect("execute_steps should succeed");
+        run_test(&mut runner).expect("test failed");
     }
 
     #[test]
@@ -3662,12 +3321,7 @@ Reticulum Transport Instance running
 
         let mut runner = require_runner!(scenario);
 
-        runner.up().expect("up failed");
-        runner.wait_ready(60).expect("wait_ready failed");
-
-        let result = execute_steps(&runner);
-        runner.down().expect("down failed");
-        result.expect("execute_steps should succeed");
+        run_test(&mut runner).expect("test failed");
     }
 
     #[test]
@@ -3680,12 +3334,7 @@ Reticulum Transport Instance running
 
         let mut runner = require_runner!(scenario);
 
-        runner.up().expect("up failed");
-        runner.wait_ready(60).expect("wait_ready failed");
-
-        let result = execute_steps(&runner);
-        runner.down().expect("down failed");
-        result.expect("execute_steps should succeed");
+        run_test(&mut runner).expect("test failed");
     }
 
     #[test]
@@ -3698,12 +3347,7 @@ Reticulum Transport Instance running
 
         let mut runner = require_runner!(scenario);
 
-        runner.up().expect("up failed");
-        runner.wait_ready(60).expect("wait_ready failed");
-
-        let result = execute_steps(&runner);
-        runner.down().expect("down failed");
-        result.expect("execute_steps should succeed");
+        run_test(&mut runner).expect("test failed");
     }
 
     #[test]
@@ -3718,12 +3362,7 @@ Reticulum Transport Instance running
 
         let mut runner = require_runner!(scenario);
 
-        runner.up().expect("up failed");
-        runner.wait_ready(60).expect("wait_ready failed");
-
-        let result = execute_steps(&runner);
-        runner.down().expect("down failed");
-        result.expect("execute_steps should succeed");
+        run_test(&mut runner).expect("test failed");
     }
 
     #[test]
@@ -3736,12 +3375,7 @@ Reticulum Transport Instance running
 
         let mut runner = require_runner!(scenario);
 
-        runner.up().expect("up failed");
-        runner.wait_ready(60).expect("wait_ready failed");
-
-        let result = execute_steps(&runner);
-        runner.down().expect("down failed");
-        result.expect("execute_steps should succeed");
+        run_test(&mut runner).expect("test failed");
     }
 
     #[test]
@@ -3756,12 +3390,7 @@ Reticulum Transport Instance running
 
         let mut runner = require_runner!(scenario);
 
-        runner.up().expect("up failed");
-        runner.wait_ready(60).expect("wait_ready failed");
-
-        let result = execute_steps(&runner);
-        runner.down().expect("down failed");
-        result.expect("execute_steps should succeed");
+        run_test(&mut runner).expect("test failed");
     }
 
     #[test]
@@ -3776,12 +3405,7 @@ Reticulum Transport Instance running
 
         let mut runner = require_runner!(scenario);
 
-        runner.up().expect("up failed");
-        runner.wait_ready(60).expect("wait_ready failed");
-
-        let result = execute_steps(&runner);
-        runner.down().expect("down failed");
-        result.expect("execute_steps should succeed");
+        run_test(&mut runner).expect("test failed");
     }
 
     #[test]
@@ -3796,12 +3420,7 @@ Reticulum Transport Instance running
 
         let mut runner = require_runner!(scenario);
 
-        runner.up().expect("up failed");
-        runner.wait_ready(60).expect("wait_ready failed");
-
-        let result = execute_steps(&runner);
-        runner.down().expect("down failed");
-        result.expect("execute_steps should succeed");
+        run_test(&mut runner).expect("test failed");
     }
 
     #[test]
@@ -3816,11 +3435,6 @@ Reticulum Transport Instance running
 
         let mut runner = require_runner!(scenario);
 
-        runner.up().expect("up failed");
-        runner.wait_ready(60).expect("wait_ready failed");
-
-        let result = execute_steps(&runner);
-        runner.down().expect("down failed");
-        result.expect("execute_steps should succeed");
+        run_test(&mut runner).expect("test failed");
     }
 }

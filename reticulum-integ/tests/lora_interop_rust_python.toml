@@ -19,12 +19,12 @@ txpower = 17
 [nodes.alpha]
 type = "rust"
 respond_to_probes = true
-rnode = "/dev/ttyACM0"
+rnode = true
 
 [nodes.beta]
 type = "python"
 respond_to_probes = true
-rnode = "/dev/ttyACM1"
+rnode = true
 
 # No [links] — LoRa is a broadcast medium, no explicit point-to-point links.
 

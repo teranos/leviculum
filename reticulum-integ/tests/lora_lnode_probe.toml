@@ -1,7 +1,6 @@
 # LoRa RX verification: RNode ↔ T114 LNode
 # Requires one RNode (ESP32) and one T114 with LNode firmware.
-# RNode at /dev/ttyACM4 (override with LEVICULUM_RNODE_4)
-# T114 serial at /dev/ttyACM1 (override with LEVICULUM_SERIAL_1)
+# Devices are auto-discovered by USB vendor ID and CMD_DETECT probe.
 
 [test]
 name = "lora_lnode_probe"
@@ -20,12 +19,12 @@ txpower = 17
 [nodes.rnode]
 type = "rust"
 respond_to_probes = true
-rnode = "/dev/ttyACM4"
+rnode = true
 
 [nodes.lnode]
 type = "rust"
 respond_to_probes = true
-serial = "/dev/ttyACM1"
+serial = true
 
 # No [links] — communication is over LoRa (broadcast medium)
 

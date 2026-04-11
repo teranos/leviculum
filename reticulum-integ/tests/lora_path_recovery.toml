@@ -34,13 +34,13 @@ txpower = 17
 [nodes.alpha]
 type = "rust"
 respond_to_probes = true
-rnode = "/dev/ttyACM0"
+rnode = true
 rnode_proxy = true
 
 [nodes.beta]
 type = "rust"
 respond_to_probes = true
-rnode = "/dev/ttyACM1"
+rnode = true
 
 # Phase 1 — Baseline: prove the path works
 [[steps]]
