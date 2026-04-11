@@ -64,7 +64,7 @@ impl LoRaInterface {
 impl Interface for LoRaInterface {
     fn id(&self) -> InterfaceId { InterfaceId(1) }
     fn name(&self) -> &str { "lora_sx1262" }
-    fn mtu(&self) -> usize { 255 }
+    fn mtu(&self) -> usize { 500 }
     fn is_online(&self) -> bool { true }
     fn try_send(&mut self, data: &[u8]) -> Result<(), InterfaceError> {
         self.sender.try_send(data.to_vec()).map_err(|_| InterfaceError::BufferFull)
