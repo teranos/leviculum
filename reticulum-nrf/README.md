@@ -1,143 +1,43 @@
-# reticulum-nrf — Embedded Reticulum for nRF52840
+# reticulum-nrf
 
-Firmware for the Heltec Mesh Node T114 (nRF52840 + SX1262 LoRa).
+Firmware for the Heltec Mesh Node T114 (nRF52840 + SX1262). It turns the T114 into a standalone Reticulum transport node that routes packets between USB serial, LoRa radio, and BLE. The transport engine is the same `reticulum-core` library that powers the Linux daemon, compiled for Cortex-M4F.
+
+The firmware speaks the RNode LoRa framing protocol, so T114 and RNode devices interoperate on the same LoRa network. On the BLE side, it implements the Columba v2.2 protocol and can be used with the Columba Android app. On the host side, it connects to `lnsd` or `rnsd` over USB serial with HDLC framing.
+
+The default radio profile uses 869.525 MHz (EU ISM band), SF7, 125 kHz bandwidth, and 17 dBm TX power. These parameters are compiled into the firmware and must match the RNode configuration on the same network.
 
 ## Prerequisites
 
-```bash
+Install the Rust embedded toolchain, the ARM cross-compiler (needed by `nrf-sdc` for C header bindgen), and add your user to the `dialout` group for serial port access (log out and back in afterwards).
+
+```
 rustup target add thumbv7em-none-eabihf
 rustup component add llvm-tools
-
-# Required for USB serial port access (log out + back in after this)
+sudo apt install gcc-arm-none-eabi
 sudo usermod -aG dialout $USER
 ```
 
-## Build
+## Build and flash
 
-```bash
-cargo build --release
-```
+Build the firmware with `cargo build --release`. To flash, put the T114 into bootloader mode by double-tapping RESET, then run `cargo run --release`. The runner converts the ELF to UF2, copies it to the bootloader drive, waits for the device to reboot, and reports the two USB serial ports. If the device is not in bootloader mode, the runner waits up to 30 seconds for you to double-tap RESET.
 
-## Flash
-
-Put the T114 into bootloader mode by double-tapping RESET, then:
-
-```bash
-cargo run --release
-```
-
-The runner automatically:
-1. Converts the ELF to a flat binary (via `llvm-objcopy`)
-2. Converts the binary to UF2 format (via `tools/bin2uf2.rs`)
-3. Finds the UF2 bootloader drive and copies the firmware
-4. Waits for the device to reboot and identifies both USB serial ports
-5. Writes the debug port path to `target/debug-port` for tooling
-
-If the device is not in bootloader mode, the runner will prompt you to
-double-tap RESET and wait up to 30 seconds (configurable via `UF2_TIMEOUT`).
-
-## Memory layout
-
-The T114 uses the Adafruit nRF52 UF2 bootloader with SoftDevice S140 v6.1.1.
-
-| Region       | Address      | Size   |
-|--------------|-------------|--------|
-| SoftDevice   | 0x00000000  | 152 KB |
-| Application  | 0x00026000  | 824 KB |
-| Bootloader   | 0x000F4000  | 48 KB  |
-| RAM (SD)     | 0x20000000  | 12 KB  |
-| RAM (App)    | 0x20003000  | 244 KB |
-
-**Important**: The flash base address in `memory.x` (`FLASH ORIGIN = 0x26000`)
-and in `tools/uf2-runner.sh` (`--base 0x26000`) must match. If these diverge,
-the firmware is written to the wrong flash address and the device will crash.
+The device stores its Reticulum identity in internal flash and preserves it across firmware updates.
 
 ## USB serial ports
 
-The firmware exposes a USB composite device with two CDC-ACM serial ports:
+The firmware exposes two USB CDC-ACM serial ports. The lower-numbered port is the debug log output. The higher-numbered port is the Reticulum transport interface that carries HDLC frames. The actual `/dev/ttyACM*` numbers depend on other connected USB devices.
 
-| Port | Interface | Purpose |
-|------|-----------|---------|
-| `/dev/ttyACM0` | 00 | Debug log output |
-| `/dev/ttyACM1` | 02 | Reticulum transport (idle for now) |
+To get stable device paths, install the udev rules:
 
-The actual `/dev/ttyACM*` numbers depend on what other USB devices are connected.
-
-### Reading debug output
-
-```bash
-picocom /dev/ttyACM0 -b 115200
 ```
-
-Or, if you installed the udev rules (see below):
-
-```bash
-picocom /dev/leviculum-debug -b 115200
-```
-
-Expected output:
-```
-[INFO] leviculum T114 booting
-[INFO] heartbeat 1
-[INFO] heartbeat 2
-```
-
-### Writing log messages in firmware code
-
-Use the `info!` and `warn!` macros (same syntax as `println!`):
-
-```rust
-use reticulum_nrf::{info, warn};
-
-info!("booting");
-info!("counter = {}", some_value);
-warn!("buffer full: {} bytes dropped", n);
-```
-
-Messages are formatted into a fixed 256-byte buffer with `\r\n` line endings and
-sent through a bounded channel (capacity 16) to the USB debug writer task.
-If the channel is full (host not reading), messages are silently dropped.
-There is no blocking and no heap allocation in the log path.
-
-### Stable device symlinks (udev rules)
-
-Without udev rules, the ttyACM numbers shift when other USB devices are
-plugged in. Install the udev rules for stable `/dev/leviculum-*` symlinks:
-
-```bash
 sudo cp udev/99-leviculum.rules /etc/udev/rules.d/
 sudo udevadm control --reload-rules
 ```
 
-After the next plug-in or reboot:
+After the next plug-in, `/dev/leviculum-debug` and `/dev/leviculum-transport` point to the correct ports regardless of enumeration order.
+
+## Reading debug output
 
 ```
-/dev/leviculum-debug       -> /dev/ttyACM2  (debug log port)
-/dev/leviculum-transport   -> /dev/ttyACM3  (reticulum transport port)
+picocom /dev/leviculum-debug -b 115200
 ```
-
-With multiple boards, each gets a serial-number-suffixed symlink
-(`/dev/leviculum-debug-A1B2C3D4E5F6G7H8`). The serial number comes from
-the nRF52840 factory-programmed device ID (FICR DEVICEID registers).
-
-### Automated test harness
-
-Flash and verify firmware output in one command:
-
-```bash
-tools/flash-and-read.sh target/thumbv7em-none-eabihf/release/t114 \
-    --expect "heartbeat 1" --timeout 15
-```
-
-Exits 0 if the pattern is found, 1 on timeout.
-
-## Troubleshooting
-
-- **"No objcopy found"**: Run `rustup component add llvm-tools`, or install
-  `gcc-arm-none-eabi`.
-- **"Timeout: No UF2 drive found"**: Double-tap RESET to enter bootloader.
-  The drive should appear as `NRF52BOOT`. You can also copy the `.uf2` file
-  manually (the path is printed on timeout).
-- **"Device did not enumerate"**: The firmware may have crashed. Check that
-  `memory.x` has the correct RAM origin (`0x20003000` — SoftDevice reserves
-  the first 12 KB).
