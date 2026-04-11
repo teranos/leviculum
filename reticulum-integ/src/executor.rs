@@ -3190,6 +3190,23 @@ Reticulum Transport Instance running
     }
 
     #[test]
+    #[ignore] // Requires RNode + T114 hardware
+    #[serial(lora)]
+    fn lora_lnode_split() {
+        let _lock = acquire_lora_lock();
+        let toml_str = std::fs::read_to_string(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/tests/lora_lnode_split.toml"
+        ))
+        .expect("lora_lnode_split.toml not found");
+        let scenario = crate::topology::parse_scenario(&toml_str).expect("parse failed");
+
+        let mut runner = require_runner!(scenario);
+
+        run_test(&mut runner).expect("test failed");
+    }
+
+    #[test]
     #[serial(docker)]
     fn selftest_bulk() {
         let toml_str = std::fs::read_to_string(concat!(

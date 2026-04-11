@@ -165,52 +165,68 @@ pub async fn lora_task(mut radio: Radio, config: RadioConfig) {
 
     let mut rx_buf = [0u8; 255];
     let mut rx_timeout_count: u32 = 0;
-
-    // RNode-compatible header: 1-byte prepended to every LoRa frame.
-    // Upper nibble = random sequence, bit 0 = split flag.
-    // RNode firmware adds this on TX and strips on RX.  We must do the
-    // same so T114 and RNode devices can exchange packets.
     let mut rng_state: u32 = 0xDEAD_BEEF; // xorshift32 seed
+    let mut reassembler = reticulum_core::rnode::SplitReassembler::new();
 
     loop {
         // Drain outgoing packets (non-blocking)
         while let Ok(data) = outgoing_rx.try_receive() {
-            // Prepend 1-byte RNode header (random upper nibble, no split)
             rng_state ^= rng_state << 13;
             rng_state ^= rng_state >> 17;
             rng_state ^= rng_state << 5;
-            let header = (rng_state as u8) & 0xF0;
-            let mut frame = Vec::with_capacity(1 + data.len());
-            frame.push(header);
-            frame.extend_from_slice(&data);
-            crate::log::log_fmt("[LORA] ", format_args!("TX {} bytes", data.len()));
-            match radio.transmit(&frame, 5000).await {
-                Ok(()) => {
-                    crate::log::log_fmt("[LORA] ", format_args!("TX done"));
-                }
-                Err(e) => {
-                    crate::log::log_fmt("[LORA] ", format_args!("TX err: {:?}", e));
+            let seq_nibble = (rng_state as u8) & 0xF0;
+            let frames = reticulum_core::rnode::build_lora_frames(&data, seq_nibble);
+
+            if frames.len() > 1 {
+                crate::log::log_fmt("[LORA] ", format_args!(
+                    "TX split {} bytes ({}+{})",
+                    data.len(), frames[0].len() - 1, frames[1].len() - 1
+                ));
+            } else {
+                crate::log::log_fmt("[LORA] ", format_args!("TX {} bytes", data.len()));
+            }
+
+            let mut tx_ok = true;
+            for (i, frame) in frames.iter().enumerate() {
+                match radio.transmit(frame, 5000).await {
+                    Ok(()) => {}
+                    Err(e) => {
+                        crate::log::log_fmt("[LORA] ", format_args!(
+                            "TX err frame {}: {:?}", i, e
+                        ));
+                        tx_ok = false;
+                        break;
+                    }
                 }
             }
+            if tx_ok {
+                crate::log::log_fmt("[LORA] ", format_args!("TX done"));
+            }
         }
+
+        // Timeout stale split reassembly buffers (10 cycles * 500ms = 5s)
+        reassembler.check_timeout(rx_timeout_count, 10);
 
         // RX with 500ms timeout, then loop back to check outgoing
         match radio.receive(&mut rx_buf, 500).await {
             Ok((len, status)) => {
-                // Strip 1-byte RNode header
-                if len < 2 {
+                let frame = &rx_buf[..len as usize];
+                if let Some(data) = reassembler.feed(frame, rx_timeout_count) {
+                    crate::log::log_fmt("[LORA] ", format_args!(
+                        "RX {} bytes rssi={} snr={}", data.len(), status.rssi, status.snr
+                    ));
+                    incoming_tx.send(data).await;
+                } else if len >= 2 && (rx_buf[0] & reticulum_core::rnode::FLAG_SPLIT) != 0 {
+                    crate::log::log_fmt("[LORA] ", format_args!(
+                        "RX split part {} bytes seq={} rssi={} snr={}",
+                        len - 1, rx_buf[0] >> 4, status.rssi, status.snr
+                    ));
+                } else if len < 2 {
                     crate::log::log_fmt("[LORA] ", format_args!("RX too short ({})", len));
-                    continue;
                 }
-                let payload = &rx_buf[1..len as usize];
-                crate::log::log_fmt("[LORA] ", format_args!(
-                    "RX {} bytes rssi={} snr={}", payload.len(), status.rssi, status.snr
-                ));
-                let data = payload.to_vec();
-                incoming_tx.send(data).await;
             }
             Err(crate::sx1262::Error::Timeout) => {
-                rx_timeout_count += 1;
+                rx_timeout_count = rx_timeout_count.wrapping_add(1);
                 if rx_timeout_count % 60 == 0 {
                     crate::log::log_fmt("[LORA] ", format_args!("RX idle ({})", rx_timeout_count));
                 }

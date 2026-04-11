@@ -1,0 +1,72 @@
+# Split protocol test: verify T114 can RX and reassemble >254 byte LoRa frames.
+#
+# A Python script on the rnode node creates a destination with 100 bytes
+# app_data and announces it. The announce is ~267 bytes on the wire, which
+# the RNode firmware splits into two LoRa frames. The T114 must reassemble
+# these frames and forward the announce to lnsd on the lnode side.
+#
+# The Python script connects as a shared-instance client (Unix socket) so
+# it does not conflict with lnsd's RNode access.
+#
+# Verify in T114 debug log:
+#   "RX split part" — split frame received and buffered
+#   "RX ... bytes"  — reassembled packet delivered
+
+[test]
+name = "lora_lnode_split"
+description = "T114 receives and reassembles split LoRa frames from RNode"
+timeout_secs = 180
+rust_log = "reticulum_core::transport=debug,reticulum_std::interfaces=debug,info"
+
+[radio]
+frequency = 869525000
+bandwidth = 125000
+sf = 7
+cr = 5
+txpower = 17
+
+[nodes.rnode]
+type = "rust"
+respond_to_probes = true
+rnode = true
+
+[nodes.lnode]
+type = "rust"
+respond_to_probes = true
+serial = true
+
+[[steps]]
+action = "sleep"
+duration_secs = 25
+
+# Baseline: single-frame announces work (this also warms up the LoRa link)
+[[steps]]
+action = "wait_for_path"
+on = "rnode"
+destination = "lnode.probe"
+timeout_secs = 90
+
+[[steps]]
+action = "wait_for_path"
+on = "lnode"
+destination = "rnode.probe"
+timeout_secs = 90
+
+# Send padded announce from rnode. Python connects as shared-instance client.
+# 100 bytes app_data makes the announce ~267 bytes, triggering RNode split TX.
+# The script announces 3 times with 5s gaps.
+[[steps]]
+action = "exec"
+on = "rnode"
+command = "python3 /opt/integ-scripts/padded_announce.py 100"
+expect_exit_code = 0
+timeout_secs = 60
+
+# Probe from lnode to rnode — this already works (single-frame) and confirms
+# that the LoRa link is still healthy after the split traffic.
+[[steps]]
+action = "rnprobe"
+from = "lnode"
+to = "rnode.probe"
+expect_result = "success"
+timeout_secs = 90

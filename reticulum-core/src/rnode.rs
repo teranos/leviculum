@@ -642,6 +642,116 @@ pub fn compute_spacing_ms(payload_bytes: u32, bandwidth_hz: u32, sf: u8, cr: u8)
 }
 
 // ---------------------------------------------------------------------------
+// LoRa frame header: split protocol
+// ---------------------------------------------------------------------------
+
+/// Split flag in the 1-byte LoRa frame header. When set, the frame is
+/// part of a split packet (payload > 254 bytes sent as two frames).
+pub const FLAG_SPLIT: u8 = 0x01;
+
+/// Maximum payload bytes in a single LoRa frame (255-byte FIFO minus 1-byte header).
+pub const MAX_SINGLE_PAYLOAD: usize = 254;
+
+/// Build one or two LoRa frames from a Reticulum packet.
+///
+/// `seq_nibble` must already be masked to upper 4 bits (0xF0).
+/// Returns 1 frame for payload <= 254 bytes, 2 frames for larger.
+/// Both split frames use the identical header byte (same sequence nibble,
+/// same FLAG_SPLIT bit), matching the RNode firmware exactly.
+pub fn build_lora_frames(data: &[u8], seq_nibble: u8) -> Vec<Vec<u8>> {
+    let seq = seq_nibble & 0xF0;
+    if data.len() > MAX_SINGLE_PAYLOAD {
+        let header = seq | FLAG_SPLIT;
+        let mut frame1 = Vec::with_capacity(1 + MAX_SINGLE_PAYLOAD);
+        frame1.push(header);
+        frame1.extend_from_slice(&data[..MAX_SINGLE_PAYLOAD]);
+
+        let mut frame2 = Vec::with_capacity(1 + data.len() - MAX_SINGLE_PAYLOAD);
+        frame2.push(header);
+        frame2.extend_from_slice(&data[MAX_SINGLE_PAYLOAD..]);
+
+        alloc::vec![frame1, frame2]
+    } else {
+        let mut frame = Vec::with_capacity(1 + data.len());
+        frame.push(seq);
+        frame.extend_from_slice(data);
+        alloc::vec![frame]
+    }
+}
+
+/// State machine for reassembling split LoRa frames.
+///
+/// Implements the four-case logic from the RNode firmware:
+/// 1. Split + no buffer → store first half, return None
+/// 2. Split + same sequence → concatenate, return assembled payload
+/// 3. Split + different sequence → discard old, store new first half
+/// 4. Not split → return payload directly (discard any pending buffer)
+pub struct SplitReassembler {
+    buf: Vec<u8>,
+    seq: Option<u8>,
+    tick: u32,
+}
+
+impl SplitReassembler {
+    pub fn new() -> Self {
+        Self {
+            buf: Vec::new(),
+            seq: None,
+            tick: 0,
+        }
+    }
+
+    /// Feed a raw LoRa frame (including the 1-byte header).
+    /// Returns `Some(payload)` when a complete packet is ready.
+    /// Returns `None` when buffering a split first-half or on errors.
+    pub fn feed(&mut self, frame: &[u8], current_tick: u32) -> Option<Vec<u8>> {
+        if frame.len() < 2 {
+            return None;
+        }
+        let header = frame[0];
+        let is_split = (header & FLAG_SPLIT) != 0;
+        let sequence = header >> 4;
+        let payload = &frame[1..];
+
+        if is_split && self.seq.is_none() {
+            // First part of a split packet
+            self.buf.clear();
+            self.buf.extend_from_slice(payload);
+            self.seq = Some(sequence);
+            self.tick = current_tick;
+            None
+        } else if is_split && self.seq == Some(sequence) {
+            // Second part: concatenate and deliver
+            self.buf.extend_from_slice(payload);
+            self.seq = None;
+            Some(core::mem::take(&mut self.buf))
+        } else if is_split {
+            // Different sequence: discard old, start new
+            self.buf.clear();
+            self.buf.extend_from_slice(payload);
+            self.seq = Some(sequence);
+            self.tick = current_tick;
+            None
+        } else {
+            // Not a split packet: deliver directly
+            if self.seq.is_some() {
+                self.buf.clear();
+                self.seq = None;
+            }
+            Some(payload.to_vec())
+        }
+    }
+
+    /// Discard stale split buffers older than `max_age` ticks.
+    pub fn check_timeout(&mut self, current_tick: u32, max_age: u32) {
+        if self.seq.is_some() && current_tick.wrapping_sub(self.tick) >= max_age {
+            self.buf.clear();
+            self.seq = None;
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
 
@@ -1191,5 +1301,259 @@ mod tests {
             spacing >= MIN_SPACING_MS,
             "spacing must never go below MIN_SPACING_MS"
         );
+    }
+
+    // -----------------------------------------------------------------------
+    // Split protocol tests
+    // -----------------------------------------------------------------------
+
+    // TX tests
+
+    #[test]
+    fn single_frame_small() {
+        let data = vec![0xAA; 100];
+        let frames = build_lora_frames(&data, 0x50);
+        assert_eq!(frames.len(), 1);
+        assert_eq!(frames[0][0] & FLAG_SPLIT, 0);
+        assert_eq!(&frames[0][1..], &data[..]);
+    }
+
+    #[test]
+    fn single_frame_exact_254() {
+        let data = vec![0xBB; 254];
+        let frames = build_lora_frames(&data, 0x30);
+        assert_eq!(frames.len(), 1);
+        assert_eq!(frames[0][0] & FLAG_SPLIT, 0);
+        assert_eq!(frames[0].len(), 255);
+    }
+
+    #[test]
+    fn split_at_255() {
+        let data = vec![0xCC; 255];
+        let frames = build_lora_frames(&data, 0x70);
+        assert_eq!(frames.len(), 2);
+        assert_ne!(frames[0][0] & FLAG_SPLIT, 0);
+        assert_ne!(frames[1][0] & FLAG_SPLIT, 0);
+        assert_eq!(frames[0].len(), 255); // 1 header + 254 payload
+        assert_eq!(frames[1].len(), 2);   // 1 header + 1 payload
+    }
+
+    #[test]
+    fn split_300_bytes() {
+        let data: Vec<u8> = (0u16..300).map(|i| (i & 0xFF) as u8).collect();
+        let frames = build_lora_frames(&data, 0xA0);
+        assert_eq!(frames.len(), 2);
+        assert_eq!(&frames[0][1..], &data[..254]);
+        assert_eq!(&frames[1][1..], &data[254..]);
+    }
+
+    #[test]
+    fn split_max_508() {
+        let data = vec![0xDD; 508];
+        let frames = build_lora_frames(&data, 0xE0);
+        assert_eq!(frames.len(), 2);
+        assert_eq!(frames[0].len(), 255);
+        assert_eq!(frames[1].len(), 255);
+    }
+
+    #[test]
+    fn header_sequence_nibble() {
+        let frames = build_lora_frames(&[1, 2, 3], 0xB0);
+        assert_eq!(frames[0][0] >> 4, 0x0B);
+    }
+
+    #[test]
+    fn both_frames_same_header() {
+        let data = vec![0xFF; 300];
+        let frames = build_lora_frames(&data, 0x40);
+        assert_eq!(frames[0][0], frames[1][0]);
+    }
+
+    #[test]
+    fn empty_payload() {
+        let frames = build_lora_frames(&[], 0x20);
+        assert_eq!(frames.len(), 1);
+        assert_eq!(frames[0].len(), 1); // header only
+        assert_eq!(frames[0][0] & FLAG_SPLIT, 0);
+    }
+
+    // RX tests
+
+    #[test]
+    fn single_frame_delivery() {
+        let mut r = SplitReassembler::new();
+        let frame = vec![0x50, 0xAA, 0xBB, 0xCC];
+        let result = r.feed(&frame, 0);
+        assert_eq!(result, Some(vec![0xAA, 0xBB, 0xCC]));
+    }
+
+    #[test]
+    fn split_reassembly() {
+        let mut r = SplitReassembler::new();
+        let header: u8 = 0x30 | FLAG_SPLIT;
+        let frame1 = {
+            let mut f = vec![header];
+            f.extend_from_slice(&[1; 254]);
+            f
+        };
+        let frame2 = {
+            let mut f = vec![header];
+            f.extend_from_slice(&[2; 46]);
+            f
+        };
+        assert_eq!(r.feed(&frame1, 0), None);
+        let result = r.feed(&frame2, 1).unwrap();
+        assert_eq!(result.len(), 300);
+        assert!(result[..254].iter().all(|&b| b == 1));
+        assert!(result[254..].iter().all(|&b| b == 2));
+    }
+
+    #[test]
+    fn split_different_sequence_restarts() {
+        let mut r = SplitReassembler::new();
+        let frame_a = vec![0x30 | FLAG_SPLIT, 0xAA];
+        let frame_b = vec![0x50 | FLAG_SPLIT, 0xBB];
+        assert_eq!(r.feed(&frame_a, 0), None);
+        assert_eq!(r.feed(&frame_b, 1), None);
+        // Buffer should now hold frame_b's payload
+        let frame_b2 = vec![0x50 | FLAG_SPLIT, 0xCC];
+        let result = r.feed(&frame_b2, 2).unwrap();
+        assert_eq!(result, vec![0xBB, 0xCC]);
+    }
+
+    #[test]
+    fn non_split_clears_pending() {
+        let mut r = SplitReassembler::new();
+        let split_frame = vec![0x30 | FLAG_SPLIT, 0xAA];
+        assert_eq!(r.feed(&split_frame, 0), None);
+        let single_frame = vec![0x70, 0xDD, 0xEE];
+        let result = r.feed(&single_frame, 1);
+        assert_eq!(result, Some(vec![0xDD, 0xEE]));
+        // Buffer should be cleared — a second split half should not match
+        let split_half2 = vec![0x30 | FLAG_SPLIT, 0xBB];
+        assert_eq!(r.feed(&split_half2, 2), None); // new first half
+    }
+
+    #[test]
+    fn timeout_clears_buffer() {
+        let mut r = SplitReassembler::new();
+        let frame = vec![0x30 | FLAG_SPLIT, 0xAA];
+        assert_eq!(r.feed(&frame, 100), None);
+        r.check_timeout(109, 10); // not expired yet
+        // Buffer should still be there
+        let frame2 = vec![0x30 | FLAG_SPLIT, 0xBB];
+        let result = r.feed(&frame2, 109).unwrap();
+        assert_eq!(result, vec![0xAA, 0xBB]);
+    }
+
+    #[test]
+    fn timeout_expires_buffer() {
+        let mut r = SplitReassembler::new();
+        let frame = vec![0x30 | FLAG_SPLIT, 0xAA];
+        assert_eq!(r.feed(&frame, 100), None);
+        r.check_timeout(110, 10); // expired
+        // Buffer cleared — second half should start a new buffer
+        let frame2 = vec![0x30 | FLAG_SPLIT, 0xBB];
+        assert_eq!(r.feed(&frame2, 111), None); // new first half, not reassembly
+    }
+
+    #[test]
+    fn frame_too_short() {
+        let mut r = SplitReassembler::new();
+        assert_eq!(r.feed(&[], 0), None);
+        assert_eq!(r.feed(&[0x50], 0), None);
+    }
+
+    #[test]
+    fn round_trip_split() {
+        let data: Vec<u8> = (0u16..300).map(|i| (i & 0xFF) as u8).collect();
+        let frames = build_lora_frames(&data, 0x60);
+        let mut r = SplitReassembler::new();
+        assert_eq!(r.feed(&frames[0], 0), None);
+        let result = r.feed(&frames[1], 1).unwrap();
+        assert_eq!(result, data);
+    }
+
+    #[test]
+    fn round_trip_single() {
+        let data = vec![0x42; 100];
+        let frames = build_lora_frames(&data, 0x80);
+        let mut r = SplitReassembler::new();
+        let result = r.feed(&frames[0], 0).unwrap();
+        assert_eq!(result, data);
+    }
+
+    #[test]
+    fn round_trip_exact_boundary() {
+        // 254 bytes = single frame
+        let data254 = vec![0x11; 254];
+        let frames = build_lora_frames(&data254, 0x90);
+        assert_eq!(frames.len(), 1);
+        let mut r = SplitReassembler::new();
+        assert_eq!(r.feed(&frames[0], 0).unwrap(), data254);
+
+        // 255 bytes = split
+        let data255 = vec![0x22; 255];
+        let frames = build_lora_frames(&data255, 0x90);
+        assert_eq!(frames.len(), 2);
+        let mut r = SplitReassembler::new();
+        assert_eq!(r.feed(&frames[0], 0), None);
+        assert_eq!(r.feed(&frames[1], 1).unwrap(), data255);
+    }
+
+    #[test]
+    fn interleaved_sequences() {
+        let mut r = SplitReassembler::new();
+        let frame_a1 = vec![0xA0 | FLAG_SPLIT, 0x11];
+        let frame_b1 = vec![0xB0 | FLAG_SPLIT, 0x22];
+        assert_eq!(r.feed(&frame_a1, 0), None);
+        // B1 arrives — A is discarded, B is now buffered
+        assert_eq!(r.feed(&frame_b1, 1), None);
+        // A2 arrives — sequence mismatch with B, B is discarded, A is new buffer
+        let frame_a2 = vec![0xA0 | FLAG_SPLIT, 0x33];
+        assert_eq!(r.feed(&frame_a2, 2), None);
+        // Another A arrives — same sequence as buffered A, reassemble
+        let frame_a3 = vec![0xA0 | FLAG_SPLIT, 0x44];
+        let result = r.feed(&frame_a3, 3).unwrap();
+        assert_eq!(result, vec![0x33, 0x44]);
+    }
+
+    #[test]
+    fn split_second_half_never_arrives() {
+        let mut r = SplitReassembler::new();
+        let frame = vec![0x50 | FLAG_SPLIT, 0xAA, 0xBB];
+        assert_eq!(r.feed(&frame, 0), None);
+        // No second half — timeout will clear it
+        r.check_timeout(10, 10);
+        assert_eq!(r.seq, None);
+    }
+
+    #[test]
+    fn two_complete_split_packets_in_sequence() {
+        let mut r = SplitReassembler::new();
+        // First split pair (seq 0x30)
+        let f1a = vec![0x30 | FLAG_SPLIT, 0x11, 0x22];
+        let f1b = vec![0x30 | FLAG_SPLIT, 0x33, 0x44];
+        assert_eq!(r.feed(&f1a, 0), None);
+        assert_eq!(r.feed(&f1b, 1).unwrap(), vec![0x11, 0x22, 0x33, 0x44]);
+        // Second split pair (seq 0x70)
+        let f2a = vec![0x70 | FLAG_SPLIT, 0xAA];
+        let f2b = vec![0x70 | FLAG_SPLIT, 0xBB];
+        assert_eq!(r.feed(&f2a, 2), None);
+        assert_eq!(r.feed(&f2b, 3).unwrap(), vec![0xAA, 0xBB]);
+    }
+
+    #[test]
+    fn non_split_between_split_halves() {
+        let mut r = SplitReassembler::new();
+        // First half of split
+        let split1 = vec![0x30 | FLAG_SPLIT, 0xAA];
+        assert_eq!(r.feed(&split1, 0), None);
+        // Non-split interrupts — buffer cleared, non-split delivered
+        let single = vec![0x50, 0xDD];
+        assert_eq!(r.feed(&single, 1).unwrap(), vec![0xDD]);
+        // Second half with same seq — treated as NEW first half (buffer was cleared)
+        let split2 = vec![0x30 | FLAG_SPLIT, 0xBB];
+        assert_eq!(r.feed(&split2, 2), None);
     }
 }

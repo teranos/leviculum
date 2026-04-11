@@ -55,6 +55,13 @@ pub fn generate_compose(
         )
         .ok();
         writeln!(out, "      - {}:/usr/local/bin/lns:ro", lns_path.display()).ok();
+        let scripts_dir = repo_root.join("reticulum-integ/scripts");
+        writeln!(
+            out,
+            "      - {}:/opt/integ-scripts:ro",
+            scripts_dir.display()
+        )
+        .ok();
         writeln!(
             out,
             "      - {}:/usr/local/bin/lncp:ro",
