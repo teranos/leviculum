@@ -825,6 +825,18 @@ fn resolve_and_probe_rnodes(scenario: &mut TestScenario) -> Result<(), RunnerErr
         }
     }
 
+    // Resolve debug_serial paths (LEVICULUM_DEBUG_SERIAL_N env override)
+    for node in scenario.nodes.values_mut() {
+        if let Some(ref mut path) = node.debug_serial {
+            if let Some(idx) = extract_acm_index(path) {
+                let env_key = format!("LEVICULUM_DEBUG_SERIAL_{idx}");
+                if let Ok(override_path) = std::env::var(&env_key) {
+                    *path = override_path;
+                }
+            }
+        }
+    }
+
     if paths_to_resolve.is_empty() && serial_paths.is_empty() {
         return Ok(());
     }

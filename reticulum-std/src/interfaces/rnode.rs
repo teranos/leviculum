@@ -32,7 +32,7 @@ const FINAL_SETTLE: Duration = Duration::from_millis(300);
 /// Detection phase read timeout
 const DETECT_TIMEOUT: Duration = Duration::from_millis(200);
 /// Configuration validation read timeout
-const VALIDATE_TIMEOUT: Duration = Duration::from_millis(250);
+const VALIDATE_TIMEOUT: Duration = Duration::from_millis(2000);
 /// Reconnect retry interval
 const RECONNECT_INTERVAL: Duration = Duration::from_secs(5);
 /// Serial read buffer size (detection + validation phases)
@@ -241,14 +241,19 @@ async fn read_frames_until_deadline(
         match tokio::time::timeout(remaining, port.read(&mut buf)).await {
             Ok(Ok(0)) => break,
             Ok(Ok(n)) => {
+                tracing::info!("rnode read {} bytes: {:02x?}", n, &buf[..n.min(32)]);
                 for frame in deframer.process(&buf[..n]) {
                     if let KissDeframeResult::Frame { command, payload } = frame {
+                        tracing::debug!("rnode KISS frame: cmd=0x{:02x} len={}", command, payload.len());
                         handler(command, &payload);
                     }
                 }
             }
             Ok(Err(e)) => return Err(e.into()),
-            Err(_) => break,
+            Err(_) => {
+                tracing::debug!("rnode read timeout ({:?} remaining)", remaining);
+                break;
+            }
         }
     }
     Ok(())
@@ -313,7 +318,10 @@ async fn send_radio_config(
     }
     config_bytes.extend_from_slice(&rnode::build_set_radio_state(rnode::RADIO_STATE_ON));
 
+    tracing::info!("rnode: sending {} config bytes", config_bytes.len());
     port.write_all(&config_bytes).await?;
+    port.flush().await?;
+    tracing::info!("rnode: config sent and flushed");
     Ok(())
 }
 

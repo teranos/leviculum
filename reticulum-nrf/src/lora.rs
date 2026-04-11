@@ -166,11 +166,25 @@ pub async fn lora_task(mut radio: Radio, config: RadioConfig) {
     let mut rx_buf = [0u8; 255];
     let mut rx_timeout_count: u32 = 0;
 
+    // RNode-compatible header: 1-byte prepended to every LoRa frame.
+    // Upper nibble = random sequence, bit 0 = split flag.
+    // RNode firmware adds this on TX and strips on RX.  We must do the
+    // same so T114 and RNode devices can exchange packets.
+    let mut rng_state: u32 = 0xDEAD_BEEF; // xorshift32 seed
+
     loop {
         // Drain outgoing packets (non-blocking)
         while let Ok(data) = outgoing_rx.try_receive() {
+            // Prepend 1-byte RNode header (random upper nibble, no split)
+            rng_state ^= rng_state << 13;
+            rng_state ^= rng_state >> 17;
+            rng_state ^= rng_state << 5;
+            let header = (rng_state as u8) & 0xF0;
+            let mut frame = Vec::with_capacity(1 + data.len());
+            frame.push(header);
+            frame.extend_from_slice(&data);
             crate::log::log_fmt("[LORA] ", format_args!("TX {} bytes", data.len()));
-            match radio.transmit(&data, 5000).await {
+            match radio.transmit(&frame, 5000).await {
                 Ok(()) => {
                     crate::log::log_fmt("[LORA] ", format_args!("TX done"));
                 }
@@ -183,10 +197,16 @@ pub async fn lora_task(mut radio: Radio, config: RadioConfig) {
         // RX with 500ms timeout, then loop back to check outgoing
         match radio.receive(&mut rx_buf, 500).await {
             Ok((len, status)) => {
+                // Strip 1-byte RNode header
+                if len < 2 {
+                    crate::log::log_fmt("[LORA] ", format_args!("RX too short ({})", len));
+                    continue;
+                }
+                let payload = &rx_buf[1..len as usize];
                 crate::log::log_fmt("[LORA] ", format_args!(
-                    "RX {} bytes rssi={} snr={}", len, status.rssi, status.snr
+                    "RX {} bytes rssi={} snr={}", payload.len(), status.rssi, status.snr
                 ));
-                let data = rx_buf[..len as usize].to_vec();
+                let data = payload.to_vec();
                 incoming_tx.send(data).await;
             }
             Err(crate::sx1262::Error::Timeout) => {

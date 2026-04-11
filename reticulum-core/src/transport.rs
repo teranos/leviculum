@@ -1808,6 +1808,17 @@ impl<C: Clock, S: Storage> Transport<C, S> {
             let should_rebroadcast =
                 self.config.enable_transport && !is_path_response && !rate_blocked && !rate_limited;
 
+            tracing::debug!(
+                dest = %HexShort(&dest_hash),
+                hops = packet.hops,
+                transport = self.config.enable_transport,
+                is_path_response,
+                rate_blocked,
+                rate_limited,
+                should_rebroadcast,
+                "announce rebroadcast decision"
+            );
+
             // Track local client destinations (Block B). When an announce arrives
             // from a local client, record (iface_id → dest_hash) so we can detect
             // client reconnects and manage per-client destination state.
