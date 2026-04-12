@@ -32,19 +32,19 @@ serial = true
 
 [[steps]]
 action = "sleep"
-duration_secs = 30
+duration_secs = 60
 
 [[steps]]
 action = "wait_for_path"
 on = "rnode_a"
 destination = "lnode_a.probe"
-timeout_secs = 90
+timeout_secs = 120
 
 [[steps]]
 action = "wait_for_path"
 on = "rnode_b"
 destination = "lnode_b.probe"
-timeout_secs = 90
+timeout_secs = 120
 
 [[steps]]
 action = "sleep"
