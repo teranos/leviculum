@@ -553,11 +553,11 @@ fn execute_benchmark(
     let radio = runner.scenario().radio.as_ref();
 
     // Compute min probe interval: 4x single-packet airtime accounts for
-    // request + response airtimes. Floor at 1200ms accounts for fixed overhead
-    // (serial framing, USB buffering, rnprobe subprocess ~50ms).
+    // probe + reply airtimes + processing margin. Floor at 800ms.
+    // With persistent RNS connection, each probe is 2 radio TX (no path re-request).
     let min_interval_ms = if let Some(r) = radio {
         let airtime = reticulum_core::rnode::airtime_ms(500, r.bandwidth, r.spreading_factor, r.coding_rate);
-        (airtime * 4).max(1200)
+        (airtime * 4).max(800)
     } else {
         3000
     };
