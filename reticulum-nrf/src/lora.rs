@@ -95,6 +95,7 @@ pub struct RadioConfig {
     pub preamble_len: u16,
     pub bw_hz: u32,       // human-readable bandwidth in Hz (for logging)
     pub cr_denom: u8,     // human-readable coding rate denominator 5-8 (for logging)
+    pub csma_enabled: bool,
 }
 
 impl RadioConfig {
@@ -109,6 +110,7 @@ impl RadioConfig {
             preamble_len: 24,
             bw_hz: 125_000,
             cr_denom: 5,
+            csma_enabled: false,
         }
     }
 
@@ -145,7 +147,158 @@ impl RadioConfig {
             preamble_len: wire.preamble_len,
             bw_hz: wire.bandwidth_hz,
             cr_denom: wire.cr,
+            csma_enabled: wire.csma_enabled,
         })
+    }
+}
+
+// ─── CSMA/CA constants ─────────────────────────────────────────────────────
+
+/// Max CSMA attempts before forcing a TX even though the channel appears busy.
+const CSMA_MAX_RETRIES: u8 = 8;
+/// Initial contention window (slots). Matches the RNode firmware. Starting at
+/// 2 guarantees a non-zero-slot random choice on the first retry so two nodes
+/// that simultaneously detect traffic desynchronize meaningfully.
+const CSMA_CW_INITIAL: u8 = 2;
+/// Maximum contention window (slots) after exponential back-off.
+const CSMA_CW_MAX: u8 = 64;
+/// Floor for slot time — matches the 24ms slot used by the RNode firmware.
+const CSMA_SLOT_MS_MIN: u64 = 24;
+
+/// xorshift32 PRNG step. Mutates state and returns the updated value.
+fn xorshift32(state: &mut u32) -> u32 {
+    *state ^= *state << 13;
+    *state ^= *state >> 17;
+    *state ^= *state << 5;
+    *state
+}
+
+/// Compute CSMA slot time in ms from the current radio profile.
+/// `max(24, airtime(500) / 10)` — scales with spreading factor so SF10/SF12
+/// don't keep retrying inside the same airtime window.
+fn compute_slot_ms(cfg: &RadioConfig) -> u64 {
+    let airtime = reticulum_core::rnode::airtime_ms(500, cfg.bw_hz, cfg.sf, cfg.cr_denom);
+    core::cmp::max(CSMA_SLOT_MS_MIN, airtime / 10)
+}
+
+/// Transmit one or two LoRa frames back-to-back. For split packets, both
+/// frames go out without any CSMA/CAD between them — the receiver's
+/// SplitReassembler expects this.
+async fn transmit_all_frames(
+    radio: &mut Radio,
+    data: &[u8],
+    rng_state: &mut u32,
+) {
+    let tx_start = embassy_time::Instant::now();
+    let seq_nibble = (xorshift32(rng_state) as u8) & 0xF0;
+    let frames = reticulum_core::rnode::build_lora_frames(data, seq_nibble);
+
+    if frames.len() > 1 {
+        crate::log::log_fmt("[LORA] ", format_args!(
+            "TX split {} bytes ({}+{})",
+            data.len(), frames[0].len() - 1, frames[1].len() - 1
+        ));
+    } else {
+        crate::log::log_fmt("[LORA] ", format_args!("TX {} bytes", data.len()));
+    }
+
+    let mut tx_ok = true;
+    for (i, frame) in frames.iter().enumerate() {
+        match radio.transmit(frame, 5000).await {
+            Ok(()) => {}
+            Err(e) => {
+                crate::log::log_fmt("[LORA] ", format_args!(
+                    "TX err frame {}: {:?}", i, e
+                ));
+                tx_ok = false;
+                break;
+            }
+        }
+    }
+    let tx_ms = tx_start.elapsed().as_millis();
+    if tx_ok {
+        crate::log::log_fmt("[LORA] ", format_args!("TX done"));
+    }
+    crate::log::log_fmt("[T114_LORA_LOOP] ", format_args!(
+        "op=tx duration_ms={}", tx_ms
+    ));
+}
+
+// ─── RX helper ─────────────────────────────────────────────────────────────
+
+/// Run one RX cycle with the given timeout. Feeds results through the split
+/// reassembler and pushes reassembled payloads to `incoming_tx`.
+/// Safe to call from both the idle-poll path and CSMA backoff windows.
+async fn rx_once(
+    radio: &mut Radio,
+    rx_buf: &mut [u8; 255],
+    timeout_ms: u32,
+    reassembler: &mut reticulum_core::rnode::SplitReassembler,
+    incoming_tx: &Sender<'static, CriticalSectionRawMutex, Vec<u8>, 4>,
+    rx_timeout_count: &mut u32,
+) {
+    let rx_start = embassy_time::Instant::now();
+    let rx_result = radio.receive(rx_buf, timeout_ms).await;
+    let rx_ms = rx_start.elapsed().as_millis();
+    match rx_result {
+        Ok((len, status)) => {
+            crate::log::log_fmt("[T114_LORA_LOOP] ", format_args!(
+                "op=rx_success duration_ms={}", rx_ms
+            ));
+            let frame = &rx_buf[..len as usize];
+            let h = frame;
+            let n = h.len().min(9);
+            if n >= 1 {
+                let mut first8 = [0u8; 8];
+                let copy_len = (n - 1).min(8);
+                first8[..copy_len].copy_from_slice(&h[1..1 + copy_len]);
+                crate::log::log_fmt("[T114_SX_RX] ", format_args!(
+                    "len={} first8={:02x}{:02x}{:02x}{:02x}{:02x}{:02x}{:02x}{:02x} rssi={} snr={}",
+                    len, first8[0], first8[1], first8[2], first8[3],
+                    first8[4], first8[5], first8[6], first8[7],
+                    status.rssi, status.snr
+                ));
+            }
+            if let Some(data) = reassembler.feed(frame, *rx_timeout_count) {
+                crate::log::log_fmt("[LORA] ", format_args!(
+                    "RX {} bytes rssi={} snr={}", data.len(), status.rssi, status.snr
+                ));
+                let plen = data.len();
+                let d = data.as_slice();
+                let m = d.len().min(8);
+                let mut p8 = [0u8; 8];
+                p8[..m].copy_from_slice(&d[..m]);
+                crate::log::log_fmt("[T114_LORA_DELIVER] ", format_args!(
+                    "pkt_hash8={:02x}{:02x}{:02x}{:02x}{:02x}{:02x}{:02x}{:02x} len={}",
+                    p8[0], p8[1], p8[2], p8[3], p8[4], p8[5], p8[6], p8[7], plen
+                ));
+                incoming_tx.send(data).await;
+            } else if len >= 2 && (rx_buf[0] & reticulum_core::rnode::FLAG_SPLIT) != 0 {
+                crate::log::log_fmt("[LORA] ", format_args!(
+                    "RX split part {} bytes seq={} rssi={} snr={}",
+                    len - 1, rx_buf[0] >> 4, status.rssi, status.snr
+                ));
+            } else if len < 2 {
+                crate::log::log_fmt("[LORA] ", format_args!("RX too short ({})", len));
+            }
+        }
+        Err(crate::sx1262::Error::Timeout) => {
+            *rx_timeout_count = rx_timeout_count.wrapping_add(1);
+            crate::log::log_fmt("[T114_SX_TIMEOUT] ", format_args!(""));
+            crate::log::log_fmt("[T114_LORA_LOOP] ", format_args!(
+                "op=rx_timeout duration_ms={}", rx_ms
+            ));
+            if *rx_timeout_count % 60 == 0 {
+                crate::log::log_fmt("[LORA] ", format_args!("RX idle ({})", *rx_timeout_count));
+            }
+        }
+        Err(e) => {
+            crate::log::log_fmt("[T114_SX_ERR] ", format_args!("error={:?}", e));
+            crate::log::log_fmt("[T114_LORA_LOOP] ", format_args!(
+                "op=rx_err duration_ms={}", rx_ms
+            ));
+            crate::log::log_fmt("[LORA] ", format_args!("RX err: {:?}", e));
+        }
     }
 }
 
@@ -182,7 +335,7 @@ pub async fn init(
 // ─── LoRa async task ───────────────────────────────────────────────────────
 
 #[embassy_executor::task]
-pub async fn lora_task(mut radio: Radio, config: RadioConfig) {
+pub async fn lora_task(mut radio: Radio, mut config: RadioConfig) {
     let outgoing_rx = LORA_OUTGOING.receiver();
     let incoming_tx = LORA_INCOMING.sender();
     let config_rx = LORA_CONFIG.receiver();
@@ -206,8 +359,9 @@ pub async fn lora_task(mut radio: Radio, config: RadioConfig) {
         config.tx_power_dbm, config.preamble_len,
     ).await {
         Ok(()) => crate::log::log_fmt("[LORA] ", format_args!(
-            "active config: freq={} sf={} bw={} cr={} txp={}",
-            config.frequency_hz, config.sf, config.bw_hz, config.cr_denom, config.tx_power_dbm
+            "active config: freq={} sf={} bw={} cr={} txp={} csma={}",
+            config.frequency_hz, config.sf, config.bw_hz, config.cr_denom,
+            config.tx_power_dbm, config.csma_enabled
         )),
         Err(e) => {
             crate::log::log_fmt("[LORA] ", format_args!("configure FAILED: {:?}", e));
@@ -222,6 +376,12 @@ pub async fn lora_task(mut radio: Radio, config: RadioConfig) {
     let mut rng_state: u32 = 0xDEAD_BEEF; // xorshift32 seed
     let mut reassembler = reticulum_core::rnode::SplitReassembler::new();
 
+    // CSMA state (only used when config.csma_enabled)
+    let mut pending_tx: Option<Vec<u8>> = None;
+    let mut csma_attempt: u8 = 0;
+    let mut csma_cw: u8 = CSMA_CW_INITIAL;
+    let mut slot_ms: u64 = compute_slot_ms(&config);
+
     loop {
         // Check for runtime radio config override (test infrastructure)
         if let Ok(new_cfg) = config_rx.try_receive() {
@@ -229,126 +389,102 @@ pub async fn lora_task(mut radio: Radio, config: RadioConfig) {
                 new_cfg.frequency_hz, new_cfg.sf, new_cfg.bw, new_cfg.cr,
                 new_cfg.tx_power_dbm, new_cfg.preamble_len,
             ).await {
-                Ok(()) => crate::log::log_fmt("[LORA] ", format_args!(
-                    "active config: freq={} sf={} bw={} cr={} txp={}",
-                    new_cfg.frequency_hz, new_cfg.sf, new_cfg.bw_hz,
-                    new_cfg.cr_denom, new_cfg.tx_power_dbm
-                )),
+                Ok(()) => {
+                    crate::log::log_fmt("[LORA] ", format_args!(
+                        "active config: freq={} sf={} bw={} cr={} txp={} csma={}",
+                        new_cfg.frequency_hz, new_cfg.sf, new_cfg.bw_hz,
+                        new_cfg.cr_denom, new_cfg.tx_power_dbm, new_cfg.csma_enabled
+                    ));
+                    config = new_cfg;
+                    slot_ms = compute_slot_ms(&config);
+                }
                 Err(e) => crate::log::log_fmt("[LORA] ", format_args!(
                     "reconfig FAILED: {:?}", e
                 )),
             }
         }
 
-        // Drain outgoing packets (non-blocking)
-        while let Ok(data) = outgoing_rx.try_receive() {
-            let tx_start = embassy_time::Instant::now();
-            rng_state ^= rng_state << 13;
-            rng_state ^= rng_state >> 17;
-            rng_state ^= rng_state << 5;
-            let seq_nibble = (rng_state as u8) & 0xF0;
-            let frames = reticulum_core::rnode::build_lora_frames(&data, seq_nibble);
-
-            if frames.len() > 1 {
-                crate::log::log_fmt("[LORA] ", format_args!(
-                    "TX split {} bytes ({}+{})",
-                    data.len(), frames[0].len() - 1, frames[1].len() - 1
-                ));
-            } else {
-                crate::log::log_fmt("[LORA] ", format_args!("TX {} bytes", data.len()));
+        // Pick up a new packet to send if no TX is in flight
+        if pending_tx.is_none() {
+            if let Ok(data) = outgoing_rx.try_receive() {
+                pending_tx = Some(data);
+                csma_attempt = 0;
+                csma_cw = CSMA_CW_INITIAL;
             }
+        }
 
-            let mut tx_ok = true;
-            for (i, frame) in frames.iter().enumerate() {
-                match radio.transmit(frame, 5000).await {
-                    Ok(()) => {}
-                    Err(e) => {
-                        crate::log::log_fmt("[LORA] ", format_args!(
-                            "TX err frame {}: {:?}", i, e
+        if let Some(data) = pending_tx.as_ref() {
+            if !config.csma_enabled {
+                transmit_all_frames(&mut radio, data, &mut rng_state).await;
+                pending_tx = None;
+            } else {
+                match radio.cad(config.sf).await {
+                    Ok(false) => {
+                        // Channel clear — send the whole packet (both split
+                        // frames back-to-back, no CAD between them).
+                        crate::log::log_fmt("[LORA_CAD] ", format_args!(
+                            "busy=false attempt={}", csma_attempt
                         ));
-                        tx_ok = false;
-                        break;
+                        crate::log::log_fmt("[LORA_CSMA_TX] ", format_args!(
+                            "retries={} forced=false slot_ms={}", csma_attempt, slot_ms
+                        ));
+                        transmit_all_frames(&mut radio, data, &mut rng_state).await;
+                        pending_tx = None;
+                    }
+                    Ok(true) => {
+                        crate::log::log_fmt("[LORA_CAD] ", format_args!(
+                            "busy=true attempt={}", csma_attempt
+                        ));
+                        csma_attempt += 1;
+                        if csma_attempt >= CSMA_MAX_RETRIES {
+                            crate::log::log_fmt("[LORA_CSMA_TX] ", format_args!(
+                                "retries={} forced=true slot_ms={}", csma_attempt, slot_ms
+                            ));
+                            transmit_all_frames(&mut radio, data, &mut rng_state).await;
+                            pending_tx = None;
+                        } else {
+                            let slots = (xorshift32(&mut rng_state) as u64) % (csma_cw as u64);
+                            let backoff_ms = slots * slot_ms;
+                            csma_cw = core::cmp::min(csma_cw.saturating_mul(2), CSMA_CW_MAX);
+                            // RX during the backoff so incoming packets aren't lost.
+                            // Clamp to >=1ms — the SX1262 needs a non-zero timeout.
+                            let rx_ms = backoff_ms.max(1).min(10_000) as u32;
+                            reassembler.check_timeout(rx_timeout_count, 10);
+                            rx_once(
+                                &mut radio, &mut rx_buf, rx_ms,
+                                &mut reassembler, &incoming_tx, &mut rx_timeout_count,
+                            ).await;
+                            continue;
+                        }
+                    }
+                    Err(e) => {
+                        crate::log::log_fmt("[LORA_CAD] ", format_args!(
+                            "err={:?} attempt={}", e, csma_attempt
+                        ));
+                        csma_attempt += 1;
+                        if csma_attempt >= CSMA_MAX_RETRIES {
+                            crate::log::log_fmt("[LORA_CSMA_TX] ", format_args!(
+                                "retries={} forced=true slot_ms={}", csma_attempt, slot_ms
+                            ));
+                            transmit_all_frames(&mut radio, data, &mut rng_state).await;
+                            pending_tx = None;
+                        }
+                        continue;
                     }
                 }
             }
-            let tx_ms = tx_start.elapsed().as_millis();
-            if tx_ok {
-                crate::log::log_fmt("[LORA] ", format_args!("TX done"));
-            }
-            crate::log::log_fmt("[T114_LORA_LOOP] ", format_args!(
-                "op=tx duration_ms={}", tx_ms
-            ));
+            // TX just completed — go back to the top of the loop to drain
+            // the next pending packet immediately. This matches the original
+            // tight-drain behavior and avoids an extra 500ms RX gap between
+            // back-to-back outbound packets (e.g. announce rebroadcasts).
+            continue;
         }
 
-        // Timeout stale split reassembly buffers (10 cycles * 500ms = 5s)
+        // Queue empty — timeout stale split reassembly buffers and RX.
         reassembler.check_timeout(rx_timeout_count, 10);
-
-        // RX with 500ms timeout, then loop back to check outgoing
-        let rx_start = embassy_time::Instant::now();
-        let rx_result = radio.receive(&mut rx_buf, 500).await;
-        let rx_ms = rx_start.elapsed().as_millis();
-        match rx_result {
-            Ok((len, status)) => {
-                crate::log::log_fmt("[T114_LORA_LOOP] ", format_args!(
-                    "op=rx_success duration_ms={}", rx_ms
-                ));
-                let frame = &rx_buf[..len as usize];
-                // Stage 1: raw radio RX — log first 8 bytes of frame (including 1-byte header).
-                // Payload first8 (after header strip) is logged at stage 2 if delivered.
-                let h = frame;
-                let n = h.len().min(9); // header + up to 8 payload bytes
-                if n >= 1 {
-                    let mut first8 = [0u8; 8];
-                    let copy_len = (n - 1).min(8);
-                    first8[..copy_len].copy_from_slice(&h[1..1 + copy_len]);
-                    crate::log::log_fmt("[T114_SX_RX] ", format_args!(
-                        "len={} first8={:02x}{:02x}{:02x}{:02x}{:02x}{:02x}{:02x}{:02x} rssi={} snr={}",
-                        len, first8[0], first8[1], first8[2], first8[3],
-                        first8[4], first8[5], first8[6], first8[7],
-                        status.rssi, status.snr
-                    ));
-                }
-                if let Some(data) = reassembler.feed(frame, rx_timeout_count) {
-                    crate::log::log_fmt("[LORA] ", format_args!(
-                        "RX {} bytes rssi={} snr={}", data.len(), status.rssi, status.snr
-                    ));
-                    // Stage 2: after split reassembly, payload ready for NodeCore
-                    let plen = data.len();
-                    let d = data.as_slice();
-                    let m = d.len().min(8);
-                    let mut p8 = [0u8; 8];
-                    p8[..m].copy_from_slice(&d[..m]);
-                    crate::log::log_fmt("[T114_LORA_DELIVER] ", format_args!(
-                        "pkt_hash8={:02x}{:02x}{:02x}{:02x}{:02x}{:02x}{:02x}{:02x} len={}",
-                        p8[0], p8[1], p8[2], p8[3], p8[4], p8[5], p8[6], p8[7], plen
-                    ));
-                    incoming_tx.send(data).await;
-                } else if len >= 2 && (rx_buf[0] & reticulum_core::rnode::FLAG_SPLIT) != 0 {
-                    crate::log::log_fmt("[LORA] ", format_args!(
-                        "RX split part {} bytes seq={} rssi={} snr={}",
-                        len - 1, rx_buf[0] >> 4, status.rssi, status.snr
-                    ));
-                } else if len < 2 {
-                    crate::log::log_fmt("[LORA] ", format_args!("RX too short ({})", len));
-                }
-            }
-            Err(crate::sx1262::Error::Timeout) => {
-                rx_timeout_count = rx_timeout_count.wrapping_add(1);
-                crate::log::log_fmt("[T114_SX_TIMEOUT] ", format_args!(""));
-                crate::log::log_fmt("[T114_LORA_LOOP] ", format_args!(
-                    "op=rx_timeout duration_ms={}", rx_ms
-                ));
-                if rx_timeout_count % 60 == 0 {
-                    crate::log::log_fmt("[LORA] ", format_args!("RX idle ({})", rx_timeout_count));
-                }
-            }
-            Err(e) => {
-                crate::log::log_fmt("[T114_SX_ERR] ", format_args!("error={:?}", e));
-                crate::log::log_fmt("[T114_LORA_LOOP] ", format_args!(
-                    "op=rx_err duration_ms={}", rx_ms
-                ));
-                crate::log::log_fmt("[LORA] ", format_args!("RX err: {:?}", e));
-            }
-        }
+        rx_once(
+            &mut radio, &mut rx_buf, 500,
+            &mut reassembler, &incoming_tx, &mut rx_timeout_count,
+        ).await;
     }
 }
