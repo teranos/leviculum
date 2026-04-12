@@ -45,6 +45,11 @@ pub fn generate_compose(
         writeln!(out, "    environment:").ok();
         writeln!(out, "      NODE_TYPE: {}", node.node_type).ok();
         writeln!(out, "      RUST_LOG: {rust_log}").ok();
+        // Force Python RNS tools (rnprobe, rnpath, rncp, rnstatus, benchmark
+        // scripts) to FAIL LOUDLY when they cannot connect to the Rust lnsd
+        // daemon, instead of silently falling back to an own Python transport.
+        // Our vendored RNS patch (Reticulum.py) checks this env var.
+        writeln!(out, "      RNS_REQUIRE_SHARED: \"1\"").ok();
         writeln!(out, "    cap_add:").ok();
         writeln!(out, "      - NET_ADMIN").ok();
         writeln!(out, "    volumes:").ok();

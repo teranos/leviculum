@@ -27,8 +27,11 @@ probe_timeout = int(sys.argv[5]) if len(sys.argv) > 5 else 15
 
 dest_hash = bytes.fromhex(dest_hash_hex)
 
-# Connect as shared-instance client
-reticulum = RNS.Reticulum(config_path)
+# Connect as shared-instance client. require_shared_instance=True means
+# we FAIL LOUDLY if the Rust lnsd daemon is unreachable — do not silently
+# fall back to running our own Python-side transport (which would probe
+# the wrong identity's destinations).
+reticulum = RNS.Reticulum(config_path, require_shared_instance=True)
 time.sleep(2)
 
 # Log client identity for trace correlation
