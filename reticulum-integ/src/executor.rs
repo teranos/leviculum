@@ -3469,6 +3469,23 @@ mod tests {
     #[test]
     #[ignore] // Requires RNode + T114 hardware
     #[serial(lora)]
+    fn lora_lnode_probe_ca() {
+        let _lock = acquire_lora_lock();
+        let toml_str = std::fs::read_to_string(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/tests/lora_lnode_probe_ca.toml"
+        ))
+        .expect("lora_lnode_probe_ca.toml not found");
+        let scenario = crate::topology::parse_scenario(&toml_str).expect("parse failed");
+
+        let mut runner = require_runner!(scenario);
+
+        run_test(&mut runner).expect("test failed");
+    }
+
+    #[test]
+    #[ignore] // Requires RNode + T114 hardware
+    #[serial(lora)]
     fn lora_lnode_split() {
         let _lock = acquire_lora_lock();
         let toml_str = std::fs::read_to_string(concat!(
@@ -3819,6 +3836,66 @@ mod tests {
             "/tests/bench_dual_pair_slow.toml"
         ))
         .expect("bench_dual_pair_slow.toml not found");
+        let scenario = crate::topology::parse_scenario(&toml_str).expect("parse failed");
+        let mut runner = require_runner!(scenario);
+        run_test(&mut runner).expect("test failed");
+    }
+
+    #[test]
+    #[ignore]
+    #[serial(lora)]
+    fn bench_single_pair_medium_ca() {
+        let _lock = acquire_lora_lock();
+        let toml_str = std::fs::read_to_string(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/tests/bench_single_pair_medium_ca.toml"
+        ))
+        .expect("bench_single_pair_medium_ca.toml not found");
+        let scenario = crate::topology::parse_scenario(&toml_str).expect("parse failed");
+        let mut runner = require_runner!(scenario);
+        run_test(&mut runner).expect("test failed");
+    }
+
+    #[test]
+    #[ignore]
+    #[serial(lora)]
+    fn bench_single_pair_slow_ca() {
+        let _lock = acquire_lora_lock();
+        let toml_str = std::fs::read_to_string(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/tests/bench_single_pair_slow_ca.toml"
+        ))
+        .expect("bench_single_pair_slow_ca.toml not found");
+        let scenario = crate::topology::parse_scenario(&toml_str).expect("parse failed");
+        let mut runner = require_runner!(scenario);
+        run_test(&mut runner).expect("test failed");
+    }
+
+    #[test]
+    #[ignore]
+    #[serial(lora)]
+    fn bench_dual_pair_medium_ca() {
+        let _lock = acquire_lora_lock();
+        let toml_str = std::fs::read_to_string(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/tests/bench_dual_pair_medium_ca.toml"
+        ))
+        .expect("bench_dual_pair_medium_ca.toml not found");
+        let scenario = crate::topology::parse_scenario(&toml_str).expect("parse failed");
+        let mut runner = require_runner!(scenario);
+        run_test(&mut runner).expect("test failed");
+    }
+
+    #[test]
+    #[ignore]
+    #[serial(lora)]
+    fn bench_dual_pair_slow_ca() {
+        let _lock = acquire_lora_lock();
+        let toml_str = std::fs::read_to_string(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/tests/bench_dual_pair_slow_ca.toml"
+        ))
+        .expect("bench_dual_pair_slow_ca.toml not found");
         let scenario = crate::topology::parse_scenario(&toml_str).expect("parse failed");
         let mut runner = require_runner!(scenario);
         run_test(&mut runner).expect("test failed");
