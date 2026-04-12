@@ -35,6 +35,8 @@ mod opcode {
     pub const SET_RX: u8 = 0x82;
     pub const GET_RX_BUFFER_STATUS: u8 = 0x13;
     pub const GET_PACKET_STATUS: u8 = 0x14;
+    pub const SET_CAD_PARAMS: u8 = 0x88;
+    pub const SET_CAD: u8 = 0xC5;
 }
 
 /// SX1262 register addresses (datasheet §15, key register table)
@@ -52,8 +54,12 @@ mod irq {
     pub const CRC_ERR: u16 = 0x0040;
     pub const TIMEOUT: u16 = 0x0200;
 
+    pub const CAD_DONE: u16 = 0x0080;     // bit 7
+    pub const CAD_DETECTED: u16 = 0x0100; // bit 8
+
     pub const TX_ALL: u16 = TX_DONE | TIMEOUT;
     pub const RX_ALL: u16 = RX_DONE | CRC_ERR | TIMEOUT;
+    pub const CAD_ALL: u16 = CAD_DONE | CAD_DETECTED;
 }
 
 /// Received packet status (RSSI and SNR).
@@ -455,6 +461,63 @@ impl<SPI: SpiDeviceTrait> Sx1262<SPI> {
         } else {
             let _ = self.set_standby_rc().await;
             Err(Error::Timeout)
+        }
+    }
+
+    // ─── CAD (Channel Activity Detection) ──────────────────────────────
+
+    /// Perform a Channel Activity Detection. Returns true if a LoRa preamble
+    /// was detected (channel busy), false if clear. Blocks until CadDone IRQ.
+    /// Exit mode 0x00 leaves the chip in STBY_RC regardless of result.
+    pub async fn cad(&mut self, sf: u8) -> Result<bool, Error> {
+        // Datasheet Table 13-81 recommended cadDetPeak values per SF
+        let (cad_sym_num, cad_det_peak) = match sf {
+            7 | 8 => (0x02, 0x16),
+            9     => (0x02, 0x17),
+            10    => (0x02, 0x18),
+            11    => (0x02, 0x19),
+            12    => (0x02, 0x1A),
+            _     => (0x02, 0x16),
+        };
+        let cad_det_min = 0x0A;
+        let cad_exit_mode = 0x00; // CAD-only, return to STBY_RC
+        let cad_timeout = [0u8; 3];
+
+        self.write_command(opcode::SET_CAD_PARAMS, &[
+            cad_sym_num, cad_det_peak, cad_det_min, cad_exit_mode,
+            cad_timeout[0], cad_timeout[1], cad_timeout[2],
+        ]).await?;
+
+        self.write_command(opcode::SET_DIO_IRQ_PARAMS, &{
+            let m = irq::CAD_ALL;
+            [(m >> 8) as u8, m as u8, (m >> 8) as u8, m as u8, 0, 0, 0, 0]
+        }).await?;
+        self.write_command(opcode::CLEAR_IRQ_STATUS, &[0xFF, 0xFF]).await?;
+
+        self.write_command(opcode::SET_CAD, &[]).await?;
+
+        // Allow for 2 symbols of CAD + margin. SF12/BW125 ~ 260ms.
+        let timeout_ms = match sf {
+            7 | 8 => 50,
+            9     => 100,
+            10    => 200,
+            11    => 400,
+            12    => 800,
+            _     => 100,
+        };
+        match with_timeout(
+            Duration::from_millis(timeout_ms),
+            self.dio1.wait_for_high(),
+        ).await {
+            Ok(()) => {
+                let flags = self.get_irq_status().await?;
+                self.write_command(opcode::CLEAR_IRQ_STATUS, &[0xFF, 0xFF]).await?;
+                Ok((flags & irq::CAD_DETECTED) != 0)
+            }
+            Err(_) => {
+                let _ = self.set_standby_rc().await;
+                Err(Error::Timeout)
+            }
         }
     }
 }
