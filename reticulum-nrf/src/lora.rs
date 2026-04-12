@@ -242,6 +242,7 @@ pub async fn lora_task(mut radio: Radio, config: RadioConfig) {
 
         // Drain outgoing packets (non-blocking)
         while let Ok(data) = outgoing_rx.try_receive() {
+            let tx_start = embassy_time::Instant::now();
             rng_state ^= rng_state << 13;
             rng_state ^= rng_state >> 17;
             rng_state ^= rng_state << 5;
@@ -270,21 +271,56 @@ pub async fn lora_task(mut radio: Radio, config: RadioConfig) {
                     }
                 }
             }
+            let tx_ms = tx_start.elapsed().as_millis();
             if tx_ok {
                 crate::log::log_fmt("[LORA] ", format_args!("TX done"));
             }
+            crate::log::log_fmt("[T114_LORA_LOOP] ", format_args!(
+                "op=tx duration_ms={}", tx_ms
+            ));
         }
 
         // Timeout stale split reassembly buffers (10 cycles * 500ms = 5s)
         reassembler.check_timeout(rx_timeout_count, 10);
 
         // RX with 500ms timeout, then loop back to check outgoing
-        match radio.receive(&mut rx_buf, 500).await {
+        let rx_start = embassy_time::Instant::now();
+        let rx_result = radio.receive(&mut rx_buf, 500).await;
+        let rx_ms = rx_start.elapsed().as_millis();
+        match rx_result {
             Ok((len, status)) => {
+                crate::log::log_fmt("[T114_LORA_LOOP] ", format_args!(
+                    "op=rx_success duration_ms={}", rx_ms
+                ));
                 let frame = &rx_buf[..len as usize];
+                // Stage 1: raw radio RX — log first 8 bytes of frame (including 1-byte header).
+                // Payload first8 (after header strip) is logged at stage 2 if delivered.
+                let h = frame;
+                let n = h.len().min(9); // header + up to 8 payload bytes
+                if n >= 1 {
+                    let mut first8 = [0u8; 8];
+                    let copy_len = (n - 1).min(8);
+                    first8[..copy_len].copy_from_slice(&h[1..1 + copy_len]);
+                    crate::log::log_fmt("[T114_SX_RX] ", format_args!(
+                        "len={} first8={:02x}{:02x}{:02x}{:02x}{:02x}{:02x}{:02x}{:02x} rssi={} snr={}",
+                        len, first8[0], first8[1], first8[2], first8[3],
+                        first8[4], first8[5], first8[6], first8[7],
+                        status.rssi, status.snr
+                    ));
+                }
                 if let Some(data) = reassembler.feed(frame, rx_timeout_count) {
                     crate::log::log_fmt("[LORA] ", format_args!(
                         "RX {} bytes rssi={} snr={}", data.len(), status.rssi, status.snr
+                    ));
+                    // Stage 2: after split reassembly, payload ready for NodeCore
+                    let plen = data.len();
+                    let d = data.as_slice();
+                    let m = d.len().min(8);
+                    let mut p8 = [0u8; 8];
+                    p8[..m].copy_from_slice(&d[..m]);
+                    crate::log::log_fmt("[T114_LORA_DELIVER] ", format_args!(
+                        "pkt_hash8={:02x}{:02x}{:02x}{:02x}{:02x}{:02x}{:02x}{:02x} len={}",
+                        p8[0], p8[1], p8[2], p8[3], p8[4], p8[5], p8[6], p8[7], plen
                     ));
                     incoming_tx.send(data).await;
                 } else if len >= 2 && (rx_buf[0] & reticulum_core::rnode::FLAG_SPLIT) != 0 {
@@ -298,11 +334,19 @@ pub async fn lora_task(mut radio: Radio, config: RadioConfig) {
             }
             Err(crate::sx1262::Error::Timeout) => {
                 rx_timeout_count = rx_timeout_count.wrapping_add(1);
+                crate::log::log_fmt("[T114_SX_TIMEOUT] ", format_args!(""));
+                crate::log::log_fmt("[T114_LORA_LOOP] ", format_args!(
+                    "op=rx_timeout duration_ms={}", rx_ms
+                ));
                 if rx_timeout_count % 60 == 0 {
                     crate::log::log_fmt("[LORA] ", format_args!("RX idle ({})", rx_timeout_count));
                 }
             }
             Err(e) => {
+                crate::log::log_fmt("[T114_SX_ERR] ", format_args!("error={:?}", e));
+                crate::log::log_fmt("[T114_LORA_LOOP] ", format_args!(
+                    "op=rx_err duration_ms={}", rx_ms
+                ));
                 crate::log::log_fmt("[LORA] ", format_args!("RX err: {:?}", e));
             }
         }

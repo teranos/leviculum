@@ -277,6 +277,14 @@ async fn retic_serial_task(
                 }
                 // Outgoing packet to send
                 Either::Second(data) => {
+                    // Stage 5/6: log first 8 bytes of payload being sent to lnsd
+                    let n = data.len().min(8);
+                    let mut p8 = [0u8; 8];
+                    p8[..n].copy_from_slice(&data[..n]);
+                    crate::log::log_fmt("[T114_SERIAL_TX] ", format_args!(
+                        "pkt_hash8={:02x}{:02x}{:02x}{:02x}{:02x}{:02x}{:02x}{:02x} len={}",
+                        p8[0], p8[1], p8[2], p8[3], p8[4], p8[5], p8[6], p8[7], data.len()
+                    ));
                     log_u32("SER: TX", data.len() as u32);
                     frame(&data, &mut frame_buf);
                     log_u32("SER: HDLC framed", frame_buf.len() as u32);
