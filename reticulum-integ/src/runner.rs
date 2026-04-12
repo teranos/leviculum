@@ -623,6 +623,16 @@ impl TestRunner {
         Ok(output)
     }
 
+    /// Read a container's log output via `docker logs`.
+    /// Used for extracting identity hashes from lnsd's startup log.
+    pub fn docker_logs(&self, node: &str) -> Result<Output, RunnerError> {
+        let container = self.container_name(node);
+        let mut cmd = Command::new("docker");
+        cmd.arg("logs").arg(&container);
+        let output = cmd.output()?;
+        Ok(output)
+    }
+
     /// Execute a command inside a node's container with extra environment variables.
     ///
     /// Returns raw `Output` — the caller interprets success/failure.

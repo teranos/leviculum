@@ -80,13 +80,24 @@ fn parse_dest_spec(spec: &str) -> Result<(&str, &str), StepError> {
 /// Extract probe responder hash from rnstatus output.
 ///
 /// Looks for: `Probe responder at <HEX32>` and returns the 32-char hex hash.
-fn extract_probe_hash(rnstatus_output: &str) -> Option<&str> {
-    let marker = "Probe responder at <";
-    let start = rnstatus_output.find(marker)? + marker.len();
-    let rest = &rnstatus_output[start..];
-    let end = rest.find('>')?;
+/// Extract the lnsd probe destination hash from a container's startup log.
+///
+/// lnsd emits `[IDENTITY] probe_destination=<32-char hex> aspect=rnstransport.probe`
+/// when `respond_to_probes=true`. This function parses the last such line.
+///
+/// This replaces the rnstatus-based resolution, which was unreliable:
+/// when Python RNS runs `rnstatus` in a container where our Rust lnsd is
+/// also running, it fails to connect as a shared-instance client and reports
+/// its OWN probe destination (a transient Python-side identity) instead of
+/// lnsd's. The `[IDENTITY]` log line is the authoritative source.
+fn extract_probe_hash_from_identity_log(logs: &str) -> Option<&str> {
+    let marker = "[IDENTITY] probe_destination=";
+    // Take the LAST occurrence (if lnsd restarted, later line is newer)
+    let start = logs.rfind(marker)? + marker.len();
+    let rest = &logs[start..];
+    // Hash is followed by a space (before " aspect=...")
+    let end = rest.find(|c: char| !c.is_ascii_hexdigit())?;
     let hash = &rest[..end];
-    // Validate: must be exactly 32 hex chars.
     if hash.len() == 32 && hash.chars().all(|c| c.is_ascii_hexdigit()) {
         Some(hash)
     } else {
@@ -94,8 +105,9 @@ fn extract_probe_hash(rnstatus_output: &str) -> Option<&str> {
     }
 }
 
-/// Resolve "bob.probe" to a 32-char hex destination hash by running rnstatus
-/// on the target node. Caches results in `cache` to avoid repeated docker execs.
+/// Resolve "bob.probe" to a 32-char hex destination hash by reading the
+/// target node's lnsd startup log for the `[IDENTITY] probe_destination=`
+/// line. Caches results in `cache` to avoid repeated docker calls.
 fn resolve_destination(
     runner: &TestRunner,
     spec: &str,
@@ -107,26 +119,48 @@ fn resolve_destination(
 
     let (node_name, aspect) = parse_dest_spec(spec)?;
 
-    let output = runner.docker_exec(node_name, &["rnstatus", "--config", "/root/.reticulum"])?;
-    let stdout = String::from_utf8_lossy(&output.stdout);
+    if aspect != "probe" {
+        return Err(StepError::DestinationResolve {
+            destination: spec.to_string(),
+            detail: format!("unsupported aspect '{aspect}', only 'probe' is implemented"),
+        });
+    }
 
-    let hash = match aspect {
-        "probe" => extract_probe_hash(&stdout).ok_or_else(|| StepError::DestinationResolve {
+    // Read the container's startup log (captured by Docker). The [IDENTITY]
+    // line is emitted once by lnsd at startup when respond_to_probes=true.
+    let output = runner
+        .docker_logs(node_name)
+        .map_err(|e| StepError::DestinationResolve {
+            destination: spec.to_string(),
+            detail: format!("docker logs failed on '{node_name}': {e}"),
+        })?;
+    // Docker logs go to stderr; merge both streams for robustness.
+    let combined = alloc_combined_logs(&output.stdout, &output.stderr);
+
+    let hash = extract_probe_hash_from_identity_log(&combined).ok_or_else(|| {
+        StepError::DestinationResolve {
             destination: spec.to_string(),
             detail: format!(
-                "no 'Probe responder at <hash>' found in rnstatus output on '{node_name}'"
+                "no '[IDENTITY] probe_destination=<hash>' found in docker logs on '{node_name}'. \
+                 Is lnsd running with respond_to_probes=true?"
             ),
-        })?,
-        other => {
-            return Err(StepError::DestinationResolve {
-                destination: spec.to_string(),
-                detail: format!("unsupported aspect '{other}', only 'probe' is implemented"),
-            });
         }
-    };
+    })?;
 
     cache.insert(spec.to_string(), hash.to_string());
     Ok(hash.to_string())
+}
+
+fn alloc_combined_logs(stdout: &[u8], stderr: &[u8]) -> String {
+    let a = String::from_utf8_lossy(stdout);
+    let b = String::from_utf8_lossy(stderr);
+    let mut out = String::with_capacity(a.len() + b.len() + 1);
+    out.push_str(&a);
+    if !a.ends_with('\n') && !a.is_empty() {
+        out.push('\n');
+    }
+    out.push_str(&b);
+    out
 }
 
 // ---------------------------------------------------------------------------
@@ -2017,34 +2051,39 @@ mod tests {
     }
 
     #[test]
-    fn extract_probe_hash_from_rnstatus() {
-        let output = r#"
-Reticulum Transport Instance running
-  Uptime is 42 seconds
-  Transport Identity is <abcdef0123456789abcdef0123456789>
-  1 path table entry
-  Probe responder at <c46bbee6a9437963a27ad5d18ce4a87c> active
+    fn extract_probe_hash_from_identity_log_basic() {
+        let logs = r#"
+2026-04-12T12:57:24 INFO Loaded transport identity: d6f22eb20a37434a
+2026-04-12T12:57:24 INFO [IDENTITY] node=d6f22eb20a37434a422c1da996ae8179
+2026-04-12T12:57:24 INFO Probe responder at <72a8e7db7e8b8c851ce34fb7bb972685> active
+2026-04-12T12:57:24 INFO [IDENTITY] probe_destination=72a8e7db7e8b8c851ce34fb7bb972685 aspect=rnstransport.probe
 "#;
-        let hash = extract_probe_hash(output).unwrap();
-        assert_eq!(hash, "c46bbee6a9437963a27ad5d18ce4a87c");
+        let hash = extract_probe_hash_from_identity_log(logs).unwrap();
+        assert_eq!(hash, "72a8e7db7e8b8c851ce34fb7bb972685");
     }
 
     #[test]
-    fn extract_probe_hash_not_present() {
-        let output = "Reticulum running, no probe responder\n";
-        assert!(extract_probe_hash(output).is_none());
+    fn extract_probe_hash_from_identity_log_takes_last() {
+        // Simulates lnsd restart: two [IDENTITY] lines, pick the most recent.
+        let logs = r#"
+[IDENTITY] probe_destination=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa aspect=rnstransport.probe
+... some logs ...
+[IDENTITY] probe_destination=bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb aspect=rnstransport.probe
+"#;
+        let hash = extract_probe_hash_from_identity_log(logs).unwrap();
+        assert_eq!(hash, "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb");
     }
 
     #[test]
-    fn extract_probe_hash_invalid_hex() {
-        let output = "Probe responder at <not_a_valid_hex_string_here_!> active\n";
-        assert!(extract_probe_hash(output).is_none());
+    fn extract_probe_hash_from_identity_log_not_present() {
+        let logs = "Reticulum started, respond_to_probes=false\n";
+        assert!(extract_probe_hash_from_identity_log(logs).is_none());
     }
 
     #[test]
-    fn extract_probe_hash_wrong_length() {
-        let output = "Probe responder at <c46bbee6> active\n";
-        assert!(extract_probe_hash(output).is_none());
+    fn extract_probe_hash_from_identity_log_truncated() {
+        let logs = "[IDENTITY] probe_destination=c46bbee6 aspect=rnstransport.probe\n";
+        assert!(extract_probe_hash_from_identity_log(logs).is_none());
     }
 
     #[test]
