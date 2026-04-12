@@ -9,6 +9,7 @@ bandwidth = 125000
 sf = 10
 cr = 8
 txpower = 17
+csma_enabled = false
 
 [nodes.rnode_a]
 type = "rust"

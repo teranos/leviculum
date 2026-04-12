@@ -156,6 +156,8 @@ pub struct RadioConfig {
     pub coding_rate: u8,
     #[serde(alias = "txpower")]
     pub tx_power: u8,
+    #[serde(default)]
+    pub csma_enabled: bool,
 }
 
 fn default_true() -> bool {
@@ -648,6 +650,7 @@ pub fn render_config(
             writeln!(out, "    spreadingfactor = {}", r.spreading_factor).ok();
             writeln!(out, "    codingrate = {}", r.coding_rate).ok();
             writeln!(out, "    txpower = {}", r.tx_power).ok();
+            writeln!(out, "    csma_enabled = {}", if r.csma_enabled { "yes" } else { "no" }).ok();
         }
     }
 
@@ -1081,6 +1084,7 @@ rnode = true
             spreading_factor: 7,
             coding_rate: 5,
             tx_power: 17,
+            csma_enabled: false,
         };
         let config = render_config(&node, &[], Some(&radio));
         assert!(
@@ -1187,6 +1191,7 @@ rnode = true
             spreading_factor: 7,
             coding_rate: 5,
             tx_power: 17,
+            csma_enabled: false,
         };
         let config = render_config(&node, &[], Some(&radio));
         assert!(

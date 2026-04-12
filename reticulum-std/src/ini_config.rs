@@ -78,6 +78,7 @@ pub(crate) fn parse_ini(content: &str) -> Result<Config, String> {
                     flow_control: None,
                     airtime_limit_short: None,
                     airtime_limit_long: None,
+                    csma_enabled: None,
                 },
             ));
             continue;
@@ -202,6 +203,7 @@ fn apply_interface_key(iface: &mut InterfaceConfig, key: &str, value: &str) {
         "flow_control" => iface.flow_control = Some(parse_bool(value)),
         "airtime_limit_short" => iface.airtime_limit_short = value.parse().ok(),
         "airtime_limit_long" => iface.airtime_limit_long = value.parse().ok(),
+        "csma_enabled" => iface.csma_enabled = Some(parse_bool(value)),
         "networkname" | "network_name" => iface.networkname = Some(value.to_string()),
         "passphrase" => iface.passphrase = Some(value.to_string()),
         "ifac_size" => iface.ifac_size = value.parse::<usize>().ok().map(|bits| bits / 8),

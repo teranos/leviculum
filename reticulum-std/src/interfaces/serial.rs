@@ -45,6 +45,7 @@ pub(crate) struct SerialRadioConfig {
     pub coding_rate: u8,
     pub tx_power: i8,
     pub preamble_len: u16,
+    pub csma_enabled: bool,
 }
 
 /// Configuration for a serial interface.
@@ -120,6 +121,7 @@ async fn send_radio_config(
         cr: config.coding_rate,
         tx_power_dbm: config.tx_power,
         preamble_len: config.preamble_len,
+        csma_enabled: config.csma_enabled,
     };
     let payload = reticulum_core::rnode::build_radio_config_frame(&wire);
     let mut frame_buf = Vec::new();

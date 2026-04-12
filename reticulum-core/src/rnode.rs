@@ -648,8 +648,8 @@ pub fn compute_spacing_ms(payload_bytes: u32, bandwidth_hz: u32, sf: u8, cr: u8)
 /// Magic prefix for radio config frames (distinguishes from Reticulum packets).
 pub const RADIO_CONFIG_MAGIC: [u8; 2] = [0xA4, 0xA4];
 
-/// Total config frame payload length (2 magic + 13 parameter bytes).
-pub const RADIO_CONFIG_FRAME_LEN: usize = 15;
+/// Total config frame payload length (2 magic + 14 parameter bytes).
+pub const RADIO_CONFIG_FRAME_LEN: usize = 16;
 
 /// ACK payload sent by T114 after applying radio config.
 pub const RADIO_CONFIG_ACK: [u8; 3] = [0xA4, 0xA4, 0x01];
@@ -664,13 +664,15 @@ pub struct RadioConfigWire {
     pub cr: u8,           // coding rate denominator (5-8)
     pub tx_power_dbm: i8,
     pub preamble_len: u16,
+    pub csma_enabled: bool,
 }
 
-/// Parse a radio config from wire bytes (13 bytes, after magic stripped).
+/// Parse a radio config from wire bytes (13 or 14 bytes, after magic stripped).
 ///
 /// Wire layout: freq_hz(4 BE) + bw_hz(4 BE) + sf(1) + cr(1) + tx_power(1) + preamble(2 BE)
+/// + csma_enabled(1, optional — defaults to false if absent for backward compat)
 pub fn parse_radio_config(data: &[u8]) -> Option<RadioConfigWire> {
-    if data.len() != 13 {
+    if data.len() != 13 && data.len() != 14 {
         return None;
     }
     let frequency_hz = u32::from_be_bytes([data[0], data[1], data[2], data[3]]);
@@ -679,6 +681,7 @@ pub fn parse_radio_config(data: &[u8]) -> Option<RadioConfigWire> {
     let cr = data[9];
     let tx_power_dbm = data[10] as i8;
     let preamble_len = u16::from_be_bytes([data[11], data[12]]);
+    let csma_enabled = if data.len() == 14 { data[13] != 0 } else { false };
 
     if sf < 5 || sf > 12 {
         return None;
@@ -694,10 +697,11 @@ pub fn parse_radio_config(data: &[u8]) -> Option<RadioConfigWire> {
         cr,
         tx_power_dbm,
         preamble_len,
+        csma_enabled,
     })
 }
 
-/// Build a radio config frame payload (15 bytes including magic prefix).
+/// Build a radio config frame payload (16 bytes including magic prefix).
 pub fn build_radio_config_frame(cfg: &RadioConfigWire) -> Vec<u8> {
     let mut out = Vec::with_capacity(RADIO_CONFIG_FRAME_LEN);
     out.extend_from_slice(&RADIO_CONFIG_MAGIC);
@@ -707,6 +711,7 @@ pub fn build_radio_config_frame(cfg: &RadioConfigWire) -> Vec<u8> {
     out.push(cfg.cr);
     out.push(cfg.tx_power_dbm as u8);
     out.extend_from_slice(&cfg.preamble_len.to_be_bytes());
+    out.push(cfg.csma_enabled as u8);
     out
 }
 
@@ -1636,6 +1641,7 @@ mod tests {
             cr: 5,
             tx_power_dbm: 17,
             preamble_len: 24,
+            csma_enabled: false,
         }
     }
 
@@ -1647,6 +1653,7 @@ mod tests {
             cr: 5,
             tx_power_dbm: 17,
             preamble_len: 24,
+            csma_enabled: false,
         }
     }
 
@@ -1658,6 +1665,7 @@ mod tests {
             cr: 8,
             tx_power_dbm: 17,
             preamble_len: 24,
+            csma_enabled: false,
         }
     }
 
@@ -1704,6 +1712,8 @@ mod tests {
         assert_eq!(frame[12], 17);
         // preamble 24 = 0x0018
         assert_eq!(&frame[13..15], &[0x00, 0x18]);
+        // csma_enabled = false
+        assert_eq!(frame[15], 0);
     }
 
     #[test]
@@ -1713,7 +1723,31 @@ mod tests {
 
     #[test]
     fn radio_config_parse_too_long() {
-        assert!(parse_radio_config(&[0; 14]).is_none());
+        assert!(parse_radio_config(&[0; 15]).is_none());
+    }
+
+    #[test]
+    fn radio_config_parse_13_byte_backward_compat() {
+        // Old 13-byte payload (no csma field) must still parse, defaulting to csma_enabled=false.
+        let cfg = medium_profile();
+        let frame = build_radio_config_frame(&cfg);
+        // Drop magic (2) and trailing csma byte (1) -> exactly 13 bytes
+        let legacy = &frame[2..frame.len() - 1];
+        assert_eq!(legacy.len(), 13);
+        let parsed = parse_radio_config(legacy).unwrap();
+        assert_eq!(parsed.csma_enabled, false);
+        assert_eq!(parsed.sf, 7);
+    }
+
+    #[test]
+    fn radio_config_round_trip_csma_enabled() {
+        let cfg = RadioConfigWire { csma_enabled: true, ..medium_profile() };
+        let frame = build_radio_config_frame(&cfg);
+        assert_eq!(frame.len(), RADIO_CONFIG_FRAME_LEN);
+        assert_eq!(frame[15], 1);
+        let parsed = parse_radio_config(&frame[2..]).unwrap();
+        assert_eq!(parsed, cfg);
+        assert!(parsed.csma_enabled);
     }
 
     #[test]

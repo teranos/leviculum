@@ -165,6 +165,8 @@ pub struct InterfaceConfig {
     pub airtime_limit_short: Option<f64>,
     /// Long-term airtime limit as percent (0.0-100.0)
     pub airtime_limit_long: Option<f64>,
+    /// Enable CSMA/CA on the T114 LoRa interface (requires CAD-capable firmware).
+    pub csma_enabled: Option<bool>,
 }
 
 /// Default interface bitrate in bits/second (matches Python Reticulum default)

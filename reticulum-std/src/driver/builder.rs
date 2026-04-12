@@ -156,6 +156,7 @@ impl ReticulumNodeBuilder {
             flow_control: None,
             airtime_limit_short: None,
             airtime_limit_long: None,
+            csma_enabled: None,
         });
         self
     }
@@ -201,6 +202,7 @@ impl ReticulumNodeBuilder {
             flow_control: None,
             airtime_limit_short: None,
             airtime_limit_long: None,
+            csma_enabled: None,
         });
         self
     }
@@ -247,6 +249,7 @@ impl ReticulumNodeBuilder {
             flow_control: None,
             airtime_limit_short: None,
             airtime_limit_long: None,
+            csma_enabled: None,
         });
         self
     }
@@ -303,6 +306,7 @@ impl ReticulumNodeBuilder {
             flow_control: None,
             airtime_limit_short: None,
             airtime_limit_long: None,
+            csma_enabled: None,
         });
         self
     }
