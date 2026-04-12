@@ -100,6 +100,20 @@ async fn main(spawner: Spawner) {
         "LNode started -- identity: {:02X}{:02X}{:02X}{:02X}{:02X}",
         hash[0], hash[1], hash[2], hash[3], hash[4]
     );
+    // Full identity hash for benchmark trace correlation
+    reticulum_nrf::log::log_fmt("[IDENTITY] ", format_args!(
+        "t114_node={:02x}{:02x}{:02x}{:02x}{:02x}{:02x}{:02x}{:02x}{:02x}{:02x}{:02x}{:02x}{:02x}{:02x}{:02x}{:02x}",
+        hash[0], hash[1], hash[2], hash[3], hash[4], hash[5], hash[6], hash[7],
+        hash[8], hash[9], hash[10], hash[11], hash[12], hash[13], hash[14], hash[15]
+    ));
+    if let Some(probe_hash) = node.probe_dest_hash() {
+        let ph = probe_hash.as_bytes();
+        reticulum_nrf::log::log_fmt("[IDENTITY] ", format_args!(
+            "t114_probe={:02x}{:02x}{:02x}{:02x}{:02x}{:02x}{:02x}{:02x}{:02x}{:02x}{:02x}{:02x}{:02x}{:02x}{:02x}{:02x}",
+            ph[0], ph[1], ph[2], ph[3], ph[4], ph[5], ph[6], ph[7],
+            ph[8], ph[9], ph[10], ph[11], ph[12], ph[13], ph[14], ph[15]
+        ));
+    }
 
     // LoRa (SPIM2 — SPIM3 has a MISO read bug on T114)
     let lora = reticulum_nrf::lora::init(

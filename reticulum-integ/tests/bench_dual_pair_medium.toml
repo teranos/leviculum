@@ -2,6 +2,7 @@
 name = "bench_dual_pair_medium"
 description = "Dual-pair probe throughput under contention (SF7/BW125)"
 timeout_secs = 360
+rust_log = "reticulum_core::transport=debug,reticulum_std::interfaces=debug,info"
 
 [radio]
 frequency = 869525000

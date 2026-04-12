@@ -31,6 +31,11 @@ dest_hash = bytes.fromhex(dest_hash_hex)
 reticulum = RNS.Reticulum(config_path)
 time.sleep(2)
 
+# Log client identity for trace correlation
+client_identity = RNS.Identity()
+print(f"[IDENTITY] benchmark_client={client_identity.hash.hex()}", file=sys.stderr, flush=True)
+print(f"[IDENTITY] target={dest_hash_hex} resolved_for=probe", file=sys.stderr, flush=True)
+
 print(f"benchmark: resolving path to {dest_hash_hex}", file=sys.stderr, flush=True)
 
 # Resolve path ONCE

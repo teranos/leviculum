@@ -418,6 +418,7 @@ impl ReticulumNodeBuilder {
             let identity = match id_store.load() {
                 Ok(Some(id)) => {
                     tracing::info!("Loaded transport identity: {}", hex_short(id.hash()));
+                    tracing::info!("[IDENTITY] node={}", hex_full(id.hash()));
                     id
                 }
                 Ok(None) => {
@@ -426,6 +427,7 @@ impl ReticulumNodeBuilder {
                         .save(&id)
                         .map_err(|e| Error::Storage(format!("failed to save identity: {e}")))?;
                     tracing::info!("Generated new transport identity: {}", hex_short(id.hash()));
+                    tracing::info!("[IDENTITY] node={}", hex_full(id.hash()));
                     id
                 }
                 Err(e) => return Err(Error::Storage(format!("failed to load identity: {e}"))),
@@ -482,6 +484,16 @@ fn hex_short(hash: &[u8]) -> String {
     hash[..n]
         .iter()
         .fold(String::with_capacity(n * 2), |mut s, b| {
+            let _ = write!(s, "{b:02x}");
+            s
+        })
+}
+
+/// Format a full hash as hex for logging
+fn hex_full(hash: &[u8]) -> String {
+    use std::fmt::Write;
+    hash.iter()
+        .fold(String::with_capacity(hash.len() * 2), |mut s, b| {
             let _ = write!(s, "{b:02x}");
             s
         })
