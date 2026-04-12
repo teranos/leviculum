@@ -31,6 +31,10 @@ destination = "receiver.probe"
 timeout_secs = 90
 
 [[steps]]
+action = "sleep"
+duration_secs = 30
+
+[[steps]]
 action = "benchmark"
 pairs = [{ from = "sender", to = "receiver.probe" }]
 duration_secs = 60

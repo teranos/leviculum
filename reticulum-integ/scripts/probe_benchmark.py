@@ -36,18 +36,19 @@ while time.time() < deadline:
              "--config", config_path, "-t", str(probe_timeout)],
             capture_output=True, text=True, timeout=probe_timeout + 5
         )
-        if result.returncode == 0:
+        # rnprobe exits 0 even on timeout — check output for "Round-trip time"
+        m = re.search(r"Round-trip time is (\d+(?:\.\d+)?)\s+(milliseconds|seconds)", result.stdout)
+        if m:
             received += 1
-            # rnprobe outputs "Round-trip time is X.XXX milliseconds" or "X.XXX seconds"
-            m = re.search(r"Round-trip time is (\d+(?:\.\d+)?)\s+(milliseconds|seconds)", result.stdout)
-            if m:
-                rtt_val = float(m.group(1))
-                if m.group(2) == "seconds":
-                    rtt_val *= 1000.0
-                rtts.append(rtt_val)
-            print(f"  probe {sent}: ok ({result.stdout.strip()})", file=sys.stderr, flush=True)
+            rtt_val = float(m.group(1))
+            if m.group(2) == "seconds":
+                rtt_val *= 1000.0
+            rtts.append(rtt_val)
+            print(f"  probe {sent}: {rtt_val:.0f}ms", file=sys.stderr, flush=True)
+        elif result.returncode != 0:
+            print(f"  probe {sent}: error (exit {result.returncode})", file=sys.stderr, flush=True)
         else:
-            print(f"  probe {sent}: failed (exit {result.returncode})", file=sys.stderr, flush=True)
+            print(f"  probe {sent}: timeout", file=sys.stderr, flush=True)
     except subprocess.TimeoutExpired:
         print(f"  probe {sent}: timeout", file=sys.stderr, flush=True)
 

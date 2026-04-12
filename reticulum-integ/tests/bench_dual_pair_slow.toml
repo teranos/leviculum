@@ -31,22 +31,27 @@ respond_to_probes = true
 serial = true
 
 # SF10/BW125/CR4/8: ~6.8s airtime per packet direction.
-# With 4 devices, announces need even longer to propagate.
+# With 4 devices, announce propagation takes even longer.
 [[steps]]
 action = "sleep"
-duration_secs = 90
+duration_secs = 120
 
 [[steps]]
 action = "wait_for_path"
 on = "rnode_a"
 destination = "lnode_a.probe"
-timeout_secs = 180
+timeout_secs = 300
 
 [[steps]]
 action = "wait_for_path"
 on = "rnode_b"
 destination = "lnode_b.probe"
-timeout_secs = 180
+timeout_secs = 300
+
+# Announce settle
+[[steps]]
+action = "sleep"
+duration_secs = 60
 
 [[steps]]
 action = "benchmark"
@@ -54,5 +59,5 @@ pairs = [
   { from = "rnode_a", to = "lnode_a.probe" },
   { from = "rnode_b", to = "lnode_b.probe" },
 ]
-duration_secs = 120
+duration_secs = 180
 label = "dual_pair_slow"

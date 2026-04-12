@@ -47,6 +47,10 @@ destination = "lnode_b.probe"
 timeout_secs = 90
 
 [[steps]]
+action = "sleep"
+duration_secs = 30
+
+[[steps]]
 action = "benchmark"
 pairs = [
   { from = "rnode_a", to = "lnode_a.probe" },

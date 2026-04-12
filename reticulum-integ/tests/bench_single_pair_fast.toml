@@ -30,6 +30,11 @@ on = "sender"
 destination = "receiver.probe"
 timeout_secs = 90
 
+# Let announce retries settle before measuring (eliminates half-duplex collisions)
+[[steps]]
+action = "sleep"
+duration_secs = 30
+
 [[steps]]
 action = "benchmark"
 pairs = [{ from = "sender", to = "receiver.probe" }]

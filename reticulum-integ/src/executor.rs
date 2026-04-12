@@ -552,20 +552,21 @@ fn execute_benchmark(
 ) -> Result<(), StepError> {
     let radio = runner.scenario().radio.as_ref();
 
-    // Compute min probe interval: airtime × 6 accounts for request + response
-    // airtimes plus serial/USB/subprocess overhead (~300ms fixed). Floor at 1500ms
-    // to avoid half-duplex collisions from overlapping probes.
+    // Compute min probe interval: 4x single-packet airtime accounts for
+    // request + response airtimes. Floor at 1200ms accounts for fixed overhead
+    // (serial framing, USB buffering, rnprobe subprocess ~50ms).
     let min_interval_ms = if let Some(r) = radio {
         let airtime = reticulum_core::rnode::airtime_ms(500, r.bandwidth, r.spreading_factor, r.coding_rate);
-        (airtime * 6).max(1500)
+        (airtime * 4).max(1200)
     } else {
         3000
     };
-    // Per-probe timeout: enough for a full round-trip + margin, but not so long
-    // that a single timeout wastes the entire benchmark window.
+    // Per-probe timeout: 8x airtime, clamped to 10-30s. Long enough for a
+    // full round-trip under contention, short enough that one lost probe
+    // doesn't waste the entire benchmark window.
     let probe_timeout_s = if let Some(r) = radio {
         let airtime = reticulum_core::rnode::airtime_ms(500, r.bandwidth, r.spreading_factor, r.coding_rate);
-        ((airtime * 10) / 1000).max(10) // 10x airtime, minimum 10s
+        ((airtime * 8) / 1000).clamp(10, 30)
     } else {
         15
     };
@@ -613,6 +614,10 @@ fn execute_benchmark(
             match rx.recv_timeout(timeout) {
                 Ok((i, Ok(output))) => {
                     let stdout = String::from_utf8_lossy(&output.stdout);
+                    let stderr = String::from_utf8_lossy(&output.stderr);
+                    if !stderr.is_empty() {
+                        eprintln!("  pair {i} stderr:\n{stderr}");
+                    }
                     // Find the last JSON line in stdout
                     let json_val = stdout
                         .lines()
