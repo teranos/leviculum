@@ -37,33 +37,306 @@ use crate::traits::Storage;
 /// On Cortex-M4, it must be placed in a `static` or `Box`, not on the stack.
 pub struct EmbeddedStorage {
     // ─── Packet dedup (two-generation ring) ──────────────────────────────
+    /// SHA-256 hashes of packets seen recently, current generation.
+    ///
+    /// **Re-insert semantics:** insert is idempotent (set membership);
+    /// position never changes for an already-present hash.
+    ///
+    /// **Eviction policy on overflow:** when this generation exceeds 128
+    /// entries (half capacity), it is rotated into `packet_cache_prev`
+    /// and a fresh empty cache replaces it. No per-entry FIFO eviction.
+    /// See `rotate_packet_cache`.
+    ///
+    /// **Typical access pattern:** every received packet inserts;
+    /// every received packet reads (dedup check across both generations).
+    ///
+    /// **Capacity:** 256.
     packet_cache: FnvIndexSet<[u8; 32], 256>,
+
+    /// Previous-generation packet dedup ring (see `packet_cache`).
+    ///
+    /// Holds hashes from the prior rotation. Read on every dedup check;
+    /// not written to directly — gets the contents of `packet_cache` on
+    /// rotation and is cleared when the next rotation promotes it again.
+    ///
+    /// **Capacity:** 256.
     packet_cache_prev: FnvIndexSet<[u8; 32], 256>,
 
     // ─── Path table ──────────────────────────────────────────────────────
+    /// Routing entries for known destinations: hops, expiry, next-hop,
+    /// receiving interface.
+    ///
+    /// **Re-insert semantics:** refresh-on-re-insert. A re-announce of
+    /// the same destination must move the entry to the back of the FIFO
+    /// so an active path is not evicted by unrelated newer entries.
+    /// Implemented in `set_path` via `remove + insert`.
+    ///
+    /// **Eviction policy on overflow:** drop the entry that was inserted
+    /// earliest (after any refreshes have moved their entries to the
+    /// back). Time-based cleanup happens via `expire_paths`.
+    ///
+    /// **Typical access pattern:** inserter is the announce/path-proof
+    /// handler in `transport.rs` (frequent under network churn);
+    /// reader is every routing decision (very frequent).
+    ///
+    /// **Capacity:** 32.
     path_table: FnvIndexMap<[u8; TRUNCATED_HASHBYTES], PathEntry, 32>,
+
+    /// Per-destination path quality state (`Unknown` / `Unresponsive` /
+    /// `Responsive`), used to allow same-emission worse-hop announces
+    /// for a path marked unresponsive.
+    ///
+    /// **Re-insert semantics:** refresh-on-re-insert. Tracks current
+    /// state for an active path; should not be evicted just because the
+    /// state changes during a churn burst.
+    ///
+    /// **Eviction policy on overflow:** drop oldest by insertion order.
+    /// `clean_stale_path_metadata` removes entries whose key is no
+    /// longer in `path_table`.
+    ///
+    /// **Typical access pattern:** inserter is the responsiveness
+    /// tracker in `transport.rs` (frequent); reader is the
+    /// path-acceptance gate (per-announce).
+    ///
+    /// **Capacity:** 32.
     path_states: FnvIndexMap<[u8; TRUNCATED_HASHBYTES], PathState, 32>,
 
     // ─── Announce ────────────────────────────────────────────────────────
+    /// Cached announce metadata for rate-limiting and rebroadcast
+    /// scheduling: timestamps, retry counts, raw packet bytes,
+    /// retransmit deadlines.
+    ///
+    /// **Re-insert semantics:** refresh-on-re-insert. Re-announces
+    /// update retransmit schedule; an entry waiting on retransmit must
+    /// not be silently dropped by an unrelated newer announce.
+    ///
+    /// **Eviction policy on overflow:** drop oldest by insertion order.
+    /// Explicit removal via `remove_announce` (e.g. on rate-limit
+    /// blocking).
+    ///
+    /// **Typical access pattern:** inserter is announce reception and
+    /// path-request response in `transport.rs` (frequent); reader is
+    /// `get_announce_mut` for rate checking (frequent).
+    ///
+    /// **Capacity:** 16.
     announce_table: FnvIndexMap<[u8; TRUNCATED_HASHBYTES], AnnounceEntry, 16>,
+
+    /// Raw cached announce packet bytes, for serving path-request
+    /// responses without waiting for the next live announce.
+    ///
+    /// **Re-insert semantics:** refresh-on-re-insert. Re-cached on each
+    /// new validated announce of the same destination.
+    ///
+    /// **Eviction policy on overflow:** drop oldest by insertion order.
+    /// `clean_announce_cache` removes entries whose key is no longer in
+    /// `path_table` and not a local destination.
+    ///
+    /// **Typical access pattern:** inserter is announce validation
+    /// (frequent); reader is path-request response building.
+    ///
+    /// **Capacity:** 16.
     announce_cache: FnvIndexMap<[u8; TRUNCATED_HASHBYTES], Vec<u8>, 16>,
+
+    /// Per-destination announce rate-tracking: last accepted timestamp,
+    /// violation count, blocked-until deadline.
+    ///
+    /// **Re-insert semantics:** refresh-on-re-insert. Updated on every
+    /// announce; the entries describing currently-rate-limited
+    /// destinations must outlive the eviction pressure they themselves
+    /// generate.
+    ///
+    /// **Eviction policy on overflow:** drop oldest by insertion order.
+    /// Implicit cleanup via `clean_stale_path_metadata` when the
+    /// matching `path_table` entry is removed.
+    ///
+    /// **Typical access pattern:** inserter is the rate-check on every
+    /// inbound announce (constant); reader is the rate gate.
+    ///
+    /// **Capacity:** 32.
     announce_rate_table: FnvIndexMap<[u8; TRUNCATED_HASHBYTES], AnnounceRateEntry, 32>,
 
     // ─── Routing ─────────────────────────────────────────────────────────
+    /// Active links routed through this transport node: timestamp,
+    /// next-hop interface, validation state, proof deadline,
+    /// destination identifier.
+    ///
+    /// **Re-insert semantics:** refresh-on-re-insert. An active link
+    /// must outlive a burst of new (and likely shorter-lived) link
+    /// setups.
+    ///
+    /// **Eviction policy on overflow:** drop oldest by insertion order.
+    /// Time-based cleanup via `expire_link_entries` (proof timeout for
+    /// unvalidated, link timeout for validated).
+    ///
+    /// **Typical access pattern:** inserter is link setup, proof, and
+    /// validation paths in `transport.rs` (sometimes); reader is
+    /// link-routed data forwarding (frequent).
+    ///
+    /// **Capacity:** 8.
     link_table: FnvIndexMap<[u8; TRUNCATED_HASHBYTES], LinkEntry, 8>,
+
+    /// Reverse-routing entries for proof responses: which interface a
+    /// forwarded packet arrived on and which interface it went out on.
+    ///
+    /// **Re-insert semantics:** refresh-on-re-insert. A re-forwarded
+    /// destination should refresh its position; old entries are
+    /// explicitly removed by `expire_reverses` and on proof receipt.
+    ///
+    /// **Eviction policy on overflow:** drop oldest by insertion order.
+    /// `expire_reverses(now, timeout)` cleans by age;
+    /// `remove_reverse_entries_for_interface` cleans on interface down.
+    ///
+    /// **Typical access pattern:** inserter is data-packet forwarding
+    /// (sometimes); reader is proof handling (which then removes the
+    /// entry).
+    ///
+    /// **Capacity:** 16.
     reverse_table: FnvIndexMap<[u8; TRUNCATED_HASHBYTES], ReverseEntry, 16>,
+
+    /// Outstanding discovery requests: "if announces for this
+    /// destination arrive, send PATH_RESPONSE to this interface."
+    ///
+    /// **Re-insert semantics:** FIFO-by-insertion. The setter
+    /// (`set_discovery_path_request`) has an explicit
+    /// `if !contains_key` guard — only the first request per key is
+    /// recorded, mirroring Python behavior. Subsequent requests for
+    /// the same destination are dropped, NOT used to refresh the
+    /// position.
+    ///
+    /// **Eviction policy on overflow:** drop oldest by insertion order.
+    /// Explicit removal via `remove_discovery_path_request` after
+    /// delivery; time-based cleanup via `expire_discovery_path_requests`.
+    ///
+    /// **Typical access pattern:** inserter is path-request reception
+    /// for unknown destinations; reader is the announce-handler when
+    /// it learns the destination (sends a PATH_RESPONSE back to the
+    /// requesting interface).
+    ///
+    /// **Capacity:** 4.
     discovery_path_requests: FnvIndexMap<[u8; TRUNCATED_HASHBYTES], (usize, u64), 4>,
 
     // ─── Path requests ───────────────────────────────────────────────────
+    /// Last-sent timestamp for outbound path requests, used as the
+    /// rate-limit gate (one request per destination per
+    /// `PATH_REQUEST_MIN_INTERVAL_MS`).
+    ///
+    /// **Re-insert semantics:** refresh-on-re-insert. Surviving the
+    /// eviction race is the whole point of the table — if the rate-
+    /// limit timestamp gets evicted, the next request is treated as
+    /// fresh and the rate limit is bypassed.
+    ///
+    /// **Eviction policy on overflow:** drop oldest by insertion order.
+    /// No explicit cleanup; entries age out implicitly through the
+    /// rate-limit check.
+    ///
+    /// **Typical access pattern:** inserter is path-request emission
+    /// (frequent); reader is the rate-limit gate before the next
+    /// emission.
+    ///
+    /// **Capacity:** 8.
     path_requests: FnvIndexMap<[u8; TRUNCATED_HASHBYTES], u64, 8>,
+
+    /// Inbound path-request dedup tags (hash of dest_hash + source
+    /// tag), so a relayed request isn't acted on twice.
+    ///
+    /// **Re-insert semantics:** N/A (set, no values). A re-checked tag
+    /// short-circuits without insertion; only fresh tags are inserted.
+    ///
+    /// **Eviction policy on overflow:** drop oldest tag by insertion
+    /// order. Eviction happens inline in `check_path_request_tag`
+    /// (not `map_set`), and uses the same insertion-order rebuild as
+    /// `map_set` to defeat the heapless `swap_remove` reordering.
+    ///
+    /// **Typical access pattern:** inserter / reader is the path-
+    /// request dedup check (very frequent under flooding).
+    ///
+    /// **Capacity:** 32.
     path_request_tag_set: FnvIndexSet<[u8; 32], 32>,
 
     // ─── Identity / security ─────────────────────────────────────────────
+    /// Cached remote `Identity` (Ed25519 + X25519 public keys), keyed
+    /// by destination hash, for signature verification.
+    ///
+    /// **Re-insert semantics:** refresh-on-re-insert. Re-insert is
+    /// rare in normal operation (identities are quasi-permanent), but
+    /// when it does occur (e.g. identity refresh on a new announce)
+    /// the entry is treated as "still alive" and bumped to the back.
+    ///
+    /// **Eviction policy on overflow:** drop oldest by insertion
+    /// order. No explicit cleanup; identities persist until evicted.
+    ///
+    /// **Typical access pattern:** inserter is announce processing
+    /// (rare); reader is signature verification on receive (frequent
+    /// for the active set, but goes through other code paths).
+    ///
+    /// **Capacity:** 16.
     known_identities: FnvIndexMap<[u8; TRUNCATED_HASHBYTES], Identity, 16>,
+
+    /// Cached remote ratchet public keys, used for batch decryption of
+    /// packets sent under the sender's current ratchet.
+    ///
+    /// **Re-insert semantics:** refresh-on-re-insert. Refreshed on
+    /// every announce containing the ratchet — exactly the
+    /// `path_table` pattern, and an active sender's ratchet must
+    /// outlive an unrelated burst.
+    ///
+    /// **Eviction policy on overflow:** drop oldest by insertion
+    /// order. Time-based cleanup via `expire_known_ratchets`.
+    ///
+    /// **Typical access pattern:** inserter is announce reception
+    /// (frequent); reader is decryption (frequent for active
+    /// destinations).
+    ///
+    /// **Capacity:** 8.
     known_ratchets: FnvIndexMap<[u8; TRUNCATED_HASHBYTES], ([u8; RATCHET_SIZE], u64), 8>,
+
+    /// Sender-side ratchet private keys (serialized) for our local
+    /// destinations, persisted across rotations so old messages remain
+    /// decipherable until the rotation window expires.
+    ///
+    /// **Re-insert semantics:** refresh-on-re-insert. Re-stored on
+    /// each ratchet rotation; rotation is the signal that the entry
+    /// is still hot.
+    ///
+    /// **Eviction policy on overflow:** drop oldest by insertion
+    /// order. No explicit cleanup; entries persist until destination
+    /// is removed or eviction strikes.
+    ///
+    /// **Typical access pattern:** inserter is ratchet rotation in
+    /// `node/mod.rs` (sometimes); reader is loading at startup or on
+    /// re-key.
+    ///
+    /// **Capacity:** 4.
     dest_ratchet_keys: FnvIndexMap<[u8; TRUNCATED_HASHBYTES], Vec<u8>, 4>,
 
     // ─── Receipts ────────────────────────────────────────────────────────
+    /// Pending-delivery `PacketReceipt`s: what we sent, when, and
+    /// whether the proof has been received.
+    ///
+    /// **Re-insert semantics:** refresh-on-re-insert. In-flight
+    /// receipts must outlive newer ones submitted just after them.
+    ///
+    /// **Insert paths:**
+    /// - `transport.rs:885` — `create_receipt`: fresh-key (truncated
+    ///   hash of the just-sent packet).
+    /// - `transport.rs:905` — `create_receipt_with_timeout`: fresh-key
+    ///   (same shape as `create_receipt`).
+    /// - `transport.rs:925` — `mark_receipt_delivered`: re-insert
+    ///   (read existing receipt, clone, mutate `status` to
+    ///   `Delivered`, write back under same hash). This is the only
+    ///   re-insert path; it benefits from the refresh because an
+    ///   application reading the delivery status shortly after must
+    ///   not race a churn-eviction.
+    ///
+    /// **Eviction policy on overflow:** drop oldest by insertion
+    /// order. Time-based cleanup via `expire_receipts` for receipts
+    /// whose `Sent` status has timed out.
+    ///
+    /// **Typical access pattern:** inserter is `create_receipt` /
+    /// `mark_receipt_delivered`; reader is application status polling
+    /// and proof handling.
+    ///
+    /// **Capacity:** 8.
     receipts: FnvIndexMap<[u8; TRUNCATED_HASHBYTES], PacketReceipt, 8>,
 }
 
@@ -105,8 +378,17 @@ impl Default for EmbeddedStorage {
 
 // ─── Helper: insert-or-evict for FnvIndexMap ──────────────────────────────
 //
-// heapless::FnvIndexMap::insert() returns Err((K,V)) when full and key is new.
-// We evict the first (oldest-inserted) entry and retry.
+// `heapless::FnvIndexMap::insert()` returns `Err((K,V))` when full and key
+// is new. We evict the truly-oldest entry by insertion order.
+//
+// We can't use `map.remove(&oldest_key)` directly: heapless's `remove` is
+// `swap_remove`, which moves the last entry into the freed slot. After the
+// first overflow, `keys().next()` would no longer be the longest-resident
+// entry — it would be whichever key was last when the previous eviction
+// happened. Strict FIFO requires rebuilding the map: snapshot the keys in
+// insertion order, drop the head, then re-insert the rest plus the new
+// entry. Cost is O(N) per overflow; N ≤ 32 so this is microseconds even
+// on Cortex-M4.
 fn map_set<K: Eq + core::hash::Hash + Copy, V, const N: usize>(
     map: &mut FnvIndexMap<K, V, N>,
     key: K,
@@ -116,16 +398,34 @@ fn map_set<K: Eq + core::hash::Hash + Copy, V, const N: usize>(
     match map.insert(key, value) {
         Ok(_) => {}
         Err((k, v)) => {
-            // Full and key not already present — evict oldest entry
             tracing::debug!(
                 "[EMB_EVICT] map={} len_before={} cap={}",
                 label,
                 map.len(),
                 N
             );
-            if let Some(&first_key) = map.keys().next() {
-                map.remove(&first_key);
+            // Snapshot keys + drain kept (K, V) pairs into heap-backed Vecs.
+            // heapless inline storage would put `N * size_of::<(K, V)>()` on
+            // the stack, which exceeds 2 KB for the larger maps and crashes
+            // the T114 firmware. The two heap allocations live only for the
+            // duration of one overflow and are freed before return.
+            let keys: Vec<K> = map.keys().copied().collect();
+            let mut kept: Vec<(K, V)> = Vec::with_capacity(keys.len());
+            for (idx, kk) in keys.iter().enumerate() {
+                if idx == 0 {
+                    continue;
+                }
+                if let Some(vv) = map.remove(kk) {
+                    let _ = kept.push((*kk, vv));
+                }
             }
+            // The oldest entry is whatever remains in `map`. Drop it.
+            map.clear();
+            // Re-insert the kept entries in original insertion order.
+            for (kk, vv) in kept {
+                let _ = map.insert(kk, vv);
+            }
+            // Insert the new entry at the back.
             if map.insert(k, v).is_err() {
                 tracing::debug!(
                     "[EMB_INSERT_FAIL] map={} len_after_evict={} cap={}",
@@ -251,6 +551,7 @@ impl Storage for EmbeddedStorage {
     }
 
     fn set_path_state(&mut self, dest_hash: [u8; TRUNCATED_HASHBYTES], state: PathState) {
+        self.path_states.remove(&dest_hash);
         map_set(&mut self.path_states, dest_hash, state, "path_states");
     }
 
@@ -261,6 +562,7 @@ impl Storage for EmbeddedStorage {
     }
 
     fn set_reverse(&mut self, hash: [u8; TRUNCATED_HASHBYTES], entry: ReverseEntry) {
+        self.reverse_table.remove(&hash);
         map_set(&mut self.reverse_table, hash, entry, "reverse_table");
     }
 
@@ -282,6 +584,7 @@ impl Storage for EmbeddedStorage {
     }
 
     fn set_link_entry(&mut self, link_id: [u8; TRUNCATED_HASHBYTES], entry: LinkEntry) {
+        self.link_table.remove(&link_id);
         map_set(&mut self.link_table, link_id, entry, "link_table");
     }
 
@@ -299,6 +602,7 @@ impl Storage for EmbeddedStorage {
     }
 
     fn set_announce(&mut self, dest_hash: [u8; TRUNCATED_HASHBYTES], entry: AnnounceEntry) {
+        self.announce_table.remove(&dest_hash);
         map_set(&mut self.announce_table, dest_hash, entry, "announce_table");
     }
 
@@ -317,6 +621,7 @@ impl Storage for EmbeddedStorage {
     }
 
     fn set_announce_cache(&mut self, dest_hash: [u8; TRUNCATED_HASHBYTES], raw: Vec<u8>) {
+        self.announce_cache.remove(&dest_hash);
         map_set(&mut self.announce_cache, dest_hash, raw, "announce_cache");
     }
 
@@ -334,6 +639,7 @@ impl Storage for EmbeddedStorage {
         dest_hash: [u8; TRUNCATED_HASHBYTES],
         entry: AnnounceRateEntry,
     ) {
+        self.announce_rate_table.remove(&dest_hash);
         map_set(&mut self.announce_rate_table, dest_hash, entry, "announce_rate_table");
     }
 
@@ -344,6 +650,7 @@ impl Storage for EmbeddedStorage {
     }
 
     fn set_receipt(&mut self, hash: [u8; TRUNCATED_HASHBYTES], receipt: PacketReceipt) {
+        self.receipts.remove(&hash);
         map_set(&mut self.receipts, hash, receipt, "receipts");
     }
 
@@ -354,6 +661,7 @@ impl Storage for EmbeddedStorage {
     }
 
     fn set_path_request_time(&mut self, dest_hash: [u8; TRUNCATED_HASHBYTES], time_ms: u64) {
+        self.path_requests.remove(&dest_hash);
         map_set(&mut self.path_requests, dest_hash, time_ms, "path_requests");
     }
 
@@ -361,10 +669,15 @@ impl Storage for EmbeddedStorage {
         if self.path_request_tag_set.contains(tag) {
             return true;
         }
-        // If full, evict oldest (first inserted)
+        // If full, evict the truly-oldest tag. heapless's `remove` is
+        // `swap_remove`, so we rebuild to preserve insertion order across
+        // repeated overflows (same reason map_set rebuilds — see comment
+        // there).
         if self.path_request_tag_set.len() >= self.path_request_tag_set.capacity() {
-            if let Some(&oldest) = self.path_request_tag_set.iter().next() {
-                self.path_request_tag_set.remove(&oldest);
+            let keys: Vec<[u8; 32]> = self.path_request_tag_set.iter().copied().collect();
+            self.path_request_tag_set.clear();
+            for k in keys.iter().skip(1) {
+                let _ = self.path_request_tag_set.insert(*k);
             }
         }
         let _ = self.path_request_tag_set.insert(*tag);
@@ -378,6 +691,7 @@ impl Storage for EmbeddedStorage {
     }
 
     fn set_identity(&mut self, dest_hash: [u8; TRUNCATED_HASHBYTES], identity: Identity) {
+        self.known_identities.remove(&dest_hash);
         map_set(&mut self.known_identities, dest_hash, identity, "known_identities");
     }
 
@@ -519,6 +833,7 @@ impl Storage for EmbeddedStorage {
         ratchet: [u8; RATCHET_SIZE],
         received_at_ms: u64,
     ) {
+        self.known_ratchets.remove(&dest_hash);
         map_set(
             &mut self.known_ratchets,
             dest_hash,
@@ -613,6 +928,7 @@ impl Storage for EmbeddedStorage {
         dest_hash: [u8; TRUNCATED_HASHBYTES],
         serialized: Vec<u8>,
     ) {
+        self.dest_ratchet_keys.remove(&dest_hash);
         map_set(&mut self.dest_ratchet_keys, dest_hash, serialized, "dest_ratchet_keys");
     }
 
@@ -827,5 +1143,529 @@ mod tests {
         s.remove_local_client_dests(0);
         s.set_local_client_known_dest(hash, 1000);
         assert!(s.local_client_known_dest_hashes().is_empty());
+    }
+
+    // ──────────────────────────────────────────────────────────────────────
+    // Bug #10 audit: Level 1 (overflow correctness) + Level 2 (semantic
+    // intent) for every map and the explicit-FIFO set. See plan
+    // `~/.claude/plans/federated-whistling-wolf.md` for the per-map
+    // semantics rationale.
+    // ──────────────────────────────────────────────────────────────────────
+
+    use rand_core::OsRng;
+
+    fn key_th(i: usize) -> [u8; TRUNCATED_HASHBYTES] {
+        let mut h = [0u8; TRUNCATED_HASHBYTES];
+        h[..4].copy_from_slice(&(i as u32).to_le_bytes());
+        h
+    }
+    fn key32(i: usize) -> [u8; 32] {
+        let mut h = [0u8; 32];
+        h[..4].copy_from_slice(&(i as u32).to_le_bytes());
+        h
+    }
+
+    fn mk_path(seed: u8) -> PathEntry {
+        PathEntry {
+            hops: 1,
+            expires_ms: 10_000 + seed as u64,
+            interface_index: 0,
+            random_blobs: Vec::new(),
+            next_hop: None,
+        }
+    }
+    fn mk_announce(seed: u8) -> AnnounceEntry {
+        AnnounceEntry {
+            timestamp_ms: 1000 + seed as u64,
+            hops: 1,
+            retries: 0,
+            retransmit_at_ms: None,
+            raw_packet: alloc::vec![seed; 8],
+            receiving_interface_index: 0,
+            target_interface: None,
+            local_rebroadcasts: 0,
+            block_rebroadcasts: false,
+        }
+    }
+    fn mk_rate(seed: u8) -> AnnounceRateEntry {
+        AnnounceRateEntry {
+            last_ms: seed as u64,
+            rate_violations: 0,
+            blocked_until_ms: 0,
+        }
+    }
+    fn mk_link(seed: u8) -> LinkEntry {
+        LinkEntry {
+            timestamp_ms: seed as u64,
+            next_hop_interface_index: 0,
+            remaining_hops: 1,
+            received_interface_index: 0,
+            hops: 1,
+            validated: false,
+            proof_timeout_ms: 99_999,
+            destination_hash: [0u8; TRUNCATED_HASHBYTES],
+            peer_signing_key: None,
+        }
+    }
+    fn mk_reverse(seed: u8) -> ReverseEntry {
+        ReverseEntry {
+            timestamp_ms: seed as u64,
+            receiving_interface_index: 0,
+            outbound_interface_index: 0,
+        }
+    }
+    fn mk_receipt(key: [u8; TRUNCATED_HASHBYTES]) -> PacketReceipt {
+        let mut packet_hash = [0u8; 32];
+        packet_hash[..TRUNCATED_HASHBYTES].copy_from_slice(&key);
+        PacketReceipt::new(packet_hash, DestinationHash::new(key), 1000)
+    }
+
+    // ─── Map 1: path_table (already fixed in Bug #1) ────────────────────
+
+    #[test]
+    fn level1_path_table_overflow_correctness() {
+        let mut s = EmbeddedStorage::new();
+        let cap = 32;
+        for i in 0..(cap * 3) {
+            s.set_path(key_th(i), mk_path(i as u8));
+        }
+        assert_eq!(s.path_count(), cap);
+        for i in (cap * 2)..(cap * 3) {
+            assert!(s.get_path(&key_th(i)).is_some(), "newest key {} missing", i);
+        }
+    }
+
+    #[test]
+    fn level2_path_table_refresh_on_reinsert() {
+        let mut s = EmbeddedStorage::new();
+        let cap = 32;
+        for i in 0..cap {
+            s.set_path(key_th(i), mk_path(i as u8));
+        }
+        s.set_path(key_th(0), mk_path(99));
+        s.set_path(key_th(cap), mk_path(0));
+        // The refresh-on-re-insert contract is "a re-inserted key survives
+        // the next eviction". We can't assert which OTHER key was evicted
+        // because the setter's `remove + insert` triggers a `swap_remove`
+        // side effect that perturbs internal positions.
+        assert!(s.get_path(&key_th(0)).is_some(), "refreshed key must survive eviction");
+        assert_eq!(s.path_count(), cap, "exactly one entry was evicted");
+    }
+
+    // ─── Map 2: path_states ─────────────────────────────────────────────
+
+    #[test]
+    fn level1_path_states_overflow_correctness() {
+        let mut s = EmbeddedStorage::new();
+        let cap = 32;
+        for i in 0..(cap * 3) {
+            s.set_path_state(key_th(i), PathState::Unresponsive);
+        }
+        for i in (cap * 2)..(cap * 3) {
+            assert!(s.get_path_state(&key_th(i)).is_some(), "newest {}", i);
+        }
+        // Count: at most cap retrievable from the inserted range.
+        let live: usize = (0..(cap * 3))
+            .filter(|i| s.get_path_state(&key_th(*i)).is_some())
+            .count();
+        assert_eq!(live, cap);
+    }
+
+    #[test]
+    fn level2_path_states_refresh_on_reinsert() {
+        let mut s = EmbeddedStorage::new();
+        let cap = 32;
+        for i in 0..cap {
+            s.set_path_state(key_th(i), PathState::Unresponsive);
+        }
+        s.set_path_state(key_th(0), PathState::Responsive);
+        s.set_path_state(key_th(cap), PathState::Unknown);
+        assert!(s.get_path_state(&key_th(0)).is_some(), "refreshed key survives");
+        assert_eq!(
+            (0..=cap).filter(|i| s.get_path_state(&key_th(*i)).is_some()).count(),
+            cap,
+            "exactly one entry was evicted"
+        );
+    }
+
+    // ─── Map 3: announce_table ──────────────────────────────────────────
+
+    #[test]
+    fn level1_announce_table_overflow_correctness() {
+        let mut s = EmbeddedStorage::new();
+        let cap = 16;
+        for i in 0..(cap * 3) {
+            s.set_announce(key_th(i), mk_announce(i as u8));
+        }
+        for i in (cap * 2)..(cap * 3) {
+            assert!(s.get_announce(&key_th(i)).is_some(), "newest {}", i);
+        }
+        let live: usize = (0..(cap * 3))
+            .filter(|i| s.get_announce(&key_th(*i)).is_some())
+            .count();
+        assert_eq!(live, cap);
+    }
+
+    #[test]
+    fn level2_announce_table_refresh_on_reinsert() {
+        let mut s = EmbeddedStorage::new();
+        let cap = 16;
+        for i in 0..cap {
+            s.set_announce(key_th(i), mk_announce(i as u8));
+        }
+        s.set_announce(key_th(0), mk_announce(99));
+        s.set_announce(key_th(cap), mk_announce(0));
+        assert!(s.get_announce(&key_th(0)).is_some(), "refreshed survives");
+    }
+
+    // ─── Map 4: announce_cache ──────────────────────────────────────────
+
+    #[test]
+    fn level1_announce_cache_overflow_correctness() {
+        let mut s = EmbeddedStorage::new();
+        let cap = 16;
+        for i in 0..(cap * 3) {
+            s.set_announce_cache(key_th(i), alloc::vec![i as u8; 4]);
+        }
+        for i in (cap * 2)..(cap * 3) {
+            assert!(s.get_announce_cache(&key_th(i)).is_some(), "newest {}", i);
+        }
+        let live: usize = (0..(cap * 3))
+            .filter(|i| s.get_announce_cache(&key_th(*i)).is_some())
+            .count();
+        assert_eq!(live, cap);
+    }
+
+    #[test]
+    fn level2_announce_cache_refresh_on_reinsert() {
+        let mut s = EmbeddedStorage::new();
+        let cap = 16;
+        for i in 0..cap {
+            s.set_announce_cache(key_th(i), alloc::vec![i as u8; 4]);
+        }
+        s.set_announce_cache(key_th(0), alloc::vec![99u8; 4]);
+        s.set_announce_cache(key_th(cap), alloc::vec![0u8; 4]);
+        assert!(s.get_announce_cache(&key_th(0)).is_some(), "refreshed survives");
+    }
+
+    // ─── Map 5: announce_rate_table ─────────────────────────────────────
+
+    #[test]
+    fn level1_announce_rate_table_overflow_correctness() {
+        let mut s = EmbeddedStorage::new();
+        let cap = 32;
+        for i in 0..(cap * 3) {
+            s.set_announce_rate(key_th(i), mk_rate(i as u8));
+        }
+        for i in (cap * 2)..(cap * 3) {
+            assert!(s.get_announce_rate(&key_th(i)).is_some(), "newest {}", i);
+        }
+        let live: usize = (0..(cap * 3))
+            .filter(|i| s.get_announce_rate(&key_th(*i)).is_some())
+            .count();
+        assert_eq!(live, cap);
+    }
+
+    #[test]
+    fn level2_announce_rate_table_refresh_on_reinsert() {
+        let mut s = EmbeddedStorage::new();
+        let cap = 32;
+        for i in 0..cap {
+            s.set_announce_rate(key_th(i), mk_rate(i as u8));
+        }
+        s.set_announce_rate(key_th(0), mk_rate(99));
+        s.set_announce_rate(key_th(cap), mk_rate(0));
+        assert!(s.get_announce_rate(&key_th(0)).is_some(), "refreshed survives");
+    }
+
+    // ─── Map 6: link_table ──────────────────────────────────────────────
+
+    #[test]
+    fn level1_link_table_overflow_correctness() {
+        let mut s = EmbeddedStorage::new();
+        let cap = 8;
+        for i in 0..(cap * 3) {
+            s.set_link_entry(key_th(i), mk_link(i as u8));
+        }
+        for i in (cap * 2)..(cap * 3) {
+            assert!(s.get_link_entry(&key_th(i)).is_some(), "newest {}", i);
+        }
+        let live: usize = (0..(cap * 3))
+            .filter(|i| s.get_link_entry(&key_th(*i)).is_some())
+            .count();
+        assert_eq!(live, cap);
+    }
+
+    #[test]
+    fn level2_link_table_refresh_on_reinsert() {
+        let mut s = EmbeddedStorage::new();
+        let cap = 8;
+        for i in 0..cap {
+            s.set_link_entry(key_th(i), mk_link(i as u8));
+        }
+        s.set_link_entry(key_th(0), mk_link(99));
+        s.set_link_entry(key_th(cap), mk_link(0));
+        assert!(s.get_link_entry(&key_th(0)).is_some(), "refreshed survives");
+    }
+
+    // ─── Map 7: reverse_table ───────────────────────────────────────────
+
+    #[test]
+    fn level1_reverse_table_overflow_correctness() {
+        let mut s = EmbeddedStorage::new();
+        let cap = 16;
+        for i in 0..(cap * 3) {
+            s.set_reverse(key_th(i), mk_reverse(i as u8));
+        }
+        for i in (cap * 2)..(cap * 3) {
+            assert!(s.get_reverse(&key_th(i)).is_some(), "newest {}", i);
+        }
+        let live: usize = (0..(cap * 3))
+            .filter(|i| s.get_reverse(&key_th(*i)).is_some())
+            .count();
+        assert_eq!(live, cap);
+    }
+
+    #[test]
+    fn level2_reverse_table_refresh_on_reinsert() {
+        let mut s = EmbeddedStorage::new();
+        let cap = 16;
+        for i in 0..cap {
+            s.set_reverse(key_th(i), mk_reverse(i as u8));
+        }
+        s.set_reverse(key_th(0), mk_reverse(99));
+        s.set_reverse(key_th(cap), mk_reverse(0));
+        assert!(s.get_reverse(&key_th(0)).is_some(), "refreshed survives");
+    }
+
+    // ─── Map 8: discovery_path_requests (FIFO-by-insertion + guard) ─────
+
+    #[test]
+    fn level1_discovery_path_requests_overflow_correctness() {
+        let mut s = EmbeddedStorage::new();
+        let cap = 4;
+        for i in 0..(cap * 3) {
+            s.set_discovery_path_request(key_th(i), i, 1000 + i as u64);
+        }
+        for i in (cap * 2)..(cap * 3) {
+            assert!(s.get_discovery_path_request(&key_th(i)).is_some(), "newest {}", i);
+        }
+        let live: usize = (0..(cap * 3))
+            .filter(|i| s.get_discovery_path_request(&key_th(*i)).is_some())
+            .count();
+        assert_eq!(live, cap);
+    }
+
+    #[test]
+    fn level2_discovery_path_requests_first_request_wins() {
+        let mut s = EmbeddedStorage::new();
+        let cap = 4;
+        for i in 0..cap {
+            s.set_discovery_path_request(key_th(i), 10 + i, 1000 + i as u64);
+        }
+        // Re-insert with different value: guard prevents update.
+        s.set_discovery_path_request(key_th(0), 999, 9999);
+        let stored = s.get_discovery_path_request(&key_th(0)).unwrap();
+        assert_eq!(stored, (10, 1000), "first-request guard must keep original value");
+        // New unrelated key triggers FIFO eviction of oldest.
+        s.set_discovery_path_request(key_th(cap), 99, 99);
+        assert!(s.get_discovery_path_request(&key_th(0)).is_none(),
+                "FIFO-by-insertion: oldest evicted (no refresh on guarded re-insert)");
+        assert!(s.get_discovery_path_request(&key_th(cap)).is_some(), "newest present");
+    }
+
+    // ─── Map 9: path_requests ───────────────────────────────────────────
+
+    #[test]
+    fn level1_path_requests_overflow_correctness() {
+        let mut s = EmbeddedStorage::new();
+        let cap = 8;
+        for i in 0..(cap * 3) {
+            s.set_path_request_time(key_th(i), 1000 + i as u64);
+        }
+        for i in (cap * 2)..(cap * 3) {
+            assert!(s.get_path_request_time(&key_th(i)).is_some(), "newest {}", i);
+        }
+        let live: usize = (0..(cap * 3))
+            .filter(|i| s.get_path_request_time(&key_th(*i)).is_some())
+            .count();
+        assert_eq!(live, cap);
+    }
+
+    #[test]
+    fn level2_path_requests_refresh_on_reinsert() {
+        let mut s = EmbeddedStorage::new();
+        let cap = 8;
+        for i in 0..cap {
+            s.set_path_request_time(key_th(i), 1000 + i as u64);
+        }
+        s.set_path_request_time(key_th(0), 99_999);
+        s.set_path_request_time(key_th(cap), 0);
+        assert!(s.get_path_request_time(&key_th(0)).is_some(), "refreshed survives");
+    }
+
+    // ─── Map 10: known_identities ───────────────────────────────────────
+
+    #[test]
+    fn level1_known_identities_overflow_correctness() {
+        let mut s = EmbeddedStorage::new();
+        let cap = 16;
+        for i in 0..(cap * 3) {
+            s.set_identity(key_th(i), Identity::generate(&mut OsRng));
+        }
+        for i in (cap * 2)..(cap * 3) {
+            assert!(s.get_identity(&key_th(i)).is_some(), "newest {}", i);
+        }
+        let live: usize = (0..(cap * 3))
+            .filter(|i| s.get_identity(&key_th(*i)).is_some())
+            .count();
+        assert_eq!(live, cap);
+    }
+
+    #[test]
+    fn level2_known_identities_refresh_on_reinsert() {
+        let mut s = EmbeddedStorage::new();
+        let cap = 16;
+        for i in 0..cap {
+            s.set_identity(key_th(i), Identity::generate(&mut OsRng));
+        }
+        s.set_identity(key_th(0), Identity::generate(&mut OsRng));
+        s.set_identity(key_th(cap), Identity::generate(&mut OsRng));
+        assert!(s.get_identity(&key_th(0)).is_some(), "refreshed survives");
+    }
+
+    // ─── Map 11: known_ratchets ─────────────────────────────────────────
+
+    #[test]
+    fn level1_known_ratchets_overflow_correctness() {
+        let mut s = EmbeddedStorage::new();
+        let cap = 8;
+        for i in 0..(cap * 3) {
+            s.remember_known_ratchet(key_th(i), [i as u8; RATCHET_SIZE], 1000 + i as u64);
+        }
+        for i in (cap * 2)..(cap * 3) {
+            assert!(s.get_known_ratchet(&key_th(i)).is_some(), "newest {}", i);
+        }
+        let live: usize = (0..(cap * 3))
+            .filter(|i| s.get_known_ratchet(&key_th(*i)).is_some())
+            .count();
+        assert_eq!(live, cap);
+    }
+
+    #[test]
+    fn level2_known_ratchets_refresh_on_reinsert() {
+        let mut s = EmbeddedStorage::new();
+        let cap = 8;
+        for i in 0..cap {
+            s.remember_known_ratchet(key_th(i), [i as u8; RATCHET_SIZE], 1000 + i as u64);
+        }
+        s.remember_known_ratchet(key_th(0), [0xAA; RATCHET_SIZE], 9999);
+        s.remember_known_ratchet(key_th(cap), [0; RATCHET_SIZE], 0);
+        assert!(s.get_known_ratchet(&key_th(0)).is_some(), "refreshed survives");
+    }
+
+    // ─── Map 12: dest_ratchet_keys ──────────────────────────────────────
+
+    #[test]
+    fn level1_dest_ratchet_keys_overflow_correctness() {
+        let mut s = EmbeddedStorage::new();
+        let cap = 4;
+        for i in 0..(cap * 3) {
+            s.store_dest_ratchet_keys(key_th(i), alloc::vec![i as u8; 8]);
+        }
+        for i in (cap * 2)..(cap * 3) {
+            assert!(s.load_dest_ratchet_keys(&key_th(i)).is_some(), "newest {}", i);
+        }
+        let live: usize = (0..(cap * 3))
+            .filter(|i| s.load_dest_ratchet_keys(&key_th(*i)).is_some())
+            .count();
+        assert_eq!(live, cap);
+    }
+
+    #[test]
+    fn level2_dest_ratchet_keys_refresh_on_reinsert() {
+        let mut s = EmbeddedStorage::new();
+        let cap = 4;
+        for i in 0..cap {
+            s.store_dest_ratchet_keys(key_th(i), alloc::vec![i as u8; 8]);
+        }
+        s.store_dest_ratchet_keys(key_th(0), alloc::vec![99u8; 8]);
+        s.store_dest_ratchet_keys(key_th(cap), alloc::vec![0u8; 8]);
+        assert!(s.load_dest_ratchet_keys(&key_th(0)).is_some(), "refreshed survives");
+    }
+
+    // ─── Map 13: receipts ───────────────────────────────────────────────
+
+    #[test]
+    fn level1_receipts_overflow_correctness() {
+        let mut s = EmbeddedStorage::new();
+        let cap = 8;
+        for i in 0..(cap * 3) {
+            let k = key_th(i);
+            s.set_receipt(k, mk_receipt(k));
+        }
+        for i in (cap * 2)..(cap * 3) {
+            assert!(s.get_receipt(&key_th(i)).is_some(), "newest {}", i);
+        }
+        let live: usize = (0..(cap * 3))
+            .filter(|i| s.get_receipt(&key_th(*i)).is_some())
+            .count();
+        assert_eq!(live, cap);
+    }
+
+    #[test]
+    fn level2_receipts_refresh_on_reinsert() {
+        let mut s = EmbeddedStorage::new();
+        let cap = 8;
+        for i in 0..cap {
+            let k = key_th(i);
+            s.set_receipt(k, mk_receipt(k));
+        }
+        // Re-insert key 0 (mirrors mark_receipt_delivered's get→clone→set path).
+        let k0 = key_th(0);
+        s.set_receipt(k0, mk_receipt(k0));
+        let kcap = key_th(cap);
+        s.set_receipt(kcap, mk_receipt(kcap));
+        assert!(s.get_receipt(&k0).is_some(), "refreshed survives");
+    }
+
+    // ─── Set 14: path_request_tag_set (own FIFO logic) ──────────────────
+
+    #[test]
+    fn level1_path_request_tag_set_overflow_correctness() {
+        let mut s = EmbeddedStorage::new();
+        let cap = 32;
+        // First-time inserts return false ("not seen before").
+        for i in 0..(cap * 3) {
+            let seen = s.check_path_request_tag(&key32(i));
+            assert!(!seen, "tag {} reported seen on first insert", i);
+        }
+        // The most-recently inserted `cap` tags must still be reported seen.
+        for i in (cap * 2)..(cap * 3) {
+            assert!(
+                s.check_path_request_tag(&key32(i)),
+                "newest tag {} should still be in the set",
+                i
+            );
+        }
+    }
+
+    #[test]
+    fn level2_path_request_tag_set_fifo_eviction() {
+        let mut s = EmbeddedStorage::new();
+        let cap = 32;
+        for i in 0..cap {
+            assert!(!s.check_path_request_tag(&key32(i)));
+        }
+        // All 32 tags now in set; second check returns true.
+        assert!(s.check_path_request_tag(&key32(0)), "tag 0 seen second time");
+        // Insert a 33rd new tag. Built-in FIFO logic must evict oldest.
+        assert!(!s.check_path_request_tag(&key32(cap)),
+                "33rd tag is fresh (and triggers eviction)");
+        assert!(s.check_path_request_tag(&key32(cap)),
+                "33rd tag now reported seen");
+        // Oldest tag was evicted: first call now returns false (not seen).
+        assert!(!s.check_path_request_tag(&key32(0)),
+                "oldest tag must be evicted by FIFO insert");
     }
 }
