@@ -18,3 +18,7 @@
 - [lnsd(1)](man/lnsd.1.md)
 - [lns(1)](man/lns.1.md)
 - [lncp(1)](man/lncp.1.md)
+
+# Development
+
+- [CI Pipeline](development-ci.md)
