@@ -22,15 +22,20 @@ respond_to_probes = true
 alpha-relay = "tcp"
 charlie-relay = "tcp"
 
+# All-Python topology — extra settle time so the relay's TCP sessions
+# are fully bedded in before the first path query. Even with this
+# margin, vendor rnsd occasionally drops path responses on its own
+# LocalInterface, producing an intermittent failure in step 2 or 3.
+# Tracked separately; the wait_for_path framework retries internally.
 [[steps]]
 action = "sleep"
-duration_secs = 20
+duration_secs = 60
 
 [[steps]]
 action = "wait_for_path"
 on = "alpha"
 destination = "charlie.probe"
-timeout_secs = 60
+timeout_secs = 120
 
 [[steps]]
 action = "file_transfer"

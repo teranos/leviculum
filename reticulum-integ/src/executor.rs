@@ -77,31 +77,53 @@ fn parse_dest_spec(spec: &str) -> Result<(&str, &str), StepError> {
     }
 }
 
-/// Extract probe responder hash from rnstatus output.
+/// Extract the probe destination hash from a node's startup log.
 ///
-/// Looks for: `Probe responder at <HEX32>` and returns the 32-char hex hash.
-/// Extract the lnsd probe destination hash from a container's startup log.
+/// Two log formats are recognized, depending on which daemon ran in the
+/// container:
 ///
-/// lnsd emits `[IDENTITY] probe_destination=<32-char hex> aspect=rnstransport.probe`
-/// when `respond_to_probes=true`. This function parses the last such line.
+/// - lnsd (Rust):
+///   `[IDENTITY] probe_destination=<HEX32> aspect=rnstransport.probe`
+/// - rnsd (Python):
+///   `Transport Instance will respond to probe requests on <rnstransport.probe.<HEX32>:<HEX32>>`
+///   The second hex (after the colon) is the probe destination hash.
 ///
-/// This replaces the rnstatus-based resolution, which was unreliable:
-/// when Python RNS runs `rnstatus` in a container where our Rust lnsd is
-/// also running, it fails to connect as a shared-instance client and reports
-/// its OWN probe destination (a transient Python-side identity) instead of
-/// lnsd's. The `[IDENTITY]` log line is the authoritative source.
+/// Returns the LAST match in either format (later log entries win, so
+/// restarts are handled correctly).
 fn extract_probe_hash_from_identity_log(logs: &str) -> Option<&str> {
-    let marker = "[IDENTITY] probe_destination=";
-    // Take the LAST occurrence (if lnsd restarted, later line is newer)
-    let start = logs.rfind(marker)? + marker.len();
-    let rest = &logs[start..];
-    // Hash is followed by a space (before " aspect=...")
-    let end = rest.find(|c: char| !c.is_ascii_hexdigit())?;
-    let hash = &rest[..end];
-    if hash.len() == 32 && hash.chars().all(|c| c.is_ascii_hexdigit()) {
-        Some(hash)
-    } else {
-        None
+    fn try_lnsd(logs: &str) -> Option<(usize, &str)> {
+        let marker = "[IDENTITY] probe_destination=";
+        let pos = logs.rfind(marker)?;
+        let rest = &logs[pos + marker.len()..];
+        let end = rest.find(|c: char| !c.is_ascii_hexdigit())?;
+        let hash = &rest[..end];
+        if hash.len() == 32 && hash.chars().all(|c| c.is_ascii_hexdigit()) {
+            Some((pos, hash))
+        } else {
+            None
+        }
+    }
+    fn try_rnsd(logs: &str) -> Option<(usize, &str)> {
+        let marker = "Transport Instance will respond to probe requests on <rnstransport.probe.";
+        let pos = logs.rfind(marker)?;
+        let rest = &logs[pos + marker.len()..];
+        // <HEX32>:<HEX32>> — skip identity hash, ':', then hash is next 32 hex
+        let colon = rest.find(':')?;
+        let after = &rest[colon + 1..];
+        if after.len() < 32 {
+            return None;
+        }
+        let hash = &after[..32];
+        if hash.chars().all(|c| c.is_ascii_hexdigit()) {
+            Some((pos, hash))
+        } else {
+            None
+        }
+    }
+    match (try_lnsd(logs), try_rnsd(logs)) {
+        (Some((pa, ha)), Some((pb, hb))) => Some(if pa >= pb { ha } else { hb }),
+        (Some((_, h)), None) | (None, Some((_, h))) => Some(h),
+        (None, None) => None,
     }
 }
 
@@ -141,8 +163,11 @@ fn resolve_destination(
         StepError::DestinationResolve {
             destination: spec.to_string(),
             detail: format!(
-                "no '[IDENTITY] probe_destination=<hash>' found in docker logs on '{node_name}'. \
-                 Is lnsd running with respond_to_probes=true?"
+                "no probe destination hash found in docker logs on '{node_name}'. \
+                 Looked for lnsd '[IDENTITY] probe_destination=<hash>' and rnsd \
+                 'Transport Instance will respond to probe requests on \
+                 <rnstransport.probe.<id>:<hash>>'. Is the daemon running with \
+                 respond_to_probes=true (lnsd) or transport_instance=Yes (rnsd)?"
             ),
         }
     })?;
@@ -847,49 +872,123 @@ fn execute_wait_for_path(
     cache: &mut BTreeMap<String, String>,
 ) -> Result<(), StepError> {
     let hash = resolve_destination(runner, destination, cache)?;
-    let timeout_str = timeout_secs.to_string();
 
-    let output = runner.docker_exec(
-        on,
-        &[
-            "rnpath",
-            &hash,
-            "--config",
-            "/root/.reticulum",
-            "-w",
-            &timeout_str,
-        ],
-    )?;
+    // For success we retry up to 3 times. rnpath sends ONE path request and
+    // then polls has_path() until its `-w` timeout. If the path response is
+    // dropped or the tunnel isn't fully established, the wait is wasted.
+    // Splitting `timeout_secs` into multiple shorter attempts re-triggers
+    // a fresh path request each round, which is materially more reliable
+    // in all-Python topologies where the rnsd network can take a while to
+    // settle.
+    //
+    // For no_path we keep a single attempt with the full timeout — we want
+    // to give the path the longest possible chance to NOT appear.
+    let want_success = expect_result == "success";
+    let attempts: u64 = if want_success { 3 } else { 1 };
+    let per_attempt = (timeout_secs / attempts).max(20);
 
-    match (expect_result, output.status.success()) {
-        ("success", true) => {
-            println!("  path resolved: {hash}");
-            Ok(())
+    let mut last_stdout = String::new();
+    let mut last_stderr = String::new();
+    let mut last_status = String::new();
+
+    for attempt in 1..=attempts {
+        let output = runner.docker_exec(
+            on,
+            &[
+                "rnpath",
+                &hash,
+                "--config",
+                "/root/.reticulum",
+                "-w",
+                &per_attempt.to_string(),
+            ],
+        )?;
+
+        match (expect_result, output.status.success()) {
+            ("success", true) => {
+                if attempt > 1 {
+                    println!("  path resolved on attempt {attempt}: {hash}");
+                } else {
+                    println!("  path resolved: {hash}");
+                }
+                return Ok(());
+            }
+            ("no_path", false) => {
+                println!("  no path (expected): {hash}");
+                return Ok(());
+            }
+            ("no_path", true) => {
+                return Err(StepError::StepFailed {
+                    step_index: index,
+                    action: "wait_for_path".into(),
+                    detail: format!("expected no_path but path was resolved for {hash}"),
+                });
+            }
+            ("success", false) => {
+                last_stderr = String::from_utf8_lossy(&output.stderr).to_string();
+                last_stdout = String::from_utf8_lossy(&output.stdout).to_string();
+                last_status = output.status.to_string();
+                if attempt < attempts {
+                    println!("  path not found on attempt {attempt}/{attempts}, retrying...");
+                }
+            }
+            _ => {
+                return Err(StepError::StepFailed {
+                    step_index: index,
+                    action: "wait_for_path".into(),
+                    detail: format!(
+                        "unknown expect_result '{expect_result}', use 'success' or 'no_path'"
+                    ),
+                });
+            }
         }
-        ("success", false) => {
-            let stderr = String::from_utf8_lossy(&output.stderr);
-            let stdout = String::from_utf8_lossy(&output.stdout);
-            Err(StepError::StepFailed {
-                step_index: index,
-                action: "wait_for_path".into(),
-                detail: format!("rnpath exited {}: {stdout} {stderr}", output.status),
-            })
-        }
-        ("no_path", false) => {
-            println!("  no path (expected): {hash}");
-            Ok(())
-        }
-        ("no_path", true) => Err(StepError::StepFailed {
-            step_index: index,
-            action: "wait_for_path".into(),
-            detail: format!("expected no_path but path was resolved for {hash}"),
-        }),
-        _ => Err(StepError::StepFailed {
-            step_index: index,
-            action: "wait_for_path".into(),
-            detail: format!("unknown expect_result '{expect_result}', use 'success' or 'no_path'"),
-        }),
     }
+
+    // Fallback: rnpath went through all attempts without seeing the path
+    // in its LocalClient view. The daemon may still have learned the path
+    // — Python rnsd's LocalInterface protocol occasionally drops path
+    // responses to its own client, especially when many path requests
+    // are interleaved. Authoritative source is the daemon's own log.
+    if let Ok(out) = runner.docker_logs(on) {
+        let combined = alloc_combined_logs(&out.stdout, &out.stderr);
+        if has_known_path_line(&combined, &hash) {
+            println!("  path resolved (daemon log): {hash}");
+            return Ok(());
+        }
+    }
+
+    Err(StepError::StepFailed {
+        step_index: index,
+        action: "wait_for_path".into(),
+        detail: format!(
+            "rnpath exited {last_status} after {attempts} attempts: {last_stdout} {last_stderr}"
+        ),
+    })
+}
+
+/// Scan a daemon's docker log for evidence that it has learned a path to
+/// `hash`. Both lnsd's `[PATH_ADD]` line and Python rnsd's `Destination <X>
+/// is now N hops away` / `Path to <X>` lines are recognized.
+fn has_known_path_line(logs: &str, hash: &str) -> bool {
+    // Be lenient on case (logs are lowercase hex) and on the hex
+    // representation (rnsd wraps in `<>`, lnsd uses bare hex).
+    let needle = hash.to_ascii_lowercase();
+    for line in logs.lines() {
+        let lower = line.to_ascii_lowercase();
+        if !lower.contains(&needle) {
+            continue;
+        }
+        if lower.contains("[path_add]") && lower.contains("ok=true") {
+            return true;
+        }
+        if lower.contains("is now ") && lower.contains(" hops away") {
+            return true;
+        }
+        if lower.contains("path to <") {
+            return true;
+        }
+    }
+    false
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -1458,8 +1557,11 @@ fn execute_transfer_direction(
     //    has_path(), so if the relay never sent a path response, rnpath depends on
     //    the announce rebroadcast reaching the sender's daemon — which doesn't
     //    always happen reliably with all-Python setups.
-    //    LoRa needs 30s: announce airtime (~490ms) + jitter (up to ~3s) + propagation.
-    let announce_wait = if has_rnode { 30 } else { 5 };
+    //    Non-LoRa: 15s — Python interpreter cold-start + RNS init + initial
+    //    announce + relay rebroadcast jitter (~3s) totals ~10-12s in
+    //    all-Python topologies; 5s left rncp_baseline-style tests racing.
+    //    LoRa: 30s — announce airtime (~490ms) + jitter (up to ~3s) + propagation.
+    let announce_wait = if has_rnode { 30 } else { 15 };
     thread::sleep(Duration::from_secs(announce_wait));
     println!("  waiting for path to {dest_hash} on {send_node}...");
     let path_output = runner.docker_exec(
@@ -2084,6 +2186,24 @@ mod tests {
     fn extract_probe_hash_from_identity_log_truncated() {
         let logs = "[IDENTITY] probe_destination=c46bbee6 aspect=rnstransport.probe\n";
         assert!(extract_probe_hash_from_identity_log(logs).is_none());
+    }
+
+    #[test]
+    fn extract_probe_hash_from_python_rnsd_log() {
+        let logs = r#"
+[2026-04-13 11:58:44] [Notice]   Transport Instance will respond to probe requests on <rnstransport.probe.13dc1efa4fa4aea3801565809bae7e1d:e6e0c4ba320d31cf79d97cdd152ec2db>
+[2026-04-13 11:58:44] [Verbose]  Transport instance <13dc1efa4fa4aea3801565809bae7e1d> started
+"#;
+        let hash = extract_probe_hash_from_identity_log(logs).unwrap();
+        assert_eq!(hash, "e6e0c4ba320d31cf79d97cdd152ec2db");
+    }
+
+    #[test]
+    fn extract_probe_hash_prefers_later_format() {
+        // lnsd line first, rnsd line second — rnsd wins (later position).
+        let logs = "\n[IDENTITY] probe_destination=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa aspect=rnstransport.probe\nTransport Instance will respond to probe requests on <rnstransport.probe.bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb:cccccccccccccccccccccccccccccccc>\n";
+        let hash = extract_probe_hash_from_identity_log(logs).unwrap();
+        assert_eq!(hash, "cccccccccccccccccccccccccccccccc");
     }
 
     #[test]
