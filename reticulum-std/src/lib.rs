@@ -15,11 +15,11 @@
 pub(crate) mod clock;
 pub mod config;
 pub mod driver;
+pub mod error;
 pub mod file_identity_store;
 pub(crate) mod file_known_destinations_store;
 pub(crate) mod file_packet_hash_store;
 pub(crate) mod file_ratchet_store;
-pub mod error;
 pub(crate) mod ini_config;
 pub mod interfaces;
 pub(crate) mod known_destinations;

@@ -323,7 +323,10 @@ impl<R: CryptoRngCore, C: Clock, S: Storage> NodeCore<R, C, S> {
         self.next_mgmt_announce_ms = Some(now_ms + MGMT_ANNOUNCE_INITIAL_DELAY_MS);
 
         tracing::info!("Probe responder at <{}> active", hash);
-        tracing::info!("[IDENTITY] probe_destination={} aspect=rnstransport.probe", hash);
+        tracing::info!(
+            "[IDENTITY] probe_destination={} aspect=rnstransport.probe",
+            hash
+        );
     }
 
     /// Get a registered destination

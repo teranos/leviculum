@@ -79,11 +79,7 @@ pub const KEEPALIVE_BYTE: u8 = 0x00;
 /// Returns 0 if the MTU is too small to carry any payload.
 pub const fn payload_per_fragment(mtu: usize) -> usize {
     let overhead = ATT_HEADER_SIZE + FRAGMENT_HEADER_SIZE;
-    if mtu > overhead {
-        mtu - overhead
-    } else {
-        0
-    }
+    mtu.saturating_sub(overhead)
 }
 
 /// Number of fragments needed to send `data_len` bytes at the given BLE MTU.
@@ -97,7 +93,7 @@ pub fn fragment_count(data_len: usize, mtu: usize) -> usize {
     if data_len == 0 {
         return 1;
     }
-    (data_len + ppf - 1) / ppf
+    data_len.div_ceil(ppf)
 }
 
 /// Build the 5-byte header for fragment `index` of `total` fragments.
@@ -119,7 +115,13 @@ pub fn build_fragment_header(index: usize, total: usize) -> [u8; FRAGMENT_HEADER
     };
     let seq = index as u16;
     let tot = total as u16;
-    [ftype, (seq >> 8) as u8, seq as u8, (tot >> 8) as u8, tot as u8]
+    [
+        ftype,
+        (seq >> 8) as u8,
+        seq as u8,
+        (tot >> 8) as u8,
+        tot as u8,
+    ]
 }
 
 /// Get the payload slice for fragment `index` from `data`.
@@ -388,10 +390,7 @@ mod tests {
         // Verify payload sizes
         assert_eq!(frags[0].len() - FRAGMENT_HEADER_SIZE, ppf); // full
         assert_eq!(frags[1].len() - FRAGMENT_HEADER_SIZE, ppf); // full
-        assert_eq!(
-            frags[2].len() - FRAGMENT_HEADER_SIZE,
-            500 - 2 * ppf
-        ); // remainder
+        assert_eq!(frags[2].len() - FRAGMENT_HEADER_SIZE, 500 - 2 * ppf); // remainder
 
         // Reassemble and verify
         let mut defrag = BleDefragmenter::new();

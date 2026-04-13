@@ -5,7 +5,9 @@ use std::path::{Path, PathBuf};
 use reticulum_core::packet_hash_store::PacketHashStore;
 
 use crate::error::Error;
-use crate::packet_hashlist::{decode_packet_hashlist, encode_packet_hashlist, PACKET_HASHLIST_FILE};
+use crate::packet_hashlist::{
+    decode_packet_hashlist, encode_packet_hashlist, PACKET_HASHLIST_FILE,
+};
 use crate::storage::atomic_write;
 
 pub(crate) struct FilePacketHashStore {

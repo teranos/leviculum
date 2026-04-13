@@ -244,7 +244,11 @@ async fn read_frames_until_deadline(
                 tracing::info!("rnode read {} bytes: {:02x?}", n, &buf[..n.min(32)]);
                 for frame in deframer.process(&buf[..n]) {
                     if let KissDeframeResult::Frame { command, payload } = frame {
-                        tracing::debug!("rnode KISS frame: cmd=0x{:02x} len={}", command, payload.len());
+                        tracing::debug!(
+                            "rnode KISS frame: cmd=0x{:02x} len={}",
+                            command,
+                            payload.len()
+                        );
                         handler(command, &payload);
                     }
                 }
@@ -447,6 +451,7 @@ async fn validate_radio_config(
 /// idle gets a random 0–500ms delay (desynchronizes rebroadcasts from multiple
 /// nodes). Subsequent queued packets use a fixed 50ms spacing to avoid serial
 /// buffer overrun. RNode firmware CSMA handles radio-level collision avoidance.
+#[allow(clippy::too_many_arguments)]
 async fn rnode_io_task(
     name: String,
     mut port: tokio_serial::SerialStream,
@@ -507,11 +512,11 @@ async fn rnode_io_task(
                                         }
                                     }
                                     rnode::CMD_DETECT => {
-                                        if payload.first() == Some(&rnode::DETECT_RESP) {
-                                            if heartbeat_pending {
-                                                tracing::debug!("{}: heartbeat OK", name);
-                                                heartbeat_pending = false;
-                                            }
+                                        if payload.first() == Some(&rnode::DETECT_RESP)
+                                            && heartbeat_pending
+                                        {
+                                            tracing::debug!("{}: heartbeat OK", name);
+                                            heartbeat_pending = false;
                                         }
                                     }
                                     rnode::CMD_RESET => {

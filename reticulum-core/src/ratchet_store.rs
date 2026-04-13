@@ -41,6 +41,7 @@ pub trait RatchetStore {
     ) -> Result<(), Self::Error>;
 
     /// Load all dest ratchet keys (sender-side) from storage.
+    #[allow(clippy::type_complexity)]
     fn load_dest_ratchet_keys(
         &mut self,
     ) -> Result<Vec<([u8; TRUNCATED_HASHBYTES], Vec<u8>)>, Self::Error>;

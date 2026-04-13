@@ -624,7 +624,7 @@ pub fn airtime_ms(payload_bytes: u32, bandwidth_hz: u32, sf: u8, cr: u8) -> u64 
     let total_us = t_preamble_us + t_payload_us;
 
     // Convert to ms, round up
-    (total_us + 999) / 1000
+    total_us.div_ceil(1000)
 }
 
 /// Compute CSMA-fair inter-frame spacing in milliseconds.
@@ -661,7 +661,7 @@ pub struct RadioConfigWire {
     pub frequency_hz: u32,
     pub bandwidth_hz: u32,
     pub sf: u8,
-    pub cr: u8,           // coding rate denominator (5-8)
+    pub cr: u8, // coding rate denominator (5-8)
     pub tx_power_dbm: i8,
     pub preamble_len: u16,
     pub csma_enabled: bool,
@@ -681,12 +681,16 @@ pub fn parse_radio_config(data: &[u8]) -> Option<RadioConfigWire> {
     let cr = data[9];
     let tx_power_dbm = data[10] as i8;
     let preamble_len = u16::from_be_bytes([data[11], data[12]]);
-    let csma_enabled = if data.len() == 14 { data[13] != 0 } else { false };
+    let csma_enabled = if data.len() == 14 {
+        data[13] != 0
+    } else {
+        false
+    };
 
-    if sf < 5 || sf > 12 {
+    if !(5..=12).contains(&sf) {
         return None;
     }
-    if cr < 5 || cr > 8 {
+    if !(5..=8).contains(&cr) {
         return None;
     }
 
@@ -764,6 +768,12 @@ pub struct SplitReassembler {
     buf: Vec<u8>,
     seq: Option<u8>,
     tick: u32,
+}
+
+impl Default for SplitReassembler {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl SplitReassembler {
@@ -1409,7 +1419,7 @@ mod tests {
         assert_ne!(frames[0][0] & FLAG_SPLIT, 0);
         assert_ne!(frames[1][0] & FLAG_SPLIT, 0);
         assert_eq!(frames[0].len(), 255); // 1 header + 254 payload
-        assert_eq!(frames[1].len(), 2);   // 1 header + 1 payload
+        assert_eq!(frames[1].len(), 2); // 1 header + 1 payload
     }
 
     #[test]
@@ -1514,7 +1524,7 @@ mod tests {
         let frame = vec![0x30 | FLAG_SPLIT, 0xAA];
         assert_eq!(r.feed(&frame, 100), None);
         r.check_timeout(109, 10); // not expired yet
-        // Buffer should still be there
+                                  // Buffer should still be there
         let frame2 = vec![0x30 | FLAG_SPLIT, 0xBB];
         let result = r.feed(&frame2, 109).unwrap();
         assert_eq!(result, vec![0xAA, 0xBB]);
@@ -1526,7 +1536,7 @@ mod tests {
         let frame = vec![0x30 | FLAG_SPLIT, 0xAA];
         assert_eq!(r.feed(&frame, 100), None);
         r.check_timeout(110, 10); // expired
-        // Buffer cleared — second half should start a new buffer
+                                  // Buffer cleared — second half should start a new buffer
         let frame2 = vec![0x30 | FLAG_SPLIT, 0xBB];
         assert_eq!(r.feed(&frame2, 111), None); // new first half, not reassembly
     }
@@ -1741,7 +1751,10 @@ mod tests {
 
     #[test]
     fn radio_config_round_trip_csma_enabled() {
-        let cfg = RadioConfigWire { csma_enabled: true, ..medium_profile() };
+        let cfg = RadioConfigWire {
+            csma_enabled: true,
+            ..medium_profile()
+        };
         let frame = build_radio_config_frame(&cfg);
         assert_eq!(frame.len(), RADIO_CONFIG_FRAME_LEN);
         assert_eq!(frame[15], 1);
@@ -1783,8 +1796,13 @@ mod tests {
 
     #[test]
     fn radio_config_all_bandwidths() {
-        for &bw in &[7_810u32, 10_420, 15_630, 20_830, 31_250, 41_670, 62_500, 125_000, 250_000, 500_000] {
-            let cfg = RadioConfigWire { bandwidth_hz: bw, ..medium_profile() };
+        for &bw in &[
+            7_810u32, 10_420, 15_630, 20_830, 31_250, 41_670, 62_500, 125_000, 250_000, 500_000,
+        ] {
+            let cfg = RadioConfigWire {
+                bandwidth_hz: bw,
+                ..medium_profile()
+            };
             let frame = build_radio_config_frame(&cfg);
             let parsed = parse_radio_config(&frame[2..]).unwrap();
             assert_eq!(parsed.bandwidth_hz, bw);
@@ -1794,7 +1812,10 @@ mod tests {
     #[test]
     fn radio_config_all_coding_rates() {
         for cr in 5..=8u8 {
-            let cfg = RadioConfigWire { cr, ..medium_profile() };
+            let cfg = RadioConfigWire {
+                cr,
+                ..medium_profile()
+            };
             let frame = build_radio_config_frame(&cfg);
             let parsed = parse_radio_config(&frame[2..]).unwrap();
             assert_eq!(parsed.cr, cr);
@@ -1804,7 +1825,10 @@ mod tests {
     #[test]
     fn radio_config_sf_boundaries() {
         for sf in 5..=12u8 {
-            let cfg = RadioConfigWire { sf, ..medium_profile() };
+            let cfg = RadioConfigWire {
+                sf,
+                ..medium_profile()
+            };
             let frame = build_radio_config_frame(&cfg);
             let parsed = parse_radio_config(&frame[2..]).unwrap();
             assert_eq!(parsed.sf, sf);

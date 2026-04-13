@@ -1361,7 +1361,10 @@ impl<C: Clock, S: Storage> Transport<C, S> {
                     HexShort(&dst[..]),
                     entry.hops,
                     self.iface_name(entry.interface_index),
-                    entry.next_hop.as_ref().map(|h| alloc::format!("{}", HexShort(&h[..]))),
+                    entry
+                        .next_hop
+                        .as_ref()
+                        .map(|h| alloc::format!("{}", HexShort(&h[..]))),
                     age_ms
                 );
             }
@@ -2607,8 +2610,8 @@ impl<C: Clock, S: Storage> Transport<C, S> {
         // network interfaces. Control destinations (path requests, tunnel
         // synthesis) are excluded — they have their own handlers.
         // Codeberg issue #24.
-        let is_control_dest = dest_hash == self.path_request_hash
-            || dest_hash == self.tunnel_synthesize_hash;
+        let is_control_dest =
+            dest_hash == self.path_request_hash || dest_hash == self.tunnel_synthesize_hash;
         if packet.flags.dest_type == DestinationType::Plain
             && packet.flags.transport_type == TransportType::Broadcast
             && !is_control_dest
@@ -2858,7 +2861,9 @@ impl<C: Clock, S: Storage> Transport<C, S> {
             packet.hops,
             self.iface_name(source_interface_index),
             self.iface_name(target_iface),
-            next_hop.as_ref().map(|h| alloc::format!("{}", HexShort(&h[..])))
+            next_hop
+                .as_ref()
+                .map(|h| alloc::format!("{}", HexShort(&h[..])))
         );
 
         let now = self.clock.now_ms();
@@ -3519,8 +3524,7 @@ impl<C: Clock, S: Storage> Transport<C, S> {
     /// control packets. We must recognize them to avoid forwarding them
     /// as plain broadcasts (Python Transport.py:1387 control_hashes check).
     fn compute_tunnel_synthesize_hash() -> [u8; TRUNCATED_HASHBYTES] {
-        let name_hash =
-            Destination::compute_name_hash("rnstransport", &["tunnel", "synthesize"]);
+        let name_hash = Destination::compute_name_hash("rnstransport", &["tunnel", "synthesize"]);
         truncated_hash(&name_hash)
     }
 
@@ -13791,10 +13795,7 @@ mod tests {
         // ─── Plain Broadcast Forwarding ─────────────────────────────────
 
         /// Helper: build a raw PLAIN BROADCAST data packet.
-        fn make_plain_broadcast_raw(
-            dest_hash: [u8; TRUNCATED_HASHBYTES],
-            data: &[u8],
-        ) -> Vec<u8> {
+        fn make_plain_broadcast_raw(dest_hash: [u8; TRUNCATED_HASHBYTES], data: &[u8]) -> Vec<u8> {
             let packet = Packet {
                 flags: PacketFlags {
                     ifac_flag: false,
@@ -13873,7 +13874,9 @@ mod tests {
             );
 
             // Should NOT have a Broadcast action (that would also hit network ifaces)
-            let has_broadcast = actions.iter().any(|a| matches!(a, Action::Broadcast { .. }));
+            let has_broadcast = actions
+                .iter()
+                .any(|a| matches!(a, Action::Broadcast { .. }));
             assert!(
                 !has_broadcast,
                 "Network→local should use SendPacket, not Broadcast"
@@ -13903,9 +13906,9 @@ mod tests {
                 .expect("process_incoming");
 
             let actions = transport.drain_actions();
-            let has_forward = actions.iter().any(|a| {
-                matches!(a, Action::SendPacket { .. } | Action::Broadcast { .. })
-            });
+            let has_forward = actions
+                .iter()
+                .any(|a| matches!(a, Action::SendPacket { .. } | Action::Broadcast { .. }));
             assert!(
                 !has_forward,
                 "No forwarding should happen without local clients, got: {:?}",
@@ -14631,7 +14634,6 @@ mod tests {
         use crate::memory_storage::MemoryStorage;
         use crate::packet::{HeaderType, PacketContext, PacketData, PacketFlags, TransportType};
         use crate::test_utils::MockClock;
-        use crate::test_utils::MockInterface;
         use rand_core::OsRng;
         extern crate alloc;
         use alloc::vec::Vec;

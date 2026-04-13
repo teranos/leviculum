@@ -275,10 +275,7 @@ pub fn run_test(runner: &mut TestRunner) -> Result<(), StepError> {
 
 /// Execute steps with a hard deadline. If the deadline passes between steps,
 /// the remaining steps are skipped and an error is returned.
-fn execute_steps_with_deadline(
-    runner: &TestRunner,
-    deadline: Instant,
-) -> Result<(), StepError> {
+fn execute_steps_with_deadline(runner: &TestRunner, deadline: Instant) -> Result<(), StepError> {
     let steps = runner.scenario().steps.clone();
     let total = steps.len();
     let mut cache = BTreeMap::new();
@@ -594,7 +591,11 @@ fn execute_step(
                 "[{step_num}/{total}] benchmark: {} pairs, {}s, profile={}",
                 pairs.len(),
                 duration_secs,
-                if profile.is_empty() { "default" } else { profile }
+                if profile.is_empty() {
+                    "default"
+                } else {
+                    profile
+                }
             );
             execute_benchmark(runner, index, pairs, *duration_secs, label)
         }
@@ -615,7 +616,8 @@ fn execute_benchmark(
     // probe + reply airtimes + processing margin. Floor at 800ms.
     // With persistent RNS connection, each probe is 2 radio TX (no path re-request).
     let min_interval_ms = if let Some(r) = radio {
-        let airtime = reticulum_core::rnode::airtime_ms(500, r.bandwidth, r.spreading_factor, r.coding_rate);
+        let airtime =
+            reticulum_core::rnode::airtime_ms(500, r.bandwidth, r.spreading_factor, r.coding_rate);
         (airtime * 4).max(800)
     } else {
         3000
@@ -624,7 +626,8 @@ fn execute_benchmark(
     // full round-trip under contention, short enough that one lost probe
     // doesn't waste the entire benchmark window.
     let probe_timeout_s = if let Some(r) = radio {
-        let airtime = reticulum_core::rnode::airtime_ms(500, r.bandwidth, r.spreading_factor, r.coding_rate);
+        let airtime =
+            reticulum_core::rnode::airtime_ms(500, r.bandwidth, r.spreading_factor, r.coding_rate);
         ((airtime * 8) / 1000).clamp(10, 30)
     } else {
         15
@@ -778,7 +781,8 @@ fn execute_benchmark(
         println!();
 
         // Save JSON results
-        let benchmarks_dir = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("benchmarks");
+        let benchmarks_dir =
+            std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("benchmarks");
         let _ = std::fs::create_dir_all(&benchmarks_dir);
         let ts = chrono_timestamp();
         let filename = format!("bench_{profile_label}_{ts}.json");
@@ -1365,7 +1369,11 @@ fn execute_file_transfer(
         None
     };
 
-    let has_rnode = runner.scenario().nodes.values().any(|n| n.rnode || n.rnode_interfaces.is_some());
+    let has_rnode = runner
+        .scenario()
+        .nodes
+        .values()
+        .any(|n| n.rnode || n.rnode_interfaces.is_some());
     let mut results = Vec::new();
 
     match direction {
@@ -1912,9 +1920,8 @@ fn execute_parallel_file_transfers(
     }
 
     // Report timed-out transfers
-    for i in 0..n {
+    for (i, t) in transfers.iter().enumerate() {
         if !collected_indices.contains(&i) {
-            let t = &transfers[i];
             println!(
                 "  [{i}] {} -> {}: TIMEOUT (no result within {timeout_secs}s)",
                 t.sender, t.receiver

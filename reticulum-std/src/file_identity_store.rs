@@ -52,7 +52,7 @@ impl IdentityStore for FileIdentityStore {
     fn save(&mut self, identity: &Identity) -> Result<(), Self::Error> {
         let bytes = identity
             .private_key_bytes()
-            .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, format!("{:?}", e)))?;
+            .map_err(|e| std::io::Error::other(format!("{:?}", e)))?;
 
         // Atomic write: write to .tmp then rename (same pattern as storage.rs)
         let tmp_path = self.path.with_extension("tmp");

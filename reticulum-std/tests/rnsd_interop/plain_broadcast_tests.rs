@@ -46,8 +46,7 @@ async fn test_plain_broadcast_local_client_to_network() {
     let py_b_addr: SocketAddr = format!("127.0.0.1:{}", py_b_rns_port).parse().unwrap();
     let daemon_tcp_addr: SocketAddr = format!("127.0.0.1:{}", daemon_tcp_port).parse().unwrap();
 
-    let _storage =
-        temp_storage("test_plain_broadcast_local_client_to_network", "daemon");
+    let _storage = temp_storage("test_plain_broadcast_local_client_to_network", "daemon");
     let mut daemon_node = ReticulumNodeBuilder::new()
         .enable_transport(true)
         .share_instance(true)
@@ -70,13 +69,10 @@ async fn test_plain_broadcast_local_client_to_network() {
     // Python detects the existing Unix socket and connects as client.
     // Its py_a_rns_port is unused (shared instance client skips TCP).
     let py_a_rns_port = find_available_ports::<2>().expect("ports")[0];
-    let py_local = TestDaemon::start_with_shared_instance_ports(
-        py_a_rns_port,
-        py_a_cmd_port,
-        &instance_name,
-    )
-    .await
-    .expect("Failed to start Python shared instance client");
+    let py_local =
+        TestDaemon::start_with_shared_instance_ports(py_a_rns_port, py_a_cmd_port, &instance_name)
+            .await
+            .expect("Failed to start Python shared instance client");
 
     // Let Python A settle as shared instance client
     tokio::time::sleep(Duration::from_secs(1)).await;
@@ -96,10 +92,7 @@ async fn test_plain_broadcast_local_client_to_network() {
             .get_received_plain_packets()
             .await
             .expect("Failed to get received plain packets");
-        if packets
-            .iter()
-            .any(|p| p.data == test_data.to_vec())
-        {
+        if packets.iter().any(|p| p.data == test_data.to_vec()) {
             received = true;
             break;
         }
@@ -133,8 +126,7 @@ async fn test_plain_broadcast_network_to_local_client() {
     let py_b_addr: SocketAddr = format!("127.0.0.1:{}", py_b_rns_port).parse().unwrap();
     let daemon_tcp_addr: SocketAddr = format!("127.0.0.1:{}", daemon_tcp_port).parse().unwrap();
 
-    let _storage =
-        temp_storage("test_plain_broadcast_network_to_local_client", "daemon");
+    let _storage = temp_storage("test_plain_broadcast_network_to_local_client", "daemon");
     let mut daemon_node = ReticulumNodeBuilder::new()
         .enable_transport(true)
         .share_instance(true)
@@ -155,13 +147,10 @@ async fn test_plain_broadcast_network_to_local_client() {
 
     // ── Phase 4: Start Python daemon A (shared instance client) ─────────
     let py_a_rns_port = find_available_ports::<2>().expect("ports")[0];
-    let py_local = TestDaemon::start_with_shared_instance_ports(
-        py_a_rns_port,
-        py_a_cmd_port,
-        &instance_name,
-    )
-    .await
-    .expect("Failed to start Python shared instance client");
+    let py_local =
+        TestDaemon::start_with_shared_instance_ports(py_a_rns_port, py_a_cmd_port, &instance_name)
+            .await
+            .expect("Failed to start Python shared instance client");
 
     // Let Python A settle as shared instance client
     tokio::time::sleep(Duration::from_secs(1)).await;
@@ -187,10 +176,7 @@ async fn test_plain_broadcast_network_to_local_client() {
             .get_received_plain_packets()
             .await
             .expect("Failed to get received plain packets");
-        if packets
-            .iter()
-            .any(|p| p.data == test_data.to_vec())
-        {
+        if packets.iter().any(|p| p.data == test_data.to_vec()) {
             received = true;
             break;
         }

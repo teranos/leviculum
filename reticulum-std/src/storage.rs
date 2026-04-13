@@ -46,8 +46,8 @@ use reticulum_core::ratchet_store::RatchetStore;
 /// At 32 bytes/entry × 1.5x HashSet overhead ≈ 4.8 MB max.
 const FILE_STORAGE_PACKET_HASH_CAP: usize = 100_000;
 
-
 pub(crate) struct Storage {
+    #[allow(dead_code)]
     base_path: PathBuf,
     inner: MemoryStorage,
     // Persistent stores
@@ -781,7 +781,10 @@ impl reticulum_core::traits::Storage for Storage {
         serialized: Vec<u8>,
     ) {
         // Write-through to disk via ratchet store
-        if let Err(e) = self.ratchet_store.save_dest_ratchet_keys(&dest_hash, &serialized) {
+        if let Err(e) = self
+            .ratchet_store
+            .save_dest_ratchet_keys(&dest_hash, &serialized)
+        {
             tracing::warn!("Failed to persist ratchet keys: {e}");
         }
         self.inner.store_dest_ratchet_keys(dest_hash, serialized)

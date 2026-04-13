@@ -480,7 +480,6 @@ impl ReticulumNodeBuilder {
     }
 }
 
-
 /// Format the first 8 bytes of a hash as hex for logging
 fn hex_short(hash: &[u8]) -> String {
     use std::fmt::Write;

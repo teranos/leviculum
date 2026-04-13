@@ -397,13 +397,10 @@ async fn test_local_client_initiates_link_through_daemon() {
 
     // ── Phase 3: Start Rust daemon (shared instance + TCP client to B) ───
     let py_b_addr: SocketAddr = format!("127.0.0.1:{}", py_b_rns_port).parse().unwrap();
-    let daemon_tcp_addr: SocketAddr =
-        format!("127.0.0.1:{}", daemon_tcp_port).parse().unwrap();
+    let daemon_tcp_addr: SocketAddr = format!("127.0.0.1:{}", daemon_tcp_port).parse().unwrap();
 
-    let _storage = crate::common::temp_storage(
-        "test_local_client_initiates_link_through_daemon",
-        "daemon",
-    );
+    let _storage =
+        crate::common::temp_storage("test_local_client_initiates_link_through_daemon", "daemon");
     let mut daemon_node = ReticulumNodeBuilder::new()
         .enable_transport(true)
         .share_instance(true)
@@ -557,8 +554,7 @@ async fn test_non_transport_daemon_relays_local_client_link() {
 
     // ── Phase 3: Start Rust daemon — transport DISABLED ──────────────────
     let py_b_addr: SocketAddr = format!("127.0.0.1:{}", py_b_rns_port).parse().unwrap();
-    let daemon_tcp_addr: SocketAddr =
-        format!("127.0.0.1:{}", daemon_tcp_port).parse().unwrap();
+    let daemon_tcp_addr: SocketAddr = format!("127.0.0.1:{}", daemon_tcp_port).parse().unwrap();
 
     let _storage = crate::common::temp_storage(
         "test_non_transport_daemon_relays_local_client_link",

@@ -130,8 +130,13 @@ async fn send_radio_config(
     for attempt in 1..=3u8 {
         tracing::info!(
             "Serial {}: sending radio config (attempt {}/3): freq={} sf={} bw={} cr={} txp={}",
-            name, attempt, config.frequency, config.spreading_factor,
-            config.bandwidth, config.coding_rate, config.tx_power
+            name,
+            attempt,
+            config.frequency,
+            config.spreading_factor,
+            config.bandwidth,
+            config.coding_rate,
+            config.tx_power
         );
         if let Err(e) = port.write_all(&frame_buf).await {
             tracing::warn!("Serial {}: config write failed: {}", name, e);
@@ -166,12 +171,12 @@ async fn send_radio_config(
                         }
                     }
                 }
-                Ok(Ok(_)) => break,   // EOF
+                Ok(Ok(_)) => break, // EOF
                 Ok(Err(e)) => {
                     tracing::warn!("Serial {}: config ACK read error: {}", name, e);
                     break;
                 }
-                Err(_) => break,       // timeout
+                Err(_) => break, // timeout
             }
         }
     }

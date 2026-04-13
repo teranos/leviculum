@@ -416,7 +416,7 @@ fn map_set<K: Eq + core::hash::Hash + Copy, V, const N: usize>(
                     continue;
                 }
                 if let Some(vv) = map.remove(kk) {
-                    let _ = kept.push((*kk, vv));
+                    kept.push((*kk, vv));
                 }
             }
             // The oldest entry is whatever remains in `map`. Drop it.
@@ -640,7 +640,12 @@ impl Storage for EmbeddedStorage {
         entry: AnnounceRateEntry,
     ) {
         self.announce_rate_table.remove(&dest_hash);
-        map_set(&mut self.announce_rate_table, dest_hash, entry, "announce_rate_table");
+        map_set(
+            &mut self.announce_rate_table,
+            dest_hash,
+            entry,
+            "announce_rate_table",
+        );
     }
 
     // ─── Receipts ───────────────────────────────────────────────────────
@@ -692,7 +697,12 @@ impl Storage for EmbeddedStorage {
 
     fn set_identity(&mut self, dest_hash: [u8; TRUNCATED_HASHBYTES], identity: Identity) {
         self.known_identities.remove(&dest_hash);
-        map_set(&mut self.known_identities, dest_hash, identity, "known_identities");
+        map_set(
+            &mut self.known_identities,
+            dest_hash,
+            identity,
+            "known_identities",
+        );
     }
 
     // ─── Cleanup ────────────────────────────────────────────────────────
@@ -929,7 +939,12 @@ impl Storage for EmbeddedStorage {
         serialized: Vec<u8>,
     ) {
         self.dest_ratchet_keys.remove(&dest_hash);
-        map_set(&mut self.dest_ratchet_keys, dest_hash, serialized, "dest_ratchet_keys");
+        map_set(
+            &mut self.dest_ratchet_keys,
+            dest_hash,
+            serialized,
+            "dest_ratchet_keys",
+        );
     }
 
     fn load_dest_ratchet_keys(&self, dest_hash: &[u8; TRUNCATED_HASHBYTES]) -> Option<Vec<u8>> {
@@ -1248,7 +1263,10 @@ mod tests {
         // the next eviction". We can't assert which OTHER key was evicted
         // because the setter's `remove + insert` triggers a `swap_remove`
         // side effect that perturbs internal positions.
-        assert!(s.get_path(&key_th(0)).is_some(), "refreshed key must survive eviction");
+        assert!(
+            s.get_path(&key_th(0)).is_some(),
+            "refreshed key must survive eviction"
+        );
         assert_eq!(s.path_count(), cap, "exactly one entry was evicted");
     }
 
@@ -1280,9 +1298,14 @@ mod tests {
         }
         s.set_path_state(key_th(0), PathState::Responsive);
         s.set_path_state(key_th(cap), PathState::Unknown);
-        assert!(s.get_path_state(&key_th(0)).is_some(), "refreshed key survives");
+        assert!(
+            s.get_path_state(&key_th(0)).is_some(),
+            "refreshed key survives"
+        );
         assert_eq!(
-            (0..=cap).filter(|i| s.get_path_state(&key_th(*i)).is_some()).count(),
+            (0..=cap)
+                .filter(|i| s.get_path_state(&key_th(*i)).is_some())
+                .count(),
             cap,
             "exactly one entry was evicted"
         );
@@ -1345,7 +1368,10 @@ mod tests {
         }
         s.set_announce_cache(key_th(0), alloc::vec![99u8; 4]);
         s.set_announce_cache(key_th(cap), alloc::vec![0u8; 4]);
-        assert!(s.get_announce_cache(&key_th(0)).is_some(), "refreshed survives");
+        assert!(
+            s.get_announce_cache(&key_th(0)).is_some(),
+            "refreshed survives"
+        );
     }
 
     // ─── Map 5: announce_rate_table ─────────────────────────────────────
@@ -1375,7 +1401,10 @@ mod tests {
         }
         s.set_announce_rate(key_th(0), mk_rate(99));
         s.set_announce_rate(key_th(cap), mk_rate(0));
-        assert!(s.get_announce_rate(&key_th(0)).is_some(), "refreshed survives");
+        assert!(
+            s.get_announce_rate(&key_th(0)).is_some(),
+            "refreshed survives"
+        );
     }
 
     // ─── Map 6: link_table ──────────────────────────────────────────────
@@ -1448,7 +1477,11 @@ mod tests {
             s.set_discovery_path_request(key_th(i), i, 1000 + i as u64);
         }
         for i in (cap * 2)..(cap * 3) {
-            assert!(s.get_discovery_path_request(&key_th(i)).is_some(), "newest {}", i);
+            assert!(
+                s.get_discovery_path_request(&key_th(i)).is_some(),
+                "newest {}",
+                i
+            );
         }
         let live: usize = (0..(cap * 3))
             .filter(|i| s.get_discovery_path_request(&key_th(*i)).is_some())
@@ -1466,12 +1499,21 @@ mod tests {
         // Re-insert with different value: guard prevents update.
         s.set_discovery_path_request(key_th(0), 999, 9999);
         let stored = s.get_discovery_path_request(&key_th(0)).unwrap();
-        assert_eq!(stored, (10, 1000), "first-request guard must keep original value");
+        assert_eq!(
+            stored,
+            (10, 1000),
+            "first-request guard must keep original value"
+        );
         // New unrelated key triggers FIFO eviction of oldest.
         s.set_discovery_path_request(key_th(cap), 99, 99);
-        assert!(s.get_discovery_path_request(&key_th(0)).is_none(),
-                "FIFO-by-insertion: oldest evicted (no refresh on guarded re-insert)");
-        assert!(s.get_discovery_path_request(&key_th(cap)).is_some(), "newest present");
+        assert!(
+            s.get_discovery_path_request(&key_th(0)).is_none(),
+            "FIFO-by-insertion: oldest evicted (no refresh on guarded re-insert)"
+        );
+        assert!(
+            s.get_discovery_path_request(&key_th(cap)).is_some(),
+            "newest present"
+        );
     }
 
     // ─── Map 9: path_requests ───────────────────────────────────────────
@@ -1484,7 +1526,11 @@ mod tests {
             s.set_path_request_time(key_th(i), 1000 + i as u64);
         }
         for i in (cap * 2)..(cap * 3) {
-            assert!(s.get_path_request_time(&key_th(i)).is_some(), "newest {}", i);
+            assert!(
+                s.get_path_request_time(&key_th(i)).is_some(),
+                "newest {}",
+                i
+            );
         }
         let live: usize = (0..(cap * 3))
             .filter(|i| s.get_path_request_time(&key_th(*i)).is_some())
@@ -1501,7 +1547,10 @@ mod tests {
         }
         s.set_path_request_time(key_th(0), 99_999);
         s.set_path_request_time(key_th(cap), 0);
-        assert!(s.get_path_request_time(&key_th(0)).is_some(), "refreshed survives");
+        assert!(
+            s.get_path_request_time(&key_th(0)).is_some(),
+            "refreshed survives"
+        );
     }
 
     // ─── Map 10: known_identities ───────────────────────────────────────
@@ -1561,7 +1610,10 @@ mod tests {
         }
         s.remember_known_ratchet(key_th(0), [0xAA; RATCHET_SIZE], 9999);
         s.remember_known_ratchet(key_th(cap), [0; RATCHET_SIZE], 0);
-        assert!(s.get_known_ratchet(&key_th(0)).is_some(), "refreshed survives");
+        assert!(
+            s.get_known_ratchet(&key_th(0)).is_some(),
+            "refreshed survives"
+        );
     }
 
     // ─── Map 12: dest_ratchet_keys ──────────────────────────────────────
@@ -1574,7 +1626,11 @@ mod tests {
             s.store_dest_ratchet_keys(key_th(i), alloc::vec![i as u8; 8]);
         }
         for i in (cap * 2)..(cap * 3) {
-            assert!(s.load_dest_ratchet_keys(&key_th(i)).is_some(), "newest {}", i);
+            assert!(
+                s.load_dest_ratchet_keys(&key_th(i)).is_some(),
+                "newest {}",
+                i
+            );
         }
         let live: usize = (0..(cap * 3))
             .filter(|i| s.load_dest_ratchet_keys(&key_th(*i)).is_some())
@@ -1591,7 +1647,10 @@ mod tests {
         }
         s.store_dest_ratchet_keys(key_th(0), alloc::vec![99u8; 8]);
         s.store_dest_ratchet_keys(key_th(cap), alloc::vec![0u8; 8]);
-        assert!(s.load_dest_ratchet_keys(&key_th(0)).is_some(), "refreshed survives");
+        assert!(
+            s.load_dest_ratchet_keys(&key_th(0)).is_some(),
+            "refreshed survives"
+        );
     }
 
     // ─── Map 13: receipts ───────────────────────────────────────────────
@@ -1658,14 +1717,23 @@ mod tests {
             assert!(!s.check_path_request_tag(&key32(i)));
         }
         // All 32 tags now in set; second check returns true.
-        assert!(s.check_path_request_tag(&key32(0)), "tag 0 seen second time");
+        assert!(
+            s.check_path_request_tag(&key32(0)),
+            "tag 0 seen second time"
+        );
         // Insert a 33rd new tag. Built-in FIFO logic must evict oldest.
-        assert!(!s.check_path_request_tag(&key32(cap)),
-                "33rd tag is fresh (and triggers eviction)");
-        assert!(s.check_path_request_tag(&key32(cap)),
-                "33rd tag now reported seen");
+        assert!(
+            !s.check_path_request_tag(&key32(cap)),
+            "33rd tag is fresh (and triggers eviction)"
+        );
+        assert!(
+            s.check_path_request_tag(&key32(cap)),
+            "33rd tag now reported seen"
+        );
         // Oldest tag was evicted: first call now returns false (not seen).
-        assert!(!s.check_path_request_tag(&key32(0)),
-                "oldest tag must be evicted by FIFO insert");
+        assert!(
+            !s.check_path_request_tag(&key32(0)),
+            "oldest tag must be evicted by FIFO insert"
+        );
     }
 }

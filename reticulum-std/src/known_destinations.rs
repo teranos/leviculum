@@ -340,7 +340,8 @@ mod tests {
         // New identity from storage
         let new_id = Identity::generate(&mut rand_core::OsRng);
         let new_hash = [0x02; TRUNCATED_HASHBYTES];
-        let storage_identities: Vec<([u8; TRUNCATED_HASHBYTES], Identity)> = vec![(new_hash, new_id)];
+        let storage_identities: Vec<([u8; TRUNCATED_HASHBYTES], Identity)> =
+            vec![(new_hash, new_id)];
         let refs: Vec<(&[u8; TRUNCATED_HASHBYTES], &Identity)> =
             storage_identities.iter().map(|(h, i)| (h, i)).collect();
 

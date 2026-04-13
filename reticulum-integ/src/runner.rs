@@ -542,7 +542,9 @@ impl TestRunner {
                                                 let _ = file.flush();
                                             }
                                             Ok(_) => {}
-                                            Err(ref e) if e.kind() == io::ErrorKind::TimedOut => continue,
+                                            Err(ref e) if e.kind() == io::ErrorKind::TimedOut => {
+                                                continue
+                                            }
                                             Err(_) => {
                                                 // Port lost — try to reconnect
                                                 thread::sleep(Duration::from_secs(1));
@@ -551,7 +553,8 @@ impl TestRunner {
                                                     .open()
                                                 {
                                                     Ok(mut new_serial) => {
-                                                        let _ = new_serial.write_data_terminal_ready(true);
+                                                        let _ = new_serial
+                                                            .write_data_terminal_ready(true);
                                                         serial = new_serial;
                                                     }
                                                     Err(_) => break,
@@ -710,13 +713,11 @@ fn udevadm_properties(path: &str) -> BTreeMap<String, String> {
 fn discover_devices() -> DiscoveredDevices {
     // Collect all ttyACM devices
     let mut acm_paths: Vec<String> = Vec::new();
-    for entry in fs::read_dir("/dev").into_iter().flatten() {
-        if let Ok(e) = entry {
-            let name = e.file_name();
-            let name = name.to_string_lossy();
-            if name.starts_with("ttyACM") || name.starts_with("ttyUSB") {
-                acm_paths.push(format!("/dev/{name}"));
-            }
+    for e in fs::read_dir("/dev").into_iter().flatten().flatten() {
+        let name = e.file_name();
+        let name = name.to_string_lossy();
+        if name.starts_with("ttyACM") || name.starts_with("ttyUSB") {
+            acm_paths.push(format!("/dev/{name}"));
         }
     }
     acm_paths.sort();
@@ -728,7 +729,10 @@ fn discover_devices() -> DiscoveredDevices {
     for path in &acm_paths {
         let props = udevadm_properties(path);
         let vendor = props.get("ID_VENDOR").map(|s| s.as_str()).unwrap_or("");
-        let iface_num = props.get("ID_USB_INTERFACE_NUM").map(|s| s.as_str()).unwrap_or("");
+        let iface_num = props
+            .get("ID_USB_INTERFACE_NUM")
+            .map(|s| s.as_str())
+            .unwrap_or("");
         let usb_serial = props.get("ID_SERIAL_SHORT").cloned().unwrap_or_default();
 
         if vendor == "leviculum" {
@@ -766,9 +770,9 @@ fn discover_devices() -> DiscoveredDevices {
     // Probe RNode candidates with CMD_DETECT
     let mut confirmed_rnodes: Vec<String> = Vec::new();
     for path in &rnode_candidates {
-        match probe_rnode(path) {
-            Ok(()) => confirmed_rnodes.push(path.clone()),
-            Err(_) => {} // not an RNode, silently skip
+        // Err means "not an RNode" — silently skip.
+        if probe_rnode(path).is_ok() {
+            confirmed_rnodes.push(path.clone());
         }
     }
     confirmed_rnodes.sort();
@@ -806,7 +810,7 @@ fn probe_rnode(path: &str) -> Result<(), String> {
     for settle_ms in [0, 500, 1500] {
         match probe_rnode_once(path, settle_ms) {
             Ok(true) => return Ok(()),
-            Ok(false) => continue, // no detect response, try again
+            Ok(false) => continue,   // no detect response, try again
             Err(e) => return Err(e), // can't open — don't retry
         }
     }
@@ -869,17 +873,13 @@ fn check_device_accessible(path: &str) -> Result<(), String> {
         Ok(_port) => Ok(()), // opened successfully, drop closes it
         Err(e) => {
             // Check if another process holds it
-            let lsof = Command::new("lsof")
-                .arg(path)
-                .output()
-                .ok()
-                .and_then(|o| {
-                    if o.status.success() {
-                        String::from_utf8(o.stdout).ok()
-                    } else {
-                        None
-                    }
-                });
+            let lsof = Command::new("lsof").arg(path).output().ok().and_then(|o| {
+                if o.status.success() {
+                    String::from_utf8(o.stdout).ok()
+                } else {
+                    None
+                }
+            });
             let holder = lsof
                 .as_deref()
                 .and_then(|s| s.lines().nth(1)) // skip header
@@ -894,7 +894,14 @@ fn check_device_accessible(path: &str) -> Result<(), String> {
 fn check_stale_resources(scenario: &TestScenario) {
     // Check for stale Docker containers
     if let Ok(output) = Command::new("docker")
-        .args(["ps", "-a", "--filter", "name=integ-", "--format", "{{.Names}} {{.Status}}"])
+        .args([
+            "ps",
+            "-a",
+            "--filter",
+            "name=integ-",
+            "--format",
+            "{{.Names}} {{.Status}}",
+        ])
         .output()
     {
         let text = String::from_utf8_lossy(&output.stdout);
@@ -908,12 +915,20 @@ fn check_stale_resources(scenario: &TestScenario) {
     // Check all device ports are released
     let mut ports: Vec<&str> = Vec::new();
     for node in scenario.nodes.values() {
-        if let Some(ref p) = node.rnode_path { ports.push(p); }
-        if let Some(ref p) = node.serial_path { ports.push(p); }
-        if let Some(ref p) = node.debug_serial_path { ports.push(p); }
+        if let Some(ref p) = node.rnode_path {
+            ports.push(p);
+        }
+        if let Some(ref p) = node.serial_path {
+            ports.push(p);
+        }
+        if let Some(ref p) = node.debug_serial_path {
+            ports.push(p);
+        }
         if let Some(ref ifaces) = node.rnode_interfaces {
             for iface in ifaces {
-                if let Some(ref p) = iface.rnode_path { ports.push(p); }
+                if let Some(ref p) = iface.rnode_path {
+                    ports.push(p);
+                }
             }
         }
     }
@@ -938,16 +953,21 @@ fn check_stale_resources(scenario: &TestScenario) {
 /// containers are best-effort cleanup.
 fn cleanup_stale_containers() {
     let output = Command::new("docker")
-        .args(["ps", "-a", "--filter", "name=integ-", "--format", "{{.Names}}"])
+        .args([
+            "ps",
+            "-a",
+            "--filter",
+            "name=integ-",
+            "--format",
+            "{{.Names}}",
+        ])
         .output();
     let names: Vec<String> = match output {
-        Ok(ref o) if o.status.success() => {
-            String::from_utf8_lossy(&o.stdout)
-                .lines()
-                .filter(|l| !l.is_empty())
-                .map(|l| l.to_string())
-                .collect()
-        }
+        Ok(ref o) if o.status.success() => String::from_utf8_lossy(&o.stdout)
+            .lines()
+            .filter(|l| !l.is_empty())
+            .map(|l| l.to_string())
+            .collect(),
         _ => return,
     };
     if names.is_empty() {
@@ -959,9 +979,7 @@ fn cleanup_stale_containers() {
     }
     let mut args = vec!["rm".to_string(), "-f".to_string()];
     args.extend(names);
-    let _ = Command::new("docker")
-        .args(&args)
-        .output();
+    let _ = Command::new("docker").args(&args).output();
 }
 
 /// Discover USB devices and assign them to nodes that need hardware.
@@ -971,16 +989,14 @@ fn cleanup_stale_containers() {
 /// is available. Otherwise assigns device paths to nodes with
 /// `rnode = true`, `serial = true`, or `rnode_interfaces`.
 fn resolve_and_probe_rnodes(scenario: &mut TestScenario) -> Result<(), RunnerError> {
-    let needed_rnodes = scenario.nodes.values()
-        .filter(|n| n.rnode)
-        .count()
-        + scenario.nodes.values()
+    let needed_rnodes = scenario.nodes.values().filter(|n| n.rnode).count()
+        + scenario
+            .nodes
+            .values()
             .filter_map(|n| n.rnode_interfaces.as_ref())
             .map(|ifaces| ifaces.len())
             .sum::<usize>();
-    let needed_lnodes = scenario.nodes.values()
-        .filter(|n| n.serial)
-        .count();
+    let needed_lnodes = scenario.nodes.values().filter(|n| n.serial).count();
 
     // Kill stale containers from previous runs that may hold USB devices.
     cleanup_stale_containers();
@@ -995,8 +1011,10 @@ fn resolve_and_probe_rnodes(scenario: &mut TestScenario) -> Result<(), RunnerErr
     if discovered.rnodes.len() < needed_rnodes || discovered.lnodes.len() < needed_lnodes {
         return Err(RunnerError::InsufficientRNodes(format!(
             "needs {} RNode(s) and {} LNode(s), found {} RNode(s) and {} LNode(s)",
-            needed_rnodes, needed_lnodes,
-            discovered.rnodes.len(), discovered.lnodes.len()
+            needed_rnodes,
+            needed_lnodes,
+            discovered.rnodes.len(),
+            discovered.lnodes.len()
         )));
     }
 
@@ -1089,7 +1107,9 @@ fn spawn_proxies(
             continue;
         }
         let device = node.rnode_path.as_ref().ok_or_else(|| {
-            RunnerError::ProxyError(format!("node '{name}': rnode_proxy requires rnode (no device assigned)"))
+            RunnerError::ProxyError(format!(
+                "node '{name}': rnode_proxy requires rnode (no device assigned)"
+            ))
         })?;
 
         let pty_path = PathBuf::from(format!(

@@ -650,7 +650,12 @@ pub fn render_config(
             writeln!(out, "    spreadingfactor = {}", r.spreading_factor).ok();
             writeln!(out, "    codingrate = {}", r.coding_rate).ok();
             writeln!(out, "    txpower = {}", r.tx_power).ok();
-            writeln!(out, "    csma_enabled = {}", if r.csma_enabled { "yes" } else { "no" }).ok();
+            writeln!(
+                out,
+                "    csma_enabled = {}",
+                if r.csma_enabled { "yes" } else { "no" }
+            )
+            .ok();
         }
     }
 
