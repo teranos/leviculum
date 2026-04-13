@@ -780,8 +780,13 @@ mod tests {
     fn test_transferring_retries_spaced_by_timeout() {
         let (link, _) = make_test_link();
         let mut rng = rand_core::OsRng;
-        // Large enough data for multiple parts
-        let data = vec![0x42u8; 2000];
+        // Large enough for multiple parts. With the `compression` feature
+        // active (workspace builds enable it via reticulum-std), repeated
+        // bytes would compress below MTU and yield a single part. Use
+        // pseudo-random bytes so part count is independent of the feature.
+        use rand_core::{OsRng, RngCore};
+        let mut data = vec![0u8; 2000];
+        OsRng.fill_bytes(&mut data);
 
         let mut res =
             OutgoingResource::new(&data, None, None, &link, true, &mut rng, 1000).unwrap();
