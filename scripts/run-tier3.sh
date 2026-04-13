@@ -1,7 +1,9 @@
 #!/bin/bash
 LOG_DIR=~/.local/state/leviculum-ci
 mkdir -p "$LOG_DIR"
-LOG="$LOG_DIR/nightly-$(date +%Y%m%d-%H%M%S).log"
+# Per-execution log: timestamp + PID guarantees no overlap if two
+# instances ever collide (CLAUDE.md: failure logs must always survive).
+LOG="$LOG_DIR/nightly-$(date +%Y%m%d-%H%M%S)-$$.log"
 RESULTS="$LOG_DIR/last-results.txt"
 
 cd "$(dirname "$0")/.."
@@ -15,7 +17,7 @@ if CARGO_TARGET_DIR=~/.cache/leviculum-ci-target just nightly > "$LOG" 2>&1; the
     PASSED=$(grep -oP 'test result: ok\. \K\d+' "$LOG" | awk '{s+=$1} END{print s}')
     SKIPPED=$(grep -oP 'test result: ok\..+?\K\d+(?= ignored)' "$LOG" | awk '{s+=$1} END{print s}')
     notify-send -u normal "Leviculum CI" "Nightly: GREEN (passed: ${PASSED:-?}, skipped: ${SKIPPED:-?})"
-    echo "$(date -Iseconds) tier3 GREEN passed=${PASSED:-?} skipped=${SKIPPED:-?}" >> "$RESULTS"
+    echo "$(date -Iseconds) tier3 GREEN passed=${PASSED:-?} skipped=${SKIPPED:-?} $LOG" >> "$RESULTS"
 else
     notify-send -u critical "Leviculum CI" "Nightly: RED — see $LOG"
     echo "$(date -Iseconds) tier3 RED $LOG" >> "$RESULTS"

@@ -1,7 +1,9 @@
 #!/bin/bash
 LOG_DIR=~/.local/state/leviculum-ci
 mkdir -p "$LOG_DIR"
-LOG="$LOG_DIR/tier2-$(date +%Y%m%d-%H%M%S).log"
+# Per-execution log: timestamp + PID guarantees no overlap if two
+# instances ever collide (CLAUDE.md: failure logs must always survive).
+LOG="$LOG_DIR/tier2-$(date +%Y%m%d-%H%M%S)-$$.log"
 RESULTS="$LOG_DIR/last-results.txt"
 
 cd "$(dirname "$0")/.."
@@ -21,7 +23,7 @@ fi
 
 if CARGO_TARGET_DIR=~/.cache/leviculum-ci-target just extensive > "$LOG" 2>&1; then
     notify-send -u low "Leviculum CI" "Tier 2 extensive: GREEN"
-    echo "$(date -Iseconds) tier2 GREEN" >> "$RESULTS"
+    echo "$(date -Iseconds) tier2 GREEN $LOG" >> "$RESULTS"
 else
     notify-send -u critical "Leviculum CI" "Tier 2 extensive: RED — see $LOG"
     echo "$(date -Iseconds) tier2 RED $LOG" >> "$RESULTS"

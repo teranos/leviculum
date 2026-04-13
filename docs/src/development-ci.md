@@ -77,14 +77,20 @@ Location: `~/.local/state/leviculum-ci/`
 | File | Contents |
 |------|----------|
 | `last-results.txt` | one-line tally per run (`<iso-timestamp> <tier> GREEN/RED <log-path>`) |
-| `tier1-YYYYMMDD-HHMMSS.log` | full Tier 1 output |
-| `tier2-YYYYMMDD-HHMMSS.log` | full Tier 2 output |
-| `nightly-YYYYMMDD-HHMMSS.log` | full Tier 3 output |
+| `tier1-YYYYMMDD-HHMMSS-PID.log` | full Tier 1 output (one file per run) |
+| `tier2-YYYYMMDD-HHMMSS-PID.log` | full Tier 2 output |
+| `nightly-YYYYMMDD-HHMMSS-PID.log` | full Tier 3 output |
 | `tier1.lock` | flock for Tier 1 concurrency control |
 | `tier1.dirty` | marker that Tier 1 needs to (re-)run |
 
 Rotation: tier 1/2 logs are deleted after 14 days; nightly logs after
 60 days. Done at the start of each runner script.
+
+Each script run gets its own log file (timestamp + PID suffix). No
+run ever overwrites another run's log — this is intentional so a
+failure trace cannot vanish under a successful re-run. The path of
+the specific log goes into `last-results.txt` so `just status` can
+point at exactly the right file.
 
 ## Convention: `#[ignore]` is for hardware-dependent tests only
 

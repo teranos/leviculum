@@ -3,7 +3,6 @@ LOG_DIR=~/.local/state/leviculum-ci
 mkdir -p "$LOG_DIR"
 LOCK="$LOG_DIR/tier1.lock"
 DIRTY="$LOG_DIR/tier1.dirty"
-LOG="$LOG_DIR/tier1-$(date +%Y%m%d-%H%M%S).log"
 RESULTS="$LOG_DIR/last-results.txt"
 
 touch "$DIRTY"
@@ -18,9 +17,12 @@ find "$LOG_DIR" -name 'tier*.log' -mtime +14 -delete 2>/dev/null || true
 
 while [ -f "$DIRTY" ]; do
     rm -f "$DIRTY"
+    # Per-iteration LOG so each run keeps its own file — never overwrite a
+    # previous run's log (CLAUDE.md: failure logs must always survive).
+    LOG="$LOG_DIR/tier1-$(date +%Y%m%d-%H%M%S)-$$.log"
     if CARGO_TARGET_DIR=~/.cache/leviculum-ci-target just standard > "$LOG" 2>&1; then
         notify-send -u low "Leviculum CI" "Tier 1 standard: GREEN"
-        echo "$(date -Iseconds) tier1 GREEN" >> "$RESULTS"
+        echo "$(date -Iseconds) tier1 GREEN $LOG" >> "$RESULTS"
     else
         notify-send -u critical "Leviculum CI" "Tier 1 standard: RED — see $LOG"
         echo "$(date -Iseconds) tier1 RED $LOG" >> "$RESULTS"
