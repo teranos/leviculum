@@ -12,6 +12,12 @@ case "${NODE_TYPE}" in
         exec /usr/local/bin/lnsd -v --config /root/.reticulum
         ;;
     python)
+        # RNS_REQUIRE_SHARED is set on the container env so that Python tools
+        # (rnprobe, rnpath, rncp, rnstatus, …) launched via `docker exec` fail
+        # loudly when they cannot reach the daemon. rnsd itself IS the daemon
+        # — with the var set, the vendored RNS patch refuses to start
+        # ("started as shared instance"). Strip it for the daemon process only.
+        unset RNS_REQUIRE_SHARED
         exec python3 -m RNS.Utilities.rnsd -v --config /root/.reticulum
         ;;
     *)
