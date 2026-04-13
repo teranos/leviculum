@@ -111,15 +111,29 @@ fn map_set<K: Eq + core::hash::Hash + Copy, V, const N: usize>(
     map: &mut FnvIndexMap<K, V, N>,
     key: K,
     value: V,
+    label: &str,
 ) {
     match map.insert(key, value) {
         Ok(_) => {}
         Err((k, v)) => {
             // Full and key not already present — evict oldest entry
+            tracing::debug!(
+                "[EMB_EVICT] map={} len_before={} cap={}",
+                label,
+                map.len(),
+                N
+            );
             if let Some(&first_key) = map.keys().next() {
                 map.remove(&first_key);
             }
-            let _ = map.insert(k, v);
+            if map.insert(k, v).is_err() {
+                tracing::debug!(
+                    "[EMB_INSERT_FAIL] map={} len_after_evict={} cap={}",
+                    label,
+                    map.len(),
+                    N
+                );
+            }
         }
     }
 }
@@ -181,7 +195,12 @@ impl Storage for EmbeddedStorage {
     }
 
     fn set_path(&mut self, dest_hash: [u8; TRUNCATED_HASHBYTES], entry: PathEntry) {
-        map_set(&mut self.path_table, dest_hash, entry);
+        // Remove before insert so re-announces refresh the FIFO position.
+        // Without this, a re-announced destination keeps its original
+        // position and can be evicted by unrelated newer entries even while
+        // still actively in use.
+        self.path_table.remove(&dest_hash);
+        map_set(&mut self.path_table, dest_hash, entry, "path_table");
     }
 
     fn remove_path(&mut self, dest_hash: &[u8; TRUNCATED_HASHBYTES]) -> Option<PathEntry> {
@@ -232,7 +251,7 @@ impl Storage for EmbeddedStorage {
     }
 
     fn set_path_state(&mut self, dest_hash: [u8; TRUNCATED_HASHBYTES], state: PathState) {
-        map_set(&mut self.path_states, dest_hash, state);
+        map_set(&mut self.path_states, dest_hash, state, "path_states");
     }
 
     // ─── Reverse Table ──────────────────────────────────────────────────
@@ -242,7 +261,7 @@ impl Storage for EmbeddedStorage {
     }
 
     fn set_reverse(&mut self, hash: [u8; TRUNCATED_HASHBYTES], entry: ReverseEntry) {
-        map_set(&mut self.reverse_table, hash, entry);
+        map_set(&mut self.reverse_table, hash, entry, "reverse_table");
     }
 
     fn remove_reverse(&mut self, hash: &[u8; TRUNCATED_HASHBYTES]) -> Option<ReverseEntry> {
@@ -263,7 +282,7 @@ impl Storage for EmbeddedStorage {
     }
 
     fn set_link_entry(&mut self, link_id: [u8; TRUNCATED_HASHBYTES], entry: LinkEntry) {
-        map_set(&mut self.link_table, link_id, entry);
+        map_set(&mut self.link_table, link_id, entry, "link_table");
     }
 
     // ─── Announce Table ─────────────────────────────────────────────────
@@ -280,7 +299,7 @@ impl Storage for EmbeddedStorage {
     }
 
     fn set_announce(&mut self, dest_hash: [u8; TRUNCATED_HASHBYTES], entry: AnnounceEntry) {
-        map_set(&mut self.announce_table, dest_hash, entry);
+        map_set(&mut self.announce_table, dest_hash, entry, "announce_table");
     }
 
     fn remove_announce(&mut self, dest_hash: &[u8; TRUNCATED_HASHBYTES]) -> Option<AnnounceEntry> {
@@ -298,7 +317,7 @@ impl Storage for EmbeddedStorage {
     }
 
     fn set_announce_cache(&mut self, dest_hash: [u8; TRUNCATED_HASHBYTES], raw: Vec<u8>) {
-        map_set(&mut self.announce_cache, dest_hash, raw);
+        map_set(&mut self.announce_cache, dest_hash, raw, "announce_cache");
     }
 
     // ─── Announce Rate ──────────────────────────────────────────────────
@@ -315,7 +334,7 @@ impl Storage for EmbeddedStorage {
         dest_hash: [u8; TRUNCATED_HASHBYTES],
         entry: AnnounceRateEntry,
     ) {
-        map_set(&mut self.announce_rate_table, dest_hash, entry);
+        map_set(&mut self.announce_rate_table, dest_hash, entry, "announce_rate_table");
     }
 
     // ─── Receipts ───────────────────────────────────────────────────────
@@ -325,7 +344,7 @@ impl Storage for EmbeddedStorage {
     }
 
     fn set_receipt(&mut self, hash: [u8; TRUNCATED_HASHBYTES], receipt: PacketReceipt) {
-        map_set(&mut self.receipts, hash, receipt);
+        map_set(&mut self.receipts, hash, receipt, "receipts");
     }
 
     // ─── Path Requests ──────────────────────────────────────────────────
@@ -335,7 +354,7 @@ impl Storage for EmbeddedStorage {
     }
 
     fn set_path_request_time(&mut self, dest_hash: [u8; TRUNCATED_HASHBYTES], time_ms: u64) {
-        map_set(&mut self.path_requests, dest_hash, time_ms);
+        map_set(&mut self.path_requests, dest_hash, time_ms, "path_requests");
     }
 
     fn check_path_request_tag(&mut self, tag: &[u8; 32]) -> bool {
@@ -359,7 +378,7 @@ impl Storage for EmbeddedStorage {
     }
 
     fn set_identity(&mut self, dest_hash: [u8; TRUNCATED_HASHBYTES], identity: Identity) {
-        map_set(&mut self.known_identities, dest_hash, identity);
+        map_set(&mut self.known_identities, dest_hash, identity, "known_identities");
     }
 
     // ─── Cleanup ────────────────────────────────────────────────────────
@@ -504,6 +523,7 @@ impl Storage for EmbeddedStorage {
             &mut self.known_ratchets,
             dest_hash,
             (ratchet, received_at_ms),
+            "known_ratchets",
         );
     }
 
@@ -558,6 +578,7 @@ impl Storage for EmbeddedStorage {
                 &mut self.discovery_path_requests,
                 dest_hash,
                 (requesting_interface, timeout_ms),
+                "discovery_path_requests",
             );
         }
     }
@@ -592,7 +613,7 @@ impl Storage for EmbeddedStorage {
         dest_hash: [u8; TRUNCATED_HASHBYTES],
         serialized: Vec<u8>,
     ) {
-        map_set(&mut self.dest_ratchet_keys, dest_hash, serialized);
+        map_set(&mut self.dest_ratchet_keys, dest_hash, serialized, "dest_ratchet_keys");
     }
 
     fn load_dest_ratchet_keys(&self, dest_hash: &[u8; TRUNCATED_HASHBYTES]) -> Option<Vec<u8>> {
@@ -604,6 +625,94 @@ impl Storage for EmbeddedStorage {
 mod tests {
     use super::*;
     use crate::destination::DestinationHash;
+
+    #[test]
+    fn fnv_remove_insert_moves_to_back() {
+        // Invariants relied on by set_path.
+        //
+        // Heapless FnvIndexMap:
+        //   - insert(existing_key, …) updates in place WITHOUT moving the
+        //     entry — the FIFO position is unchanged.
+        //   - remove(&K) uses swap_remove: the last entry is moved to K's
+        //     old slot, then the tail is truncated. This means keys().next()
+        //     after a front-removal is NOT the key that was second in
+        //     insertion order — it's whatever was last.
+        //   - insert(new_key) appends at the back.
+        //
+        // Consequence for the fix: remove(K) + insert(K) guarantees K ends
+        // up at the BACK (last to be evicted by FIFO), even though the
+        // intermediate state rearranges other keys due to swap_remove.
+        use heapless::FnvIndexMap;
+        let mut m: FnvIndexMap<u32, u32, 4> = FnvIndexMap::new();
+        m.insert(1, 10).unwrap();
+        m.insert(2, 20).unwrap();
+        m.insert(3, 30).unwrap();
+        assert_eq!(*m.keys().next().unwrap(), 1);
+
+        // In-place update keeps position at the front.
+        m.insert(1, 11).unwrap();
+        assert_eq!(
+            *m.keys().next().unwrap(),
+            1,
+            "in-place insert keeps position"
+        );
+
+        // remove(1) + insert(1) — 1 must end up at the back.
+        m.remove(&1);
+        m.insert(1, 12).unwrap();
+        assert_eq!(
+            *m.keys().last().unwrap(),
+            1,
+            "remove+insert lands the key at the back"
+        );
+        // Per-heapless swap_remove: the entry that was last BEFORE the
+        // remove (3) now sits at the front. Documented, not intended —
+        // for the fix, only the "back" invariant matters.
+        assert_eq!(
+            *m.keys().next().unwrap(),
+            3,
+            "swap_remove leaves former-last at the front"
+        );
+    }
+
+    #[test]
+    fn test_set_path_refreshes_fifo_position() {
+        // Regression test for Bug #1: set_path must move re-announced
+        // destinations to the back of the FIFO, so that active paths
+        // are not evicted by unrelated later entries.
+        let mut s = EmbeddedStorage::new();
+        let entry = PathEntry {
+            hops: 1,
+            expires_ms: 10_000,
+            interface_index: 0,
+            random_blobs: Vec::new(),
+            next_hop: None,
+        };
+
+        // Fill to capacity (32) with unique keys.
+        for i in 0u8..32 {
+            let mut h = [0u8; TRUNCATED_HASHBYTES];
+            h[0] = i;
+            s.set_path(h, entry.clone());
+        }
+
+        // Re-announce the oldest (key 0). Without the fix, this is a
+        // no-op on insertion order. With the fix, it moves to the back.
+        let mut oldest = [0u8; TRUNCATED_HASHBYTES];
+        oldest[0] = 0;
+        s.set_path(oldest, entry.clone());
+
+        // Add one unrelated new entry, which must evict the current front.
+        let mut new_key = [0u8; TRUNCATED_HASHBYTES];
+        new_key[0] = 100;
+        s.set_path(new_key, entry.clone());
+
+        // The re-announced entry must survive.
+        assert!(
+            s.get_path(&oldest).is_some(),
+            "re-announced path must survive unrelated evictions"
+        );
+    }
 
     #[test]
     fn test_embedded_storage_path_roundtrip() {

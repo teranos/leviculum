@@ -1808,12 +1808,16 @@ impl<C: Clock, S: Storage> Transport<C, S> {
                     next_hop: packet.transport_id,
                 },
             );
+            let readback_ok = self.storage.get_path(&dest_hash).is_some();
+            let table_len = self.storage.path_count();
             tracing::debug!(
-                "[PATH_ADD] dst={} hops={} iface={} next_hop={:?} source=announce",
+                "[PATH_ADD] dst={} hops={} iface={} next_hop={:?} source=announce ok={} table_len={}",
                 HexShort(&dest_hash),
                 packet.hops,
                 self.iface_name(interface_index),
-                packet.transport_id.as_ref().map(|h| alloc::format!("{}", HexShort(&h[..])))
+                packet.transport_id.as_ref().map(|h| alloc::format!("{}", HexShort(&h[..]))),
+                readback_ok,
+                table_len
             );
 
             if let Some(ref next_hop) = packet.transport_id {

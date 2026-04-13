@@ -17,7 +17,7 @@ use alloc::collections::BTreeMap;
 use embassy_executor::Spawner;
 use embassy_futures::select::{select4, Either4};
 use embassy_nrf::gpio::{Level, Output, OutputDrive};
-use embassy_time::{Instant, Timer};
+use embassy_time::{Duration, Instant, Timer};
 
 use reticulum_core::embedded_storage::EmbeddedStorage;
 use reticulum_core::ifac::IfacConfig;
@@ -80,6 +80,10 @@ async fn main(spawner: Spawner) {
     };
 
     let mut node = Box::new(builder.build(rng, EmbassyClock, EmbeddedStorage::new()));
+
+    let initial_path_len = node.path_count();
+    info!("[BOOT] path_table_initial_len={}", initial_path_len);
+    spawner.must_spawn(boot_log_repeater(initial_path_len));
 
     if !identity_loaded {
         use reticulum_core::identity_store::IdentityStore;
@@ -210,5 +214,13 @@ async fn main(spawner: Spawner) {
                 dispatch_actions(&mut ifaces, output.actions, &ifac_configs);
             }
         }
+    }
+}
+
+#[embassy_executor::task]
+async fn boot_log_repeater(initial_len: usize) {
+    for _ in 0..6 {
+        Timer::after(Duration::from_secs(10)).await;
+        info!("[BOOT] path_table_initial_len={}", initial_len);
     }
 }
