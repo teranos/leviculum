@@ -22,7 +22,7 @@ nightly proves the entire stack.
 One command, idempotent:
 
 ```
-bash scripts/install-ci.sh
+just install-ci
 ```
 
 It installs `git` hooks (via `core.hooksPath = .githooks`), runner

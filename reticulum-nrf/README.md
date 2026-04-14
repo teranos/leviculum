@@ -19,18 +19,20 @@ sudo usermod -aG dialout $USER
 
 ## Build and flash
 
-Build the firmware with `cargo build --release`. Flash with `cargo run --release --bin t114`.
+Build the firmware with `cargo build --release`. Flash with `just flash` (from the repo root), which wraps `cargo run --release --bin t114`.
 
-`cargo run --release --bin t114` flashes **every attached T114** sequentially. This is deliberate: if only one were flashed, developers would forget to update the other(s) and later run multi-node tests against mixed firmware versions, producing misleading results. The runner walks all matching devices in turn, copies the UF2, and prints a per-device summary at the end.
+`just flash` flashes **every attached T114** sequentially. This is deliberate: if only one were flashed, developers would forget to update the other(s) and later run multi-node tests against mixed firmware versions, producing misleading results. The runner walks all matching devices in turn, copies the UF2, and prints a per-device summary at the end.
 
 Since the touch-free flashing change (`git log --grep='Bug #13'`), flashing is touch-free in the common case: the host opens each T114's transport CDC port at 1200 baud, the firmware intercepts the line-coding change, writes a retained-register magic, and soft-resets into the Adafruit UF2 bootloader. No physical button press required.
 
 **Selective flashing** (e.g. for A/B firmware testing, one T114 on a new build and another on the old):
 
 ```
-LEVICULUM_FLASH_ONLY=/dev/leviculum-transport cargo run --release --bin t114
-LEVICULUM_FLASH_ONLY=/dev/ttyACM3             cargo run --release --bin t114
+just flash-one /dev/leviculum-transport
+just flash-one /dev/ttyACM3
 ```
+
+Both forms expand to `LEVICULUM_FLASH_ONLY=<port> cargo run --release --bin t114`.
 
 **When you still need a physical double-tap:** the firmware on a specific T114 has crashed or never reached USB init (panic before the handler is installed, stack overflow, hardware fault). The runner detects this per device via the UF2-drive-polling timeout and prompts for that specific T114 only. Other T114s in the batch continue to flash touch-free.
 

@@ -90,8 +90,8 @@ coalesce — no parallel re-runs.
 
 ```sh
 just status                                  # last result per tier
+just logs                                    # tail most recent Tier 1 log
 cat ~/.local/state/leviculum-ci/last-results.txt   # full history
-tail -f ~/.local/state/leviculum-ci/tier1-*.log    # live Tier 1 output
 ```
 
 ## LoRa hardware tests
@@ -100,10 +100,11 @@ Tier 3 only. Requires two Heltec T114 boards + two RNode radios
 connected via USB. Manual runs:
 
 ```sh
-cargo run --release --bin t114    # flashes ALL attached T114s; touch-free
+just flash                        # flashes ALL attached T114s; touch-free
                                   #   since the Bug #13 firmware change.
                                   #   Double-tap RESET only if the runner
                                   #   prompts you (crashed-firmware fallback).
+just flash-one /dev/ttyACM3       # flash one specific T114 (A/B testing)
 just nightly                      # full Tier 3 run
 ```
 
@@ -150,7 +151,7 @@ infrastructure.
 ## Installing / updating the CI
 
 ```sh
-bash scripts/install-ci.sh
+just install-ci
 ```
 
 Idempotent. Installs git hooks, systemd user units, state dirs,

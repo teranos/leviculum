@@ -1,34 +1,63 @@
-# Tier 0: ~3 min, runs on every git push.
 # Exclude reticulum-integ: its lib tests are Docker-based and require
 # --test-threads=1 (run in Tier 2). Including them here would race-fail
 # and blow the 3 min budget.
+# Tier 0 (~3 min, runs on every git push): fmt + clippy + workspace lib tests.
 fast:
     cargo fmt --all -- --check
     cargo clippy --workspace -- -D warnings
     cargo test --workspace --lib --exclude reticulum-integ
 
-# Tier 1: ~15 min (first run after fresh CARGO_TARGET_DIR: 20-40 min)
-# Runs in background after every commit.
+# First run after a fresh CARGO_TARGET_DIR: 20-40 min. Runs in background
+# after every commit via the post-commit hook.
+# Tier 1 (~15 min): Tier 0 + core/tests + ffi + proxy + rnsd_interop.
 standard: fast
     cargo test -p reticulum-core --tests
     cargo test -p reticulum-ffi
     cargo test -p reticulum-proxy
     cargo test -p reticulum-std --test rnsd_interop
 
-# Tier 2: ~30-90 min, scheduled or on demand.
 # Default cargo test runs non-ignored tests and skips ignored ones.
 # Docker tests (#[serial(docker)]) run; LoRa tests (#[ignore] #[serial(lora)])
 # skip automatically. --test-threads=1 is required even though serial_test
 # enforces per-group serialization, because the embedded #[serial(docker)]
 # groups can still overlap resource usage with unit tests in the same
 # binary on a multi-CPU harness.
+# Tier 2 (~30-90 min, 12:30 + 18:30 daily): Tier 1 + Docker integ suite.
 extensive: standard
     cargo test -p reticulum-integ -- --test-threads=1
 
-# Tier 3: ~2-6h, scheduled nightly. --include-ignored adds LoRa tests.
+# --include-ignored adds the LoRa hardware tests on top of Tier 2.
+# Tier 3 (~2-6h, 02:00 nightly): Tier 2 + LoRa hardware tests.
 nightly: extensive
     cargo test -p reticulum-integ -- --include-ignored --test-threads=1
 
 # Status of last runs across all tiers
 status:
     @bash scripts/ci-status.sh
+
+# For other tiers: ls ~/.local/state/leviculum-ci/ and pick a file.
+# Tail the most recent Tier 1 log (live if a run is in progress).
+logs:
+    @bash -c 'LOG=$(ls -t ~/.local/state/leviculum-ci/tier1-*.log 2>/dev/null | head -1); \
+        if [ -z "$LOG" ]; then echo "No Tier 1 log yet."; exit 1; fi; \
+        echo "==> $LOG"; tail -f "$LOG"'
+
+# Idempotent; safe to re-run after pulling.
+# Install git hooks and systemd user timers for the 4-tier CI pipeline.
+install-ci:
+    bash scripts/install-ci.sh
+
+# Touch-free since Bug #13; double-tap RESET only if the runner prompts
+# for a crashed device. Details: reticulum-nrf/README.md §Build and flash.
+# The firmware crate is outside the workspace (cross-compiled), so we
+# invoke cargo from its own directory.
+# Flash every attached T114 with the current firmware.
+flash:
+    cd reticulum-nrf && cargo run --release --bin t114
+
+# Useful for A/B testing (one T114 on new firmware, one on old).
+#   just flash-one /dev/ttyACM3
+#   just flash-one /dev/leviculum-transport
+# Flash a single T114 by port path or udev symlink.
+flash-one PORT:
+    cd reticulum-nrf && LEVICULUM_FLASH_ONLY={{PORT}} cargo run --release --bin t114
