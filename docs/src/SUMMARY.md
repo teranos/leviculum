@@ -21,4 +21,5 @@
 
 # Development
 
+- [Testing Quick Reference](development-testing.md)
 - [CI Pipeline](development-ci.md)
