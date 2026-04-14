@@ -1,0 +1,10 @@
+{
+  "sandbox": {
+    "enabled": true,
+    "filesystem": {
+      "allowRead": ["/dev/ttyACM*", "/dev/ttyUSB*", "/sys/bus/usb", "/sys/devices", "/dev/bus/usb"],
+      "allowWrite": ["/dev/ttyACM*", "/dev/ttyUSB*"]
+    },
+    "excludedCommands": ["udevadm", "lsusb", "dmesg"]
+  }
+}
