@@ -1927,32 +1927,11 @@ impl<C: Clock, S: Storage> Transport<C, S> {
             // Skip immediate broadcast; the deferred AnnounceEntry handles it.
             let delay_for_local_registration = should_rebroadcast && is_new_local_client_dest;
 
-            // Immediate first rebroadcast — no jitter, no deferral
-            // (skipped for local client first-registration announces)
-            if should_rebroadcast && !delay_for_local_registration {
-                tracing::debug!(
-                    "Rebroadcasting announce for <{}> with hop count {}",
-                    HexShort(&dest_hash),
-                    packet.hops
-                );
-                if let Ok(mut rebroadcast) = Packet::unpack(raw) {
-                    // Raw bytes have original wire hops; set to receipt-incremented value
-                    rebroadcast.hops = packet.hops;
-                    rebroadcast.flags.header_type = HeaderType::Type2;
-                    rebroadcast.flags.transport_type = TransportType::Transport;
-                    rebroadcast.transport_id = Some(*self.identity.hash());
-
-                    if packet.hops == 0 || self.interface_announce_caps.is_empty() {
-                        self.forward_on_all(&mut rebroadcast);
-                        self.record_outgoing_announce_broadcast(interface_index);
-                    } else {
-                        self.broadcast_announce_with_caps(&mut rebroadcast);
-                        // broadcast_announce_with_caps sends to individual capped
-                        // interfaces (tracked below) and broadcasts to uncapped ones
-                        self.record_outgoing_announce_broadcast(interface_index);
-                    }
-                }
-            }
+            // Python-RNS parity: received announces are not re-emitted
+            // directly from handle_announce. They are inserted into
+            // announce_table below and the retry scheduler performs every
+            // on-air rebroadcast. Python does the same at Transport.py:1754
+            // (inserts entry) + Transport.py:519-540 (scheduler fires).
 
             if delay_for_local_registration {
                 tracing::debug!(
@@ -1970,8 +1949,14 @@ impl<C: Clock, S: Storage> Transport<C, S> {
                     AnnounceEntry {
                         timestamp_ms: now,
                         hops: packet.hops,
-                        retries: if should_rebroadcast && !delay_for_local_registration {
-                            1
+                        // Python parity (Transport.py:1722, 1748-1752):
+                        // non-local-client announces start at retries=0 and
+                        // fire twice from the scheduler (bounded by
+                        // LOCAL_REBROADCASTS_MAX=2); local-client announces
+                        // start at retries=PATHFINDER_R=1 and fire exactly
+                        // once. See docs/src/architecture-broadcast-python-parity.md.
+                        retries: if delay_for_local_registration {
+                            PATHFINDER_RETRIES
                         } else {
                             0
                         },
@@ -1979,15 +1964,15 @@ impl<C: Clock, S: Storage> Transport<C, S> {
                             // Deferred first broadcast for local client registration
                             Some(now + LOCAL_CLIENT_ANNOUNCE_DELAY_MS)
                         } else if should_rebroadcast {
-                            // Retry after grace period + per-node jitter to desync
-                            // simultaneous rebroadcasts on slow links (Python:
-                            // PATHFINDER_G + rand() * PATHFINDER_RW). Uses
-                            // deterministic jitter from identity XOR dest_hash so
-                            // different nodes pick different delays for the same
-                            // announce, without requiring an rng parameter.
+                            // Python-RNS parity (Transport.py:1728): the first
+                            // rebroadcast for a received non-local-client
+                            // announce is scheduled within the jitter window
+                            // of receipt, without the PATHFINDER_G grace.
+                            // Subsequent reschedules below add PATHFINDER_G,
+                            // matching Transport.py:531.
                             let jitter = self
                                 .deterministic_jitter_ms(&dest_hash, self.announce_jitter_max_ms());
-                            Some(now + PATHFINDER_G_MS + jitter)
+                            Some(now + jitter)
                         } else {
                             None
                         },
@@ -4105,12 +4090,15 @@ impl<C: Clock, S: Storage> Transport<C, S> {
                         });
                     }
                 } else {
-                    // Retries bypass announce bandwidth caps — the initial
-                    // broadcast (in handle_announce) already accounted for
-                    // bandwidth. Retries exist for reliability on lossy links;
-                    // blocking them behind a 77s holdoff (at 976 bps / 2% cap)
-                    // defeats their entire purpose.
-                    self.forward_on_all(&mut parsed);
+                    // Apply ANNOUNCE_CAP to retries that forward a relayed
+                    // announce (hops > 0), matching Python Transport.py:1091.
+                    // Self-originated retries (hops == 0) and interfaces
+                    // without a cap bypass the rate limiter.
+                    if parsed.hops == 0 || self.interface_announce_caps.is_empty() {
+                        self.forward_on_all(&mut parsed);
+                    } else {
+                        self.broadcast_announce_with_caps(&mut parsed);
+                    }
                     self.record_outgoing_announce_broadcast(except_iface);
                 }
 
@@ -5530,7 +5518,11 @@ mod tests {
         // ─── Stage 1: Announce Rebroadcast Tests ─────────────────────────
 
         #[test]
-        fn test_rebroadcast_immediate_then_scheduled() {
+        fn test_rebroadcast_scheduled_twice_then_removed() {
+            // Python parity (Transport.py:519-540): for a received non-local-
+            // client announce, the retry scheduler fires exactly twice before
+            // removing the entry (once from retries=0 → 1, once from 1 → 2,
+            // then the `retries > PATHFINDER_RETRIES=1` guard fires).
             let mut transport = make_transport_enabled();
             let _idx0 = transport.register_interface(Box::new(MockInterface::new("if0", 1)));
             let _idx1 = transport.register_interface(Box::new(MockInterface::new("if1", 2)));
@@ -5539,20 +5531,37 @@ mod tests {
             transport.process_incoming(0, &raw).unwrap();
             transport.drain_events();
 
-            // First rebroadcast was immediate — retries starts at 1,
-            // next retransmit scheduled at now + PATHFINDER_G_MS
             let entry = transport.storage().get_announce(&dest_hash).unwrap();
             assert!(entry.retransmit_at_ms.is_some());
-            assert_eq!(entry.retries, 1);
+            assert_eq!(
+                entry.retries, 0,
+                "Python parity: non-local-client entry starts at retries=0"
+            );
 
-            // Advance past PATHFINDER_G_MS to trigger second retransmit
-            transport.clock.advance(PATHFINDER_G_MS + 1000);
+            transport
+                .clock
+                .advance(transport.announce_jitter_max_ms() + 100);
             transport.poll();
+            let entry = transport.storage().get_announce(&dest_hash).unwrap();
+            assert_eq!(
+                entry.retries, 1,
+                "after first fire, retries incremented to 1"
+            );
 
-            // Retries should be incremented to 2
-            if let Some(entry) = transport.storage().get_announce(&dest_hash) {
-                assert_eq!(entry.retries, 2);
-            }
+            transport.clock.advance(PATHFINDER_G_MS + 5_000);
+            transport.poll();
+            let entry = transport.storage().get_announce(&dest_hash).unwrap();
+            assert_eq!(
+                entry.retries, 2,
+                "after second fire, retries incremented to 2"
+            );
+
+            transport.clock.advance(PATHFINDER_G_MS + 5_000);
+            transport.poll();
+            assert!(
+                transport.storage().get_announce(&dest_hash).is_none(),
+                "third fire: retries > PATHFINDER_RETRIES → entry removed"
+            );
         }
 
         #[test]
@@ -5566,7 +5575,12 @@ mod tests {
             transport.process_incoming(0, &raw).unwrap();
             transport.drain_events();
 
-            // Rebroadcast happens immediately — verify it fired
+            // First on-air rebroadcast fires from the retry scheduler once
+            // the jitter window elapses (Python parity).
+            transport
+                .clock
+                .advance(transport.announce_jitter_max_ms() + 100);
+            transport.poll();
             assert!(transport.stats().packets_forwarded > 0);
         }
 
@@ -5600,12 +5614,14 @@ mod tests {
             transport.process_incoming(0, &raw).unwrap();
             transport.drain_events();
 
-            // Immediate first rebroadcast already happened — retries=1
+            // Python parity: non-local-client entry starts at retries=0.
+            // The retry scheduler fires PATHFINDER_RETRIES+1 = 2 times, each
+            // time incrementing retries; then the `retries > PATHFINDER_RETRIES`
+            // guard removes the entry.
             let entry = transport.storage().get_announce(&dest_hash).unwrap();
-            assert_eq!(entry.retries, 1);
+            assert_eq!(entry.retries, 0);
 
-            // Each poll fires retransmit and bumps retries: 1→2, 2→3, 3→4
-            for expected_retries in 2..=PATHFINDER_RETRIES + 1 {
+            for expected_retries in 1..=PATHFINDER_RETRIES + 1 {
                 transport.clock.advance(PATHFINDER_G_MS + 5000);
                 transport.poll();
                 let entry = transport
@@ -5615,7 +5631,7 @@ mod tests {
                 assert_eq!(entry.retries, expected_retries);
             }
 
-            // One more poll: retries=4 > PATHFINDER_RETRIES(3) → removed
+            // One more poll: retries > PATHFINDER_RETRIES → removed
             transport.clock.advance(PATHFINDER_G_MS + 5000);
             transport.poll();
             assert!(
@@ -5635,7 +5651,12 @@ mod tests {
             transport.process_incoming(0, &raw).unwrap();
             transport.drain_events();
 
-            // Immediate rebroadcast — verify hops incremented
+            // Retry scheduler fires the first rebroadcast after the initial
+            // jitter window — advance and poll to trigger it.
+            transport
+                .clock
+                .advance(transport.announce_jitter_max_ms() + 100);
+            transport.poll();
             assert!(transport.stats().packets_forwarded > 0);
 
             let actions = transport.drain_actions();
@@ -6842,12 +6863,10 @@ mod tests {
             let len = packet.pack(&mut buf).unwrap();
             transport.process_incoming(0, &buf[..len]).unwrap();
 
-            assert!(
-                transport.stats().packets_forwarded > 0,
-                "Link request should be forwarded"
-            );
-
-            // Find the link entry that was created
+            // Find the link entry that was created. handle_link_request inserts
+            // this unconditionally on the forward path (before the same-interface
+            // suppression check), so the entry's presence is sufficient proof
+            // the code flow reached the signing-key lookup.
             let link_entry = transport
                 .storage()
                 .link_entry_values()
@@ -6920,9 +6939,14 @@ mod tests {
             // Register low bitrate on if1: 1000 bps, 2% cap = 20 bps effective
             transport.register_interface_bitrate(1, 1000);
 
-            // Process first announce (hops > 0 so caps apply) — immediate rebroadcast
+            // Process first announce (hops > 0 so caps apply). Rebroadcast fires
+            // from the retry scheduler after the jitter window (Python parity).
             let (raw1, _dh1) = make_announce_raw(1, PacketContext::None);
             transport.process_incoming(0, &raw1).unwrap();
+            transport
+                .clock
+                .advance(transport.announce_jitter_max_ms() + 100);
+            transport.poll();
             let actions1 = transport.drain_actions();
             let _ = transport.drain_events();
 
@@ -6936,9 +6960,14 @@ mod tests {
                 "first announce should be sent on capped interface"
             );
 
-            // Process second announce immediately (no time advance) — also immediate rebroadcast
+            // Process second announce immediately (no time advance) and poll
+            // the scheduler — the cap's holdoff should queue this one on if1.
             let (raw2, _dh2) = make_announce_raw(1, PacketContext::None);
             transport.process_incoming(0, &raw2).unwrap();
+            transport
+                .clock
+                .advance(transport.announce_jitter_max_ms() + 100);
+            transport.poll();
             let actions2 = transport.drain_actions();
             let _ = transport.drain_events();
 
@@ -7107,9 +7136,14 @@ mod tests {
             transport.register_interface_bitrate(1, 100);
             transport.register_interface_bitrate(2, 1_000_000);
 
-            // Process an announce from if0 — immediate rebroadcast
+            // Process an announce from if0. Rebroadcast fires from the retry
+            // scheduler once the jitter window elapses (Python parity).
             let (raw, _dh) = make_announce_raw(1, PacketContext::None);
             transport.process_incoming(0, &raw).unwrap();
+            transport
+                .clock
+                .advance(transport.announce_jitter_max_ms() + 100);
+            transport.poll();
             let actions = transport.drain_actions();
             let _ = transport.drain_events();
 
@@ -7235,13 +7269,18 @@ mod tests {
             // Don't register any bitrate → no caps
             assert!(transport.interface_announce_caps.is_empty());
 
-            // Immediate rebroadcast — check actions from process_incoming
+            // Retry scheduler fires the first rebroadcast after the jitter
+            // window (Python parity).
             let (raw, _dh) = make_announce_raw(1, PacketContext::None);
             transport.process_incoming(0, &raw).unwrap();
+            transport
+                .clock
+                .advance(transport.announce_jitter_max_ms() + 100);
+            transport.poll();
             let actions = transport.drain_actions();
             let _ = transport.drain_events();
 
-            // Should use Broadcast action (no caps → forward_on_all_except)
+            // Should use Broadcast action (no caps → forward_on_all)
             let broadcasts = actions
                 .iter()
                 .filter(|a| matches!(a, Action::Broadcast { .. }))
@@ -9040,9 +9079,11 @@ mod tests {
         }
 
         #[test]
-        fn test_announce_rebroadcast_immediate_on_receive() {
-            // When an announce is received on a transport node, it should be
-            // rebroadcast immediately (as part of process_incoming), not deferred.
+        fn test_announce_rebroadcast_scheduled_from_announce_table() {
+            // Python parity (Transport.py:1754): received announces enter
+            // announce_table and the retry scheduler fires the first rebroadcast
+            // within the jitter window (0-PATHFINDER_RW ms). process_incoming
+            // itself no longer emits an on-air broadcast.
             let mut transport = make_transport_enabled();
             let _idx0 = transport.register_interface(Box::new(MockInterface::new("if0", 1)));
             let _idx1 = transport.register_interface(Box::new(MockInterface::new("if1", 2)));
@@ -9050,11 +9091,24 @@ mod tests {
             let (raw, _dest_hash) = make_announce_raw(1, PacketContext::None);
             let _ = transport.process_incoming(0, &raw);
 
-            // The rebroadcast Broadcast action should be emitted immediately
+            // No on-air broadcast yet — only the entry in announce_table
+            let actions_before_poll = transport.drain_actions();
+            assert!(
+                actions_before_poll
+                    .iter()
+                    .all(|a| !matches!(a, Action::Broadcast { .. })),
+                "no Broadcast action should be emitted before retry scheduler fires"
+            );
+
+            // Advance clock past the jitter window and poll — first rebroadcast
+            transport
+                .clock
+                .advance(transport.announce_jitter_max_ms() + 100);
+            transport.poll();
             let actions = transport.drain_actions();
             assert!(
                 !actions.is_empty(),
-                "announce rebroadcast should produce actions immediately"
+                "retry scheduler should produce actions after advancing clock"
             );
 
             // Each rebroadcast fans out on all interfaces without excluding
@@ -9093,12 +9147,12 @@ mod tests {
             }
         }
 
-        /// B1 parity: a received announce produces a Broadcast action that
-        /// does not exclude the receiving interface, and the same announce
-        /// arriving a second time on the same interface produces no further
-        /// broadcast actions — the packet_hashlist dedup at process_incoming
-        /// catches it, including the self-echo our first emission would
-        /// create on a shared medium.
+        /// A received announce triggers exactly one Broadcast action from the
+        /// retry scheduler once the jitter window elapses, with
+        /// exclude_iface=None. A second arrival of the same packet on the
+        /// same interface is absorbed by the packet_hashlist dedup in
+        /// process_incoming and does not produce an additional entry or
+        /// emission.
         #[test]
         fn test_announce_rebroadcast_dedup_catches_echo() {
             let mut transport = make_transport_enabled();
@@ -9108,14 +9162,26 @@ mod tests {
             let (raw, _dest_hash) = make_announce_raw(1, PacketContext::None);
 
             let _ = transport.process_incoming(0, &raw);
+            transport
+                .clock
+                .advance(transport.announce_jitter_max_ms() + 100);
+            transport.poll();
             let first_actions = transport.drain_actions();
             let first_broadcasts = first_actions
                 .iter()
-                .filter(|a| matches!(a, Action::Broadcast { .. }))
+                .filter(|a| {
+                    matches!(
+                        a,
+                        Action::Broadcast {
+                            exclude_iface: None,
+                            ..
+                        }
+                    )
+                })
                 .count();
             assert_eq!(
                 first_broadcasts, 1,
-                "first arrival should produce exactly one Broadcast action"
+                "first scheduler fire should produce exactly one Broadcast with no exclude"
             );
 
             let _ = transport.process_incoming(0, &raw);
@@ -9595,8 +9661,13 @@ mod tests {
             let raw_3hops = make_announce_raw_with_random_hash(&dest, 2, &random_hash); // stored as 3
             let raw_2hops = make_announce_raw_with_random_hash(&dest, 1, &random_hash); // stored as 2
 
-            // 3-hop announce arrives — should produce Broadcast action (rebroadcast)
+            // 3-hop announce arrives — rebroadcast fires from the retry
+            // scheduler once the jitter window elapses (Python parity).
             let _ = transport.process_incoming(0, &raw_3hops);
+            transport
+                .clock
+                .advance(transport.announce_jitter_max_ms() + 100);
+            transport.poll();
             let actions = transport.drain_actions();
             assert!(
                 actions
@@ -9605,8 +9676,13 @@ mod tests {
                 "first announce should be rebroadcast"
             );
 
-            // 2-hop announce within rate window — updates path but NO rebroadcast
+            // 2-hop announce within rate window — updates path but NO new
+            // announce_table entry / no rebroadcast scheduled.
             let _ = transport.process_incoming(1, &raw_2hops);
+            transport
+                .clock
+                .advance(transport.announce_jitter_max_ms() + 100);
+            transport.poll();
             let actions = transport.drain_actions();
 
             // Should NOT have a Broadcast action (rate-limited suppresses rebroadcast)
@@ -13650,13 +13726,16 @@ mod tests {
                 "Dest hash should be tracked in local_client_known_dests"
             );
 
-            // Verify an AnnounceEntry was created with deferred retransmit at 250ms
+            // Verify an AnnounceEntry was created with deferred retransmit at 250ms.
+            // Python parity (Transport.py:1748-1752): local-client source
+            // starts at retries=PATHFINDER_R so the scheduler fires exactly
+            // once before `retries > PATHFINDER_R` removes the entry.
             let entry = transport.storage.get_announce(&dest_hash);
             assert!(entry.is_some(), "AnnounceEntry should exist");
             let entry = entry.unwrap();
             assert_eq!(
-                entry.retries, 0,
-                "retries should be 0 (no immediate broadcast)"
+                entry.retries, PATHFINDER_RETRIES,
+                "local-client source starts at retries=PATHFINDER_RETRIES"
             );
             assert_eq!(
                 entry.retransmit_at_ms,
@@ -15303,7 +15382,7 @@ mod tests {
                 AnnounceEntry {
                     timestamp_ms: now,
                     hops: 0,
-                    retries: 2,
+                    retries: 0,
                     retransmit_at_ms: Some(now),
                     raw_packet: vec![0xAA; 32],
                     receiving_interface_index: usize::MAX,
@@ -15331,7 +15410,7 @@ mod tests {
             let updated = transport.storage().get_announce(&dest_hash).unwrap();
             assert_eq!(updated.retransmit_at_ms, Some(future));
             // Deferral ≠ retry: retries counter unchanged.
-            assert_eq!(updated.retries, 2);
+            assert_eq!(updated.retries, 0);
         }
 
         /// Once the interface becomes ready, the next scheduler tick does
@@ -15350,7 +15429,7 @@ mod tests {
                 AnnounceEntry {
                     timestamp_ms: now,
                     hops: 0,
-                    retries: 1,
+                    retries: 0,
                     retransmit_at_ms: Some(now),
                     raw_packet: alloc::vec![0u8; 32],
                     receiving_interface_index: usize::MAX,
@@ -15362,13 +15441,13 @@ mod tests {
             // Interface 3 ready at now — no deferral.
             transport.set_interface_next_slot_ms(3, now);
             transport.check_announce_rebroadcasts(now);
-            // Deferral path leaves retries == 1; push path increments to 2
+            // Deferral path leaves retries == 0; push path increments to 1
             // via the exp-backoff block. Packet::unpack may fail on the
             // fake bytes so the Action is never actually emitted, but the
             // retries += 1 happens regardless.
             let updated = transport.storage().get_announce(&dest_hash).unwrap();
             assert_eq!(
-                updated.retries, 2,
+                updated.retries, 1,
                 "expected retries incremented (push path took); got {}",
                 updated.retries
             );
@@ -15394,7 +15473,7 @@ mod tests {
                 AnnounceEntry {
                     timestamp_ms: now,
                     hops: 0,
-                    retries: 3,
+                    retries: 0,
                     retransmit_at_ms: Some(now),
                     raw_packet: vec![0xBB; 32],
                     receiving_interface_index: usize::MAX,
@@ -15415,7 +15494,7 @@ mod tests {
             let updated = transport.storage().get_announce(&dest_hash).unwrap();
             // Deferred to the MINIMUM of the two slots.
             assert_eq!(updated.retransmit_at_ms, Some(now + 500));
-            assert_eq!(updated.retries, 3, "retries unchanged");
+            assert_eq!(updated.retries, 0, "retries unchanged");
         }
 
         /// Broadcast with at least one ready interface → push path taken.
@@ -15438,7 +15517,7 @@ mod tests {
                 AnnounceEntry {
                     timestamp_ms: now,
                     hops: 0,
-                    retries: 2,
+                    retries: 0,
                     retransmit_at_ms: Some(now),
                     raw_packet: alloc::vec![0u8; 32],
                     receiving_interface_index: usize::MAX,
@@ -15449,10 +15528,10 @@ mod tests {
             );
             transport.check_announce_rebroadcasts(now);
             // Push path ran → retries incremented. Deferral path would
-            // leave retries unchanged at 2.
+            // leave retries unchanged at 0.
             let updated = transport.storage().get_announce(&dest_hash).unwrap();
             assert_eq!(
-                updated.retries, 3,
+                updated.retries, 1,
                 "expected retries incremented (push path took); got {}",
                 updated.retries
             );

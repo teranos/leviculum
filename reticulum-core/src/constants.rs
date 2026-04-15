@@ -108,9 +108,13 @@ pub const RATCHET_INTERVAL_SECS: u64 = 60 * 30; // 30 minutes
 
 /// Transport constants
 pub const PATHFINDER_MAX_HOPS: u8 = 128;
-/// Rust uses 3 retries vs Python's 1 — necessary for reliability on slow
-/// LoRa links (SF10+) where CSMA cannot prevent collisions across long airtime.
-pub const PATHFINDER_RETRIES: u8 = 3;
+/// Matches Python's PATHFINDER_R (vendor/Reticulum/RNS/Transport.py:67).
+/// Upper bound on the retries counter in the announce retry scheduler.
+/// Combined with LOCAL_REBROADCASTS_MAX=2 this makes a received
+/// non-local-client announce fire twice from the scheduler and a
+/// local-client-sourced announce fire once. See
+/// docs/src/architecture-broadcast-python-parity.md for the full walk.
+pub const PATHFINDER_RETRIES: u8 = 1;
 pub const PATHFINDER_EXPIRY_SECS: u64 = 60 * 60 * 24 * 7; // 7 days
 
 /// Retry grace period for announce rebroadcast (milliseconds)
