@@ -1300,8 +1300,17 @@ impl<C: Clock, S: Storage> Transport<C, S> {
             (path.interface_index, path.needs_relay(), path.next_hop)
         };
 
-        if self.is_interface_congested(interface_index) {
-            return Err(TransportError::Busy);
+        // Bug #3 Phase 2a (C4): consult the next-slot backchannel instead
+        // of the binary `is_interface_congested` flag. If the interface is
+        // not yet ready for an MTU-sized packet, return PacingDelay with
+        // the exact ready-at timestamp so stream.rs:127 can sleep_until
+        // rather than the old 50ms-polling fallback.
+        let now_ms = self.clock.now_ms();
+        let next_slot = self.next_slot_ms_for_interface(interface_index, now_ms);
+        if next_slot > now_ms {
+            return Err(TransportError::PacingDelay {
+                ready_at_ms: next_slot,
+            });
         }
 
         // Cache outbound packet hash so echoes returning via shared-medium
@@ -15095,7 +15104,7 @@ mod tests {
         }
 
         #[test]
-        fn test_send_to_destination_busy_when_congested() {
+        fn test_send_to_destination_pacing_delay_when_interface_not_ready() {
             let mut transport = test_transport();
 
             // Add a path to a destination via interface 0
@@ -15113,12 +15122,46 @@ mod tests {
                 },
             );
 
-            // Set interface congested
-            transport.set_interface_congested(iface_idx, true);
+            // Mark the interface as unavailable until a future wall-clock ms
+            // via the next-slot backchannel (Bug #3 Phase 2a).
+            let now_ms = transport.clock().now_ms();
+            let future_slot = now_ms + 5_000;
+            transport.set_interface_next_slot_ms(iface_idx, future_slot);
 
-            // Send should return Busy
+            // Send must return PacingDelay with that exact timestamp.
             let result = transport.send_to_destination(&dest_hash, &[0u8; 32]);
-            assert!(matches!(result, Err(TransportError::Busy)));
+            assert_eq!(
+                result,
+                Err(TransportError::PacingDelay {
+                    ready_at_ms: future_slot
+                })
+            );
+        }
+
+        #[test]
+        fn test_send_to_destination_ok_when_interface_ready() {
+            let mut transport = test_transport();
+
+            let dest_hash = [0xBB; crate::constants::TRUNCATED_HASHBYTES];
+            let iface_idx = 0;
+            use crate::traits::Storage as _;
+            transport.storage_mut().set_path(
+                dest_hash,
+                crate::storage_types::PathEntry {
+                    interface_index: iface_idx,
+                    hops: 1,
+                    next_hop: None,
+                    expires_ms: 1000 + 3_600_000,
+                    random_blobs: vec![],
+                },
+            );
+
+            // Leave next_slot unset (→ getter returns now_ms = ready).
+            let result = transport.send_to_destination(&dest_hash, &[0u8; 32]);
+            assert!(
+                result.is_ok(),
+                "ready interface should succeed, got {result:?}"
+            );
         }
 
         #[test]

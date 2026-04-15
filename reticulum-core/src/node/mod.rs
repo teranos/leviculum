@@ -496,6 +496,9 @@ impl<R: CryptoRngCore, C: Clock, S: Storage> NodeCore<R, C, S> {
             .send_to_destination(dest_hash.as_bytes(), &buf[..len])
             .map_err(|e| match e {
                 crate::transport::TransportError::Busy => send::SendError::Busy,
+                crate::transport::TransportError::PacingDelay { ready_at_ms } => {
+                    send::SendError::PacingDelay { ready_at_ms }
+                }
                 _ => send::SendError::NoPath,
             })?;
 
