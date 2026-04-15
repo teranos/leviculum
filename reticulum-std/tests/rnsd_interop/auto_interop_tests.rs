@@ -347,7 +347,7 @@ async fn test_auto_link_bidirectional_data() {
 
     // Wait for LinkEstablished on both sides
     assert!(
-        wait_for_link_established(&mut events_a, &link_id_a, Duration::from_secs(10)).await,
+        wait_for_link_established(&mut events_a, link_id_a, Duration::from_secs(10)).await,
         "Link should establish on A side"
     );
     assert!(
@@ -372,7 +372,7 @@ async fn test_auto_link_bidirectional_data() {
     let payload_b_to_a = generate_test_payload(128);
     handle_b.send(&payload_b_to_a).await.expect("send B→A");
 
-    let received_on_a = wait_for_data_event(&mut events_a, &link_id_a, Duration::from_secs(10))
+    let received_on_a = wait_for_data_event(&mut events_a, link_id_a, Duration::from_secs(10))
         .await
         .expect("A should receive data from B");
     assert!(
@@ -481,7 +481,7 @@ async fn test_auto_mtu_negotiation() {
         .expect("accept link on B");
 
     assert!(
-        wait_for_link_established(&mut events_a, &link_id_a, Duration::from_secs(10)).await,
+        wait_for_link_established(&mut events_a, link_id_a, Duration::from_secs(10)).await,
         "Link should establish on A"
     );
     assert!(
@@ -490,8 +490,8 @@ async fn test_auto_mtu_negotiation() {
     );
 
     // Verify MTU values
-    let negotiated_mtu = node_a.link_negotiated_mtu(&link_id_a);
-    let mdu = node_a.link_mdu(&link_id_a);
+    let negotiated_mtu = node_a.link_negotiated_mtu(link_id_a);
+    let mdu = node_a.link_mdu(link_id_a);
 
     assert_eq!(
         negotiated_mtu,
@@ -618,7 +618,7 @@ async fn test_auto_peer_timeout() {
         .expect("accept link on B");
 
     assert!(
-        wait_for_link_established(&mut events_a, &link_id_a, Duration::from_secs(10)).await,
+        wait_for_link_established(&mut events_a, link_id_a, Duration::from_secs(10)).await,
         "Link should establish on A"
     );
     assert!(

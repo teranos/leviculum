@@ -1683,11 +1683,6 @@ impl TestDaemon {
 
         let mut resources = Vec::new();
         for item in arr {
-            let resource_hash = item
-                .get("resource_hash")
-                .and_then(|v| v.as_str())
-                .unwrap_or("unknown")
-                .to_string();
             let data_hex = item.get("data").and_then(|v| v.as_str()).unwrap_or("");
             let data = hex::decode(data_hex).unwrap_or_default();
             let metadata = item
@@ -1701,7 +1696,6 @@ impl TestDaemon {
                 .to_string();
 
             resources.push(ReceivedResource {
-                resource_hash,
                 data,
                 metadata,
                 status,
@@ -1739,7 +1733,6 @@ pub struct PathEntry {
 /// A resource received by a Python test daemon.
 #[derive(Debug, Clone)]
 pub struct ReceivedResource {
-    pub resource_hash: String,
     pub data: Vec<u8>,
     pub metadata: Option<Vec<u8>>,
     pub status: String,

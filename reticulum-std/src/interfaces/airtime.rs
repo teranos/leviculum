@@ -242,7 +242,7 @@ mod tests {
         // deeper in deficit than the new threshold, so regen must catch up.
         let current = b.current(0);
         let expected_wait_sf7 = cost_sf7 - b.threshold_ms.abs() - current;
-        let expected_fit_sf7 = (0i64 + expected_wait_sf7).max(0) as u64;
+        let expected_fit_sf7 = expected_wait_sf7.max(0) as u64;
         assert_eq!(fit_sf7, expected_fit_sf7);
     }
 }

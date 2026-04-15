@@ -173,7 +173,7 @@ async fn test_request_response_python_handler() {
         .expect("Failed to build request packet");
 
     let request_id = reticulum_core::packet::truncated_packet_hash(&request_packet);
-    eprintln!("Sending request, request_id: {}", hex::encode(&request_id));
+    eprintln!("Sending request, request_id: {}", hex::encode(request_id));
 
     framed_buf.clear();
     frame(&request_packet, &mut framed_buf);

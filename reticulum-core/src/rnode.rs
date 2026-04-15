@@ -1337,21 +1337,24 @@ mod tests {
         // 491-byte resource data segment at 62.5kHz SF7 CR5
         // Semtech calculator: ~1440ms
         let ms = airtime_ms(491, 62_500, 7, 5);
-        assert!(ms >= 1400 && ms <= 1500, "airtime={ms}ms, expected ~1440ms");
+        assert!(
+            (1400..=1500).contains(&ms),
+            "airtime={ms}ms, expected ~1440ms"
+        );
     }
 
     #[test]
     fn test_airtime_491b_bw125000_sf7_cr5() {
         // Same payload at 125kHz — should be ~half
         let ms = airtime_ms(491, 125_000, 7, 5);
-        assert!(ms >= 700 && ms <= 800, "airtime={ms}ms, expected ~750ms");
+        assert!((700..=800).contains(&ms), "airtime={ms}ms, expected ~750ms");
     }
 
     #[test]
     fn test_airtime_491b_bw250000_sf7_cr5() {
         // Same payload at 250kHz — should be ~quarter
         let ms = airtime_ms(491, 250_000, 7, 5);
-        assert!(ms >= 350 && ms <= 420, "airtime={ms}ms, expected ~380ms");
+        assert!((350..=420).contains(&ms), "airtime={ms}ms, expected ~380ms");
     }
 
     #[test]

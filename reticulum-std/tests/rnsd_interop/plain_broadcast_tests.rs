@@ -37,7 +37,7 @@ async fn test_plain_broadcast_local_client_to_network() {
         .expect("Failed to start Python remote daemon");
 
     // Register a PLAIN destination on the remote to receive broadcasts
-    let remote_dest_hash = py_remote
+    let _remote_dest_hash = py_remote
         .register_plain_destination("broadcast_test", &["echo"])
         .await
         .expect("Failed to register plain destination on remote");

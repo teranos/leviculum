@@ -683,7 +683,6 @@ mod tests {
     use crate::resource::ResourceAdvertisement;
 
     fn make_test_adv(num_parts: u32, hashmap_data: Vec<u8>) -> ResourceAdvertisement {
-        use alloc::vec;
         ResourceAdvertisement {
             transfer_size: 464,
             data_size: 100,

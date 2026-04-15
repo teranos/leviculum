@@ -180,7 +180,7 @@ mod tests {
         let core_guard = core.lock().unwrap();
         let prv = core_guard.identity().private_key_bytes().unwrap();
         use sha2::Digest;
-        let hash = sha2::Sha256::digest(&prv);
+        let hash = sha2::Sha256::digest(prv);
         let mut key = [0u8; 32];
         key.copy_from_slice(&hash);
         key

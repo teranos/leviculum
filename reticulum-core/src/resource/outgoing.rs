@@ -657,7 +657,7 @@ mod tests {
 
         // Create responder and complete handshake for testing
         let dest_hash2 = crate::destination::DestinationHash::new([0xBB; 16]);
-        let responder = Link::new_outgoing(dest_hash2, &mut OsRng);
+        let _responder = Link::new_outgoing(dest_hash2, &mut OsRng);
 
         // We need an active link for encryption — use the test helper
         // that sets link_key directly.
@@ -699,7 +699,7 @@ mod tests {
         let adv = ResourceAdvertisement::unpack(res.adv_packet()).unwrap();
         assert_eq!(adv.resource_hash, *res.resource_hash());
         assert_eq!(adv.num_parts, res.num_parts);
-        assert_eq!(adv.flags.encrypted, true);
+        assert!(adv.flags.encrypted);
         assert_eq!(adv.segment_index, 1);
         assert_eq!(adv.total_segments, 1);
         assert!(adv.request_id.is_none());

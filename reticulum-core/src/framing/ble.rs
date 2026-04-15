@@ -480,7 +480,7 @@ mod tests {
     #[test]
     fn test_min_mtu() {
         // MIN_MTU 23 → payload = 23 - 3 - 5 = 15 bytes per fragment
-        let data: Vec<u8> = (0..50).map(|i| i).collect();
+        let data: Vec<u8> = (0..50).collect();
         let frags = fragment_packet(&data, MIN_MTU);
         let ppf = payload_per_fragment(MIN_MTU);
         assert_eq!(ppf, 15);

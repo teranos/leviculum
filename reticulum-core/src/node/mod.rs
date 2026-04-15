@@ -5854,18 +5854,15 @@ mod tests {
 
     // ─── RTT Retry Tests ─────────────────────────────────────────────────────
 
+    type TestNode = NodeCore<OsRng, MockClock, NoStorage>;
+    type LinkPairWithoutRtt = (TestNode, TestNode, LinkId, LinkId, Vec<u8>);
+
     /// Helper: create two NodeCores and perform handshake up to initiator
     /// receiving the proof (initiator is ACTIVE), but do NOT deliver the RTT
     /// packet to the responder (responder stays in HANDSHAKE).
     ///
     /// Returns (initiator, responder, init_link_id, resp_link_id, rtt_packet).
-    fn establish_link_pair_without_rtt() -> (
-        NodeCore<OsRng, MockClock, NoStorage>,
-        NodeCore<OsRng, MockClock, NoStorage>,
-        LinkId,
-        LinkId,
-        Vec<u8>,
-    ) {
+    fn establish_link_pair_without_rtt() -> LinkPairWithoutRtt {
         use crate::transport::InterfaceId;
 
         let resp_identity = Identity::generate(&mut OsRng);
@@ -6002,7 +5999,7 @@ mod tests {
             let _ = initiator.handle_timeout();
             // After each retry, send_count increases
             if let Some(link) = initiator.link(&init_link_id) {
-                assert_eq!(link.rtt_send_count(), (i + 2) as u8);
+                assert_eq!(link.rtt_send_count(), i + 2);
             }
         }
 
