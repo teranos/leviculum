@@ -1285,6 +1285,11 @@ async fn run_event_loop(
     let mut next_poll = tokio::time::Instant::now();
     let mut next_flush = tokio::time::Instant::now() + Duration::from_secs(FLUSH_INTERVAL_SECS);
     let mut retry_queues: BTreeMap<usize, VecDeque<Vec<u8>>> = BTreeMap::new();
+    // Bug #3 Phase 2a (E1): track which per-interface queues have
+    // already emitted the depth-≥-8 warning so we don't spam once the
+    // queue is deep. Cleared when the queue drops back below 8.
+    let mut retry_queue_warned: std::collections::BTreeSet<usize> =
+        std::collections::BTreeSet::new();
 
     // Clone IFAC configs from core so dispatch_output can apply IFAC outside the lock.
     // This is the canonical source of truth for "what IFAC config does interface N have
@@ -1332,8 +1337,7 @@ async fn run_event_loop(
                             &mut registry,
                             &event_tx,
                             &inner,
-                            &mut retry_queues,
-                            &ifac_configs,
+                            &mut retry_queues, &mut retry_queue_warned, &ifac_configs,
                         );
                     }
                     RecvEvent::Disconnected(iface_id) => {
@@ -1347,8 +1351,7 @@ async fn run_event_loop(
                             &mut registry,
                             &event_tx,
                             &inner,
-                            &mut retry_queues,
-                            &ifac_configs,
+                            &mut retry_queues, &mut retry_queue_warned, &ifac_configs,
                         );
                         // Clear retry queue and congested flag for disconnected interface
                         retry_queues.remove(&iface_id.0);
@@ -1373,8 +1376,7 @@ async fn run_event_loop(
                     &mut registry,
                     &event_tx,
                     &inner,
-                    &mut retry_queues,
-                    &ifac_configs,
+                    &mut retry_queues, &mut retry_queue_warned, &ifac_configs,
                 );
             }
 
@@ -1392,8 +1394,7 @@ async fn run_event_loop(
                     &mut registry,
                     &event_tx,
                     &inner,
-                    &mut retry_queues,
-                    &ifac_configs,
+                    &mut retry_queues, &mut retry_queue_warned, &ifac_configs,
                 );
 
                 // Advance next_poll based on next_deadline_ms
@@ -1454,7 +1455,7 @@ async fn run_event_loop(
                         let mut core = inner.lock().unwrap();
                         core.handle_interface_up(iface_idx)
                     };
-                    dispatch_output(output, &mut registry, &event_tx, &inner, &mut retry_queues, &ifac_configs);
+                    dispatch_output(output, &mut registry, &event_tx, &inner, &mut retry_queues, &mut retry_queue_warned, &ifac_configs);
                 }
             }
 
@@ -1475,7 +1476,7 @@ async fn run_event_loop(
                     let mut core = inner.lock().unwrap();
                     core.handle_interface_up(iface_id.0)
                 };
-                dispatch_output(output, &mut registry, &event_tx, &inner, &mut retry_queues, &ifac_configs);
+                dispatch_output(output, &mut registry, &event_tx, &inner, &mut retry_queues, &mut retry_queue_warned, &ifac_configs);
             }
 
             // Branch 7: Periodic storage flush (persist identities + packet hashes)
@@ -1498,6 +1499,7 @@ fn dispatch_output(
     event_tx: &mpsc::Sender<NodeEvent>,
     inner: &Arc<Mutex<StdNodeCore>>,
     retry_queues: &mut BTreeMap<usize, VecDeque<Vec<u8>>>,
+    retry_queue_warned: &mut std::collections::BTreeSet<usize>,
     ifac_configs: &BTreeMap<usize, reticulum_core::ifac::IfacConfig>,
 ) {
     // 1. Drain retry queues before dispatching new actions
@@ -1527,15 +1529,16 @@ fn dispatch_output(
 
     // 4. Queue SendPacket retries (with cap enforcement)
     for retry in result.retries {
-        let queue = retry_queues.entry(retry.iface_idx).or_default();
+        let iface_idx = retry.iface_idx;
+        let queue = retry_queues.entry(iface_idx).or_default();
         if queue.len() >= RETRY_QUEUE_CAP {
             queue.pop_front();
             tracing::warn!(
                 "Retry queue full for iface {}, dropping oldest packet",
-                retry.iface_idx,
+                iface_idx,
             );
         }
-        queue.push_back(retry.data);
+        push_retry_with_warn(queue, iface_idx, retry.data, retry_queue_warned);
     }
 
     // 5. Update congestion flags based on queue state
@@ -1548,6 +1551,11 @@ fn dispatch_output(
     }
     // Remove empty queues to avoid accumulating stale entries
     retry_queues.retain(|_, queue| !queue.is_empty());
+
+    // Bug #3 Phase 2a (E1): clear the per-queue warned flag when the
+    // queue drops back below 8 so a future re-crossing re-emits the
+    // warning. Also drop entries for queues that no longer exist.
+    retry_queue_warned.retain(|idx| retry_queues.get(idx).map(|q| q.len() >= 8).unwrap_or(false));
 
     // 5a. Push per-interface next_slot_ms into the Transport backchannel.
     //     Bug #3 Phase 2a (C3): Transport can't hold handles (sans-I/O),
@@ -1578,6 +1586,30 @@ fn dispatch_output(
                 );
             }
         }
+    }
+}
+
+/// Append `data` to the per-interface retry queue and emit a single
+/// tracing::warn when the queue depth crosses from < 8 to exactly 8.
+/// The crossing-only semantics (tracked via `warned`) prevent spam
+/// when the queue hovers above 8. The caller clears a queue's entry
+/// from `warned` when the queue falls back below 8.
+/// Bug #3 Phase 2a (E1).
+fn push_retry_with_warn(
+    queue: &mut VecDeque<Vec<u8>>,
+    iface_idx: usize,
+    data: Vec<u8>,
+    warned: &mut std::collections::BTreeSet<usize>,
+) {
+    let len_before = queue.len();
+    queue.push_back(data);
+    if len_before < 8 && queue.len() == 8 && !warned.contains(&iface_idx) {
+        tracing::warn!(
+            iface = iface_idx,
+            depth = queue.len(),
+            "retry queue depth high, first-order backpressure may be mis-tuned"
+        );
+        warned.insert(iface_idx);
     }
 }
 
@@ -1661,6 +1693,53 @@ mod tests {
         let fake_hash = reticulum_core::DestinationHash::new([0xFF; 16]);
         assert!(!node.has_path(&fake_hash));
         assert!(node.hops_to(&fake_hash).is_none());
+    }
+
+    /// Bug #3 Phase 2a (E1): push_retry_with_warn inserts an entry
+    /// into the `warned` set the first time queue depth crosses from
+    /// < 8 to == 8. Subsequent pushes beyond 8 do NOT re-insert.
+    #[test]
+    fn push_retry_warns_once_when_crossing_depth_8() {
+        let mut q: VecDeque<Vec<u8>> = VecDeque::new();
+        let mut warned: std::collections::BTreeSet<usize> = std::collections::BTreeSet::new();
+        // Push 7 entries → never warns.
+        for _ in 0..7 {
+            push_retry_with_warn(&mut q, 1, vec![0u8; 8], &mut warned);
+        }
+        assert!(!warned.contains(&1), "7 packets must not trigger warn");
+        // Push 8th → crosses threshold.
+        push_retry_with_warn(&mut q, 1, vec![0u8; 8], &mut warned);
+        assert!(warned.contains(&1), "8 packets must trigger warn");
+        // Push 9th → already warned, set membership unchanged (idempotent).
+        push_retry_with_warn(&mut q, 1, vec![0u8; 8], &mut warned);
+        assert!(warned.contains(&1));
+        assert_eq!(warned.len(), 1, "no duplicate entries");
+    }
+
+    /// Clearing the warned flag (as dispatch_output does after the
+    /// retain loop) allows a future 7→8 crossing to re-emit.
+    #[test]
+    fn push_retry_rewarns_after_queue_drains_below_8() {
+        let mut q: VecDeque<Vec<u8>> = VecDeque::new();
+        let mut warned: std::collections::BTreeSet<usize> = std::collections::BTreeSet::new();
+        for _ in 0..8 {
+            push_retry_with_warn(&mut q, 2, vec![0u8; 8], &mut warned);
+        }
+        assert!(warned.contains(&2));
+        // Drain below 8 (simulate: clear queue, clear warned per the
+        // retain-clause in dispatch_output).
+        q.clear();
+        warned.retain(|idx| {
+            let _ = idx;
+            // Mirror dispatch_output's clause: keep only if queue.len() >= 8
+            false // queue is empty now
+        });
+        assert!(!warned.contains(&2));
+        // Rebuild to 8 → warn re-emitted.
+        for _ in 0..8 {
+            push_retry_with_warn(&mut q, 2, vec![0u8; 8], &mut warned);
+        }
+        assert!(warned.contains(&2));
     }
 
     /// Bug #3 Phase 2a (D2): drain_retry_queues honors next_slot_ms.
