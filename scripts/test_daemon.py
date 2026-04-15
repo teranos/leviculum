@@ -1439,8 +1439,16 @@ def main():
                         help="Enable respond_to_probes (prints PROBE_DEST:<hex> on startup)")
     parser.add_argument("-v", "--verbose", action="store_true",
                         help="Enable verbose output")
+    parser.add_argument("--mgmt-announce-interval-seconds", type=int, default=None,
+                        help="Override Transport.mgmt_announce_interval for keepalive tests")
 
     args = parser.parse_args()
+
+    # Apply mgmt_announce_interval override BEFORE Transport.start by setting
+    # the class attribute. Transport reads it at check time, so subsequent
+    # firings use the reduced interval. Production default stays 2 h.
+    if args.mgmt_announce_interval_seconds is not None:
+        Transport.mgmt_announce_interval = args.mgmt_announce_interval_seconds
 
     daemon = TestDaemon(
         rns_port=args.rns_port,

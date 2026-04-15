@@ -204,14 +204,53 @@ impl TestDaemon {
 
     /// Start a daemon with specific ports (useful for debugging).
     pub async fn start_with_ports(rns_port: u16, cmd_port: u16) -> Result<Self, HarnessError> {
+        Self::start_with_ports_and_options(rns_port, cmd_port, None).await
+    }
+
+    /// Start a daemon with an override of Python's
+    /// `Transport.mgmt_announce_interval`. Used by parity tests that need
+    /// to observe the keepalive mechanism without waiting the default two
+    /// hours. The interval is applied to the Python class attribute before
+    /// `RNS.Reticulum` is constructed, so the first ~15 s initial-delay
+    /// fire is unaffected and subsequent fires use the reduced cadence.
+    pub async fn start_with_mgmt_interval(interval_secs: u32) -> Result<Self, HarnessError> {
+        ensure_reticulum_submodule()?;
+        let mut last_error = HarnessError::StartupTimeout;
+        for attempt in 0..Self::MAX_STARTUP_RETRIES {
+            let (rns_port, cmd_port) = find_two_available_ports()?;
+            match Self::start_with_ports_and_options(rns_port, cmd_port, Some(interval_secs)).await
+            {
+                Ok(daemon) => return Ok(daemon),
+                Err(HarnessError::StartupTimeout) => {
+                    if attempt + 1 < Self::MAX_STARTUP_RETRIES {
+                        tokio::time::sleep(Duration::from_millis(100)).await;
+                    }
+                    last_error = HarnessError::StartupTimeout;
+                }
+                Err(e) => return Err(e),
+            }
+        }
+        Err(last_error)
+    }
+
+    async fn start_with_ports_and_options(
+        rns_port: u16,
+        cmd_port: u16,
+        mgmt_announce_interval_secs: Option<u32>,
+    ) -> Result<Self, HarnessError> {
+        let mut args: Vec<String> = vec![
+            Self::DAEMON_SCRIPT.to_string(),
+            "--rns-port".to_string(),
+            rns_port.to_string(),
+            "--cmd-port".to_string(),
+            cmd_port.to_string(),
+        ];
+        if let Some(secs) = mgmt_announce_interval_secs {
+            args.push("--mgmt-announce-interval-seconds".to_string());
+            args.push(secs.to_string());
+        }
         let mut process = Command::new("python3")
-            .args([
-                Self::DAEMON_SCRIPT,
-                "--rns-port",
-                &rns_port.to_string(),
-                "--cmd-port",
-                &cmd_port.to_string(),
-            ])
+            .args(&args)
             .stdout(Stdio::piped())
             .stderr(Stdio::inherit())
             .spawn()
