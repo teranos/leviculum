@@ -75,6 +75,7 @@ pub(crate) fn spawn_udp_interface(
         incoming: incoming_rx,
         outgoing: outgoing_tx,
         counters,
+        credit: None,
     })
 }
 

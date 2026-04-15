@@ -130,6 +130,7 @@ pub(crate) fn spawn_tcp_interface_from_stream(
         incoming: incoming_rx,
         outgoing: outgoing_tx,
         counters,
+        credit: None,
     }
 }
 
@@ -274,6 +275,7 @@ pub(crate) fn spawn_tcp_client_with_reconnect(config: TcpClientConfig) -> Interf
         incoming: incoming_rx,
         outgoing: outgoing_tx,
         counters,
+        credit: None,
     }
 }
 

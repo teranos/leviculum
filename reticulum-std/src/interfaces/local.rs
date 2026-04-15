@@ -129,6 +129,7 @@ fn spawn_local_interface_from_stream(
         incoming: incoming_rx,
         outgoing: outgoing_tx,
         counters,
+        credit: None,
     }
 }
 
@@ -181,6 +182,7 @@ pub(crate) fn spawn_local_client(
         incoming: incoming_rx,
         outgoing: outgoing_tx,
         counters,
+        credit: None,
     })
 }
 

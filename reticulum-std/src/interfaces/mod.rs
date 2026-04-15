@@ -19,12 +19,14 @@ pub(crate) mod tcp;
 pub(crate) mod udp;
 
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use std::time::Instant;
 
 use reticulum_core::traits::{InterfaceError, InterfaceMode};
 use reticulum_core::transport::InterfaceId;
 use tokio::sync::mpsc;
+
+use self::airtime::AirtimeCredit;
 
 /// Speed sampling state, updated every second by the traffic counter task.
 struct SpeedState {
@@ -154,6 +156,16 @@ pub(crate) struct InterfaceHandle {
     pub incoming: mpsc::Receiver<IncomingPacket>,
     pub outgoing: mpsc::Sender<OutgoingPacket>,
     pub counters: Arc<InterfaceCounters>,
+    /// Airtime budget for interfaces whose capacity is constrained by the
+    /// radio physics (currently only LoRa-Serial). `None` for TCP, UDP,
+    /// Local, RNode, AutoInterface — those are "always ready" from the
+    /// backpressure-layer's perspective. Consumed by Phase B3's
+    /// `try_send_prioritized` credit-charge and Phase B4's `next_slot_ms`
+    /// override. See `airtime.rs` for the bucket model.
+    // Phase B1 lands the field ahead of its production readers (B3+B4).
+    // Remove this allow in B3 when try_send_prioritized actually uses it.
+    #[allow(dead_code)]
+    pub credit: Option<Arc<Mutex<AirtimeCredit>>>,
 }
 
 impl reticulum_core::traits::Interface for InterfaceHandle {
@@ -254,5 +266,47 @@ impl InterfaceRegistry {
     /// Mutable slice of all handles for dispatch_actions()
     pub(crate) fn handles_mut_slice(&mut self) -> &mut [InterfaceHandle] {
         &mut self.handles
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Build a bare-bones InterfaceHandle for unit testing. Phase B1
+    /// invariant: `credit` defaults to `None` — non-LoRa interfaces
+    /// leave the bucket empty, which makes the Phase B4 `next_slot_ms`
+    /// override return `now_ms` (always ready) for them.
+    fn make_handle(id: usize) -> InterfaceHandle {
+        let (_inc_tx, inc_rx) = mpsc::channel(4);
+        let (out_tx, _out_rx) = mpsc::channel(4);
+        InterfaceHandle {
+            info: InterfaceInfo {
+                id: InterfaceId(id),
+                name: format!("test-{id}"),
+                hw_mtu: None,
+                is_local_client: false,
+                bitrate: None,
+                ifac: None,
+            },
+            incoming: inc_rx,
+            outgoing: out_tx,
+            counters: Arc::new(InterfaceCounters::new()),
+            credit: None,
+        }
+    }
+
+    #[test]
+    fn interface_handle_defaults_to_no_credit() {
+        let h = make_handle(7);
+        assert!(h.credit.is_none());
+    }
+
+    #[test]
+    fn interface_handle_with_credit_attached_is_some() {
+        let mut h = make_handle(8);
+        let credit = AirtimeCredit::new(125_000, 10, 8, 500);
+        h.credit = Some(Arc::new(Mutex::new(credit)));
+        assert!(h.credit.is_some());
     }
 }

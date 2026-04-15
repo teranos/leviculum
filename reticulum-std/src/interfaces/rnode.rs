@@ -851,6 +851,7 @@ pub(crate) fn spawn_rnode_interface(config: RNodeInterfaceConfig) -> InterfaceHa
         incoming: incoming_rx,
         outgoing: outgoing_tx,
         counters,
+        credit: None,
     }
 }
 

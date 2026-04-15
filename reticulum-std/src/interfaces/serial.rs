@@ -100,6 +100,7 @@ pub(crate) fn spawn_serial_interface(config: SerialInterfaceConfig) -> Interface
         incoming: incoming_rx,
         outgoing: outgoing_tx,
         counters,
+        credit: None,
     }
 }
 

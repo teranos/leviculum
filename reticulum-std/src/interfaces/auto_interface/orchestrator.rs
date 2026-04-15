@@ -637,6 +637,7 @@ fn handle_discovery_packet(
         incoming: incoming_rx,
         outgoing: outgoing_tx,
         counters: Arc::clone(&counters),
+        credit: None,
     };
 
     let now = Instant::now();
