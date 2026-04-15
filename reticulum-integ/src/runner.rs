@@ -115,9 +115,6 @@ pub struct TestRunner {
     /// Background `dmesg --follow` process for capturing USB/kernel events.
     /// Started in `up()`, killed in `down()`.
     dmesg_process: Option<Child>,
-    /// Number of active debug capture threads (informational only, threads stop on port close).
-    #[allow(dead_code)]
-    debug_capture_count: usize,
 }
 
 impl TestRunner {
@@ -215,7 +212,6 @@ impl TestRunner {
             proxy_processes,
             proxy_sockets,
             dmesg_process: None,
-            debug_capture_count: 0,
         })
     }
 

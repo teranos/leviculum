@@ -889,4 +889,3 @@ async fn test_auto_group_isolation() {
         "Node C (different group) should NOT receive announce"
     );
 }
-

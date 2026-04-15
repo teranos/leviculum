@@ -47,7 +47,8 @@ use reticulum_core::ratchet_store::RatchetStore;
 const FILE_STORAGE_PACKET_HASH_CAP: usize = 100_000;
 
 pub(crate) struct Storage {
-    #[allow(dead_code)]
+    // Read by category_path/read_root/write_root in #[cfg(test)] helpers only.
+    #[cfg_attr(not(test), allow(dead_code))]
     base_path: PathBuf,
     inner: MemoryStorage,
     // Persistent stores
