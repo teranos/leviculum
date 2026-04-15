@@ -636,6 +636,14 @@ pub struct Transport<C: Clock, S: Storage> {
     /// Removal path: cleared by the driver when retry queue drains or interface disconnects.
     interface_congested: BTreeSet<usize>,
 
+    /// Per-interface "earliest ready" wall-clock ms pushed by the driver
+    /// after each `dispatch_output` tick. Driver computes this via
+    /// `Interface::next_slot_ms(MTU, now)` on each handle and mirrors the
+    /// answer here so Transport can consult it without holding interface
+    /// trait objects (Bug #3 Phase 2a architecture; Transport stays
+    /// sans-I/O).
+    interface_next_slot_ms: BTreeMap<usize, u64>,
+
     /// Per-interface IFAC (Interface Access Code) configurations.
     /// Keyed by interface index. Only present for interfaces with networkname/passphrase configured.
     /// Removal path: removed in handle_interface_down via remove_ifac_config().
@@ -685,6 +693,7 @@ impl<C: Clock, S: Storage> Transport<C, S> {
             interface_incoming_announce_times: BTreeMap::new(),
             interface_outgoing_announce_times: BTreeMap::new(),
             interface_congested: BTreeSet::new(),
+            interface_next_slot_ms: BTreeMap::new(),
             ifac_configs: BTreeMap::new(),
             pending_actions: Vec::new(),
             last_discovery_retry_ms: 0,
@@ -3361,6 +3370,38 @@ impl<C: Clock, S: Storage> Transport<C, S> {
     /// Check if an interface is congested (driver retry queue non-empty).
     pub fn is_interface_congested(&self, iface_idx: usize) -> bool {
         self.interface_congested.contains(&iface_idx)
+    }
+
+    /// Record the wall-clock ms at which the given interface will next
+    /// accept a packet. Called by the driver after every
+    /// `dispatch_actions` tick by querying each handle's
+    /// `Interface::next_slot_ms(MTU, now)`.
+    ///
+    /// Slot is computed for MTU-sized packets. Smaller packets may fit
+    /// earlier than the cached value reports; over-estimation is
+    /// intentional. Transport does not query per-size because doing so
+    /// would require Transport to hold interface handles, violating
+    /// sans-I/O. If per-size accuracy ever becomes measurably important,
+    /// extend the cache shape rather than adding a query path.
+    pub fn set_interface_next_slot_ms(&mut self, iface_idx: usize, slot_ms: u64) {
+        self.interface_next_slot_ms.insert(iface_idx, slot_ms);
+    }
+
+    /// Read the earliest wall-clock ms at which the given interface will
+    /// accept a packet, or `now_ms` if no value was pushed (unknown ⇒
+    /// always ready — matches the `Interface::next_slot_ms` trait default).
+    ///
+    /// Slot is computed for MTU-sized packets. Smaller packets may fit
+    /// earlier than the cached value reports; over-estimation is
+    /// intentional. Transport does not query per-size because doing so
+    /// would require Transport to hold interface handles, violating
+    /// sans-I/O. If per-size accuracy ever becomes measurably important,
+    /// extend the cache shape rather than adding a query path.
+    pub fn next_slot_ms_for_interface(&self, iface_idx: usize, now_ms: u64) -> u64 {
+        self.interface_next_slot_ms
+            .get(&iface_idx)
+            .copied()
+            .unwrap_or(now_ms)
     }
 
     /// Check if a destination is for a local client (path exists with hops=0).
@@ -15420,5 +15461,36 @@ mod tests {
             rendered.contains("1000"),
             "expected ready_at_ms in Display output, got {rendered:?}"
         );
+    }
+
+    /// Bug #3 Phase 2a (C2): setter + getter round-trip for the
+    /// interface_next_slot_ms backchannel. Driver pushes, Transport
+    /// reads.
+    #[test]
+    fn interface_next_slot_ms_round_trip() {
+        use crate::test_utils::test_transport;
+        let mut t = test_transport();
+        t.set_interface_next_slot_ms(3, 5_000);
+        assert_eq!(t.next_slot_ms_for_interface(3, 0), 5_000);
+    }
+
+    /// Absent key returns the caller's `now_ms` — unknown interfaces
+    /// are treated as "always ready", matching the trait-level
+    /// next_slot_ms default.
+    #[test]
+    fn interface_next_slot_ms_absent_returns_now() {
+        use crate::test_utils::test_transport;
+        let t = test_transport();
+        assert_eq!(t.next_slot_ms_for_interface(99, 42), 42);
+    }
+
+    /// Overwriting pushes a fresh value; no accumulation.
+    #[test]
+    fn interface_next_slot_ms_overwrite() {
+        use crate::test_utils::test_transport;
+        let mut t = test_transport();
+        t.set_interface_next_slot_ms(7, 1_000);
+        t.set_interface_next_slot_ms(7, 2_000);
+        assert_eq!(t.next_slot_ms_for_interface(7, 0), 2_000);
     }
 }
