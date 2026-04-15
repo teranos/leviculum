@@ -24,10 +24,9 @@ use std::time::Duration;
 use reticulum_core::identity::Identity;
 use reticulum_core::node::NodeEvent;
 use reticulum_core::{Destination, DestinationHash, DestinationType, Direction};
-use reticulum_std::driver::ReticulumNodeBuilder;
 
 use crate::common::{
-    extract_signing_key, parse_dest_hash, wait_for_data_event, wait_for_event,
+    build_rust_node, extract_signing_key, parse_dest_hash, wait_for_data_event, wait_for_event,
     wait_for_link_established, wait_for_path_on_node,
 };
 use crate::harness::TestDaemon;
@@ -38,33 +37,6 @@ use crate::harness::TestDaemon;
 
 /// Build a Rust node connected to a daemon, ready for single-packet operations.
 ///
-/// Returns `(node, event_rx, _storage)`. The node is started and connected.
-/// The `_storage` guard must be kept alive for the test duration.
-async fn build_rust_node(
-    daemon: &TestDaemon,
-) -> (
-    reticulum_std::driver::ReticulumNode,
-    tokio::sync::mpsc::Receiver<NodeEvent>,
-    tempfile::TempDir,
-) {
-    let storage = crate::common::temp_storage("build_rust_node", "node");
-    let mut node = ReticulumNodeBuilder::new()
-        .add_tcp_client(daemon.rns_addr())
-        .storage_path(storage.path().to_path_buf())
-        .build()
-        .await
-        .expect("Failed to build node");
-
-    let event_rx = node.take_event_receiver().unwrap();
-    node.start().await.expect("Failed to start node");
-
-    // Allow TCP connection to settle
-    tokio::time::sleep(Duration::from_secs(1)).await;
-
-    // Return as mut since stop() needs &mut self
-    (node, event_rx, storage)
-}
-
 /// Register Python destination with PROVE_ALL and announce it.
 /// Returns the destination hash (parsed) and public key hex.
 async fn setup_python_dest(

@@ -5,7 +5,7 @@
 //! hop count, not the raw wire hops from the cache.
 
 use std::net::SocketAddr;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::time::Duration;
 
@@ -64,9 +64,7 @@ fn create_probe_config_dir(instance_name: &str, identity_bytes: &[u8; 64]) -> Pa
     tempdir
 }
 
-fn cleanup_config_dir(path: &Path) {
-    let _ = std::fs::remove_dir_all(path);
-}
+use crate::common::cleanup_config_dir;
 
 /// Test that rnprobe reports correct hops for a direct neighbor destination.
 ///

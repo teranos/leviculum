@@ -17,11 +17,8 @@
 //! - Rust→Python: caller must msgpack-encode metadata before send_resource()
 //! - Python→Rust: ResourceCompleted.metadata contains msgpack-encoded bytes
 
-use std::net::SocketAddr;
 use std::time::Duration;
 
-use tokio::io::{AsyncReadExt, AsyncWriteExt};
-use tokio::net::TcpStream;
 use tokio::sync::mpsc;
 
 use reticulum_core::identity::Identity;
@@ -32,65 +29,14 @@ use reticulum_core::{Destination, DestinationType, Direction};
 use reticulum_std::driver::{ReticulumNode, ReticulumNodeBuilder};
 
 use crate::common::{
-    wait_for_link_request_event, wait_for_resource_completed, wait_for_resource_sender_completed,
-    wait_for_responder_established,
+    create_link_raw, wait_for_link_request_event, wait_for_resource_completed,
+    wait_for_resource_sender_completed, wait_for_responder_established,
 };
 use crate::harness::TestDaemon;
 
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
-
-/// Raw JSON-RPC call to create a link (non-blocking from Rust's perspective).
-/// Identical to responder_node_tests::create_link_raw.
-async fn create_link_raw(
-    cmd_addr: SocketAddr,
-    dest_hash: &str,
-    dest_key: &str,
-    timeout_secs: u64,
-) -> Result<String, String> {
-    let cmd = serde_json::json!({
-        "method": "create_link",
-        "params": {
-            "dest_hash": dest_hash,
-            "dest_key": dest_key,
-            "timeout": timeout_secs,
-        }
-    });
-
-    let mut stream = TcpStream::connect(cmd_addr)
-        .await
-        .map_err(|e| format!("connect failed: {e}"))?;
-
-    stream
-        .write_all(cmd.to_string().as_bytes())
-        .await
-        .map_err(|e| format!("write failed: {e}"))?;
-
-    stream
-        .shutdown()
-        .await
-        .map_err(|e| format!("shutdown failed: {e}"))?;
-
-    let mut response = Vec::new();
-    stream
-        .read_to_end(&mut response)
-        .await
-        .map_err(|e| format!("read failed: {e}"))?;
-
-    let resp: serde_json::Value =
-        serde_json::from_slice(&response).map_err(|e| format!("parse failed: {e}"))?;
-
-    if let Some(error) = resp.get("error") {
-        return Err(format!("create_link error: {error}"));
-    }
-
-    resp.get("result")
-        .and_then(|r| r.get("link_hash"))
-        .and_then(|v| v.as_str())
-        .map(|s| s.to_string())
-        .ok_or_else(|| "missing link_hash in response".to_string())
-}
 
 /// Msgpack-encode a byte slice as a bin value.
 /// Returns the raw msgpack bytes (bin8/bin16/bin32 format).

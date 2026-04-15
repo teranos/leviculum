@@ -132,10 +132,7 @@ async fn run_python_tool(script: &str, args: &[&str], config_dir: &Path) -> Outp
     output
 }
 
-/// Cleanup helper
-fn cleanup_config_dir(path: &Path) {
-    let _ = std::fs::remove_dir_all(path);
-}
+use crate::common::cleanup_config_dir;
 
 // rnstatus tests
 /// Test that `rnstatus --config <tempdir>` succeeds against the Rust daemon.

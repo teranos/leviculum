@@ -22,12 +22,10 @@
 //! cargo test --package reticulum-std --test rnsd_interop link_tests -- --nocapture
 //! ```
 
-use std::net::SocketAddr;
 use std::time::Duration;
 
 use rand_core::OsRng;
-use tokio::io::{AsyncReadExt, AsyncWriteExt};
-use tokio::net::TcpStream as TokioTcpStream;
+use tokio::io::AsyncWriteExt;
 
 use reticulum_core::constants::TRUNCATED_HASHBYTES;
 use reticulum_core::identity::Identity;
@@ -909,56 +907,4 @@ async fn test_link_identify_from_python() {
     );
 
     rust_node.stop().await.expect("stop Rust node");
-}
-
-/// Send a `create_link` JSON-RPC command to a daemon using a raw TCP connection.
-///
-/// Callable from a spawned task without borrowing `TestDaemon`.
-async fn create_link_raw(
-    cmd_addr: SocketAddr,
-    dest_hash: &str,
-    dest_key: &str,
-    timeout_secs: u64,
-) -> Result<String, String> {
-    let cmd = serde_json::json!({
-        "method": "create_link",
-        "params": {
-            "dest_hash": dest_hash,
-            "dest_key": dest_key,
-            "timeout": timeout_secs,
-        }
-    });
-
-    let mut stream = TokioTcpStream::connect(cmd_addr)
-        .await
-        .map_err(|e| format!("connect failed: {}", e))?;
-
-    stream
-        .write_all(cmd.to_string().as_bytes())
-        .await
-        .map_err(|e| format!("write failed: {}", e))?;
-
-    stream
-        .shutdown()
-        .await
-        .map_err(|e| format!("shutdown failed: {}", e))?;
-
-    let mut response = Vec::new();
-    stream
-        .read_to_end(&mut response)
-        .await
-        .map_err(|e| format!("read failed: {}", e))?;
-
-    let resp: serde_json::Value =
-        serde_json::from_slice(&response).map_err(|e| format!("parse failed: {}", e))?;
-
-    if let Some(error) = resp.get("error") {
-        return Err(format!("create_link error: {}", error));
-    }
-
-    resp.get("result")
-        .and_then(|r| r.get("link_hash"))
-        .and_then(|v| v.as_str())
-        .map(|s| s.to_string())
-        .ok_or_else(|| "missing link_hash in response".to_string())
 }

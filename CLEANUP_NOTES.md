@@ -615,7 +615,7 @@ Ergebnis der Planungs-Session mit dem User am 2026-04-15. Wird von einem später
 2. §2 Clippy-Warnings abarbeiten.
 3. §7 Pass A — toxische Kommentar-Referenzen (`Bug #N`, `Phase 2a (X)`, `~/.claude/…`, Capture-Zeitstempel). Regel: Sachinhalt knapp umformulieren wenn Mehrwert; sonst löschen.
 4. §7 Pass B — Kommentar-Stil (Box-Drawing-Divider, Em-Dashes in Line-Comments, Bullet-Listen in Kommentaren, `NOTE:`/`Important:`-Deko, Emojis).
-5. §12 Pass A — Test-Timeout-Konstanten zentralisieren (`reticulum-std/tests/rnsd_interop/common.rs`).
+5. §12 Pass A — Test-Timeout-Konstanten zentralisieren (`reticulum-std/tests/rnsd_interop/common.rs`). **Autonomer Durchlauf 2026-04-15: descoped.** Mass-migration von 832 Duration-Calls ist nicht sicher automatisierbar, weil `Duration::from_secs(10)` (186 Treffer) verschiedene semantische Intents trägt (Link-Establishment, Propagation-Wait, Receipt-Timeout, Cleanup-Cap, …). Jede Stelle braucht per-site-Review. Der naheliegende mechanische Ersatz mit einer einzigen `LINK_WAIT`-Konstante würde semantisch wrong-mappen. Verlagert in Teil B mit User-Review.
 6. §13.1 — Test-Helper-Konsolidierung nach `common.rs` (`create_link_raw`, `build_rust_node`, `temp_storage`, `cleanup_config_dir`, `wait_for_*`-Familie generisch).
 7. §5.1 — `cargo-machete`-Funde einzeln verifizieren; für `reticulum-ffi` als `ignored` eintragen (Stub, §9.2); bei anderen Crates: echte Entfernung nur mit `cargo check --all-features --all-targets`-Durchgang.
 8. §11.3 — die eine echte `#[ignore]`-Policy-Verletzung (`auto_interop_tests.rs:906` Port-Conflict) fixen oder löschen. Abbruchregel: wenn Root-Cause nicht in 30 Min gefunden, Befund in Abschlussbericht statt Löschung.

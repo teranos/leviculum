@@ -31,12 +31,11 @@ use reticulum_core::identity::Identity;
 use reticulum_core::node::NodeEvent;
 use reticulum_core::packet::{Packet, PacketType};
 use reticulum_core::{Destination, DestinationHash, DestinationType, Direction};
-use reticulum_std::driver::ReticulumNodeBuilder;
 use reticulum_std::interfaces::hdlc::{frame, DeframeResult, Deframer};
 
 use crate::common::{
-    connect_to_daemon, now_ms, parse_dest_hash, wait_for_event, wait_for_path_on_node,
-    ParsedAnnounce, DAEMON_PROCESS_TIME,
+    build_rust_node, connect_to_daemon, now_ms, parse_dest_hash, wait_for_event,
+    wait_for_path_on_node, ParsedAnnounce, DAEMON_PROCESS_TIME,
 };
 use crate::harness::{DaemonTopology, TestDaemon};
 
@@ -505,31 +504,6 @@ async fn wait_for_announce_with_hash(
 // =========================================================================
 // Helpers for ratcheted encryption tests
 // =========================================================================
-
-/// Build a Rust node connected to a daemon, ready for single-packet operations.
-async fn build_rust_node(
-    daemon: &TestDaemon,
-) -> (
-    reticulum_std::driver::ReticulumNode,
-    tokio::sync::mpsc::Receiver<NodeEvent>,
-    tempfile::TempDir,
-) {
-    let storage = crate::common::temp_storage("build_rust_node", "node");
-    let mut node = ReticulumNodeBuilder::new()
-        .add_tcp_client(daemon.rns_addr())
-        .storage_path(storage.path().to_path_buf())
-        .build()
-        .await
-        .expect("Failed to build node");
-
-    let event_rx = node.take_event_receiver().unwrap();
-    node.start().await.expect("Failed to start node");
-
-    // Allow TCP connection to settle
-    tokio::time::sleep(Duration::from_secs(1)).await;
-
-    (node, event_rx, storage)
-}
 
 /// Register Python destination with ratchets enabled and enforced, then announce.
 ///

@@ -1338,3 +1338,86 @@ pub fn create_test_transport() -> (
     );
     (transport, 0)
 }
+
+/// Build a Rust node connected to a daemon via TCP, ready for single-packet
+/// operations. Returns `(node, event_rx, storage)`; the node is started and
+/// the storage guard must outlive the test.
+pub async fn build_rust_node(
+    daemon: &crate::harness::TestDaemon,
+) -> (
+    reticulum_std::driver::ReticulumNode,
+    tokio::sync::mpsc::Receiver<reticulum_core::node::NodeEvent>,
+    tempfile::TempDir,
+) {
+    let storage = temp_storage("build_rust_node", "node");
+    let mut node = reticulum_std::driver::ReticulumNodeBuilder::new()
+        .add_tcp_client(daemon.rns_addr())
+        .storage_path(storage.path().to_path_buf())
+        .build()
+        .await
+        .expect("Failed to build node");
+
+    let event_rx = node.take_event_receiver().unwrap();
+    node.start().await.expect("Failed to start node");
+
+    tokio::time::sleep(Duration::from_secs(1)).await;
+
+    (node, event_rx, storage)
+}
+
+/// Recursively remove a config directory, ignoring errors.
+pub fn cleanup_config_dir(path: &std::path::Path) {
+    let _ = std::fs::remove_dir_all(path);
+}
+
+/// Send a `create_link` JSON-RPC command to a daemon using a raw TCP
+/// connection. Callable from a spawned task without borrowing `TestDaemon`.
+/// Returns the hex link hash on success.
+pub async fn create_link_raw(
+    cmd_addr: std::net::SocketAddr,
+    dest_hash: &str,
+    dest_key: &str,
+    timeout_secs: u64,
+) -> Result<String, String> {
+    let cmd = serde_json::json!({
+        "method": "create_link",
+        "params": {
+            "dest_hash": dest_hash,
+            "dest_key": dest_key,
+            "timeout": timeout_secs,
+        }
+    });
+
+    let mut stream = TcpStream::connect(cmd_addr)
+        .await
+        .map_err(|e| format!("connect failed: {e}"))?;
+
+    stream
+        .write_all(cmd.to_string().as_bytes())
+        .await
+        .map_err(|e| format!("write failed: {e}"))?;
+
+    stream
+        .shutdown()
+        .await
+        .map_err(|e| format!("shutdown failed: {e}"))?;
+
+    let mut response = Vec::new();
+    stream
+        .read_to_end(&mut response)
+        .await
+        .map_err(|e| format!("read failed: {e}"))?;
+
+    let resp: serde_json::Value =
+        serde_json::from_slice(&response).map_err(|e| format!("parse failed: {e}"))?;
+
+    if let Some(error) = resp.get("error") {
+        return Err(format!("create_link error: {error}"));
+    }
+
+    resp.get("result")
+        .and_then(|r| r.get("link_hash"))
+        .and_then(|v| v.as_str())
+        .map(|s| s.to_string())
+        .ok_or_else(|| "missing link_hash in response".to_string())
+}

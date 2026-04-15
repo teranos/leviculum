@@ -21,18 +21,15 @@
 //! cargo test --package reticulum-std --test rnsd_interop responder_node_tests -- --nocapture
 //! ```
 
-use std::net::SocketAddr;
 use std::time::Duration;
-
-use tokio::io::{AsyncReadExt, AsyncWriteExt};
-use tokio::net::TcpStream;
 
 use reticulum_core::identity::Identity;
 use reticulum_core::{Destination, DestinationType, Direction};
 use reticulum_std::driver::ReticulumNodeBuilder;
 
 use crate::common::{
-    wait_for_data_event, wait_for_link_request_event, wait_for_responder_established,
+    create_link_raw, wait_for_data_event, wait_for_link_request_event,
+    wait_for_responder_established,
 };
 use crate::harness::TestDaemon;
 
@@ -208,57 +205,4 @@ async fn test_rust_node_as_responder() {
     stream.close().await.expect("Failed to close stream");
     rust_node.stop().await.expect("Failed to stop Rust node");
     eprintln!("test_rust_node_as_responder: PASSED");
-}
-
-/// Send a `create_link` JSON-RPC command to a daemon using a raw TCP connection.
-///
-/// This is identical to `TestDaemon::create_link()` but can be called from a
-/// spawned task without borrowing the `TestDaemon`.
-async fn create_link_raw(
-    cmd_addr: SocketAddr,
-    dest_hash: &str,
-    dest_key: &str,
-    timeout_secs: u64,
-) -> Result<String, String> {
-    let cmd = serde_json::json!({
-        "method": "create_link",
-        "params": {
-            "dest_hash": dest_hash,
-            "dest_key": dest_key,
-            "timeout": timeout_secs,
-        }
-    });
-
-    let mut stream = TcpStream::connect(cmd_addr)
-        .await
-        .map_err(|e| format!("connect failed: {}", e))?;
-
-    stream
-        .write_all(cmd.to_string().as_bytes())
-        .await
-        .map_err(|e| format!("write failed: {}", e))?;
-
-    stream
-        .shutdown()
-        .await
-        .map_err(|e| format!("shutdown failed: {}", e))?;
-
-    let mut response = Vec::new();
-    stream
-        .read_to_end(&mut response)
-        .await
-        .map_err(|e| format!("read failed: {}", e))?;
-
-    let resp: serde_json::Value =
-        serde_json::from_slice(&response).map_err(|e| format!("parse failed: {}", e))?;
-
-    if let Some(error) = resp.get("error") {
-        return Err(format!("create_link error: {}", error));
-    }
-
-    resp.get("result")
-        .and_then(|r| r.get("link_hash"))
-        .and_then(|v| v.as_str())
-        .map(|s| s.to_string())
-        .ok_or_else(|| "missing link_hash in response".to_string())
 }
