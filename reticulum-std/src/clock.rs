@@ -19,6 +19,14 @@ impl SystemClock {
             start: Instant::now(),
         }
     }
+
+    /// Expose the start anchor so the interface layer's backpressure
+    /// clock can align with ours (Bug #3 Phase 2a — the bucket's
+    /// last_update_ms and Transport's now_ms have to share a frame
+    /// or retry-scheduler deferral math breaks).
+    pub(crate) fn start_instant(&self) -> Instant {
+        self.start
+    }
 }
 
 impl Default for SystemClock {

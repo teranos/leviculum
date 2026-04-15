@@ -28,15 +28,36 @@ use tokio::sync::mpsc;
 
 use self::airtime::AirtimeCredit;
 
-/// Monotonic wall-clock in milliseconds since the first call.
+/// Monotonic wall-clock in milliseconds since the process-local anchor.
 ///
-/// The backpressure layer only cares about time deltas (credit regen,
-/// earliest-fit-time computations), so an arbitrary process-local anchor
-/// is fine. `std::time::Instant` is guaranteed monotonic; we anchor on
-/// the first call and return elapsed ms from there.
+/// CRITICAL: this anchor MUST match Transport's SystemClock anchor so
+/// that `last_update_ms` values stored by the credit bucket
+/// (via try_send_prioritized) and `now_ms` values read by the retry
+/// scheduler (via interface_next_slot_ms) are in the same frame.
+/// Bug #3 Phase 2a: a drift of even a few seconds flips
+/// `earliest_fit_time` into returning "ready now" when the bucket is
+/// actually in deficit, silently defeating retry deferral.
+///
+/// `init_clock_anchor` must be called from the driver with the
+/// Transport SystemClock's start instant BEFORE any `now_ms()` call.
+/// If `init_clock_anchor` was never called, we fall back to anchoring
+/// at first `now_ms()` invocation — this is safe for unit tests that
+/// never touch Transport's clock.
+static CLOCK_ANCHOR: OnceLock<Instant> = OnceLock::new();
+
+pub(crate) fn init_clock_anchor(anchor: Instant) {
+    // First writer wins. If the driver calls this before any TX,
+    // Transport and the bucket share a frame. If the bucket saw a
+    // try_send BEFORE the driver called this, the OnceLock already
+    // holds the bucket's fallback anchor — the driver's call is a
+    // no-op. That's a programming error (driver must init first) but
+    // does no harm: both frames are still self-consistent, just
+    // offset by <1s.
+    let _ = CLOCK_ANCHOR.set(anchor);
+}
+
 fn now_ms() -> u64 {
-    static BOOT: OnceLock<Instant> = OnceLock::new();
-    let boot = BOOT.get_or_init(Instant::now);
+    let boot = CLOCK_ANCHOR.get_or_init(Instant::now);
     boot.elapsed().as_millis() as u64
 }
 
