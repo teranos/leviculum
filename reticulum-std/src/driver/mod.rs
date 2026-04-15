@@ -1305,7 +1305,36 @@ async fn run_event_loop(
     };
 
     loop {
+        // Bug #3 Phase 2a (E3): event-driven retry-queue drain. Any
+        // non-empty queue whose front packet is currently ineligible
+        // for a slot contributes a wake deadline; the earliest of
+        // those becomes the tokio::time::sleep_until arm below. When
+        // all queues are empty or the head is already ready, no sleep
+        // arm is activated.
+        let retry_wake_instant: Option<tokio::time::Instant> = {
+            let now_ms = inner.lock().unwrap().now_ms();
+            compute_retry_wake_deadline_ms(&retry_queues, &registry, now_ms)
+                .and_then(|slot_ms| slot_ms.checked_sub(now_ms))
+                .map(|delta_ms| tokio::time::Instant::now() + Duration::from_millis(delta_ms))
+        };
+
         tokio::select! {
+            // Bug #3 Phase 2a (E3): fires exactly when the earliest
+            // retry-queue head becomes eligible. The arm only exists
+            // when retry_wake_instant is Some; otherwise the select
+            // skips it. Inside, we call drain + push_next_slot_ms to
+            // get the packets out and refresh Transport's slot cache.
+            _ = async {
+                match retry_wake_instant {
+                    Some(t) => tokio::time::sleep_until(t).await,
+                    None => core::future::pending::<()>().await,
+                }
+            } => {
+                let now_ms = inner.lock().unwrap().now_ms();
+                drain_retry_queues(&mut retry_queues, &mut registry, now_ms);
+                push_next_slot_ms(&mut registry, &inner);
+            }
+
             // Branch 1: Packet from any interface
             event = recv_any(&mut registry) => {
                 match event {
@@ -1636,6 +1665,43 @@ fn push_retry_with_warn(
     }
 }
 
+/// Compute the next wall-clock deadline at which any packet in the
+/// retry queues becomes eligible to drain. Returns the MINIMUM over
+/// all non-empty queues of `handle.next_slot_ms(front.len(), now)`.
+/// `None` iff every retry queue is empty.
+///
+/// Used by run_event_loop to schedule a sleep_until arm so idle nodes
+/// with retry-queued packets still drain at the right moment — no
+/// polling, no fixed 500 ms fallback. Bug #3 Phase 2a (E3).
+fn compute_retry_wake_deadline_ms(
+    retry_queues: &BTreeMap<usize, VecDeque<Vec<u8>>>,
+    registry: &InterfaceRegistry,
+    now_ms: u64,
+) -> Option<u64> {
+    use reticulum_core::traits::Interface;
+    let mut min_slot: Option<u64> = None;
+    for (&iface_idx, queue) in retry_queues.iter() {
+        let Some(front) = queue.front() else { continue };
+        if let Some(handle) = registry.handles().iter().find(|h| h.id().0 == iface_idx) {
+            let slot = handle.next_slot_ms(front.len(), now_ms);
+            // Only count slots strictly in the future; ready slots don't
+            // need waking — they'd drain at the next normal dispatch tick.
+            if slot > now_ms {
+                match min_slot {
+                    Some(current) if slot < current => min_slot = Some(slot),
+                    None => min_slot = Some(slot),
+                    _ => {}
+                }
+            } else {
+                // A ready queue head means we can drain NOW — return
+                // None so the caller doesn't sleep at all.
+                return None;
+            }
+        }
+    }
+    min_slot
+}
+
 /// Drain per-interface retry queues in-place, honouring per-packet
 /// airtime gating. Bug #3 Phase 2a (D2): before calling try_send, ask
 /// the handle's next_slot_ms for the actual packet size — Transport's
@@ -1788,6 +1854,122 @@ mod tests {
             push_retry_with_warn(&mut q, 3, vec![0u8; 4], &mut warned, &mut max_depth);
         }
         assert_eq!(max_depth.get(&3), Some(&11));
+    }
+
+    /// Bug #3 Phase 2a (E3): compute_retry_wake_deadline_ms returns
+    /// `None` when every retry queue is empty — no wake needed.
+    #[tokio::test(flavor = "current_thread")]
+    async fn compute_retry_wake_none_when_queues_empty() {
+        let registry = InterfaceRegistry::new();
+        let retry_queues: BTreeMap<usize, VecDeque<Vec<u8>>> = BTreeMap::new();
+        assert_eq!(
+            compute_retry_wake_deadline_ms(&retry_queues, &registry, 1_000),
+            None
+        );
+    }
+
+    /// Queues with a ready head → return None so the caller doesn't
+    /// sleep (drain would already happen on the next normal tick).
+    #[tokio::test(flavor = "current_thread")]
+    async fn compute_retry_wake_none_when_any_head_ready() {
+        use crate::interfaces::airtime::AirtimeCredit;
+        use crate::interfaces::{InterfaceCounters, InterfaceHandle, InterfaceInfo};
+        use reticulum_core::transport::InterfaceId;
+
+        let mut registry = InterfaceRegistry::new();
+        let (_inc_tx, inc_rx) = tokio::sync::mpsc::channel(4);
+        let (out_tx, _out_rx) = tokio::sync::mpsc::channel(4);
+        registry.register(InterfaceHandle {
+            info: InterfaceInfo {
+                id: InterfaceId(0),
+                name: "ready".into(),
+                hw_mtu: None,
+                is_local_client: false,
+                bitrate: None,
+                ifac: None,
+            },
+            incoming: inc_rx,
+            outgoing: out_tx,
+            counters: Arc::new(InterfaceCounters::new()),
+            credit: None, // always-ready
+        });
+        let mut retry_queues = BTreeMap::new();
+        retry_queues
+            .entry(0usize)
+            .or_insert_with(VecDeque::new)
+            .push_back(vec![1, 2, 3]);
+        assert_eq!(
+            compute_retry_wake_deadline_ms(&retry_queues, &registry, 1_000),
+            None,
+            "ready interface should short-circuit to None"
+        );
+        // Silence unused-import warning on non-LoRa path.
+        let _ = AirtimeCredit::new(125_000, 10, 8, 500);
+    }
+
+    /// When a queue head is NOT ready, return the MINIMUM over all
+    /// not-ready heads' slot times.
+    #[tokio::test(flavor = "current_thread")]
+    async fn compute_retry_wake_returns_min_future_slot() {
+        use crate::interfaces::airtime::AirtimeCredit;
+        use crate::interfaces::{InterfaceCounters, InterfaceHandle, InterfaceInfo};
+        use reticulum_core::transport::InterfaceId;
+
+        let mut registry = InterfaceRegistry::new();
+        let now_ms = 1_000;
+
+        // Two LoRa handles with different saturation — both have
+        // not-ready heads; the earlier slot should win.
+        for (idx, payload_charge) in [(0usize, 500u32), (1usize, 100u32)] {
+            let mut credit = AirtimeCredit::new(125_000, 10, 8, 500);
+            credit.try_charge(payload_charge, now_ms).unwrap();
+            let (_inc_tx, inc_rx) = tokio::sync::mpsc::channel(4);
+            let (out_tx, _out_rx) = tokio::sync::mpsc::channel(4);
+            registry.register(InterfaceHandle {
+                info: InterfaceInfo {
+                    id: InterfaceId(idx),
+                    name: format!("lora-{idx}"),
+                    hw_mtu: None,
+                    is_local_client: false,
+                    bitrate: None,
+                    ifac: None,
+                },
+                incoming: inc_rx,
+                outgoing: out_tx,
+                counters: Arc::new(InterfaceCounters::new()),
+                credit: Some(Arc::new(Mutex::new(credit))),
+            });
+        }
+        // Both queues carry a full-MTU packet — both heads are
+        // definitely not-ready because the buckets were charged at
+        // different magnitudes.
+        let mut retry_queues = BTreeMap::new();
+        retry_queues
+            .entry(0usize)
+            .or_insert_with(VecDeque::new)
+            .push_back(vec![0u8; 500]);
+        retry_queues
+            .entry(1usize)
+            .or_insert_with(VecDeque::new)
+            .push_back(vec![0u8; 500]);
+
+        let iface0_slot = {
+            let handles = registry.handles();
+            use reticulum_core::traits::Interface;
+            handles[0].next_slot_ms(500, now_ms)
+        };
+        let iface1_slot = {
+            let handles = registry.handles();
+            use reticulum_core::traits::Interface;
+            handles[1].next_slot_ms(500, now_ms)
+        };
+        let expected_min = iface0_slot.min(iface1_slot);
+        assert!(expected_min > now_ms);
+
+        assert_eq!(
+            compute_retry_wake_deadline_ms(&retry_queues, &registry, now_ms),
+            Some(expected_min)
+        );
     }
 
     /// Bug #3 Phase 2a (D2): drain_retry_queues honors next_slot_ms.
