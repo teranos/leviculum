@@ -1574,6 +1574,14 @@ fn dispatch_output(
     // Remove empty queues to avoid accumulating stale entries
     retry_queues.retain(|_, queue| !queue.is_empty());
 
+    // 5a. Push per-interface next_slot_ms into the Transport backchannel.
+    //     Bug #3 Phase 2a (C3): Transport can't hold handles (sans-I/O),
+    //     so the driver queries each Interface::next_slot_ms(MTU, now)
+    //     and mirrors it into Transport. D1 + C4 + C5 read from there.
+    //     Slot is computed at MTU size — conservative for smaller packets
+    //     (see doc on set_interface_next_slot_ms).
+    push_next_slot_ms(registry, inner);
+
     // 6. Forward events to application (best effort — drop if full)
     for event in output.events {
         if let NodeEvent::LinkEstablished { link_id, .. } = &event {
@@ -1598,6 +1606,21 @@ fn dispatch_output(
     }
 }
 
+/// Mirror each interface's `next_slot_ms(MTU, now_ms)` into Transport's
+/// backchannel. Bug #3 Phase 2a (C3). Extracted so it is unit-testable
+/// without spinning up the full driver; called from `dispatch_output`.
+fn push_next_slot_ms(registry: &mut InterfaceRegistry, inner: &Arc<Mutex<StdNodeCore>>) {
+    use reticulum_core::traits::Interface;
+    let now_ms = inner.lock().unwrap().now_ms();
+    let mut core = inner.lock().unwrap();
+    for handle in registry.handles_mut_slice().iter_mut() {
+        let mtu = handle.mtu();
+        let iface_idx = handle.id().0;
+        let slot = handle.next_slot_ms(mtu, now_ms);
+        core.set_interface_next_slot_ms(iface_idx, slot);
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1616,5 +1639,91 @@ mod tests {
         let fake_hash = reticulum_core::DestinationHash::new([0xFF; 16]);
         assert!(!node.has_path(&fake_hash));
         assert!(node.hops_to(&fake_hash).is_none());
+    }
+
+    /// Bug #3 Phase 2a (C3): push_next_slot_ms copies per-interface
+    /// next_slot_ms into Transport's backchannel. Build a synthetic
+    /// registry with one LoRa (saturated bucket → future slot) and
+    /// one non-LoRa (default → now_ms), run the push, assert Transport
+    /// reflects both.
+    #[tokio::test(flavor = "current_thread")]
+    async fn push_next_slot_ms_mirrors_per_handle_values() {
+        use crate::interfaces::airtime::AirtimeCredit;
+        use crate::interfaces::{InterfaceCounters, InterfaceHandle, InterfaceInfo};
+        use reticulum_core::transport::InterfaceId;
+        use std::sync::atomic::Ordering;
+        let _ = Ordering::Relaxed; // silences unused-import on minor builds
+
+        // Minimal StdNodeCore in Arc<Mutex>.
+        let tmp = std::env::temp_dir().join(format!("bug3-phase2a-c3-test-{}", std::process::id()));
+        std::fs::create_dir_all(&tmp).unwrap();
+        let core: Arc<Mutex<StdNodeCore>> = {
+            let node = reticulum_core::node::NodeCoreBuilder::new()
+                .enable_transport(true)
+                .build(
+                    rand_core::OsRng,
+                    SystemClock::new(),
+                    crate::storage::Storage::new(&tmp).unwrap(),
+                );
+            Arc::new(Mutex::new(node))
+        };
+
+        // Construct two synthetic handles directly. Channel receivers
+        // are dropped at end of test — that's fine since we don't call
+        // try_send here, only next_slot_ms (which is &self).
+        let mut registry = InterfaceRegistry::new();
+
+        let (_lora_inc_tx, lora_inc_rx) = tokio::sync::mpsc::channel(4);
+        let (lora_out_tx, _lora_out_rx) = tokio::sync::mpsc::channel(4);
+        let mut lora_credit = AirtimeCredit::new(125_000, 10, 8, 500);
+        // Exhaust to guarantee earliest_fit_time > 0.
+        lora_credit.try_charge(500, 0).unwrap();
+        let lora_handle = InterfaceHandle {
+            info: InterfaceInfo {
+                id: InterfaceId(1),
+                name: "lora-test".into(),
+                hw_mtu: Some(500),
+                is_local_client: false,
+                bitrate: None,
+                ifac: None,
+            },
+            incoming: lora_inc_rx,
+            outgoing: lora_out_tx,
+            counters: Arc::new(InterfaceCounters::new()),
+            credit: Some(Arc::new(Mutex::new(lora_credit))),
+        };
+
+        let (_plain_inc_tx, plain_inc_rx) = tokio::sync::mpsc::channel(4);
+        let (plain_out_tx, _plain_out_rx) = tokio::sync::mpsc::channel(4);
+        let plain_handle = InterfaceHandle {
+            info: InterfaceInfo {
+                id: InterfaceId(2),
+                name: "plain-test".into(),
+                hw_mtu: None,
+                is_local_client: false,
+                bitrate: None,
+                ifac: None,
+            },
+            incoming: plain_inc_rx,
+            outgoing: plain_out_tx,
+            counters: Arc::new(InterfaceCounters::new()),
+            credit: None,
+        };
+        registry.register(lora_handle);
+        registry.register(plain_handle);
+
+        // Run the push.
+        push_next_slot_ms(&mut registry, &core);
+
+        // LoRa (idx=1, saturated): slot must be in the future relative to now_ms.
+        let now_ms = core.lock().unwrap().now_ms();
+        let lora_slot = core.lock().unwrap().next_slot_ms_for_interface(1, now_ms);
+        assert!(
+            lora_slot > now_ms,
+            "saturated LoRa should map to future slot, got {lora_slot} vs now {now_ms}"
+        );
+        // Plain (idx=2, no credit): slot equals now_ms (trait default).
+        let plain_slot = core.lock().unwrap().next_slot_ms_for_interface(2, now_ms);
+        assert_eq!(plain_slot, now_ms, "non-LoRa should map to now_ms");
     }
 }

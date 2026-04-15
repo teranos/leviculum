@@ -1126,6 +1126,23 @@ impl<R: CryptoRngCore, C: Clock, S: Storage> NodeCore<R, C, S> {
         self.transport.set_interface_congested(iface_idx, congested);
     }
 
+    /// Record the wall-clock ms at which the given interface will next
+    /// accept an MTU-sized packet. Called by the driver after every
+    /// dispatch tick (Bug #3 Phase 2a). See
+    /// `Transport::set_interface_next_slot_ms` for the MTU-cache
+    /// trade-off rationale.
+    pub fn set_interface_next_slot_ms(&mut self, iface_idx: usize, slot_ms: u64) {
+        self.transport
+            .set_interface_next_slot_ms(iface_idx, slot_ms);
+    }
+
+    /// Read the earliest ready time pushed by the driver for this
+    /// interface, falling back to `now_ms` when no value has been
+    /// pushed yet.
+    pub fn next_slot_ms_for_interface(&self, iface_idx: usize, now_ms: u64) -> u64 {
+        self.transport.next_slot_ms_for_interface(iface_idx, now_ms)
+    }
+
     /// Register an IFAC configuration for an interface.
     ///
     /// The driver should call this during interface setup for interfaces with
