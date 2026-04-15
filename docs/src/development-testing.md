@@ -100,7 +100,10 @@ Tier 3 only. Requires two Heltec T114 boards + two RNode radios
 connected via USB. Manual runs:
 
 ```sh
-cargo run --release --bin t114    # flash a T114 (double-tap RESET when prompted)
+cargo run --release --bin t114    # flashes ALL attached T114s; touch-free
+                                  #   since the Bug #13 firmware change.
+                                  #   Double-tap RESET only if the runner
+                                  #   prompts you (crashed-firmware fallback).
 just nightly                      # full Tier 3 run
 ```
 

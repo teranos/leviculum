@@ -19,7 +19,8 @@ use embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex;
 use embassy_sync::channel::{Channel, Receiver, Sender};
 use embassy_time::with_timeout;
 use embassy_usb::class::cdc_acm::{CdcAcmClass, State};
-use embassy_usb::{Builder, Config, UsbDevice};
+use embassy_usb::control::{OutResponse, Recipient, Request, RequestType};
+use embassy_usb::{Builder, Config, Handler, UsbDevice};
 use reticulum_core::framing::hdlc::{frame, DeframeResult, Deframer};
 use static_cell::StaticCell;
 
@@ -34,6 +35,7 @@ static MSOS_DESC: StaticCell<[u8; 0]> = StaticCell::new();
 static CONTROL_BUF: StaticCell<[u8; 128]> = StaticCell::new();
 static CDC_DEBUG_STATE: StaticCell<State<'static>> = StaticCell::new();
 static CDC_RETIC_STATE: StaticCell<State<'static>> = StaticCell::new();
+static BAUD_TOUCH: StaticCell<BaudTouchHandler> = StaticCell::new();
 
 /// Channels for serial interface: NodeCore ↔ USB CDC-ACM
 static INCOMING_CHANNEL: Channel<CriticalSectionRawMutex, Vec<u8>, 8> = Channel::new();
@@ -111,6 +113,11 @@ pub fn init(
         CONTROL_BUF.init([0; 128]),
     );
 
+    // 1200-baud-touch: Adafruit nRF52 bootloader trigger.
+    // Registered before any CdcAcmClass so the handler sees SET_LINE_CODING
+    // requests for either CDC port. See `BaudTouchHandler` below.
+    builder.handler(BAUD_TOUCH.init(BaudTouchHandler));
+
     // CDC-ACM #0: Debug log output (interfaces 00+01)
     let cdc_debug = CdcAcmClass::new(&mut builder, CDC_DEBUG_STATE.init(State::new()), 64);
 
@@ -135,6 +142,53 @@ pub fn init(
 }
 
 type UsbDriver = usb::Driver<'static, HardwareVbusDetect>;
+
+/// CDC PSTN spec §6.3.10: SET_LINE_CODING is class request 0x20,
+/// addressed to the CDC communication interface. Payload is the 7-byte
+/// LINE_CODING structure: u32 dwDTERate (LE), u8 bCharFormat,
+/// u8 bParityType, u8 bDataBits.
+const REQ_SET_LINE_CODING: u8 = 0x20;
+
+/// USB control-request handler that triggers the Adafruit nRF52 bootloader
+/// when the host opens any CDC port at exactly 1200 baud (the
+/// "1200-baud-touch" convention). On match: writes the UF2-stay-in-bootloader
+/// magic to GPREGRET and issues a soft reset. The bootloader reads GPREGRET
+/// on next boot and stays in UF2 mass-storage mode for flashing.
+///
+/// All non-1200 SET_LINE_CODING requests fall through to the CdcAcm handler
+/// untouched. Strict equality only — fuzzy matching would risk spurious
+/// resets when terminal apps round 1215 → 1200.
+struct BaudTouchHandler;
+
+impl Handler for BaudTouchHandler {
+    fn control_out(&mut self, req: Request, data: &[u8]) -> Option<OutResponse> {
+        if req.request_type == RequestType::Class
+            && req.recipient == Recipient::Interface
+            && req.request == REQ_SET_LINE_CODING
+            && data.len() >= 7
+        {
+            let data_rate = u32::from_le_bytes([data[0], data[1], data[2], data[3]]);
+            if data_rate == 1200 {
+                // Hot path: no `await`, no allocation, no logging between the
+                // GPREGRET write and `sys_reset()`. Any preemption here would
+                // risk the magic being lost before the reset fires.
+                // SAFETY: GPREGRET is a memory-mapped retained-register in the
+                // POWER peripheral; safe to write any u32 value at any time.
+                unsafe {
+                    const GPREGRET: *mut u32 = 0x4000_051C as *mut u32;
+                    const DFU_MAGIC_UF2_RESET: u32 = 0x57;
+                    core::ptr::write_volatile(GPREGRET, DFU_MAGIC_UF2_RESET);
+                }
+                cortex_m::peripheral::SCB::sys_reset();
+                // sys_reset() is `-> !` and never returns.
+            }
+        }
+        // Pass-through for everything else: CdcAcm's own handler will accept
+        // the SET_LINE_CODING and update its cached line_coding, or reject as
+        // appropriate.
+        None
+    }
+}
 
 #[embassy_executor::task]
 async fn usb_task(mut usb: UsbDevice<'static, UsbDriver>) {

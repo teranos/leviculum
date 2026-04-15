@@ -2,6 +2,15 @@
 # Cargo runner for T114 — builds UF2 from ELF and deploys to bootloader.
 # Invoked automatically by `cargo run` via .cargo/config.toml.
 #
+# Default behaviour: flash EVERY attached T114 (matched by VID/PID 1209:0001)
+# sequentially. Touch-free for healthy firmware (1200-baud-touch triggers the
+# Adafruit bootloader); falls back to manual double-tap RESET prompt per
+# device if touch fails (e.g. crashed firmware, old firmware without the
+# handler).
+#
+# Selective flashing: set LEVICULUM_FLASH_ONLY=<port-or-symlink> to target
+# exactly one T114. Useful for A/B firmware testing.
+#
 # Pipeline: ELF → flat binary (objcopy) → UF2 (bin2uf2) → copy to UF2 drive
 #
 # NOTE: --base must match FLASH ORIGIN in memory.x (currently 0x26000 for S140 v6)
@@ -89,7 +98,7 @@ fi
 echo "==> Converting binary to UF2 (base: $FLASH_BASE, family: nRF52840)"
 "$BIN2UF2" --base "$FLASH_BASE" --family "$FAMILY_ID" "$BIN_FILE" "$UF2_FILE"
 
-# --- Step 5: Find UF2 drive -------------------------------------------------
+# --- Helper: find UF2 drive (polled by flash_one_uf2) -----------------------
 
 find_uf2_drive() {
     local search_dirs=()
@@ -152,171 +161,463 @@ find_uf2_drive() {
     echo ""
 }
 
-UF2_DRIVE="$(find_uf2_drive)"
+# --- Helper: enumerate all attached T114 transport ports --------------------
+# Prints one path per line, sorted by ID_SERIAL_SHORT (deterministic order).
+# Empty output means no T114 with the leviculum VID/PID + interface 02 found.
+# Single udevadm call per port (cached output grepped four times) — saves
+# ~75% of subprocess calls vs. a four-call form.
 
-# --- Step 6: Prompt + wait --------------------------------------------------
+find_all_t114_transport_ports() {
+    local port props vid pid iface serial out=""
+    for port in /dev/ttyACM*; do
+        [ -c "$port" ] || continue
+        props="$(udevadm info -q property "$port" 2>/dev/null || true)"
+        vid="$(   echo "$props" | grep '^ID_VENDOR_ID='         | cut -d= -f2)"
+        pid="$(   echo "$props" | grep '^ID_MODEL_ID='          | cut -d= -f2)"
+        iface="$( echo "$props" | grep '^ID_USB_INTERFACE_NUM=' | cut -d= -f2)"
+        if [ "$vid" = "1209" ] && [ "$pid" = "0001" ] && [ "$iface" = "02" ]; then
+            serial="$(echo "$props" | grep '^ID_SERIAL_SHORT='  | cut -d= -f2)"
+            out="$out$serial $port"$'\n'
+        fi
+    done
+    echo -n "$out" | sort | awk '{print $2}'
+}
 
-if [ -z "$UF2_DRIVE" ]; then
-    echo "==> Looking for UF2 drive..."
-    echo "    ┌──────────────────────────────────────────────────┐"
-    echo "    │  Double-tap RESET on T114 to enter bootloader.   │"
-    echo "    └──────────────────────────────────────────────────┘"
-    echo "==> Waiting for UF2 drive (${UF2_TIMEOUT}s)..."
+# --- Helper: flash one UF2 to whichever bootloader drive appears ------------
+# Args: $1 = hint string (port path or "(unknown device)") for log/prompt
+# Returns:
+#   0 = UF2 successfully copied to the drive
+#   1 = UF2 drive never appeared within UF2_TIMEOUT (manual prompt was
+#       displayed but ignored, or no T114 in bootloader mode)
+#   2 = drive appeared but cp failed (write-protect, FS error, mid-flight unplug)
+# The helper prints a precise per-failure diagnostic line BEFORE returning
+# non-zero, so the caller's summary need only list the port without
+# re-explaining the cause.
 
-    max_ticks=$((UF2_TIMEOUT * 2))  # 0.5s per tick
-    tick=0
-    while [ "$tick" -lt "$max_ticks" ]; do
+flash_one_uf2() {
+    local hint="${1:-(unknown device)}"
+    local drive
+
+    # Quick silent grace period: if 1200-baud-touch worked the firmware will
+    # have rebooted into the UF2 bootloader within ~1-2 s. Polling silently
+    # for QUIET_GRACE seconds before showing the manual-tap prompt avoids
+    # misleading the user into thinking they need to tap when touch already
+    # succeeded.
+    local QUIET_GRACE=4
+    local quiet_ticks=$((QUIET_GRACE * 2))   # 0.5s per tick
+    drive="$(find_uf2_drive)"
+    local tick=0
+    while [ -z "$drive" ] && [ "$tick" -lt "$quiet_ticks" ]; do
         sleep 0.5
         tick=$((tick + 1))
-        UF2_DRIVE="$(find_uf2_drive)"
-        if [ -n "$UF2_DRIVE" ]; then
-            break
-        fi
+        drive="$(find_uf2_drive)"
     done
 
-    if [ -z "$UF2_DRIVE" ]; then
-        echo "" >&2
-        echo "==> Timeout: No UF2 drive found after ${UF2_TIMEOUT}s." >&2
-        echo "    UF2 file ready at: $UF2_FILE" >&2
-        echo "    To flash manually:" >&2
-        echo "      1. Double-tap RESET on T114" >&2
-        echo "      2. cp $UF2_FILE /media/$USER/NRF52BOOT/NEW.UF2" >&2
-        echo "      3. sync" >&2
-        exit 1
+    if [ -z "$drive" ]; then
+        # Touch didn't bring up a drive in the grace window — show the prompt
+        # and continue polling for the remaining UF2_TIMEOUT.
+        echo "==> $hint: looking for UF2 drive..."
+        echo "    ┌──────────────────────────────────────────────────┐"
+        echo "    │  Double-tap RESET on T114 to enter bootloader.   │"
+        echo "    └──────────────────────────────────────────────────┘"
+        echo "==> Waiting for UF2 drive (${UF2_TIMEOUT}s)..."
+
+        local remaining_ticks=$(( (UF2_TIMEOUT - QUIET_GRACE) * 2 ))
+        [ "$remaining_ticks" -lt 0 ] && remaining_ticks=0
+        tick=0
+        while [ "$tick" -lt "$remaining_ticks" ]; do
+            sleep 0.5
+            tick=$((tick + 1))
+            drive="$(find_uf2_drive)"
+            if [ -n "$drive" ]; then
+                break
+            fi
+        done
+
+        if [ -z "$drive" ]; then
+            echo "[uf2-runner] $hint: UF2 drive never appeared (timeout after ${UF2_TIMEOUT}s manual prompt)" >&2
+            return 1
+        fi
     fi
-fi
 
-# --- Step 7: Deploy ---------------------------------------------------------
+    local drive_name
+    drive_name="$(basename "$drive")"
+    echo "==> $hint: found UF2 drive at $drive ($drive_name)"
 
-DRIVE_NAME="$(basename "$UF2_DRIVE")"
-echo "==> Found: $UF2_DRIVE ($DRIVE_NAME)"
+    # UF2 bootloaders intercept FAT filesystem writes and check each 512-byte
+    # sector for UF2 magic. Write the file via cp (same approach as uf2conv.py
+    # and the Heltec Arduino toolchain). sync may return I/O errors because the
+    # bootloader resets after processing the last UF2 block — this is normal
+    # and expected.
+    local uf2_size uf2_blocks
+    uf2_size="$(stat -c%s "$UF2_FILE")"
+    uf2_blocks=$((uf2_size / 512))
+    echo "==> $hint: deploying firmware.uf2 (${uf2_size} bytes, ${uf2_blocks} blocks)"
 
-# UF2 bootloaders intercept FAT filesystem writes and check each 512-byte
-# sector for UF2 magic. Write the file via cp (same approach as uf2conv.py
-# and the Heltec Arduino toolchain). No sync — the bootloader processes
-# blocks as they arrive and resets when done; explicit sync races with
-# the device disconnect.
-UF2_SIZE="$(stat -c%s "$UF2_FILE")"
-UF2_BLOCKS=$((UF2_SIZE / 512))
-echo "==> Deploying firmware.uf2 (${UF2_SIZE} bytes, ${UF2_BLOCKS} blocks)..."
-if [ -w "$UF2_DRIVE" ]; then
-    cp "$UF2_FILE" "$UF2_DRIVE/NEW.UF2"
-    sync
+    if [ -w "$drive" ]; then
+        if ! cp "$UF2_FILE" "$drive/NEW.UF2" 2>/dev/null; then
+            echo "[uf2-runner] $hint: UF2 drive mounted at $drive but cp failed" >&2
+            # Best-effort cleanup if we mounted to /mnt
+            [ "$drive" = "/mnt" ] && sudo -n umount /mnt 2>/dev/null || true
+            return 2
+        fi
+        sync 2>/dev/null || true
+    else
+        if ! sudo cp "$UF2_FILE" "$drive/NEW.UF2" 2>/dev/null; then
+            echo "[uf2-runner] $hint: UF2 drive mounted at $drive but sudo cp failed" >&2
+            [ "$drive" = "/mnt" ] && sudo -n umount /mnt 2>/dev/null || true
+            return 2
+        fi
+        sudo sync 2>/dev/null || true
+    fi
+
+    # Best-effort cleanup if we mounted to /mnt
+    if [ "$drive" = "/mnt" ]; then
+        sudo -n umount /mnt 2>/dev/null || true
+    fi
+
+    return 0
+}
+
+# --- Step 5: Determine target list ------------------------------------------
+
+if [ -n "${LEVICULUM_FLASH_ONLY:-}" ]; then
+    PORTS="$LEVICULUM_FLASH_ONLY"
+    echo "==> LEVICULUM_FLASH_ONLY set; targeting only $PORTS"
 else
-    sudo cp "$UF2_FILE" "$UF2_DRIVE/NEW.UF2"
-    sudo sync
+    PORTS="$(find_all_t114_transport_ports)"
 fi
-# sync may return I/O errors because the bootloader resets after
-# processing the last UF2 block — this is normal and expected.
 
-# --- Step 8: Boot verification ----------------------------------------------
+# Newline-separated lists of ports that flashed successfully / failed.
+FLASHED_PORTS=""
+FAILED_PORTS=""
 
-echo "==> Waiting for device to boot..."
+# --- Step 6: Flash loop -----------------------------------------------------
 
-# Wait for UF2 drive to disappear (bootloader finished flashing)
-for _ in $(seq 1 20); do
-    if [ ! -d "$UF2_DRIVE" ] || [ ! -f "$UF2_DRIVE/INFO_UF2.TXT" ]; then
+# Tracks serials whose UF2 was successfully copied (one per line). Captured
+# in-loop just before the touch so we can identify devices across renumber.
+FLASHED_SERIALS=""
+
+if [ -z "$PORTS" ]; then
+    # No T114 visible on VID/PID — either none attached, all already in
+    # bootloader mode (UF2 drive only), or all crashed. Run one round of the
+    # legacy fallback (manual prompt + UF2-drive polling).
+    echo "[uf2-runner] no T114 transport port detected; awaiting manual double-tap"
+    if flash_one_uf2 "(unknown device)"; then
+        FLASHED_PORTS="(unknown)"
+    else
+        FAILED_PORTS="(unknown)"
+    fi
+else
+    NUM=$(echo "$PORTS" | wc -l)
+    echo "==> Flashing $NUM T114(s)"
+    INDEX=0
+    while IFS= read -r PORT; do
+        [ -n "$PORT" ] || continue
+        INDEX=$((INDEX + 1))
+        # Capture this port's serial BEFORE the touch so we can recognise
+        # the device after it renumbers.
+        PORT_SERIAL="$(udevadm info -q property "$PORT" 2>/dev/null | grep '^ID_SERIAL_SHORT=' | cut -d= -f2 || true)"
+        echo ""
+        if [ -n "$PORT_SERIAL" ]; then
+            echo "==> ($INDEX/$NUM) trying T114 at $PORT (serial=$PORT_SERIAL)"
+        else
+            echo "==> ($INDEX/$NUM) trying T114 at $PORT"
+        fi
+        # 1200-baud-touch. Old firmware ignores; new firmware writes the
+        # GPREGRET magic and resets into the UF2 bootloader. stty errors are
+        # tolerated (port may have already disappeared mid-loop).
+        stty -F "$PORT" 1200 2>/dev/null || true
+        if flash_one_uf2 "$PORT"; then
+            FLASHED_PORTS="$FLASHED_PORTS"$'\n'"$PORT"
+            [ -n "$PORT_SERIAL" ] && FLASHED_SERIALS="$FLASHED_SERIALS"$'\n'"$PORT_SERIAL"
+        else
+            echo "[uf2-runner] ($INDEX/$NUM) FAILED — continuing with next T114" >&2
+            FAILED_PORTS="$FAILED_PORTS"$'\n'"$PORT"
+        fi
+    done <<< "$PORTS"
+fi
+
+# Strip leading newlines.
+FLASHED_SERIALS="$(echo -n "$FLASHED_SERIALS" | sed '/^$/d')"
+
+# Crashed-firmware recovery pass: a T114 with crashed app firmware never
+# enumerates as a transport CDC port — invisible to the main touch loop.
+# If the user double-taps the crashed T114 BEFORE running this script (or
+# between flashes), its Adafruit bootloader appears as a UF2 mass-storage
+# drive. Flash whatever's still mounted after the touch loop. Filtered by
+# Board-ID "HT-n5262" so only genuine T114 bootloaders are touched.
+while true; do
+    EXTRA_DRIVE="$(find_uf2_drive)"
+    [ -n "$EXTRA_DRIVE" ] || break
+    if [ ! -f "$EXTRA_DRIVE/INFO_UF2.TXT" ] || ! grep -q "HT-n5262" "$EXTRA_DRIVE/INFO_UF2.TXT" 2>/dev/null; then
         break
     fi
-    sleep 0.5
+    echo ""
+    echo "==> Extra UF2 drive at $EXTRA_DRIVE — flashing crashed-firmware T114 (no transport port)"
+    if [ -w "$EXTRA_DRIVE" ]; then
+        if cp "$UF2_FILE" "$EXTRA_DRIVE/NEW.UF2" 2>/dev/null; then
+            sync 2>/dev/null || true
+            FLASHED_PORTS="$FLASHED_PORTS"$'\n'"(crashed-recovery)"
+        else
+            echo "[uf2-runner] (crashed-recovery): cp to $EXTRA_DRIVE failed" >&2
+            FAILED_PORTS="$FAILED_PORTS"$'\n'"(crashed-recovery)"
+        fi
+    else
+        if sudo cp "$UF2_FILE" "$EXTRA_DRIVE/NEW.UF2" 2>/dev/null; then
+            sudo sync 2>/dev/null || true
+            FLASHED_PORTS="$FLASHED_PORTS"$'\n'"(crashed-recovery)"
+        else
+            echo "[uf2-runner] (crashed-recovery): sudo cp to $EXTRA_DRIVE failed" >&2
+            FAILED_PORTS="$FAILED_PORTS"$'\n'"(crashed-recovery)"
+        fi
+    fi
+    [ "$EXTRA_DRIVE" = "/mnt" ] && sudo -n umount /mnt 2>/dev/null || true
+    # Wait for the bootloader to process the file and disappear before
+    # checking for more drives. Without this the same drive could be picked
+    # up twice in quick succession.
+    sleep 1
+    sleep 1
+    sleep 1
 done
 
-# Wait for our USB device to appear — match by VID:PID 1209:0001
-BOOT_TIMEOUT=20  # ticks at 0.5s each = 10 seconds
+# Strip leading newlines from accumulated lists.
+FLASHED_PORTS="$(echo -n "$FLASHED_PORTS" | sed '/^$/d')"
+FAILED_PORTS="$(echo -n "$FAILED_PORTS"   | sed '/^$/d')"
+
+# --- Step 7: Boot wait + summary --------------------------------------------
+
+NUM_FLASHED=0
+if [ -n "$FLASHED_PORTS" ]; then
+    NUM_FLASHED=$(echo "$FLASHED_PORTS" | wc -l)
+fi
+
+# Wait up to 10 s for the flashed devices to re-enumerate as T114 transport
+# ports. We poll until every serial in FLASHED_SERIALS is present, or until
+# we time out. This is stricter than "any N ports visible": with
+# LEVICULUM_FLASH_ONLY targeting one specific T114, an unrelated already-
+# present T114 must not satisfy the count.
+echo ""
+echo "==> Waiting for flashed devices to re-enumerate..."
+BOOT_TIMEOUT=20  # ticks at 0.5s = 10 s
 boot_tick=0
-OUR_PORTS=""
+CURRENT_PORTS=""
 while [ "$boot_tick" -lt "$BOOT_TIMEOUT" ]; do
-    OUR_PORTS=""
-    for tty in /dev/ttyACM*; do
-        [ -c "$tty" ] || continue
-        vid="$(udevadm info -q property "$tty" 2>/dev/null | grep '^ID_VENDOR_ID=' | cut -d= -f2 || true)"
-        pid="$(udevadm info -q property "$tty" 2>/dev/null | grep '^ID_MODEL_ID=' | cut -d= -f2 || true)"
-        if [ "$vid" = "1209" ] && [ "$pid" = "0001" ]; then
-            OUR_PORTS="${OUR_PORTS:+$OUR_PORTS }$tty"
-        fi
-    done
-    if [ -n "$OUR_PORTS" ]; then
-        # Wait for udev to settle and create symlinks
+    CURRENT_PORTS="$(find_all_t114_transport_ports)"
+    # Build current-serial set.
+    cur_serial_set=""
+    if [ -n "$CURRENT_PORTS" ]; then
+        while IFS= read -r p; do
+            [ -n "$p" ] || continue
+            s="$(udevadm info -q property "$p" 2>/dev/null | grep '^ID_SERIAL_SHORT=' | cut -d= -f2 || true)"
+            [ -n "$s" ] && cur_serial_set="$cur_serial_set $s"
+        done <<< "$CURRENT_PORTS"
+    fi
+    # Count how many FLASHED_SERIALS are present.
+    matched=0
+    expected=0
+    if [ -n "$FLASHED_SERIALS" ]; then
+        expected=$(echo "$FLASHED_SERIALS" | wc -l)
+        while IFS= read -r fs; do
+            [ -n "$fs" ] || continue
+            case " $cur_serial_set " in
+                *" $fs "*) matched=$((matched + 1)) ;;
+            esac
+        done <<< "$FLASHED_SERIALS"
+    fi
+    if [ "$expected" -gt 0 ] && [ "$matched" -ge "$expected" ]; then
+        sleep 0.5  # let udev settle symlinks
+        CURRENT_PORTS="$(find_all_t114_transport_ports)"
+        break
+    fi
+    # Fallback for the legacy "(unknown)" path with no captured serial: any
+    # port reappearing within timeout is good enough.
+    if [ "$expected" -eq 0 ] && [ -n "$CURRENT_PORTS" ]; then
         sleep 0.5
+        CURRENT_PORTS="$(find_all_t114_transport_ports)"
         break
     fi
     sleep 0.5
     boot_tick=$((boot_tick + 1))
 done
 
-# --- Step 9: Identify ports ------------------------------------------------
-
-DEBUG_PORT=""
-TRANSPORT_PORT=""
-SERIAL=""
-
-if [ -n "$OUR_PORTS" ]; then
-    for port in $OUR_PORTS; do
-        iface="$(udevadm info -q property "$port" 2>/dev/null | grep '^ID_USB_INTERFACE_NUM=' | cut -d= -f2 || true)"
-        case "$iface" in
-            00) DEBUG_PORT="$port" ;;
-            02) TRANSPORT_PORT="$port" ;;
-        esac
-        if [ -z "$SERIAL" ]; then
-            SERIAL="$(udevadm info -q property "$port" 2>/dev/null | grep '^ID_SERIAL_SHORT=' | cut -d= -f2 || true)"
+# Per-port lookup: print serial + transport + matching debug port.
+print_device_line() {
+    local transport="$1"
+    local props serial debug_port
+    props="$(udevadm info -q property "$transport" 2>/dev/null || true)"
+    serial="$(echo "$props" | grep '^ID_SERIAL_SHORT=' | cut -d= -f2)"
+    # Find matching debug port (interface 00, same serial).
+    local p p_props p_iface p_serial
+    debug_port=""
+    for p in /dev/ttyACM*; do
+        [ -c "$p" ] || continue
+        p_props="$(udevadm info -q property "$p" 2>/dev/null || true)"
+        p_iface="$( echo "$p_props" | grep '^ID_USB_INTERFACE_NUM=' | cut -d= -f2)"
+        p_serial="$(echo "$p_props" | grep '^ID_SERIAL_SHORT='      | cut -d= -f2)"
+        if [ "$p_iface" = "00" ] && [ "$p_serial" = "$serial" ]; then
+            debug_port="$p"
+            break
         fi
     done
-
-    # Check for udev symlinks
-    DEBUG_SYMLINK=""
-    TRANSPORT_SYMLINK=""
-    if [ -L "/dev/leviculum-debug" ]; then
-        DEBUG_SYMLINK="/dev/leviculum-debug"
-    fi
-    if [ -L "/dev/leviculum-transport" ]; then
-        TRANSPORT_SYMLINK="/dev/leviculum-transport"
-    fi
-
-    if [ -n "$SERIAL" ]; then
-        echo "==> Firmware booted (serial: $SERIAL)"
+    if [ -n "$debug_port" ]; then
+        printf "      serial=%s  transport=%s  debug=%s\n" "$serial" "$transport" "$debug_port"
     else
-        echo "==> Firmware booted"
+        printf "      serial=%s  transport=%s  debug=(not found)\n" "$serial" "$transport"
     fi
+}
 
-    if [ -n "$DEBUG_PORT" ]; then
-        if [ -n "$DEBUG_SYMLINK" ]; then
-            echo "    Debug:     $DEBUG_PORT ($DEBUG_SYMLINK)"
-        else
-            echo "    Debug:     $DEBUG_PORT"
-        fi
-    fi
-
-    if [ -n "$TRANSPORT_PORT" ]; then
-        if [ -n "$TRANSPORT_SYMLINK" ]; then
-            echo "    Transport: $TRANSPORT_PORT ($TRANSPORT_SYMLINK)"
-        else
-            echo "    Transport: $TRANSPORT_PORT"
-        fi
-    fi
-
-    if [ -z "$DEBUG_SYMLINK" ] && [ -z "$TRANSPORT_SYMLINK" ]; then
-        echo "    Tip: install udev/99-leviculum.rules for stable /dev/leviculum-* symlinks"
-    fi
-
-    # Write debug port to target/debug-port for tooling (prefer udev symlink)
-    mkdir -p "$TARGET_DIR"
-    if [ -n "$DEBUG_SYMLINK" ]; then
-        echo "$DEBUG_SYMLINK" > "$TARGET_DIR/debug-port"
-    elif [ -n "$DEBUG_PORT" ]; then
-        echo "$DEBUG_PORT" > "$TARGET_DIR/debug-port"
-    fi
-else
-    echo "==> Warning: Device did not enumerate serial ports within 10s." >&2
-    echo "    Firmware may have crashed, or USB CDC-ACM is not enabled." >&2
+# Classify flashed devices as booted vs flashed-but-not-booted, BY SERIAL.
+# After flash a device may renumber to a different /dev/ttyACM*; the
+# authoritative identity is its USB serial number. A flashed serial is
+# "booted" iff any current transport port has that serial.
+#
+# Build a quick lookup of currently-visible serials.
+CURRENT_SERIALS=""
+if [ -n "$CURRENT_PORTS" ]; then
+    while IFS= read -r p; do
+        [ -n "$p" ] || continue
+        s="$(udevadm info -q property "$p" 2>/dev/null | grep '^ID_SERIAL_SHORT=' | cut -d= -f2 || true)"
+        [ -n "$s" ] && CURRENT_SERIALS="$CURRENT_SERIALS"$'\n'"$s $p"
+    done <<< "$CURRENT_PORTS"
 fi
 
-# --- Step 11: Clean up ------------------------------------------------------
+BOOTED_PORTS=""       # transport paths of devices that flashed AND came back
+NOT_BOOTED_PORTS=""   # original paths of devices that flashed but didn't reappear
 
-# Unmount /mnt if we mounted there
-if [ "$UF2_DRIVE" = "/mnt" ]; then
-    sudo -n umount /mnt 2>/dev/null || true
+if [ -n "$FLASHED_PORTS" ]; then
+    # Map FLASHED entries to serials in the same order as the loop ran.
+    # FLASHED_SERIALS is parallel to FLASHED_PORTS for the normal flow; the
+    # legacy "(unknown)" placeholder has no entry there.
+    flashed_lines=$(echo "$FLASHED_PORTS" | wc -l)
+    serial_lines=0
+    [ -n "$FLASHED_SERIALS" ] && serial_lines=$(echo "$FLASHED_SERIALS" | wc -l)
+
+    i=0
+    while IFS= read -r fp; do
+        [ -n "$fp" ] || continue
+        i=$((i + 1))
+        if [ "$fp" = "(unknown)" ]; then
+            # Legacy fallback path — no serial captured. Best-effort: if any
+            # port is currently visible, claim booted with the first one.
+            if [ -n "$CURRENT_PORTS" ]; then
+                first="$(echo "$CURRENT_PORTS" | head -1)"
+                BOOTED_PORTS="$BOOTED_PORTS"$'\n'"$first"
+            else
+                NOT_BOOTED_PORTS="$NOT_BOOTED_PORTS"$'\n'"(unknown)"
+            fi
+            continue
+        fi
+        # Look up the serial captured BEFORE flash (parallel-array index).
+        fp_serial=""
+        if [ "$i" -le "$serial_lines" ]; then
+            fp_serial="$(echo "$FLASHED_SERIALS" | sed -n "${i}p")"
+        fi
+        if [ -z "$fp_serial" ]; then
+            # No serial recorded — fall back to path comparison.
+            if echo "$CURRENT_PORTS" | grep -qx "$fp"; then
+                BOOTED_PORTS="$BOOTED_PORTS"$'\n'"$fp"
+            else
+                NOT_BOOTED_PORTS="$NOT_BOOTED_PORTS"$'\n'"$fp"
+            fi
+            continue
+        fi
+        # Search current ports for this serial (regardless of which /dev/ttyACM*).
+        # `|| true` covers grep-no-match, which is normal when a flashed
+        # device hasn't re-enumerated yet.
+        cur_path="$(echo "$CURRENT_SERIALS" | grep "^${fp_serial} " | awk '{print $2}' | head -1 || true)"
+        if [ -n "$cur_path" ]; then
+            BOOTED_PORTS="$BOOTED_PORTS"$'\n'"$cur_path"
+        else
+            NOT_BOOTED_PORTS="$NOT_BOOTED_PORTS"$'\n'"$fp (serial=$fp_serial)"
+        fi
+    done <<< "$FLASHED_PORTS"
 fi
+
+# Strip leading newlines.
+BOOTED_PORTS="$(echo -n "$BOOTED_PORTS"         | sed '/^$/d')"
+NOT_BOOTED_PORTS="$(echo -n "$NOT_BOOTED_PORTS" | sed '/^$/d')"
+
+NUM_BOOTED=0
+NUM_NOT_BOOTED=0
+NUM_FAILED=0
+if [ -n "$BOOTED_PORTS"     ]; then NUM_BOOTED=$(    echo "$BOOTED_PORTS"     | wc -l); fi
+if [ -n "$NOT_BOOTED_PORTS" ]; then NUM_NOT_BOOTED=$(echo "$NOT_BOOTED_PORTS" | wc -l); fi
+if [ -n "$FAILED_PORTS"     ]; then NUM_FAILED=$(    echo "$FAILED_PORTS"     | wc -l); fi
+
+echo ""
+echo "==> Flash summary:"
+
+if [ "$NUM_BOOTED" -gt 0 ]; then
+    echo "    flashed & booted ($NUM_BOOTED):"
+    while IFS= read -r p; do
+        [ -n "$p" ] || continue
+        print_device_line "$p"
+    done <<< "$BOOTED_PORTS"
+fi
+
+if [ "$NUM_NOT_BOOTED" -gt 0 ]; then
+    echo "    flashed but not booted ($NUM_NOT_BOOTED):"
+    while IFS= read -r p; do
+        [ -n "$p" ] || continue
+        printf "      %s   — UF2 copied but device did not re-enumerate within 10s\n" "$p"
+        printf "                       (firmware may be crashed; double-tap RESET to re-flash)\n"
+    done <<< "$NOT_BOOTED_PORTS"
+fi
+
+if [ "$NUM_FAILED" -gt 0 ]; then
+    echo "    failed to flash ($NUM_FAILED):"
+    while IFS= read -r p; do
+        [ -n "$p" ] || continue
+        printf "      %s   — UF2 not copied (see error line above)\n" "$p"
+    done <<< "$FAILED_PORTS"
+fi
+
+# --- Step 8: Update target/debug-port for tooling ---------------------------
+# Tools that consume target/debug-port (e.g. log readers) assume one port.
+# Write the first booted device's debug path; LEVICULUM_FLASH_ONLY pins a
+# specific device.
+if [ -n "$BOOTED_PORTS" ]; then
+    first_transport="$(echo "$BOOTED_PORTS" | head -1)"
+    first_props="$(udevadm info -q property "$first_transport" 2>/dev/null || true)"
+    first_serial="$(echo "$first_props" | grep '^ID_SERIAL_SHORT=' | cut -d= -f2)"
+    first_debug=""
+    for p in /dev/ttyACM*; do
+        [ -c "$p" ] || continue
+        p_props="$(udevadm info -q property "$p" 2>/dev/null || true)"
+        p_iface="$( echo "$p_props" | grep '^ID_USB_INTERFACE_NUM=' | cut -d= -f2)"
+        p_serial="$(echo "$p_props" | grep '^ID_SERIAL_SHORT='      | cut -d= -f2)"
+        if [ "$p_iface" = "00" ] && [ "$p_serial" = "$first_serial" ]; then
+            first_debug="$p"
+            break
+        fi
+    done
+    # Prefer udev symlink if present (stable across reboots).
+    if [ -L "/dev/leviculum-debug-$first_serial" ]; then
+        first_debug="/dev/leviculum-debug-$first_serial"
+    elif [ -L "/dev/leviculum-debug" ] && [ "$NUM_BOOTED" -eq 1 ]; then
+        first_debug="/dev/leviculum-debug"
+    fi
+    if [ -n "$first_debug" ]; then
+        mkdir -p "$TARGET_DIR"
+        echo "$first_debug" > "$TARGET_DIR/debug-port"
+    fi
+fi
+
+# --- Step 9: Cleanup --------------------------------------------------------
 
 rm -f "$BIN_FILE"
 
+# Exit code: non-zero if any targeted T114 ended up "failed to flash".
+# "Flashed but not booted" still counts as exit 0 — the bits made it onto
+# the device; if the firmware crashes that's a build problem, not a
+# tooling problem.
+if [ "$NUM_FAILED" -gt 0 ]; then
+    echo ""
+    echo "==> Exit 1: $NUM_FAILED of $((NUM_FLASHED + NUM_FAILED)) T114(s) did not get flashed."
+    exit 1
+fi
+
+echo ""
 echo "==> Done!"
+exit 0
