@@ -1943,10 +1943,10 @@ impl<C: Clock, S: Storage> Transport<C, S> {
                     rebroadcast.transport_id = Some(*self.identity.hash());
 
                     if packet.hops == 0 || self.interface_announce_caps.is_empty() {
-                        self.forward_on_all_except(interface_index, &mut rebroadcast);
+                        self.forward_on_all(&mut rebroadcast);
                         self.record_outgoing_announce_broadcast(interface_index);
                     } else {
-                        self.broadcast_announce_with_caps(interface_index, &mut rebroadcast);
+                        self.broadcast_announce_with_caps(&mut rebroadcast);
                         // broadcast_announce_with_caps sends to individual capped
                         // interfaces (tracked below) and broadcasts to uncapped ones
                         self.record_outgoing_announce_broadcast(interface_index);
@@ -3057,6 +3057,10 @@ impl<C: Clock, S: Storage> Transport<C, S> {
 
     /// Forward a packet on all interfaces except one.
     /// Checks TTL and updates stats. Hops were already incremented on receipt.
+    /// Pack and broadcast a relayed packet on every online interface except
+    /// the one it arrived on. Matches Python Transport.outbound() behaviour
+    /// for packets of transport_type BROADCAST (Transport.py:1388-1392),
+    /// which explicitly skips the receiving interface.
     fn forward_on_all_except(&mut self, except_index: usize, packet: &mut Packet) {
         if packet.hops > self.config.max_hops {
             tracing::debug!(
@@ -3071,6 +3075,38 @@ impl<C: Clock, S: Storage> Transport<C, S> {
         let mut buf = alloc::vec![0u8; size];
         if let Ok(len) = packet.pack(&mut buf) {
             self.send_on_all_interfaces_except(except_index, &buf[..len]);
+            self.stats.packets_forwarded += 1;
+        }
+    }
+
+    /// Pack and broadcast a relayed announce on every online interface,
+    /// including the one the original packet arrived on. Matches Python
+    /// Transport.outbound() for ANNOUNCE packets (Transport.py:1025-1167),
+    /// which loops all interfaces without filtering by receiving_interface.
+    /// Self-heard echoes are dropped on arrival by the packet_hashlist dedup
+    /// in process_incoming, seeded here before the broadcast is emitted.
+    fn forward_on_all(&mut self, packet: &mut Packet) {
+        if packet.hops > self.config.max_hops {
+            tracing::debug!(
+                hops = packet.hops,
+                max_hops = self.config.max_hops,
+                "Dropped broadcast packet, max hops exceeded"
+            );
+            self.stats.packets_dropped += 1;
+            return;
+        }
+        let size = packet.packed_size();
+        let mut buf = alloc::vec![0u8; size];
+        if let Ok(len) = packet.pack(&mut buf) {
+            // Seed dedup so our own emission is recognised when it echoes
+            // back on a shared medium (e.g., both nodes heard by the same
+            // LoRa antenna). Matches the add_packet_hash path already used
+            // by send_on_all_interfaces / send_on_all_interfaces_except.
+            self.storage.add_packet_hash(packet_hash(&buf[..len]));
+            self.pending_actions.push(Action::Broadcast {
+                data: buf[..len].to_vec(),
+                exclude_iface: None,
+            });
             self.stats.packets_forwarded += 1;
         }
     }
@@ -4074,7 +4110,7 @@ impl<C: Clock, S: Storage> Transport<C, S> {
                     // bandwidth. Retries exist for reliability on lossy links;
                     // blocking them behind a 77s holdoff (at 976 bps / 2% cap)
                     // defeats their entire purpose.
-                    self.forward_on_all_except(except_iface, &mut parsed);
+                    self.forward_on_all(&mut parsed);
                     self.record_outgoing_announce_broadcast(except_iface);
                 }
 
@@ -4122,7 +4158,7 @@ impl<C: Clock, S: Storage> Transport<C, S> {
     /// Uncapped interfaces receive the announce via Broadcast action (driver dispatches).
     /// Capped interfaces that already got a SendPacket may also receive the Broadcast;
     /// the driver should deduplicate if this matters for the link type.
-    fn broadcast_announce_with_caps(&mut self, except_index: usize, packet: &mut Packet) {
+    fn broadcast_announce_with_caps(&mut self, packet: &mut Packet) {
         if packet.hops > self.config.max_hops {
             self.stats.packets_dropped += 1;
             return;
@@ -4136,14 +4172,16 @@ impl<C: Clock, S: Storage> Transport<C, S> {
         let raw = buf[..len].to_vec();
         let now = self.clock.now_ms();
 
+        // Seed dedup so our emission is recognised when it echoes back on a
+        // shared medium. Matches Python Transport.outbound() which iterates
+        // all interfaces without filtering by receiving_interface and relies
+        // on packet_hashlist (Transport.py:1227) to absorb the echo.
+        self.storage.add_packet_hash(packet_hash(&raw));
+
         // Handle capped interfaces individually
         let capped_ifaces: Vec<usize> = self.interface_announce_caps.keys().copied().collect();
 
         for iface_idx in &capped_ifaces {
-            if *iface_idx == except_index {
-                continue;
-            }
-
             let cap = self
                 .interface_announce_caps
                 .get_mut(iface_idx)
@@ -4177,7 +4215,7 @@ impl<C: Clock, S: Storage> Transport<C, S> {
         // above (either sent immediately or queued). A plain Broadcast would
         // double-send to capped interfaces that already got a SendPacket.
         for &iface_idx in self.interface_names.keys() {
-            if iface_idx == except_index || self.interface_announce_caps.contains_key(&iface_idx) {
+            if self.interface_announce_caps.contains_key(&iface_idx) {
                 continue;
             }
             self.pending_actions.push(Action::SendPacket {
@@ -9019,8 +9057,10 @@ mod tests {
                 "announce rebroadcast should produce actions immediately"
             );
 
-            // All rebroadcast actions should be Broadcast with exclude,
-            // and the rebroadcasted packet should be Type2/Transport with our transport_id
+            // Each rebroadcast fans out on all interfaces without excluding
+            // the receiving one (Python parity, Transport.py:1025-1167); the
+            // self-heard echo is dropped on RX by the packet_hashlist dedup.
+            // The rebroadcasted packet is Type2/Transport with our transport_id.
             for action in &actions {
                 match action {
                     Action::Broadcast {
@@ -9028,9 +9068,8 @@ mod tests {
                         data,
                     } => {
                         assert_eq!(
-                            *exclude_iface,
-                            Some(InterfaceId(0)),
-                            "rebroadcast should exclude the receiving interface"
+                            *exclude_iface, None,
+                            "announce rebroadcast should not exclude any interface"
                         );
                         let pkt = Packet::unpack(data).unwrap();
                         assert_eq!(
@@ -9052,6 +9091,43 @@ mod tests {
                     other => panic!("expected Broadcast action, got {:?}", other),
                 }
             }
+        }
+
+        /// B1 parity: a received announce produces a Broadcast action that
+        /// does not exclude the receiving interface, and the same announce
+        /// arriving a second time on the same interface produces no further
+        /// broadcast actions — the packet_hashlist dedup at process_incoming
+        /// catches it, including the self-echo our first emission would
+        /// create on a shared medium.
+        #[test]
+        fn test_announce_rebroadcast_dedup_catches_echo() {
+            let mut transport = make_transport_enabled();
+            let _idx0 = transport.register_interface(Box::new(MockInterface::new("if0", 1)));
+            let _idx1 = transport.register_interface(Box::new(MockInterface::new("if1", 2)));
+
+            let (raw, _dest_hash) = make_announce_raw(1, PacketContext::None);
+
+            let _ = transport.process_incoming(0, &raw);
+            let first_actions = transport.drain_actions();
+            let first_broadcasts = first_actions
+                .iter()
+                .filter(|a| matches!(a, Action::Broadcast { .. }))
+                .count();
+            assert_eq!(
+                first_broadcasts, 1,
+                "first arrival should produce exactly one Broadcast action"
+            );
+
+            let _ = transport.process_incoming(0, &raw);
+            let second_actions = transport.drain_actions();
+            let second_broadcasts = second_actions
+                .iter()
+                .filter(|a| matches!(a, Action::Broadcast { .. }))
+                .count();
+            assert_eq!(
+                second_broadcasts, 0,
+                "duplicate arrival should be dropped by packet_hashlist dedup, no new Broadcast"
+            );
         }
 
         // ─── Sans-I/O Audit: Action coverage tests ──────────────────────────
