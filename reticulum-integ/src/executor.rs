@@ -3928,6 +3928,48 @@ mod tests {
     #[test]
     #[ignore]
     #[serial(lora)]
+    fn bench_single_pair_medium_ca_rnode_only() {
+        let toml_str = std::fs::read_to_string(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/tests/bench_single_pair_medium_ca_rnode_only.toml"
+        ))
+        .expect("bench_single_pair_medium_ca_rnode_only.toml not found");
+        let scenario = crate::topology::parse_scenario(&toml_str).expect("parse failed");
+        let mut runner = require_runner!(scenario);
+        run_test(&mut runner).expect("test failed");
+    }
+
+    #[test]
+    #[ignore]
+    #[serial(lora)]
+    fn bench_single_pair_medium_rnode_only() {
+        let toml_str = std::fs::read_to_string(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/tests/bench_single_pair_medium_rnode_only.toml"
+        ))
+        .expect("bench_single_pair_medium_rnode_only.toml not found");
+        let scenario = crate::topology::parse_scenario(&toml_str).expect("parse failed");
+        let mut runner = require_runner!(scenario);
+        run_test(&mut runner).expect("test failed");
+    }
+
+    #[test]
+    #[ignore]
+    #[serial(lora)]
+    fn bench_single_pair_slow_ca_rnode_only() {
+        let toml_str = std::fs::read_to_string(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/tests/bench_single_pair_slow_ca_rnode_only.toml"
+        ))
+        .expect("bench_single_pair_slow_ca_rnode_only.toml not found");
+        let scenario = crate::topology::parse_scenario(&toml_str).expect("parse failed");
+        let mut runner = require_runner!(scenario);
+        run_test(&mut runner).expect("test failed");
+    }
+
+    #[test]
+    #[ignore]
+    #[serial(lora)]
     fn bench_dual_pair_medium_ca() {
         let toml_str = std::fs::read_to_string(concat!(
             env!("CARGO_MANIFEST_DIR"),
