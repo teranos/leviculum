@@ -3381,6 +3381,15 @@ impl<C: Clock, S: Storage> Transport<C, S> {
         self.interface_congested.contains(&iface_idx)
     }
 
+    /// Test-only: flip `config.enable_transport` on a constructed
+    /// Transport. Production flows set it via TransportConfig at
+    /// construction; tests using the `test_transport()` helper need a
+    /// mutation path to exercise transport-gated behaviour.
+    #[cfg(test)]
+    pub(crate) fn set_enable_transport_for_tests(&mut self, enabled: bool) {
+        self.config.enable_transport = enabled;
+    }
+
     /// Record the wall-clock ms at which the given interface will next
     /// accept a packet. Called by the driver after every
     /// `dispatch_actions` tick by querying each handle's
@@ -3894,7 +3903,17 @@ impl<C: Clock, S: Storage> Transport<C, S> {
         // Collect entries that need action
         let mut to_remove = Vec::new();
         let mut to_rebroadcast = Vec::new();
+        // Bug #3 Phase 2a (D1): retransmit_at deferrals when the target
+        // interface's next_slot_ms is in the future. Applied via
+        // set_announce after the read loop, without incrementing retries.
+        let mut to_defer: Vec<([u8; TRUNCATED_HASHBYTES], u64)> = Vec::new();
 
+        // Iterate the interface_next_slot_ms keys for broadcast deferral.
+        // Broadcast defers iff EVERY known interface is future. We use
+        // interface_hw_mtus as the authoritative "known interfaces" set
+        // (populated at driver registration), falling back through the
+        // getter's unwrap_or(now) for interfaces without a pushed slot —
+        // those count as "ready now" and prevent deferral.
         let keys = self.storage.announce_keys();
         for dest_hash in keys {
             if let Some(entry) = self.storage.get_announce(&dest_hash) {
@@ -3909,14 +3928,52 @@ impl<C: Clock, S: Storage> Transport<C, S> {
                 // Check if retransmit is due
                 if let Some(retransmit_at) = entry.retransmit_at_ms {
                     if retransmit_at <= now && !entry.raw_packet.is_empty() {
-                        to_rebroadcast.push((
-                            dest_hash,
-                            entry.raw_packet.clone(),
-                            entry.receiving_interface_index,
-                            entry.hops,
-                            entry.block_rebroadcasts,
-                            entry.target_interface,
-                        ));
+                        // Ask the next-slot backchannel whether the target(s)
+                        // can accept this packet now.
+                        let defer_to: Option<u64> = match entry.target_interface {
+                            Some(idx) => {
+                                let slot = self.next_slot_ms_for_interface(idx, now);
+                                (slot > now).then_some(slot)
+                            }
+                            None => {
+                                // Broadcast: defer only if every registered
+                                // interface reports a future slot. If any is
+                                // ready now, push — the dispatcher filters
+                                // per-interface via try_send_prioritized.
+                                let mut all_future = true;
+                                let mut min_slot = u64::MAX;
+                                let mut any_iface = false;
+                                for &iface_idx in self.interface_hw_mtus.keys() {
+                                    any_iface = true;
+                                    let slot = self.next_slot_ms_for_interface(iface_idx, now);
+                                    if slot <= now {
+                                        all_future = false;
+                                        break;
+                                    }
+                                    if slot < min_slot {
+                                        min_slot = slot;
+                                    }
+                                }
+                                if any_iface && all_future {
+                                    Some(min_slot)
+                                } else {
+                                    None
+                                }
+                            }
+                        };
+
+                        if let Some(slot) = defer_to {
+                            to_defer.push((dest_hash, slot));
+                        } else {
+                            to_rebroadcast.push((
+                                dest_hash,
+                                entry.raw_packet.clone(),
+                                entry.receiving_interface_index,
+                                entry.hops,
+                                entry.block_rebroadcasts,
+                                entry.target_interface,
+                            ));
+                        }
                     }
                 }
             }
@@ -3924,6 +3981,17 @@ impl<C: Clock, S: Storage> Transport<C, S> {
 
         for hash in to_remove {
             self.storage.remove_announce(&hash);
+        }
+
+        // Apply deferrals: slide retransmit_at forward without touching
+        // retries. Only rewrites entries that still exist (cheap in the
+        // common case since get_announce is by-hash).
+        for (dest_hash, slot) in to_defer {
+            if let Some(entry) = self.storage.get_announce(&dest_hash) {
+                let mut updated = entry.clone();
+                updated.retransmit_at_ms = Some(slot);
+                self.storage.set_announce(dest_hash, updated);
+            }
         }
 
         let transport_id = *self.identity.hash();
@@ -12290,6 +12358,7 @@ mod tests {
         #[test]
         fn test_receipt_timeout_multihop_with_bitrate() {
             let mut transport = test_transport();
+            transport.set_enable_transport_for_tests(true);
             let dest_hash = [0xCC; TRUNCATED_HASHBYTES];
             let iface_idx = transport.register_interface(Box::new(MockInterface::new("rnode", 1)));
             transport.register_interface_bitrate(iface_idx, 976);
@@ -12311,6 +12380,7 @@ mod tests {
         #[test]
         fn test_receipt_timeout_multihop_unknown_bitrate() {
             let mut transport = test_transport();
+            transport.set_enable_transport_for_tests(true);
             let dest_hash = [0xDD; TRUNCATED_HASHBYTES];
             // Multi-hop but no bitrate registered — uses UNKNOWN_BITRATE_ASSUMPTION
             transport.storage.set_path(
@@ -12331,6 +12401,7 @@ mod tests {
         #[test]
         fn test_receipt_uses_path_aware_timeout() {
             let mut transport = test_transport();
+            transport.set_enable_transport_for_tests(true);
             let dest_hash = [0xEE; TRUNCATED_HASHBYTES];
             let iface_idx = transport.register_interface(Box::new(MockInterface::new("rnode", 1)));
             transport.register_interface_bitrate(iface_idx, 976);
@@ -15135,6 +15206,181 @@ mod tests {
                 Err(TransportError::PacingDelay {
                     ready_at_ms: future_slot
                 })
+            );
+        }
+
+        /// Bug #3 Phase 2a (D1): an announce whose retransmit_at has
+        /// fired is deferred (retransmit_at bumped, retries unchanged,
+        /// no Broadcast Action pushed) when its target interface's
+        /// next_slot_ms is in the future.
+        #[test]
+        fn retry_scheduler_defers_targeted_announce_when_iface_not_ready() {
+            use crate::storage_types::AnnounceEntry;
+            let mut transport = test_transport();
+            transport.set_enable_transport_for_tests(true);
+            let dest_hash = [0xCC; crate::constants::TRUNCATED_HASHBYTES];
+            // Register an announce that's retransmit-due RIGHT NOW and
+            // targeted at interface 7. Retry count 2 so we can observe
+            // that it doesn't change.
+            let now = transport.clock().now_ms();
+            use crate::traits::Storage as _;
+            transport.storage_mut().set_announce(
+                dest_hash,
+                AnnounceEntry {
+                    timestamp_ms: now,
+                    hops: 0,
+                    retries: 2,
+                    retransmit_at_ms: Some(now),
+                    raw_packet: vec![0xAA; 32],
+                    receiving_interface_index: usize::MAX,
+                    target_interface: Some(7),
+                    local_rebroadcasts: 0,
+                    block_rebroadcasts: false,
+                },
+            );
+            // Mark interface 7 as not-yet-ready.
+            let future = now + 500;
+            transport.set_interface_next_slot_ms(7, future);
+            // Fire the scheduler.
+            transport.check_announce_rebroadcasts(now);
+            // Load-bearing invariant: no Broadcast or SendPacket Action
+            // was pushed for this announce.
+            assert!(
+                transport
+                    .pending_actions
+                    .iter()
+                    .all(|a| !matches!(a, Action::Broadcast { .. } | Action::SendPacket { .. })),
+                "no Action should have been pushed, got {:?}",
+                transport.pending_actions
+            );
+            // Deferral: timer bumped forward to the interface's slot.
+            let updated = transport.storage().get_announce(&dest_hash).unwrap();
+            assert_eq!(updated.retransmit_at_ms, Some(future));
+            // Deferral ≠ retry: retries counter unchanged.
+            assert_eq!(updated.retries, 2);
+        }
+
+        /// Once the interface becomes ready, the next scheduler tick does
+        /// NOT defer. Observable via retries being incremented on the
+        /// normal-push path vs unchanged on the defer path.
+        #[test]
+        fn retry_scheduler_increments_retries_when_slot_ready() {
+            use crate::storage_types::AnnounceEntry;
+            let mut transport = test_transport();
+            transport.set_enable_transport_for_tests(true);
+            let dest_hash = [0xDD; crate::constants::TRUNCATED_HASHBYTES];
+            let now = transport.clock().now_ms();
+            use crate::traits::Storage as _;
+            transport.storage_mut().set_announce(
+                dest_hash,
+                AnnounceEntry {
+                    timestamp_ms: now,
+                    hops: 0,
+                    retries: 1,
+                    retransmit_at_ms: Some(now),
+                    raw_packet: alloc::vec![0u8; 32],
+                    receiving_interface_index: usize::MAX,
+                    target_interface: Some(3),
+                    local_rebroadcasts: 0,
+                    block_rebroadcasts: false,
+                },
+            );
+            // Interface 3 ready at now — no deferral.
+            transport.set_interface_next_slot_ms(3, now);
+            transport.check_announce_rebroadcasts(now);
+            // Deferral path leaves retries == 1; push path increments to 2
+            // via the exp-backoff block. Packet::unpack may fail on the
+            // fake bytes so the Action is never actually emitted, but the
+            // retries += 1 happens regardless.
+            let updated = transport.storage().get_announce(&dest_hash).unwrap();
+            assert_eq!(
+                updated.retries, 2,
+                "expected retries incremented (push path took); got {}",
+                updated.retries
+            );
+        }
+
+        /// Broadcast (target_interface = None): defer if ALL registered
+        /// interfaces are in the future; use the minimum of their slots.
+        #[test]
+        fn retry_scheduler_defers_broadcast_when_all_interfaces_future() {
+            use crate::storage_types::AnnounceEntry;
+            let mut transport = test_transport();
+            transport.set_enable_transport_for_tests(true);
+            let dest_hash = [0xEE; crate::constants::TRUNCATED_HASHBYTES];
+            let now = transport.clock().now_ms();
+            // Register two interfaces (via hw_mtu map) and push future slots.
+            transport.set_interface_hw_mtu(0, 500);
+            transport.set_interface_hw_mtu(1, 500);
+            transport.set_interface_next_slot_ms(0, now + 800);
+            transport.set_interface_next_slot_ms(1, now + 500);
+            use crate::traits::Storage as _;
+            transport.storage_mut().set_announce(
+                dest_hash,
+                AnnounceEntry {
+                    timestamp_ms: now,
+                    hops: 0,
+                    retries: 3,
+                    retransmit_at_ms: Some(now),
+                    raw_packet: vec![0xBB; 32],
+                    receiving_interface_index: usize::MAX,
+                    target_interface: None,
+                    local_rebroadcasts: 0,
+                    block_rebroadcasts: false,
+                },
+            );
+            transport.check_announce_rebroadcasts(now);
+            assert!(
+                transport
+                    .pending_actions
+                    .iter()
+                    .all(|a| !matches!(a, Action::Broadcast { .. } | Action::SendPacket { .. })),
+                "no Action pushed, got {:?}",
+                transport.pending_actions
+            );
+            let updated = transport.storage().get_announce(&dest_hash).unwrap();
+            // Deferred to the MINIMUM of the two slots.
+            assert_eq!(updated.retransmit_at_ms, Some(now + 500));
+            assert_eq!(updated.retries, 3, "retries unchanged");
+        }
+
+        /// Broadcast with at least one ready interface → push path taken.
+        /// Observable via retries counter incrementing (deferral keeps it
+        /// unchanged, push increments via the exp-backoff block).
+        #[test]
+        fn retry_scheduler_pushes_broadcast_when_any_interface_ready() {
+            use crate::storage_types::AnnounceEntry;
+            let mut transport = test_transport();
+            transport.set_enable_transport_for_tests(true);
+            let dest_hash = [0xFE; crate::constants::TRUNCATED_HASHBYTES];
+            let now = transport.clock().now_ms();
+            transport.set_interface_hw_mtu(0, 500);
+            transport.set_interface_hw_mtu(1, 500);
+            transport.set_interface_next_slot_ms(0, now + 800); // future
+                                                                // iface 1 has no slot pushed → getter returns now_ms → ready.
+            use crate::traits::Storage as _;
+            transport.storage_mut().set_announce(
+                dest_hash,
+                AnnounceEntry {
+                    timestamp_ms: now,
+                    hops: 0,
+                    retries: 2,
+                    retransmit_at_ms: Some(now),
+                    raw_packet: alloc::vec![0u8; 32],
+                    receiving_interface_index: usize::MAX,
+                    target_interface: None,
+                    local_rebroadcasts: 0,
+                    block_rebroadcasts: false,
+                },
+            );
+            transport.check_announce_rebroadcasts(now);
+            // Push path ran → retries incremented. Deferral path would
+            // leave retries unchanged at 2.
+            let updated = transport.storage().get_announce(&dest_hash).unwrap();
+            assert_eq!(
+                updated.retries, 3,
+                "expected retries incremented (push path took); got {}",
+                updated.retries
             );
         }
 
