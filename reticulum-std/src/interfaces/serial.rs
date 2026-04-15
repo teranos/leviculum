@@ -5,7 +5,7 @@
 //! LocalInterface) over a serial port.
 
 use std::sync::atomic::Ordering;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use reticulum_core::constants::MTU;
@@ -76,6 +76,20 @@ pub(crate) fn spawn_serial_interface(config: SerialInterfaceConfig) -> Interface
     let task_name = config.name.clone();
     let task_counters = Arc::clone(&counters);
 
+    // Build the airtime credit bucket if radio params are known. Non-LoRa
+    // Serial consumers (no radio_config) leave credit = None, preserving
+    // "always ready" semantics for the B4 next_slot_ms override.
+    // B5 will pass a clone of this Arc into `send_radio_config` so runtime
+    // reconfig updates the bucket in place.
+    let credit = config.radio_config.as_ref().map(|rc| {
+        Arc::new(Mutex::new(super::airtime::AirtimeCredit::new(
+            rc.bandwidth,
+            rc.spreading_factor,
+            rc.coding_rate,
+            SERIAL_HW_MTU,
+        )))
+    });
+
     tokio::spawn(async move {
         serial_reconnect_task(
             id,
@@ -100,7 +114,7 @@ pub(crate) fn spawn_serial_interface(config: SerialInterfaceConfig) -> Interface
         incoming: incoming_rx,
         outgoing: outgoing_tx,
         counters,
-        credit: None,
+        credit,
     }
 }
 
@@ -400,5 +414,51 @@ pub(crate) fn parse_stop_bits(n: u8) -> tokio_serial::StopBits {
     match n {
         2 => tokio_serial::StopBits::Two,
         _ => tokio_serial::StopBits::One,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn base_config(port: &str, radio: Option<SerialRadioConfig>) -> SerialInterfaceConfig {
+        SerialInterfaceConfig {
+            id: InterfaceId(0),
+            name: "serial-test".to_string(),
+            port: port.to_string(),
+            speed: 115_200,
+            data_bits: tokio_serial::DataBits::Eight,
+            parity: tokio_serial::Parity::None,
+            stop_bits: tokio_serial::StopBits::One,
+            buffer_size: SERIAL_DEFAULT_BUFFER_SIZE,
+            reconnect_notify: None,
+            radio_config: radio,
+        }
+    }
+
+    /// With a radio config present, the spawned handle carries an
+    /// AirtimeCredit bucket.
+    #[tokio::test(flavor = "current_thread")]
+    async fn spawn_with_radio_config_populates_credit() {
+        let radio = SerialRadioConfig {
+            frequency: 869_525_000,
+            bandwidth: 125_000,
+            spreading_factor: 10,
+            coding_rate: 8,
+            tx_power: 17,
+            preamble_len: 24,
+            csma_enabled: true,
+        };
+        let handle = spawn_serial_interface(base_config("/dev/null-test-no-radio-a", Some(radio)));
+        assert!(handle.credit.is_some());
+    }
+
+    /// Without a radio config, the spawned handle leaves credit = None.
+    /// This is the "plain serial" (non-LoRa) path used by reticulum-std's
+    /// rnsd_interop tests.
+    #[tokio::test(flavor = "current_thread")]
+    async fn spawn_without_radio_config_leaves_credit_none() {
+        let handle = spawn_serial_interface(base_config("/dev/null-test-no-radio-b", None));
+        assert!(handle.credit.is_none());
     }
 }
