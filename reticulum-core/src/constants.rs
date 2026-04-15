@@ -118,6 +118,17 @@ pub const PATHFINDER_G_MS: u64 = 5_000;
 /// Random window added to retry grace period (milliseconds, Python PATHFINDER_RW = 0.5)
 pub const PATHFINDER_RW_MS: u64 = 500;
 
+/// Multiplier applied to the worst-case interface airtime when computing
+/// the announce jitter window. Synchronous startups (multiple nodes
+/// powered up at the same time) issue their first announce within
+/// milliseconds of each other; the jitter window must be wide enough that
+/// retries drift apart by more than one transmit duration, otherwise
+/// every retry collides at the same air-time and the announce burst
+/// fails as a whole. A factor of 3 means each retry's window spans
+/// roughly three packet airtimes — sufficient drift on slow LoRa modes
+/// where a single transmit takes several seconds.
+pub const JITTER_AIRTIME_FACTOR: u64 = 3;
+
 /// Maximum number of local (neighbor) rebroadcasts before suppressing
 pub const LOCAL_REBROADCASTS_MAX: u8 = 2;
 

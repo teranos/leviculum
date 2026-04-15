@@ -44,12 +44,13 @@ use alloc::vec::Vec;
 use crate::constants::{
     ANNOUNCE_RATE_GRACE, ANNOUNCE_RATE_LIMIT_MS, ANNOUNCE_RATE_PENALTY_MS,
     DEFAULT_ANNOUNCE_CAP_PERCENT, DISCOVERY_RETRY_INTERVAL_MS, DISCOVERY_TIMEOUT_MS,
-    ESTABLISHMENT_TIMEOUT_PER_HOP_MS, LINK_TIMEOUT_MS, LOCAL_CLIENT_ANNOUNCE_DELAY_MS,
-    LOCAL_CLIENT_DEST_EXPIRY_MS, LOCAL_REBROADCASTS_MAX, MAX_QUEUED_ANNOUNCES_PER_INTERFACE,
-    MAX_RANDOM_BLOBS, MS_PER_SECOND, MTU, PATHFINDER_EXPIRY_SECS, PATHFINDER_G_MS,
-    PATHFINDER_MAX_HOPS, PATHFINDER_RETRIES, PATHFINDER_RW_MS, PATH_REQUEST_GRACE_MS,
-    PATH_REQUEST_MIN_INTERVAL_MS, RATCHET_SIZE, RECEIPT_TIMEOUT_DEFAULT_MS,
-    REVERSE_TABLE_EXPIRY_MS, TRUNCATED_HASHBYTES, UNKNOWN_BITRATE_ASSUMPTION_BPS,
+    ESTABLISHMENT_TIMEOUT_PER_HOP_MS, JITTER_AIRTIME_FACTOR, LINK_TIMEOUT_MS,
+    LOCAL_CLIENT_ANNOUNCE_DELAY_MS, LOCAL_CLIENT_DEST_EXPIRY_MS, LOCAL_REBROADCASTS_MAX,
+    MAX_QUEUED_ANNOUNCES_PER_INTERFACE, MAX_RANDOM_BLOBS, MS_PER_SECOND, MTU,
+    PATHFINDER_EXPIRY_SECS, PATHFINDER_G_MS, PATHFINDER_MAX_HOPS, PATHFINDER_RETRIES,
+    PATHFINDER_RW_MS, PATH_REQUEST_GRACE_MS, PATH_REQUEST_MIN_INTERVAL_MS, RATCHET_SIZE,
+    RECEIPT_TIMEOUT_DEFAULT_MS, REVERSE_TABLE_EXPIRY_MS, TRUNCATED_HASHBYTES,
+    UNKNOWN_BITRATE_ASSUMPTION_BPS,
 };
 
 use crate::announce::{emission_from_random_hash, max_emission_from_blobs, ReceivedAnnounce};
@@ -635,6 +636,14 @@ pub struct Transport<C: Clock, S: Storage> {
     /// sans-I/O).
     interface_next_slot_ms: BTreeMap<usize, u64>,
 
+    /// Per-interface worst-case airtime in milliseconds for a single
+    /// MTU-sized transmit. Driver pushes one entry per LoRa-Serial
+    /// interface (computed from its current bw/sf/cr/MTU); non-LoRa
+    /// interfaces are absent from the map. Read by
+    /// `announce_jitter_max_ms` to size the announce-retry jitter
+    /// window proportional to the slowest registered link.
+    interface_max_airtime_ms: BTreeMap<usize, u64>,
+
     /// Per-interface IFAC (Interface Access Code) configurations.
     /// Keyed by interface index. Only present for interfaces with networkname/passphrase configured.
     /// Removal path: removed in handle_interface_down via remove_ifac_config().
@@ -684,6 +693,7 @@ impl<C: Clock, S: Storage> Transport<C, S> {
             interface_incoming_announce_times: BTreeMap::new(),
             interface_outgoing_announce_times: BTreeMap::new(),
             interface_next_slot_ms: BTreeMap::new(),
+            interface_max_airtime_ms: BTreeMap::new(),
             ifac_configs: BTreeMap::new(),
             pending_actions: Vec::new(),
             last_discovery_retry_ms: 0,
@@ -3393,6 +3403,44 @@ impl<C: Clock, S: Storage> Transport<C, S> {
             .get(&iface_idx)
             .copied()
             .unwrap_or(now_ms)
+    }
+
+    /// Record the worst-case airtime in milliseconds for one MTU-sized
+    /// transmit on the given interface. Pushed by the driver after each
+    /// dispatch tick for LoRa-Serial interfaces; non-LoRa interfaces are
+    /// not pushed and remain absent from the map.
+    ///
+    /// Returns the worst-case airtime across *all* registered
+    /// interfaces, intentionally over-estimating for fast interfaces:
+    /// announce retry scheduling is per-destination, not per-interface,
+    /// so the jitter window has to accommodate the slowest possible
+    /// recipient. If a finer-grained per-interface jitter ever becomes
+    /// measurably useful, extend the cache shape.
+    pub fn set_interface_max_airtime_ms(&mut self, iface_idx: usize, ms: u64) {
+        self.interface_max_airtime_ms.insert(iface_idx, ms);
+    }
+
+    /// Compute the announce jitter ceiling, in milliseconds, for the
+    /// `deterministic_jitter_ms` calls in the announce-retry path.
+    /// Returns `max(PATHFINDER_RW_MS, JITTER_AIRTIME_FACTOR × worst_airtime)`
+    /// across all registered interfaces. With no interfaces registered
+    /// the floor `PATHFINDER_RW_MS` applies, preserving the legacy
+    /// behaviour for hosts without a LoRa link.
+    ///
+    /// The returned value is a worst-case over all interfaces (see
+    /// `set_interface_max_airtime_ms`). It is intentionally
+    /// over-estimating for destinations reachable only via fast
+    /// interfaces, because the announce-retry scheduler does not yet
+    /// distinguish per-interface schedules and a single conservative
+    /// window is simpler than per-interface slot bookkeeping.
+    pub fn announce_jitter_max_ms(&self) -> u64 {
+        let max_airtime = self
+            .interface_max_airtime_ms
+            .values()
+            .copied()
+            .max()
+            .unwrap_or(0);
+        PATHFINDER_RW_MS.max(JITTER_AIRTIME_FACTOR * max_airtime)
     }
 
     /// Check if a destination is for a local client (path exists with hops=0).
@@ -15727,5 +15775,55 @@ mod tests {
         t.set_interface_next_slot_ms(7, 1_000);
         t.set_interface_next_slot_ms(7, 2_000);
         assert_eq!(t.next_slot_ms_for_interface(7, 0), 2_000);
+    }
+
+    /// Empty registry: jitter window falls back to the legacy
+    /// `PATHFINDER_RW_MS = 500` floor. Hosts without any interface
+    /// reporting airtime see the pre-airtime behaviour.
+    #[test]
+    fn announce_jitter_max_ms_empty_registry_uses_floor() {
+        use crate::test_utils::test_transport;
+        let t = test_transport();
+        assert_eq!(t.announce_jitter_max_ms(), PATHFINDER_RW_MS);
+    }
+
+    /// Tiny airtime (3 × 100 ms = 300) does not lift the window above
+    /// the legacy floor.
+    #[test]
+    fn announce_jitter_max_ms_small_airtime_below_floor() {
+        use crate::test_utils::test_transport;
+        let mut t = test_transport();
+        t.set_interface_max_airtime_ms(0, 100);
+        assert_eq!(t.announce_jitter_max_ms(), 500);
+    }
+
+    /// SF10-class airtime (~2700 ms) lifts the window to 3 × 2700 =
+    /// 8100 ms, well above one packet's airtime.
+    #[test]
+    fn announce_jitter_max_ms_sf10_airtime_dominates() {
+        use crate::test_utils::test_transport;
+        let mut t = test_transport();
+        t.set_interface_max_airtime_ms(0, 2_700);
+        assert_eq!(t.announce_jitter_max_ms(), 3 * 2_700);
+    }
+
+    /// Fast and slow interfaces: the slowest wins.
+    #[test]
+    fn announce_jitter_max_ms_two_interfaces_slowest_wins() {
+        use crate::test_utils::test_transport;
+        let mut t = test_transport();
+        t.set_interface_max_airtime_ms(0, 100);
+        t.set_interface_max_airtime_ms(1, 2_700);
+        assert_eq!(t.announce_jitter_max_ms(), 3 * 2_700);
+    }
+
+    /// Setter overwrite works for max-airtime as it does for next_slot.
+    #[test]
+    fn set_interface_max_airtime_ms_overwrite() {
+        use crate::test_utils::test_transport;
+        let mut t = test_transport();
+        t.set_interface_max_airtime_ms(0, 1_000);
+        t.set_interface_max_airtime_ms(0, 500);
+        assert_eq!(t.announce_jitter_max_ms(), 3 * 500);
     }
 }
