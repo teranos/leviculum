@@ -42,6 +42,14 @@ nrf-mpsl = { git = "https://github.com/alexmoon/nrf-sdc", rev = "df7e3b4", featu
 nrf-sdc = { git = "https://github.com/alexmoon/nrf-sdc", rev = "df7e3b4", features = ["nrf52840", "peripheral"] }
 trouble-host = { git = "https://github.com/embassy-rs/trouble", branch = "main", default-features = false, features = ["peripheral", "derive", "gatt", "default-packet-pool"] }
 
+# cortex-m-rt supplies the startup runtime, panic handler, and vector
+# table that the linker needs for a no_std no_main firmware image, even
+# though no Rust module imports it directly. nrf-mpsl is pulled in for
+# its `critical-section-impl` feature; the actual API is reached via the
+# nrf-sdc re-exports.
+[package.metadata.cargo-machete]
+ignored = ["cortex-m-rt", "nrf-mpsl"]
+
 [profile.release]
 opt-level = "z"      # optimize for size
 lto = true           # link-time optimization across all crates

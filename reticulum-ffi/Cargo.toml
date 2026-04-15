@@ -18,3 +18,9 @@ rand_core.workspace = true
 
 [build-dependencies]
 cbindgen = "0.27"
+
+# reticulum-ffi is a stub/orphaned crate (§9.2 of CLEANUP_NOTES) —
+# dependencies sit in Cargo.toml even though the stub does not import
+# them, in anticipation of the planned redesign.
+[package.metadata.cargo-machete]
+ignored = ["libc", "reticulum-std"]

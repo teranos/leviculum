@@ -30,7 +30,12 @@ rmp-serde.workspace = true
 rmpv.workspace = true
 toml.workspace = true
 thiserror.workspace = true
-bytes.workspace = true
+
+# md-5 is imported as `use md5::Md5`; cargo-machete flags the hyphenated
+# package name as unused because grepping the sources finds `md5::` but
+# not `md_5::`.
+[package.metadata.cargo-machete]
+ignored = ["md-5"]
 
 [dev-dependencies]
 tracing-subscriber.workspace = true
