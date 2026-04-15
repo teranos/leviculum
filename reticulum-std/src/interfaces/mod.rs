@@ -19,7 +19,7 @@ pub(crate) mod tcp;
 pub(crate) mod udp;
 
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, OnceLock};
 use std::time::Instant;
 
 use reticulum_core::traits::{InterfaceError, InterfaceMode};
@@ -27,6 +27,18 @@ use reticulum_core::transport::InterfaceId;
 use tokio::sync::mpsc;
 
 use self::airtime::AirtimeCredit;
+
+/// Monotonic wall-clock in milliseconds since the first call.
+///
+/// The backpressure layer only cares about time deltas (credit regen,
+/// earliest-fit-time computations), so an arbitrary process-local anchor
+/// is fine. `std::time::Instant` is guaranteed monotonic; we anchor on
+/// the first call and return elapsed ms from there.
+fn now_ms() -> u64 {
+    static BOOT: OnceLock<Instant> = OnceLock::new();
+    let boot = BOOT.get_or_init(Instant::now);
+    boot.elapsed().as_millis() as u64
+}
 
 /// Speed sampling state, updated every second by the traffic counter task.
 struct SpeedState {
@@ -159,12 +171,9 @@ pub(crate) struct InterfaceHandle {
     /// Airtime budget for interfaces whose capacity is constrained by the
     /// radio physics (currently only LoRa-Serial). `None` for TCP, UDP,
     /// Local, RNode, AutoInterface — those are "always ready" from the
-    /// backpressure-layer's perspective. Consumed by Phase B3's
-    /// `try_send_prioritized` credit-charge and Phase B4's `next_slot_ms`
-    /// override. See `airtime.rs` for the bucket model.
-    // Phase B1 lands the field ahead of its production readers (B3+B4).
-    // Remove this allow in B3 when try_send_prioritized actually uses it.
-    #[allow(dead_code)]
+    /// backpressure-layer's perspective. Consumed by
+    /// `try_send_prioritized` (credit-charge) and by Phase B4's
+    /// `next_slot_ms` override. See `airtime.rs` for the bucket model.
     pub credit: Option<Arc<Mutex<AirtimeCredit>>>,
 }
 
@@ -192,6 +201,16 @@ impl reticulum_core::traits::Interface for InterfaceHandle {
         data: &[u8],
         high_priority: bool,
     ) -> Result<(), InterfaceError> {
+        // First: airtime-credit check for constrained interfaces. LoRa-Serial
+        // populates `credit`; TCP/UDP/Local leave it `None` and skip the
+        // charge entirely. See `airtime.rs` for the bucket semantics; see
+        // Bug #3 Phase 2a in CLAUDE.md for the backpressure architecture.
+        if let Some(credit) = &self.credit {
+            let mut c = credit.lock().expect("airtime credit mutex poisoned");
+            if c.try_charge(data.len() as u32, now_ms()).is_err() {
+                return Err(InterfaceError::BufferFull);
+            }
+        }
         match self.outgoing.try_send(OutgoingPacket {
             data: data.to_vec(),
             high_priority,
@@ -273,14 +292,18 @@ impl InterfaceRegistry {
 mod tests {
     use super::*;
 
-    /// Build a bare-bones InterfaceHandle for unit testing. Phase B1
-    /// invariant: `credit` defaults to `None` — non-LoRa interfaces
-    /// leave the bucket empty, which makes the Phase B4 `next_slot_ms`
-    /// override return `now_ms` (always ready) for them.
-    fn make_handle(id: usize) -> InterfaceHandle {
+    /// Build a bare-bones InterfaceHandle plus the kept-alive receiver
+    /// for the outgoing channel. The receiver must stay in scope for
+    /// the duration of any `try_send_prioritized` test, otherwise the
+    /// channel closes and `try_send` returns `Disconnected`.
+    ///
+    /// Phase B1 invariant: `credit` defaults to `None` — non-LoRa
+    /// interfaces leave the bucket empty, which makes the Phase B4
+    /// `next_slot_ms` override return `now_ms` (always ready) for them.
+    fn make_handle(id: usize) -> (InterfaceHandle, mpsc::Receiver<OutgoingPacket>) {
         let (_inc_tx, inc_rx) = mpsc::channel(4);
-        let (out_tx, _out_rx) = mpsc::channel(4);
-        InterfaceHandle {
+        let (out_tx, out_rx) = mpsc::channel(4);
+        let handle = InterfaceHandle {
             info: InterfaceInfo {
                 id: InterfaceId(id),
                 name: format!("test-{id}"),
@@ -293,20 +316,74 @@ mod tests {
             outgoing: out_tx,
             counters: Arc::new(InterfaceCounters::new()),
             credit: None,
-        }
+        };
+        (handle, out_rx)
     }
 
     #[test]
     fn interface_handle_defaults_to_no_credit() {
-        let h = make_handle(7);
+        let (h, _rx) = make_handle(7);
         assert!(h.credit.is_none());
     }
 
     #[test]
     fn interface_handle_with_credit_attached_is_some() {
-        let mut h = make_handle(8);
+        let (mut h, _rx) = make_handle(8);
         let credit = AirtimeCredit::new(125_000, 10, 8, 500);
         h.credit = Some(Arc::new(Mutex::new(credit)));
         assert!(h.credit.is_some());
+    }
+
+    /// try_send_prioritized on a handle without a credit bucket behaves
+    /// identically to the pre-B3 code path — pure mpsc dispatch.
+    #[test]
+    fn try_send_without_credit_goes_straight_to_mpsc() {
+        use reticulum_core::traits::Interface;
+        let (mut h, _rx) = make_handle(9);
+        assert!(h.credit.is_none());
+        h.try_send_prioritized(&[1, 2, 3, 4], false)
+            .expect("no credit → should succeed via mpsc");
+    }
+
+    /// try_send_prioritized on a LoRa handle with fresh credit succeeds
+    /// and charges the bucket.
+    #[test]
+    fn try_send_with_fresh_credit_charges_bucket() {
+        use reticulum_core::traits::Interface;
+        let (mut h, _rx) = make_handle(10);
+        let credit = AirtimeCredit::new(125_000, 10, 8, 500);
+        h.credit = Some(Arc::new(Mutex::new(credit)));
+        h.try_send_prioritized(&[0u8; 50], true)
+            .expect("fresh credit + small packet → Ok");
+        // Bucket was charged: current() is now below zero right after
+        // the try_charge (time advanced by ~microseconds at most, so
+        // current(now) ≈ credit_ms < 0 for the SF10 payload cost).
+        let current_ms = h.credit.as_ref().unwrap().lock().unwrap().current(now_ms());
+        assert!(
+            current_ms < 0,
+            "expected credit to be in deficit after charge, got {current_ms}"
+        );
+    }
+
+    /// A bucket manually exhausted to exactly threshold causes the next
+    /// try_send_prioritized to return BufferFull without touching the
+    /// mpsc. Case 4 (regen recovery) is covered by
+    /// `airtime::tests::try_charge_succeeds_after_regen_wait`.
+    #[test]
+    fn try_send_with_exhausted_credit_returns_buffer_full() {
+        use reticulum_core::traits::Interface;
+        let (mut h, _rx) = make_handle(11);
+        let mut credit = AirtimeCredit::new(125_000, 10, 8, 500);
+        // Charge a full MTU at t=0 so `current() == threshold_ms`; any
+        // subsequent charge at t≈0 has to fail.
+        credit.try_charge(500, 0).expect("first charge should fit");
+        h.credit = Some(Arc::new(Mutex::new(credit)));
+
+        // Immediate follow-up: now_ms() is only slightly > 0, far below the
+        // regeneration needed to accept another charge. Expect BufferFull.
+        let err = h
+            .try_send_prioritized(&[0u8; 500], true)
+            .expect_err("exhausted credit → BufferFull");
+        assert!(matches!(err, InterfaceError::BufferFull));
     }
 }
