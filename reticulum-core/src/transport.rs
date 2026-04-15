@@ -1239,7 +1239,13 @@ impl<C: Clock, S: Storage> Transport<C, S> {
         Ok(())
     }
 
-    /// Send raw data on all online interfaces (emits Broadcast action)
+    /// Send raw data on all online interfaces (emits Broadcast action).
+    /// Matches Python Reticulum's Transport.outbound one-shot semantics:
+    /// Destination.announce at Destination.py:322 calls Packet.send exactly
+    /// once, and Packet.send at Packet.py:273-299 invokes Transport.outbound
+    /// once. Locally-originated announces are not inserted into announce_table
+    /// and have no retries; the Transport keepalive at check_mgmt_announces
+    /// re-emits on the configured 2-hour interval.
     pub fn send_on_all_interfaces(&mut self, data: &[u8]) {
         // Cache outbound packet hash so echoes returning via redundant paths
         // are dropped by the dedup check in process_incoming().
@@ -1252,37 +1258,6 @@ impl<C: Clock, S: Storage> Transport<C, S> {
             data: data.to_vec(),
             exclude_iface: None,
         });
-
-        // Rust extension: schedule retries for locally-originated announces.
-        // Python does NOT do this — its outbound() broadcasts once and never
-        // adds locally-originated announces to announce_table (only received
-        // announces get retransmitted via handle_announce → announce_table).
-        // We add retries because on LoRa, a single lost TX means the node is
-        // unreachable until the next mgmt announce (2 hours later).
-        if let Ok(packet) = Packet::unpack(data) {
-            if packet.flags.packet_type == PacketType::Announce {
-                let dest_hash = packet.destination_hash;
-                let now = self.clock.now_ms();
-                let jitter =
-                    self.deterministic_jitter_ms(&dest_hash, self.announce_jitter_max_ms());
-                self.storage.set_announce(
-                    dest_hash,
-                    AnnounceEntry {
-                        timestamp_ms: now,
-                        hops: 0,
-                        retries: 1,
-                        retransmit_at_ms: Some(now + PATHFINDER_G_MS + jitter),
-                        raw_packet: data.to_vec(),
-                        // Use usize::MAX as sentinel — retries for locally-originated
-                        // announces should broadcast to ALL interfaces (no exclusion).
-                        receiving_interface_index: usize::MAX,
-                        target_interface: None,
-                        local_rebroadcasts: 0,
-                        block_rebroadcasts: false,
-                    },
-                );
-            }
-        }
     }
 
     /// Send a packet to a destination via its known path
@@ -9193,6 +9168,71 @@ mod tests {
             assert_eq!(
                 second_broadcasts, 0,
                 "duplicate arrival should be dropped by packet_hashlist dedup, no new Broadcast"
+            );
+        }
+
+        /// B3 parity: a self-originated announce is a one-shot broadcast and
+        /// must not leave a scheduled retry in announce_table. Python's
+        /// Destination.announce at Destination.py:322 calls Packet.send
+        /// exactly once; Rust's send_on_all_interfaces now mirrors that.
+        #[test]
+        fn test_self_originated_announce_is_one_shot() {
+            use crate::destination::{Destination, DestinationType, Direction};
+            let mut transport = make_transport_enabled();
+            let _idx0 = transport.register_interface(Box::new(MockInterface::new("if0", 1)));
+            let _idx1 = transport.register_interface(Box::new(MockInterface::new("if1", 2)));
+
+            let identity = Identity::generate(&mut OsRng);
+            let mut dest = Destination::new(
+                Some(identity),
+                Direction::In,
+                DestinationType::Single,
+                "testapp",
+                &["oneshot"],
+            )
+            .unwrap();
+            let dest_hash = dest.hash().into_bytes();
+
+            let announce = dest
+                .announce(None, &mut OsRng, transport.clock.now_ms())
+                .unwrap();
+            let mut buf = [0u8; MTU];
+            let len = announce.pack(&mut buf).unwrap();
+            transport.send_on_all_interfaces(&buf[..len]);
+
+            let first_actions = transport.drain_actions();
+            let first_broadcasts = first_actions
+                .iter()
+                .filter(|a| {
+                    matches!(
+                        a,
+                        Action::Broadcast {
+                            exclude_iface: None,
+                            ..
+                        }
+                    )
+                })
+                .count();
+            assert_eq!(
+                first_broadcasts, 1,
+                "self-originated announce produces exactly one Broadcast"
+            );
+
+            assert!(
+                transport.storage().get_announce(&dest_hash).is_none(),
+                "self-originated announce must not leave an announce_table entry"
+            );
+
+            transport.clock.advance(60_000);
+            transport.poll();
+            let later_actions = transport.drain_actions();
+            let later_broadcasts = later_actions
+                .iter()
+                .filter(|a| matches!(a, Action::Broadcast { .. }))
+                .count();
+            assert_eq!(
+                later_broadcasts, 0,
+                "no scheduled retry should fire for a self-originated announce"
             );
         }
 
