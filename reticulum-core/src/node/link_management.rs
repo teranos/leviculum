@@ -408,17 +408,24 @@ impl<R: CryptoRngCore, C: Clock, S: Storage> NodeCore<R, C, S> {
         let attached_iface = link.attached_interface();
         let dest_hash = *link.destination_hash();
 
-        // Check interface congestion before building/encrypting the packet.
+        // Check interface readiness before building/encrypting the packet.
         // Only applies to app-originated sends; event-loop-internal sends
         // (retransmits, proofs, keepalives) go through route_link_packet()
         // and use the driver retry queue instead.
+        //
+        // Bug #3 Phase 2a (C5): use the next-slot backchannel instead of
+        // the binary is_interface_congested flag. A future slot becomes
+        // SendError::PacingDelay { ready_at_ms } so stream.rs can
+        // sleep_until rather than the old 50ms-polling Busy fallback.
+        let now_ms = self.transport.clock().now_ms();
         if let Some(iface_idx) = attached_iface {
-            if self.transport.is_interface_congested(iface_idx) {
-                return Err(send::SendError::Busy);
+            let next_slot = self.transport.next_slot_ms_for_interface(iface_idx, now_ms);
+            if next_slot > now_ms {
+                return Err(send::SendError::PacingDelay {
+                    ready_at_ms: next_slot,
+                });
             }
         }
-
-        let now_ms = self.transport.clock().now_ms();
 
         let link = self.links.get_mut(link_id).ok_or(send::SendError::NoLink)?;
         if link.state() != LinkState::Active {

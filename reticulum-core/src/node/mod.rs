@@ -5814,28 +5814,34 @@ mod tests {
     }
 
     #[test]
-    fn test_send_on_link_busy_when_congested() {
+    fn test_send_on_link_pacing_delay_when_interface_not_ready() {
         let mut pair = establish_nodecore_link_pair();
 
-        // The link was established via InterfaceId(0) — mark it congested
-        pair.initiator.set_interface_congested(0, true);
+        // The link was established via InterfaceId(0) — push a future
+        // slot via the next-slot backchannel (Bug #3 Phase 2a (C5)).
+        let now_ms = pair.initiator.transport().clock().now_ms();
+        let future_slot = now_ms + 5_000;
+        pair.initiator.set_interface_next_slot_ms(0, future_slot);
 
-        // send_on_link should return Busy without accepting the envelope
+        // send_on_link must return PacingDelay with that exact timestamp
+        // and NOT accept the envelope.
         let result = pair
             .initiator
             .send_on_link(&pair.initiator_link_id, b"Hello!");
-        assert!(
-            matches!(result, Err(crate::node::send::SendError::Busy)),
-            "Expected SendError::Busy, got: {:?}",
-            result,
+        assert_eq!(
+            result.as_ref().err(),
+            Some(&crate::node::send::SendError::PacingDelay {
+                ready_at_ms: future_slot
+            }),
+            "Expected SendError::PacingDelay {{ ready_at_ms: {future_slot} }}, got: {result:?}"
         );
 
-        // Clear congestion — send should succeed
-        pair.initiator.set_interface_congested(0, false);
+        // Reset the slot to now_ms → send should succeed.
+        pair.initiator.set_interface_next_slot_ms(0, now_ms);
         let result = pair
             .initiator
             .send_on_link(&pair.initiator_link_id, b"Hello!");
-        assert!(result.is_ok(), "Expected Ok after clearing congestion");
+        assert!(result.is_ok(), "Expected Ok after clearing pacing delay");
     }
 
     // ─── RTT Retry Tests ─────────────────────────────────────────────────────
