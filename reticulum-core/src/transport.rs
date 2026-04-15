@@ -1683,12 +1683,16 @@ impl<C: Clock, S: Storage> Transport<C, S> {
         if let Some(existing) = self.storage.get_announce_mut(&dest_hash) {
             let elapsed = now.saturating_sub(existing.timestamp_ms);
             if elapsed < self.config.announce_rate_limit_ms {
-                // Local rebroadcast detection: neighbor sent same announce at same or +1 hop
+                // Local rebroadcast detection: neighbor sent same announce at same or +1 hop.
+                // Python parity (Transport.py:1584-1590): always increment the counter
+                // but only cancel our pending retries once we have emitted at least one
+                // rebroadcast ourselves (`retries > 0`). Without this guard, a neighbor
+                // heard within the jitter window of the initial entry could cancel our
+                // first-ever fire, violating the Python on-wire count.
                 if packet.hops == existing.hops.saturating_add(1) {
-                    // A neighbor is rebroadcasting the same announce we have
                     existing.local_rebroadcasts = existing.local_rebroadcasts.saturating_add(1);
-                    if existing.local_rebroadcasts >= LOCAL_REBROADCASTS_MAX {
-                        // Enough neighbors have rebroadcast; suppress our own
+                    if existing.retries > 0 && existing.local_rebroadcasts >= LOCAL_REBROADCASTS_MAX
+                    {
                         existing.retransmit_at_ms = None;
                         tracing::trace!(
                             dest = %HexShort(&dest_hash),
@@ -9169,6 +9173,43 @@ mod tests {
                 second_broadcasts, 0,
                 "duplicate arrival should be dropped by packet_hashlist dedup, no new Broadcast"
             );
+        }
+
+        /// B6 parity: heard-neighbor rebroadcasts do not cancel a pending
+        /// first emission. Python (Transport.py:1587) gates the
+        /// LOCAL_REBROADCASTS_MAX cancellation on `retries > 0`, so an
+        /// announce still in its initial jitter window keeps its scheduled
+        /// first fire regardless of how many neighbors are already
+        /// rebroadcasting the same announce.
+        #[test]
+        fn test_local_rebroadcasts_max_guarded_by_retries_gt_zero() {
+            let mut transport = make_transport_enabled();
+            let _idx0 = transport.register_interface(Box::new(MockInterface::new("if0", 1)));
+
+            // Feed an announce at hops=0 wire → path hops=1.
+            let (raw, dest_hash) = make_announce_raw(0, PacketContext::None);
+            transport.process_incoming(0, &raw).unwrap();
+            transport.drain_events();
+
+            let before = transport.storage().get_announce(&dest_hash).unwrap();
+            assert_eq!(before.retries, 0, "entry starts at retries=0");
+            assert!(before.retransmit_at_ms.is_some());
+
+            // Craft a neighbor rebroadcast at wire hops = entry.hops (= 1),
+            // which becomes hops=2 on receipt → matches
+            // `packet.hops == existing.hops + 1` increment branch.
+            let (neighbor_raw, _) = make_announce_raw(before.hops, PacketContext::None);
+            for _ in 0..LOCAL_REBROADCASTS_MAX {
+                transport.process_incoming(0, &neighbor_raw).ok();
+                transport.drain_events();
+            }
+
+            let after = transport.storage().get_announce(&dest_hash).unwrap();
+            assert!(
+                after.retransmit_at_ms.is_some(),
+                "first fire must still be scheduled (retries=0 gate)"
+            );
+            assert_eq!(after.retries, 0, "no emission has occurred yet",);
         }
 
         /// B3 parity: a self-originated announce is a one-shot broadcast and
