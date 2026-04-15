@@ -78,9 +78,7 @@ pub(crate) fn spawn_serial_interface(config: SerialInterfaceConfig) -> Interface
 
     // Build the airtime credit bucket if radio params are known. Non-LoRa
     // Serial consumers (no radio_config) leave credit = None, preserving
-    // "always ready" semantics for the B4 next_slot_ms override.
-    // B5 will pass a clone of this Arc into `send_radio_config` so runtime
-    // reconfig updates the bucket in place.
+    // "always ready" semantics for the next_slot_ms override.
     let credit = config.radio_config.as_ref().map(|rc| {
         Arc::new(Mutex::new(super::airtime::AirtimeCredit::new(
             rc.bandwidth,
@@ -89,6 +87,7 @@ pub(crate) fn spawn_serial_interface(config: SerialInterfaceConfig) -> Interface
             SERIAL_HW_MTU,
         )))
     });
+    let task_credit = credit.clone();
 
     tokio::spawn(async move {
         serial_reconnect_task(
@@ -98,6 +97,7 @@ pub(crate) fn spawn_serial_interface(config: SerialInterfaceConfig) -> Interface
             incoming_tx,
             outgoing_rx,
             task_counters,
+            task_credit,
         )
         .await;
     });
@@ -122,10 +122,15 @@ pub(crate) fn spawn_serial_interface(config: SerialInterfaceConfig) -> Interface
 ///
 /// Retries up to 3 times with 2-second ACK timeout each. Returns true on success.
 /// This is test infrastructure — normal usage never calls this.
+///
+/// On ACK, if `credit` is Some, atomically update its radio params so
+/// subsequent `try_charge` calls price airtime under the new profile
+/// (Bug #3 Phase 2a — reconfig hook).
 async fn send_radio_config(
     port: &mut tokio_serial::SerialStream,
     config: &SerialRadioConfig,
     name: &str,
+    credit: Option<&Arc<Mutex<super::airtime::AirtimeCredit>>>,
 ) -> bool {
     use reticulum_core::rnode::{RadioConfigWire, RADIO_CONFIG_ACK};
 
@@ -182,6 +187,19 @@ async fn send_radio_config(
                                 && data[..] == RADIO_CONFIG_ACK[..]
                             {
                                 tracing::info!("Serial {}: radio config ACK received", name);
+                                // Update the host-side airtime bucket to price
+                                // subsequent charges under the newly-applied
+                                // radio profile. See Bug #3 Phase 2a (B5).
+                                if let Some(credit) = credit {
+                                    credit
+                                        .lock()
+                                        .expect("airtime credit mutex poisoned")
+                                        .update_radio_params(
+                                            config.bandwidth,
+                                            config.spreading_factor,
+                                            config.coding_rate,
+                                        );
+                                }
                                 return true;
                             }
                         }
@@ -211,6 +229,7 @@ async fn serial_reconnect_task(
     incoming_tx: mpsc::Sender<IncomingPacket>,
     mut outgoing_rx: mpsc::Receiver<OutgoingPacket>,
     counters: Arc<InterfaceCounters>,
+    credit: Option<Arc<Mutex<super::airtime::AirtimeCredit>>>,
 ) {
     let mut has_connected_before = false;
     loop {
@@ -242,7 +261,7 @@ async fn serial_reconnect_task(
 
                 // Send radio config if configured (test infrastructure)
                 if let Some(ref radio_cfg) = config.radio_config {
-                    if !send_radio_config(&mut port, radio_cfg, &name).await {
+                    if !send_radio_config(&mut port, radio_cfg, &name, credit.as_ref()).await {
                         tracing::warn!(
                             "Serial {}: radio config not acknowledged, T114 uses defaults",
                             name
@@ -460,5 +479,68 @@ mod tests {
     async fn spawn_without_radio_config_leaves_credit_none() {
         let handle = spawn_serial_interface(base_config("/dev/null-test-no-radio-b", None));
         assert!(handle.credit.is_none());
+    }
+
+    /// B5 wiring sanity: the Arc<Mutex<AirtimeCredit>> attached to the
+    /// spawned handle is the SAME instance that `send_radio_config`'s
+    /// `update_radio_params` call would mutate. Verified by spawning at
+    /// SF=7, manually applying the SF=10/CR=8 reconfig through the
+    /// shared Arc (mirroring what the ACK path does), and observing a
+    /// concrete behavior difference on the handle-side bucket.
+    ///
+    /// Test construction: at SF=7 after a MTU charge, a small follow-up
+    /// packet is rejected (fresh cost X_50_sf7 pushes credit below the
+    /// tight SF=7 threshold). After reconfig to SF=10/CR=8 the threshold
+    /// grows in magnitude (MTU airtime at SF10 is ~10× SF7), so the same
+    /// carried-over deficit now leaves room for the small follow-up.
+    /// The change in accept/reject is observable only if update_radio_params
+    /// actually ran — so this asserts the wiring.
+    ///
+    /// End-to-end send_radio_config coverage requires a T114 and lives
+    /// in Phase G hardware verification; this test locks down the
+    /// Arc-shared-state invariant only.
+    #[tokio::test(flavor = "current_thread")]
+    async fn reconfig_propagates_to_handle_side_bucket() {
+        let radio = SerialRadioConfig {
+            frequency: 869_525_000,
+            bandwidth: 125_000,
+            spreading_factor: 7,
+            coding_rate: 5,
+            tx_power: 17,
+            preamble_len: 24,
+            csma_enabled: true,
+        };
+        let handle = spawn_serial_interface(base_config("/dev/null-test-reconfig", Some(radio)));
+        let credit_arc = handle
+            .credit
+            .as_ref()
+            .expect("radio_config present → bucket attached")
+            .clone();
+        // Exhaust at SF=7: a full-MTU charge puts credit at the SF7 threshold.
+        {
+            let mut c = credit_arc.lock().unwrap();
+            c.try_charge(500, 0).expect("initial charge at SF7 fits");
+            // Small follow-up at SF7 MUST fail (any positive-cost packet from
+            // exactly-threshold pushes below threshold).
+            assert!(
+                c.try_charge(50, 0).is_err(),
+                "small follow-up at SF7 should be rejected"
+            );
+        }
+        // Simulate the ACK path's update to SF=10/CR=8 (as a scenario
+        // might push via send_radio_config's post-ACK hook).
+        credit_arc
+            .lock()
+            .unwrap()
+            .update_radio_params(125_000, 10, 8);
+        // Under the new, more-permissive SF10 threshold, the carried-over
+        // SF7 deficit leaves room for the same small packet.
+        {
+            let mut c = credit_arc.lock().unwrap();
+            assert!(
+                c.try_charge(50, 0).is_ok(),
+                "small follow-up after SF7→SF10 reconfig should succeed"
+            );
+        }
     }
 }

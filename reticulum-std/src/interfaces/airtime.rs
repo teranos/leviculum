@@ -1,8 +1,3 @@
-// Phase A1 lands this module ahead of its consumers (Phase B wires
-// it into InterfaceHandle). Remove the allow once the fields are
-// read from outside this file.
-#![allow(dead_code)]
-
 //! Airtime credit bucket for LoRa-Serial interfaces.
 //!
 //! Models the per-interface airtime budget as a signed credit that
