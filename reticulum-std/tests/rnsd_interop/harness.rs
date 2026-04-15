@@ -143,6 +143,23 @@ impl TestDaemon {
     /// Timeout for daemon startup
     const STARTUP_TIMEOUT: Duration = Duration::from_secs(10);
 
+    /// Extract the actually-bound cmd port from the daemon's READY line.
+    /// The daemon falls back to a kernel-allocated port when the requested
+    /// port was stolen in the find_*_available_ports TOCTOU window, so the
+    /// harness reads the post-bind value from the READY line rather than
+    /// trusting the pre-spawn `cmd_port` argument.
+    fn parse_ready_cmd_port(ready_line: &str) -> Result<u16, HarnessError> {
+        let parts: Vec<&str> = ready_line.split_whitespace().collect();
+        if parts.len() < 3 {
+            return Err(HarnessError::ParseError(format!(
+                "Invalid READY line: {ready_line}"
+            )));
+        }
+        parts[2].parse::<u16>().map_err(|_| {
+            HarnessError::ParseError(format!("Invalid cmd_port in READY line: {ready_line}"))
+        })
+    }
+
     /// Maximum retries for daemon startup (handles port race conditions)
     const MAX_STARTUP_RETRIES: u32 = 3;
 
@@ -222,14 +239,7 @@ impl TestDaemon {
             .map_err(|_| HarnessError::StartupTimeout)?
             .map_err(|_| HarnessError::StartupTimeout)??;
 
-        // Parse the READY line to verify ports
-        let parts: Vec<&str> = ready_line.split_whitespace().collect();
-        if parts.len() < 3 {
-            return Err(HarnessError::ParseError(format!(
-                "Invalid READY line: {}",
-                ready_line
-            )));
-        }
+        let cmd_port = Self::parse_ready_cmd_port(&ready_line)?;
 
         // Wait briefly for interfaces to fully initialize
         tokio::time::sleep(Duration::from_millis(200)).await;
@@ -326,10 +336,12 @@ impl TestDaemon {
             Err(HarnessError::StartupTimeout)
         });
 
-        let _ready_line = timeout(Self::STARTUP_TIMEOUT, ready_result)
+        let ready_line = timeout(Self::STARTUP_TIMEOUT, ready_result)
             .await
             .map_err(|_| HarnessError::StartupTimeout)?
             .map_err(|_| HarnessError::StartupTimeout)??;
+
+        let cmd_port = Self::parse_ready_cmd_port(&ready_line)?;
 
         // Wait briefly for interfaces to fully initialize
         tokio::time::sleep(Duration::from_millis(200)).await;
@@ -421,10 +433,12 @@ impl TestDaemon {
             Err(HarnessError::StartupTimeout)
         });
 
-        let _ready_line = timeout(Self::STARTUP_TIMEOUT, ready_result)
+        let ready_line = timeout(Self::STARTUP_TIMEOUT, ready_result)
             .await
             .map_err(|_| HarnessError::StartupTimeout)?
             .map_err(|_| HarnessError::StartupTimeout)??;
+
+        let cmd_port = Self::parse_ready_cmd_port(&ready_line)?;
 
         // Wait briefly for interfaces to fully initialize
         tokio::time::sleep(Duration::from_millis(200)).await;
@@ -534,10 +548,12 @@ impl TestDaemon {
             Err(HarnessError::StartupTimeout)
         });
 
-        let _ready_line = timeout(Self::STARTUP_TIMEOUT, ready_result)
+        let ready_line = timeout(Self::STARTUP_TIMEOUT, ready_result)
             .await
             .map_err(|_| HarnessError::StartupTimeout)?
             .map_err(|_| HarnessError::StartupTimeout)??;
+
+        let cmd_port = Self::parse_ready_cmd_port(&ready_line)?;
 
         // Wait for local socket to be ready
         tokio::time::sleep(Duration::from_millis(500)).await;
@@ -629,13 +645,7 @@ impl TestDaemon {
             .map_err(|_| HarnessError::StartupTimeout)?
             .map_err(|_| HarnessError::StartupTimeout)??;
 
-        let parts: Vec<&str> = ready_line.split_whitespace().collect();
-        if parts.len() < 3 {
-            return Err(HarnessError::ParseError(format!(
-                "Invalid READY line: {}",
-                ready_line
-            )));
-        }
+        let cmd_port = Self::parse_ready_cmd_port(&ready_line)?;
 
         tokio::time::sleep(Duration::from_millis(200)).await;
 

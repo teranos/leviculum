@@ -213,19 +213,23 @@ class TestDaemon:
             f.write(config)
 
     def _start_cmd_server(self):
-        """Start the JSON-RPC command server in a separate thread."""
+        """Start the JSON-RPC command server in a separate thread.
+
+        The requested cmd_port races with other parallel tests between
+        find_*_available_ports() releasing its bind(0) discovery listener
+        and the moment this bind() runs. When that race is lost, fall back
+        to a kernel-allocated port: the harness reads the actually-bound
+        port back from the READY line's third field. No retries on the
+        requested port — if it's taken, another process holds it for the
+        rest of the test and retrying wastes budget.
+        """
         self.cmd_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         self.cmd_socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-        # Retry bind to handle TOCTOU races with parallel tests
-        for attempt in range(5):
-            try:
-                self.cmd_socket.bind(('127.0.0.1', self.cmd_port))
-                break
-            except OSError as e:
-                if attempt < 4:
-                    time.sleep(0.2 * (attempt + 1))
-                else:
-                    raise
+        try:
+            self.cmd_socket.bind(('127.0.0.1', self.cmd_port))
+        except OSError:
+            self.cmd_socket.bind(('127.0.0.1', 0))
+            self.cmd_port = self.cmd_socket.getsockname()[1]
         self.cmd_socket.listen(5)
         self.cmd_socket.settimeout(1.0)
 
