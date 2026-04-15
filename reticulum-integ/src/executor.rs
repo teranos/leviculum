@@ -2090,35 +2090,31 @@ mod tests {
         };
     }
 
-    /// Acquire an exclusive file lock to prevent parallel LoRa test execution.
+    /// Regression guard for the integ-lock release-on-panic invariant.
     ///
-    /// `serial_test`'s `#[serial]` only works within a single cargo-test process
-    /// and may not serialize `#[ignore]` tests reliably. This file lock works
-    /// across processes and threads: any second test trying to acquire it will
-    /// block until the first one finishes.
+    /// After `TestRunner::new()` acquires the process-wide lock, any
+    /// panic in the test must still close the lock file via OS unwind /
+    /// process exit — next cargo-test invocation must succeed. This test
+    /// exercises the acquire + panic path; the "does subsequent
+    /// invocation succeed" half is validated manually in verification
+    /// check 9, not here. Staying in the suite so a future refactor that
+    /// swaps `OnceLock<File>` for something with a non-trivial Drop can't
+    /// silently break release-on-panic.
     ///
-    /// The returned `File` holds the lock — it is released when dropped at test end.
-    fn acquire_lora_lock() -> std::fs::File {
-        use std::os::unix::io::AsRawFd;
-
-        let lock_path = "/tmp/leviculum-lora-test.lock";
-        let file = std::fs::OpenOptions::new()
-            .create(true)
-            .write(true)
-            .truncate(false)
-            .open(lock_path)
-            .unwrap_or_else(|e| panic!("cannot open lock file {lock_path}: {e}"));
-
-        // LOCK_EX = exclusive lock, blocks until acquired
-        let rc = unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_EX) };
-        if rc != 0 {
-            panic!(
-                "flock({lock_path}) failed: {}",
-                std::io::Error::last_os_error()
-            );
-        }
-        eprintln!("[lora-lock] acquired exclusive lock on {lock_path}");
-        file
+    /// Uses a TCP-only scenario → no hardware required, and
+    /// `TestRunner::new()` returns before any container is spawned, so
+    /// this is fast and hermetic.
+    #[test]
+    #[should_panic(expected = "deliberate panic for lock-release regression test")]
+    fn lock_released_on_panic() {
+        let toml_str = std::fs::read_to_string(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/tests/basic_probe.toml"
+        ))
+        .expect("basic_probe.toml not found");
+        let scenario = crate::topology::parse_scenario(&toml_str).expect("parse failed");
+        let _runner = require_runner!(scenario);
+        panic!("deliberate panic for lock-release regression test");
     }
 
     #[test]
@@ -2577,7 +2573,6 @@ mod tests {
     // even if the RNode device is not detected (reconnect runs in background).
     #[serial(lora)]
     fn lora_direct_rust() {
-        let _lock = acquire_lora_lock();
         let toml_str = std::fs::read_to_string(concat!(
             env!("CARGO_MANIFEST_DIR"),
             "/tests/lora_direct_rust.toml"
@@ -2599,7 +2594,6 @@ mod tests {
     // "configured"/"configuration failed" (Rust) or RNodeInterface errors (Python).
     #[serial(lora)]
     fn lora_interop_rust_python() {
-        let _lock = acquire_lora_lock();
         let toml_str = std::fs::read_to_string(concat!(
             env!("CARGO_MANIFEST_DIR"),
             "/tests/lora_interop_rust_python.toml"
@@ -2619,7 +2613,6 @@ mod tests {
     // Build lns with: cargo build --release --bin lns
     #[serial(lora)]
     fn lora_link_rust() {
-        let _lock = acquire_lora_lock();
         let toml_str = std::fs::read_to_string(concat!(
             env!("CARGO_MANIFEST_DIR"),
             "/tests/lora_link_rust.toml"
@@ -2639,7 +2632,6 @@ mod tests {
     // Build lns with: cargo build --release --bin lns
     #[serial(lora)]
     fn lora_link_interop() {
-        let _lock = acquire_lora_lock();
         let toml_str = std::fs::read_to_string(concat!(
             env!("CARGO_MANIFEST_DIR"),
             "/tests/lora_link_interop.toml"
@@ -2656,7 +2648,6 @@ mod tests {
     #[ignore] // Requires RNode hardware
     #[serial(lora)]
     fn lora_tcp_bridge_rust_relay() {
-        let _lock = acquire_lora_lock();
         let toml_str = std::fs::read_to_string(concat!(
             env!("CARGO_MANIFEST_DIR"),
             "/tests/lora_tcp_bridge_rust_relay.toml"
@@ -2673,7 +2664,6 @@ mod tests {
     #[ignore] // Requires RNode hardware
     #[serial(lora)]
     fn lora_tcp_bridge_python_relay() {
-        let _lock = acquire_lora_lock();
         let toml_str = std::fs::read_to_string(concat!(
             env!("CARGO_MANIFEST_DIR"),
             "/tests/lora_tcp_bridge_python_relay.toml"
@@ -2690,7 +2680,6 @@ mod tests {
     #[ignore] // Requires RNode hardware
     #[serial(lora)]
     fn lora_tcp_bridge_python_selftest() {
-        let _lock = acquire_lora_lock();
         let toml_str = std::fs::read_to_string(concat!(
             env!("CARGO_MANIFEST_DIR"),
             "/tests/lora_tcp_bridge_python_selftest.toml"
@@ -2707,7 +2696,6 @@ mod tests {
     #[ignore] // Requires RNode hardware
     #[serial(lora)]
     fn lora_late_announce_2node() {
-        let _lock = acquire_lora_lock();
         let toml_str = std::fs::read_to_string(concat!(
             env!("CARGO_MANIFEST_DIR"),
             "/tests/lora_late_announce_2node.toml"
@@ -2724,7 +2712,6 @@ mod tests {
     #[ignore] // Requires RNode hardware
     #[serial(lora)]
     fn lora_late_announce_4node() {
-        let _lock = acquire_lora_lock();
         let toml_str = std::fs::read_to_string(concat!(
             env!("CARGO_MANIFEST_DIR"),
             "/tests/lora_late_announce_4node.toml"
@@ -2741,7 +2728,6 @@ mod tests {
     #[ignore] // Requires RNode hardware
     #[serial(lora)]
     fn lora_late_announce_6node() {
-        let _lock = acquire_lora_lock();
         let toml_str = std::fs::read_to_string(concat!(
             env!("CARGO_MANIFEST_DIR"),
             "/tests/lora_late_announce_6node.toml"
@@ -2758,7 +2744,6 @@ mod tests {
     #[ignore] // Requires RNode hardware
     #[serial(lora)]
     fn lora_late_announce_8node() {
-        let _lock = acquire_lora_lock();
         let toml_str = std::fs::read_to_string(concat!(
             env!("CARGO_MANIFEST_DIR"),
             "/tests/lora_late_announce_8node.toml"
@@ -2775,7 +2760,6 @@ mod tests {
     #[ignore] // Requires RNode hardware
     #[serial(lora)]
     fn lora_late_announce_10node() {
-        let _lock = acquire_lora_lock();
         let toml_str = std::fs::read_to_string(concat!(
             env!("CARGO_MANIFEST_DIR"),
             "/tests/lora_late_announce_10node.toml"
@@ -2792,7 +2776,6 @@ mod tests {
     #[ignore] // Requires RNode hardware
     #[serial(lora)]
     fn lora_rpc_after_selftest() {
-        let _lock = acquire_lora_lock();
         let toml_str = std::fs::read_to_string(concat!(
             env!("CARGO_MANIFEST_DIR"),
             "/tests/lora_rpc_after_selftest.toml"
@@ -2809,7 +2792,6 @@ mod tests {
     #[ignore] // Requires 4 RNode devices
     #[serial(lora)]
     fn lora_multihop_transfer() {
-        let _lock = acquire_lora_lock();
         let toml_str = std::fs::read_to_string(concat!(
             env!("CARGO_MANIFEST_DIR"),
             "/tests/lora_multihop_transfer.toml"
@@ -2826,7 +2808,6 @@ mod tests {
     #[ignore] // Requires 4 RNode devices
     #[serial(lora)]
     fn lora_multihop_bidir() {
-        let _lock = acquire_lora_lock();
         let toml_str = std::fs::read_to_string(concat!(
             env!("CARGO_MANIFEST_DIR"),
             "/tests/lora_multihop_bidir.toml"
@@ -2843,7 +2824,6 @@ mod tests {
     #[ignore] // Requires 4 RNode devices
     #[serial(lora)]
     fn lora_multihop_link_loss() {
-        let _lock = acquire_lora_lock();
         let toml_str = std::fs::read_to_string(concat!(
             env!("CARGO_MANIFEST_DIR"),
             "/tests/lora_multihop_link_loss.toml"
@@ -2860,7 +2840,6 @@ mod tests {
     #[ignore] // Requires RNode hardware
     #[serial(lora)]
     fn lora_ratchet_basic() {
-        let _lock = acquire_lora_lock();
         let toml_str = std::fs::read_to_string(concat!(
             env!("CARGO_MANIFEST_DIR"),
             "/tests/lora_ratchet_basic.toml"
@@ -2877,7 +2856,6 @@ mod tests {
     #[ignore] // Requires RNode hardware
     #[serial(lora)]
     fn lora_ratchet_enforced() {
-        let _lock = acquire_lora_lock();
         let toml_str = std::fs::read_to_string(concat!(
             env!("CARGO_MANIFEST_DIR"),
             "/tests/lora_ratchet_enforced.toml"
@@ -2894,7 +2872,6 @@ mod tests {
     #[ignore] // Requires RNode hardware
     #[serial(lora)]
     fn lora_ratchet_rotation() {
-        let _lock = acquire_lora_lock();
         let toml_str = std::fs::read_to_string(concat!(
             env!("CARGO_MANIFEST_DIR"),
             "/tests/lora_ratchet_rotation.toml"
@@ -2911,7 +2888,6 @@ mod tests {
     #[ignore] // Requires RNode hardware
     #[serial(lora)]
     fn lora_path_recovery() {
-        let _lock = acquire_lora_lock();
         let toml_str = std::fs::read_to_string(concat!(
             env!("CARGO_MANIFEST_DIR"),
             "/tests/lora_path_recovery.toml"
@@ -2928,7 +2904,6 @@ mod tests {
     #[ignore] // Requires RNode hardware
     #[serial(lora)]
     fn lora_lncp_proxy_50kb() {
-        let _lock = acquire_lora_lock();
         let toml_str = std::fs::read_to_string(concat!(
             env!("CARGO_MANIFEST_DIR"),
             "/tests/lora_lncp_proxy_50kb.toml"
@@ -2945,7 +2920,6 @@ mod tests {
     #[ignore] // Requires RNode hardware
     #[serial(lora)]
     fn lora_link_teardown() {
-        let _lock = acquire_lora_lock();
         let toml_str = std::fs::read_to_string(concat!(
             env!("CARGO_MANIFEST_DIR"),
             "/tests/lora_link_teardown.toml"
@@ -2962,7 +2936,6 @@ mod tests {
     #[ignore] // Requires RNode hardware
     #[serial(lora)]
     fn lora_lncp_auth_fetch() {
-        let _lock = acquire_lora_lock();
         let toml_str = std::fs::read_to_string(concat!(
             env!("CARGO_MANIFEST_DIR"),
             "/tests/lora_lncp_auth_fetch.toml"
@@ -2979,7 +2952,6 @@ mod tests {
     #[ignore] // Requires 4 RNode devices
     #[serial(lora)]
     fn lora_4node_contention_rust() {
-        let _lock = acquire_lora_lock();
         let toml_str = std::fs::read_to_string(concat!(
             env!("CARGO_MANIFEST_DIR"),
             "/tests/lora_4node_contention_rust.toml"
@@ -2996,7 +2968,6 @@ mod tests {
     #[ignore] // Requires 4 RNode devices
     #[serial(lora)]
     fn lora_4node_contention_python() {
-        let _lock = acquire_lora_lock();
         let toml_str = std::fs::read_to_string(concat!(
             env!("CARGO_MANIFEST_DIR"),
             "/tests/lora_4node_contention_python.toml"
@@ -3013,7 +2984,6 @@ mod tests {
     #[ignore] // Requires 4 RNode devices
     #[serial(lora)]
     fn lora_4node_contention_mixed() {
-        let _lock = acquire_lora_lock();
         let toml_str = std::fs::read_to_string(concat!(
             env!("CARGO_MANIFEST_DIR"),
             "/tests/lora_4node_contention_mixed.toml"
@@ -3030,7 +3000,6 @@ mod tests {
     #[ignore] // Requires 4 RNode devices
     #[serial(lora)]
     fn lora_4node_sequential_python() {
-        let _lock = acquire_lora_lock();
         let toml_str = std::fs::read_to_string(concat!(
             env!("CARGO_MANIFEST_DIR"),
             "/tests/lora_4node_sequential_python.toml"
@@ -3047,7 +3016,6 @@ mod tests {
     #[ignore] // Requires RNode hardware
     #[serial(lora)]
     fn lora_dual_cluster_rust() {
-        let _lock = acquire_lora_lock();
         let toml_str = std::fs::read_to_string(concat!(
             env!("CARGO_MANIFEST_DIR"),
             "/tests/lora_dual_cluster_rust.toml"
@@ -3064,7 +3032,6 @@ mod tests {
     #[ignore] // Requires RNode hardware
     #[serial(lora)]
     fn lora_dual_cluster_mixed() {
-        let _lock = acquire_lora_lock();
         let toml_str = std::fs::read_to_string(concat!(
             env!("CARGO_MANIFEST_DIR"),
             "/tests/lora_dual_cluster_mixed.toml"
@@ -3081,7 +3048,6 @@ mod tests {
     #[ignore] // Requires RNode hardware + lora-proxy binary
     #[serial(lora)]
     fn lora_proxy_loss() {
-        let _lock = acquire_lora_lock();
         let toml_str = std::fs::read_to_string(concat!(
             env!("CARGO_MANIFEST_DIR"),
             "/tests/lora_proxy_loss.toml"
@@ -3098,7 +3064,6 @@ mod tests {
     #[ignore] // Requires RNode hardware
     #[serial(lora)]
     fn lora_lncp_push() {
-        let _lock = acquire_lora_lock();
         let toml_str = std::fs::read_to_string(concat!(
             env!("CARGO_MANIFEST_DIR"),
             "/tests/lora_lncp_push.toml"
@@ -3115,7 +3080,6 @@ mod tests {
     #[ignore] // Requires RNode hardware
     #[serial(lora)]
     fn lora_lncp_fetch() {
-        let _lock = acquire_lora_lock();
         let toml_str = std::fs::read_to_string(concat!(
             env!("CARGO_MANIFEST_DIR"),
             "/tests/lora_lncp_fetch.toml"
@@ -3132,7 +3096,6 @@ mod tests {
     #[ignore] // Requires RNode hardware
     #[serial(lora)]
     fn lora_lncp_auth() {
-        let _lock = acquire_lora_lock();
         let toml_str = std::fs::read_to_string(concat!(
             env!("CARGO_MANIFEST_DIR"),
             "/tests/lora_lncp_auth.toml"
@@ -3149,7 +3112,6 @@ mod tests {
     #[ignore] // Requires RNode hardware + lora-proxy binary
     #[serial(lora)]
     fn lora_lncp_proxy() {
-        let _lock = acquire_lora_lock();
         let toml_str = std::fs::read_to_string(concat!(
             env!("CARGO_MANIFEST_DIR"),
             "/tests/lora_lncp_proxy.toml"
@@ -3166,7 +3128,6 @@ mod tests {
     #[ignore] // Requires RNode hardware
     #[serial(lora)]
     fn lora_lncp_size_sweep() {
-        let _lock = acquire_lora_lock();
         let toml_str = std::fs::read_to_string(concat!(
             env!("CARGO_MANIFEST_DIR"),
             "/tests/lora_lncp_size_sweep.toml"
@@ -3183,7 +3144,6 @@ mod tests {
     #[ignore] // Requires RNode hardware
     #[serial(lora)]
     fn lora_lncp_proxy_4drop() {
-        let _lock = acquire_lora_lock();
         let toml_str = std::fs::read_to_string(concat!(
             env!("CARGO_MANIFEST_DIR"),
             "/tests/lora_lncp_proxy_4drop.toml"
@@ -3200,7 +3160,6 @@ mod tests {
     #[ignore] // Requires RNode hardware
     #[serial(lora)]
     fn lora_lncp_proxy_6drop() {
-        let _lock = acquire_lora_lock();
         let toml_str = std::fs::read_to_string(concat!(
             env!("CARGO_MANIFEST_DIR"),
             "/tests/lora_lncp_proxy_6drop.toml"
@@ -3217,7 +3176,6 @@ mod tests {
     #[ignore] // Requires RNode hardware
     #[serial(lora)]
     fn lora_lncp_link_loss() {
-        let _lock = acquire_lora_lock();
         let toml_str = std::fs::read_to_string(concat!(
             env!("CARGO_MANIFEST_DIR"),
             "/tests/lora_lncp_link_loss.toml"
@@ -3234,7 +3192,6 @@ mod tests {
     #[ignore] // Requires RNode hardware
     #[serial(lora)]
     fn lora_lncp_link_retry() {
-        let _lock = acquire_lora_lock();
         let toml_str = std::fs::read_to_string(concat!(
             env!("CARGO_MANIFEST_DIR"),
             "/tests/lora_lncp_link_retry.toml"
@@ -3251,7 +3208,6 @@ mod tests {
     #[ignore] // Requires RNode hardware
     #[serial(lora)]
     fn lora_lncp_proof_retry() {
-        let _lock = acquire_lora_lock();
         let toml_str = std::fs::read_to_string(concat!(
             env!("CARGO_MANIFEST_DIR"),
             "/tests/lora_lncp_proof_retry.toml"
@@ -3268,7 +3224,6 @@ mod tests {
     #[ignore] // Requires RNode hardware
     #[serial(lora)]
     fn lora_lrncp_resource_proof_retry() {
-        let _lock = acquire_lora_lock();
         let toml_str = std::fs::read_to_string(concat!(
             env!("CARGO_MANIFEST_DIR"),
             "/tests/lora_lrncp_resource_proof_retry.toml"
@@ -3285,7 +3240,6 @@ mod tests {
     #[ignore] // Requires RNode hardware
     #[serial(lora)]
     fn lora_lncp_bidir() {
-        let _lock = acquire_lora_lock();
         let toml_str = std::fs::read_to_string(concat!(
             env!("CARGO_MANIFEST_DIR"),
             "/tests/lora_lncp_bidir.toml"
@@ -3302,7 +3256,6 @@ mod tests {
     #[ignore] // Requires RNode hardware
     #[serial(lora)]
     fn lora_lncp_bridge() {
-        let _lock = acquire_lora_lock();
         let toml_str = std::fs::read_to_string(concat!(
             env!("CARGO_MANIFEST_DIR"),
             "/tests/lora_lncp_bridge.toml"
@@ -3321,7 +3274,6 @@ mod tests {
     #[ignore] // Requires RNode hardware
     #[serial(lora)]
     fn lora_rncp_push() {
-        let _lock = acquire_lora_lock();
         let toml_str = std::fs::read_to_string(concat!(
             env!("CARGO_MANIFEST_DIR"),
             "/tests/lora_rncp_push.toml"
@@ -3338,7 +3290,6 @@ mod tests {
     #[ignore] // Requires RNode hardware
     #[serial(lora)]
     fn lora_rncp_fetch() {
-        let _lock = acquire_lora_lock();
         let toml_str = std::fs::read_to_string(concat!(
             env!("CARGO_MANIFEST_DIR"),
             "/tests/lora_rncp_fetch.toml"
@@ -3355,7 +3306,6 @@ mod tests {
     #[ignore] // Requires RNode hardware
     #[serial(lora)]
     fn lora_rncp_auth() {
-        let _lock = acquire_lora_lock();
         let toml_str = std::fs::read_to_string(concat!(
             env!("CARGO_MANIFEST_DIR"),
             "/tests/lora_rncp_auth.toml"
@@ -3372,7 +3322,6 @@ mod tests {
     #[ignore] // Requires RNode hardware + lora-proxy binary
     #[serial(lora)]
     fn lora_rncp_proxy() {
-        let _lock = acquire_lora_lock();
         let toml_str = std::fs::read_to_string(concat!(
             env!("CARGO_MANIFEST_DIR"),
             "/tests/lora_rncp_proxy.toml"
@@ -3389,7 +3338,6 @@ mod tests {
     #[ignore] // Requires RNode hardware
     #[serial(lora)]
     fn lora_rncp_bridge() {
-        let _lock = acquire_lora_lock();
         let toml_str = std::fs::read_to_string(concat!(
             env!("CARGO_MANIFEST_DIR"),
             "/tests/lora_rncp_bridge.toml"
@@ -3408,7 +3356,6 @@ mod tests {
     #[ignore] // Requires RNode hardware
     #[serial(lora)]
     fn lora_lncp_push_to_python() {
-        let _lock = acquire_lora_lock();
         let toml_str = std::fs::read_to_string(concat!(
             env!("CARGO_MANIFEST_DIR"),
             "/tests/lora_lncp_push_to_python.toml"
@@ -3425,7 +3372,6 @@ mod tests {
     #[ignore] // Requires RNode hardware
     #[serial(lora)]
     fn lora_rncp_push_to_rust() {
-        let _lock = acquire_lora_lock();
         let toml_str = std::fs::read_to_string(concat!(
             env!("CARGO_MANIFEST_DIR"),
             "/tests/lora_rncp_push_to_rust.toml"
@@ -3442,7 +3388,6 @@ mod tests {
     #[ignore] // Requires RNode hardware
     #[serial(lora)]
     fn lora_lncp_fetch_from_python() {
-        let _lock = acquire_lora_lock();
         let toml_str = std::fs::read_to_string(concat!(
             env!("CARGO_MANIFEST_DIR"),
             "/tests/lora_lncp_fetch_from_python.toml"
@@ -3459,7 +3404,6 @@ mod tests {
     #[ignore] // Requires RNode hardware
     #[serial(lora)]
     fn lora_rncp_fetch_from_rust() {
-        let _lock = acquire_lora_lock();
         let toml_str = std::fs::read_to_string(concat!(
             env!("CARGO_MANIFEST_DIR"),
             "/tests/lora_rncp_fetch_from_rust.toml"
@@ -3476,7 +3420,6 @@ mod tests {
     #[ignore] // Requires RNode hardware
     #[serial(lora)]
     fn lora_lncp_auth_to_python() {
-        let _lock = acquire_lora_lock();
         let toml_str = std::fs::read_to_string(concat!(
             env!("CARGO_MANIFEST_DIR"),
             "/tests/lora_lncp_auth_to_python.toml"
@@ -3493,7 +3436,6 @@ mod tests {
     #[ignore] // Requires RNode hardware
     #[serial(lora)]
     fn lora_lncp_bridge_python_relay() {
-        let _lock = acquire_lora_lock();
         let toml_str = std::fs::read_to_string(concat!(
             env!("CARGO_MANIFEST_DIR"),
             "/tests/lora_lncp_bridge_python_relay.toml"
@@ -3512,7 +3454,6 @@ mod tests {
     #[ignore] // Requires 3 RNode hardware devices
     #[serial(lora)]
     fn lora_3node_transfer() {
-        let _lock = acquire_lora_lock();
         let toml_str = std::fs::read_to_string(concat!(
             env!("CARGO_MANIFEST_DIR"),
             "/tests/lora_3node_transfer.toml"
@@ -3529,7 +3470,6 @@ mod tests {
     #[ignore] // Requires 3 RNode hardware devices
     #[serial(lora)]
     fn lora_3node_contention() {
-        let _lock = acquire_lora_lock();
         let toml_str = std::fs::read_to_string(concat!(
             env!("CARGO_MANIFEST_DIR"),
             "/tests/lora_3node_contention.toml"
@@ -3546,7 +3486,6 @@ mod tests {
     #[ignore] // Requires 3 RNode hardware devices
     #[serial(lora)]
     fn lora_3node_bidir() {
-        let _lock = acquire_lora_lock();
         let toml_str = std::fs::read_to_string(concat!(
             env!("CARGO_MANIFEST_DIR"),
             "/tests/lora_3node_bidir.toml"
@@ -3563,7 +3502,6 @@ mod tests {
     #[ignore] // Requires RNode + T114 hardware
     #[serial(lora)]
     fn lora_lnode_serial_relay() {
-        let _lock = acquire_lora_lock();
         let toml_str = std::fs::read_to_string(concat!(
             env!("CARGO_MANIFEST_DIR"),
             "/tests/lora_lnode_serial_relay.toml"
@@ -3580,7 +3518,6 @@ mod tests {
     #[ignore] // Requires RNode + T114 hardware
     #[serial(lora)]
     fn lora_lnode_probe() {
-        let _lock = acquire_lora_lock();
         let toml_str = std::fs::read_to_string(concat!(
             env!("CARGO_MANIFEST_DIR"),
             "/tests/lora_lnode_probe.toml"
@@ -3597,7 +3534,6 @@ mod tests {
     #[ignore] // Requires RNode + T114 hardware
     #[serial(lora)]
     fn lora_lnode_probe_ca() {
-        let _lock = acquire_lora_lock();
         let toml_str = std::fs::read_to_string(concat!(
             env!("CARGO_MANIFEST_DIR"),
             "/tests/lora_lnode_probe_ca.toml"
@@ -3614,7 +3550,6 @@ mod tests {
     #[ignore] // Requires RNode + T114 hardware
     #[serial(lora)]
     fn lora_lnode_split() {
-        let _lock = acquire_lora_lock();
         let toml_str = std::fs::read_to_string(concat!(
             env!("CARGO_MANIFEST_DIR"),
             "/tests/lora_lnode_split.toml"
@@ -3882,7 +3817,6 @@ mod tests {
     #[ignore] // Requires RNode + T114 hardware
     #[serial(lora)]
     fn bench_single_pair_fast() {
-        let _lock = acquire_lora_lock();
         let toml_str = std::fs::read_to_string(concat!(
             env!("CARGO_MANIFEST_DIR"),
             "/tests/bench_single_pair_fast.toml"
@@ -3897,7 +3831,6 @@ mod tests {
     #[ignore] // Requires RNode + T114 hardware
     #[serial(lora)]
     fn bench_single_pair_medium() {
-        let _lock = acquire_lora_lock();
         let toml_str = std::fs::read_to_string(concat!(
             env!("CARGO_MANIFEST_DIR"),
             "/tests/bench_single_pair_medium.toml"
@@ -3912,7 +3845,6 @@ mod tests {
     #[ignore] // Requires RNode + T114 hardware
     #[serial(lora)]
     fn bench_single_pair_slow() {
-        let _lock = acquire_lora_lock();
         let toml_str = std::fs::read_to_string(concat!(
             env!("CARGO_MANIFEST_DIR"),
             "/tests/bench_single_pair_slow.toml"
@@ -3927,7 +3859,6 @@ mod tests {
     #[ignore] // Requires 2x RNode + 2x T114 hardware
     #[serial(lora)]
     fn bench_dual_pair_fast() {
-        let _lock = acquire_lora_lock();
         let toml_str = std::fs::read_to_string(concat!(
             env!("CARGO_MANIFEST_DIR"),
             "/tests/bench_dual_pair_fast.toml"
@@ -3942,7 +3873,6 @@ mod tests {
     #[ignore] // Requires 2x RNode + 2x T114 hardware
     #[serial(lora)]
     fn bench_dual_pair_medium() {
-        let _lock = acquire_lora_lock();
         let toml_str = std::fs::read_to_string(concat!(
             env!("CARGO_MANIFEST_DIR"),
             "/tests/bench_dual_pair_medium.toml"
@@ -3957,7 +3887,6 @@ mod tests {
     #[ignore] // Requires 2x RNode + 2x T114 hardware
     #[serial(lora)]
     fn bench_dual_pair_slow() {
-        let _lock = acquire_lora_lock();
         let toml_str = std::fs::read_to_string(concat!(
             env!("CARGO_MANIFEST_DIR"),
             "/tests/bench_dual_pair_slow.toml"
@@ -3972,7 +3901,6 @@ mod tests {
     #[ignore]
     #[serial(lora)]
     fn bench_single_pair_medium_ca() {
-        let _lock = acquire_lora_lock();
         let toml_str = std::fs::read_to_string(concat!(
             env!("CARGO_MANIFEST_DIR"),
             "/tests/bench_single_pair_medium_ca.toml"
@@ -3987,7 +3915,6 @@ mod tests {
     #[ignore]
     #[serial(lora)]
     fn bench_single_pair_slow_ca() {
-        let _lock = acquire_lora_lock();
         let toml_str = std::fs::read_to_string(concat!(
             env!("CARGO_MANIFEST_DIR"),
             "/tests/bench_single_pair_slow_ca.toml"
@@ -4002,7 +3929,6 @@ mod tests {
     #[ignore]
     #[serial(lora)]
     fn bench_dual_pair_medium_ca() {
-        let _lock = acquire_lora_lock();
         let toml_str = std::fs::read_to_string(concat!(
             env!("CARGO_MANIFEST_DIR"),
             "/tests/bench_dual_pair_medium_ca.toml"
@@ -4017,7 +3943,6 @@ mod tests {
     #[ignore]
     #[serial(lora)]
     fn bench_dual_pair_slow_ca() {
-        let _lock = acquire_lora_lock();
         let toml_str = std::fs::read_to_string(concat!(
             env!("CARGO_MANIFEST_DIR"),
             "/tests/bench_dual_pair_slow_ca.toml"

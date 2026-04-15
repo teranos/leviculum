@@ -124,6 +124,12 @@ impl TestRunner {
     /// If any node has `rnode_proxy = true`, spawns lora-proxy processes and
     /// waits for their PTYs to appear.
     pub fn new(mut scenario: TestScenario) -> Result<Self, RunnerError> {
+        // First thing: acquire the process-wide integ lock so a colliding
+        // `cargo test` aborts before any Docker/USB work. Subsequent
+        // TestRunners in the same process are no-ops — the `OnceLock`
+        // holds the fd for the process lifetime.
+        crate::lock::acquire_integ_lock();
+
         let manifest_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
         let repo_root = manifest_dir
             .parent()

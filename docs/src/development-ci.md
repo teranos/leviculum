@@ -106,6 +106,71 @@ Cargo feature (e.g. `slow-tests`) for that case instead. Currently
 the invariant `#[ignore] tests == #[serial(lora)] tests` holds; keep
 it that way.
 
+## Concurrent test protection
+
+Two `cargo test -p reticulum-integ` invocations on the same machine
+fight over Docker container names and USB serial handles. To prevent
+that, every integ test silently acquires a process-wide file lock on
+`~/.local/state/leviculum-ci/test.lock` as the first step inside
+`TestRunner::new()`.
+
+Single invocation: transparent. No extra output.
+
+Two simultaneous invocations: the second exits within a second with
+a multi-line `[leviculum]` message naming the current holder —
+pid, started time, cwd, optionally the test-name filter. Example:
+
+```
+[leviculum] Another integration test is already running.
+[leviculum] Current holder:
+[leviculum]   pid=12345
+[leviculum]   started=2026-04-14T02:01:33
+[leviculum]   pkg=reticulum-integ
+[leviculum]   binary=reticulum_integ-abc123def
+[leviculum]   cwd=/home/lew/coding/libreticulum
+[leviculum] Wait for it to finish or stop that process, then retry.
+```
+
+Scheduled Tier 2 / Tier 3 runs that collide with a manual test
+drop a marker file at `~/.local/state/leviculum-ci/lock-contention`;
+the runner scripts observe the marker, classify the run as SKIPPED
+(not RED), send a `normal` (not `critical`) notification, and delete
+the marker. No false-alarm pages.
+
+### Inspecting the lock
+
+```
+cat ~/.local/state/leviculum-ci/test.lock     # current (or last) holder
+ls  ~/.local/state/leviculum-ci/lock-contention  # marker if present
+```
+
+### Force-release
+
+Not applicable. The kernel releases the flock the moment the holding
+process closes its fd — on clean exit, panic, SIGINT, SIGKILL, and
+even host reboot. There is no TTL, no heartbeat, no manual cleanup
+path. A stale `test.lock` file on disk after a reboot is self-
+healing: the next invocation opens it, flock succeeds immediately
+(kernel state is empty post-reboot), and the stale content is
+overwritten.
+
+### Scope
+
+The lock protects only `reticulum-integ` tests. Unit tests in
+`reticulum-core`, `reticulum-std`, `reticulum-ffi`,
+`reticulum-proxy`, and `reticulum-cli` do not acquire it — they
+parallelise freely with an in-progress integ run. Pure-parse unit
+tests inside `reticulum-integ` (e.g. compose YAML validation,
+radio-config wire round-trips) also don't acquire the lock because
+they never call `TestRunner::new()`.
+
+### Filesystem requirement
+
+Local filesystem only. `flock` semantics over NFS / sshfs are
+implementation-defined. If your `$HOME` is on a network filesystem,
+the lock behaviour is not guaranteed. This is a single-developer
+dev-box tool; not an issue in practice.
+
 ## Troubleshooting
 
 | Symptom | Action |

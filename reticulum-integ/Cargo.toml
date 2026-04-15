@@ -22,7 +22,7 @@ reticulum-core = { path = "../reticulum-core" }
 tempfile = "3"
 rand = "0.8"
 serialport = "4"
+libc = "0.2"
 
 [dev-dependencies]
 serial_test = "3"
-libc = "0.2"
