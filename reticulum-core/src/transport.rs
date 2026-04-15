@@ -1263,7 +1263,8 @@ impl<C: Clock, S: Storage> Transport<C, S> {
             if packet.flags.packet_type == PacketType::Announce {
                 let dest_hash = packet.destination_hash;
                 let now = self.clock.now_ms();
-                let jitter = self.deterministic_jitter_ms(&dest_hash, PATHFINDER_RW_MS);
+                let jitter =
+                    self.deterministic_jitter_ms(&dest_hash, self.announce_jitter_max_ms());
                 self.storage.set_announce(
                     dest_hash,
                     AnnounceEntry {
@@ -1984,7 +1985,8 @@ impl<C: Clock, S: Storage> Transport<C, S> {
                             // deterministic jitter from identity XOR dest_hash so
                             // different nodes pick different delays for the same
                             // announce, without requiring an rng parameter.
-                            let jitter = self.deterministic_jitter_ms(&dest_hash, PATHFINDER_RW_MS);
+                            let jitter = self
+                                .deterministic_jitter_ms(&dest_hash, self.announce_jitter_max_ms());
                             Some(now + PATHFINDER_G_MS + jitter)
                         } else {
                             None
@@ -4093,8 +4095,10 @@ impl<C: Clock, S: Storage> Transport<C, S> {
                 .map(|e| e.retries)
                 .unwrap_or(0);
             let backoff_factor = 1u64 << (retries.min(4) as u64);
-            let jitter =
-                self.deterministic_jitter_ms(&dest_hash, PATHFINDER_RW_MS * backoff_factor);
+            let jitter = self.deterministic_jitter_ms(
+                &dest_hash,
+                self.announce_jitter_max_ms() * backoff_factor,
+            );
             if let Some(entry) = self.storage.get_announce_mut(&dest_hash) {
                 let next_at = now + PATHFINDER_G_MS + jitter;
                 entry.retransmit_at_ms = Some(next_at);
@@ -15825,5 +15829,78 @@ mod tests {
         t.set_interface_max_airtime_ms(0, 1_000);
         t.set_interface_max_airtime_ms(0, 500);
         assert_eq!(t.announce_jitter_max_ms(), 3 * 500);
+    }
+
+    /// With no interfaces registered, the jitter window matches the
+    /// legacy floor — pre-airtime behaviour preserved.
+    #[test]
+    fn announce_retry_jitter_no_interfaces_uses_legacy_floor() {
+        use crate::test_utils::test_transport;
+        let t = test_transport();
+        let dest = [0xAB; TRUNCATED_HASHBYTES];
+        let jitter = t.deterministic_jitter_ms(&dest, t.announce_jitter_max_ms());
+        assert!(jitter < PATHFINDER_RW_MS);
+    }
+
+    /// With one SF10-class interface, the jitter window scales to
+    /// 3 × airtime. Verify the jitter falls within the expected
+    /// extended bound and exceeds the legacy floor over many seeds.
+    #[test]
+    fn announce_retry_jitter_sf10_extends_window() {
+        use crate::test_utils::test_transport;
+        let mut t = test_transport();
+        t.set_interface_max_airtime_ms(0, 2_700);
+        let upper = t.announce_jitter_max_ms();
+        assert_eq!(upper, 3 * 2_700);
+        let mut max_seen = 0u64;
+        for byte in 0..=255u8 {
+            let dest = [byte; TRUNCATED_HASHBYTES];
+            let jitter = t.deterministic_jitter_ms(&dest, upper);
+            assert!(jitter < upper);
+            max_seen = max_seen.max(jitter);
+        }
+        assert!(
+            max_seen > PATHFINDER_RW_MS,
+            "256-seed sample should expose the extended window, max_seen={max_seen}"
+        );
+    }
+
+    /// The retry-scheduler call site multiplies jitter window by the
+    /// backoff_factor (1, 2, 4, 8, 16 across retries 0-4). At retry 3
+    /// the effective ceiling is 8 × (3 × airtime), comfortably wide.
+    #[test]
+    fn announce_retry_jitter_with_backoff_factor() {
+        use crate::test_utils::test_transport;
+        let mut t = test_transport();
+        t.set_interface_max_airtime_ms(0, 2_700);
+        let base = t.announce_jitter_max_ms();
+        let backoff_factor = 8u64;
+        let upper = base * backoff_factor;
+        let dest = [0x42; TRUNCATED_HASHBYTES];
+        let jitter = t.deterministic_jitter_ms(&dest, upper);
+        assert!(jitter < upper);
+        assert_eq!(upper, 8 * 3 * 2_700);
+    }
+
+    /// Two nodes with distinct identities and the same airtime
+    /// configuration must compute different jitter values for the
+    /// same destination — that is the whole point of folding identity
+    /// into `deterministic_jitter_ms`. Without this, synchronous
+    /// startups would still collide on every retry.
+    #[test]
+    fn announce_retry_jitter_diverges_across_identities() {
+        use crate::test_utils::test_transport;
+        let mut a = test_transport();
+        let mut b = test_transport();
+        a.set_interface_max_airtime_ms(0, 2_700);
+        b.set_interface_max_airtime_ms(0, 2_700);
+        let dest = [0x77; TRUNCATED_HASHBYTES];
+        let upper = a.announce_jitter_max_ms();
+        let ja = a.deterministic_jitter_ms(&dest, upper);
+        let jb = b.deterministic_jitter_ms(&dest, upper);
+        assert_ne!(
+            ja, jb,
+            "two random identities produced identical jitter for the same dest"
+        );
     }
 }
