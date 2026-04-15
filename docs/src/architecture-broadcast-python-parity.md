@@ -430,7 +430,7 @@ structural divergence, ⚠ gap not yet addressed, ✗ does not match.
 | Self-announce on-wire count | 1 | 4 (1 + 3 retries) | ✗ | **B3 brings to 1** |
 | Self-announce fanout | all interfaces (MODE_FULL assumed) | `send_on_all_interfaces(exclude=None)` | ✓ | `transport.rs:1243-1255` |
 | Received-announce rebroadcast count | 2 (non-local-client), 1 (local-client) | 4 at `retries=1` init + `PATHFINDER_RETRIES=3` | ✗ | **B2 brings to 2** |
-| Received-announce fanout | all interfaces; echo dedup'd on RX | `forward_on_all_except(source)` | ≈ | Timing divergence: skip receiving interface (section 13). Per-peer packet count matches Python; on-wire echo to source is suppressed. |
+| Received-announce fanout | all interfaces; echo dedup'd on RX | `forward_on_all_except(source)` | ✗ | **B1 removes exclusion** |
 | Packet-hash dedup on RX | `Transport.py:1227` | `transport.rs:1179` | ✓ | Identical semantics, rolling window |
 | `PATHFINDER_G` grace | 5 s | 5 000 ms | ✓ | `constants.rs:117` |
 | `PATHFINDER_RW` jitter | 0.5 s | 500 ms (+ optional airtime factor) | ≈ | Option α permitted timing divergence |
@@ -476,32 +476,20 @@ announce. Achievable in two ways:
 constants and counter semantics, so future upstream-audit
 readers see 1:1 constants.
 
-### B1 fanout alignment — intentional divergence
+### B1 fanout alignment
 
-Leviculum emits forwarded announces on every interface *except* the
-one the announce arrived on. Python emits on every interface
-including the receiving one and absorbs the self-echo via
-`packet_hashlist`. The parity rule (Lew, 2026-04-15) permits
-timing-and-pacing divergences that do not change on-wire packet
-counts or types per peer. Our exclusion fits: each individual peer
-sees the same set of packets Python would deliver to it, just
-without the redundant echo back to the source peer.
+**Question**: if we remove `exclude_iface`, can dedup reliably
+catch the self-echo?
 
-Why we kept the exclusion: during Phase C2 validation a three-node
-Python-Python-Rust-relay scenario consistently failed to propagate
-when the Rust relay emitted the forwarded announce back onto the
-source TCP connection. The Python reference does not exhibit this
-failure in pure-Python topologies, likely because of subtleties in
-its interface-specific handling that we have not reproduced.
-Rather than block the parity task on reverse-engineering that
-interaction, we kept the existing Rust exclusion and documented
-the divergence here.
-
-Packet-hash dedup remains active (`transport.rs:1179` +
-`add_packet_hash` calls in `send_on_all_interfaces`,
-`send_on_all_interfaces_except`, `broadcast_announce_with_caps`)
-so any genuine echo on a shared medium such as LoRa is still
-absorbed.
+**Resolution**: yes. Outgoing broadcasts go through
+`send_on_all_interfaces` at `transport.rs:1243-1255` which calls
+`self.storage.add_packet_hash()` before emitting the
+`Action::Broadcast`. The dedup check at `transport.rs:1179`
+in `process_incoming` reads that set. The only edge case is the
+dedup window rollover at `HASHLIST_MAXSIZE = 1 000 000` entries —
+a packet that is ~1M packets old could theoretically come back.
+Not a concern in practice for single-day bench runs; flag as a
+known-limitation comment in the B1 commit.
 
 ### Mode-less Rust
 

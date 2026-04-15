@@ -2058,17 +2058,16 @@ mod tests {
         node.transport().clock().set(TEST_TIME_MS + 100_000);
         let output = node.handle_timeout();
 
-        // Should have at least one Broadcast action with the receiving
-        // interface excluded — announce rebroadcast skips the source as a
-        // timing optimization (docs/src/architecture-broadcast-python-parity.md
-        // section 13 on B1 divergence).
+        // Should have at least one Broadcast action with exclude_iface=None
+        // (announce rebroadcast fans out on all interfaces; the self-echo is
+        // absorbed by packet-hash dedup on RX).
         let has_rebroadcast = output.actions.iter().any(|a| {
             matches!(
                 a,
                 Action::Broadcast {
-                    exclude_iface: Some(iface),
+                    exclude_iface: None,
                     ..
-                } if *iface == InterfaceId(0)
+                }
             )
         });
         assert!(
