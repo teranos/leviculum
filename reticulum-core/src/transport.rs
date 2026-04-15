@@ -522,6 +522,12 @@ pub enum TransportError {
     NoPath,
     /// Target interface is congested — try later
     Busy,
+    /// Target interface is pacing — retry no earlier than `ready_at_ms`.
+    /// Mirrors `ChannelError::PacingDelay` / `SendError::PacingDelay` so
+    /// async callers (see `driver/stream.rs:127`) can `sleep_until` to
+    /// the exact ready time instead of polling. Introduced by Bug #3
+    /// Phase 2a; the `Busy` variant is removed in Phase F.
+    PacingDelay { ready_at_ms: u64 },
     /// Packet parsing error
     PacketError(PacketError),
     /// Announce validation error
@@ -533,6 +539,9 @@ impl core::fmt::Display for TransportError {
         match self {
             TransportError::NoPath => write!(f, "no path to destination"),
             TransportError::Busy => write!(f, "busy"),
+            TransportError::PacingDelay { ready_at_ms } => {
+                write!(f, "pacing delay, ready at {} ms", ready_at_ms)
+            }
             TransportError::PacketError(e) => write!(f, "packet error: {}", e),
             TransportError::AnnounceError(e) => write!(f, "announce error: {}", e),
         }
@@ -15397,5 +15406,19 @@ mod tests {
             );
             assert_eq!(transport.stats().packets_dropped, 0);
         }
+    }
+
+    /// Bug #3 Phase 2a (C1): PacingDelay Display includes the ready-at
+    /// timestamp. The exact wording is less important than (a) presence
+    /// of the variant, (b) the timestamp being visible for log grepping.
+    #[test]
+    fn pacing_delay_display_includes_ready_at_ms() {
+        use alloc::format;
+        let err = TransportError::PacingDelay { ready_at_ms: 1_000 };
+        let rendered = format!("{}", err);
+        assert!(
+            rendered.contains("1000"),
+            "expected ready_at_ms in Display output, got {rendered:?}"
+        );
     }
 }
