@@ -1077,7 +1077,99 @@ fn resolve_and_probe_rnodes(scenario: &mut TestScenario) -> Result<(), RunnerErr
         }
     }
 
+    // Silence every discovered T114 the scenario did not bind. A fresh-flashed
+    // T114 defaults to csma=false and emits Reticulum announces on the
+    // benchmark channel, which the sender's RNode reads as CSMA-busy and
+    // backs off from. Pushing the test channel's radio config with
+    // csma_enabled=true tunes the idle T114 to the same frequency (so its
+    // CAD actually sees the benchmark traffic) and makes it a polite
+    // neighbour. See Bug #2 diagnosis (2026-04-13 T22-31-48 capture).
+    if let Some(ref radio) = scenario.radio {
+        for lnode in discovered.lnodes.iter().skip(lnode_idx) {
+            silence_unused_lnode(&lnode.data_port, &lnode.usb_serial, radio);
+        }
+    }
+
     Ok(())
+}
+
+/// Send a radio-config frame with `csma_enabled=true` to a T114 that the
+/// current scenario does not bind. Best-effort: failures warn and continue —
+/// a silent failure here only reintroduces the Bug #2 symptom.
+fn silence_unused_lnode(port_path: &str, usb_serial: &str, radio: &crate::topology::RadioConfig) {
+    use reticulum_core::framing::hdlc::{frame, DeframeResult, Deframer};
+    use reticulum_core::rnode::{build_radio_config_frame, RadioConfigWire, RADIO_CONFIG_ACK};
+    use std::io::{Read, Write};
+
+    let wire = RadioConfigWire {
+        frequency_hz: radio.frequency as u32,
+        bandwidth_hz: radio.bandwidth,
+        sf: radio.spreading_factor,
+        cr: radio.coding_rate,
+        tx_power_dbm: radio.tx_power as i8,
+        preamble_len: 24,
+        csma_enabled: true,
+        // Drop every outgoing LoRa frame at the driver level. CSMA alone
+        // still allows the idle T114 to announce between probe bursts — see
+        // Bug #2 diag Run 2 (2026-04-13 T23-14-02) alternating-timeout
+        // pattern even with csma=on. radio_silent makes the idle T114 a
+        // listen-only neighbour.
+        radio_silent: true,
+    };
+    let payload = build_radio_config_frame(&wire);
+    let mut framed = Vec::new();
+    frame(&payload, &mut framed);
+
+    let mut port = match serialport::new(port_path, 115_200)
+        .timeout(Duration::from_millis(200))
+        .open()
+    {
+        Ok(p) => p,
+        Err(e) => {
+            eprintln!("[silence] T114 {usb_serial} at {port_path}: open failed: {e}");
+            return;
+        }
+    };
+    // CDC-ACM only transmits after DTR is asserted (matches debug-capture path).
+    let _ = port.write_data_terminal_ready(true);
+
+    for attempt in 1..=3u8 {
+        if let Err(e) = port.write_all(&framed) {
+            eprintln!("[silence] T114 {usb_serial}: write (attempt {attempt}) failed: {e}");
+            continue;
+        }
+        let _ = port.flush();
+
+        let mut deframer = Deframer::new();
+        let mut buf = [0u8; 64];
+        let deadline = Instant::now() + Duration::from_secs(2);
+        while Instant::now() < deadline {
+            match port.read(&mut buf) {
+                Ok(n) if n > 0 => {
+                    for r in deframer.process(&buf[..n]) {
+                        if let DeframeResult::Frame(data) = r {
+                            if data.as_slice() == RADIO_CONFIG_ACK {
+                                eprintln!(
+                                    "[silence] T114 {usb_serial} at {port_path}: csma=on acked"
+                                );
+                                return;
+                            }
+                        }
+                    }
+                }
+                Ok(_) => {}
+                Err(ref e) if e.kind() == io::ErrorKind::TimedOut => continue,
+                Err(e) => {
+                    eprintln!("[silence] T114 {usb_serial}: read error: {e}");
+                    break;
+                }
+            }
+        }
+        eprintln!("[silence] T114 {usb_serial}: attempt {attempt}/3 no ack, retrying");
+    }
+    eprintln!(
+        "[silence] T114 {usb_serial} at {port_path}: NO ACK after 3 attempts — idle T114 may still disturb channel"
+    );
 }
 
 /// Spawn lora-proxy processes for all nodes with `rnode_proxy = true`.

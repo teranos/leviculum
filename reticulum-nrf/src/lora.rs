@@ -96,6 +96,11 @@ pub struct RadioConfig {
     pub bw_hz: u32,       // human-readable bandwidth in Hz (for logging)
     pub cr_denom: u8,     // human-readable coding rate denominator 5-8 (for logging)
     pub csma_enabled: bool,
+    /// When true, drop every outgoing LoRa packet at the driver boundary —
+    /// the radio keeps listening but never transmits. Used by the
+    /// integration-test runner to neutralize T114s it does not bind, so the
+    /// test channel is not polluted by their Reticulum announces.
+    pub radio_silent: bool,
 }
 
 impl RadioConfig {
@@ -111,6 +116,7 @@ impl RadioConfig {
             bw_hz: 125_000,
             cr_denom: 5,
             csma_enabled: false,
+            radio_silent: false,
         }
     }
 
@@ -148,6 +154,7 @@ impl RadioConfig {
             bw_hz: wire.bandwidth_hz,
             cr_denom: wire.cr,
             csma_enabled: wire.csma_enabled,
+            radio_silent: wire.radio_silent,
         })
     }
 }
@@ -404,12 +411,20 @@ pub async fn lora_task(mut radio: Radio, mut config: RadioConfig) {
             }
         }
 
-        // Pick up a new packet to send if no TX is in flight
+        // Pick up a new packet to send if no TX is in flight. When
+        // `radio_silent` is set, drop everything the stack hands us instead
+        // of starting a TX — the radio stays listening but never transmits.
+        // See Bug #2: unused test T114s must not pollute the LoRa channel
+        // with their own Reticulum announces.
         if pending_tx.is_none() {
             if let Ok(data) = outgoing_rx.try_receive() {
-                pending_tx = Some(data);
-                csma_attempt = 0;
-                csma_cw = CSMA_CW_INITIAL;
+                if config.radio_silent {
+                    drop(data);
+                } else {
+                    pending_tx = Some(data);
+                    csma_attempt = 0;
+                    csma_cw = CSMA_CW_INITIAL;
+                }
             }
         }
 

@@ -122,6 +122,7 @@ async fn send_radio_config(
         tx_power_dbm: config.tx_power,
         preamble_len: config.preamble_len,
         csma_enabled: config.csma_enabled,
+        radio_silent: false,
     };
     let payload = reticulum_core::rnode::build_radio_config_frame(&wire);
     let mut frame_buf = Vec::new();

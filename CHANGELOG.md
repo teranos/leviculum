@@ -5,6 +5,20 @@ All notable changes to this project will be documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+
+Radio-config wire format gained a `radio_silent` flag (byte 15 of
+the payload, backward-compatible parse down to 13 bytes). When set,
+the T114 firmware drops outgoing LoRa packets at the driver
+boundary — the radio keeps listening but never transmits. The
+integration-test runner uses this to neutralize every T114 the
+scenario does not bind, so single-pair LoRa benchmarks stop
+seeing the idle T114's Reticulum announces as CSMA-busy. Bug #2
+CA-ON single-pair PDR distribution collapses from σ≈21 to σ≈4
+(mean 79 → 97 %, min 44 → 88 %).
+
 ## [0.6.3] - 2026-04-01
 
 ### Fixed
