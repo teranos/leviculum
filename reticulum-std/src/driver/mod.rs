@@ -1322,8 +1322,8 @@ async fn run_event_loop(
             // Bug #3 Phase 2a (E3): fires exactly when the earliest
             // retry-queue head becomes eligible. The arm only exists
             // when retry_wake_instant is Some; otherwise the select
-            // skips it. Inside, we call drain + push_next_slot_ms to
-            // get the packets out and refresh Transport's slot cache.
+            // skips it. Inside, we call drain + push_interface_state to
+            // get the packets out and refresh Transport's caches.
             _ = async {
                 match retry_wake_instant {
                     Some(t) => tokio::time::sleep_until(t).await,
@@ -1332,7 +1332,7 @@ async fn run_event_loop(
             } => {
                 let now_ms = inner.lock().unwrap().now_ms();
                 drain_retry_queues(&mut retry_queues, &mut registry, now_ms);
-                push_next_slot_ms(&mut registry, &inner);
+                push_interface_state(&mut registry, &inner);
             }
 
             // Branch 1: Packet from any interface
@@ -1594,13 +1594,14 @@ fn dispatch_output(
     // warning. Also drop entries for queues that no longer exist.
     retry_queue_warned.retain(|idx| retry_queues.get(idx).map(|q| q.len() >= 8).unwrap_or(false));
 
-    // 5a. Push per-interface next_slot_ms into the Transport backchannel.
-    //     Bug #3 Phase 2a (C3): Transport can't hold handles (sans-I/O),
-    //     so the driver queries each Interface::next_slot_ms(MTU, now)
-    //     and mirrors it into Transport. D1 + C4 + C5 read from there.
-    //     Slot is computed at MTU size — conservative for smaller packets
-    //     (see doc on set_interface_next_slot_ms).
-    push_next_slot_ms(registry, inner);
+    // 5a. Push per-interface next_slot_ms + max_airtime_ms into the
+    //     Transport backchannels. Transport can't hold handles
+    //     (sans-I/O), so the driver mirrors both quantities here.
+    //     next_slot_ms is read by the announce-retry / direct-send
+    //     path; max_airtime_ms feeds the jitter-window helper that
+    //     scales announce retry randomness with the slowest link's
+    //     airtime.
+    push_interface_state(registry, inner);
 
     // 6. Forward events to application (best effort — drop if full)
     for event in output.events {
@@ -1744,10 +1745,18 @@ fn drain_retry_queues(
     }
 }
 
-/// Mirror each interface's `next_slot_ms(MTU, now_ms)` into Transport's
-/// backchannel. Bug #3 Phase 2a (C3). Extracted so it is unit-testable
-/// without spinning up the full driver; called from `dispatch_output`.
-fn push_next_slot_ms(registry: &mut InterfaceRegistry, inner: &Arc<Mutex<StdNodeCore>>) {
+/// Mirror each interface's per-tick state into Transport's
+/// backchannels. Pushes `next_slot_ms(MTU, now_ms)` for the
+/// readiness cache and, for LoRa-Serial interfaces with an airtime
+/// credit bucket, the worst-case airtime that drives the jitter
+/// window for announce retries. Non-LoRa interfaces have
+/// `credit == None` and are simply skipped for the airtime push;
+/// Transport's getter falls back to the legacy floor when no
+/// interface contributes.
+///
+/// Extracted so it is unit-testable without spinning up the full
+/// driver; called from `dispatch_output`.
+fn push_interface_state(registry: &mut InterfaceRegistry, inner: &Arc<Mutex<StdNodeCore>>) {
     use reticulum_core::traits::Interface;
     let now_ms = inner.lock().unwrap().now_ms();
     let mut core = inner.lock().unwrap();
@@ -1756,6 +1765,13 @@ fn push_next_slot_ms(registry: &mut InterfaceRegistry, inner: &Arc<Mutex<StdNode
         let iface_idx = handle.id().0;
         let slot = handle.next_slot_ms(mtu, now_ms);
         core.set_interface_next_slot_ms(iface_idx, slot);
+        if let Some(credit) = handle.credit.as_ref() {
+            let max_airtime = credit
+                .lock()
+                .expect("airtime credit mutex poisoned")
+                .max_airtime_ms();
+            core.set_interface_max_airtime_ms(iface_idx, max_airtime);
+        }
     }
 }
 
@@ -2078,13 +2094,12 @@ mod tests {
         assert_eq!(received, 3);
     }
 
-    /// Bug #3 Phase 2a (C3): push_next_slot_ms copies per-interface
-    /// next_slot_ms into Transport's backchannel. Build a synthetic
-    /// registry with one LoRa (saturated bucket → future slot) and
-    /// one non-LoRa (default → now_ms), run the push, assert Transport
-    /// reflects both.
+    /// push_interface_state copies per-interface next_slot_ms into
+    /// Transport's backchannel. Build a synthetic registry with one
+    /// LoRa (saturated bucket → future slot) and one non-LoRa (default
+    /// → now_ms), run the push, assert Transport reflects both.
     #[tokio::test(flavor = "current_thread")]
-    async fn push_next_slot_ms_mirrors_per_handle_values() {
+    async fn push_interface_state_mirrors_per_handle_values() {
         use crate::interfaces::airtime::AirtimeCredit;
         use crate::interfaces::{InterfaceCounters, InterfaceHandle, InterfaceInfo};
         use reticulum_core::transport::InterfaceId;
@@ -2150,7 +2165,7 @@ mod tests {
         registry.register(plain_handle);
 
         // Run the push.
-        push_next_slot_ms(&mut registry, &core);
+        push_interface_state(&mut registry, &core);
 
         // LoRa (idx=1, saturated): slot must be in the future relative to now_ms.
         let now_ms = core.lock().unwrap().now_ms();
@@ -2162,5 +2177,161 @@ mod tests {
         // Plain (idx=2, no credit): slot equals now_ms (trait default).
         let plain_slot = core.lock().unwrap().next_slot_ms_for_interface(2, now_ms);
         assert_eq!(plain_slot, now_ms, "non-LoRa should map to now_ms");
+    }
+
+    /// One LoRa-Serial handle at SF7 → Transport's
+    /// announce_jitter_max_ms() reflects the SF7 airtime (which at
+    /// 500 B is well below 167 ms, so the legacy 500 ms floor wins).
+    /// Verifies the airtime push runs and the helper composes
+    /// correctly. Use SF10 for a value the helper actually amplifies.
+    #[tokio::test(flavor = "current_thread")]
+    async fn push_interface_state_pushes_max_airtime_for_lora() {
+        use crate::interfaces::airtime::AirtimeCredit;
+        use crate::interfaces::{InterfaceCounters, InterfaceHandle, InterfaceInfo};
+        use reticulum_core::transport::InterfaceId;
+
+        let tmp = std::env::temp_dir().join(format!("bug19-a2-test-{}", std::process::id()));
+        std::fs::create_dir_all(&tmp).unwrap();
+        let core: Arc<Mutex<StdNodeCore>> = {
+            let node = reticulum_core::node::NodeCoreBuilder::new()
+                .enable_transport(true)
+                .build(
+                    rand_core::OsRng,
+                    SystemClock::new(),
+                    crate::storage::Storage::new(&tmp).unwrap(),
+                );
+            Arc::new(Mutex::new(node))
+        };
+
+        let mut registry = InterfaceRegistry::new();
+        let (_inc_tx, inc_rx) = tokio::sync::mpsc::channel(4);
+        let (out_tx, _out_rx) = tokio::sync::mpsc::channel(4);
+        let credit = AirtimeCredit::new(125_000, 10, 8, 500);
+        let expected_airtime = credit.max_airtime_ms();
+        let handle = InterfaceHandle {
+            info: InterfaceInfo {
+                id: InterfaceId(1),
+                name: "lora-sf10".into(),
+                hw_mtu: Some(500),
+                is_local_client: false,
+                bitrate: None,
+                ifac: None,
+            },
+            incoming: inc_rx,
+            outgoing: out_tx,
+            counters: Arc::new(InterfaceCounters::new()),
+            credit: Some(Arc::new(Mutex::new(credit))),
+        };
+        registry.register(handle);
+
+        push_interface_state(&mut registry, &core);
+
+        let jitter = core.lock().unwrap().announce_jitter_max_ms();
+        assert_eq!(
+            jitter,
+            (3 * expected_airtime).max(500),
+            "jitter window should track SF10 airtime"
+        );
+    }
+
+    /// A non-LoRa registry leaves the airtime map empty; the helper
+    /// returns the legacy floor.
+    #[tokio::test(flavor = "current_thread")]
+    async fn push_interface_state_skips_airtime_for_non_lora() {
+        use crate::interfaces::{InterfaceCounters, InterfaceHandle, InterfaceInfo};
+        use reticulum_core::transport::InterfaceId;
+
+        let tmp = std::env::temp_dir().join(format!("bug19-a2-non-lora-{}", std::process::id()));
+        std::fs::create_dir_all(&tmp).unwrap();
+        let core: Arc<Mutex<StdNodeCore>> = {
+            let node = reticulum_core::node::NodeCoreBuilder::new()
+                .enable_transport(true)
+                .build(
+                    rand_core::OsRng,
+                    SystemClock::new(),
+                    crate::storage::Storage::new(&tmp).unwrap(),
+                );
+            Arc::new(Mutex::new(node))
+        };
+
+        let mut registry = InterfaceRegistry::new();
+        let (_inc_tx, inc_rx) = tokio::sync::mpsc::channel(4);
+        let (out_tx, _out_rx) = tokio::sync::mpsc::channel(4);
+        let handle = InterfaceHandle {
+            info: InterfaceInfo {
+                id: InterfaceId(2),
+                name: "tcp-test".into(),
+                hw_mtu: None,
+                is_local_client: false,
+                bitrate: None,
+                ifac: None,
+            },
+            incoming: inc_rx,
+            outgoing: out_tx,
+            counters: Arc::new(InterfaceCounters::new()),
+            credit: None,
+        };
+        registry.register(handle);
+
+        push_interface_state(&mut registry, &core);
+
+        let jitter = core.lock().unwrap().announce_jitter_max_ms();
+        assert_eq!(jitter, 500, "no LoRa interface ⇒ legacy floor");
+    }
+
+    /// Reconfiguring the bucket's radio params (SF7 → SF10) is picked
+    /// up on the next push. Mirrors the live `send_radio_config` flow:
+    /// the bucket's `update_radio_params` swaps params atomically; the
+    /// next dispatch tick mirrors the new airtime into Transport.
+    #[tokio::test(flavor = "current_thread")]
+    async fn push_interface_state_picks_up_runtime_radio_reconfig() {
+        use crate::interfaces::airtime::AirtimeCredit;
+        use crate::interfaces::{InterfaceCounters, InterfaceHandle, InterfaceInfo};
+        use reticulum_core::transport::InterfaceId;
+
+        let tmp = std::env::temp_dir().join(format!("bug19-a2-reconfig-{}", std::process::id()));
+        std::fs::create_dir_all(&tmp).unwrap();
+        let core: Arc<Mutex<StdNodeCore>> = {
+            let node = reticulum_core::node::NodeCoreBuilder::new()
+                .enable_transport(true)
+                .build(
+                    rand_core::OsRng,
+                    SystemClock::new(),
+                    crate::storage::Storage::new(&tmp).unwrap(),
+                );
+            Arc::new(Mutex::new(node))
+        };
+
+        let mut registry = InterfaceRegistry::new();
+        let (_inc_tx, inc_rx) = tokio::sync::mpsc::channel(4);
+        let (out_tx, _out_rx) = tokio::sync::mpsc::channel(4);
+        let credit = Arc::new(Mutex::new(AirtimeCredit::new(125_000, 7, 5, 500)));
+        let handle = InterfaceHandle {
+            info: InterfaceInfo {
+                id: InterfaceId(1),
+                name: "lora-reconfig".into(),
+                hw_mtu: Some(500),
+                is_local_client: false,
+                bitrate: None,
+                ifac: None,
+            },
+            incoming: inc_rx,
+            outgoing: out_tx,
+            counters: Arc::new(InterfaceCounters::new()),
+            credit: Some(credit.clone()),
+        };
+        registry.register(handle);
+
+        push_interface_state(&mut registry, &core);
+        let sf7_jitter = core.lock().unwrap().announce_jitter_max_ms();
+
+        credit.lock().unwrap().update_radio_params(125_000, 10, 8);
+        push_interface_state(&mut registry, &core);
+        let sf10_jitter = core.lock().unwrap().announce_jitter_max_ms();
+
+        assert!(
+            sf10_jitter > sf7_jitter,
+            "SF10 jitter ({sf10_jitter}) must exceed SF7 ({sf7_jitter}) after reconfig"
+        );
     }
 }

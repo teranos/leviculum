@@ -1130,6 +1130,22 @@ impl<R: CryptoRngCore, C: Clock, S: Storage> NodeCore<R, C, S> {
             .set_interface_next_slot_ms(iface_idx, slot_ms);
     }
 
+    /// Record the worst-case airtime in milliseconds for one MTU-sized
+    /// transmit on the given interface. Pushed by the driver after each
+    /// dispatch tick for LoRa-Serial interfaces. See
+    /// `Transport::set_interface_max_airtime_ms` for the
+    /// per-destination jitter trade-off.
+    pub fn set_interface_max_airtime_ms(&mut self, iface_idx: usize, ms: u64) {
+        self.transport.set_interface_max_airtime_ms(iface_idx, ms);
+    }
+
+    /// Read the announce-retry jitter ceiling derived from the
+    /// per-interface airtime backchannel. See
+    /// `Transport::announce_jitter_max_ms`.
+    pub fn announce_jitter_max_ms(&self) -> u64 {
+        self.transport.announce_jitter_max_ms()
+    }
+
     /// Read the earliest ready time pushed by the driver for this
     /// interface, falling back to `now_ms` when no value has been
     /// pushed yet.

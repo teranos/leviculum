@@ -93,6 +93,14 @@ impl AirtimeCredit {
         }
     }
 
+    /// Worst-case airtime in milliseconds for one full-MTU transmit
+    /// under the bucket's current radio params. Used by the driver to
+    /// populate Transport's `interface_max_airtime_ms` backchannel,
+    /// which sizes the announce-retry jitter window.
+    pub(crate) fn max_airtime_ms(&self) -> u64 {
+        airtime_ms(self.max_payload_bytes, self.bw_hz, self.sf, self.cr)
+    }
+
     /// Swap the radio params used to price subsequent charges.
     /// Preserves `credit_ms` and `last_update_ms` — the in-flight
     /// packet was already charged under the old params and drains
