@@ -150,7 +150,7 @@ async fn test_rust_relay_announce_and_link_data() {
     }
 
     // Step 8: Wait and verify Python-B received the messages
-    // Note: the test daemon echoes received packets, which causes echo ping-pong.
+    // the test daemon echoes received packets, which causes echo ping-pong.
     // We check that each unique message was received at least once.
     let mut b_received_set = std::collections::HashSet::new();
     let deadline = tokio::time::Instant::now() + Duration::from_secs(10);

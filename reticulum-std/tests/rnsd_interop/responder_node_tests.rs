@@ -1,4 +1,4 @@
-//! Responder Node interop tests — Rust as link responder via high-level API
+//! Responder Node interop tests ; Rust as link responder via high-level API
 //!
 //! These tests verify the full responder path using `ReticulumNode::accept_link()`,
 //! proving that:
@@ -41,8 +41,7 @@ use crate::harness::TestDaemon;
 /// Topology: Py-Initiator → Py-Relay (transport) → Rust-Node (responder)
 #[tokio::test]
 async fn test_rust_node_as_responder() {
-    // ── Phase 1: Setup ──────────────────────────────────────────────────
-
+    // Phase 1: Setup
     // Start Python relay (transport node) and initiator
     let py_relay = TestDaemon::start().await.expect("Failed to start Py-Relay");
     let py_initiator = TestDaemon::start()
@@ -74,8 +73,7 @@ async fn test_rust_node_as_responder() {
     rust_node.start().await.expect("Failed to start Rust node");
     tokio::time::sleep(Duration::from_secs(1)).await;
 
-    // ── Phase 2: Register + Announce ────────────────────────────────────
-
+    // Phase 2: Register + Announce
     // Create a Rust identity and destination
     let rust_identity = Identity::generate(&mut rand_core::OsRng);
     let public_key_hex = hex::encode(rust_identity.public_key_bytes());
@@ -116,8 +114,7 @@ async fn test_rust_node_as_responder() {
         "Py-Initiator should learn path to Rust destination through Relay"
     );
 
-    // ── Phase 3: Incoming Link ──────────────────────────────────────────
-
+    // Phase 3: Incoming Link
     // Python create_link blocks until the link is ACTIVE or times out.
     // We must accept the link on the Rust side concurrently, so
     // spawn create_link as a background task using a raw JSON-RPC call.
@@ -152,16 +149,15 @@ async fn test_rust_node_as_responder() {
         "Should receive LinkEstablished(is_initiator=false) within 15s"
     );
 
-    // Join the create_link background task — it should have succeeded by now
+    // Join the create_link background task ; it should have succeeded by now
     let link_hash = create_link_handle
         .await
         .expect("create_link task panicked")
         .expect("Python create_link should succeed");
     eprintln!("Python link established: {}", link_hash);
 
-    // ── Phase 4: Bidirectional Data ─────────────────────────────────────
-
-    // Python → Rust (raw data via send_on_link — produces LinkDataReceived)
+    // Phase 4: Bidirectional Data
+    // Python → Rust (raw data via send_on_link ; produces LinkDataReceived)
     py_initiator
         .send_on_link(&link_hash, b"hello-from-python-initiator")
         .await
@@ -176,7 +172,7 @@ async fn test_rust_node_as_responder() {
     );
     eprintln!("Rust received Python→Rust data: OK");
 
-    // Rust → Python (via Channel / send() — produces MessageReceived on receiver)
+    // Rust → Python (via Channel / send() ; produces MessageReceived on receiver)
     // This is the key test for the MessageReceived routing fix: LinkHandle::try_send()
     // uses Channel internally, which produces MessageReceived events, not LinkDataReceived.
     stream
@@ -208,8 +204,7 @@ async fn test_rust_node_as_responder() {
     );
     eprintln!("Python received Rust→Python data: OK");
 
-    // ── Cleanup ─────────────────────────────────────────────────────────
-
+    // Cleanup
     stream.close().await.expect("Failed to close stream");
     rust_node.stop().await.expect("Failed to stop Rust node");
     eprintln!("test_rust_node_as_responder: PASSED");

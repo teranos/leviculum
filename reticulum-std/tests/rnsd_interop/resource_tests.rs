@@ -444,7 +444,7 @@ async fn test_python_sends_resource_with_metadata() {
 
     assert_eq!(received_data, data, "Data should match");
 
-    // Rust receives msgpack-encoded metadata — decode and verify
+    // Rust receives msgpack-encoded metadata ; decode and verify
     let metadata_bytes = received_metadata.expect("Metadata should be present");
     let decoded = msgpack_decode_bin(&metadata_bytes);
     assert_eq!(decoded, raw_metadata, "Decoded metadata should match");
@@ -471,7 +471,7 @@ async fn test_rust_sends_large_resource() {
         .await
         .expect("send_resource should succeed");
 
-    // Large transfer — allow 60s
+    // Large transfer ; allow 60s
     assert!(
         wait_for_resource_sender_completed(&mut event_rx, &link_id, Duration::from_secs(60)).await,
         "Rust sender should get ResourceCompleted for large resource"
@@ -517,7 +517,7 @@ async fn test_python_sends_large_resource_to_rust() {
         .await
         .expect("Python send_resource should succeed");
 
-    // Large transfer — allow 60s
+    // Large transfer ; allow 60s
     let (received_data, received_metadata) =
         wait_for_resource_completed(&mut event_rx, &link_id, Duration::from_secs(60))
             .await

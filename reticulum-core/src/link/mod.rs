@@ -140,7 +140,7 @@ fn build_proof_signed_data(
     signed_data
 }
 
-/// Handshake phase — tracks which side we're on and when we started waiting.
+/// Handshake phase ; tracks which side we're on and when we started waiting.
 /// Consumed by `check_timeouts()` to detect stalled handshakes.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum LinkPhase {
@@ -188,9 +188,9 @@ pub enum LinkError {
     NotFound,
     /// Unsupported link encryption mode signaled by the peer
     UnsupportedMode,
-    /// Send path is occupied — try later (mirrors [`ChannelError::Busy`])
+    /// Send path is occupied ; try later (mirrors [`ChannelError::Busy`])
     Busy,
-    /// Channel is pacing sends — retry at the given time (mirrors [`ChannelError::PacingDelay`])
+    /// Channel is pacing sends ; retry at the given time (mirrors [`ChannelError::PacingDelay`])
     PacingDelay { ready_at_ms: u64 },
     /// Destination not registered on this node
     DestinationNotRegistered,
@@ -656,7 +656,7 @@ impl Link {
         let signaling_bytes = encode_signaling_bytes(mtu, mode);
 
         // Build signed data: link_id (16) + our_x25519_pub (32) + dest_ed25519_pub (32) + signaling (3)
-        // Note: Python RNS uses the destination's Ed25519 signing key (not the link's ephemeral one)
+        // Python RNS uses the destination's Ed25519 signing key (not the link's ephemeral one)
         let signed_data = build_proof_signed_data(
             &self.id,
             self.ephemeral_public.as_bytes(),
@@ -735,7 +735,7 @@ impl Link {
             "link: handshake RTT measured"
         );
 
-        // Link is now active — clear cached proof (no longer needed for re-send)
+        // Link is now active ; clear cached proof (no longer needed for re-send)
         self.state = LinkState::Active;
         self.cached_proof = None;
 
@@ -1023,7 +1023,7 @@ impl Link {
     ///
     /// **Note:** Proof validation is directional. The initiator can validate proofs
     /// from the responder (destination owner) because `peer_verifying_key` is set to
-    /// the destination's identity key. The reverse direction is not supported — the
+    /// the destination's identity key. The reverse direction is not supported ; the
     /// responder's `peer_verifying_key` is the initiator's ephemeral key, not their
     /// identity key.
     ///
@@ -1129,8 +1129,7 @@ impl Link {
         self.stale_time_secs = self.keepalive_secs * LINK_STALE_FACTOR;
     }
 
-    // ─── RTT retry state (initiator only) ─────────────────────────────
-
+    // RTT retry state (initiator only)
     /// Timestamp of the last RTT packet send (milliseconds)
     pub(crate) fn rtt_sent_at_ms(&self) -> Option<u64> {
         self.rtt_sent_at_ms
@@ -1286,8 +1285,7 @@ impl Link {
         self.channel.as_mut().unwrap()
     }
 
-    // ── Resource accessors ───────────────────────────────────────────────
-
+    // Resource accessors
     /// Set the resource acceptance strategy.
     pub fn set_resource_strategy(&mut self, strategy: crate::resource::ResourceStrategy) {
         self.resource_strategy = strategy;
@@ -1740,7 +1738,7 @@ impl Link {
         packet.extend_from_slice(&request_data);
 
         // Calculate and set link ID from the complete packet
-        // Note: Link ID calculation uses the same algorithm regardless of header type
+        // Link ID calculation uses the same algorithm regardless of header type
         let link_id = Self::calculate_link_id(&packet);
         self.set_link_id(link_id);
 
@@ -3238,8 +3236,7 @@ mod tests {
         assert!(link.established_at.is_some());
     }
 
-    // ─── MTU Negotiation Tests ───────────────────────────────────────────
-
+    // MTU Negotiation Tests
     #[test]
     fn test_decode_signaling_bytes_roundtrip() {
         // Round-trip: encode then decode must produce the same values
@@ -3665,8 +3662,7 @@ mod tests {
         assert!(matches!(result, Err(LinkError::InvalidState)));
     }
 
-    // ─── LinkIdentify tests ──────────────────────────────────────────────────
-
+    // LinkIdentify tests
     #[test]
     fn test_link_identify_roundtrip() {
         use crate::identity::Identity;
@@ -3723,7 +3719,7 @@ mod tests {
         let (initiator, responder) = setup_active_link_pair();
         let link_id = *initiator.id();
 
-        // Create two identities — sign with one, claim to be the other
+        // Create two identities ; sign with one, claim to be the other
         let real_identity = Identity::generate(&mut OsRng);
         let fake_identity = Identity::generate(&mut OsRng);
 

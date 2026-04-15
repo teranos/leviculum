@@ -210,7 +210,7 @@ impl ReticulumNodeBuilder {
     /// Add a UDP interface
     ///
     /// Binds to `listen_addr` for incoming datagrams and sends outgoing
-    /// datagrams to `forward_addr`. No framing — each datagram is one packet.
+    /// datagrams to `forward_addr`. No framing ; each datagram is one packet.
     pub fn add_udp_interface(mut self, listen_addr: SocketAddr, forward_addr: SocketAddr) -> Self {
         self.interfaces.push(InterfaceConfig {
             interface_type: "UDPInterface".to_string(),
@@ -347,7 +347,7 @@ impl ReticulumNodeBuilder {
     ///
     /// The node will connect to `\0rns/{instance_name}` and route all
     /// traffic through the daemon. No config-file interfaces (TCP, UDP,
-    /// Auto, RNode) will be loaded — the daemon connection is the only
+    /// Auto, RNode) will be loaded ; the daemon connection is the only
     /// interface.
     ///
     /// Should be used with `enable_transport(false)`.
@@ -442,7 +442,7 @@ impl ReticulumNodeBuilder {
             };
             self.core_builder.identity(identity)
         } else {
-            // Explicit identity — write to file so Python tools can read it
+            // Explicit identity ; write to file so Python tools can read it
             use reticulum_core::identity_store::IdentityStore;
             if let Some(id) = self.core_builder.identity_ref() {
                 let _ = id_store.save(id);
@@ -453,7 +453,7 @@ impl ReticulumNodeBuilder {
             .enable_transport(enable_transport)
             .respond_to_probes(config.reticulum.respond_to_probes);
 
-        // Build NodeCore (consumes storage — persistent data already loaded)
+        // Build NodeCore (consumes storage ; persistent data already loaded)
         let node_core = core_builder.build(rand_core::OsRng, clock, storage);
 
         let mut node = ReticulumNode::new(node_core, interfaces, self.corrupt_every);
@@ -556,7 +556,7 @@ mod tests {
 
     #[test]
     fn test_builder_defaults_transport_enabled_from_config() {
-        // No explicit enable_transport call — should use config default (true)
+        // No explicit enable_transport call ; should use config default (true)
         let node = ReticulumNodeBuilder::new()
             .build_sync()
             .expect("build_sync failed");

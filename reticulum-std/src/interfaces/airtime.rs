@@ -102,7 +102,7 @@ impl AirtimeCredit {
     }
 
     /// Swap the radio params used to price subsequent charges.
-    /// Preserves `credit_ms` and `last_update_ms` — the in-flight
+    /// Preserves `credit_ms` and `last_update_ms` ; the in-flight
     /// packet was already charged under the old params and drains
     /// under them; subsequent packets pay the new price. Threshold
     /// and max_credit are recomputed from `max_payload_bytes` under

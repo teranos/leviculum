@@ -56,7 +56,7 @@ pub fn now_ms() -> u64 {
 
 /// Create a unique temp storage directory for a test node.
 ///
-/// Returns `TempDir` guard — directory is removed on Drop. The caller must
+/// Returns `TempDir` guard ; directory is removed on Drop. The caller must
 /// keep the guard alive for the test duration. Use `.path().to_path_buf()`
 /// to get the `PathBuf` for `ReticulumNodeBuilder::storage_path()`.
 pub fn temp_storage(test_name: &str, node: &str) -> tempfile::TempDir {
@@ -1233,7 +1233,7 @@ pub async fn wait_for_link_on_daemon(
 // MTU test constants and helpers
 // =========================================================================
 
-/// TCP interface hardware MTU — the class-level maximum (TCPInterface.HW_MTU).
+/// TCP interface hardware MTU ; the class-level maximum (TCPInterface.HW_MTU).
 /// Used when configuring Rust node interfaces via `set_interface_hw_mtu()`.
 pub const TCP_HW_MTU: u32 = 262144;
 

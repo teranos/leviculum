@@ -393,7 +393,7 @@ pub async fn run_listen(
                         }
 
                         if segment_index == total_segments {
-                            // Last segment — save the complete file
+                            // Last segment ; save the complete file
                             if let Err(e) = save_received_file(
                                 &segment_buffer,
                                 segment_metadata.as_deref(),
@@ -453,7 +453,7 @@ pub async fn run_listen(
 /// Server-side handler for fetch_file requests.
 ///
 /// Reads the requested file, starts a Resource transfer, then sends the
-/// response. This ordering matches Python rncp exactly — the Resource ADV
+/// response. This ordering matches Python rncp exactly ; the Resource ADV
 /// is sent before the response so the client (which has AcceptAll set)
 /// receives the data as soon as possible.
 #[allow(clippy::too_many_arguments)]
@@ -492,7 +492,7 @@ async fn handle_fetch_request(
         let canonical_file = match std::fs::canonicalize(&file_path) {
             Ok(p) => p,
             Err(_) => {
-                // File doesn't exist or can't be resolved — deny
+                // File doesn't exist or can't be resolved ; deny
                 if !quiet {
                     eprintln!("Fetch denied (not in jail): {}", requested_path);
                 }
@@ -537,7 +537,7 @@ async fn handle_fetch_request(
         eprintln!("Sending {} ({} bytes)", requested_path, file_data.len());
     }
 
-    // Send Resource FIRST, then response — matches Python ordering
+    // Send Resource FIRST, then response ; matches Python ordering
     node.send_resource(link_id, &file_data, Some(&metadata_bytes), true)
         .await?;
 
@@ -616,7 +616,7 @@ pub async fn run_fetch(
     )
     .await?;
 
-    // Set AcceptAll BEFORE sending request — the server starts the Resource
+    // Set AcceptAll BEFORE sending request ; the server starts the Resource
     // transfer as a side-effect, so we must be ready to accept it.
     node.set_resource_strategy(
         &link_id,
@@ -714,7 +714,7 @@ pub async fn run_fetch(
                         }
 
                         if segment_index == total_segments {
-                            // Last segment — save the complete file
+                            // Last segment ; save the complete file
                             save_received_file(
                                 &segment_buffer,
                                 segment_metadata.as_deref(),
@@ -996,7 +996,7 @@ mod tests {
         // Wait for announce to propagate
         tokio::time::sleep(Duration::from_millis(1500)).await;
 
-        // Send with identity — should succeed
+        // Send with identity ; should succeed
         let result = run_send(
             &sender_node,
             &mut sev,
@@ -1065,7 +1065,7 @@ mod tests {
         // Wait for announce to propagate
         tokio::time::sleep(Duration::from_millis(1500)).await;
 
-        // Send with wrong identity — should fail
+        // Send with wrong identity ; should fail
         let result = run_send(
             &sender_node,
             &mut sev,
@@ -1124,7 +1124,7 @@ mod tests {
         // Wait for announce to propagate
         tokio::time::sleep(Duration::from_millis(1500)).await;
 
-        // Send without identity — should succeed in no_auth mode
+        // Send without identity ; should succeed in no_auth mode
         let result = run_send(
             &sender_node,
             &mut sev,
@@ -1264,12 +1264,12 @@ mod tests {
         let outside = tmp.path().join("outside.txt");
         std::fs::write(&outside, b"secret").unwrap();
 
-        // File inside jail — canonicalize succeeds and starts_with matches
+        // File inside jail ; canonicalize succeeds and starts_with matches
         let canonical_jail = std::fs::canonicalize(&jail).unwrap();
         let canonical_inside = std::fs::canonicalize(&inside).unwrap();
         assert!(canonical_inside.starts_with(&canonical_jail));
 
-        // File outside jail — should NOT start_with jail
+        // File outside jail ; should NOT start_with jail
         let canonical_outside = std::fs::canonicalize(&outside).unwrap();
         assert!(!canonical_outside.starts_with(&canonical_jail));
     }

@@ -77,7 +77,7 @@ async fn test_announce_creates_path_entry() {
         "Path entry should exist in path_table"
     );
     let entry = path_entry.unwrap();
-    // Note: Reticulum increments hop count when receiving, so hops=0 in packet becomes hops=1 in path_table
+    // Reticulum increments hop count when receiving, so hops=0 in packet becomes hops=1 in path_table
     assert_eq!(
         entry.hops,
         Some(1),
@@ -112,7 +112,7 @@ async fn test_announce_hop_count_recorded() {
 
     let entry0 = paths.get(&hex::encode(hash0));
     assert!(entry0.is_some(), "Path for hops=0 should exist");
-    // Note: The daemon may increment the hop count when recording
+    // The daemon may increment the hop count when recording
     println!(
         "Hops=0 announce recorded with hops={:?}",
         entry0.unwrap().hops
@@ -182,7 +182,7 @@ async fn test_register_and_announce_destination() {
     let dest_hash_bytes = hex::decode(&dest_info.hash).expect("Invalid hex");
     let has_path = daemon.has_path(&dest_hash_bytes).await;
 
-    // Note: The daemon may or may not create a path for its own destinations
+    // The daemon may or may not create a path for its own destinations
     println!("Has path to own destination: {}", has_path);
 }
 
@@ -280,7 +280,7 @@ async fn test_interface_configuration() {
 
 /// Verify that duplicate announces are deduplicated by the daemon.
 ///
-/// Note: When transport is enabled, the daemon retransmits announces to all interfaces.
+/// When transport is enabled, the daemon retransmits announces to all interfaces.
 /// With a TCPServerInterface, each client connection is treated as a separate "peer",
 /// so the announce gets forwarded. The deduplication being tested here is that the
 /// daemon doesn't process/propagate the same announce TWICE from the same source -

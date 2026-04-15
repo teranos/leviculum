@@ -115,7 +115,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let mut all_passed = true;
 
-    // ── Phase 1: DISCOVERY ──────────────────────────────────────────────────
+    // Phase 1: DISCOVERY
     let phase_start = Instant::now();
     let phase_timeout = std::time::Duration::from_secs(15);
 
@@ -146,7 +146,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         std::process::exit(1);
     }
 
-    // ── Phase 2: ANNOUNCE ───────────────────────────────────────────────────
+    // Phase 2: ANNOUNCE
     let phase_start = Instant::now();
     let phase_timeout = std::time::Duration::from_secs(15);
 
@@ -207,7 +207,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let dest_hash = dest_hash.expect("set in phase 2");
     let signing_key = signing_key.expect("set in phase 2");
 
-    // ── Phase 3: LINK ───────────────────────────────────────────────────────
+    // Phase 3: LINK
     let phase_start = Instant::now();
     let phase_timeout = std::time::Duration::from_secs(15);
 
@@ -289,7 +289,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         std::process::exit(1);
     }
 
-    // ── Phase 4: DATA ───────────────────────────────────────────────────────
+    // Phase 4: DATA
     let phase_start = Instant::now();
 
     info!("Phase 4: DATA — sending test payload...");

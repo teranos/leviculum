@@ -6,7 +6,7 @@ use crate::topology::TestScenario;
 
 /// Generate a `docker-compose.yml` string for the given scenario.
 ///
-/// Pure function — no I/O. All paths in the output are absolute.
+/// Pure function ; no I/O. All paths in the output are absolute.
 ///
 /// # Arguments
 ///
@@ -375,7 +375,7 @@ respond_to_probes = true
             &BTreeMap::new(),
         );
 
-        // alpha has rnode — should have privileged and devices
+        // alpha has rnode ; should have privileged and devices
         let alpha_idx = yaml.find("  alpha:").expect("no alpha");
         let beta_idx = yaml.find("  beta:").expect("no beta");
         let alpha_block = if alpha_idx < beta_idx {
@@ -392,7 +392,7 @@ respond_to_probes = true
             "alpha should have device mapping"
         );
 
-        // beta has no rnode — should NOT have privileged or devices
+        // beta has no rnode ; should NOT have privileged or devices
         let beta_block = if beta_idx > alpha_idx {
             &yaml[beta_idx..]
         } else {

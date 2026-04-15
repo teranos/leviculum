@@ -15,7 +15,7 @@ use crate::constants::{IDENTITY_KEY_SIZE, TRUNCATED_HASHBYTES};
 /// Announce packet hash length (SHA-256).
 pub const PACKET_HASH_LEN: usize = 32;
 
-/// A known destination entry — a peer identity discovered from an announce.
+/// A known destination entry ; a peer identity discovered from an announce.
 #[derive(Clone)]
 pub struct KnownDestEntry {
     /// Seconds since Unix epoch (Python `time.time()` compatible).

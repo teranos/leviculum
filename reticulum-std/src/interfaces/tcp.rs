@@ -231,7 +231,7 @@ pub(crate) fn spawn_tcp_server(
 /// Spawn a TCP client interface with automatic reconnection.
 ///
 /// Creates the channel pair once and spawns a reconnect task that owns them.
-/// The `InterfaceHandle` is returned immediately — the initial connect happens
+/// The `InterfaceHandle` is returned immediately ; the initial connect happens
 /// asynchronously in the background, so `start()` returns without blocking.
 ///
 /// During disconnect, the `incoming_tx` stays alive so the driver never sees
@@ -282,7 +282,7 @@ pub(crate) fn spawn_tcp_client_with_reconnect(config: TcpClientConfig) -> Interf
 /// Reconnect wrapper for TCP client connections.
 ///
 /// Owns the channel endpoints and keeps them alive across reconnection cycles.
-/// The driver never sees `RecvEvent::Disconnected` — only a gap in incoming
+/// The driver never sees `RecvEvent::Disconnected` ; only a gap in incoming
 /// packets during downtime. On reconnection (not the first connect), sends a
 /// notification on `reconnect_notify` so the driver can call
 /// `handle_interface_up` to re-announce destinations (Block D).
@@ -408,7 +408,7 @@ async fn tcp_interface_task(
                                     }
                                 }
                                 Err(ref e) if e.kind() == io::ErrorKind::WouldBlock => {
-                                    // No more data — go back to select!
+                                    // No more data ; go back to select!
                                     break;
                                 }
                                 Err(e) => {
@@ -446,7 +446,7 @@ async fn tcp_interface_task(
                         counters.tx_bytes.fetch_add(frame_buf.len() as u64, Ordering::Relaxed);
                     }
                     None => {
-                        // Event loop dropped its sender — shut down
+                        // Event loop dropped its sender ; shut down
                         tracing::debug!("TCP interface {} outgoing channel closed", name);
                         return outgoing_rx;
                     }

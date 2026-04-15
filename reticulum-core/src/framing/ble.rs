@@ -41,8 +41,7 @@ extern crate alloc;
 use alloc::collections::BTreeMap;
 use alloc::vec::Vec;
 
-// ─── Constants ─────────────────────────────────────────────────────────────
-
+// Constants
 /// Fragment header size in bytes.
 pub const FRAGMENT_HEADER_SIZE: usize = 5;
 
@@ -72,8 +71,7 @@ pub const KEEPALIVE_INTERVAL_MS: u64 = 15_000;
 /// Keepalive packet content (single zero byte).
 pub const KEEPALIVE_BYTE: u8 = 0x00;
 
-// ─── Fragmentation (stateless) ─────────────────────────────────────────────
-
+// Fragmentation (stateless)
 /// Maximum payload bytes per fragment for a given BLE MTU.
 ///
 /// Returns 0 if the MTU is too small to carry any payload.
@@ -159,8 +157,7 @@ pub fn fragment_packet(data: &[u8], mtu: usize) -> Vec<Vec<u8>> {
     fragments
 }
 
-// ─── Defragmentation (stateful, per-peer) ──────────────────────────────────
-
+// Defragmentation (stateful, per-peer)
 /// Result of processing a received BLE fragment.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum DefragResult {
@@ -229,13 +226,13 @@ impl BleDefragmenter {
             return DefragResult::Error;
         }
 
-        // LONE fragment — complete packet in one piece
+        // LONE fragment ; complete packet in one piece
         if ftype == FRAGMENT_TYPE_LONE {
             self.reset();
             return DefragResult::Complete(payload.to_vec());
         }
 
-        // New multi-fragment sequence starting — reset any previous partial
+        // New multi-fragment sequence starting ; reset any previous partial
         if ftype == FRAGMENT_TYPE_START && seq == 0 {
             self.fragments.clear();
             self.expected_total = total;
@@ -243,7 +240,7 @@ impl BleDefragmenter {
 
         // Check consistency with current reassembly
         if total != self.expected_total {
-            // Fragment from a different packet or corrupted — discard
+            // Fragment from a different packet or corrupted ; discard
             self.reset();
             return DefragResult::Error;
         }
@@ -260,7 +257,7 @@ impl BleDefragmenter {
                 match self.fragments.get(&i) {
                     Some(p) => packet.extend_from_slice(p),
                     None => {
-                        // Should not happen — len check passed but gap found
+                        // Should not happen ; len check passed but gap found
                         self.reset();
                         return DefragResult::Error;
                     }
@@ -296,8 +293,7 @@ impl Default for BleDefragmenter {
     }
 }
 
-// ─── Tests ─────────────────────────────────────────────────────────────────
-
+// Tests
 #[cfg(test)]
 mod tests {
     use super::*;

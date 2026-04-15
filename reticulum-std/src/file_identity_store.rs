@@ -13,7 +13,7 @@ const IDENTITY_FILE: &str = "transport_identity";
 /// File-backed identity store, Python-compatible.
 ///
 /// The identity file is raw 64 bytes (32 X25519 + 32 Ed25519 private keys),
-/// the same format Python Reticulum uses. No magic bytes, no checksum —
+/// the same format Python Reticulum uses. No magic bytes, no checksum ;
 /// the filesystem provides existence checking.
 pub struct FileIdentityStore {
     path: PathBuf,

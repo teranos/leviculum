@@ -475,8 +475,7 @@ impl BufferedChannelWriter {
     }
 }
 
-// ─── Compression Support ─────────────────────────────────────────────────────
-
+// Compression Support
 #[cfg(feature = "compression")]
 mod compression_support {
     //! BZ2 compression extensions for the buffer system (no_std compatible)

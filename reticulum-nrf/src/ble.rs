@@ -25,8 +25,7 @@ use reticulum_core::InterfaceId;
 use static_cell::StaticCell;
 use trouble_host::prelude::*;
 
-// ─── Interrupt bindings ────────────────────────────────────────────────────
-
+// Interrupt bindings
 bind_interrupts!(pub struct Irqs {
     RNG => rng::InterruptHandler<peripherals::RNG>;
     USBD => embassy_nrf::usb::InterruptHandler<peripherals::USBD>;
@@ -37,8 +36,7 @@ bind_interrupts!(pub struct Irqs {
     RTC0 => mpsl::HighPrioInterruptHandler;
 });
 
-// ─── GATT service (Columba v2.2) ──────────────────────────────────────────
-
+// GATT service (Columba v2.2)
 #[gatt_server]
 struct ReticulumServer {
     reticulum_service: ReticulumService,
@@ -56,8 +54,7 @@ struct ReticulumService {
     identity: [u8; 16],
 }
 
-// ─── Channels ──────────────────────────────────────────────────────────────
-
+// Channels
 static BLE_INCOMING: Channel<CriticalSectionRawMutex, Vec<u8>, 4> = Channel::new();
 static BLE_OUTGOING: Channel<CriticalSectionRawMutex, Vec<u8>, 4> = Channel::new();
 
@@ -73,8 +70,7 @@ pub fn channels() -> BleChannels {
     }
 }
 
-// ─── BleInterface ──────────────────────────────────────────────────────────
-
+// BleInterface
 pub struct BleInterface {
     sender: Sender<'static, CriticalSectionRawMutex, Vec<u8>, 4>,
 }
@@ -95,8 +91,7 @@ impl Interface for BleInterface {
     }
 }
 
-// ─── SDC builder ───────────────────────────────────────────────────────────
-
+// SDC builder
 fn build_sdc<'d, const N: usize>(
     p: sdc::Peripherals<'d>,
     rng: &'d mut rng::Rng<'static, embassy_nrf::mode::Async>,
@@ -111,8 +106,7 @@ fn build_sdc<'d, const N: usize>(
         .build(p, rng, mpsl, mem)
 }
 
-// ─── Tasks ─────────────────────────────────────────────────────────────────
-
+// Tasks
 #[embassy_executor::task]
 async fn mpsl_task(mpsl: &'static MultiprotocolServiceLayer<'static>) -> ! {
     mpsl.run().await
@@ -120,7 +114,7 @@ async fn mpsl_task(mpsl: &'static MultiprotocolServiceLayer<'static>) -> ! {
 
 #[embassy_executor::task]
 async fn ble_task(sdc: sdc::SoftdeviceController<'static>, identity_hash: [u8; 16]) {
-    // Derive BLE address from identity hash — new identity per flash = new address
+    // Derive BLE address from identity hash ; new identity per flash = new address
     // = clean GATT discovery on Android (no stale cache from previous firmware)
     let mut addr = [0u8; 6];
     addr.copy_from_slice(&identity_hash[2..8]);
@@ -160,8 +154,7 @@ async fn ble_task(sdc: sdc::SoftdeviceController<'static>, identity_hash: [u8; 1
     ).await;
 }
 
-// ─── Init ──────────────────────────────────────────────────────────────────
-
+// Init
 pub fn init(
     spawner: &Spawner, identity_hash: [u8; 16],
     rtc0: Peri<'static, peripherals::RTC0>, timer0: Peri<'static, peripherals::TIMER0>,
@@ -202,8 +195,7 @@ pub fn init(
     spawner.must_spawn(ble_task(sdc, identity_hash));
 }
 
-// ─── Advertising ───────────────────────────────────────────────────────────
-
+// Advertising
 async fn advertise<'v, 's, C: Controller>(
     peripheral: &mut Peripheral<'v, C, DefaultPacketPool>,
     server: &'s ReticulumServer<'v>,
@@ -244,8 +236,7 @@ async fn advertise<'v, 's, C: Controller>(
     Ok(conn)
 }
 
-// ─── GATT event loop with data pipeline ────────────────────────────────────
-
+// GATT event loop with data pipeline
 async fn gatt_events(
     server: &ReticulumServer<'_>,
     conn: &GattConnection<'_, '_, DefaultPacketPool>,
@@ -292,12 +283,12 @@ async fn gatt_events(
                                         Ok(reply) => reply.send().await,
                                         Err(_) => {}
                                     }
-                                    // Don't send keepalive immediately — Columba needs
+                                    // Don't send keepalive immediately ; Columba needs
                                     // time to finish its handshake. The keepalive timer
                                     // will fire after KEEPALIVE_INTERVAL_MS.
                                     continue;
                                 } else if data.len() < FRAGMENT_HEADER_SIZE {
-                                    // Keepalive (1-byte 0x00) — accept and skip
+                                    // Keepalive (1-byte 0x00) ; accept and skip
                                 } else {
                                     // Data fragment
                                     let now = Instant::now().as_millis();
@@ -321,7 +312,7 @@ async fn gatt_events(
                 }
             }
             Either3::Second(packet) => {
-                // Outgoing packet — fragment and notify
+                // Outgoing packet ; fragment and notify
                 let fragments = ble_framing::fragment_packet(&packet, ble_framing::DEFAULT_MTU);
                 for frag in &fragments {
                     if let Ok(hv) = heapless::Vec::<u8, 251>::from_slice(frag) {

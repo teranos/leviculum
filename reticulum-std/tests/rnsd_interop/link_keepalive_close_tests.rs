@@ -922,7 +922,7 @@ async fn test_keepalive_resets_stale_timer() {
 
 /// Test: Rust initiator sends 0xFF keepalive, Python responder echoes 0xFE.
 ///
-/// Note: This test requires the link to be active long enough for keepalive
+/// This test requires the link to be active long enough for keepalive
 /// to be triggered. In real scenarios, this happens after keepalive_interval.
 /// For testing, we verify the keepalive mechanism exists and works.
 #[tokio::test]
@@ -1083,7 +1083,7 @@ async fn test_python_initiator_sends_keepalive_rust_echoes() {
         assert!(!link.is_initiator(), "Rust should be responder");
     }
 
-    // Note: Testing actual keepalive from Python would require Python to send
+    // Testing actual keepalive from Python would require Python to send
     // keepalives, which happens based on Python's internal timing. Instead,
     // we verify that the responder echo mechanism is correctly set up.
     println!("SUCCESS: Rust responder link established (keepalive echo mechanism ready)");

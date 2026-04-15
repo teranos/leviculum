@@ -1,8 +1,8 @@
 //! Interop tests for path system gaps (Gaps 1, 3, 4).
 //!
-//! Gap 1: Path timestamp refresh on forward — active paths stay alive.
-//! Gap 3: Announce bandwidth caps — regression that cap subsystem doesn't break forwarding.
-//! Gap 4: 32-byte path requests — non-transport nodes send shorter requests.
+//! Gap 1: Path timestamp refresh on forward ; active paths stay alive.
+//! Gap 3: Announce bandwidth caps ; regression that cap subsystem doesn't break forwarding.
+//! Gap 4: 32-byte path requests ; non-transport nodes send shorter requests.
 //!
 //! Gap 2 (LRPROOF validation) is covered by the existing
 //! `test_rust_relay_announce_and_link_data` test in `rust_relay_tests.rs`.
@@ -15,8 +15,7 @@ use reticulum_std::driver::ReticulumNodeBuilder;
 use crate::common::wait_for_path_on_daemon;
 use crate::harness::TestDaemon;
 
-// ─── Gap 1: Path timestamp refresh on forward ───────────────────────────────
-
+// Gap 1: Path timestamp refresh on forward
 /// Test: A link request forward through a Rust relay refreshes the path timestamp,
 /// keeping the path alive beyond the initial expiry.
 ///
@@ -73,7 +72,7 @@ async fn test_path_refresh_keeps_route_alive() {
     // Wait 15 seconds (close to expiry but not past it)
     tokio::time::sleep(Duration::from_secs(15)).await;
 
-    // Create a link from B to A — the link request forward refreshes the path
+    // Create a link from B to A ; the link request forward refreshes the path
     let link_b_to_a = daemon_b
         .create_link(&dest_a_info.hash, &dest_a_info.public_key, 30)
         .await
@@ -159,8 +158,7 @@ async fn test_path_expires_when_idle() {
     relay.stop().await.expect("stop relay");
 }
 
-// ─── Gap 4: Path request format ─────────────────────────────────────────────
-
+// Gap 4: Path request format
 /// Test: A non-transport Rust node sends a path request through a Python relay,
 /// and the relay responds with the path. This exercises the 32-byte path request
 /// format (no transport_id) that non-transport nodes should use.
@@ -259,7 +257,7 @@ async fn test_path_request_for_unknown_destination() {
         "should not have path to unknown dest"
     );
 
-    // Wait a reasonable time — should not crash, should not get a path
+    // Wait a reasonable time ; should not crash, should not get a path
     tokio::time::sleep(Duration::from_secs(5)).await;
     assert!(
         !rust_node.has_path(&fake_dest),
@@ -269,8 +267,7 @@ async fn test_path_request_for_unknown_destination() {
     rust_node.stop().await.expect("stop Rust node");
 }
 
-// ─── Gap 3: Announce bandwidth caps (regression) ────────────────────────────
-
+// Gap 3: Announce bandwidth caps (regression)
 /// Test: Announces forwarded through a Rust transport relay reach both endpoints.
 /// This is a regression test ensuring the announce cap subsystem (dormant for TCP
 /// since bitrate=0 means no cap) doesn't break announce forwarding.

@@ -107,7 +107,7 @@ fn extract_probe_hash_from_identity_log(logs: &str) -> Option<&str> {
         let marker = "Transport Instance will respond to probe requests on <rnstransport.probe.";
         let pos = logs.rfind(marker)?;
         let rest = &logs[pos + marker.len()..];
-        // <HEX32>:<HEX32>> — skip identity hash, ':', then hash is next 32 hex
+        // <HEX32>:<HEX32>> ; skip identity hash, ':', then hash is next 32 hex
         let colon = rest.find(':')?;
         let after = &rest[colon + 1..];
         if after.len() < 32 {
@@ -236,7 +236,7 @@ fn scale_command_timeouts(command: &str) -> String {
 /// Run a complete test lifecycle with a guaranteed timeout.
 ///
 /// Brings containers up, waits for readiness, executes all steps, then
-/// tears down — even if the timeout fires. Logs are always saved before
+/// tears down ; even if the timeout fires. Logs are always saved before
 /// teardown. The timeout comes from `scenario.test.timeout_secs`.
 ///
 /// This replaces the pattern of calling `runner.up()`, `execute_steps()`,
@@ -320,7 +320,7 @@ pub fn execute_steps(runner: &TestRunner) -> Result<(), StepError> {
         }
     }
 
-    // Always collect container logs — useful for post-mortem even on success.
+    // Always collect container logs ; useful for post-mortem even on success.
     let _ = runner.collect_logs();
 
     Ok(())
@@ -885,7 +885,7 @@ fn execute_wait_for_path(
     // in all-Python topologies where the rnsd network can take a while to
     // settle.
     //
-    // For no_path we keep a single attempt with the full timeout — we want
+    // For no_path we keep a single attempt with the full timeout ; we want
     // to give the path the longest possible chance to NOT appear.
     let want_success = expect_result == "success";
     let attempts: u64 = if want_success { 3 } else { 1 };
@@ -950,7 +950,7 @@ fn execute_wait_for_path(
 
     // Fallback: rnpath went through all attempts without seeing the path
     // in its LocalClient view. The daemon may still have learned the path
-    // — Python rnsd's LocalInterface protocol occasionally drops path
+    // ; Python rnsd's LocalInterface protocol occasionally drops path
     // responses to its own client, especially when many path requests
     // are interleaved. Authoritative source is the daemon's own log.
     if let Ok(out) = runner.docker_logs(on) {
@@ -1043,7 +1043,7 @@ fn execute_rnprobe(
         last_status = output.status.code();
 
         if output.status.success() {
-            // Success — check hops and return
+            // Success ; check hops and return
             return check_probe_hops(index, expect_hops, &last_stdout, &hash);
         }
 
@@ -1536,7 +1536,7 @@ fn execute_transfer_direction(
     }
 
     // 3. Build and start listener on receiver (detached)
-    //    docker exec -d runs detached — the Docker client returns immediately.
+    //    docker exec -d runs detached ; the Docker client returns immediately.
     //    Use sh -c to redirect output to a log file for debugging.
     let container = runner.container_name(recv_node);
     let listener_cmd = build_listener_cmd(recv_tool, receiver_flags, auth_identity_hash);
@@ -1563,12 +1563,12 @@ fn execute_transfer_direction(
     //    relay has learned the destination from the listener's announce, and the
     //    relay ignores it. Python rnpath only sends one path request and then polls
     //    has_path(), so if the relay never sent a path response, rnpath depends on
-    //    the announce rebroadcast reaching the sender's daemon — which doesn't
+    //    the announce rebroadcast reaching the sender's daemon ; which doesn't
     //    always happen reliably with all-Python setups.
-    //    Non-LoRa: 15s — Python interpreter cold-start + RNS init + initial
+    //    Non-LoRa: 15s ; Python interpreter cold-start + RNS init + initial
     //    announce + relay rebroadcast jitter (~3s) totals ~10-12s in
     //    all-Python topologies; 5s left rncp_baseline-style tests racing.
-    //    LoRa: 30s — announce airtime (~490ms) + jitter (up to ~3s) + propagation.
+    //    LoRa: 30s ; announce airtime (~490ms) + jitter (up to ~3s) + propagation.
     let announce_wait = if has_rnode { 30 } else { 15 };
     thread::sleep(Duration::from_secs(announce_wait));
     println!("  waiting for path to {dest_hash} on {send_node}...");
@@ -1815,7 +1815,7 @@ fn execute_transfer_direction(
 ///
 /// Each transfer runs in its own thread via `std::thread::scope()`.
 /// Results are collected via `mpsc::channel` with a hard deadline.
-/// All nodes must be disjoint — no node appears in more than one transfer.
+/// All nodes must be disjoint ; no node appears in more than one transfer.
 fn execute_parallel_file_transfers(
     runner: &TestRunner,
     step_index: usize,
@@ -2094,7 +2094,7 @@ mod tests {
     ///
     /// After `TestRunner::new()` acquires the process-wide lock, any
     /// panic in the test must still close the lock file via OS unwind /
-    /// process exit — next cargo-test invocation must succeed. This test
+    /// process exit ; next cargo-test invocation must succeed. This test
     /// exercises the acquire + panic path; the "does subsequent
     /// invocation succeed" half is validated manually in verification
     /// check 9, not here. Staying in the suite so a future refactor that
@@ -2203,7 +2203,7 @@ mod tests {
 
     #[test]
     fn extract_probe_hash_prefers_later_format() {
-        // lnsd line first, rnsd line second — rnsd wins (later position).
+        // lnsd line first, rnsd line second ; rnsd wins (later position).
         let logs = "\n[IDENTITY] probe_destination=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa aspect=rnstransport.probe\nTransport Instance will respond to probe requests on <rnstransport.probe.bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb:cccccccccccccccccccccccccccccccc>\n";
         let hash = extract_probe_hash_from_identity_log(logs).unwrap();
         assert_eq!(hash, "cccccccccccccccccccccccccccccccc");
@@ -2568,8 +2568,8 @@ mod tests {
     #[ignore]
     // Requires RNode hardware at /dev/ttyACM0 and /dev/ttyACM1.
     // Build lnsd with: cargo build --release --bin lnsd --features serial
-    // NOTE: If wait_for_path times out, check container logs for
-    // "configured" or "configuration failed" — wait_ready() succeeds
+    // If wait_for_path times out, check container logs for
+    // "configured" or "configuration failed" ; wait_ready() succeeds
     // even if the RNode device is not detected (reconnect runs in background).
     #[serial(lora)]
     fn lora_direct_rust() {
@@ -2590,7 +2590,7 @@ mod tests {
     // Requires RNode hardware at /dev/ttyACM0 and /dev/ttyACM1.
     // Build lnsd with: cargo build --release --bin lnsd --features serial
     // Docker image must have pyserial installed for Python RNodeInterface.
-    // NOTE: If wait_for_path times out, check container logs for
+    // If wait_for_path times out, check container logs for
     // "configured"/"configuration failed" (Rust) or RNodeInterface errors (Python).
     #[serial(lora)]
     fn lora_interop_rust_python() {
@@ -3811,8 +3811,7 @@ mod tests {
         run_test(&mut runner).expect("test failed");
     }
 
-    // ── Benchmark tests ──────────────────────────────────────────────────
-
+    // Benchmark tests
     #[test]
     #[ignore] // Requires RNode + T114 hardware
     #[serial(lora)]

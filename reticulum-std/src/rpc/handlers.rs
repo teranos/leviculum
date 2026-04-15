@@ -1,4 +1,4 @@
-//! RPC command dispatch — maps requests to node state queries
+//! RPC command dispatch ; maps requests to node state queries
 
 use std::sync::atomic::Ordering;
 
@@ -19,7 +19,7 @@ pub(super) fn handle_request(
     auto_peer_count: usize,
 ) -> Result<Vec<u8>, RpcError> {
     let response = match request {
-        // ─── Full implementations ──────────────────────────────────────
+        // Full implementations
         RpcRequest::GetInterfaceStats => {
             build_interface_stats(core, start_time, iface_stats_map, auto_peer_count)
         }
@@ -38,12 +38,12 @@ pub(super) fn handle_request(
         RpcRequest::DropAllVia { destination_hash } => drop_all_via(core, destination_hash),
         RpcRequest::DropAnnounceQueues => pickle_bool(true),
 
-        // ─── Radio-only (always None for TCP/UDP/Auto) ─────────────────
+        // Radio-only (always None for TCP/UDP/Auto)
         RpcRequest::GetPacketRssi { .. } => pickle_none(),
         RpcRequest::GetPacketSnr { .. } => pickle_none(),
         RpcRequest::GetPacketQ { .. } => pickle_none(),
 
-        // ─── Blackhole stubs ───────────────────────────────────────────
+        // Blackhole stubs
         RpcRequest::GetBlackholedIdentities => pickle_dict(vec![]),
         RpcRequest::BlackholeIdentity { .. } => pickle_bool(true),
         RpcRequest::UnblackholeIdentity { .. } => pickle_bool(true),
@@ -52,8 +52,7 @@ pub(super) fn handle_request(
     serialize_response(&response)
 }
 
-// ─── Interface Stats (rnstatus) ─────────────────────────────────────────────
-
+// Interface Stats (rnstatus)
 /// Build the `interface_stats` response dict matching Python's format.
 fn build_interface_stats(
     core: &StdNodeCore,
@@ -192,8 +191,7 @@ fn build_interface_stats(
     pickle_dict(entries)
 }
 
-// ─── Path Table (rnpath -t) ─────────────────────────────────────────────────
-
+// Path Table (rnpath -t)
 /// Build the path table response. Timestamps are converted from monotonic core
 /// milliseconds to approximate Unix epoch seconds using the start_time anchor.
 fn build_path_table(
@@ -239,7 +237,7 @@ fn build_path_table(
                     // Relayed: next_hop is the relay's transport ID
                     Some(h) => pickle_bytes(h),
                     // Direct: Python uses the destination hash as received_from
-                    // (Transport.py:1600), never None — rnpath crashes on None.
+                    // (Transport.py:1600), never None ; rnpath crashes on None.
                     None => pickle_bytes(&entry.hash),
                 },
             ),
@@ -252,8 +250,7 @@ fn build_path_table(
     pickle_list(list)
 }
 
-// ─── Rate Table (rnpath -r) ─────────────────────────────────────────────────
-
+// Rate Table (rnpath -r)
 fn build_rate_table(core: &StdNodeCore, start_time: std::time::Instant) -> Value {
     let entries = core.rate_table_entries();
     let epoch_base = epoch_base_secs(start_time);
@@ -287,8 +284,7 @@ fn build_rate_table(core: &StdNodeCore, start_time: std::time::Instant) -> Value
     pickle_list(list)
 }
 
-// ─── Path Lookups (rnpath) ──────────────────────────────────────────────────
-
+// Path Lookups (rnpath)
 fn get_next_hop(core: &StdNodeCore, destination_hash: &[u8]) -> Value {
     let hash = match try_into_hash(destination_hash) {
         Some(h) => h,
@@ -323,8 +319,7 @@ fn get_next_hop_if_name(core: &StdNodeCore, destination_hash: &[u8]) -> Value {
     }
 }
 
-// ─── Drop Operations ────────────────────────────────────────────────────────
-
+// Drop Operations
 fn drop_path(core: &mut StdNodeCore, destination_hash: &[u8]) -> Value {
     let hash = match try_into_hash(destination_hash) {
         Some(h) => h,
@@ -341,8 +336,7 @@ fn drop_all_via(core: &mut StdNodeCore, via_hash: &[u8]) -> Value {
     pickle_int(core.drop_all_paths_via(&hash) as i64)
 }
 
-// ─── Helpers ────────────────────────────────────────────────────────────────
-
+// Helpers
 /// Compute a 16-byte interface hash from its name (matches Python Identity.full_hash).
 fn compute_interface_hash(name: &str) -> [u8; 16] {
     use sha2::Digest;

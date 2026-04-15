@@ -135,8 +135,7 @@ async fn handle_rpc_connection(
     Ok(())
 }
 
-// ─── Client-side functions (for integration tests) ────────────────────────
-
+// Client-side functions (for integration tests)
 /// Connect to the RPC server, perform handshake, send request, receive response.
 #[cfg(test)]
 pub(crate) async fn rpc_client_call(

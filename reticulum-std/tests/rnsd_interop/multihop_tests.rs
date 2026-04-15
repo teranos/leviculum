@@ -59,7 +59,7 @@ use crate::harness::DaemonTopology;
 /// 2. Verifies both daemons have transport enabled
 /// 3. Verifies D0 receives an announce directly
 ///
-/// Note: Full announce propagation through the relay depends on RNS's
+/// Full announce propagation through the relay depends on RNS's
 /// announce rebroadcast logic, which may have throttling or timing
 /// requirements. This test verifies the topology is correctly established.
 #[tokio::test]
@@ -154,7 +154,7 @@ async fn test_two_hop_announce_propagation() {
 
     // Entry daemon should have hops=0 (received directly from connected Rust)
     if let Some(path) = entry_path {
-        // Note: RNS may increment hops on receipt, so accept 0 or 1
+        // RNS may increment hops on receipt, so accept 0 or 1
         assert!(
             path.hops.unwrap_or(0) <= 1,
             "Entry daemon should have hops <= 1 for directly received announce"
@@ -198,7 +198,7 @@ async fn test_two_hop_announce_propagation() {
 /// - All daemons have transport enabled
 /// - Entry daemon receives announces from Rust
 ///
-/// Note: Full announce propagation depends on RNS's rebroadcast logic.
+/// Full announce propagation depends on RNS's rebroadcast logic.
 #[tokio::test]
 async fn test_three_hop_topology_setup() {
     // Create 3-daemon topology
@@ -285,7 +285,7 @@ async fn test_three_hop_topology_setup() {
 /// - Destinations can be registered in any daemon in the topology
 /// - Direct links to that daemon work correctly
 ///
-/// Note: This test connects directly to the exit daemon rather than
+/// This test connects directly to the exit daemon rather than
 /// through the relay, since path propagation timing is unreliable.
 #[tokio::test]
 async fn test_destination_in_exit_daemon() {

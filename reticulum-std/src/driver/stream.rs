@@ -2,8 +2,8 @@
 //!
 //! Locks the core directly and dispatches actions through the event loop,
 //! matching the pattern used by `PacketSender`. This ensures that
-//! `send()` returns the real result from `send_on_link()` — including
-//! `Busy` — instead of silently buffering through an mpsc channel.
+//! `send()` returns the real result from `send_on_link()` ; including
+//! `Busy` ; instead of silently buffering through an mpsc channel.
 
 use std::sync::{Arc, Mutex};
 
@@ -240,7 +240,7 @@ mod tests {
         let handle = LinkHandle::new(link_id, inner, tx);
 
         // Send fails because there's no link, so dispatch channel
-        // closure is not reached — but Send(NoLink) is returned first
+        // closure is not reached ; but Send(NoLink) is returned first
         let result = handle.try_send(b"hello").await;
         assert!(result.is_err());
     }

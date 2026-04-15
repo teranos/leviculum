@@ -162,7 +162,7 @@ async fn test_rotation_during_active_link() {
         rotation_result.ratchet_count, rotation_result.new_ratchet_id
     );
 
-    // Note: latest_ratchet_id is only set during encryption operations in RNS,
+    // latest_ratchet_id is only set during encryption operations in RNS,
     // not during rotation. So we verify the rotation succeeded by checking
     // that the ratchet_count increased.
     assert!(rotation_result.rotated, "Rotation should succeed");
@@ -442,7 +442,7 @@ async fn test_ratchet_in_multi_hop_topology() {
     let entry_has_path = topology.entry_daemon().has_path(&dest_hash).await;
     println!("Entry daemon has path: {}", entry_has_path);
 
-    // Note: Whether the path propagates depends on RNS rebroadcast timing
+    // Whether the path propagates depends on RNS rebroadcast timing
     // The key verification is that ratchets work in a multi-daemon setup
 
     println!("SUCCESS: Ratcheted destination works in multi-hop topology");

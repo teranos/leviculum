@@ -8,8 +8,7 @@
 
 use alloc::vec::Vec;
 
-// ─── Encoding helpers ────────────────────────────────────────────────────────
-
+// Encoding helpers
 /// Write a fixmap header (count ≤ 15).
 pub(crate) fn write_fixmap_header(buf: &mut Vec<u8>, count: u8) {
     debug_assert!(count <= 15);
@@ -89,8 +88,7 @@ pub(crate) fn write_bool(buf: &mut Vec<u8>, val: bool) {
     buf.push(if val { 0xc3 } else { 0xc2 });
 }
 
-// ─── Decoding helpers ────────────────────────────────────────────────────────
-
+// Decoding helpers
 /// Read one byte, advancing position.
 pub(crate) fn read_byte(data: &[u8], pos: &mut usize) -> Option<u8> {
     let b = *data.get(*pos)?;

@@ -1,4 +1,4 @@
-//! `lns selftest` — real-network integration self-test
+//! `lns selftest` ; real-network integration self-test
 //!
 //! Two ephemeral nodes in one process, both connected to a public relay,
 //! establishing a link through it and exchanging messages bidirectionally.
@@ -19,8 +19,7 @@ use reticulum_std::{
     Destination, DestinationHash, DestinationType, Direction, Identity, LinkId, NodeEvent,
 };
 
-// ─── Message Format ──────────────────────────────────────────────────────────
-
+// Message Format
 fn build_message(dir: &str, seq: u64, now_ms: u64) -> Vec<u8> {
     let payload = format!("{dir}:{seq}:{now_ms}");
     let mut hasher = Sha256::new();
@@ -64,8 +63,7 @@ fn parse_message(data: &[u8]) -> Option<ParsedMessage> {
     })
 }
 
-// ─── Stats ───────────────────────────────────────────────────────────────────
-
+// Stats
 struct SelftestStats {
     // Link phase
     sent_a: u64,
@@ -148,8 +146,7 @@ impl SelftestStats {
     }
 }
 
-// ─── Shared State ────────────────────────────────────────────────────────────
-
+// Shared State
 struct SharedState {
     stats: Mutex<SelftestStats>,
     // Discovery
@@ -188,8 +185,7 @@ impl SharedState {
     }
 }
 
-// ─── Received message recording ──────────────────────────────────────────────
-
+// Received message recording
 /// Record a received message into the stats, handling dedup, ordering, and RTT.
 /// `is_a` = true means node A received (expects dir "ba"), false means node B (expects "ab").
 fn record_received_message(
@@ -273,8 +269,7 @@ fn record_received_message(
     }
 }
 
-// ─── Verdict ─────────────────────────────────────────────────────────────────
-
+// Verdict
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 enum Verdict {
     Pass,
@@ -319,7 +314,7 @@ fn compute_sp_verdict(stats: &SelftestStats, warnings: &[String]) -> Verdict {
     let total_sent = stats.sp_sent_a + stats.sp_sent_b;
     let total_recv = stats.sp_recv_a + stats.sp_recv_b;
 
-    // FAIL conditions — relaxed for unreliable single packets
+    // FAIL conditions ; relaxed for unreliable single packets
     if total_sent > 0 && total_recv == 0 {
         return Verdict::Fail;
     }
@@ -337,8 +332,7 @@ fn compute_sp_verdict(stats: &SelftestStats, warnings: &[String]) -> Verdict {
     Verdict::Pass
 }
 
-// ─── Event Tasks ─────────────────────────────────────────────────────────────
-
+// Event Tasks
 async fn event_task_a(
     mut event_rx: tokio::sync::mpsc::Receiver<NodeEvent>,
     state: Arc<SharedState>,
@@ -455,8 +449,7 @@ async fn event_task_b(
     }
 }
 
-// ─── Send helpers ────────────────────────────────────────────────────────────
-
+// Send helpers
 async fn send_msg(
     stream: &LinkHandle,
     dir: &str,
@@ -517,8 +510,7 @@ async fn send_single_msg(
     }
 }
 
-// ─── Address Resolution ─────────────────────────────────────────────────────
-
+// Address Resolution
 /// Resolve an address string to a SocketAddr, supporting both IP:port and hostname:port.
 async fn resolve_address(addr: &str) -> Result<SocketAddr, Box<dyn std::error::Error>> {
     // Try direct parse first (fast path for IP:port)
@@ -534,8 +526,7 @@ async fn resolve_address(addr: &str) -> Result<SocketAddr, Box<dyn std::error::E
     Ok(resolved)
 }
 
-// ─── Main Entry Point ────────────────────────────────────────────────────────
-
+// Main Entry Point
 pub async fn run_selftest(
     targets: Vec<String>,
     duration: u64,
@@ -574,7 +565,7 @@ pub async fn run_selftest(
 
     let dual = addr_a != addr_b;
 
-    // ── Phase 1: Setup ──────────────────────────────────────────────────
+    // Phase 1: Setup
     if dual {
         println!(
             "[selftest] Client A -> {} / Client B -> {} (mode: {mode})",
@@ -606,7 +597,7 @@ pub async fn run_selftest(
         .map_err(|e| format!("cannot connect to {addr_b}: {e}"))?;
     }
 
-    // Two ephemeral identities — need two instances each (Identity is not Clone)
+    // Two ephemeral identities ; need two instances each (Identity is not Clone)
     use rand_core::OsRng;
     let id_a = Identity::generate(&mut OsRng);
     let pk_a = id_a.private_key_bytes().map_err(|e| e.to_string())?;
@@ -700,7 +691,7 @@ pub async fn run_selftest(
     let state = Arc::new(SharedState::new());
     let link_id_a: Arc<Mutex<Option<LinkId>>> = Arc::new(Mutex::new(None));
 
-    // ── Phase 2: Discovery ──────────────────────────────────────────────
+    // Phase 2: Discovery
     let event_rx_a = node_a.take_event_receiver().ok_or("event rx A")?;
     let event_rx_b = node_b.take_event_receiver().ok_or("event rx B")?;
 
@@ -763,13 +754,13 @@ pub async fn run_selftest(
         1000
     };
 
-    // Variables used by the report — assigned by the link phases or defaulted
+    // Variables used by the report ; assigned by the link phases or defaulted
     let mut link_warnings: Vec<String> = Vec::new();
     let mut final_win = 0usize;
     let mut final_win_max = 0usize;
 
     if run_link {
-        // ── Phase 3: Link ───────────────────────────────────────────────
+        // Phase 3: Link
         let link_start = Instant::now();
 
         let signing_key_b = state
@@ -831,7 +822,7 @@ pub async fn run_selftest(
             link_start.elapsed().as_secs_f64(),
         );
 
-        // ── Phase 4: Warmup ─────────────────────────────────────────────
+        // Phase 4: Warmup
         let warmup_start = Instant::now();
         let warmup_msgs = 10u64;
 
@@ -881,7 +872,7 @@ pub async fn run_selftest(
             warmup_start.elapsed().as_secs_f64(),
         );
 
-        // ── Phase 5: Sustained exchange ─────────────────────────────────
+        // Phase 5: Sustained exchange
         println!("[selftest] Phase 5: Sustained link exchange ({duration}s)");
 
         let mut seq_a = warmup_msgs;
@@ -985,7 +976,7 @@ pub async fn run_selftest(
             println!("[selftest] Phase 6: Skipped (link dead)");
             println!("[selftest] Phase 7: Skipped (link dead)");
         } else {
-            // ── Phase 6: Burst ──────────────────────────────────────────
+            // Phase 6: Burst
             // Send 10 messages as fast as possible. send() absorbs
             // pacing delays and busy conditions automatically.
             let mut burst_ok = 0u64;
@@ -1014,7 +1005,7 @@ pub async fn run_selftest(
                 println!("[selftest] Phase 6: Burst 10/10 — OK");
             }
 
-            // ── Phase 7: Drain + Close ────────────────────────────────
+            // Phase 7: Drain + Close
             let drain_start = Instant::now();
             let drain_max = std::time::Duration::from_secs(120);
             let mut drain_last_print = Instant::now();
@@ -1096,7 +1087,7 @@ pub async fn run_selftest(
     let mut sp_warnings: Vec<String> = Vec::new();
 
     if run_packet {
-        // ── Phase 8: Single-packet sustained exchange ───────────────────
+        // Phase 8: Single-packet sustained exchange
         println!("[selftest] Phase 8: Single-packet exchange ({duration}s)");
         state.single_packet_phase.store(true, Ordering::Relaxed);
 
@@ -1176,7 +1167,7 @@ pub async fn run_selftest(
         tokio::time::sleep(std::time::Duration::from_secs(5)).await;
     }
 
-    // ── Ratchet Phases ──────────────────────────────────────────────────
+    // Ratchet Phases
     let mut ratchet_verdict: Option<Verdict> = None;
 
     if run_ratchet_any {
@@ -1444,7 +1435,7 @@ pub async fn run_selftest(
         );
     }
 
-    // ── Report ──────────────────────────────────────────────────────────
+    // Report
     let total_time = start_time.elapsed();
     let mut verdicts: Vec<Verdict> = Vec::new();
 
@@ -1626,8 +1617,7 @@ async fn cleanup(
     let _ = node_b.stop().await;
 }
 
-// ─── Unit Tests ──────────────────────────────────────────────────────────────
-
+// Unit Tests
 #[cfg(test)]
 mod tests {
     use super::*;

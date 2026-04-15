@@ -7,10 +7,10 @@
 //! ## Categories
 //!
 //! 1. Wire inspection + interop (test 1.5)
-//! 2. Payload integrity — bidirectional single packets and link data
-//! 3. Crypto correctness — wrong key, corrupted ciphertext
-//! 4. Volume and sequence — 100-packet batches
-//! 5. Lifecycle — full announce→packet→proof cycles
+//! 2. Payload integrity ; bidirectional single packets and link data
+//! 3. Crypto correctness ; wrong key, corrupted ciphertext
+//! 4. Volume and sequence ; 100-packet batches
+//! 5. Lifecycle ; full announce→packet→proof cycles
 //!
 //! ## Running These Tests
 //!
@@ -163,7 +163,7 @@ async fn setup_rust_dest_for_receiving(
 }
 
 // =========================================================================
-// Category 2: Payload Integrity — Bidirectional
+// Category 2: Payload Integrity ; Bidirectional
 // =========================================================================
 
 /// Rust→Python: Send known plaintext, Python receives exact bytes
@@ -686,7 +686,7 @@ async fn test_corrupted_ciphertext_dropped_by_rust() {
     );
     assert_eq!(received.unwrap(), valid_payload);
 
-    // The daemon is still functioning — the TCP path works
+    // The daemon is still functioning ; the TCP path works
     daemon.ping().await.expect("Daemon should be responsive");
 
     rust_node.stop().await.expect("Failed to stop node");
@@ -827,7 +827,7 @@ async fn test_100_channel_messages_ordered() {
     rust_node.stop().await.expect("Failed to stop node");
 }
 
-/// Alternate single packets and link data — each decrypted correctly
+/// Alternate single packets and link data ; each decrypted correctly
 #[tokio::test]
 async fn test_interleaved_single_and_link_no_cross_contamination() {
     let daemon = TestDaemon::start().await.expect("Failed to start daemon");

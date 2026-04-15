@@ -39,7 +39,7 @@ pub(crate) async fn read_message<R: AsyncRead + Unpin>(
     let len = i32::from_be_bytes(len_buf);
 
     if len < 0 {
-        // Large message format (>= 2 GB) — not expected in RPC
+        // Large message format (>= 2 GB) ; not expected in RPC
         return Err(RpcError::InvalidFormat(
             "large message format not supported".into(),
         ));
@@ -177,8 +177,8 @@ pub(crate) async fn answer_challenge<S: AsyncRead + AsyncWrite + Unpin>(
 /// Full server-side handshake: deliver_challenge then answer_challenge.
 ///
 /// Matches Python's `Listener.accept()` which calls:
-/// 1. `deliver_challenge(conn, authkey)` — server authenticates client
-/// 2. `answer_challenge(conn, authkey)` — server answers client's challenge
+/// 1. `deliver_challenge(conn, authkey)` ; server authenticates client
+/// 2. `answer_challenge(conn, authkey)` ; server answers client's challenge
 pub(crate) async fn server_handshake<S: AsyncRead + AsyncWrite + Unpin>(
     stream: &mut S,
     authkey: &[u8; 32],
@@ -191,8 +191,8 @@ pub(crate) async fn server_handshake<S: AsyncRead + AsyncWrite + Unpin>(
 /// Full client-side handshake: answer_challenge then deliver_challenge.
 ///
 /// Matches Python's `Client()` which calls:
-/// 1. `answer_challenge(conn, authkey)` — client answers server's challenge
-/// 2. `deliver_challenge(conn, authkey)` — client authenticates server
+/// 1. `answer_challenge(conn, authkey)` ; client answers server's challenge
+/// 2. `deliver_challenge(conn, authkey)` ; client authenticates server
 #[cfg(test)]
 pub(crate) async fn client_handshake<S: AsyncRead + AsyncWrite + Unpin>(
     stream: &mut S,
@@ -364,7 +364,7 @@ mod tests {
             challenge.extend_from_slice(&random);
             write_message(&mut server, &challenge).await.unwrap();
 
-            // Read response — should be raw 16-byte HMAC-MD5
+            // Read response ; should be raw 16-byte HMAC-MD5
             let response = read_message(&mut server).await.unwrap();
             assert_eq!(
                 response.len(),
@@ -422,7 +422,7 @@ mod tests {
             challenge2.extend_from_slice(&random);
             write_message(&mut client, &challenge2).await.unwrap();
 
-            // Read server's response — should be raw MD5
+            // Read server's response ; should be raw MD5
             let response = read_message(&mut client).await.unwrap();
             assert_eq!(response.len(), MD5_DIGEST_LEN);
 

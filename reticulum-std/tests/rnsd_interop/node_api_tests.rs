@@ -283,7 +283,7 @@ async fn test_node_restart() {
 
 /// Test that announce processing creates a path in the node
 ///
-/// Note: The PathFound event may or may not be exposed depending on how the
+/// The PathFound event may or may not be exposed depending on how the
 /// high-level ReticulumNode processes events. This test verifies that after
 /// receiving an announce, the node knows a path to the destination.
 #[tokio::test]

@@ -70,14 +70,13 @@ async fn test_announce_propagation_between_daemons() {
 
 /// Test: Rust-side path recovery when a relay drops LRPROOF and a link times out.
 ///
-/// Phase 1 — Baseline: Rust node connects to Py-Dest through Relay, sends data.
-/// Phase 2 — Failure: Relay drops LRPROOF, Rust node attempts new link, times out (~30s),
+/// Phase 1 ; Baseline: Rust node connects to Py-Dest through Relay, sends data.
+/// Phase 2 ; Failure: Relay drops LRPROOF, Rust node attempts new link, times out (~30s),
 ///           `expire_path()` fires, `has_path()` becomes false.
-/// Phase 3 — Recovery: Stop dropping, re-announce, new link succeeds.
+/// Phase 3 ; Recovery: Stop dropping, re-announce, new link succeeds.
 #[tokio::test]
 async fn test_rust_node_path_recovery_on_link_timeout() {
-    // ── Phase 1: Baseline — verify link works through Relay ──────────
-
+    // Phase 1: Baseline ; verify link works through Relay
     // Step 1: Start Python daemons (relay + destination)
     let py_relay = TestDaemon::start().await.expect("Failed to start Py-Relay");
     let py_dest = TestDaemon::start().await.expect("Failed to start Py-Dest");
@@ -163,8 +162,7 @@ async fn test_rust_node_path_recovery_on_link_timeout() {
     let _ = stream1.close().await;
     tokio::time::sleep(Duration::from_millis(500)).await;
 
-    // ── Phase 2: Drop LRPROOF, trigger timeout recovery ─────────────
-
+    // Phase 2: Drop LRPROOF, trigger timeout recovery
     // Step 9: Path from Phase 1 should still be valid
     assert!(
         rust_node.has_path(&dest_hash),
@@ -196,7 +194,7 @@ async fn test_rust_node_path_recovery_on_link_timeout() {
         "Should receive LinkClosed event — link timeout should fire within 120s"
     );
 
-    // Step 13: KEY ASSERTION — path should be gone.
+    // Step 13: KEY ASSERTION ; path should be gone.
     // TCP connection is alive → handle_interface_down() never fires.
     // ONLY expire_path() at node/mod.rs:988 can cause this.
     assert!(
@@ -215,17 +213,16 @@ async fn test_rust_node_path_recovery_on_link_timeout() {
         "Relay should have dropped at least one LRPROOF packet, got 0 drops"
     );
 
-    // ── Phase 3: Recovery — stop dropping, re-announce, new link ─────
-
+    // Phase 3: Recovery ; stop dropping, re-announce, new link
     // Step 15: Disable LRPROOF dropping on Relay
     py_relay
         .disable_lrproof_drop()
         .await
         .expect("Failed to disable LRPROOF dropping");
 
-    // Step 16: Soft check — request_path() from the timeout handler may have
+    // Step 16: Soft check ; request_path() from the timeout handler may have
     // already restored the path (relay has a cached path to Py-Dest).
-    // Poll for ~10s but don't hard-assert — timing-dependent.
+    // Poll for ~10s but don't hard-assert ; timing-dependent.
     let path_restored_by_request =
         wait_for_path_on_node(&rust_node, &dest_hash, Duration::from_secs(10)).await;
     eprintln!(
@@ -247,7 +244,7 @@ async fn test_rust_node_path_recovery_on_link_timeout() {
         );
     }
 
-    // Step 19: Rust node connects — proof arrives this time
+    // Step 19: Rust node connects ; proof arrives this time
     let stream3 = rust_node
         .connect(&dest_hash, &signing_key)
         .await

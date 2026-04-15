@@ -16,7 +16,7 @@ use crate::transport::{InterfaceId, Transport, TransportConfig};
 /// Standard initial time for deterministic tests (1 second in ms).
 pub(crate) const TEST_TIME_MS: u64 = 1_000_000;
 
-/// Deterministic clock for tests — supports interior mutability via Cell.
+/// Deterministic clock for tests ; supports interior mutability via Cell.
 pub(crate) struct MockClock(Cell<u64>);
 
 impl MockClock {
@@ -41,7 +41,7 @@ impl Clock for MockClock {
     }
 }
 
-/// Mock interface for testing — records sent packets.
+/// Mock interface for testing ; records sent packets.
 pub(crate) struct MockInterface {
     name: &'static str,
     id: InterfaceId,

@@ -222,7 +222,7 @@ async fn test_request_response_python_handler() {
                                         "response request_id should match"
                                     );
 
-                                    // Python echoes back the data — should be msgpack "hello"
+                                    // Python echoes back the data ; should be msgpack "hello"
                                     let expected_echo = msgpack_fixstr("hello");
                                     assert_eq!(
                                         resp_data, expected_echo,

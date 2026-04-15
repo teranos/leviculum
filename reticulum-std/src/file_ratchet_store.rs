@@ -137,7 +137,7 @@ impl RatchetStore for FileRatchetStore {
                     ));
                 }
                 None => {
-                    // Corrupted file — delete it
+                    // Corrupted file ; delete it
                     let _ = std::fs::remove_file(entry.path());
                 }
             }

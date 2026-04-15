@@ -626,7 +626,7 @@ async fn test_auto_peer_timeout() {
         "Link should establish on B"
     );
 
-    // Stop Node B — this kills its sockets
+    // Stop Node B ; this kills its sockets
     node_b.stop().await.ok();
 
     // Node A should detect the peer loss via InterfaceDown or LinkClosed
@@ -862,7 +862,7 @@ async fn test_auto_group_isolation() {
     .await;
 
     // Node C (different group) should NOT receive the announce
-    // Wait an additional 5s — if C receives anything, isolation is broken
+    // Wait an additional 5s ; if C receives anything, isolation is broken
     let found_c = wait_for_event(&mut events_c, Duration::from_secs(5), |event| {
         if let NodeEvent::AnnounceReceived { announce, .. } = event {
             if *announce.destination_hash() == dest_hash {
@@ -895,7 +895,7 @@ async fn test_auto_group_isolation() {
 // =========================================================================
 
 /// Start a Python rnsd with AutoInterface and verify Rust discovers it via
-/// multicast. Tests only discovery packets — no unicast data transfer (which
+/// multicast. Tests only discovery packets ; no unicast data transfer (which
 /// is unreliable on the same machine due to SO_REUSEPORT routing ambiguity).
 ///
 /// Ignored: Python's socketserver.UDPServer binds the data port without

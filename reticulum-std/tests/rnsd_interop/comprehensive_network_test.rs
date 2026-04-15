@@ -33,7 +33,7 @@
 //! 4. **Stream/Buffer** - Binary data transfer testing
 //! 5. **Proof Strategies** - PROVE_NONE, PROVE_APP, PROVE_ALL
 //!
-//! Note: Ratchet testing is in `ratchet_rotation_tests.rs`
+//! Ratchet testing is in `ratchet_rotation_tests.rs`
 //!
 //! ## Running
 //!
@@ -402,7 +402,7 @@ async fn phase2_link_establishment(network: &mut MultiNodeTestNetwork) {
     println!("phase2: link establishment");
 
     // Test L1: Rust-A -> Py-4 (multi-hop, with ratchets)
-    // Note: For multi-hop links to work, announce propagation must complete
+    // For multi-hop links to work, announce propagation must complete
     // through the relay daemons, and the link request must include transport
     // routing info (HEADER_2 format).
     println!("Testing L1: Rust-A -> Py-4 (multi-hop link)...");

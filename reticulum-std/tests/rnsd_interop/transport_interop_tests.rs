@@ -35,7 +35,7 @@ use crate::harness::{DaemonTopology, TestDaemon};
 /// Rust-A sends announce to D1 (exit daemon). D1 receives on its
 /// TCPServerInterface and rebroadcasts to D0 via its TCPClientInterface.
 ///
-/// Note: Announce rebroadcasting in Python Reticulum has a PATHFINDER_G (5s)
+/// Announce rebroadcasting in Python Reticulum has a PATHFINDER_G (5s)
 /// delay plus random jitter. Between separate processes this can take > 15s.
 /// This test uses generous timeouts.
 #[tokio::test]
@@ -317,7 +317,7 @@ async fn test_announce_rebroadcast_hop_count_accuracy() {
         }
     }
 
-    // Propagation to D0 must succeed — fail hard if it didn't
+    // Propagation to D0 must succeed ; fail hard if it didn't
     assert!(
         d0_has_path,
         "D0 should have received announce propagated from D4 through 4 relays"
@@ -1058,7 +1058,7 @@ async fn test_path_request_triggers_local_destination_announce() {
     )
     .await;
 
-    // Note: Python's behavior for local destination path requests may vary.
+    // Python's behavior for local destination path requests may vary.
     // The daemon may fire a PathRequestReceived event which our test daemon
     // doesn't handle, or it may directly re-announce.
     if let Some(info) = response {
@@ -1765,7 +1765,7 @@ async fn test_announce_rebroadcast_timing_accuracy() {
 /// D0 recognizes the destination as local and responds with an announce,
 /// which propagates back through D1 to Rust-A.
 ///
-/// Note: PATH_REQUEST forwarding requires the intermediary daemon to have
+/// PATH_REQUEST forwarding requires the intermediary daemon to have
 /// multiple interfaces. D1 has both TCPServerInterface (where Rust-A connects)
 /// and TCPClientInterface (to D0), enabling forwarding between them.
 ///

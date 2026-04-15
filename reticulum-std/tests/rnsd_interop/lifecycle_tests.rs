@@ -37,12 +37,10 @@ use crate::common::{
 };
 use crate::harness::TestDaemon;
 
-// ── Test ──────────────────────────────────────────────────────────────────────
-
+// Test
 #[tokio::test]
 async fn test_full_link_lifecycle_through_relay() {
-    // ── Phase 1: Setup + Link Establishment ──────────────────────────────
-
+    // Phase 1: Setup + Link Establishment
     // Step 1: Start Python daemons (relay + destination)
     let py_relay = TestDaemon::start().await.expect("Failed to start Py-Relay");
     let py_dest = TestDaemon::start().await.expect("Failed to start Py-Dest");
@@ -113,8 +111,7 @@ async fn test_full_link_lifecycle_through_relay() {
         "Py-Dest should show the link in its link table"
     );
 
-    // ── Phase 2: Bidirectional Data (proves Fix 1) ───────────────────────
-
+    // Phase 2: Bidirectional Data (proves Fix 1)
     // Step 8: Rust → Python
     stream
         .try_send(b"hello-from-rust")
@@ -144,8 +141,7 @@ async fn test_full_link_lifecycle_through_relay() {
         "Rust should receive exact data from Python"
     );
 
-    // ── Phase 3: Channel ACK / Delivery Confirmation (proves Fix 2) ──────
-
+    // Phase 3: Channel ACK / Delivery Confirmation (proves Fix 2)
     // Step 10: Send 5 messages from Rust, each going through Channel as RawBytesMessage.
     // Space sends to avoid Busy (channel window starts small after handshake).
     for i in 0..5 {
@@ -166,9 +162,9 @@ async fn test_full_link_lifecycle_through_relay() {
 
     // Step 11: Wait for delivery confirmations
     // Before Fix 2, zero LinkDeliveryConfirmed events would arrive because:
-    // - No proof was generated for CHANNEL packets (Fix 2a)
-    // - No receipt was registered (Fix 2b)
-    // - mark_delivered was not wired (Fix 2c)
+    // No proof was generated for CHANNEL packets (Fix 2a)
+    // No receipt was registered (Fix 2b)
+    // mark_delivered was not wired (Fix 2c)
     let confirmations = wait_for_delivery_confirmations(&mut event_rx, 3, Duration::from_secs(15));
     let confirmations = confirmations.await;
     eprintln!("Delivery confirmations received: {}/5", confirmations);
@@ -187,8 +183,7 @@ async fn test_full_link_lifecycle_through_relay() {
         ack_messages.len()
     );
 
-    // ── Phase 4: Graceful Close from Rust (proves Fix 3) ────────────────
-
+    // Phase 4: Graceful Close from Rust (proves Fix 3)
     // Step 12: Verify link is active on Python side
     let link_status = py_dest
         .get_link_status(&link_hash_hex)
@@ -196,7 +191,7 @@ async fn test_full_link_lifecycle_through_relay() {
         .expect("Failed to get link status");
     eprintln!("Python link state before close: {:?}", link_status.state);
 
-    // Step 13: Graceful close — sends LINKCLOSE packet
+    // Step 13: Graceful close ; sends LINKCLOSE packet
     // Before Fix 3, close() only set a local flag. No LINKCLOSE was sent.
     stream.close().await.expect("Failed to close stream");
 
@@ -213,8 +208,7 @@ async fn test_full_link_lifecycle_through_relay() {
         close_result.status, close_result.state
     );
 
-    // ── Phase 5: Remote Close from Python (proves Fix 1 for LINKCLOSE) ───
-
+    // Phase 5: Remote Close from Python (proves Fix 1 for LINKCLOSE)
     // Step 15: Establish a new link
     tokio::time::sleep(Duration::from_millis(500)).await;
 

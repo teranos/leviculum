@@ -418,8 +418,7 @@ impl Identity {
         Ok(plaintext)
     }
 
-    // ─── Ratchet Encryption Support ────────────────────────────────────────────
-
+    // Ratchet Encryption Support
     /// Encrypt data for a destination using an optional ratchet for forward secrecy
     ///
     /// If a ratchet public key is provided, ECDH is performed with the ratchet
@@ -582,7 +581,7 @@ impl Identity {
     }
 }
 
-// Note: No Default impl - use Identity::generate(ctx) instead
+// No Default impl - use Identity::generate(ctx) instead
 
 #[cfg(test)]
 mod tests {
@@ -939,8 +938,7 @@ mod tests {
         assert_eq!(result, Err(IdentityError::DecryptionFailed));
     }
 
-    // ─── Ratchet Encryption Tests ─────────────────────────────────────────────
-
+    // Ratchet Encryption Tests
     #[test]
     fn test_encrypt_for_destination_without_ratchet() {
         // Without a ratchet, should work the same as regular encrypt
@@ -1128,8 +1126,7 @@ mod tests {
         assert_eq!(result, Err(IdentityError::DecryptionFailed));
     }
 
-    // ─── Proof Tests ─────────────────────────────────────────────────────────────
-
+    // Proof Tests
     #[test]
     fn test_create_proof() {
         let identity = new_identity();

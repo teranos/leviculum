@@ -19,7 +19,7 @@ use crate::link::{LinkCloseReason, LinkId, PeerKeys};
 #[derive(Debug)]
 #[non_exhaustive]
 pub enum NodeEvent {
-    // ─── Path Discovery Events ─────────────────────────────────────────────────
+    // Path Discovery Events
     /// A new announce was received and validated
     AnnounceReceived {
         /// Parsed announce data
@@ -40,7 +40,7 @@ pub enum NodeEvent {
 
     /// A remote node requested the path to one of our local destinations
     ///
-    /// This is informational — the transport layer already handles
+    /// This is informational ; the transport layer already handles
     /// auto-re-announce internally (Transport.py:1843-1853).
     /// No application action is required.
     PathRequestReceived {
@@ -54,7 +54,7 @@ pub enum NodeEvent {
         destination_hash: DestinationHash,
     },
 
-    // ─── Single-Packet Events ──────────────────────────────────────────────────
+    // Single-Packet Events
     /// Incoming single-packet data (not via a Link)
     PacketReceived {
         /// The destination hash that received this packet
@@ -79,7 +79,7 @@ pub enum NodeEvent {
         error: DeliveryError,
     },
 
-    // ─── Link Events ──────────────────────────────────────────────────────────
+    // Link Events
     /// Incoming link request (Link establishment request)
     LinkRequest {
         /// The link ID
@@ -116,7 +116,7 @@ pub enum NodeEvent {
     /// Raw data received on a link without Channel framing
     ///
     /// Emitted when the peer sends a plain link data packet (not via Channel).
-    /// This is the lower-level variant — use [`MessageReceived`](NodeEvent::MessageReceived)
+    /// This is the lower-level variant ; use [`MessageReceived`](NodeEvent::MessageReceived)
     /// for channel-multiplexed messaging.
     LinkDataReceived {
         /// The link ID
@@ -137,7 +137,7 @@ pub enum NodeEvent {
         link_id: LinkId,
     },
 
-    /// Observability event — a channel message was retransmitted due to timeout.
+    /// Observability event ; a channel message was retransmitted due to timeout.
     ///
     /// No application action is required. Useful for logging and diagnostics.
     ChannelRetransmit {
@@ -173,7 +173,7 @@ pub enum NodeEvent {
         destination_hash: DestinationHash,
     },
 
-    // ─── Proof Events ──────────────────────────────────────────────────────────
+    // Proof Events
     /// Application should decide whether to prove this packet
     ///
     /// Emitted when a packet is received at a destination with `ProofStrategy::App`.
@@ -208,7 +208,7 @@ pub enum NodeEvent {
         packet_hash: [u8; 32],
     },
 
-    // ─── Resource Events ──────────────────────────────────────────────────────
+    // Resource Events
     /// Resource advertisement received (for AcceptApp strategy).
     /// Application should call `accept_resource()` or `reject_resource()`.
     ResourceAdvertised {
@@ -286,7 +286,7 @@ pub enum NodeEvent {
         is_sender: bool,
     },
 
-    // ─── Request/Response Events ────────────────────────────────────────────────
+    // Request/Response Events
     /// Request received on a link for a registered handler.
     /// Call `send_response()` with the request_id to reply.
     RequestReceived {
@@ -322,7 +322,7 @@ pub enum NodeEvent {
         request_id: [u8; TRUNCATED_HASHBYTES],
     },
 
-    // ─── Interface Events ──────────────────────────────────────────────────────
+    // Interface Events
     /// An interface went offline
     InterfaceDown(usize),
 }

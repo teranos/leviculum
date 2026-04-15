@@ -26,12 +26,12 @@ use crate::harness::{find_available_ports, TestDaemon};
 async fn test_plain_broadcast_local_client_to_network() {
     init_tracing();
 
-    // ── Phase 1: Port allocation ────────────────────────────────────────
+    // Phase 1: Port allocation
     let ports = find_available_ports::<4>().expect("Failed to allocate ports");
     let [daemon_tcp_port, py_b_rns_port, py_b_cmd_port, py_a_cmd_port] = ports;
     let instance_name = format!("broadcast_l2n_{}", std::process::id());
 
-    // ── Phase 2: Start Python daemon B (remote node, TCP server) ────────
+    // Phase 2: Start Python daemon B (remote node, TCP server)
     let py_remote = TestDaemon::start_with_ports(py_b_rns_port, py_b_cmd_port)
         .await
         .expect("Failed to start Python remote daemon");
@@ -42,7 +42,7 @@ async fn test_plain_broadcast_local_client_to_network() {
         .await
         .expect("Failed to register plain destination on remote");
 
-    // ── Phase 3: Start Rust daemon (shared instance + TCP client to B) ──
+    // Phase 3: Start Rust daemon (shared instance + TCP client to B)
     let py_b_addr: SocketAddr = format!("127.0.0.1:{}", py_b_rns_port).parse().unwrap();
     let daemon_tcp_addr: SocketAddr = format!("127.0.0.1:{}", daemon_tcp_port).parse().unwrap();
 
@@ -65,7 +65,7 @@ async fn test_plain_broadcast_local_client_to_network() {
     // Wait for TCP connection + Unix socket to be ready
     tokio::time::sleep(Duration::from_secs(1)).await;
 
-    // ── Phase 4: Start Python daemon A (shared instance client) ─────────
+    // Phase 4: Start Python daemon A (shared instance client)
     // Python detects the existing Unix socket and connects as client.
     // Its py_a_rns_port is unused (shared instance client skips TCP).
     let py_a_rns_port = find_available_ports::<2>().expect("ports")[0];
@@ -77,14 +77,14 @@ async fn test_plain_broadcast_local_client_to_network() {
     // Let Python A settle as shared instance client
     tokio::time::sleep(Duration::from_secs(1)).await;
 
-    // ── Phase 5: Send plain broadcast from local client (A) ─────────────
+    // Phase 5: Send plain broadcast from local client (A)
     let test_data = b"hello broadcast world";
     py_local
         .send_plain_packet("broadcast_test", &["echo"], test_data)
         .await
         .expect("Failed to send plain broadcast from local client");
 
-    // ── Phase 6: Verify remote (B) received the broadcast ───────────────
+    // Phase 6: Verify remote (B) received the broadcast
     let mut received = false;
     for _ in 0..15 {
         tokio::time::sleep(DAEMON_PROCESS_TIME).await;
@@ -112,17 +112,17 @@ async fn test_plain_broadcast_local_client_to_network() {
 async fn test_plain_broadcast_network_to_local_client() {
     init_tracing();
 
-    // ── Phase 1: Port allocation ────────────────────────────────────────
+    // Phase 1: Port allocation
     let ports = find_available_ports::<4>().expect("Failed to allocate ports");
     let [daemon_tcp_port, py_b_rns_port, py_b_cmd_port, py_a_cmd_port] = ports;
     let instance_name = format!("broadcast_n2l_{}", std::process::id());
 
-    // ── Phase 2: Start Python daemon B (remote node, TCP server) ────────
+    // Phase 2: Start Python daemon B (remote node, TCP server)
     let py_remote = TestDaemon::start_with_ports(py_b_rns_port, py_b_cmd_port)
         .await
         .expect("Failed to start Python remote daemon");
 
-    // ── Phase 3: Start Rust daemon (shared instance + TCP client to B) ──
+    // Phase 3: Start Rust daemon (shared instance + TCP client to B)
     let py_b_addr: SocketAddr = format!("127.0.0.1:{}", py_b_rns_port).parse().unwrap();
     let daemon_tcp_addr: SocketAddr = format!("127.0.0.1:{}", daemon_tcp_port).parse().unwrap();
 
@@ -145,7 +145,7 @@ async fn test_plain_broadcast_network_to_local_client() {
     // Wait for TCP connection + Unix socket to be ready
     tokio::time::sleep(Duration::from_secs(1)).await;
 
-    // ── Phase 4: Start Python daemon A (shared instance client) ─────────
+    // Phase 4: Start Python daemon A (shared instance client)
     let py_a_rns_port = find_available_ports::<2>().expect("ports")[0];
     let py_local =
         TestDaemon::start_with_shared_instance_ports(py_a_rns_port, py_a_cmd_port, &instance_name)
@@ -161,14 +161,14 @@ async fn test_plain_broadcast_network_to_local_client() {
         .await
         .expect("Failed to register plain destination on local client");
 
-    // ── Phase 5: Send plain broadcast from remote (B) ───────────────────
+    // Phase 5: Send plain broadcast from remote (B)
     let test_data = b"hello from network";
     py_remote
         .send_plain_packet("broadcast_test", &["echo"], test_data)
         .await
         .expect("Failed to send plain broadcast from remote");
 
-    // ── Phase 6: Verify local client (A) received the broadcast ─────────
+    // Phase 6: Verify local client (A) received the broadcast
     let mut received = false;
     for _ in 0..15 {
         tokio::time::sleep(DAEMON_PROCESS_TIME).await;

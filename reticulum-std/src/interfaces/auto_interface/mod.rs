@@ -1,4 +1,4 @@
-//! AutoInterface — zero-configuration LAN discovery via IPv6 multicast
+//! AutoInterface ; zero-configuration LAN discovery via IPv6 multicast
 //!
 //! Nodes on the same LAN discover each other via IPv6 multicast and
 //! communicate over UDP. Matches Python Reticulum's `AutoInterface`.
@@ -16,19 +16,18 @@ use tokio::net::UdpSocket;
 
 use reticulum_core::crypto::full_hash;
 
-// ─── Constants (match Python exactly) ────────────────────────────────────────
-
+// Constants (match Python exactly)
 pub(crate) const DEFAULT_GROUP_ID: &[u8] = b"reticulum";
 pub(crate) const DEFAULT_DISCOVERY_PORT: u16 = 29716;
 pub(crate) const DEFAULT_DATA_PORT: u16 = 42671;
 
-/// Peer timeout — peer removed if not heard for this long
+/// Peer timeout ; peer removed if not heard for this long
 pub(crate) const PEERING_TIMEOUT_SECS: f64 = 22.0;
 /// Multicast announce interval
 pub(crate) const ANNOUNCE_INTERVAL_SECS: f64 = 1.6;
 /// Peer maintenance job interval
 pub(crate) const PEER_JOB_INTERVAL_SECS: f64 = 4.0;
-/// Multicast echo timeout — carrier lost if no self-echo for this long
+/// Multicast echo timeout ; carrier lost if no self-echo for this long
 pub(crate) const MCAST_ECHO_TIMEOUT_SECS: f64 = 6.5;
 
 /// Deduplication cache capacity (number of entries)
@@ -42,8 +41,7 @@ pub(crate) const AUTO_HW_MTU: u32 = 1196;
 /// Multicast address type: "1" = temporary
 const MULTICAST_ADDRESS_TYPE: &str = "1";
 
-// ─── Scope mapping ───────────────────────────────────────────────────────────
-
+// Scope mapping
 /// IPv6 multicast scope values matching Python's AutoInterface
 fn scope_to_byte(scope: &str) -> &'static str {
     match scope.to_lowercase().as_str() {
@@ -56,8 +54,7 @@ fn scope_to_byte(scope: &str) -> &'static str {
     }
 }
 
-// ─── Configuration ───────────────────────────────────────────────────────────
-
+// Configuration
 /// Configuration for an AutoInterface instance
 #[derive(Debug, Clone)]
 pub struct AutoInterfaceConfig {
@@ -87,8 +84,7 @@ impl Default for AutoInterfaceConfig {
     }
 }
 
-// ─── NIC enumeration ─────────────────────────────────────────────────────────
-
+// NIC enumeration
 /// A network interface adopted for AutoInterface use
 #[derive(Debug, Clone)]
 pub struct AdoptedNic {
@@ -221,8 +217,7 @@ fn name_to_index(name: &str) -> u32 {
     unsafe { libc::if_nametoindex(c_name.as_ptr()) }
 }
 
-// ─── Multicast address derivation ────────────────────────────────────────────
-
+// Multicast address derivation
 /// Derive the IPv6 multicast discovery address from a group ID and scope.
 ///
 /// Matches Python's AutoInterface multicast address derivation:
@@ -255,8 +250,7 @@ pub(crate) fn derive_multicast_address(group_id: &[u8], scope: &str) -> io::Resu
     })
 }
 
-// ─── Discovery tokens ────────────────────────────────────────────────────────
-
+// Discovery tokens
 /// Size of the per-instance nonce appended to discovery tokens.
 ///
 /// Each orchestrator generates a random nonce at startup. This nonce is
@@ -366,8 +360,7 @@ fn constant_time_eq(a: &[u8], b: &[u8]) -> bool {
     diff == 0
 }
 
-// ─── Deduplication cache ─────────────────────────────────────────────────────
-
+// Deduplication cache
 /// Cache for deduplicating packets received from multiple NICs.
 ///
 /// Stores hashes of recently seen packets with timestamps.
@@ -402,7 +395,7 @@ impl DeduplicationCache {
             }
         }
 
-        // Not a duplicate — add to cache
+        // Not a duplicate ; add to cache
         if self.entries.len() >= self.max_size {
             self.entries.pop_front();
         }
@@ -411,8 +404,7 @@ impl DeduplicationCache {
     }
 }
 
-// ─── Unicast discovery port ──────────────────────────────────────────────────
-
+// Unicast discovery port
 /// The unicast discovery port is discovery_port + 1 (matches Python)
 pub(crate) fn unicast_discovery_port(discovery_port: u16) -> u16 {
     discovery_port + 1
@@ -423,8 +415,7 @@ pub(crate) fn reverse_peering_interval_secs() -> f64 {
     ANNOUNCE_INTERVAL_SECS * 3.25
 }
 
-// ─── Socket binding helpers ──────────────────────────────────────────────────
-
+// Socket binding helpers
 /// Bind a multicast discovery socket on a specific NIC.
 ///
 /// - Joins the multicast group on the NIC
@@ -589,7 +580,7 @@ pub(crate) async fn recv_from_any<S: std::borrow::Borrow<UdpSocket>>(
                 });
             }
             Err(ref e) if e.kind() == io::ErrorKind::WouldBlock => {
-                // Spurious wakeup — re-register by looping back to poll_recv_ready
+                // Spurious wakeup ; re-register by looping back to poll_recv_ready
                 continue;
             }
             Err(e) => return Err(e),
@@ -776,7 +767,7 @@ mod tests {
 
     #[test]
     fn test_enumerate_nics_whitelist() {
-        // Whitelist a non-existent device — should return empty
+        // Whitelist a non-existent device ; should return empty
         let config = AutoInterfaceConfig {
             allowed_devices: Some("nonexistent_device_xyz".to_string()),
             ..Default::default()
@@ -895,7 +886,7 @@ mod tests {
 
     #[test]
     fn test_discovery_packet_token_first() {
-        // Verify token occupies bytes [0..32] — Python reads data[:32]
+        // Verify token occupies bytes [0..32] ; Python reads data[:32]
         let token = make_discovery_token(b"reticulum", "fe80::1");
         let nonce = [0xABu8; NONCE_SIZE];
         let data_port = 12345u16;

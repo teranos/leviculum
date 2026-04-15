@@ -183,12 +183,12 @@ async fn test_shared_instance_send_announce() {
 async fn test_shared_instance_link_through_daemon() {
     init_tracing();
 
-    // ── Phase 1: Port allocation ─────────────────────────────────────────
+    // Phase 1: Port allocation
     let ports = find_available_ports::<3>().expect("Failed to allocate ports");
     let [daemon_tcp_port, py_rns_port, py_cmd_port] = ports;
     let instance_name = format!("linktest_{}", std::process::id());
 
-    // ── Phase 2: Start Rust daemon (in-process) ─────────────────────────
+    // Phase 2: Start Rust daemon (in-process)
     // The Rust daemon owns the abstract Unix socket and has a TCP server
     // for Rust node A to connect to.
     let daemon_tcp_addr: SocketAddr = format!("127.0.0.1:{}", daemon_tcp_port).parse().unwrap();
@@ -212,7 +212,7 @@ async fn test_shared_instance_link_through_daemon() {
     // Wait for Unix socket listener to be ready
     tokio::time::sleep(Duration::from_millis(500)).await;
 
-    // ── Phase 3: Start Python as shared instance client ──────────────────
+    // Phase 3: Start Python as shared instance client
     // Python detects the existing socket and falls back to LocalClientInterface.
     // Its TCP server is NOT created (Python skips external interfaces when
     // is_connected_to_shared_instance=True). JSON-RPC command port works
@@ -222,7 +222,7 @@ async fn test_shared_instance_link_through_daemon() {
             .await
             .expect("Failed to start Python shared instance client");
 
-    // ── Phase 4: Register destination and announce on Python ─────────────
+    // Phase 4: Register destination and announce on Python
     let dest_info = py_client
         .register_destination("sharedlinktest", &["echo"])
         .await
@@ -236,7 +236,7 @@ async fn test_shared_instance_link_through_daemon() {
     let dest_hash = parse_dest_hash(&dest_info.hash);
     let signing_key = extract_signing_key(&dest_info.public_key);
 
-    // ── Phase 5: Start Rust node A, wait for announce ────────────────────
+    // Phase 5: Start Rust node A, wait for announce
     // Rust node A connects to the daemon's TCP server as a non-transport endpoint.
     let _storage2 =
         crate::common::temp_storage("test_shared_instance_link_through_daemon", "node2");
@@ -259,7 +259,7 @@ async fn test_shared_instance_link_through_daemon() {
         "Rust A should learn path to Python destination through daemon"
     );
 
-    // ── Phase 6: Establish link ──────────────────────────────────────────
+    // Phase 6: Establish link
     // Link request: Rust A → TCP → daemon → Unix socket → Python
     // Link proof:   Python → Unix socket → daemon → TCP → Rust A
     let mut link_handle = rust_a
@@ -299,8 +299,7 @@ async fn test_shared_instance_link_through_daemon() {
     }
     assert!(py_has_link, "Python should have an established link");
 
-    // ── Phase 7: Bidirectional data exchange ─────────────────────────────
-
+    // Phase 7: Bidirectional data exchange
     // Rust A → Python (via Channel)
     link_handle
         .try_send(b"hello-from-rust")
@@ -328,7 +327,7 @@ async fn test_shared_instance_link_through_daemon() {
         "Python should receive channel message from Rust A"
     );
 
-    // Python → Rust A (echo via Channel — Python echoes the channel message back)
+    // Python → Rust A (echo via Channel ; Python echoes the channel message back)
     let echo = wait_for_data_event(&mut event_rx, &link_id, Duration::from_secs(10)).await;
     assert!(echo.is_some(), "Should receive echo from Python");
     assert_eq!(
@@ -356,7 +355,7 @@ async fn test_shared_instance_link_through_daemon() {
         "Raw data from Python should match"
     );
 
-    // ── Cleanup ──────────────────────────────────────────────────────────
+    // Cleanup
     link_handle.close().await.expect("Failed to close link");
     rust_a.stop().await.expect("Failed to stop Rust node A");
     daemon_node
@@ -380,12 +379,12 @@ async fn test_shared_instance_link_through_daemon() {
 async fn test_local_client_initiates_link_through_daemon() {
     init_tracing();
 
-    // ── Phase 1: Port allocation ─────────────────────────────────────────
+    // Phase 1: Port allocation
     let ports = find_available_ports::<4>().expect("Failed to allocate ports");
     let [daemon_tcp_port, py_b_rns_port, py_b_cmd_port, py_a_cmd_port] = ports;
     let instance_name = format!("lclink_{}", std::process::id());
 
-    // ── Phase 2: Start Python B (remote responder, TCP server) ───────────
+    // Phase 2: Start Python B (remote responder, TCP server)
     let py_b = TestDaemon::start_with_ports(py_b_rns_port, py_b_cmd_port)
         .await
         .expect("Failed to start Python B");
@@ -395,7 +394,7 @@ async fn test_local_client_initiates_link_through_daemon() {
         .await
         .expect("Failed to register destination on Python B");
 
-    // ── Phase 3: Start Rust daemon (shared instance + TCP client to B) ───
+    // Phase 3: Start Rust daemon (shared instance + TCP client to B)
     let py_b_addr: SocketAddr = format!("127.0.0.1:{}", py_b_rns_port).parse().unwrap();
     let daemon_tcp_addr: SocketAddr = format!("127.0.0.1:{}", daemon_tcp_port).parse().unwrap();
 
@@ -418,7 +417,7 @@ async fn test_local_client_initiates_link_through_daemon() {
 
     tokio::time::sleep(Duration::from_secs(1)).await;
 
-    // ── Phase 4: Start Python A (shared instance client, initiator) ──────
+    // Phase 4: Start Python A (shared instance client, initiator)
     let py_a_rns_port = find_available_ports::<2>().expect("ports")[0];
     let py_a =
         TestDaemon::start_with_shared_instance_ports(py_a_rns_port, py_a_cmd_port, &instance_name)
@@ -427,7 +426,7 @@ async fn test_local_client_initiates_link_through_daemon() {
 
     tokio::time::sleep(Duration::from_secs(1)).await;
 
-    // ── Phase 5: Announce AFTER all nodes are connected ──────────────────
+    // Phase 5: Announce AFTER all nodes are connected
     // Python B announces now so the daemon sees it and forwards to Python A.
     py_b.announce_destination(&dest_info.hash, b"issue24-link-test")
         .await
@@ -448,7 +447,7 @@ async fn test_local_client_initiates_link_through_daemon() {
         "Python A should discover Python B's destination through the daemon"
     );
 
-    // ── Phase 6: Python A creates link to Python B ───────────────────────
+    // Phase 6: Python A creates link to Python B
     // Link request: Python A → Unix → daemon → TCP → Python B
     // Link proof:   Python B → TCP → daemon → Unix → Python A
     let link_hash = py_a
@@ -472,7 +471,7 @@ async fn test_local_client_initiates_link_through_daemon() {
         "Python B should have the established link from Python A"
     );
 
-    // ── Phase 7: Bidirectional data exchange ─────────────────────────────
+    // Phase 7: Bidirectional data exchange
     // Python A → Python B
     py_a.send_on_link(&link_hash, b"hello-from-local-client")
         .await
@@ -537,12 +536,12 @@ async fn test_local_client_initiates_link_through_daemon() {
 async fn test_non_transport_daemon_relays_local_client_link() {
     init_tracing();
 
-    // ── Phase 1: Port allocation ─────────────────────────────────────────
+    // Phase 1: Port allocation
     let ports = find_available_ports::<4>().expect("Failed to allocate ports");
     let [daemon_tcp_port, py_b_rns_port, py_b_cmd_port, py_a_cmd_port] = ports;
     let instance_name = format!("notransport_{}", std::process::id());
 
-    // ── Phase 2: Start Python B (remote responder, TCP server) ───────────
+    // Phase 2: Start Python B (remote responder, TCP server)
     let py_b = TestDaemon::start_with_ports(py_b_rns_port, py_b_cmd_port)
         .await
         .expect("Failed to start Python B");
@@ -552,7 +551,7 @@ async fn test_non_transport_daemon_relays_local_client_link() {
         .await
         .expect("Failed to register destination on Python B");
 
-    // ── Phase 3: Start Rust daemon — transport DISABLED ──────────────────
+    // Phase 3: Start Rust daemon ; transport DISABLED
     let py_b_addr: SocketAddr = format!("127.0.0.1:{}", py_b_rns_port).parse().unwrap();
     let daemon_tcp_addr: SocketAddr = format!("127.0.0.1:{}", daemon_tcp_port).parse().unwrap();
 
@@ -577,7 +576,7 @@ async fn test_non_transport_daemon_relays_local_client_link() {
 
     tokio::time::sleep(Duration::from_secs(1)).await;
 
-    // ── Phase 4: Start Python A (shared instance client) ─────────────────
+    // Phase 4: Start Python A (shared instance client)
     let py_a_rns_port = find_available_ports::<2>().expect("ports")[0];
     let py_a =
         TestDaemon::start_with_shared_instance_ports(py_a_rns_port, py_a_cmd_port, &instance_name)
@@ -586,7 +585,7 @@ async fn test_non_transport_daemon_relays_local_client_link() {
 
     tokio::time::sleep(Duration::from_secs(1)).await;
 
-    // ── Phase 5: Announce AFTER all nodes are connected ──────────────────
+    // Phase 5: Announce AFTER all nodes are connected
     // Announce forwarding to local clients is NOT gated on enable_transport.
     py_b.announce_destination(&dest_info.hash, b"no-transport-test")
         .await
@@ -605,7 +604,7 @@ async fn test_non_transport_daemon_relays_local_client_link() {
         "Python A should discover Python B even with non-transport daemon"
     );
 
-    // ── Phase 6: Python A creates link to Python B ───────────────────────
+    // Phase 6: Python A creates link to Python B
     // from_local gate allows link request routing without transport.
     // for_local_link gate allows proof routing back without transport.
     let link_hash = py_a
@@ -613,7 +612,7 @@ async fn test_non_transport_daemon_relays_local_client_link() {
         .await
         .expect("Link should establish through non-transport daemon");
 
-    // ── Phase 7: Bidirectional data exchange ─────────────────────────────
+    // Phase 7: Bidirectional data exchange
     py_a.send_on_link(&link_hash, b"through-non-transport")
         .await
         .expect("Failed to send from Python A");
@@ -676,7 +675,7 @@ async fn test_non_transport_daemon_relays_local_client_link() {
 async fn test_local_client_builder_link_through_daemon() {
     init_tracing();
 
-    // ── Phase 1: Port allocation ─────────────────────────────────────────
+    // Phase 1: Port allocation
     let ports = find_available_ports::<2>().expect("Failed to allocate ports");
     let [daemon_tcp_port, _spare] = ports;
     let instance_name = format!("clientbuilder_{}", std::process::id());
@@ -688,7 +687,7 @@ async fn test_local_client_builder_link_through_daemon() {
     let client_b_storage = tmp.join("client_b");
     let rust_a_storage = tmp.join("rust_a");
 
-    // ── Phase 2: Start Rust daemon (in-process) ─────────────────────────
+    // Phase 2: Start Rust daemon (in-process)
     let daemon_tcp_addr: SocketAddr = format!("127.0.0.1:{}", daemon_tcp_port).parse().unwrap();
 
     let mut daemon_node = ReticulumNodeBuilder::new()
@@ -708,7 +707,7 @@ async fn test_local_client_builder_link_through_daemon() {
     // Wait for Unix socket listener to be ready
     tokio::time::sleep(Duration::from_millis(500)).await;
 
-    // ── Phase 3: Build Rust client B via connect_to_shared_instance ─────
+    // Phase 3: Build Rust client B via connect_to_shared_instance
     let mut client_b = ReticulumNodeBuilder::new()
         .enable_transport(false)
         .connect_to_shared_instance(&instance_name)
@@ -725,7 +724,7 @@ async fn test_local_client_builder_link_through_daemon() {
         .await
         .expect("Failed to start Rust client B");
 
-    // ── Phase 4: Register destination and announce on client B ──────────
+    // Phase 4: Register destination and announce on client B
     let client_b_identity = Identity::generate(&mut rand_core::OsRng);
     let client_b_signing_key = {
         let pk = client_b_identity.public_key_bytes();
@@ -750,7 +749,7 @@ async fn test_local_client_builder_link_through_daemon() {
         .await
         .expect("Failed to announce destination on client B");
 
-    // ── Phase 5: Start Rust node A, wait for path ───────────────────────
+    // Phase 5: Start Rust node A, wait for path
     let mut rust_a = ReticulumNodeBuilder::new()
         .enable_transport(false)
         .add_tcp_client(daemon_tcp_addr)
@@ -769,7 +768,7 @@ async fn test_local_client_builder_link_through_daemon() {
         "Rust A should learn path to client B's destination through daemon"
     );
 
-    // ── Phase 6: Establish link ─────────────────────────────────────────
+    // Phase 6: Establish link
     // connect() sends the link request. We must accept on client B before
     // Rust A can receive the proof, so handle both sides concurrently.
     let mut link_handle = rust_a
@@ -823,8 +822,7 @@ async fn test_local_client_builder_link_through_daemon() {
         "Link should be established within 15s"
     );
 
-    // ── Phase 7: Bidirectional data exchange ────────────────────────────
-
+    // Phase 7: Bidirectional data exchange
     // Rust A → Client B
     link_handle
         .try_send(b"hello-from-a")
@@ -850,7 +848,7 @@ async fn test_local_client_builder_link_through_daemon() {
     assert!(data.is_some(), "Rust A should receive data from client B");
     assert_eq!(data.unwrap(), b"hello-from-b");
 
-    // ── Cleanup ─────────────────────────────────────────────────────────
+    // Cleanup
     link_handle.close().await.expect("Failed to close link");
     rust_a.stop().await.expect("Failed to stop Rust node A");
     client_b.stop().await.expect("Failed to stop client B");

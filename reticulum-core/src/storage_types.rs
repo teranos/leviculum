@@ -9,8 +9,7 @@ use crate::constants::{PROOF_DATA_SIZE, RECEIPT_TIMEOUT_DEFAULT_MS, TRUNCATED_HA
 use crate::destination::DestinationHash;
 use crate::identity::Identity;
 
-// ─── Path Types ─────────────────────────────────────────────────────────────
-
+// Path Types
 /// Path quality state (for path recovery)
 ///
 /// Tracks whether a path is known to be working, unresponsive, or unknown.
@@ -18,7 +17,7 @@ use crate::identity::Identity;
 /// current path has been marked unresponsive (Python Transport.py:1672-1681).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PathState {
-    /// Default state — no knowledge about path quality
+    /// Default state ; no knowledge about path quality
     Unknown,
     /// Communication attempt failed (unvalidated link expired)
     Unresponsive,
@@ -55,8 +54,7 @@ impl PathEntry {
     }
 }
 
-// ─── Link Types ─────────────────────────────────────────────────────────────
-
+// Link Types
 /// Link table entry (for active links routed through this transport node)
 #[derive(Debug, Clone)]
 pub struct LinkEntry {
@@ -82,8 +80,7 @@ pub struct LinkEntry {
     pub peer_signing_key: Option<[u8; crate::constants::ED25519_KEY_SIZE]>,
 }
 
-// ─── Reverse Types ──────────────────────────────────────────────────────────
-
+// Reverse Types
 /// Reverse table entry (for routing replies back)
 #[derive(Debug, Clone, Copy)]
 pub struct ReverseEntry {
@@ -95,8 +92,7 @@ pub struct ReverseEntry {
     pub outbound_interface_index: usize,
 }
 
-// ─── Announce Types ─────────────────────────────────────────────────────────
-
+// Announce Types
 /// Announce table entry (for rate limiting and rebroadcast tracking)
 #[derive(Debug, Clone)]
 pub struct AnnounceEntry {
@@ -136,8 +132,7 @@ pub struct AnnounceRateEntry {
     pub blocked_until_ms: u64,
 }
 
-// ─── Receipt Types ──────────────────────────────────────────────────────────
-
+// Receipt Types
 /// Status of a packet receipt
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ReceiptStatus {
@@ -173,7 +168,7 @@ pub struct PacketReceipt {
 impl PacketReceipt {
     /// Create a new receipt for a sent packet
     pub fn new(packet_hash: [u8; 32], destination_hash: DestinationHash, sent_at_ms: u64) -> Self {
-        // Take the first 16 bytes of the full hash directly — do NOT re-hash.
+        // Take the first 16 bytes of the full hash directly ; do NOT re-hash.
         // truncated_hash() would SHA256 the already-hashed input, producing
         // SHA256(SHA256(hashable))[0:16] instead of SHA256(hashable)[0:16].
         // Python uses packet.get_hash()[:16] which is a simple slice.

@@ -234,7 +234,7 @@ async fn test_python_prove_all_sends_proof() {
     let _proof_packet =
         wait_for_any_proof_packet(&mut stream, &mut deframer, PACKET_WAIT_TIMEOUT).await;
 
-    // Note: Python might send the proof to a different destination or not send one
+    // Python might send the proof to a different destination or not send one
     // if it doesn't have a route back to us. This test verifies the basic flow.
     // In a full implementation, we'd need proper path announcement handling.
 

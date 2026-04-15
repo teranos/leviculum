@@ -49,9 +49,9 @@ use crate::transport::InterfaceId;
 /// Error type for interface send operations
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum InterfaceError {
-    /// Outbound buffer full — packet dropped (non-fatal)
+    /// Outbound buffer full ; packet dropped (non-fatal)
     BufferFull,
-    /// Interface disconnected — driver must call handle_interface_down()
+    /// Interface disconnected ; driver must call handle_interface_down()
     Disconnected,
 }
 
@@ -81,7 +81,7 @@ pub struct InterfaceMode {
 /// implements it on whatever holds the outbound channel (e.g., a tokio mpsc
 /// sender, an Embassy SPI handle, a LoRa radio driver).
 ///
-/// The **receive side** is intentionally absent — receiving is async and
+/// The **receive side** is intentionally absent ; receiving is async and
 /// driver-specific (tokio channels, hardware interrupts, DMA). The driver
 /// feeds received packets into core via `handle_packet()`.
 ///
@@ -92,7 +92,7 @@ pub struct InterfaceMode {
 ///
 /// # Error handling
 ///
-/// - `BufferFull`: non-fatal, packet dropped — Reticulum is best-effort
+/// - `BufferFull`: non-fatal, packet dropped ; Reticulum is best-effort
 /// - `Disconnected`: driver must call `handle_interface_down()` for cleanup
 pub trait Interface {
     /// Opaque identifier used by core for routing tables
@@ -115,7 +115,7 @@ pub trait Interface {
     /// Try to send a packet (non-blocking, fire-and-forget)
     ///
     /// Returns `Ok(())` if the packet was accepted for delivery.
-    /// Returns `Err(BufferFull)` if the outbound buffer is full — packet is dropped.
+    /// Returns `Err(BufferFull)` if the outbound buffer is full ; packet is dropped.
     /// Returns `Err(Disconnected)` if the interface is dead.
     ///
     /// The implementation handles framing internally (e.g., HDLC for TCP).
@@ -139,7 +139,7 @@ pub trait Interface {
     /// Wall-clock time (ms) at which this interface will next accept a
     /// packet of the given size.
     ///
-    /// The default implementation returns `now_ms` — the interface is
+    /// The default implementation returns `now_ms` ; the interface is
     /// always ready. LoRa/constrained interfaces override to return the
     /// earliest-fit time computed from their airtime budget.
     ///
@@ -194,16 +194,14 @@ pub trait Clock {
 /// - `FileStorage` (in `reticulum-std`): wraps MemoryStorage + disk
 ///   persistence with Python-compatible file formats.
 pub trait Storage {
-    // ─── Packet Dedup ───────────────────────────────────────────────────────
-
+    // Packet Dedup
     /// Check if a packet hash has been seen before
     fn has_packet_hash(&self, hash: &[u8; 32]) -> bool;
 
     /// Record a packet hash as seen. Implementations handle capacity/eviction.
     fn add_packet_hash(&mut self, hash: [u8; 32]);
 
-    // ─── Path Table ─────────────────────────────────────────────────────────
-
+    // Path Table
     /// Look up a path by destination hash
     fn get_path(&self, dest_hash: &[u8; TRUNCATED_HASHBYTES]) -> Option<&PathEntry>;
 
@@ -233,16 +231,14 @@ pub trait Storage {
     /// Return owned copies of all announce rate entries (for RPC export).
     fn announce_rate_entries(&self) -> Vec<([u8; TRUNCATED_HASHBYTES], AnnounceRateEntry)>;
 
-    // ─── Path State ─────────────────────────────────────────────────────────
-
+    // Path State
     /// Get path quality state for a destination
     fn get_path_state(&self, dest_hash: &[u8; TRUNCATED_HASHBYTES]) -> Option<PathState>;
 
     /// Set path quality state
     fn set_path_state(&mut self, dest_hash: [u8; TRUNCATED_HASHBYTES], state: PathState);
 
-    // ─── Reverse Table ──────────────────────────────────────────────────────
-
+    // Reverse Table
     /// Look up a reverse entry by packet hash
     fn get_reverse(&self, hash: &[u8; TRUNCATED_HASHBYTES]) -> Option<&ReverseEntry>;
 
@@ -252,8 +248,7 @@ pub trait Storage {
     /// Remove a reverse entry
     fn remove_reverse(&mut self, hash: &[u8; TRUNCATED_HASHBYTES]) -> Option<ReverseEntry>;
 
-    // ─── Link Table ─────────────────────────────────────────────────────────
-
+    // Link Table
     /// Look up a link table entry
     fn get_link_entry(&self, link_id: &[u8; TRUNCATED_HASHBYTES]) -> Option<&LinkEntry>;
 
@@ -269,8 +264,7 @@ pub trait Storage {
         self.get_link_entry(link_id).is_some()
     }
 
-    // ─── Announce Table ─────────────────────────────────────────────────────
-
+    // Announce Table
     /// Look up an announce entry
     fn get_announce(&self, dest_hash: &[u8; TRUNCATED_HASHBYTES]) -> Option<&AnnounceEntry>;
 
@@ -289,16 +283,14 @@ pub trait Storage {
     /// Return all destination hashes in the announce table
     fn announce_keys(&self) -> Vec<[u8; TRUNCATED_HASHBYTES]>;
 
-    // ─── Announce Cache ─────────────────────────────────────────────────────
-
+    // Announce Cache
     /// Get cached raw announce bytes for a destination
     fn get_announce_cache(&self, dest_hash: &[u8; TRUNCATED_HASHBYTES]) -> Option<&Vec<u8>>;
 
     /// Cache raw announce bytes for a destination
     fn set_announce_cache(&mut self, dest_hash: [u8; TRUNCATED_HASHBYTES], raw: Vec<u8>);
 
-    // ─── Announce Rate ──────────────────────────────────────────────────────
-
+    // Announce Rate
     /// Get announce rate tracking for a destination
     fn get_announce_rate(
         &self,
@@ -308,16 +300,14 @@ pub trait Storage {
     /// Set announce rate tracking for a destination
     fn set_announce_rate(&mut self, dest_hash: [u8; TRUNCATED_HASHBYTES], entry: AnnounceRateEntry);
 
-    // ─── Receipts ───────────────────────────────────────────────────────────
-
+    // Receipts
     /// Look up a receipt by truncated hash
     fn get_receipt(&self, hash: &[u8; TRUNCATED_HASHBYTES]) -> Option<&PacketReceipt>;
 
     /// Insert or update a receipt
     fn set_receipt(&mut self, hash: [u8; TRUNCATED_HASHBYTES], receipt: PacketReceipt);
 
-    // ─── Path Requests ──────────────────────────────────────────────────────
-
+    // Path Requests
     /// Get the last path request timestamp for a destination
     fn get_path_request_time(&self, dest_hash: &[u8; TRUNCATED_HASHBYTES]) -> Option<u64>;
 
@@ -328,17 +318,15 @@ pub trait Storage {
     /// If already seen, returns true.
     fn check_path_request_tag(&mut self, tag: &[u8; 32]) -> bool;
 
-    // ─── Known Identities ───────────────────────────────────────────────────
-
+    // Known Identities
     /// Look up a known remote identity by destination hash
     fn get_identity(&self, dest_hash: &[u8; TRUNCATED_HASHBYTES]) -> Option<&Identity>;
 
     /// Store a known remote identity
     fn set_identity(&mut self, dest_hash: [u8; TRUNCATED_HASHBYTES], identity: Identity);
 
-    // ─── Known Ratchets (sender-side cache) ────────────────────────────
-
-    /// Get the known ratchet public key for a destination (owned, not ref — disk-backed
+    // Known Ratchets (sender-side cache)
+    /// Get the known ratchet public key for a destination (owned, not ref ; disk-backed
     /// Storage can't return references to deserialized data).
     fn get_known_ratchet(
         &self,
@@ -356,8 +344,7 @@ pub trait Storage {
     /// Remove known ratchets older than `expiry_ms`. Returns count removed.
     fn expire_known_ratchets(&mut self, now_ms: u64, expiry_ms: u64) -> usize;
 
-    // ─── Local Client Destinations (per-interface tracking) ──────────
-
+    // Local Client Destinations (per-interface tracking)
     /// Track a destination hash as belonging to a local client interface.
     /// Returns true if the hash was newly inserted.
     fn add_local_client_dest(
@@ -369,8 +356,7 @@ pub trait Storage {
     /// Remove all destination hashes for a local client interface.
     fn remove_local_client_dests(&mut self, iface_id: usize);
 
-    // ─── Local Client Known Destinations (persist across disconnects) ─
-
+    // Local Client Known Destinations (persist across disconnects)
     /// Record a destination hash with its last-seen timestamp.
     fn set_local_client_known_dest(
         &mut self,
@@ -384,8 +370,7 @@ pub trait Storage {
     /// Remove entries older than `expiry_ms`. Returns count removed.
     fn expire_local_client_known_dests(&mut self, now_ms: u64, expiry_ms: u64) -> usize;
 
-    // ─── Discovery Path Requests ───────────────────────────────────────
-
+    // Discovery Path Requests
     /// Record a pending discovery path request.
     ///
     /// When a transport node forwards a path request for an unknown
@@ -422,8 +407,7 @@ pub trait Storage {
     /// the internal collection.
     fn discovery_path_request_dest_hashes(&self) -> Vec<[u8; TRUNCATED_HASHBYTES]>;
 
-    // ─── Sender-Side Ratchet Keys (Destination private keys) ─────────
-
+    // Sender-Side Ratchet Keys (Destination private keys)
     /// Persist serialized ratchet private keys for a destination.
     fn store_dest_ratchet_keys(
         &mut self,
@@ -434,8 +418,7 @@ pub trait Storage {
     /// Load serialized ratchet private keys for a destination.
     fn load_dest_ratchet_keys(&self, dest_hash: &[u8; TRUNCATED_HASHBYTES]) -> Option<Vec<u8>>;
 
-    // ─── Cleanup ────────────────────────────────────────────────────────────
-
+    // Cleanup
     /// Remove expired reverse table entries. Returns count removed.
     fn expire_reverses(&mut self, now_ms: u64, timeout_ms: u64) -> usize;
 
@@ -471,21 +454,18 @@ pub trait Storage {
     /// Returns destination hashes of removed paths.
     fn remove_paths_for_interface(&mut self, iface_index: usize) -> Vec<[u8; TRUNCATED_HASHBYTES]>;
 
-    // ─── Deadlines ──────────────────────────────────────────────────────────
-
+    // Deadlines
     /// Earliest receipt deadline (sent_at + timeout), or None if no pending receipts
     fn earliest_receipt_deadline(&self) -> Option<u64>;
 
     /// Earliest link entry deadline, or None if table is empty
     fn earliest_link_deadline(&self, link_timeout_ms: u64) -> Option<u64>;
 
-    // ─── Flush ──────────────────────────────────────────────────────────────
-
+    // Flush
     /// Persist all dirty state to underlying storage (no-op for in-memory implementations)
     fn flush(&mut self) {}
 
-    // ─── Diagnostics ─────────────────────────────────────────────────────────
-
+    // Diagnostics
     /// Return a diagnostic dump of storage collection sizes and estimated byte usage.
     ///
     /// Returns (formatted_text, total_estimated_bytes). Default returns empty.
@@ -633,7 +613,7 @@ impl Storage for NoStorage {
     }
     fn set_identity(&mut self, _dest_hash: [u8; TRUNCATED_HASHBYTES], _identity: Identity) {}
 
-    // ─── Known Ratchets ─────────────────────────────────────────────────
+    // Known Ratchets
     fn get_known_ratchet(
         &self,
         _dest_hash: &[u8; TRUNCATED_HASHBYTES],
@@ -651,7 +631,7 @@ impl Storage for NoStorage {
         0
     }
 
-    // ─── Local Client Destinations ──────────────────────────────────────
+    // Local Client Destinations
     fn add_local_client_dest(
         &mut self,
         _iface_id: usize,
@@ -661,7 +641,7 @@ impl Storage for NoStorage {
     }
     fn remove_local_client_dests(&mut self, _iface_id: usize) {}
 
-    // ─── Local Client Known Destinations ────────────────────────────────
+    // Local Client Known Destinations
     fn set_local_client_known_dest(
         &mut self,
         _dest_hash: [u8; TRUNCATED_HASHBYTES],
@@ -675,7 +655,7 @@ impl Storage for NoStorage {
         0
     }
 
-    // ─── Discovery Path Requests ───────────────────────────────────────
+    // Discovery Path Requests
     fn set_discovery_path_request(
         &mut self,
         _dest_hash: [u8; TRUNCATED_HASHBYTES],
@@ -697,7 +677,7 @@ impl Storage for NoStorage {
         Vec::new()
     }
 
-    // ─── Sender-Side Ratchet Keys ───────────────────────────────────────
+    // Sender-Side Ratchet Keys
     fn store_dest_ratchet_keys(
         &mut self,
         _dest_hash: [u8; TRUNCATED_HASHBYTES],
@@ -855,7 +835,7 @@ mod tests {
         assert_eq!(iface.next_slot_ms(0, 0), 0);
     }
 
-    /// An override is honoured — the default is overridable per impl.
+    /// An override is honoured ; the default is overridable per impl.
     #[test]
     fn next_slot_ms_override_returns_custom_value() {
         struct DelayedByHundred;

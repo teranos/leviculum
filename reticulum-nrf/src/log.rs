@@ -11,8 +11,7 @@ use core::sync::atomic::{AtomicUsize, Ordering};
 use embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex;
 use embassy_sync::signal::Signal;
 
-// ─── Ring buffer ───────────────────────────────────────────────────────────
-
+// Ring buffer
 const LOG_RING_SIZE: usize = 4096; // 4 KB — fits ~15-20 log lines
 
 /// Lock-free ring buffer for log output.
@@ -75,8 +74,7 @@ pub static LOG_RING: LogRing = LogRing::new();
 /// Signal to wake the USB debug writer when new data is available.
 pub static LOG_SIGNAL: Signal<CriticalSectionRawMutex, ()> = Signal::new();
 
-// ─── Log formatting ────────────────────────────────────────────────────────
-
+// Log formatting
 /// Format and write a log message to the ring buffer. Never blocks.
 pub fn log_fmt(prefix: &str, args: core::fmt::Arguments) {
     let mut buf = [0u8; 256];
@@ -103,8 +101,7 @@ pub fn log_fmt(prefix: &str, args: core::fmt::Arguments) {
     LOG_SIGNAL.signal(());
 }
 
-// ─── Macros ────────────────────────────────────────────────────────────────
-
+// Macros
 /// Log an informational message over USB CDC-ACM debug port.
 #[macro_export]
 macro_rules! info {
@@ -121,8 +118,7 @@ macro_rules! warn {
     };
 }
 
-// ─── Tracing subscriber ───────────────────────────────────────────────────
-
+// Tracing subscriber
 /// Minimal tracing subscriber that routes `reticulum-core` log events
 /// to the ring buffer via log_fmt.
 pub struct TracingSubscriber;

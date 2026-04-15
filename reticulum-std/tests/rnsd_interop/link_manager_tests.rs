@@ -1615,7 +1615,7 @@ async fn test_manager_many_simultaneous_links() {
 
 /// Test rapid data exchange on a single link.
 ///
-/// Note: send_on_link() uses Channel (windowed, reliable delivery).
+/// send_on_link() uses Channel (windowed, reliable delivery).
 /// We send in batches, processing incoming proofs between batches to
 /// keep the channel window open.
 #[tokio::test]
@@ -1645,7 +1645,7 @@ async fn test_manager_rapid_data_exchange() {
                 sent += 1;
             }
             Err(_) => {
-                // Window full or pacing — process incoming and retry
+                // Window full or pacing ; process incoming and retry
                 tokio::time::sleep(Duration::from_millis(100)).await;
                 // Read and process any incoming packets (proofs/acks)
                 if let Ok(Ok(n)) = timeout(Duration::from_millis(100), stream.read(&mut buf)).await
@@ -1724,7 +1724,7 @@ async fn test_manager_large_payloads() {
                     break;
                 }
                 Err(_) => {
-                    // Window full or pacing — process incoming and retry
+                    // Window full or pacing ; process incoming and retry
                     tokio::time::sleep(Duration::from_millis(200)).await;
                     if let Ok(Ok(n)) =
                         timeout(Duration::from_millis(200), stream.read(&mut buf)).await

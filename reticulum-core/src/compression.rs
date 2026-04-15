@@ -2,7 +2,7 @@
 //!
 //! This module provides safe wrappers around libbz2-rs-sys (a pure Rust bzip2
 //! implementation) for BZ2 compression and decompression. The underlying
-//! library is 100% Rust with no C dependencies — the `unsafe` blocks bridge
+//! library is 100% Rust with no C dependencies ; the `unsafe` blocks bridge
 //! between Rust slices and the library's C-compatible pointer API.
 //!
 //! # Example
@@ -113,10 +113,10 @@ fn compress_with_size(data: &[u8], dest_size: usize) -> Result<Vec<u8>, Compress
     let mut dest_len = dest_size as c_uint;
 
     // SAFETY:
-    // - dest and source are valid pointers to allocated memory
-    // - dest_len is valid and points to a valid c_uint
-    // - source_len is within bounds of source
-    // - All parameters are valid values
+    // dest and source are valid pointers to allocated memory
+    // dest_len is valid and points to a valid c_uint
+    // source_len is within bounds of source
+    // All parameters are valid values
     let ret = unsafe {
         BZ2_bzBuffToBuffCompress(
             dest.as_mut_ptr() as *mut c_char,
@@ -170,10 +170,10 @@ pub fn decompress(data: &[u8], max_size: usize) -> Result<Vec<u8>, CompressionEr
     let mut dest_len = max_size as c_uint;
 
     // SAFETY:
-    // - dest and source are valid pointers to allocated memory
-    // - dest_len is valid and points to a valid c_uint
-    // - source_len is within bounds of source
-    // - All parameters are valid values
+    // dest and source are valid pointers to allocated memory
+    // dest_len is valid and points to a valid c_uint
+    // source_len is within bounds of source
+    // All parameters are valid values
     let ret = unsafe {
         BZ2_bzBuffToBuffDecompress(
             dest.as_mut_ptr() as *mut c_char,

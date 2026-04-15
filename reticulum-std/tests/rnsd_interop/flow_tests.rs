@@ -545,7 +545,7 @@ async fn test_discovery_path_update() {
         let updated_hops = transport.hops_to(&dest_hash).expect("Should have hops");
         println!("Updated path: hops={}", updated_hops);
 
-        // Note: Python announce handler may reject duplicate announces within a time window.
+        // Python announce handler may reject duplicate announces within a time window.
         // The important thing is the path is still valid.
     } else {
         println!("No second announce received (may be rate-limited by daemon)");

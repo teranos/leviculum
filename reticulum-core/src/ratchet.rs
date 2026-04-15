@@ -129,8 +129,7 @@ mod tests {
     use super::*;
     use rand_core::OsRng;
 
-    // ─── Ratchet Tests ─────────────────────────────────────────────────────────
-
+    // Ratchet Tests
     #[test]
     fn test_ratchet_generation() {
         let ratchet = Ratchet::generate(&mut OsRng, 1704067200000);

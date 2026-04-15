@@ -87,7 +87,7 @@ fn cleanup_config_dir(path: &Path) {
 async fn test_rnprobe_reports_correct_hops() {
     init_tracing();
 
-    // ── Phase 1: Setup ──────────────────────────────────────────────────
+    // Phase 1: Setup
     let ports = find_available_ports::<2>().expect("Failed to allocate ports");
     let daemon_tcp_port = ports[0];
     let test_id = PROBE_TEST_COUNTER.fetch_add(1, Ordering::Relaxed);
@@ -100,7 +100,7 @@ async fn test_rnprobe_reports_correct_hops() {
         .private_key_bytes()
         .expect("generated identity must have private keys");
 
-    // ── Phase 2: Start Rust lnsd (node A) ──────────────────────────────
+    // Phase 2: Start Rust lnsd (node A)
     let mut config = Config::default();
     config.reticulum.respond_to_probes = true;
     let _storage = crate::common::temp_storage("test_rnprobe_reports_correct_hops", "node");
@@ -123,7 +123,7 @@ async fn test_rnprobe_reports_correct_hops() {
     // Wait for Unix socket listener
     tokio::time::sleep(Duration::from_millis(500)).await;
 
-    // ── Phase 3: Start Python daemon (node B) with --respond-to-probes ──
+    // Phase 3: Start Python daemon (node B) with --respond-to-probes
     let py_daemon = TestDaemon::start_with_probes()
         .await
         .expect("Failed to start Python daemon with probes");
@@ -139,7 +139,7 @@ async fn test_rnprobe_reports_correct_hops() {
         .await
         .expect("Failed to connect Python to Rust daemon");
 
-    // ── Phase 4: Wait for Python's probe announce to propagate ──────────
+    // Phase 4: Wait for Python's probe announce to propagate
     let dest_hash = parse_dest_hash(&py_probe_hex);
 
     assert!(
@@ -155,10 +155,10 @@ async fn test_rnprobe_reports_correct_hops() {
         "Rust daemon's path table should show hops=1 for direct neighbor probe destination"
     );
 
-    // ── Phase 5: Write config dir for rnprobe with correct identity ─────
+    // Phase 5: Write config dir for rnprobe with correct identity
     let config_dir = create_probe_config_dir(&instance_name, &identity_bytes);
 
-    // ── Phase 6: Run rnprobe ────────────────────────────────────────────
+    // Phase 6: Run rnprobe
     let config_str = config_dir.to_str().expect("config dir must be valid UTF-8");
     let output = tokio::process::Command::new("python3")
         .arg(RNPROBE_PY)
@@ -178,7 +178,7 @@ async fn test_rnprobe_reports_correct_hops() {
     eprintln!("rnprobe stderr: {}", stderr);
     eprintln!("rnprobe exit status: {}", output.status);
 
-    // ── Phase 7: Parse and verify hop count ─────────────────────────────
+    // Phase 7: Parse and verify hop count
     let re = regex::Regex::new(r"over (\d+) hop").unwrap();
     let caps = re.captures(&stdout).unwrap_or_else(|| {
         panic!(

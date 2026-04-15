@@ -31,7 +31,7 @@ pub(crate) enum ResourcePartResult {
     Continue,
     /// Send this REQ packet (encrypted by caller).
     SendRequest(Vec<u8>),
-    /// All parts received — caller should call `assemble()`.
+    /// All parts received ; caller should call `assemble()`.
     Assembling,
     /// Part did not match any expected hash.
     InvalidPart,
@@ -301,7 +301,7 @@ impl IncomingResource {
         if let Some(req_sent) = self.req_sent_ms {
             let elapsed = now_ms.saturating_sub(req_sent);
             if elapsed > 0 && self.parts_received_this_window == 1 {
-                // First part of this window — measure data RTT rate
+                // First part of this window ; measure data RTT rate
                 let bytes_per_part = if self.num_parts > 0 {
                     self.transfer_size / self.num_parts as u64
                 } else {
@@ -345,7 +345,7 @@ impl IncomingResource {
                 return ResourcePartResult::Assembling;
             }
 
-            // Not done yet — build next request
+            // Not done yet ; build next request
             if !self.waiting_for_hmu {
                 let req = self.build_request();
                 self.req_sent_ms = Some(now_ms);
@@ -426,7 +426,7 @@ impl IncomingResource {
         }
 
         self.waiting_for_hmu = false;
-        // last_activity_ms intentionally not updated — HMU is a control message,
+        // last_activity_ms intentionally not updated ; HMU is a control message,
         // not data progress, so the timeout should continue from the last data part.
         self.retries = 0;
 
@@ -546,7 +546,7 @@ impl IncomingResource {
         match self.status {
             ResourceStatus::Transferring => {
                 // Timeout factor reduces after first data received
-                // (Python Resource.py:828 — PART_TIMEOUT_FACTOR_AFTER_RTT).
+                // (Python Resource.py:828 ; PART_TIMEOUT_FACTOR_AFTER_RTT).
                 let timeout_factor = if self.data_received {
                     PART_TIMEOUT_FACTOR_AFTER_RTT // 2
                 } else {
@@ -587,7 +587,7 @@ impl IncomingResource {
                     } else {
                         self.last_activity_ms = now_ms;
                         // Rebuild request with only the currently missing parts
-                        // (matches Python Resource.py:622 — request_next() on timeout).
+                        // (matches Python Resource.py:622 ; request_next() on timeout).
                         let req = self.build_request();
                         self.req_sent_ms = Some(now_ms);
                         ResourcePollResult::RetransmitAdv(req)
@@ -631,8 +631,7 @@ impl IncomingResource {
         self.status = ResourceStatus::Failed;
     }
 
-    // ── Accessors ──────────────────────────────────────────────────────────
-
+    // Accessors
     pub(crate) fn status(&self) -> ResourceStatus {
         self.status
     }

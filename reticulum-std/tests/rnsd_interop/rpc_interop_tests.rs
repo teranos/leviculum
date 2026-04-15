@@ -137,8 +137,7 @@ fn cleanup_config_dir(path: &Path) {
     let _ = std::fs::remove_dir_all(path);
 }
 
-// ─── rnstatus tests ───────────────────────────────────────────────────────
-
+// rnstatus tests
 /// Test that `rnstatus --config <tempdir>` succeeds against the Rust daemon.
 ///
 /// This is the definitive interop test: Python parses our pickle output,
@@ -232,8 +231,7 @@ async fn test_rnstatus_json_against_rust_daemon() {
     cleanup_config_dir(&config_dir);
 }
 
-// ─── rnpath tests ─────────────────────────────────────────────────────────
-
+// rnpath tests
 /// Test `rnpath -t` (show path table) against the Rust daemon.
 /// Should return empty but not crash.
 #[tokio::test]
@@ -255,7 +253,7 @@ async fn test_rnpath_table_against_rust_daemon() {
         panic!("rnpath -t exited with code {:?}", output.status.code());
     }
 
-    // Empty path table — rnpath should still exit successfully.
+    // Empty path table ; rnpath should still exit successfully.
     // It may print a header or "No paths" message, or nothing at all.
 
     cleanup_config_dir(&config_dir);

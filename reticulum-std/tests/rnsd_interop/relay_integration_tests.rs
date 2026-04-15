@@ -1,7 +1,7 @@
 //! Comprehensive relay integration tests exercising multi-relay topologies,
 //! relay failure with path recovery, and mixed Python+Rust relay chains.
 //!
-//! ## Test 1: Diamond relay — single path, then failover
+//! ## Test 1: Diamond relay ; single path, then failover
 //!
 //! Phase 1:
 //! ```text
@@ -37,15 +37,14 @@ use crate::harness::TestDaemon;
 
 /// Test: Diamond relay topology with failure recovery.
 ///
-/// Phase 1 — A single Rust relay (R1) bridges two Python daemons.
+/// Phase 1 ; A single Rust relay (R1) bridges two Python daemons.
 ///   Verifies announce propagation, bidirectional link+data, and relay stats.
 ///
-/// Phase 2 — R1 is killed, R2 is started, A re-announces. B discovers
+/// Phase 2 ; R1 is killed, R2 is started, A re-announces. B discovers
 ///   A via R2 and re-establishes communication.
 #[tokio::test]
 async fn test_diamond_relay_and_failure_recovery() {
-    // ── Phase 1: Single relay path ──────────────────────────────────────
-
+    // Phase 1: Single relay path
     // Step 1: Start two Python daemons
     let daemon_a = TestDaemon::start().await.expect("Failed to start daemon A");
     let daemon_b = TestDaemon::start().await.expect("Failed to start daemon B");
@@ -176,8 +175,7 @@ async fn test_diamond_relay_and_failure_recovery() {
         "R1 should have forwarded packets"
     );
 
-    // ── Phase 2: Failure + recovery ─────────────────────────────────────
-
+    // Phase 2: Failure + recovery
     // Step 11: Close old links
     let _ = daemon_a.close_link(&link_a_to_b).await;
     let _ = daemon_b.close_link(&link_b_to_a).await;
@@ -204,7 +202,7 @@ async fn test_diamond_relay_and_failure_recovery() {
     // Step 15: Wait for Python to detect dead TCP
     tokio::time::sleep(Duration::from_secs(2)).await;
 
-    // Step 16: B attempts link to A — should fail (R1 dead, old path stale)
+    // Step 16: B attempts link to A ; should fail (R1 dead, old path stale)
     let link_attempt = daemon_b
         .create_link(&dest_a_info.hash, &dest_a_info.public_key, 5)
         .await;
@@ -225,7 +223,7 @@ async fn test_diamond_relay_and_failure_recovery() {
         wait_for_path_on_daemon(&daemon_b, &dest_a_hash, Duration::from_secs(15)).await;
     assert!(b_sees_a_again, "B should see A again via R2");
 
-    // Step 19: B creates link to A via R2 — should succeed
+    // Step 19: B creates link to A via R2 ; should succeed
     let link_recovery = daemon_b
         .create_link(&dest_a_info.hash, &dest_a_info.public_key, 15)
         .await

@@ -1,7 +1,7 @@
 //! In-memory Storage implementation backed by BTreeMaps with configurable caps.
 //!
 //! `MemoryStorage` is the production Storage implementation for embedded targets
-//! and the default test storage for core tests. It is NOT `#[cfg(test)]` — it is
+//! and the default test storage for core tests. It is NOT `#[cfg(test)]` ; it is
 //! always available.
 
 extern crate alloc;
@@ -34,61 +34,61 @@ const COMPACT_IDENTITY_CAP: usize = 1_000;
 
 /// In-memory storage with configurable per-collection capacity limits.
 ///
-/// Uses BTreeMap/BTreeSet for all collections. Not persistent — all data is
+/// Uses BTreeMap/BTreeSet for all collections. Not persistent ; all data is
 /// lost when the process exits. For persistent storage, use `FileStorage`
 /// in `reticulum-std`.
 pub struct MemoryStorage {
-    // ─── Capacity limits ────────────────────────────────────────────────
+    // Capacity limits
     packet_hash_cap: usize,
     identity_cap: usize,
 
-    // ─── Packet dedup ───────────────────────────────────────────────────
+    // Packet dedup
     /// Current generation of packet hashes
     packet_cache: BTreeSet<[u8; 32]>,
     /// Previous generation (rotated out when current exceeds half cap)
     packet_cache_prev: BTreeSet<[u8; 32]>,
 
-    // ─── Path table ─────────────────────────────────────────────────────
+    // Path table
     path_table: BTreeMap<[u8; TRUNCATED_HASHBYTES], PathEntry>,
     path_states: BTreeMap<[u8; TRUNCATED_HASHBYTES], PathState>,
 
-    // ─── Reverse table ──────────────────────────────────────────────────
+    // Reverse table
     reverse_table: BTreeMap<[u8; TRUNCATED_HASHBYTES], ReverseEntry>,
 
-    // ─── Link table ─────────────────────────────────────────────────────
+    // Link table
     link_table: BTreeMap<[u8; TRUNCATED_HASHBYTES], LinkEntry>,
 
-    // ─── Announce table ─────────────────────────────────────────────────
+    // Announce table
     announce_table: BTreeMap<[u8; TRUNCATED_HASHBYTES], AnnounceEntry>,
     announce_cache: BTreeMap<[u8; TRUNCATED_HASHBYTES], Vec<u8>>,
     announce_rate_table: BTreeMap<[u8; TRUNCATED_HASHBYTES], AnnounceRateEntry>,
 
-    // ─── Receipts ───────────────────────────────────────────────────────
+    // Receipts
     receipts: BTreeMap<[u8; TRUNCATED_HASHBYTES], PacketReceipt>,
 
-    // ─── Path requests ──────────────────────────────────────────────────
+    // Path requests
     path_requests: BTreeMap<[u8; TRUNCATED_HASHBYTES], u64>,
     path_request_tags: VecDeque<[u8; 32]>,
     path_request_tag_set: BTreeSet<[u8; 32]>,
 
-    // ─── Known identities ───────────────────────────────────────────────
+    // Known identities
     known_identities: BTreeMap<[u8; TRUNCATED_HASHBYTES], Identity>,
 
-    // ─── Known ratchets (sender-side cache) ──────────────────────────────
+    // Known ratchets (sender-side cache)
     known_ratchets: BTreeMap<[u8; TRUNCATED_HASHBYTES], ([u8; RATCHET_SIZE], u64)>,
 
-    // ─── Local client destinations (per-interface tracking) ──────────────
+    // Local client destinations (per-interface tracking)
     local_client_dest_map: BTreeMap<usize, BTreeSet<[u8; TRUNCATED_HASHBYTES]>>,
 
-    // ─── Local client known destinations (persist across disconnects) ────
+    // Local client known destinations (persist across disconnects)
     local_client_known_dests: BTreeMap<[u8; TRUNCATED_HASHBYTES], u64>,
 
-    // ─── Discovery path requests ─────────────────────────────────────────
+    // Discovery path requests
     /// Pending discovery path requests: dest_hash → (requesting_interface, timeout_ms)
     /// Removal: expire_discovery_path_requests() or remove_discovery_path_request()
     discovery_path_requests: BTreeMap<[u8; TRUNCATED_HASHBYTES], (usize, u64)>,
 
-    // ─── Sender-side ratchet keys (destination private keys) ─────────────
+    // Sender-side ratchet keys (destination private keys)
     dest_ratchet_keys: BTreeMap<[u8; TRUNCATED_HASHBYTES], Vec<u8>>,
 }
 
@@ -129,8 +129,7 @@ impl MemoryStorage {
         }
     }
 
-    // ─── Test convenience methods ───────────────────────────────────────
-
+    // Test convenience methods
     /// Number of packet hashes in both generations
     pub fn packet_hash_count(&self) -> usize {
         self.packet_cache.len() + self.packet_cache_prev.len()
@@ -221,7 +220,7 @@ impl MemoryStorage {
         let mut s = String::new();
         let mut total = 0u64;
 
-        // packet_cache: BTreeSet<[u8; 32]> — 3x overhead
+        // packet_cache: BTreeSet<[u8; 32]> ; 3x overhead
         let n = self.packet_cache.len();
         let raw = (n * 32) as u64;
         let est = raw * 3;
@@ -232,7 +231,7 @@ impl MemoryStorage {
             n, raw, est
         );
 
-        // packet_cache_prev: BTreeSet<[u8; 32]> — 3x
+        // packet_cache_prev: BTreeSet<[u8; 32]> ; 3x
         let n = self.packet_cache_prev.len();
         let raw = (n * 32) as u64;
         let est = raw * 3;
@@ -254,7 +253,7 @@ impl MemoryStorage {
         let mut s = String::new();
         let mut total = 0u64;
 
-        // path_table: BTreeMap<[u8; 16], PathEntry> — 3x
+        // path_table: BTreeMap<[u8; 16], PathEntry> ; 3x
         let n = self.path_table.len();
         let mut raw = 0u64;
         for entry in self.path_table.values() {
@@ -268,7 +267,7 @@ impl MemoryStorage {
             n, raw, est
         );
 
-        // path_states: BTreeMap<[u8; 16], PathState> — 3x
+        // path_states: BTreeMap<[u8; 16], PathState> ; 3x
         let n = self.path_states.len();
         let raw = (n * (TRUNCATED_HASHBYTES + 1)) as u64;
         let est = raw * 3;
@@ -279,7 +278,7 @@ impl MemoryStorage {
             n, raw, est
         );
 
-        // reverse_table: BTreeMap<[u8; 16], ReverseEntry> — 3x
+        // reverse_table: BTreeMap<[u8; 16], ReverseEntry> ; 3x
         let n = self.reverse_table.len();
         let raw = (n * (TRUNCATED_HASHBYTES + 24)) as u64;
         let est = raw * 3;
@@ -290,7 +289,7 @@ impl MemoryStorage {
             n, raw, est
         );
 
-        // link_table: BTreeMap<[u8; 16], LinkEntry> — 3x
+        // link_table: BTreeMap<[u8; 16], LinkEntry> ; 3x
         let n = self.link_table.len();
         let mut raw = 0u64;
         for entry in self.link_table.values() {
@@ -307,7 +306,7 @@ impl MemoryStorage {
             n, raw, est
         );
 
-        // announce_table: BTreeMap<[u8; 16], AnnounceEntry> — 3x
+        // announce_table: BTreeMap<[u8; 16], AnnounceEntry> ; 3x
         let n = self.announce_table.len();
         let mut raw = 0u64;
         for entry in self.announce_table.values() {
@@ -321,7 +320,7 @@ impl MemoryStorage {
             n, raw, est
         );
 
-        // announce_cache: BTreeMap<[u8; 16], Vec<u8>> — 3x
+        // announce_cache: BTreeMap<[u8; 16], Vec<u8>> ; 3x
         let n = self.announce_cache.len();
         let mut raw = 0u64;
         for v in self.announce_cache.values() {
@@ -335,7 +334,7 @@ impl MemoryStorage {
             n, raw, est
         );
 
-        // announce_rate_table: BTreeMap<[u8; 16], AnnounceRateEntry> — 3x
+        // announce_rate_table: BTreeMap<[u8; 16], AnnounceRateEntry> ; 3x
         let n = self.announce_rate_table.len();
         let raw = (n * (TRUNCATED_HASHBYTES + 17)) as u64;
         let est = raw * 3;
@@ -346,7 +345,7 @@ impl MemoryStorage {
             n, raw, est
         );
 
-        // receipts: BTreeMap<[u8; 16], PacketReceipt> — 3x
+        // receipts: BTreeMap<[u8; 16], PacketReceipt> ; 3x
         let n = self.receipts.len();
         let raw = (n * (TRUNCATED_HASHBYTES + 81)) as u64;
         let est = raw * 3;
@@ -357,7 +356,7 @@ impl MemoryStorage {
             n, raw, est
         );
 
-        // path_requests: BTreeMap<[u8; 16], u64> — 3x
+        // path_requests: BTreeMap<[u8; 16], u64> ; 3x
         let n = self.path_requests.len();
         let raw = (n * (TRUNCATED_HASHBYTES + 8)) as u64;
         let est = raw * 3;
@@ -368,7 +367,7 @@ impl MemoryStorage {
             n, raw, est
         );
 
-        // path_request_tags: VecDeque<[u8; 32]> — 1x
+        // path_request_tags: VecDeque<[u8; 32]> ; 1x
         let n = self.path_request_tags.len();
         let raw = (n * 32) as u64;
         let est = raw;
@@ -379,7 +378,7 @@ impl MemoryStorage {
             n, raw, est
         );
 
-        // path_request_tag_set: BTreeSet<[u8; 32]> — 3x
+        // path_request_tag_set: BTreeSet<[u8; 32]> ; 3x
         let n = self.path_request_tag_set.len();
         let raw = (n * 32) as u64;
         let est = raw * 3;
@@ -390,7 +389,7 @@ impl MemoryStorage {
             n, raw, est
         );
 
-        // known_identities: BTreeMap<[u8; 16], Identity> — 3x
+        // known_identities: BTreeMap<[u8; 16], Identity> ; 3x
         let n = self.known_identities.len();
         let raw = (n * (TRUNCATED_HASHBYTES + 128)) as u64;
         let est = raw * 3;
@@ -401,7 +400,7 @@ impl MemoryStorage {
             n, raw, est
         );
 
-        // known_ratchets: BTreeMap<[u8; 16], ([u8; 32], u64)> — 3x
+        // known_ratchets: BTreeMap<[u8; 16], ([u8; 32], u64)> ; 3x
         let n = self.known_ratchets.len();
         let raw = (n * (TRUNCATED_HASHBYTES + RATCHET_SIZE + 8)) as u64;
         let est = raw * 3;
@@ -412,7 +411,7 @@ impl MemoryStorage {
             n, raw, est
         );
 
-        // local_client_dest_map: BTreeMap<usize, BTreeSet<[u8; 16]>> — 3x
+        // local_client_dest_map: BTreeMap<usize, BTreeSet<[u8; 16]>> ; 3x
         let n: usize = self.local_client_dest_map.values().map(|s| s.len()).sum();
         let raw = (n * TRUNCATED_HASHBYTES + self.local_client_dest_map.len() * 8) as u64;
         let est = raw * 3;
@@ -423,7 +422,7 @@ impl MemoryStorage {
             self.local_client_dest_map.len(), n, raw, est
         );
 
-        // local_client_known_dests: BTreeMap<[u8; 16], u64> — 3x
+        // local_client_known_dests: BTreeMap<[u8; 16], u64> ; 3x
         let n = self.local_client_known_dests.len();
         let raw = (n * (TRUNCATED_HASHBYTES + 8)) as u64;
         let est = raw * 3;
@@ -434,7 +433,7 @@ impl MemoryStorage {
             n, raw, est
         );
 
-        // discovery_path_requests: BTreeMap<[u8; 16], (usize, u64)> — 3x
+        // discovery_path_requests: BTreeMap<[u8; 16], (usize, u64)> ; 3x
         let n = self.discovery_path_requests.len();
         let raw = (n * (TRUNCATED_HASHBYTES + 8 + 8)) as u64;
         let est = raw * 3;
@@ -445,7 +444,7 @@ impl MemoryStorage {
             n, raw, est
         );
 
-        // dest_ratchet_keys: BTreeMap<[u8; 16], Vec<u8>> — 3x
+        // dest_ratchet_keys: BTreeMap<[u8; 16], Vec<u8>> ; 3x
         let n = self.dest_ratchet_keys.len();
         let mut raw = 0u64;
         for v in self.dest_ratchet_keys.values() {
@@ -488,8 +487,7 @@ impl MemoryStorage {
 }
 
 impl Storage for MemoryStorage {
-    // ─── Packet Dedup ───────────────────────────────────────────────────
-
+    // Packet Dedup
     fn has_packet_hash(&self, hash: &[u8; 32]) -> bool {
         self.packet_cache.contains(hash) || self.packet_cache_prev.contains(hash)
     }
@@ -502,8 +500,7 @@ impl Storage for MemoryStorage {
         }
     }
 
-    // ─── Path Table ─────────────────────────────────────────────────────
-
+    // Path Table
     fn get_path(&self, dest_hash: &[u8; TRUNCATED_HASHBYTES]) -> Option<&PathEntry> {
         self.path_table.get(dest_hash)
     }
@@ -551,8 +548,7 @@ impl Storage for MemoryStorage {
             .collect()
     }
 
-    // ─── Path State ─────────────────────────────────────────────────────
-
+    // Path State
     fn get_path_state(&self, dest_hash: &[u8; TRUNCATED_HASHBYTES]) -> Option<PathState> {
         self.path_states.get(dest_hash).copied()
     }
@@ -561,8 +557,7 @@ impl Storage for MemoryStorage {
         self.path_states.insert(dest_hash, state);
     }
 
-    // ─── Reverse Table ──────────────────────────────────────────────────
-
+    // Reverse Table
     fn get_reverse(&self, hash: &[u8; TRUNCATED_HASHBYTES]) -> Option<&ReverseEntry> {
         self.reverse_table.get(hash)
     }
@@ -575,8 +570,7 @@ impl Storage for MemoryStorage {
         self.reverse_table.remove(hash)
     }
 
-    // ─── Link Table ─────────────────────────────────────────────────────
-
+    // Link Table
     fn get_link_entry(&self, link_id: &[u8; TRUNCATED_HASHBYTES]) -> Option<&LinkEntry> {
         self.link_table.get(link_id)
     }
@@ -592,8 +586,7 @@ impl Storage for MemoryStorage {
         self.link_table.insert(link_id, entry);
     }
 
-    // ─── Announce Table ─────────────────────────────────────────────────
-
+    // Announce Table
     fn get_announce(&self, dest_hash: &[u8; TRUNCATED_HASHBYTES]) -> Option<&AnnounceEntry> {
         self.announce_table.get(dest_hash)
     }
@@ -617,8 +610,7 @@ impl Storage for MemoryStorage {
         self.announce_table.keys().copied().collect()
     }
 
-    // ─── Announce Cache ─────────────────────────────────────────────────
-
+    // Announce Cache
     fn get_announce_cache(&self, dest_hash: &[u8; TRUNCATED_HASHBYTES]) -> Option<&Vec<u8>> {
         self.announce_cache.get(dest_hash)
     }
@@ -627,8 +619,7 @@ impl Storage for MemoryStorage {
         self.announce_cache.insert(dest_hash, raw);
     }
 
-    // ─── Announce Rate ──────────────────────────────────────────────────
-
+    // Announce Rate
     fn get_announce_rate(
         &self,
         dest_hash: &[u8; TRUNCATED_HASHBYTES],
@@ -644,8 +635,7 @@ impl Storage for MemoryStorage {
         self.announce_rate_table.insert(dest_hash, entry);
     }
 
-    // ─── Receipts ───────────────────────────────────────────────────────
-
+    // Receipts
     fn get_receipt(&self, hash: &[u8; TRUNCATED_HASHBYTES]) -> Option<&PacketReceipt> {
         self.receipts.get(hash)
     }
@@ -654,8 +644,7 @@ impl Storage for MemoryStorage {
         self.receipts.insert(hash, receipt);
     }
 
-    // ─── Path Requests ──────────────────────────────────────────────────
-
+    // Path Requests
     fn get_path_request_time(&self, dest_hash: &[u8; TRUNCATED_HASHBYTES]) -> Option<u64> {
         self.path_requests.get(dest_hash).copied()
     }
@@ -678,15 +667,14 @@ impl Storage for MemoryStorage {
         false
     }
 
-    // ─── Known Identities ───────────────────────────────────────────────
-
+    // Known Identities
     fn get_identity(&self, dest_hash: &[u8; TRUNCATED_HASHBYTES]) -> Option<&Identity> {
         self.known_identities.get(dest_hash)
     }
 
     fn set_identity(&mut self, dest_hash: [u8; TRUNCATED_HASHBYTES], identity: Identity) {
         // Evict oldest when at cap (BTreeMap has no insertion order,
-        // so we just remove the first key — deterministic but arbitrary)
+        // so we just remove the first key ; deterministic but arbitrary)
         if self.known_identities.len() >= self.identity_cap
             && !self.known_identities.contains_key(&dest_hash)
         {
@@ -697,8 +685,7 @@ impl Storage for MemoryStorage {
         self.known_identities.insert(dest_hash, identity);
     }
 
-    // ─── Cleanup ────────────────────────────────────────────────────────
-
+    // Cleanup
     fn expire_reverses(&mut self, now_ms: u64, timeout_ms: u64) -> usize {
         let before = self.reverse_table.len();
         self.reverse_table
@@ -791,8 +778,7 @@ impl Storage for MemoryStorage {
         removed
     }
 
-    // ─── Deadlines ──────────────────────────────────────────────────────
-
+    // Deadlines
     fn earliest_receipt_deadline(&self) -> Option<u64> {
         self.receipts
             .values()
@@ -814,8 +800,7 @@ impl Storage for MemoryStorage {
             .min()
     }
 
-    // ─── Diagnostics ──────────────────────────────────────────────────────
-
+    // Diagnostics
     fn diagnostic_dump(&self) -> (String, u64) {
         let (mut s, mut total) = self.diagnostic_dump_packet_cache();
         let (s2, total2) = self.diagnostic_dump_non_packet_cache();
@@ -824,8 +809,7 @@ impl Storage for MemoryStorage {
         (s, total)
     }
 
-    // ─── Known Ratchets ────────────────────────────────────────────────
-
+    // Known Ratchets
     fn get_known_ratchet(
         &self,
         dest_hash: &[u8; TRUNCATED_HASHBYTES],
@@ -850,8 +834,7 @@ impl Storage for MemoryStorage {
         before - self.known_ratchets.len()
     }
 
-    // ─── Local Client Destinations ──────────────────────────────────────
-
+    // Local Client Destinations
     fn add_local_client_dest(
         &mut self,
         iface_id: usize,
@@ -867,8 +850,7 @@ impl Storage for MemoryStorage {
         self.local_client_dest_map.remove(&iface_id);
     }
 
-    // ─── Local Client Known Destinations ────────────────────────────────
-
+    // Local Client Known Destinations
     fn set_local_client_known_dest(
         &mut self,
         dest_hash: [u8; TRUNCATED_HASHBYTES],
@@ -889,8 +871,7 @@ impl Storage for MemoryStorage {
         before - self.local_client_known_dests.len()
     }
 
-    // ─── Discovery Path Requests ───────────────────────────────────────
-
+    // Discovery Path Requests
     fn set_discovery_path_request(
         &mut self,
         dest_hash: [u8; TRUNCATED_HASHBYTES],
@@ -925,8 +906,7 @@ impl Storage for MemoryStorage {
         self.discovery_path_requests.keys().copied().collect()
     }
 
-    // ─── Sender-Side Ratchet Keys ───────────────────────────────────────
-
+    // Sender-Side Ratchet Keys
     fn store_dest_ratchet_keys(
         &mut self,
         dest_hash: [u8; TRUNCATED_HASHBYTES],
@@ -1289,8 +1269,7 @@ mod tests {
         assert_eq!(DEFAULT_IDENTITY_CAP, 50_000);
     }
 
-    // ─── D1: Announce table operations ────────────────────────────────
-
+    // D1: Announce table operations
     #[test]
     fn test_announce_table_operations() {
         let mut s = MemoryStorage::with_defaults();
@@ -1369,8 +1348,7 @@ mod tests {
         assert_eq!(rate.blocked_until_ms, 3000);
     }
 
-    // ─── D2: earliest_link_deadline ───────────────────────────────────
-
+    // D2: earliest_link_deadline
     #[test]
     fn test_earliest_link_deadline() {
         let mut s = MemoryStorage::with_defaults();
@@ -1416,8 +1394,7 @@ mod tests {
         assert_eq!(s.earliest_link_deadline(5000), Some(3000));
     }
 
-    // ─── D3: Unvalidated link entry expiry ────────────────────────────
-
+    // D3: Unvalidated link entry expiry
     #[test]
     fn test_link_entry_expire_unvalidated() {
         let mut s = MemoryStorage::with_defaults();
@@ -1448,8 +1425,7 @@ mod tests {
         assert_eq!(expired[0].0, h1);
     }
 
-    // ─── D4: remove_link_entries_for_interface ────────────────────────
-
+    // D4: remove_link_entries_for_interface
     #[test]
     fn test_remove_link_entries_for_interface() {
         let mut s = MemoryStorage::with_defaults();
@@ -1484,8 +1460,7 @@ mod tests {
         assert!(s.get_link_entry(&h3).is_some());
     }
 
-    // ─── D5: remove_paths_for_interface ───────────────────────────────
-
+    // D5: remove_paths_for_interface
     #[test]
     fn test_remove_paths_for_interface() {
         let mut s = MemoryStorage::with_defaults();
@@ -1514,8 +1489,7 @@ mod tests {
         assert!(s.get_path(&h3).is_none());
     }
 
-    // ─── D6: path_request_time get/set ────────────────────────────────
-
+    // D6: path_request_time get/set
     #[test]
     fn test_path_request_time() {
         let mut s = MemoryStorage::with_defaults();

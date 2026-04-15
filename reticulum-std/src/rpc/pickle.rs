@@ -166,8 +166,7 @@ pub(crate) fn serialize_response(value: &Value) -> Result<Vec<u8>, RpcError> {
         .map_err(|e| RpcError::Pickle(format!("serialize: {}", e)))
 }
 
-// ─── Pickle dict helpers ──────────────────────────────────────────────
-
+// Pickle dict helpers
 /// Create a pickle string key
 pub(crate) fn pickle_str_key(s: &str) -> HashableValue {
     HashableValue::String(s.into())
@@ -213,8 +212,7 @@ pub(crate) fn pickle_list(items: Vec<Value>) -> Value {
     Value::List(items)
 }
 
-// ─── Internal helpers ─────────────────────────────────────────────────
-
+// Internal helpers
 fn dict_get_str(dict: &BTreeMap<HashableValue, Value>, key: &str) -> Option<String> {
     let k = HashableValue::String(key.into());
     match dict.get(&k) {

@@ -55,7 +55,7 @@ impl Message for RawBytesMessage<'_> {
 /// separate maps that previously encoded this relationship in different
 /// directions (`data_receipts`, `channel_receipt_keys`, `channel_hash_to_seq`).
 ///
-/// Every datum exists exactly once. Lookups are linear scans — n is bounded
+/// Every datum exists exactly once. Lookups are linear scans ; n is bounded
 /// by channel window size × active links (realistically < 100, typically < 20).
 pub(super) struct ReceiptTracker {
     entries: Vec<ReceiptEntry>,
@@ -171,8 +171,7 @@ impl ReceiptTracker {
 }
 
 impl<R: CryptoRngCore, C: Clock, S: Storage> NodeCore<R, C, S> {
-    // ─── Link Management (Public API) ─────────────────────────────────────────
-
+    // Link Management (Public API)
     /// Initiate a link to a destination
     ///
     /// # Arguments
@@ -216,7 +215,7 @@ impl<R: CryptoRngCore, C: Clock, S: Storage> NodeCore<R, C, S> {
         // When the next-hop bitrate is known (e.g., directly on LoRa), use it.
         // When unknown and hops > 1 (path traverses relay nodes whose interfaces
         // we can't see), use a conservative estimate. This covers clients that
-        // connect via TCP to a transport daemon which routes through LoRa — the
+        // connect via TCP to a transport daemon which routes through LoRa ; the
         // client sees TCP (no bitrate) but the actual path includes slow links.
         // Python handles this via an RPC call to `get_first_hop_timeout()`.
         if let Some(bitrate) = self
@@ -395,8 +394,7 @@ impl<R: CryptoRngCore, C: Clock, S: Storage> NodeCore<R, C, S> {
             .count()
     }
 
-    // ─── Link Data Transfer ───────────────────────────────────────────────────
-
+    // Link Data Transfer
     /// Send data on an existing link via Channel (reliable, ordered)
     pub fn send_on_link(
         &mut self,
@@ -497,8 +495,7 @@ impl<R: CryptoRngCore, C: Clock, S: Storage> NodeCore<R, C, S> {
         ))
     }
 
-    // ─── Internal: Link Packet Processing ─────────────────────────────────────
-
+    // Internal: Link Packet Processing
     /// Process an incoming link-related packet
     pub(super) fn process_link_packet(
         &mut self,
@@ -717,7 +714,7 @@ impl<R: CryptoRngCore, C: Clock, S: Storage> NodeCore<R, C, S> {
 
         link.set_phase(LinkPhase::Established);
 
-        // Link established — no more retries needed.
+        // Link established ; no more retries needed.
         self.link_retry_state.remove(&link_id);
 
         // Keepalive timing uses the actual measurement (even 0 for localhost).
@@ -753,7 +750,7 @@ impl<R: CryptoRngCore, C: Clock, S: Storage> NodeCore<R, C, S> {
                     HexShort(link_id.as_bytes()),
                     e,
                 );
-                // Emit the event anyway — the link IS established even if the
+                // Emit the event anyway ; the link IS established even if the
                 // RTT packet could not be sent.
                 self.events.push(NodeEvent::LinkEstablished {
                     link_id,
@@ -815,7 +812,7 @@ impl<R: CryptoRngCore, C: Clock, S: Storage> NodeCore<R, C, S> {
             self.try_confirm_rtt(link_id);
 
             // confirm_delivery removes the entry entirely (fixes orphan path #1).
-            // Event only fires when the receipt still exists — a valid proof for
+            // Event only fires when the receipt still exists ; a valid proof for
             // an already-expired/removed receipt is silently dropped.
             if let Some(sequence) = self.receipt_tracker.confirm_delivery(&truncated) {
                 tracing::debug!(
@@ -902,7 +899,7 @@ impl<R: CryptoRngCore, C: Clock, S: Storage> NodeCore<R, C, S> {
         }
     }
 
-    /// RTT packet (context = Lrrtt) — responder side
+    /// RTT packet (context = Lrrtt) ; responder side
     fn handle_rtt_packet(&mut self, link_id: LinkId, packet: &Packet, now_secs: u64) {
         let Some(link) = self.links.get_mut(&link_id) else {
             return;
@@ -927,7 +924,7 @@ impl<R: CryptoRngCore, C: Clock, S: Storage> NodeCore<R, C, S> {
         }
     }
 
-    /// Keepalive packet — record activity and echo if requested
+    /// Keepalive packet ; record activity and echo if requested
     fn handle_keepalive_packet(&mut self, link_id: LinkId, packet: &Packet, now_secs: u64) {
         let Some(link) = self.links.get_mut(&link_id) else {
             return;
@@ -943,7 +940,7 @@ impl<R: CryptoRngCore, C: Clock, S: Storage> NodeCore<R, C, S> {
         }
     }
 
-    /// Link close packet — verify and tear down the link
+    /// Link close packet ; verify and tear down the link
     fn handle_close_packet(&mut self, link_id: LinkId, packet: &Packet) {
         let Some(link) = self.links.get_mut(&link_id) else {
             return;
@@ -963,7 +960,7 @@ impl<R: CryptoRngCore, C: Clock, S: Storage> NodeCore<R, C, S> {
         }
     }
 
-    /// Channel packet — decrypt, process through channel, build proof
+    /// Channel packet ; decrypt, process through channel, build proof
     fn handle_channel_packet(
         &mut self,
         link_id: LinkId,
@@ -1005,7 +1002,7 @@ impl<R: CryptoRngCore, C: Clock, S: Storage> NodeCore<R, C, S> {
         };
         plaintext.truncate(decrypted_len);
 
-        // 2. Channel receive + drain + proof — link borrow scoped in this block
+        // 2. Channel receive + drain + proof ; link borrow scoped in this block
         // so that route_link_packet (which needs &mut self) can run afterward.
         //
         // Deferred proof strategy: only prove messages that are delivered in-order
@@ -1050,10 +1047,10 @@ impl<R: CryptoRngCore, C: Clock, S: Storage> NodeCore<R, C, S> {
                 }
                 Ok(ReceiveOutcome::Buffered) => {
                     tracing::debug!("link_mgr: channel message buffered (out-of-order)");
-                    // No proof — sender will retransmit the gap-filling packet
+                    // No proof ; sender will retransmit the gap-filling packet
                 }
                 Ok(ReceiveOutcome::DuplicateBuffered) => {
-                    // Duplicate of buffered msg — no proof
+                    // Duplicate of buffered msg ; no proof
                 }
                 Err(ChannelError::RxRingFull) => {
                     rx_ring_full = true;
@@ -1147,7 +1144,7 @@ impl<R: CryptoRngCore, C: Clock, S: Storage> NodeCore<R, C, S> {
         }
     }
 
-    /// Regular data packet — decrypt, handle proof strategy, emit data event
+    /// Regular data packet ; decrypt, handle proof strategy, emit data event
     fn handle_plain_data_packet(
         &mut self,
         link_id: LinkId,
@@ -1216,7 +1213,7 @@ impl<R: CryptoRngCore, C: Clock, S: Storage> NodeCore<R, C, S> {
         }
     }
 
-    /// Handle a LINKIDENTIFY packet — peer is proving their identity.
+    /// Handle a LINKIDENTIFY packet ; peer is proving their identity.
     ///
     /// Protocol: plaintext = public_key(64) + signature(64) = 128 bytes.
     /// signed_data = link_id(16) + public_key(64) = 80 bytes.
@@ -1327,8 +1324,7 @@ impl<R: CryptoRngCore, C: Clock, S: Storage> NodeCore<R, C, S> {
         });
     }
 
-    // ─── Internal: Request/Response Handlers ────────────────────────────────────
-
+    // Internal: Request/Response Handlers
     /// Handle an incoming request packet (responder side).
     ///
     /// Protocol: plaintext = msgpack fixarray(3) [timestamp, path_hash, data].
@@ -1648,8 +1644,7 @@ impl<R: CryptoRngCore, C: Clock, S: Storage> NodeCore<R, C, S> {
         }
     }
 
-    // ─── Internal: Resource Handlers ──────────────────────────────────────────
-
+    // Internal: Resource Handlers
     /// Handle a ResourceAdv packet (incoming advertisement).
     fn handle_resource_adv(
         &mut self,
@@ -1671,7 +1666,7 @@ impl<R: CryptoRngCore, C: Clock, S: Storage> NodeCore<R, C, S> {
         }
         link.record_inbound(now_secs);
 
-        // Already have an incoming resource or pending ADV — ignore
+        // Already have an incoming resource or pending ADV ; ignore
         if link.has_incoming_resource() || link.has_pending_resource() {
             tracing::debug!("Resource ADV on link with active resource, ignoring");
             return;
@@ -1793,7 +1788,7 @@ impl<R: CryptoRngCore, C: Clock, S: Storage> NodeCore<R, C, S> {
             return;
         }
 
-        // Need immutable link ref for handle_request — extract what we need first
+        // Need immutable link ref for handle_request ; extract what we need first
         // Then call handle_request with a fresh borrow
         let packets = {
             let link_mut = self.links.get_mut(&link_id).unwrap();
@@ -1822,7 +1817,7 @@ impl<R: CryptoRngCore, C: Clock, S: Storage> NodeCore<R, C, S> {
                     if status == crate::resource::ResourceStatus::Transferring
                         || status == crate::resource::ResourceStatus::AwaitingProof
                     {
-                        // Emit progress (skip at 1.0 — completion is a separate event)
+                        // Emit progress (skip at 1.0 ; completion is a separate event)
                         if progress < 1.0 {
                             self.events.push(NodeEvent::ResourceProgress {
                                 link_id,
@@ -1932,7 +1927,7 @@ impl<R: CryptoRngCore, C: Clock, S: Storage> NodeCore<R, C, S> {
                 }
             }
             ResourcePartResult::Assembling => {
-                // All parts received — assemble
+                // All parts received ; assemble
                 let link_ref = &*link;
                 match incoming.assemble(link_ref) {
                     Ok((data, metadata)) => {
@@ -2101,7 +2096,7 @@ impl<R: CryptoRngCore, C: Clock, S: Storage> NodeCore<R, C, S> {
         match res.handle_proof(proof_data) {
             Ok(crate::resource::ResourceStatus::Complete) => {
                 let resource_hash = *res.resource_hash();
-                // Don't put back — transfer is complete
+                // Don't put back ; transfer is complete
                 self.events.push(NodeEvent::ResourceCompleted {
                     link_id,
                     resource_hash,
@@ -2130,8 +2125,7 @@ impl<R: CryptoRngCore, C: Clock, S: Storage> NodeCore<R, C, S> {
         }
     }
 
-    // ─── Internal: Timeout / Polling ──────────────────────────────────────────
-
+    // Internal: Timeout / Polling
     /// Check for handshake timeouts on pending links
     pub(super) fn check_timeouts(&mut self, now_ms: u64) {
         let timed_out: Vec<LinkId> = self
@@ -2414,7 +2408,7 @@ impl<R: CryptoRngCore, C: Clock, S: Storage> NodeCore<R, C, S> {
             .collect();
 
         for link_id in channel_link_ids {
-            // Get link, extract RTT, poll channel — actions is owned Vec, releasing borrow
+            // Get link, extract RTT, poll channel ; actions is owned Vec, releasing borrow
             let actions = match self.links.get_mut(&link_id) {
                 Some(link) => {
                     let rtt_ms = link.rtt_ms();
@@ -2512,7 +2506,7 @@ impl<R: CryptoRngCore, C: Clock, S: Storage> NodeCore<R, C, S> {
         for link_id in resource_link_ids {
             let rtt_ms = self.links.get(&link_id).map(|l| l.rtt_ms()).unwrap_or(5000);
 
-            // Poll outgoing resource — collect result into owned enum, release borrow
+            // Poll outgoing resource ; collect result into owned enum, release borrow
             let out_result = match self.links.get_mut(&link_id) {
                 Some(link) => link
                     .outgoing_resource_mut()
@@ -2591,7 +2585,7 @@ impl<R: CryptoRngCore, C: Clock, S: Storage> NodeCore<R, C, S> {
                 }
             }
 
-            // Poll incoming resource — same pattern
+            // Poll incoming resource ; same pattern
             let in_result = match self.links.get_mut(&link_id) {
                 Some(link) => link
                     .incoming_resource_mut()
@@ -2741,8 +2735,7 @@ impl<R: CryptoRngCore, C: Clock, S: Storage> NodeCore<R, C, S> {
         earliest
     }
 
-    // ─── Internal: Helpers ────────────────────────────────────────────────────
-
+    // Internal: Helpers
     /// Route a link packet via attached interface, with path lookup fallback.
     pub(super) fn route_link_packet(&mut self, link_id: &LinkId, data: &[u8]) {
         if let Some(link) = self.links.get(link_id) {
@@ -2776,7 +2769,7 @@ impl<R: CryptoRngCore, C: Clock, S: Storage> NodeCore<R, C, S> {
         // Clean up all receipt entries for this link
         self.receipt_tracker.remove_for_link(&link_id);
 
-        // Clean up pending requests for this link (no timeout events — LinkClosed suffices)
+        // Clean up pending requests for this link (no timeout events ; LinkClosed suffices)
         self.pending_requests.retain(|_, pr| pr.link_id != link_id);
 
         // Path recovery for locally-initiated links that never activated

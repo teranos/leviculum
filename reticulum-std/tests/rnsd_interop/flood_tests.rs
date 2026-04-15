@@ -41,7 +41,7 @@ async fn test_announce_destination_smoke() {
     // Start one Python daemon
     let py_a = TestDaemon::start().await.expect("Failed to start daemon");
 
-    // Build Rust node connected to daemon (transport disabled — no relay)
+    // Build Rust node connected to daemon (transport disabled ; no relay)
     let _storage = crate::common::temp_storage("test_announce_destination_smoke", "node");
     let mut rust_node = ReticulumNodeBuilder::new()
         .add_tcp_client(py_a.rns_addr())
@@ -79,7 +79,7 @@ async fn test_announce_destination_smoke() {
     let found = wait_for_path_on_daemon(&py_a, &dest_hash, Duration::from_secs(10)).await;
     assert!(found, "Python daemon should learn path to Rust destination");
 
-    // Verify hop count is 1 (direct — Python increments hops by 1 on reception)
+    // Verify hop count is 1 (direct ; Python increments hops by 1 on reception)
     let paths = py_a.get_path_table().await.unwrap();
     let hex_hash = hex::encode(dest_hash.as_bytes());
     let entry = paths
@@ -159,7 +159,7 @@ async fn test_triangle_echo_prevention() {
     let hex_hash = hex::encode(dest_hash.as_bytes());
     rust_node.register_destination(dest);
 
-    // Announce the destination — broadcasts on both interfaces
+    // Announce the destination ; broadcasts on both interfaces
     rust_node
         .announce_destination(&dest_hash, Some(b"triangle-test"))
         .await
@@ -331,7 +331,7 @@ async fn test_diamond_originator_echo() {
 
     // Wait for all 3 announce retransmits to complete (~16.5s from announce time).
     // Locally-originated announces are retransmitted 3 times for LoRa reliability
-    // (transport.rs:1152-1178, Rust extension — Python does not retransmit these).
+    // (transport.rs:1152-1178, Rust extension ; Python does not retransmit these).
     // Each retransmit increments packets_forwarded via forward_on_all_except().
     // After retries exhaust (retries > PATHFINDER_RETRIES), the entry is removed
     // and no further forwarding occurs.
@@ -398,7 +398,7 @@ async fn test_diamond_originator_echo() {
 /// Verifies that link data crosses the diamond correctly, with dedup
 /// preventing duplicate delivery of the same packet via both paths.
 ///
-/// Note: The test daemon echoes every received packet (creating a new
+/// The test daemon echoes every received packet (creating a new
 /// RNS.Packet with fresh encryption/hash each time), which causes echo
 /// ping-pong between Py-Src and Py-Dst. The assertion checks that the
 /// payload was delivered at least once, ignoring echo-generated copies.
@@ -524,7 +524,7 @@ async fn test_diamond_link_redundant_paths() {
     );
 
     // Storm detection: measure whether packet rate is stabilizing
-    // (non-asserting — collect data for future analysis)
+    // (non-asserting ; collect data for future analysis)
     let stats_1 = rust_relay.transport_stats();
     tokio::time::sleep(Duration::from_secs(5)).await;
     let stats_2 = rust_relay.transport_stats();

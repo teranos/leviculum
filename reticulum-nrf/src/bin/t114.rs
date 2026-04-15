@@ -119,7 +119,7 @@ async fn main(spawner: Spawner) {
         ));
     }
 
-    // LoRa (SPIM2 — SPIM3 has a MISO read bug on T114)
+    // LoRa (SPIM2 ; SPIM3 has a MISO read bug on T114)
     let lora = reticulum_nrf::lora::init(
         p.SPI2, p.P0_19, p.P0_22, p.P0_23, p.P0_24, p.P0_25, p.P0_17, p.P0_20,
     ).await;
@@ -158,7 +158,7 @@ async fn main(spawner: Spawner) {
     }
     led.set_level(Level::High);
 
-    // Event-driven main loop — four event sources:
+    // Event-driven main loop ; four event sources:
     // 1. Serial incoming (USB)
     // 2. LoRa incoming (radio)
     // 3. BLE incoming (defragmented Reticulum packets from phone)

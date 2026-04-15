@@ -171,7 +171,7 @@ impl TestDaemon {
     /// If the Reticulum submodule exists but is not initialized, this will
     /// automatically run `git submodule update --init` first.
     ///
-    /// Note: This includes retry logic to handle TOCTOU race conditions where
+    /// This includes retry logic to handle TOCTOU race conditions where
     /// ports allocated by `find_two_available_ports()` might be grabbed by
     /// another parallel test before the daemon can bind to them.
     pub async fn start() -> Result<Self, HarnessError> {
@@ -708,7 +708,7 @@ impl TestDaemon {
 
     /// Kill this daemon and restart it on the same ports.
     ///
-    /// The new daemon is a fresh Python process with empty state — all
+    /// The new daemon is a fresh Python process with empty state ; all
     /// previously registered destinations, established links, and path
     /// table entries are lost.  Any existing TCP streams from test code
     /// to the old daemon will be broken and must be reconnected.
@@ -719,7 +719,7 @@ impl TestDaemon {
         let rns_port = self.rns_port;
         let cmd_port = self.cmd_port;
 
-        // Hard kill (simulates crash — no graceful shutdown RPC)
+        // Hard kill (simulates crash ; no graceful shutdown RPC)
         let _ = self.process.kill();
         let _ = self.process.wait();
 
@@ -728,7 +728,7 @@ impl TestDaemon {
 
         // start_with_ports returns a full TestDaemon. We swap process
         // handles so the new_daemon's Drop runs on the old (dead) process
-        // — harmless since it's already dead.
+        // ; harmless since it's already dead.
         let mut new_daemon = Self::start_with_ports(rns_port, cmd_port).await?;
         std::mem::swap(&mut self.process, &mut new_daemon.process);
 

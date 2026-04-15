@@ -11,8 +11,7 @@ use embassy_nrf::gpio::{Level, Output, OutputDrive};
 use embassy_nrf::peripherals;
 use embassy_nrf::Peri;
 
-// ─── SX1262 LoRa Radio (SPI0) ──────────────────────────────────────────────
-
+// SX1262 LoRa Radio (SPI0)
 /// SX1262 SPI clock
 pub type LoRaSck = peripherals::P0_19;
 /// SX1262 SPI MOSI
@@ -41,27 +40,23 @@ pub const LORA_DIO2_AS_RF_SWITCH: bool = true;
 /// SX1262 BUSY polling timeout (ms, from RNode firmware)
 pub const LORA_BUSY_TIMEOUT_MS: u32 = 100;
 
-// ─── Green LED ──────────────────────────────────────────────────────────────
-
+// Green LED
 /// Green indicator LED (active LOW)
 pub type LedPin = peripherals::P1_03;
 
-// ─── NeoPixel (2x SK6812) ───────────────────────────────────────────────────
-
+// NeoPixel (2x SK6812)
 /// NeoPixel data pin (GRB, 800 kHz WS2812 protocol)
 pub type NeoPixelPin = peripherals::P0_14;
 /// Number of addressable NeoPixel LEDs
 pub const NEOPIXEL_COUNT: usize = 2;
 
-// ─── UART (NFC pins repurposed as GPIO) ─────────────────────────────────────
-
+// UART (NFC pins repurposed as GPIO)
 /// UART RX (header P1, NFC pin repurposed)
 pub type UartRx = peripherals::P0_09;
 /// UART TX (header P1, NFC pin repurposed)
 pub type UartTx = peripherals::P0_10;
 
-// ─── GPS (L76K, powered via VEXT) ──────────────────────────────────────────
-
+// GPS (L76K, powered via VEXT)
 /// GPS UART TX (MCU → GPS)
 pub type GpsTx = peripherals::P1_05;
 /// GPS UART RX (GPS → MCU)
@@ -73,22 +68,19 @@ pub type GpsPps = peripherals::P1_04;
 /// GPS UART baud rate
 pub const GPS_BAUD: u32 = 115_200;
 
-// ─── I2C0 (RTC footprint, optional PCF8563TS) ─────────────────────────────
-
+// I2C0 (RTC footprint, optional PCF8563TS)
 /// I2C0 SDA (RTC footprint)
 pub type I2c0Sda = peripherals::P0_26;
 /// I2C0 SCL (RTC footprint)
 pub type I2c0Scl = peripherals::P0_27;
 
-// ─── I2C1 (general purpose, header P1) ─────────────────────────────────────
-
+// I2C1 (general purpose, header P1)
 /// I2C1 SDA (general purpose, header P1)
 pub type I2c1Sda = peripherals::P0_16;
 /// I2C1 SCL (general purpose, header P1)
 pub type I2c1Scl = peripherals::P0_13;
 
-// ─── TFT Display (ST7789 240x135, optional, SPI1) ──────────────────────────
-
+// TFT Display (ST7789 240x135, optional, SPI1)
 /// TFT SPI clock
 pub type TftSck = peripherals::P1_08;
 /// TFT SPI MOSI
@@ -104,8 +96,7 @@ pub type TftBacklight = peripherals::P0_15;
 /// TFT power enable
 pub type TftPowerEn = peripherals::P0_03;
 
-// ─── QSPI Flash (MX25R1635F, 16 Mbit) ─────────────────────────────────────
-
+// QSPI Flash (MX25R1635F, 16 Mbit)
 /// QSPI flash clock
 pub type QspiClk = peripherals::P1_14;
 /// QSPI flash chip-select
@@ -116,11 +107,10 @@ pub type QspiIo0 = peripherals::P1_12;
 pub type QspiIo1 = peripherals::P1_13;
 /// QSPI flash IO2
 pub type QspiIo2 = peripherals::P1_00;
-/// QSPI flash IO3 (HOLD# — must be HIGH before QSPI activation)
+/// QSPI flash IO3 (HOLD# ; must be HIGH before QSPI activation)
 pub type QspiIo3 = peripherals::P1_01;
 
-// ─── Battery / ADC ──────────────────────────────────────────────────────────
-
+// Battery / ADC
 /// Battery voltage sense (AIN2)
 pub type BatteryAdc = peripherals::P0_04;
 /// ADC divider enable (HIGH = enabled)
@@ -128,20 +118,18 @@ pub type AdcCtrl = peripherals::P0_06;
 /// ADC multiplier: converts raw ADC reading to battery voltage (mV)
 pub const ADC_MULTIPLIER: f32 = 4.916;
 
-// ─── External peripheral power ──────────────────────────────────────────────
-
+// External peripheral power
 /// VEXT enable (HIGH = on, controls GPS + display power rail, 1s warmup)
 pub type VextEnable = peripherals::P0_21;
 /// VEXT warmup time in milliseconds
 pub const VEXT_WARMUP_MS: u32 = 1000;
 
-// ─── User button ────────────────────────────────────────────────────────────
-
+// User button
 /// User button
 pub type UserButton = peripherals::P1_10;
 
 /// Create the green LED output (active low)
 pub fn led(pin: Peri<'static, LedPin>) -> Output<'static> {
-    // LED is active LOW — start with Level::High (LED off)
+    // LED is active LOW ; start with Level::High (LED off)
     Output::new(pin, Level::High, OutputDrive::Standard)
 }

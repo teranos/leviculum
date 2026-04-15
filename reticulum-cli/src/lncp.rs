@@ -123,7 +123,7 @@ async fn main() {
     let args = Args::parse();
 
     // RUST_LOG env takes precedence; otherwise use -v/-q flags.
-    // Default is "warn" (not "info") — lncp is a user tool, not a daemon.
+    // Default is "warn" (not "info") ; lncp is a user tool, not a daemon.
     let default_filter = match (args.verbose as i8) - (args.quiet as i8) {
         3.. => "trace",
         2 => "debug",

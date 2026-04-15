@@ -91,7 +91,7 @@ async fn test_drop_count() {
     write_kiss_frame(&mut a_test, 0x00, b"frame2").await;
     write_kiss_frame(&mut a_test, 0x00, b"frame3").await;
 
-    // Read from B side — should get exactly 2 (first was dropped)
+    // Read from B side ; should get exactly 2 (first was dropped)
     let received = read_kiss_frames(&mut b_test, 2, Duration::from_secs(2)).await;
     assert_eq!(
         received.len(),
@@ -196,7 +196,7 @@ async fn test_clear_all() {
 
     tokio::task::yield_now().await;
 
-    // Send a frame — should be dropped (first rule wins)
+    // Send a frame ; should be dropped (first rule wins)
     write_kiss_frame(&mut a_test, 0x00, b"blocked").await;
     let received = read_kiss_frames(&mut b_test, 1, Duration::from_millis(200)).await;
     assert!(received.is_empty(), "Frame should have been dropped");
@@ -247,7 +247,7 @@ async fn test_control_socket() {
     let resp = control_cmd(&sock_path, "rule clear all").await;
     assert_eq!(resp, "OK");
 
-    // List again — empty
+    // List again ; empty
     let resp = control_cmd(&sock_path, "rule list").await;
     assert_eq!(resp, "OK []");
 
@@ -385,7 +385,7 @@ async fn test_control_socket_full_options() {
     let resp = control_cmd(&sock_path, "rule add corrupt").await;
     assert!(resp.starts_with("OK "), "Got: {resp}");
 
-    // List — should show both
+    // List ; should show both
     let resp = control_cmd(&sock_path, "rule list").await;
     assert!(resp.contains("\"action\":\"delay 100\""), "Got: {resp}");
     assert!(resp.contains("\"direction\":\"a_to_b\""), "Got: {resp}");
@@ -406,7 +406,7 @@ async fn test_control_socket_full_options() {
     let _ = std::fs::remove_file(&sock_path);
 }
 
-/// Test 9: drop count=5 then forward 10 frames — stats check
+/// Test 9: drop count=5 then forward 10 frames ; stats check
 #[tokio::test]
 async fn test_drop_5_forward_10() {
     let engine = Arc::new(Mutex::new(RuleEngine::new()));

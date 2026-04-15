@@ -3,12 +3,12 @@
 //!
 //! The nRF52840 RNG is a simple TRNG: write TASKS_START, poll EVENTS_VALRDY,
 //! read VALUE. This works regardless of which code "owns" the peripheral
-//! token — the hardware is always accessible via its register address.
+//! token ; the hardware is always accessible via its register address.
 //!
 //! The SDC owns the embassy `Rng` peripheral token and uses it for
 //! BLE address randomization and crypto. NodeCore uses this `RawHwRng`
 //! for identity generation, signing nonces, and announce random hashes.
-//! Both are safe because: (a) the hardware RNG is stateless — reading VALUE
+//! Both are safe because: (a) the hardware RNG is stateless ; reading VALUE
 //! consumes the value atomically, (b) the Embassy executor is single-threaded,
 //! so NodeCore and SDC never access the RNG simultaneously.
 
@@ -72,5 +72,5 @@ impl RngCore for RawHwRng {
     }
 }
 
-// The nRF52840 hardware RNG is a TRNG with bias correction — cryptographically secure.
+// The nRF52840 hardware RNG is a TRNG with bias correction ; cryptographically secure.
 impl CryptoRng for RawHwRng {}

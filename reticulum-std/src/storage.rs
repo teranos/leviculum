@@ -3,10 +3,10 @@
 //! Wraps `MemoryStorage` for all runtime collections (paths, reverses, links,
 //! announces, etc.) and adds disk persistence for four Python-compatible
 //! collections:
-//! - `known_destinations` — msgpack map of identity data (flush-on-shutdown)
-//! - `packet_hashlist` — msgpack array of 32-byte dedup hashes (flush-on-shutdown)
-//! - `ratchets/{hex_hash}` — receiver-side known ratchets (write-through)
-//! - `ratchetkeys/{hex_hash}` — sender-side ratchet private keys (write-through)
+//! - `known_destinations` ; msgpack map of identity data (flush-on-shutdown)
+//! - `packet_hashlist` ; msgpack array of 32-byte dedup hashes (flush-on-shutdown)
+//! - `ratchets/{hex_hash}` ; receiver-side known ratchets (write-through)
+//! - `ratchetkeys/{hex_hash}` ; sender-side ratchet private keys (write-through)
 //!
 //! All non-persistent collections live in the inner `MemoryStorage` and are
 //! lost on process exit. Flush-on-shutdown data is written by [`Storage::flush()`]
@@ -237,8 +237,7 @@ impl Storage {
         Ok(())
     }
 
-    // ─── Ratchet disk persistence ─────────────────────────────────────────
-
+    // Ratchet disk persistence
     // load_known_ratchets_from_disk and load_dest_ratchet_keys_from_disk
     // moved to FileRatchetStore. encode/decode_known_ratchet moved to
     // file_ratchet_store.rs.
@@ -293,14 +292,14 @@ pub(crate) fn hex_decode(s: &str) -> Option<Vec<u8>> {
         .collect()
 }
 
-// ─── Storage Trait Implementation ──────────────────────────────────────────
+// Storage Trait Implementation
 //
 // All runtime collection methods delegate to the inner MemoryStorage.
 // The legacy generic API (load/store/delete/list_keys) stays file-based
 // for ratchet compatibility.
 
 impl reticulum_core::traits::Storage for Storage {
-    // ─── Packet Dedup (own HashSet, not inner MemoryStorage) ─────────────
+    // Packet Dedup (own HashSet, not inner MemoryStorage)
     fn has_packet_hash(&self, hash: &[u8; 32]) -> bool {
         self.packet_cache.contains(hash) || self.packet_cache_prev.contains(hash)
     }
@@ -313,7 +312,7 @@ impl reticulum_core::traits::Storage for Storage {
         self.packet_hashes_dirty = true;
     }
 
-    // ─── Path Table ──────────────────────────────────────────────────────
+    // Path Table
     fn get_path(
         &self,
         dest_hash: &[u8; TRUNCATED_HASHBYTES],
@@ -359,7 +358,7 @@ impl reticulum_core::traits::Storage for Storage {
         self.inner.announce_rate_entries()
     }
 
-    // ─── Path State ──────────────────────────────────────────────────────
+    // Path State
     fn get_path_state(
         &self,
         dest_hash: &[u8; TRUNCATED_HASHBYTES],
@@ -374,7 +373,7 @@ impl reticulum_core::traits::Storage for Storage {
         self.inner.set_path_state(dest_hash, state)
     }
 
-    // ─── Reverse Table ───────────────────────────────────────────────────
+    // Reverse Table
     fn get_reverse(
         &self,
         hash: &[u8; TRUNCATED_HASHBYTES],
@@ -395,7 +394,7 @@ impl reticulum_core::traits::Storage for Storage {
         self.inner.remove_reverse(hash)
     }
 
-    // ─── Link Table ──────────────────────────────────────────────────────
+    // Link Table
     fn get_link_entry(
         &self,
         link_id: &[u8; TRUNCATED_HASHBYTES],
@@ -415,7 +414,7 @@ impl reticulum_core::traits::Storage for Storage {
     ) {
         self.inner.set_link_entry(link_id, entry)
     }
-    // ─── Announce Table ──────────────────────────────────────────────────
+    // Announce Table
     fn get_announce(
         &self,
         dest_hash: &[u8; TRUNCATED_HASHBYTES],
@@ -445,7 +444,7 @@ impl reticulum_core::traits::Storage for Storage {
         self.inner.announce_keys()
     }
 
-    // ─── Announce Cache ──────────────────────────────────────────────────
+    // Announce Cache
     fn get_announce_cache(&self, dest_hash: &[u8; TRUNCATED_HASHBYTES]) -> Option<&Vec<u8>> {
         self.inner.get_announce_cache(dest_hash)
     }
@@ -453,7 +452,7 @@ impl reticulum_core::traits::Storage for Storage {
         self.inner.set_announce_cache(dest_hash, raw)
     }
 
-    // ─── Announce Rate ───────────────────────────────────────────────────
+    // Announce Rate
     fn get_announce_rate(
         &self,
         dest_hash: &[u8; TRUNCATED_HASHBYTES],
@@ -468,7 +467,7 @@ impl reticulum_core::traits::Storage for Storage {
         self.inner.set_announce_rate(dest_hash, entry)
     }
 
-    // ─── Receipts ────────────────────────────────────────────────────────
+    // Receipts
     fn get_receipt(
         &self,
         hash: &[u8; TRUNCATED_HASHBYTES],
@@ -482,7 +481,7 @@ impl reticulum_core::traits::Storage for Storage {
     ) {
         self.inner.set_receipt(hash, receipt)
     }
-    // ─── Path Requests ───────────────────────────────────────────────────
+    // Path Requests
     fn get_path_request_time(&self, dest_hash: &[u8; TRUNCATED_HASHBYTES]) -> Option<u64> {
         self.inner.get_path_request_time(dest_hash)
     }
@@ -493,7 +492,7 @@ impl reticulum_core::traits::Storage for Storage {
         self.inner.check_path_request_tag(tag)
     }
 
-    // ─── Known Identities ────────────────────────────────────────────────
+    // Known Identities
     fn get_identity(
         &self,
         dest_hash: &[u8; TRUNCATED_HASHBYTES],
@@ -509,7 +508,7 @@ impl reticulum_core::traits::Storage for Storage {
         self.identities_dirty = true;
     }
 
-    // ─── Cleanup ─────────────────────────────────────────────────────────
+    // Cleanup
     fn expire_reverses(&mut self, now_ms: u64, timeout_ms: u64) -> usize {
         self.inner.expire_reverses(now_ms, timeout_ms)
     }
@@ -554,7 +553,7 @@ impl reticulum_core::traits::Storage for Storage {
         self.inner.remove_paths_for_interface(iface_index)
     }
 
-    // ─── Deadlines ───────────────────────────────────────────────────────
+    // Deadlines
     fn earliest_receipt_deadline(&self) -> Option<u64> {
         self.inner.earliest_receipt_deadline()
     }
@@ -562,8 +561,7 @@ impl reticulum_core::traits::Storage for Storage {
         self.inner.earliest_link_deadline(link_timeout_ms)
     }
 
-    // ─── Flush (persist to disk) ─────────────────────────────────────────
-
+    // Flush (persist to disk)
     fn flush(&mut self) {
         if !self.identities_dirty && !self.packet_hashes_dirty {
             tracing::debug!("Flush skipped — nothing dirty");
@@ -578,7 +576,7 @@ impl reticulum_core::traits::Storage for Storage {
             // New identities get a minimal entry; existing entries get their
             // timestamp and public_key refreshed (the runtime version was just
             // validated from a live announce, so it takes precedence over the
-            // disk version). app_data and packet_hash are preserved — they
+            // disk version). app_data and packet_hash are preserved ; they
             // come from the original announce and are not available here.
             for (hash, identity) in self.inner.known_identity_iter() {
                 self.known_dest_entries
@@ -635,13 +633,13 @@ impl reticulum_core::traits::Storage for Storage {
         }
     }
 
-    // ─── Diagnostics ──────────────────────────────────────────────────────
+    // Diagnostics
     fn diagnostic_dump(&self) -> (String, u64) {
         use std::fmt::Write;
         let mut s = String::new();
         let mut total = 0u64;
 
-        // packet_cache: HashSet<[u8; 32]> — 1.5x overhead
+        // packet_cache: HashSet<[u8; 32]> ; 1.5x overhead
         let n = self.packet_cache.len();
         let raw = (n * 32) as u64;
         let est = raw * 3 / 2;
@@ -652,7 +650,7 @@ impl reticulum_core::traits::Storage for Storage {
             n, raw, est
         );
 
-        // packet_cache_prev: HashSet<[u8; 32]> — 1.5x
+        // packet_cache_prev: HashSet<[u8; 32]> ; 1.5x
         let n = self.packet_cache_prev.len();
         let raw = (n * 32) as u64;
         let est = raw * 3 / 2;
@@ -671,7 +669,7 @@ impl reticulum_core::traits::Storage for Storage {
         (s, total)
     }
 
-    // ─── Known Ratchets (write-through to disk) ────────────────────────
+    // Known Ratchets (write-through to disk)
     fn get_known_ratchet(
         &self,
         dest_hash: &[u8; TRUNCATED_HASHBYTES],
@@ -716,7 +714,7 @@ impl reticulum_core::traits::Storage for Storage {
         count
     }
 
-    // ─── Local Client Destinations ──────────────────────────────────────
+    // Local Client Destinations
     fn add_local_client_dest(
         &mut self,
         iface_id: usize,
@@ -727,7 +725,7 @@ impl reticulum_core::traits::Storage for Storage {
     fn remove_local_client_dests(&mut self, iface_id: usize) {
         self.inner.remove_local_client_dests(iface_id)
     }
-    // ─── Local Client Known Destinations ────────────────────────────────
+    // Local Client Known Destinations
     fn set_local_client_known_dest(
         &mut self,
         dest_hash: [u8; TRUNCATED_HASHBYTES],
@@ -744,7 +742,7 @@ impl reticulum_core::traits::Storage for Storage {
             .expire_local_client_known_dests(now_ms, expiry_ms)
     }
 
-    // ─── Discovery Path Requests ───────────────────────────────────────
+    // Discovery Path Requests
     fn set_discovery_path_request(
         &mut self,
         dest_hash: [u8; TRUNCATED_HASHBYTES],
@@ -774,7 +772,7 @@ impl reticulum_core::traits::Storage for Storage {
         self.inner.discovery_path_request_dest_hashes()
     }
 
-    // ─── Sender-Side Ratchet Keys (write-through to disk) ──────────────
+    // Sender-Side Ratchet Keys (write-through to disk)
     fn store_dest_ratchet_keys(
         &mut self,
         dest_hash: [u8; TRUNCATED_HASHBYTES],
@@ -921,7 +919,7 @@ mod tests {
             CoreStorage::flush(&mut storage);
         }
 
-        // Re-open storage — identity should be loaded from disk
+        // Re-open storage ; identity should be loaded from disk
         {
             let storage = Storage::new(&path).unwrap();
             assert!(
@@ -949,7 +947,7 @@ mod tests {
             CoreStorage::flush(&mut storage);
         }
 
-        // Re-open storage — hash should be loaded from disk
+        // Re-open storage ; hash should be loaded from disk
         {
             let storage = Storage::new(&path).unwrap();
             assert!(
@@ -1026,7 +1024,7 @@ mod tests {
         let (encoded, _) = encode_packet_hashlist(hashes.iter()).unwrap();
         std::fs::write(path.join(PACKET_HASHLIST_FILE), &encoded).unwrap();
 
-        // Create storage — should load both automatically
+        // Create storage ; should load both automatically
         let storage = Storage::new(&path).unwrap();
 
         use reticulum_core::traits::Storage as CoreStorage;
@@ -1073,7 +1071,7 @@ mod tests {
             // Add the same identity to runtime storage (simulates a fresh announce)
             CoreStorage::set_identity(&mut storage, dest_hash, id);
 
-            // Flush — should update timestamp but preserve app_data and packet_hash
+            // Flush ; should update timestamp but preserve app_data and packet_hash
             CoreStorage::flush(&mut storage);
         }
 
@@ -1152,7 +1150,7 @@ mod tests {
         }
 
         // Current should have 1 entry (the 6th hash, after rotation cleared current)
-        // Wait — 6th hash triggers rotation, then gets inserted? No:
+        // Wait ; 6th hash triggers rotation, then gets inserted? No:
         // add_packet_hash inserts first, then checks. So after inserting 6th:
         // current has 6, exceeds 5, rotation happens: current(6) -> prev, current cleared.
         // So current=0, prev=6. The 6th hash is in prev.
@@ -1182,7 +1180,7 @@ mod tests {
 
             CoreStorage::add_packet_hash(&mut storage, hash_a);
             CoreStorage::add_packet_hash(&mut storage, hash_b);
-            // After 2 inserts: current has 2, but cap/2=2, so 2 > 2 is false — no rotation yet
+            // After 2 inserts: current has 2, but cap/2=2, so 2 > 2 is false ; no rotation yet
             // Actually: len() > cap/2 means 2 > 2 which is false, no rotation
             // Add a third to trigger rotation
             let hash_c = [0xCC; 32];
@@ -1192,7 +1190,7 @@ mod tests {
             CoreStorage::flush(&mut storage);
         }
 
-        // Re-open — all hashes should be loaded
+        // Re-open ; all hashes should be loaded
         {
             let storage = Storage::new(&path).unwrap();
             assert!(
@@ -1228,8 +1226,7 @@ mod tests {
         assert!(total > 0);
     }
 
-    // ─── Ratchet Persistence Tests ──────────────────────────────────────
-
+    // Ratchet Persistence Tests
     /// Create a temp storage with a unique per-test directory.
     fn unique_temp_storage(suffix: &str) -> (Storage, PathBuf) {
         let path = temp_dir().join(format!("reticulum_ratchet_{}_{suffix}", std::process::id()));
@@ -1330,7 +1327,7 @@ mod tests {
         let hex = hex_encode(&[0x33; TRUNCATED_HASHBYTES]);
         std::fs::write(ratchets_dir.join(&hex), b"garbage data").unwrap();
 
-        // Recreate storage — should load without panic, skip corrupted file
+        // Recreate storage ; should load without panic, skip corrupted file
         let storage = Storage::new(&path).unwrap();
         let loaded = CoreStorage::get_known_ratchet(&storage, &[0x33; TRUNCATED_HASHBYTES]);
         assert!(loaded.is_none(), "Corrupted ratchet should not be loaded");

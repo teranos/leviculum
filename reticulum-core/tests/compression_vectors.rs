@@ -159,7 +159,7 @@ fn test_compression_ratios() {
     );
 
     // Less compressible: sequential bytes
-    // Note: BZ2 has significant overhead (~40 bytes header), so small random-ish
+    // BZ2 has significant overhead (~40 bytes header), so small random-ish
     // data may actually expand. This is expected behavior.
     let sequential: Vec<u8> = (0..=255).collect();
     let compressed_seq = compress(&sequential).expect("Compression failed");

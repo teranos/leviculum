@@ -77,7 +77,7 @@ mod tests {
         derive_key(ikm, None, None, &mut out1);
         derive_key(ikm, Some(&[]), None, &mut out2);
 
-        // Note: None salt uses a zero-filled salt of hash length,
+        // None salt uses a zero-filled salt of hash length,
         // while empty salt is actually empty - these may differ
         // The important thing is both work
         assert_ne!(out1, [0u8; 32]);

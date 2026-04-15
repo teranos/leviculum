@@ -5,10 +5,10 @@
 //!
 //! ## Test Groups
 //!
-//! - **A: TCP** — negotiated MTU over TCP links through a Python daemon
-//! - **B: UDP** — negotiated MTU over UDP links (Python-to-Python baseline, Rust-to-Rust, Rust-to-Python, Python-to-Rust)
-//! - **C: Boundary** — exact MDU, one-byte, and over-MDU payloads
-//! - **D: Multi-hop** — MTU clamping through mixed-interface relays
+//! - **A: TCP** ; negotiated MTU over TCP links through a Python daemon
+//! - **B: UDP** ; negotiated MTU over UDP links (Python-to-Python baseline, Rust-to-Rust, Rust-to-Python, Python-to-Rust)
+//! - **C: Boundary** ; exact MDU, one-byte, and over-MDU payloads
+//! - **D: Multi-hop** ; MTU clamping through mixed-interface relays
 //!
 //! ## Python Daemon MTU Behavior
 //!
@@ -79,7 +79,7 @@ fn is_active<R: rand_core::CryptoRngCore, C: Clock, S: Storage>(
 
 /// Establish a full Rust-to-Rust link via daemon relay.
 ///
-/// Returns `(link_id_a, link_id_b)` — both should be the same LinkId.
+/// Returns `(link_id_a, link_id_b)` ; both should be the same LinkId.
 /// `node_a` is responder, `node_b` is initiator.
 async fn establish_rust_to_rust_link(
     node_a: &mut reticulum_core::node::NodeCore<OsRng, TestClock, MemoryStorage>,
@@ -179,7 +179,7 @@ async fn establish_rust_to_rust_link(
 // Group A: TCP MTU negotiation
 // =========================================================================
 
-/// A1: Rust-to-Rust over TCP — verify negotiated MTU and full-MDU data transfer.
+/// A1: Rust-to-Rust over TCP ; verify negotiated MTU and full-MDU data transfer.
 ///
 /// RustA (responder) <-TCP-> PyDaemon (relay) <-TCP-> RustB (initiator)
 ///
@@ -300,7 +300,7 @@ async fn test_mtu_a1_rust_to_rust_tcp_mtu_and_data() {
     );
 }
 
-/// A2: Rust-to-Python over TCP — verify both sides agree on MTU.
+/// A2: Rust-to-Python over TCP ; verify both sides agree on MTU.
 ///
 /// Rust (initiator) <-TCP-> PyDaemon (responder)
 ///
@@ -342,7 +342,7 @@ async fn test_mtu_a2_rust_to_python_tcp_mtu() {
     let dest_hash_bytes: [u8; 16] = hex::decode(&dest_info.hash).unwrap().try_into().unwrap();
     let dest_hash = DestinationHash::new(dest_hash_bytes);
 
-    // Initiate link — now has path from announce, so signaling bytes will be included
+    // Initiate link ; now has path from announce, so signaling bytes will be included
     let (link_id, _, output) = node.connect(dest_hash, &signing_key);
     dispatch_actions(&mut stream, &output).await;
 
@@ -405,7 +405,7 @@ async fn test_mtu_a2_rust_to_python_tcp_mtu() {
     );
 }
 
-/// A3: Python-to-Rust over TCP — verify responder side MTU.
+/// A3: Python-to-Rust over TCP ; verify responder side MTU.
 ///
 /// PyDaemon (initiator) <-TCP-> Rust (responder)
 ///
@@ -433,7 +433,7 @@ async fn test_mtu_a3_python_to_rust_tcp_mtu() {
 
     tokio::time::sleep(Duration::from_millis(500)).await;
 
-    // Spawn create_link in background — it blocks until link is fully established
+    // Spawn create_link in background ; it blocks until link is fully established
     let dest_hash_hex = hex::encode(dest_hash.as_bytes());
     let daemon_cmd_addr = daemon.cmd_addr();
     let dest_hash_hex_clone = dest_hash_hex.clone();
@@ -651,7 +651,7 @@ async fn test_mtu_a4_bidirectional_tcp_full_mdu() {
     );
 }
 
-/// A0: Direct Rust-to-Rust TCP — no Python daemon, full 262144 MTU.
+/// A0: Direct Rust-to-Rust TCP ; no Python daemon, full 262144 MTU.
 ///
 /// RustA (TCP server, responder) <-TCP-> RustB (TCP client, initiator)
 ///
@@ -759,7 +759,7 @@ async fn test_mtu_a0_direct_tcp_full_mtu() {
         "A link should be established"
     );
 
-    // Verify negotiated MTU — full TCP HW_MTU, no daemon clamping
+    // Verify negotiated MTU ; full TCP HW_MTU, no daemon clamping
     let mtu_a = node_a.link_negotiated_mtu(&link_id_a);
     let mtu_b = node_b.link_negotiated_mtu(link_id_b);
     assert_eq!(
@@ -819,7 +819,7 @@ async fn test_mtu_a0_direct_tcp_full_mtu() {
 // Group B: UDP MTU negotiation
 // =========================================================================
 
-/// B0: Python-to-Python UDP baseline — verify two Python daemons negotiate MTU=500.
+/// B0: Python-to-Python UDP baseline ; verify two Python daemons negotiate MTU=500.
 ///
 /// Two Python daemons connected via UDP. Daemon A initiates a link to a
 /// destination on daemon B. Both sides should report MTU=500 (base protocol MTU),
@@ -912,7 +912,7 @@ async fn test_mtu_b0_python_to_python_udp_baseline() {
     );
 }
 
-/// B1: Rust-to-Rust over UDP — verify negotiated MTU=1064 and data transfer.
+/// B1: Rust-to-Rust over UDP ; verify negotiated MTU=1064 and data transfer.
 ///
 /// Uses ReticulumNodeBuilder with UDP interfaces.
 #[tokio::test]
@@ -1064,7 +1064,7 @@ async fn test_mtu_b1_rust_to_rust_udp_mtu() {
     node_b.stop().await.ok();
 }
 
-/// B2: Rust-to-Python over UDP — verify both sides agree on base MTU=500.
+/// B2: Rust-to-Python over UDP ; verify both sides agree on base MTU=500.
 ///
 /// Rust (initiator, UDP) → Python daemon (responder, UDP)
 ///
@@ -1139,7 +1139,7 @@ async fn test_mtu_b2_rust_to_python_udp() {
         "Link should be established over UDP"
     );
 
-    // Verify negotiated MTU on Rust side — clamped to base MTU by Python
+    // Verify negotiated MTU on Rust side ; clamped to base MTU by Python
     let mtu = node.link_negotiated_mtu(&link_id);
     assert_eq!(
         mtu,
@@ -1196,7 +1196,7 @@ async fn test_mtu_b2_rust_to_python_udp() {
     node.stop().await.ok();
 }
 
-/// B3: Python-to-Rust over UDP — verify responder side MTU=500 (base protocol MTU).
+/// B3: Python-to-Rust over UDP ; verify responder side MTU=500 (base protocol MTU).
 ///
 /// Python daemon (initiator, UDP) → Rust (responder, UDP)
 ///
@@ -1278,7 +1278,7 @@ async fn test_mtu_b3_python_to_rust_udp() {
     }
     assert!(path_found, "Python should learn path to Rust destination");
 
-    // Spawn create_link in background — it blocks until link is ACTIVE
+    // Spawn create_link in background ; it blocks until link is ACTIVE
     let daemon_create_link = {
         let dest_hash_hex = dest_hash_hex.clone();
         let public_key_hex = public_key_hex.clone();
@@ -1335,7 +1335,7 @@ async fn test_mtu_b3_python_to_rust_udp() {
         panic!("Python create_link failed: {}", error);
     }
 
-    // Verify Rust-side MTU — base protocol MTU from Python's signaling
+    // Verify Rust-side MTU ; base protocol MTU from Python's signaling
     let mtu = node.link_negotiated_mtu(&link_id);
     assert_eq!(
         mtu,
@@ -1397,7 +1397,7 @@ async fn test_mtu_b3_python_to_rust_udp() {
 // Group C: Boundary tests
 // =========================================================================
 
-/// C1: Exact MDU boundary — send exactly DAEMON_TCP_MAX_CHANNEL_PAYLOAD bytes.
+/// C1: Exact MDU boundary ; send exactly DAEMON_TCP_MAX_CHANNEL_PAYLOAD bytes.
 ///
 /// (Covered by A1, included as explicit boundary test)
 #[tokio::test]
@@ -1475,7 +1475,7 @@ async fn test_mtu_c1_exact_mdu() {
     );
 }
 
-/// C2: Minimum payload — send 1 byte.
+/// C2: Minimum payload ; send 1 byte.
 #[tokio::test]
 async fn test_mtu_c2_one_byte() {
     let daemon = TestDaemon::start().await.expect("Failed to start daemon");
@@ -1541,7 +1541,7 @@ async fn test_mtu_c2_one_byte() {
     println!("SUCCESS: C2 - 1-byte transfer verified");
 }
 
-/// C3: Over MDU — send MDU+1 bytes, expect error.
+/// C3: Over MDU ; send MDU+1 bytes, expect error.
 #[tokio::test]
 async fn test_mtu_c3_over_mdu() {
     let daemon = TestDaemon::start().await.expect("Failed to start daemon");
@@ -1579,7 +1579,7 @@ async fn test_mtu_c3_over_mdu() {
 
     tokio::time::sleep(Duration::from_millis(500)).await;
 
-    // Send MDU+1 bytes — should fail
+    // Send MDU+1 bytes ; should fail
     let oversized = generate_test_payload(DAEMON_TCP_MAX_CHANNEL_PAYLOAD + 1);
     let result = node_b.send_on_link(&link_id_b, &oversized);
     assert!(result.is_err(), "Sending MDU+1 bytes should fail, got Ok");
@@ -1594,7 +1594,7 @@ async fn test_mtu_c3_over_mdu() {
 // Group D: Multi-hop MTU clamping
 // =========================================================================
 
-/// D1: TCP -> RustRelay -> UDP — verify MTU clamps to UDP bottleneck (1064).
+/// D1: TCP -> RustRelay -> UDP ; verify MTU clamps to UDP bottleneck (1064).
 ///
 /// Topology:
 ///   RustA (TCP client, initiator) <-TCP-> RustRelay (TCP server + UDP, transport=true) <-UDP-> RustB (UDP, responder)
@@ -1722,7 +1722,7 @@ async fn test_mtu_d1_tcp_relay_udp_clamp() {
         "B link should be established"
     );
 
-    // Verify negotiated MTU — clamped to UDP bottleneck
+    // Verify negotiated MTU ; clamped to UDP bottleneck
     let mtu_a = node_a.link_negotiated_mtu(link_id_a);
     let mtu_b = node_b.link_negotiated_mtu(&link_id_b);
     assert_eq!(
@@ -1771,13 +1771,13 @@ async fn test_mtu_d1_tcp_relay_udp_clamp() {
     relay.stop().await.ok();
 }
 
-/// D2: UDP -> RustRelay -> TCP — verify MTU stays at UDP bottleneck (1064).
+/// D2: UDP -> RustRelay -> TCP ; verify MTU stays at UDP bottleneck (1064).
 ///
 /// Topology (reverse of D1):
 ///   RustA (UDP, initiator) <-UDP-> RustRelay (TCP server + UDP, transport=true) <-TCP-> RustB (TCP client, responder)
 ///
 /// RustA's UDP interface has HW_MTU=1064. The link request signaling bytes
-/// already encode 1064, so the relay doesn't need to clamp — but the packet
+/// already encode 1064, so the relay doesn't need to clamp ; but the packet
 /// still traverses UDP->Relay->TCP, proving the full relay path works.
 #[tokio::test]
 async fn test_mtu_d2_udp_relay_tcp() {
@@ -1899,7 +1899,7 @@ async fn test_mtu_d2_udp_relay_tcp() {
         "B link should be established"
     );
 
-    // Verify negotiated MTU — constrained by A's UDP interface
+    // Verify negotiated MTU ; constrained by A's UDP interface
     let mtu_a = node_a.link_negotiated_mtu(link_id_a);
     let mtu_b = node_b.link_negotiated_mtu(&link_id_b);
     assert_eq!(mtu_a, Some(UDP_HW_MTU), "A should negotiate UDP HW_MTU");

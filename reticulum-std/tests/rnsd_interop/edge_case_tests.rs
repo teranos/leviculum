@@ -57,7 +57,7 @@ async fn test_max_hops_announce_accepted() {
     assert!(has_path, "Daemon should accept announce with hops=7");
 
     // Check the recorded hops
-    // Note: The daemon increments hops when processing, so hops=7 sent
+    // The daemon increments hops when processing, so hops=7 sent
     // becomes hops=8 in the path table (it counts the "hop" into this node)
     let paths = daemon
         .get_path_table()
@@ -133,7 +133,7 @@ async fn test_better_path_replaces_worse() {
     let path = paths.get(&hex::encode(dest_hash));
     println!("After second announce (hops=1): {:?}", path);
 
-    // Note: Python RNS may not update the path if timestamp is too close
+    // Python RNS may not update the path if timestamp is too close
     // This test documents the expected behavior
 
     println!("SUCCESS: Path replacement test completed");
@@ -191,7 +191,7 @@ async fn test_worse_path_does_not_replace() {
     let path = paths.get(&hex::encode(dest_hash));
     println!("After worse announce (hops=5): {:?}", path);
 
-    // Note: Actual behavior depends on RNS implementation details
+    // Actual behavior depends on RNS implementation details
     // The test documents what happens
 
     println!("SUCCESS: Worse path handling test completed");

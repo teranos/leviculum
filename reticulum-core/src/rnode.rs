@@ -1,4 +1,4 @@
-//! RNode command protocol — encoding, decoding, and constants
+//! RNode command protocol ; encoding, decoding, and constants
 //!
 //! This module implements the RNode serial command protocol as a pure data
 //! transformation layer (`no_std + alloc`). It defines command constants,
@@ -19,7 +19,7 @@
 //! Each `decode_*` function takes the raw payload bytes (already extracted
 //! from a KISS frame by [`KissDeframer`](crate::framing::kiss::KissDeframer))
 //! and returns `Option<T>`, returning `None` if the payload is too short.
-//! All values are returned as raw device integers — no float conversion
+//! All values are returned as raw device integers ; no float conversion
 //! is performed in core.
 
 use alloc::vec::Vec;
@@ -55,7 +55,7 @@ pub const CMD_LT_ALOCK: u8 = 0x0C;
 /// Device ready for next TX packet
 pub const CMD_READY: u8 = 0x0F;
 /// Select subinterface for next command
-/// (multi-interface support — see doc/RNODE_PROTOCOL_RESEARCH.md)
+/// (multi-interface support ; see doc/RNODE_PROTOCOL_RESEARCH.md)
 pub const CMD_SEL_INT: u8 = 0x1F;
 
 // ---------------------------------------------------------------------------
@@ -76,7 +76,7 @@ pub const CMD_STAT_CHTM: u8 = 0x25;
 pub const CMD_STAT_PHYPRM: u8 = 0x26;
 /// Battery status (2 bytes: state, percent)
 pub const CMD_STAT_BAT: u8 = 0x27;
-/// CSMA contention window params (3 bytes) — see Codeberg issue #25
+/// CSMA contention window params (3 bytes) ; see Codeberg issue #25
 pub const CMD_STAT_CSMA: u8 = 0x28;
 /// CPU temperature (1 byte, value - 120 = Celsius)
 pub const CMD_STAT_TEMP: u8 = 0x29;
@@ -96,7 +96,7 @@ pub const CMD_RESET: u8 = 0x55;
 
 // ---------------------------------------------------------------------------
 // Multi-interface data commands
-// (multi-interface support — see doc/RNODE_PROTOCOL_RESEARCH.md)
+// (multi-interface support ; see doc/RNODE_PROTOCOL_RESEARCH.md)
 // ---------------------------------------------------------------------------
 
 /// List available radio interfaces
@@ -122,7 +122,7 @@ pub const CMD_INT_DATA: [u8; 12] = [
 // Error command and codes
 // ---------------------------------------------------------------------------
 
-/// Error report from device (0x90 — same value as CMD_INT_DATA[5] and PLATFORM_AVR;
+/// Error report from device (0x90 ; same value as CMD_INT_DATA[5] and PLATFORM_AVR;
 /// disambiguated by protocol context: command byte vs payload byte)
 pub const CMD_ERROR: u8 = 0x90;
 
@@ -178,7 +178,7 @@ pub const REQUIRED_FW_MIN: u8 = 52;
 
 /// Minimum allowed operating frequency (Hz)
 pub const FREQ_MIN: u32 = 137_000_000;
-/// Maximum allowed operating frequency (Hz) — covers 2.4 GHz SX128X
+/// Maximum allowed operating frequency (Hz) ; covers 2.4 GHz SX128X
 pub const FREQ_MAX: u32 = 3_000_000_000;
 
 // ---------------------------------------------------------------------------
@@ -561,7 +561,7 @@ pub const JITTER_MAX_MS: u64 = 500;
 
 /// Minimum spacing (ms) between consecutive serial writes.
 /// Prevents overrunning the serial buffer (508 bytes at 115200 baud ≈ 44ms).
-/// For CSMA-fair pacing, use `compute_spacing_ms()` instead — this constant
+/// For CSMA-fair pacing, use `compute_spacing_ms()` instead ; this constant
 /// is only the serial-level floor.
 pub const MIN_SPACING_MS: u64 = 50;
 
@@ -666,7 +666,7 @@ pub struct RadioConfigWire {
     pub preamble_len: u16,
     pub csma_enabled: bool,
     /// When true, the T114 drops every outgoing LoRa packet at the driver
-    /// level — the radio stays listening but never transmits. Used by the
+    /// level ; the radio stays listening but never transmits. Used by the
     /// integration-test runner to neutralize T114s the scenario does not
     /// bind, so they cannot pollute the benchmark channel with their own
     /// Reticulum announces.
@@ -676,8 +676,8 @@ pub struct RadioConfigWire {
 /// Parse a radio config from wire bytes (13, 14, or 15 bytes, after magic stripped).
 ///
 /// Wire layout: freq_hz(4 BE) + bw_hz(4 BE) + sf(1) + cr(1) + tx_power(1) + preamble(2 BE)
-/// + csma_enabled(1, optional — defaults to false if absent for backward compat)
-/// + radio_silent(1, optional — defaults to false if absent for backward compat)
+/// + csma_enabled(1, optional ; defaults to false if absent for backward compat)
+/// + radio_silent(1, optional ; defaults to false if absent for backward compat)
 pub fn parse_radio_config(data: &[u8]) -> Option<RadioConfigWire> {
     if !(13..=15).contains(&data.len()) {
         return None;
@@ -1192,7 +1192,7 @@ mod tests {
 
     #[test]
     fn test_roundtrip_data_with_special_bytes() {
-        // Data containing FEND and FESC bytes — must survive escaping
+        // Data containing FEND and FESC bytes ; must survive escaping
         let data = [0xC0, 0xDB, 0x42, 0xC0, 0xDB];
         let frame = build_data_frame(&data);
         let mut deframer = KissDeframer::with_max_payload(HW_MTU);
@@ -1317,7 +1317,7 @@ mod tests {
 
     #[test]
     fn test_compute_bitrate_62_5khz() {
-        // SF7, CR5, BW62.5kHz — the slow bandwidth used by LoRa integration tests
+        // SF7, CR5, BW62.5kHz ; the slow bandwidth used by LoRa integration tests
         // 7 * (4.0/5) / (128 / 62.5) * 1000 = 7 * 0.8 / 2.048 * 1000 = 2734.375 → 2734
         let br = compute_bitrate(7, 5, 62_500);
         assert_eq!(br, 2734);
@@ -1325,14 +1325,13 @@ mod tests {
 
     #[test]
     fn test_compute_bitrate_500khz() {
-        // SF7, CR5, BW500kHz — fast LoRa configuration
+        // SF7, CR5, BW500kHz ; fast LoRa configuration
         // 7 * (4.0/5) / (128 / 500) * 1000 = 7 * 0.8 / 0.256 * 1000 = 21875
         let br = compute_bitrate(7, 5, 500_000);
         assert_eq!(br, 21875);
     }
 
-    // ── Airtime tests ───────────────────────────────────────────────
-
+    // Airtime tests
     #[test]
     fn test_airtime_491b_bw62500_sf7_cr5() {
         // 491-byte resource data segment at 62.5kHz SF7 CR5
@@ -1346,14 +1345,14 @@ mod tests {
 
     #[test]
     fn test_airtime_491b_bw125000_sf7_cr5() {
-        // Same payload at 125kHz — should be ~half
+        // Same payload at 125kHz ; should be ~half
         let ms = airtime_ms(491, 125_000, 7, 5);
         assert!((700..=800).contains(&ms), "airtime={ms}ms, expected ~750ms");
     }
 
     #[test]
     fn test_airtime_491b_bw250000_sf7_cr5() {
-        // Same payload at 250kHz — should be ~quarter
+        // Same payload at 250kHz ; should be ~quarter
         let ms = airtime_ms(491, 250_000, 7, 5);
         assert!((350..=420).contains(&ms), "airtime={ms}ms, expected ~380ms");
     }
@@ -1370,7 +1369,7 @@ mod tests {
 
     #[test]
     fn test_airtime_sf12_long_range() {
-        // 100 bytes at SF12 125kHz CR8 — very slow long range
+        // 100 bytes at SF12 125kHz CR8 ; very slow long range
         let ms = airtime_ms(100, 125_000, 12, 8);
         assert!(ms >= 2000, "airtime={ms}ms, expected >2000ms for SF12");
     }
@@ -1388,7 +1387,7 @@ mod tests {
 
     #[test]
     fn test_compute_spacing_floor() {
-        // Tiny packet with huge bandwidth — airtime < MIN_SPACING_MS
+        // Tiny packet with huge bandwidth ; airtime < MIN_SPACING_MS
         let spacing = compute_spacing_ms(1, 500_000, 7, 5);
         assert!(
             spacing >= MIN_SPACING_MS,
@@ -1522,7 +1521,7 @@ mod tests {
         let single_frame = vec![0x70, 0xDD, 0xEE];
         let result = r.feed(&single_frame, 1);
         assert_eq!(result, Some(vec![0xDD, 0xEE]));
-        // Buffer should be cleared — a second split half should not match
+        // Buffer should be cleared ; a second split half should not match
         let split_half2 = vec![0x30 | FLAG_SPLIT, 0xBB];
         assert_eq!(r.feed(&split_half2, 2), None); // new first half
     }
@@ -1545,7 +1544,7 @@ mod tests {
         let frame = vec![0x30 | FLAG_SPLIT, 0xAA];
         assert_eq!(r.feed(&frame, 100), None);
         r.check_timeout(110, 10); // expired
-                                  // Buffer cleared — second half should start a new buffer
+                                  // Buffer cleared ; second half should start a new buffer
         let frame2 = vec![0x30 | FLAG_SPLIT, 0xBB];
         assert_eq!(r.feed(&frame2, 111), None); // new first half, not reassembly
     }
@@ -1600,12 +1599,12 @@ mod tests {
         let frame_a1 = vec![0xA0 | FLAG_SPLIT, 0x11];
         let frame_b1 = vec![0xB0 | FLAG_SPLIT, 0x22];
         assert_eq!(r.feed(&frame_a1, 0), None);
-        // B1 arrives — A is discarded, B is now buffered
+        // B1 arrives ; A is discarded, B is now buffered
         assert_eq!(r.feed(&frame_b1, 1), None);
-        // A2 arrives — sequence mismatch with B, B is discarded, A is new buffer
+        // A2 arrives ; sequence mismatch with B, B is discarded, A is new buffer
         let frame_a2 = vec![0xA0 | FLAG_SPLIT, 0x33];
         assert_eq!(r.feed(&frame_a2, 2), None);
-        // Another A arrives — same sequence as buffered A, reassemble
+        // Another A arrives ; same sequence as buffered A, reassemble
         let frame_a3 = vec![0xA0 | FLAG_SPLIT, 0x44];
         let result = r.feed(&frame_a3, 3).unwrap();
         assert_eq!(result, vec![0x33, 0x44]);
@@ -1616,7 +1615,7 @@ mod tests {
         let mut r = SplitReassembler::new();
         let frame = vec![0x50 | FLAG_SPLIT, 0xAA, 0xBB];
         assert_eq!(r.feed(&frame, 0), None);
-        // No second half — timeout will clear it
+        // No second half ; timeout will clear it
         r.check_timeout(10, 10);
         assert_eq!(r.seq, None);
     }
@@ -1642,16 +1641,15 @@ mod tests {
         // First half of split
         let split1 = vec![0x30 | FLAG_SPLIT, 0xAA];
         assert_eq!(r.feed(&split1, 0), None);
-        // Non-split interrupts — buffer cleared, non-split delivered
+        // Non-split interrupts ; buffer cleared, non-split delivered
         let single = vec![0x50, 0xDD];
         assert_eq!(r.feed(&single, 1).unwrap(), vec![0xDD]);
-        // Second half with same seq — treated as NEW first half (buffer was cleared)
+        // Second half with same seq ; treated as NEW first half (buffer was cleared)
         let split2 = vec![0x30 | FLAG_SPLIT, 0xBB];
         assert_eq!(r.feed(&split2, 2), None);
     }
 
-    // ── Radio config wire protocol tests ─────────────────────────────────
-
+    // Radio config wire protocol tests
     fn medium_profile() -> RadioConfigWire {
         RadioConfigWire {
             frequency_hz: 869_525_000,
@@ -1767,7 +1765,7 @@ mod tests {
 
     #[test]
     fn radio_config_parse_14_byte_backward_compat() {
-        // 14-byte payload from before the radio_silent flag existed — the
+        // 14-byte payload from before the radio_silent flag existed ; the
         // csma byte is present but radio_silent must default to false.
         let cfg = RadioConfigWire {
             csma_enabled: true,

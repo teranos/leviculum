@@ -135,7 +135,7 @@ async fn test_link_establishment_basic() {
     println!("Daemon links: {:?}", links.keys().collect::<Vec<_>>());
 
     // The daemon should have at least one link now
-    // Note: The link hash format may differ slightly, so we just check there's a link
+    // The link hash format may differ slightly, so we just check there's a link
     assert!(!links.is_empty(), "Daemon should have at least one link");
 }
 
@@ -670,7 +670,7 @@ async fn test_link_proof_validation() {
 }
 
 // =========================================================================
-// Test: Link identify — Rust identifies to Python
+// Test: Link identify ; Rust identifies to Python
 // =========================================================================
 
 /// Verify that Rust's link identify is recognized by Python.

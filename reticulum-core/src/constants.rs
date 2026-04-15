@@ -30,8 +30,7 @@
 //!     = 464 bytes
 //! ```
 
-// ─── Utility Functions ───────────────────────────────────────────────────────
-
+// Utility Functions
 /// Convert a slice to a fixed-size array by copying bytes from the given offset.
 ///
 /// # Panics
@@ -43,8 +42,7 @@ pub(crate) fn slice_to_array<const N: usize>(src: &[u8], offset: usize) -> [u8; 
     arr
 }
 
-// ─── Protocol Constants ──────────────────────────────────────────────────────
-
+// Protocol Constants
 /// Physical layer MTU in bytes
 pub const MTU: usize = 500;
 
@@ -129,7 +127,7 @@ pub const PATHFINDER_RW_MS: u64 = 500;
 /// retries drift apart by more than one transmit duration, otherwise
 /// every retry collides at the same air-time and the announce burst
 /// fails as a whole. A factor of 3 means each retry's window spans
-/// roughly three packet airtimes — sufficient drift on slow LoRa modes
+/// roughly three packet airtimes ; sufficient drift on slow LoRa modes
 /// where a single transmit takes several seconds.
 pub const JITTER_AIRTIME_FACTOR: u64 = 3;
 
@@ -209,7 +207,7 @@ pub const ESTABLISHMENT_RESPONDER_BONUS_MS: u64 = 54_000;
 pub const RTT_RETRY_MAX_ATTEMPTS: u8 = 5;
 
 /// Link request retry: minimum number of retries after the initial attempt.
-/// The actual retry count is `max(this, hops)` — multi-hop paths get more
+/// The actual retry count is `max(this, hops)` ; multi-hop paths get more
 /// retries because each hop is an independent loss opportunity.
 /// Total attempts = 1 + effective_retries.
 /// Python Reticulum has no link request retry (single attempt only).
@@ -268,8 +266,7 @@ pub const KEEPALIVE_PAYLOAD_SIZE: usize = 1;
 /// Milliseconds per second (for time conversion)
 pub const MS_PER_SECOND: u64 = 1000;
 
-// ─── Proof Constants ─────────────────────────────────────────────────────────
-
+// Proof Constants
 /// Proof strategy: Never generate proofs (default)
 pub const PROVE_NONE: u8 = 0x21;
 /// Proof strategy: Ask application via callback to decide
@@ -300,8 +297,7 @@ pub const RESOURCE_AUTO_COMPRESS_MAX: usize = 64 * 1024 * 1024; // 64 MB
 /// Size of the advertisement excluding the variable-length hashmap data.
 pub const RESOURCE_ADV_OVERHEAD: usize = 134;
 
-// ─── Channel Constants ─────────────────────────────────────────────────────
-
+// Channel Constants
 /// Channel envelope header size: msgtype(2) + sequence(2) + length(2)
 pub const CHANNEL_ENVELOPE_HEADER_SIZE: usize = 6;
 
@@ -353,7 +349,7 @@ pub const CHANNEL_DEFAULT_RTT_MS: u64 = 500;
 
 /// Minimum base RTO. 25ms was unreachably low for any
 /// real Reticulum link (LoRa: ~365ms/frame, BLE: ~20ms, LAN: ~1ms).
-/// 100ms is defense-in-depth — the measured RTT * 2.5 always
+/// 100ms is defense-in-depth ; the measured RTT * 2.5 always
 /// dominates on any non-loopback link.
 pub const CHANNEL_MIN_TIMEOUT_BASE_MS: f64 = 100.0;
 
@@ -369,8 +365,7 @@ pub const US_PER_MS: u64 = 1000;
 /// Reserved message type boundary (>= 0xf000 is reserved)
 pub const CHANNEL_MSGTYPE_RESERVED: u16 = 0xf000;
 
-// ─── Stream Data Constants ──────────────────────────────────────────────────
-
+// Stream Data Constants
 /// StreamDataMessage type (system-reserved: 0xff00)
 pub const STREAM_DATA_MSGTYPE: u16 = 0xff00;
 
@@ -402,8 +397,7 @@ pub const IFAC_SALT: [u8; 32] = [
     0x3e, 0x73, 0x33, 0x91, 0xb2, 0xa0, 0xf5, 0x3f, 0x41, 0x6d, 0x9f, 0x90, 0x7e, 0x55, 0xcf, 0xf8,
 ];
 
-// ─── CRC Constants ──────────────────────────────────────────────────────────
-
+// CRC Constants
 /// CRC-16-CCITT initial value
 pub const CRC_INITIAL: u16 = 0xFFFF;
 
@@ -413,8 +407,7 @@ pub const CRC_HIGH_BIT: u16 = 0x8000;
 /// Bits in a byte (for CRC bit shifting)
 pub const BITS_PER_BYTE: usize = 8;
 
-// ─── Token Encryption Constants ─────────────────────────────────────────────
-
+// Token Encryption Constants
 /// Token key size (HMAC key + AES key)
 pub const TOKEN_KEY_SIZE: usize = 64;
 
@@ -424,8 +417,7 @@ pub const TOKEN_HMAC_KEY_SIZE: usize = 32;
 /// Token AES key size (second half of token key)
 pub const TOKEN_AES_KEY_SIZE: usize = 32;
 
-// ─── Link Signaling Constants ───────────────────────────────────────────────
-
+// Link Signaling Constants
 /// 21-bit mask for MTU in signaling bytes
 pub const SIGNALING_MTU_MASK: u32 = 0x1FFFFF;
 
@@ -435,8 +427,7 @@ pub const SIGNALING_MODE_MASK: u32 = 0x07;
 /// Bit shift for mode in signaling bytes (21 bits for MTU)
 pub const SIGNALING_MODE_SHIFT: u32 = 21;
 
-// ─── Random Hash Constants ──────────────────────────────────────────────────
-
+// Random Hash Constants
 /// Size of random portion in random hash (bytes)
 pub const RANDOM_HASH_RANDOM_SIZE: usize = 5;
 
@@ -446,8 +437,7 @@ pub const RANDOM_HASH_TIMESTAMP_SIZE: usize = 5;
 /// Offset into timestamp bytes (skip high bytes)
 pub const RANDOM_HASH_TIMESTAMP_OFFSET: usize = 3;
 
-// ─── BLE Interface Constants (Columba Protocol v2.2) ───────────────────────
-
+// BLE Interface Constants (Columba Protocol v2.2)
 /// Reticulum BLE GATT service UUID
 pub const BLE_SERVICE_UUID: &str = "37145b00-442d-4a94-917f-8f42c5da28e3";
 /// BLE RX characteristic UUID (write by Central, receives data)

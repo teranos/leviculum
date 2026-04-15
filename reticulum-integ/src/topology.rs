@@ -111,7 +111,7 @@ pub struct NodeDef {
     #[serde(default)]
     pub listen_port: Option<u16>,
     /// Multiple RNode interfaces with per-interface radio parameters.
-    /// Mutually exclusive with `rnode` — use this for multi-frequency nodes.
+    /// Mutually exclusive with `rnode` ; use this for multi-frequency nodes.
     #[serde(default)]
     pub rnode_interfaces: Option<Vec<RNodeInterfaceDef>>,
     /// This node needs an LNode serial connection (e.g., T114).
@@ -257,7 +257,7 @@ pub enum Step {
         repeats: u32,
         #[serde(default = "default_transfer_timeout")]
         timeout_secs: u64,
-        /// "push" (default) or "fetch" — fetch reverses file creation/verification.
+        /// "push" (default) or "fetch" ; fetch reverses file creation/verification.
         #[serde(default = "default_mode")]
         mode: String,
         /// Extra flags appended to the listener command (e.g., "-F -n", "-F -j /tmp/jail").
@@ -270,7 +270,7 @@ pub enum Step {
         /// Empty = no auth (default: `-n` for backward compat).
         #[serde(default)]
         auth_from: String,
-        /// "success" (default) or "failure" — expect the transfer to fail.
+        /// "success" (default) or "failure" ; expect the transfer to fail.
         #[serde(default = "default_expect_success")]
         expect_result: String,
         /// Override remote file path for fetch (default: /tmp/fetchable/test_transfer.bin).
@@ -312,7 +312,7 @@ fn default_benchmark_duration() -> u64 {
 }
 
 /// Simplified transfer definition for parallel execution.
-// Fields read via serde deserialization — compiler cannot
+// Fields read via serde deserialization ; compiler cannot
 // see the indirect access through TOML parsing.
 #[allow(dead_code)]
 #[derive(Debug, Clone, Deserialize)]
@@ -1258,7 +1258,7 @@ alpha-beta = "tcp"
 "#;
         let scenario = parse_scenario(toml_str).unwrap();
         let tmp = TempDir::new().unwrap();
-        // Should succeed — listen_port 5555 != link port 4242.
+        // Should succeed ; listen_port 5555 != link port 4242.
         generate_node_configs(&scenario, tmp.path()).unwrap();
     }
 

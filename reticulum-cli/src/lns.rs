@@ -45,7 +45,7 @@ fn hex_decode(s: &str) -> Result<Vec<u8>, String> {
 /// Display app_data as a human-readable string.
 ///
 /// Some Python Reticulum apps (LXMF, Sideband, NomadNet) encode app_data
-/// as a msgpack structure — typically `[display_name, stamp]` or
+/// as a msgpack structure ; typically `[display_name, stamp]` or
 /// `[stamp, display_name]`. This function tries to extract the display
 /// name from such structures, falling back to UTF-8 lossy conversion.
 fn display_app_data(data: &[u8]) -> String {
@@ -58,7 +58,7 @@ fn display_app_data(data: &[u8]) -> String {
     // Unwrap a top-level msgpack str/bin wrapper and retry
     if let Some((inner, _)) = read_msgpack_text(data) {
         if !inner.is_empty() {
-            // Inner content is valid UTF-8 text — try parsing it as nested msgpack
+            // Inner content is valid UTF-8 text ; try parsing it as nested msgpack
             if let Some(s) = try_parse_app_data(inner.as_bytes()) {
                 return s;
             }
@@ -91,7 +91,7 @@ fn try_parse_app_data(data: &[u8]) -> Option<String> {
             }
         }
     }
-    // Try msgpack fixmap: 0x80..0x8f = map of 0..15 entries — scan values
+    // Try msgpack fixmap: 0x80..0x8f = map of 0..15 entries ; scan values
     if (data[0] & 0xf0) == 0x80 {
         let count = (data[0] & 0x0f) as usize;
         if count >= 1 {
@@ -247,13 +247,13 @@ fn read_msgpack_text(data: &[u8]) -> Option<(String, &[u8])> {
             let rest = &rest[2..];
             (rest.get(..len)?, rest.get(len..)?)
         }
-        // bin8 (0xc4): 1-byte length — try as UTF-8
+        // bin8 (0xc4): 1-byte length ; try as UTF-8
         0xc4 => {
             let (&len, rest) = rest.split_first()?;
             let len = len as usize;
             (rest.get(..len)?, rest.get(len..)?)
         }
-        // bin16 (0xc5): 2-byte length — try as UTF-8
+        // bin16 (0xc5): 2-byte length ; try as UTF-8
         0xc5 => {
             if rest.len() < 2 {
                 return None;
@@ -403,7 +403,7 @@ enum Commands {
 
     /// Copy files over Reticulum (compatible with rncp)
     ///
-    /// Note: `-v`/`--verbose` and `-c`/`--config` are global Args flags,
+    /// `-v`/`--verbose` and `-c`/`--config` are global Args flags,
     /// so this subcommand uses `-V`/`--cp-verbose` and `--cp-config` instead.
     /// rncp uses `-v` and has no `--config` equivalent.
     Cp {
@@ -522,14 +522,14 @@ async fn run_connect(
 ) -> Result<(), Box<dyn std::error::Error>> {
     let socket_addr: SocketAddr = addr.parse().map_err(|e| format!("invalid address: {e}"))?;
 
-    // Verify TCP connectivity before building the node — the driver silently
+    // Verify TCP connectivity before building the node ; the driver silently
     // ignores connection failures, leaving the node running with no interfaces.
     tokio::net::TcpStream::connect(socket_addr)
         .await
         .map_err(|e| format!("cannot connect to {socket_addr}: {e}"))?;
 
     // Load or generate identity private key bytes, so we can create two Identity
-    // instances (one for the builder, one for the destination — Identity is not Clone).
+    // instances (one for the builder, one for the destination ; Identity is not Clone).
     let private_key_bytes = if let Some(path) = &identity_path {
         let bytes = std::fs::read(path)?;
         let id =
@@ -1343,10 +1343,10 @@ mod tests {
 
     #[test]
     fn test_display_app_data_msgpack_fallback_on_invalid() {
-        // Starts with 0x92 but structure is broken — should fall back
+        // Starts with 0x92 but structure is broken ; should fall back
         let data = [0x92, 0xFF];
         let result = display_app_data(&data);
-        // Should not panic — 0xFF is negative fixint, not printable
+        // Should not panic ; 0xFF is negative fixint, not printable
         assert!(result.is_empty());
     }
 
@@ -1380,7 +1380,7 @@ mod tests {
 
     #[test]
     fn test_display_app_data_picks_longest_utf8() {
-        // Two valid UTF-8 strings — should pick the longer one
+        // Two valid UTF-8 strings ; should pick the longer one
         let mut data = vec![0x92]; // fixarray(2)
         data.push(0xa2); // fixstr(2) "Hi"
         data.extend_from_slice(b"Hi");
@@ -1410,7 +1410,7 @@ mod tests {
 
     #[test]
     fn test_display_app_data_fixmap_skips_short_values() {
-        // fixmap(1): {"c": "AB"} — value too short to be a name, but returned
+        // fixmap(1): {"c": "AB"} ; value too short to be a name, but returned
         // since it's the only text in the map
         let data = [0x81, 0xa1, b'c', 0xa2, b'A', b'B'];
         assert_eq!(display_app_data(&data), "AB");
@@ -1418,19 +1418,19 @@ mod tests {
 
     #[test]
     fn test_display_app_data_pure_binary() {
-        // 16 bytes of non-UTF-8 binary — should show empty, not garbled
+        // 16 bytes of non-UTF-8 binary ; should show empty, not garbled
         let data = [
             0xFF, 0xFE, 0x01, 0x02, 0x69, 0xAB, 0x5B, 0x71, 0xBC, 0xCD, 0xDE, 0x28, 0xEF, 0xF0,
             0x12, 0x34,
         ];
         let result = display_app_data(&data);
-        // No garbled replacement characters — either empty or short printable run
+        // No garbled replacement characters ; either empty or short printable run
         assert!(!result.contains('\u{FFFD}'));
     }
 
     #[test]
     fn test_display_app_data_binary_with_embedded_text() {
-        // Binary blob with "RRC Beleth" embedded — should extract it
+        // Binary blob with "RRC Beleth" embedded ; should extract it
         let mut data = vec![0xFF, 0x82, 0xAB];
         data.extend_from_slice(b"RRC Beleth");
         data.extend_from_slice(&[0xFF, 0xFE, 0xFD]);
@@ -1439,7 +1439,7 @@ mod tests {
 
     #[test]
     fn test_display_app_data_short_binary_no_text() {
-        // Short binary with only 1-2 char printable runs — shows empty
+        // Short binary with only 1-2 char printable runs ; shows empty
         let data = [0xFF, b'a', 0xFE, b'b', 0xFD];
         assert_eq!(display_app_data(&data), "");
     }

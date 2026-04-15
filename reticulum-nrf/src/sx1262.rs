@@ -112,7 +112,7 @@ pub struct Sx1262<SPI> {
 }
 
 impl<SPI: SpiDeviceTrait> Sx1262<SPI> {
-    /// Create a new SX1262 driver. Does NOT initialize the radio — call `reset()` + init_radio() first.
+    /// Create a new SX1262 driver. Does NOT initialize the radio ; call `reset()` + init_radio() first.
     pub fn new(spi: SPI, reset: Output<'static>, busy: Input<'static>, dio1: Input<'static>) -> Self {
         Self { spi, reset, busy, dio1, preamble_len: 24 }
     }
@@ -242,8 +242,7 @@ impl<SPI: SpiDeviceTrait> Sx1262<SPI> {
         self.get_status().await
     }
 
-    // ─── Frequency, modulation, packet params ──────────────────────────
-
+    // Frequency, modulation, packet params
     /// Write a register (datasheet §13.2.1).
     pub async fn write_register(&mut self, addr: u16, data: &[u8]) -> Result<(), Error> {
         self.wait_busy().await?;
@@ -329,8 +328,7 @@ impl<SPI: SpiDeviceTrait> Sx1262<SPI> {
         self.apply_tx_clamp_workaround().await
     }
 
-    // ─── TX ────────────────────────────────────────────────────────────
-
+    // TX
     /// Transmit a packet. Blocks until TxDone or timeout.
     /// Call configure_lora() first to set frequency/modulation/power.
     pub async fn transmit(&mut self, data: &[u8], timeout_ms: u32) -> Result<(), Error> {
@@ -341,7 +339,7 @@ impl<SPI: SpiDeviceTrait> Sx1262<SPI> {
         }).await?;
         self.write_command(opcode::CLEAR_IRQ_STATUS, &[0xFF, 0xFF]).await?;
 
-        // Write payload — use two SPI operations to avoid 258-byte stack buffer
+        // Write payload ; use two SPI operations to avoid 258-byte stack buffer
         self.wait_busy().await?;
         let header = [opcode::WRITE_BUFFER, 0x00];
         self.spi.transaction(&mut [
@@ -349,7 +347,7 @@ impl<SPI: SpiDeviceTrait> Sx1262<SPI> {
             Operation::Write(data),
         ]).await.map_err(|_| Error::Spi)?;
 
-        // Start TX (no hardware timeout — we use our own)
+        // Start TX (no hardware timeout ; we use our own)
         let t = u24_be(0);
         self.write_command(opcode::SET_TX, &t).await?;
 
@@ -374,8 +372,7 @@ impl<SPI: SpiDeviceTrait> Sx1262<SPI> {
         }
     }
 
-    // ─── RX ────────────────────────────────────────────────────────────
-
+    // RX
     /// Get RX buffer status: payload length and start pointer (datasheet §13.5.2).
     async fn get_rx_buffer_status(&mut self) -> Result<(u8, u8), Error> {
         let mut buf = [0u8; 2];
@@ -464,8 +461,7 @@ impl<SPI: SpiDeviceTrait> Sx1262<SPI> {
         }
     }
 
-    // ─── CAD (Channel Activity Detection) ──────────────────────────────
-
+    // CAD (Channel Activity Detection)
     /// Perform a Channel Activity Detection. Returns true if a LoRa preamble
     /// was detected (channel busy), false if clear. Blocks until CadDone IRQ.
     /// Exit mode 0x00 leaves the chip in STBY_RC regardless of result.

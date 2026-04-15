@@ -7,8 +7,7 @@
 use crate::constants::IDENTITY_KEY_SIZE;
 use crate::identity::Identity;
 
-// ─── Wire format ───────────────────────────────────────────────────────────
-
+// Wire format
 const MAGIC: [u8; 4] = [0x52, 0x54, 0x49, 0x43]; // "RTIC"
 const FORMAT_VERSION: u8 = 0x01;
 const HEADER_SIZE: usize = 5; // magic(4) + version(1)
@@ -78,8 +77,7 @@ pub fn decode_identity(buf: &[u8]) -> Option<Identity> {
     Identity::from_private_key_bytes(key).ok()
 }
 
-// ─── Trait ─────────────────────────────────────────────────────────────────
-
+// Trait
 /// Persistent storage for a node's own Reticulum identity.
 ///
 /// Implemented per target:
@@ -95,8 +93,7 @@ pub trait IdentityStore {
     fn save(&mut self, identity: &Identity) -> Result<(), Self::Error>;
 }
 
-// ─── Tests ─────────────────────────────────────────────────────────────────
-
+// Tests
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -2,10 +2,10 @@
 //!
 //! Uses `heapless::FnvIndexMap` and `heapless::IndexSet` with compile-time
 //! capacities instead of `BTreeMap`/`BTreeSet`. Eliminates allocator overhead
-//! for map containers — only variable-size data fields (`Vec<u8>` in announce
+//! for map containers ; only variable-size data fields (`Vec<u8>` in announce
 //! cache and ratchet keys) still use the heap allocator.
 //!
-//! Local client (shared-instance) methods are no-ops — embedded nodes are the
+//! Local client (shared-instance) methods are no-ops ; embedded nodes are the
 //! daemon, not a client of a daemon.
 
 extern crate alloc;
@@ -30,13 +30,13 @@ use crate::traits::Storage;
 /// analysis: path_table=32, announce_table=8, link_table=8, etc.
 ///
 /// When a collection is full, insert operations evict the oldest entry
-/// rather than panicking. This matches the MemoryStorage overflow behavior —
+/// rather than panicking. This matches the MemoryStorage overflow behavior ;
 /// the protocol handles missing entries gracefully via timeouts and retransmits.
 ///
 /// **Size note**: This struct is ~20-30 KB (heapless collections are inline).
 /// On Cortex-M4, it must be placed in a `static` or `Box`, not on the stack.
 pub struct EmbeddedStorage {
-    // ─── Packet dedup (two-generation ring) ──────────────────────────────
+    // Packet dedup (two-generation ring)
     /// SHA-256 hashes of packets seen recently, current generation.
     ///
     /// **Re-insert semantics:** insert is idempotent (set membership);
@@ -56,13 +56,13 @@ pub struct EmbeddedStorage {
     /// Previous-generation packet dedup ring (see `packet_cache`).
     ///
     /// Holds hashes from the prior rotation. Read on every dedup check;
-    /// not written to directly — gets the contents of `packet_cache` on
+    /// not written to directly ; gets the contents of `packet_cache` on
     /// rotation and is cleared when the next rotation promotes it again.
     ///
     /// **Capacity:** 256.
     packet_cache_prev: FnvIndexSet<[u8; 32], 256>,
 
-    // ─── Path table ──────────────────────────────────────────────────────
+    // Path table
     /// Routing entries for known destinations: hops, expiry, next-hop,
     /// receiving interface.
     ///
@@ -101,7 +101,7 @@ pub struct EmbeddedStorage {
     /// **Capacity:** 32.
     path_states: FnvIndexMap<[u8; TRUNCATED_HASHBYTES], PathState, 32>,
 
-    // ─── Announce ────────────────────────────────────────────────────────
+    // Announce
     /// Cached announce metadata for rate-limiting and rebroadcast
     /// scheduling: timestamps, retry counts, raw packet bytes,
     /// retransmit deadlines.
@@ -155,7 +155,7 @@ pub struct EmbeddedStorage {
     /// **Capacity:** 32.
     announce_rate_table: FnvIndexMap<[u8; TRUNCATED_HASHBYTES], AnnounceRateEntry, 32>,
 
-    // ─── Routing ─────────────────────────────────────────────────────────
+    // Routing
     /// Active links routed through this transport node: timestamp,
     /// next-hop interface, validation state, proof deadline,
     /// destination identifier.
@@ -198,7 +198,7 @@ pub struct EmbeddedStorage {
     ///
     /// **Re-insert semantics:** FIFO-by-insertion. The setter
     /// (`set_discovery_path_request`) has an explicit
-    /// `if !contains_key` guard — only the first request per key is
+    /// `if !contains_key` guard ; only the first request per key is
     /// recorded, mirroring Python behavior. Subsequent requests for
     /// the same destination are dropped, NOT used to refresh the
     /// position.
@@ -215,13 +215,13 @@ pub struct EmbeddedStorage {
     /// **Capacity:** 4.
     discovery_path_requests: FnvIndexMap<[u8; TRUNCATED_HASHBYTES], (usize, u64), 4>,
 
-    // ─── Path requests ───────────────────────────────────────────────────
+    // Path requests
     /// Last-sent timestamp for outbound path requests, used as the
     /// rate-limit gate (one request per destination per
     /// `PATH_REQUEST_MIN_INTERVAL_MS`).
     ///
     /// **Re-insert semantics:** refresh-on-re-insert. Surviving the
-    /// eviction race is the whole point of the table — if the rate-
+    /// eviction race is the whole point of the table ; if the rate-
     /// limit timestamp gets evicted, the next request is treated as
     /// fresh and the rate limit is bypassed.
     ///
@@ -253,7 +253,7 @@ pub struct EmbeddedStorage {
     /// **Capacity:** 32.
     path_request_tag_set: FnvIndexSet<[u8; 32], 32>,
 
-    // ─── Identity / security ─────────────────────────────────────────────
+    // Identity / security
     /// Cached remote `Identity` (Ed25519 + X25519 public keys), keyed
     /// by destination hash, for signature verification.
     ///
@@ -276,7 +276,7 @@ pub struct EmbeddedStorage {
     /// packets sent under the sender's current ratchet.
     ///
     /// **Re-insert semantics:** refresh-on-re-insert. Refreshed on
-    /// every announce containing the ratchet — exactly the
+    /// every announce containing the ratchet ; exactly the
     /// `path_table` pattern, and an active sender's ratchet must
     /// outlive an unrelated burst.
     ///
@@ -309,7 +309,7 @@ pub struct EmbeddedStorage {
     /// **Capacity:** 4.
     dest_ratchet_keys: FnvIndexMap<[u8; TRUNCATED_HASHBYTES], Vec<u8>, 4>,
 
-    // ─── Receipts ────────────────────────────────────────────────────────
+    // Receipts
     /// Pending-delivery `PacketReceipt`s: what we sent, when, and
     /// whether the proof has been received.
     ///
@@ -317,11 +317,11 @@ pub struct EmbeddedStorage {
     /// receipts must outlive newer ones submitted just after them.
     ///
     /// **Insert paths:**
-    /// - `transport.rs:885` — `create_receipt`: fresh-key (truncated
+    /// - `transport.rs:885` ; `create_receipt`: fresh-key (truncated
     ///   hash of the just-sent packet).
-    /// - `transport.rs:905` — `create_receipt_with_timeout`: fresh-key
+    /// - `transport.rs:905` ; `create_receipt_with_timeout`: fresh-key
     ///   (same shape as `create_receipt`).
-    /// - `transport.rs:925` — `mark_receipt_delivered`: re-insert
+    /// - `transport.rs:925` ; `mark_receipt_delivered`: re-insert
     ///   (read existing receipt, clone, mutate `status` to
     ///   `Delivered`, write back under same hash). This is the only
     ///   re-insert path; it benefits from the refresh because an
@@ -376,7 +376,7 @@ impl Default for EmbeddedStorage {
     }
 }
 
-// ─── Helper: insert-or-evict for FnvIndexMap ──────────────────────────────
+// Helper: insert-or-evict for FnvIndexMap
 //
 // `heapless::FnvIndexMap::insert()` returns `Err((K,V))` when full and key
 // is new. We evict the truly-oldest entry by insertion order.
@@ -384,7 +384,7 @@ impl Default for EmbeddedStorage {
 // We can't use `map.remove(&oldest_key)` directly: heapless's `remove` is
 // `swap_remove`, which moves the last entry into the freed slot. After the
 // first overflow, `keys().next()` would no longer be the longest-resident
-// entry — it would be whichever key was last when the previous eviction
+// entry ; it would be whichever key was last when the previous eviction
 // happened. Strict FIFO requires rebuilding the map: snapshot the keys in
 // insertion order, drop the head, then re-insert the rest plus the new
 // entry. Cost is O(N) per overflow; N ≤ 32 so this is microseconds even
@@ -474,8 +474,7 @@ fn map_retain_collect<K: Eq + core::hash::Hash + Copy, V: Clone, const N: usize>
 }
 
 impl Storage for EmbeddedStorage {
-    // ─── Packet Dedup ───────────────────────────────────────────────────
-
+    // Packet Dedup
     fn has_packet_hash(&self, hash: &[u8; 32]) -> bool {
         self.packet_cache.contains(hash) || self.packet_cache_prev.contains(hash)
     }
@@ -488,8 +487,7 @@ impl Storage for EmbeddedStorage {
         }
     }
 
-    // ─── Path Table ─────────────────────────────────────────────────────
-
+    // Path Table
     fn get_path(&self, dest_hash: &[u8; TRUNCATED_HASHBYTES]) -> Option<&PathEntry> {
         self.path_table.get(dest_hash)
     }
@@ -544,8 +542,7 @@ impl Storage for EmbeddedStorage {
             .collect()
     }
 
-    // ─── Path State ─────────────────────────────────────────────────────
-
+    // Path State
     fn get_path_state(&self, dest_hash: &[u8; TRUNCATED_HASHBYTES]) -> Option<PathState> {
         self.path_states.get(dest_hash).copied()
     }
@@ -555,8 +552,7 @@ impl Storage for EmbeddedStorage {
         map_set(&mut self.path_states, dest_hash, state, "path_states");
     }
 
-    // ─── Reverse Table ──────────────────────────────────────────────────
-
+    // Reverse Table
     fn get_reverse(&self, hash: &[u8; TRUNCATED_HASHBYTES]) -> Option<&ReverseEntry> {
         self.reverse_table.get(hash)
     }
@@ -570,8 +566,7 @@ impl Storage for EmbeddedStorage {
         self.reverse_table.remove(hash)
     }
 
-    // ─── Link Table ─────────────────────────────────────────────────────
-
+    // Link Table
     fn get_link_entry(&self, link_id: &[u8; TRUNCATED_HASHBYTES]) -> Option<&LinkEntry> {
         self.link_table.get(link_id)
     }
@@ -588,8 +583,7 @@ impl Storage for EmbeddedStorage {
         map_set(&mut self.link_table, link_id, entry, "link_table");
     }
 
-    // ─── Announce Table ─────────────────────────────────────────────────
-
+    // Announce Table
     fn get_announce(&self, dest_hash: &[u8; TRUNCATED_HASHBYTES]) -> Option<&AnnounceEntry> {
         self.announce_table.get(dest_hash)
     }
@@ -614,8 +608,7 @@ impl Storage for EmbeddedStorage {
         self.announce_table.keys().copied().collect()
     }
 
-    // ─── Announce Cache ─────────────────────────────────────────────────
-
+    // Announce Cache
     fn get_announce_cache(&self, dest_hash: &[u8; TRUNCATED_HASHBYTES]) -> Option<&Vec<u8>> {
         self.announce_cache.get(dest_hash)
     }
@@ -625,8 +618,7 @@ impl Storage for EmbeddedStorage {
         map_set(&mut self.announce_cache, dest_hash, raw, "announce_cache");
     }
 
-    // ─── Announce Rate ──────────────────────────────────────────────────
-
+    // Announce Rate
     fn get_announce_rate(
         &self,
         dest_hash: &[u8; TRUNCATED_HASHBYTES],
@@ -648,8 +640,7 @@ impl Storage for EmbeddedStorage {
         );
     }
 
-    // ─── Receipts ───────────────────────────────────────────────────────
-
+    // Receipts
     fn get_receipt(&self, hash: &[u8; TRUNCATED_HASHBYTES]) -> Option<&PacketReceipt> {
         self.receipts.get(hash)
     }
@@ -659,8 +650,7 @@ impl Storage for EmbeddedStorage {
         map_set(&mut self.receipts, hash, receipt, "receipts");
     }
 
-    // ─── Path Requests ──────────────────────────────────────────────────
-
+    // Path Requests
     fn get_path_request_time(&self, dest_hash: &[u8; TRUNCATED_HASHBYTES]) -> Option<u64> {
         self.path_requests.get(dest_hash).copied()
     }
@@ -676,7 +666,7 @@ impl Storage for EmbeddedStorage {
         }
         // If full, evict the truly-oldest tag. heapless's `remove` is
         // `swap_remove`, so we rebuild to preserve insertion order across
-        // repeated overflows (same reason map_set rebuilds — see comment
+        // repeated overflows (same reason map_set rebuilds ; see comment
         // there).
         if self.path_request_tag_set.len() >= self.path_request_tag_set.capacity() {
             let keys: Vec<[u8; 32]> = self.path_request_tag_set.iter().copied().collect();
@@ -689,8 +679,7 @@ impl Storage for EmbeddedStorage {
         false
     }
 
-    // ─── Known Identities ───────────────────────────────────────────────
-
+    // Known Identities
     fn get_identity(&self, dest_hash: &[u8; TRUNCATED_HASHBYTES]) -> Option<&Identity> {
         self.known_identities.get(dest_hash)
     }
@@ -705,8 +694,7 @@ impl Storage for EmbeddedStorage {
         );
     }
 
-    // ─── Cleanup ────────────────────────────────────────────────────────
-
+    // Cleanup
     fn expire_reverses(&mut self, now_ms: u64, timeout_ms: u64) -> usize {
         let before = self.reverse_table.len();
         map_retain(&mut self.reverse_table, |_, entry| {
@@ -805,8 +793,7 @@ impl Storage for EmbeddedStorage {
         removed
     }
 
-    // ─── Deadlines ──────────────────────────────────────────────────────
-
+    // Deadlines
     fn earliest_receipt_deadline(&self) -> Option<u64> {
         self.receipts
             .values()
@@ -828,8 +815,7 @@ impl Storage for EmbeddedStorage {
             .min()
     }
 
-    // ─── Known Ratchets ─────────────────────────────────────────────────
-
+    // Known Ratchets
     fn get_known_ratchet(
         &self,
         dest_hash: &[u8; TRUNCATED_HASHBYTES],
@@ -860,8 +846,7 @@ impl Storage for EmbeddedStorage {
         before - self.known_ratchets.len()
     }
 
-    // ─── Local Client Destinations (no-op on embedded) ──────────────────
-
+    // Local Client Destinations (no-op on embedded)
     fn add_local_client_dest(
         &mut self,
         _iface_id: usize,
@@ -872,8 +857,7 @@ impl Storage for EmbeddedStorage {
 
     fn remove_local_client_dests(&mut self, _iface_id: usize) {}
 
-    // ─── Local Client Known Destinations (no-op on embedded) ────────────
-
+    // Local Client Known Destinations (no-op on embedded)
     fn set_local_client_known_dest(
         &mut self,
         _dest_hash: [u8; TRUNCATED_HASHBYTES],
@@ -889,8 +873,7 @@ impl Storage for EmbeddedStorage {
         0
     }
 
-    // ─── Discovery Path Requests ────────────────────────────────────────
-
+    // Discovery Path Requests
     fn set_discovery_path_request(
         &mut self,
         dest_hash: [u8; TRUNCATED_HASHBYTES],
@@ -931,8 +914,7 @@ impl Storage for EmbeddedStorage {
         self.discovery_path_requests.keys().copied().collect()
     }
 
-    // ─── Sender-Side Ratchet Keys ───────────────────────────────────────
-
+    // Sender-Side Ratchet Keys
     fn store_dest_ratchet_keys(
         &mut self,
         dest_hash: [u8; TRUNCATED_HASHBYTES],
@@ -962,13 +944,13 @@ mod tests {
         // Invariants relied on by set_path.
         //
         // Heapless FnvIndexMap:
-        //   - insert(existing_key, …) updates in place WITHOUT moving the
-        //     entry — the FIFO position is unchanged.
-        //   - remove(&K) uses swap_remove: the last entry is moved to K's
+        // insert(existing_key, …) updates in place WITHOUT moving the
+        //     entry ; the FIFO position is unchanged.
+        // remove(&K) uses swap_remove: the last entry is moved to K's
         //     old slot, then the tail is truncated. This means keys().next()
         //     after a front-removal is NOT the key that was second in
-        //     insertion order — it's whatever was last.
-        //   - insert(new_key) appends at the back.
+        //     insertion order ; it's whatever was last.
+        // insert(new_key) appends at the back.
         //
         // Consequence for the fix: remove(K) + insert(K) guarantees K ends
         // up at the BACK (last to be evicted by FIFO), even though the
@@ -988,7 +970,7 @@ mod tests {
             "in-place insert keeps position"
         );
 
-        // remove(1) + insert(1) — 1 must end up at the back.
+        // remove(1) + insert(1) ; 1 must end up at the back.
         m.remove(&1);
         m.insert(1, 12).unwrap();
         assert_eq!(
@@ -997,7 +979,7 @@ mod tests {
             "remove+insert lands the key at the back"
         );
         // Per-heapless swap_remove: the entry that was last BEFORE the
-        // remove (3) now sits at the front. Documented, not intended —
+        // remove (3) now sits at the front. Documented, not intended ;
         // for the fix, only the "back" invariant matters.
         assert_eq!(
             *m.keys().next().unwrap(),
@@ -1083,7 +1065,7 @@ mod tests {
         }
         assert_eq!(s.path_count(), 32);
 
-        // Insert one more — should evict the first
+        // Insert one more ; should evict the first
         let mut new_hash = [0xFFu8; TRUNCATED_HASHBYTES];
         new_hash[0] = 0xFF;
         s.set_path(
@@ -1158,12 +1140,8 @@ mod tests {
         s.set_local_client_known_dest(hash, 1000);
         assert!(s.local_client_known_dest_hashes().is_empty());
     }
-
-    // ──────────────────────────────────────────────────────────────────────
     // Overflow correctness + semantic-intent coverage for every storage map
     // and the explicit-FIFO set.
-    // ──────────────────────────────────────────────────────────────────────
-
     use rand_core::OsRng;
 
     fn key_th(i: usize) -> [u8; TRUNCATED_HASHBYTES] {
@@ -1232,8 +1210,7 @@ mod tests {
         PacketReceipt::new(packet_hash, DestinationHash::new(key), 1000)
     }
 
-    // ─── Map 1: path_table ──────────────────────────────────────────────
-
+    // Map 1: path_table
     #[test]
     fn level1_path_table_overflow_correctness() {
         let mut s = EmbeddedStorage::new();
@@ -1267,8 +1244,7 @@ mod tests {
         assert_eq!(s.path_count(), cap, "exactly one entry was evicted");
     }
 
-    // ─── Map 2: path_states ─────────────────────────────────────────────
-
+    // Map 2: path_states
     #[test]
     fn level1_path_states_overflow_correctness() {
         let mut s = EmbeddedStorage::new();
@@ -1308,8 +1284,7 @@ mod tests {
         );
     }
 
-    // ─── Map 3: announce_table ──────────────────────────────────────────
-
+    // Map 3: announce_table
     #[test]
     fn level1_announce_table_overflow_correctness() {
         let mut s = EmbeddedStorage::new();
@@ -1338,8 +1313,7 @@ mod tests {
         assert!(s.get_announce(&key_th(0)).is_some(), "refreshed survives");
     }
 
-    // ─── Map 4: announce_cache ──────────────────────────────────────────
-
+    // Map 4: announce_cache
     #[test]
     fn level1_announce_cache_overflow_correctness() {
         let mut s = EmbeddedStorage::new();
@@ -1371,8 +1345,7 @@ mod tests {
         );
     }
 
-    // ─── Map 5: announce_rate_table ─────────────────────────────────────
-
+    // Map 5: announce_rate_table
     #[test]
     fn level1_announce_rate_table_overflow_correctness() {
         let mut s = EmbeddedStorage::new();
@@ -1404,8 +1377,7 @@ mod tests {
         );
     }
 
-    // ─── Map 6: link_table ──────────────────────────────────────────────
-
+    // Map 6: link_table
     #[test]
     fn level1_link_table_overflow_correctness() {
         let mut s = EmbeddedStorage::new();
@@ -1434,8 +1406,7 @@ mod tests {
         assert!(s.get_link_entry(&key_th(0)).is_some(), "refreshed survives");
     }
 
-    // ─── Map 7: reverse_table ───────────────────────────────────────────
-
+    // Map 7: reverse_table
     #[test]
     fn level1_reverse_table_overflow_correctness() {
         let mut s = EmbeddedStorage::new();
@@ -1464,8 +1435,7 @@ mod tests {
         assert!(s.get_reverse(&key_th(0)).is_some(), "refreshed survives");
     }
 
-    // ─── Map 8: discovery_path_requests (FIFO-by-insertion + guard) ─────
-
+    // Map 8: discovery_path_requests (FIFO-by-insertion + guard)
     #[test]
     fn level1_discovery_path_requests_overflow_correctness() {
         let mut s = EmbeddedStorage::new();
@@ -1513,8 +1483,7 @@ mod tests {
         );
     }
 
-    // ─── Map 9: path_requests ───────────────────────────────────────────
-
+    // Map 9: path_requests
     #[test]
     fn level1_path_requests_overflow_correctness() {
         let mut s = EmbeddedStorage::new();
@@ -1550,8 +1519,7 @@ mod tests {
         );
     }
 
-    // ─── Map 10: known_identities ───────────────────────────────────────
-
+    // Map 10: known_identities
     #[test]
     fn level1_known_identities_overflow_correctness() {
         let mut s = EmbeddedStorage::new();
@@ -1580,8 +1548,7 @@ mod tests {
         assert!(s.get_identity(&key_th(0)).is_some(), "refreshed survives");
     }
 
-    // ─── Map 11: known_ratchets ─────────────────────────────────────────
-
+    // Map 11: known_ratchets
     #[test]
     fn level1_known_ratchets_overflow_correctness() {
         let mut s = EmbeddedStorage::new();
@@ -1613,8 +1580,7 @@ mod tests {
         );
     }
 
-    // ─── Map 12: dest_ratchet_keys ──────────────────────────────────────
-
+    // Map 12: dest_ratchet_keys
     #[test]
     fn level1_dest_ratchet_keys_overflow_correctness() {
         let mut s = EmbeddedStorage::new();
@@ -1650,8 +1616,7 @@ mod tests {
         );
     }
 
-    // ─── Map 13: receipts ───────────────────────────────────────────────
-
+    // Map 13: receipts
     #[test]
     fn level1_receipts_overflow_correctness() {
         let mut s = EmbeddedStorage::new();
@@ -1685,8 +1650,7 @@ mod tests {
         assert!(s.get_receipt(&k0).is_some(), "refreshed survives");
     }
 
-    // ─── Set 14: path_request_tag_set (own FIFO logic) ──────────────────
-
+    // Set 14: path_request_tag_set (own FIFO logic)
     #[test]
     fn level1_path_request_tag_set_overflow_correctness() {
         let mut s = EmbeddedStorage::new();

@@ -359,7 +359,7 @@ mod tests {
         let hash = [0x01; TRUNCATED_HASHBYTES];
         store.update_from_announce(&hash, &id.public_key_bytes(), b"original_app");
 
-        // Merge with the same hash from storage — should NOT overwrite
+        // Merge with the same hash from storage ; should NOT overwrite
         let storage_entries: Vec<([u8; TRUNCATED_HASHBYTES], Identity)> = vec![(hash, id)];
         let refs: Vec<(&[u8; TRUNCATED_HASHBYTES], &Identity)> =
             storage_entries.iter().map(|(h, i)| (h, i)).collect();
