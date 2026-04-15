@@ -75,11 +75,16 @@ async fn test_rust_relay_announce_and_link_data() {
     let dest_a_hash = reticulum_core::DestinationHash::new(dest_a_hash_bytes);
     let dest_b_hash = reticulum_core::DestinationHash::new(dest_b_hash_bytes);
 
-    // Step 4: Both daemons announce their destinations
+    // Step 4: Both daemons announce their destinations.
+    // Space below Python's ingress_control IC_BURST_FREQ_NEW threshold
+    // so the Rust relay's fanout doesn't trip Python's per-interface
+    // burst detector (see architecture-broadcast-python-parity.md, B1
+    // subtlety).
     daemon_a
         .announce_destination(&dest_a_info.hash, b"hello-from-A")
         .await
         .expect("Failed to announce dest_A");
+    tokio::time::sleep(Duration::from_secs(2)).await;
     daemon_b
         .announce_destination(&dest_b_info.hash, b"hello-from-B")
         .await

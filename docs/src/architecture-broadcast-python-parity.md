@@ -430,7 +430,7 @@ structural divergence, ⚠ gap not yet addressed, ✗ does not match.
 | Self-announce on-wire count | 1 | 4 (1 + 3 retries) | ✗ | **B3 brings to 1** |
 | Self-announce fanout | all interfaces (MODE_FULL assumed) | `send_on_all_interfaces(exclude=None)` | ✓ | `transport.rs:1243-1255` |
 | Received-announce rebroadcast count | 2 (non-local-client), 1 (local-client) | 4 at `retries=1` init + `PATHFINDER_RETRIES=3` | ✗ | **B2 brings to 2** |
-| Received-announce fanout | all interfaces; echo dedup'd on RX | `forward_on_all_except(source)` | ✗ | **B1 removes exclusion** |
+| Received-announce fanout | all interfaces; echo dedup'd on RX | `send_on_all_interfaces` (no exclude) | ✓ | Matches Python. B1 verified by `test_announces_forwarded_through_transport`. |
 | Packet-hash dedup on RX | `Transport.py:1227` | `transport.rs:1179` | ✓ | Identical semantics, rolling window |
 | `PATHFINDER_G` grace | 5 s | 5 000 ms | ✓ | `constants.rs:117` |
 | `PATHFINDER_RW` jitter | 0.5 s | 500 ms (+ optional airtime factor) | ≈ | Option α permitted timing divergence |
@@ -479,7 +479,7 @@ readers see 1:1 constants.
 ### B1 fanout alignment
 
 **Question**: if we remove `exclude_iface`, can dedup reliably
-catch the self-echo?
+catch the self-echo, and does it play well with Python peers?
 
 **Resolution**: yes. Outgoing broadcasts go through
 `send_on_all_interfaces` at `transport.rs:1243-1255` which calls
@@ -488,8 +488,36 @@ catch the self-echo?
 in `process_incoming` reads that set. The only edge case is the
 dedup window rollover at `HASHLIST_MAXSIZE = 1 000 000` entries —
 a packet that is ~1M packets old could theoretically come back.
-Not a concern in practice for single-day bench runs; flag as a
-known-limitation comment in the B1 commit.
+Not a concern in practice for single-day bench runs.
+
+**Python interop subtlety** (discovered 2026-04-15 when the B1
+change was first landed, caused a 3-node TCP relay test to fail,
+then resolved by spacing out the test's announce emissions): the
+Python reference has a per-interface **ingress control** at
+`vendor/Reticulum/RNS/Interfaces/Interface.py:117-138`. When two
+announces arrive on the same interface faster than
+`IC_BURST_FREQ_NEW = 3.5/s` (≈ 285 ms apart), Python activates
+burst mode for at least `IC_BURST_HOLD = 60 s` then penalises for
+`IC_BURST_PENALTY = 300 s`. Held announces are released by
+`process_held_announces` every `interface_jobs_interval = 5 s`,
+but only once the cooldown expires.
+
+In a LoRa topology the multi-second airtime per transmit naturally
+spaces announces below this threshold, so ingress control never
+activates. In a TCP relay topology a Rust node that receives
+announces from both peers in rapid succession — and with B1
+fans them both out on every interface, with only the retry
+scheduler's 0-500 ms jitter spacing them — can trip Python's
+ingress control on the receiving side.
+
+This is not a Rust bug; it is Python's intended rate-limit
+behaviour that naive TCP-only tests can expose. The regression
+guard test `test_announces_forwarded_through_transport` spaces
+its two `announce_destination` calls by two seconds to keep
+the spawned-peer interface's `ia_freq` below 3.5 /s. Production
+scenarios where two daemons announce in tight succession through
+a Rust relay remain subject to Python's ingress limits — exactly
+as they would be through a Python relay.
 
 ### Mode-less Rust
 

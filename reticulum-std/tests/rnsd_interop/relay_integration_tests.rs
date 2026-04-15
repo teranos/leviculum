@@ -84,6 +84,9 @@ async fn test_diamond_relay_and_failure_recovery() {
         .announce_destination(&dest_a_info.hash, b"diamond-A")
         .await
         .expect("Failed to announce dest_a");
+    // Space below Python's ingress_control IC_BURST_FREQ_NEW threshold
+    // (docs/src/architecture-broadcast-python-parity.md, B1 subtlety).
+    tokio::time::sleep(Duration::from_secs(2)).await;
     daemon_b
         .announce_destination(&dest_b_info.hash, b"diamond-B")
         .await
@@ -329,6 +332,8 @@ async fn test_mixed_python_rust_relay_chain() {
         .expect("Failed to register dest_b");
     let dest_b_hash = parse_dest_hash(&dest_b_info.hash);
 
+    // Space below Python's ingress_control IC_BURST_FREQ_NEW threshold.
+    tokio::time::sleep(Duration::from_secs(2)).await;
     daemon_b
         .announce_destination(&dest_b_info.hash, b"mixed-B")
         .await
