@@ -1501,33 +1501,8 @@ fn dispatch_output(
     ifac_configs: &BTreeMap<usize, reticulum_core::ifac::IfacConfig>,
 ) {
     // 1. Drain retry queues before dispatching new actions
-    for (iface_idx, queue) in retry_queues.iter_mut() {
-        let iface_id = InterfaceId(*iface_idx);
-        while let Some(data) = queue.front() {
-            if let Some(handle) = registry.handles_mut_slice().iter_mut().find(|h| {
-                use reticulum_core::traits::Interface;
-                h.id() == iface_id
-            }) {
-                use reticulum_core::traits::Interface;
-                // Retry queue only holds SendPacket data (directed traffic),
-                // which is always high priority.
-                match handle.try_send_prioritized(data, true) {
-                    Ok(()) => {
-                        queue.pop_front();
-                    }
-                    Err(InterfaceError::BufferFull) => break,
-                    Err(InterfaceError::Disconnected) => {
-                        queue.clear();
-                        break;
-                    }
-                }
-            } else {
-                // Interface removed — clear queue
-                queue.clear();
-                break;
-            }
-        }
-    }
+    let drain_now_ms = inner.lock().unwrap().now_ms();
+    drain_retry_queues(retry_queues, registry, drain_now_ms);
 
     // 2. Dispatch new actions to interfaces (protocol logic in core)
     let mut ifaces: Vec<&mut dyn reticulum_core::traits::Interface> = registry
@@ -1606,6 +1581,53 @@ fn dispatch_output(
     }
 }
 
+/// Drain per-interface retry queues in-place, honouring per-packet
+/// airtime gating. Bug #3 Phase 2a (D2): before calling try_send, ask
+/// the handle's next_slot_ms for the actual packet size — Transport's
+/// MTU-sized backchannel cache is conservative for smaller packets,
+/// and the drain's finer granularity recovers that headroom. Extracted
+/// so it is unit-testable without spinning up the full driver.
+fn drain_retry_queues(
+    retry_queues: &mut BTreeMap<usize, VecDeque<Vec<u8>>>,
+    registry: &mut InterfaceRegistry,
+    now_ms: u64,
+) {
+    use reticulum_core::traits::Interface;
+    for (iface_idx, queue) in retry_queues.iter_mut() {
+        let iface_id = InterfaceId(*iface_idx);
+        while let Some(data) = queue.front() {
+            if let Some(handle) = registry
+                .handles_mut_slice()
+                .iter_mut()
+                .find(|h| h.id() == iface_id)
+            {
+                if handle.next_slot_ms(data.len(), now_ms) > now_ms {
+                    // Interface not yet ready for THIS packet size — leave
+                    // it at the front, try next dispatch tick (driver-local
+                    // wake in E3 will fire at the computed slot).
+                    break;
+                }
+                // Retry queue only holds SendPacket data (directed traffic),
+                // which is always high priority.
+                match handle.try_send_prioritized(data, true) {
+                    Ok(()) => {
+                        queue.pop_front();
+                    }
+                    Err(InterfaceError::BufferFull) => break,
+                    Err(InterfaceError::Disconnected) => {
+                        queue.clear();
+                        break;
+                    }
+                }
+            } else {
+                // Interface removed — clear queue
+                queue.clear();
+                break;
+            }
+        }
+    }
+}
+
 /// Mirror each interface's `next_slot_ms(MTU, now_ms)` into Transport's
 /// backchannel. Bug #3 Phase 2a (C3). Extracted so it is unit-testable
 /// without spinning up the full driver; called from `dispatch_output`.
@@ -1639,6 +1661,117 @@ mod tests {
         let fake_hash = reticulum_core::DestinationHash::new([0xFF; 16]);
         assert!(!node.has_path(&fake_hash));
         assert!(node.hops_to(&fake_hash).is_none());
+    }
+
+    /// Bug #3 Phase 2a (D2): drain_retry_queues honors next_slot_ms.
+    /// A ready interface drains its packet; a saturated interface
+    /// leaves the packet at the queue front.
+    #[tokio::test(flavor = "current_thread")]
+    async fn drain_retry_queues_skips_saturated_and_drains_ready() {
+        use crate::interfaces::airtime::AirtimeCredit;
+        use crate::interfaces::{InterfaceCounters, InterfaceHandle, InterfaceInfo};
+        use reticulum_core::transport::InterfaceId;
+
+        let mut registry = InterfaceRegistry::new();
+
+        // LoRa handle (iface_idx=1), saturated bucket.
+        let mut saturated = AirtimeCredit::new(125_000, 10, 8, 500);
+        saturated.try_charge(500, 0).unwrap();
+        let (_li, l_inc_rx) = tokio::sync::mpsc::channel(4);
+        let (l_out_tx, mut l_out_rx) = tokio::sync::mpsc::channel(4);
+        registry.register(InterfaceHandle {
+            info: InterfaceInfo {
+                id: InterfaceId(1),
+                name: "lora".into(),
+                hw_mtu: Some(500),
+                is_local_client: false,
+                bitrate: None,
+                ifac: None,
+            },
+            incoming: l_inc_rx,
+            outgoing: l_out_tx,
+            counters: Arc::new(InterfaceCounters::new()),
+            credit: Some(Arc::new(Mutex::new(saturated))),
+        });
+
+        // Plain handle (iface_idx=2), credit = None (always ready).
+        let (_pi, p_inc_rx) = tokio::sync::mpsc::channel(4);
+        let (p_out_tx, mut p_out_rx) = tokio::sync::mpsc::channel(4);
+        registry.register(InterfaceHandle {
+            info: InterfaceInfo {
+                id: InterfaceId(2),
+                name: "plain".into(),
+                hw_mtu: None,
+                is_local_client: false,
+                bitrate: None,
+                ifac: None,
+            },
+            incoming: p_inc_rx,
+            outgoing: p_out_tx,
+            counters: Arc::new(InterfaceCounters::new()),
+            credit: None,
+        });
+
+        // Queue one packet on each interface.
+        let mut retry_queues: BTreeMap<usize, VecDeque<Vec<u8>>> = BTreeMap::new();
+        retry_queues
+            .entry(1)
+            .or_default()
+            .push_back(vec![0xAA; 100]);
+        retry_queues
+            .entry(2)
+            .or_default()
+            .push_back(vec![0xBB; 100]);
+
+        drain_retry_queues(&mut retry_queues, &mut registry, 0);
+
+        // Saturated LoRa: packet still at front.
+        assert_eq!(retry_queues.get(&1).map(|q| q.len()), Some(1));
+        // Plain: packet drained.
+        assert_eq!(retry_queues.get(&2).map(|q| q.len()), Some(0));
+        // And the plain interface's outgoing channel received the packet.
+        assert!(p_out_rx.try_recv().is_ok());
+        // Saturated: nothing went to outgoing.
+        assert!(l_out_rx.try_recv().is_err());
+    }
+
+    /// A ready interface (no credit) drains repeatedly across retries.
+    #[tokio::test(flavor = "current_thread")]
+    async fn drain_retry_queues_drains_all_ready_packets() {
+        use crate::interfaces::{InterfaceCounters, InterfaceHandle, InterfaceInfo};
+        use reticulum_core::transport::InterfaceId;
+
+        let mut registry = InterfaceRegistry::new();
+        let (_pi, p_inc_rx) = tokio::sync::mpsc::channel(4);
+        let (p_out_tx, mut p_out_rx) = tokio::sync::mpsc::channel(4);
+        registry.register(InterfaceHandle {
+            info: InterfaceInfo {
+                id: InterfaceId(0),
+                name: "tcp".into(),
+                hw_mtu: None,
+                is_local_client: false,
+                bitrate: None,
+                ifac: None,
+            },
+            incoming: p_inc_rx,
+            outgoing: p_out_tx,
+            counters: Arc::new(InterfaceCounters::new()),
+            credit: None,
+        });
+        let mut retry_queues: BTreeMap<usize, VecDeque<Vec<u8>>> = BTreeMap::new();
+        let queue = retry_queues.entry(0).or_default();
+        queue.push_back(vec![1, 2, 3]);
+        queue.push_back(vec![4, 5, 6]);
+        queue.push_back(vec![7, 8, 9]);
+
+        drain_retry_queues(&mut retry_queues, &mut registry, 0);
+
+        assert_eq!(retry_queues.get(&0).map(|q| q.len()), Some(0));
+        let mut received = 0;
+        while p_out_rx.try_recv().is_ok() {
+            received += 1;
+        }
+        assert_eq!(received, 3);
     }
 
     /// Bug #3 Phase 2a (C3): push_next_slot_ms copies per-interface
