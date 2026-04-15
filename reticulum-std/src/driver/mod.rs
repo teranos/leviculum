@@ -604,7 +604,7 @@ impl ReticulumNode {
                                 coding_rate: config.coding_rate.unwrap_or(5),
                                 tx_power: config.tx_power.unwrap_or(17),
                                 preamble_len: 24,
-                                csma_enabled: config.csma_enabled.unwrap_or(false),
+                                csma_enabled: config.csma_enabled.unwrap_or(true),
                             })
                         } else {
                             None

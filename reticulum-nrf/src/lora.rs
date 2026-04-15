@@ -115,7 +115,7 @@ impl RadioConfig {
             preamble_len: 24,
             bw_hz: 125_000,
             cr_denom: 5,
-            csma_enabled: false,
+            csma_enabled: true,
             radio_silent: false,
         }
     }
