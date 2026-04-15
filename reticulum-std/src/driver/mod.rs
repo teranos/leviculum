@@ -1290,6 +1290,11 @@ async fn run_event_loop(
     // queue is deep. Cleared when the queue drops back below 8.
     let mut retry_queue_warned: std::collections::BTreeSet<usize> =
         std::collections::BTreeSet::new();
+    // Bug #3 Phase 2a (E2): monotonic high-watermark of each
+    // retry_queue's depth since process start. Logged at info! when
+    // it increases so hardware benchmarks can read it out of the
+    // capture without extra instrumentation.
+    let mut retry_queue_max_depth: BTreeMap<usize, usize> = BTreeMap::new();
 
     // Clone IFAC configs from core so dispatch_output can apply IFAC outside the lock.
     // This is the canonical source of truth for "what IFAC config does interface N have
@@ -1337,7 +1342,7 @@ async fn run_event_loop(
                             &mut registry,
                             &event_tx,
                             &inner,
-                            &mut retry_queues, &mut retry_queue_warned, &ifac_configs,
+                            &mut retry_queues, &mut retry_queue_warned, &mut retry_queue_max_depth, &ifac_configs,
                         );
                     }
                     RecvEvent::Disconnected(iface_id) => {
@@ -1351,7 +1356,7 @@ async fn run_event_loop(
                             &mut registry,
                             &event_tx,
                             &inner,
-                            &mut retry_queues, &mut retry_queue_warned, &ifac_configs,
+                            &mut retry_queues, &mut retry_queue_warned, &mut retry_queue_max_depth, &ifac_configs,
                         );
                         // Clear retry queue and congested flag for disconnected interface
                         retry_queues.remove(&iface_id.0);
@@ -1376,7 +1381,7 @@ async fn run_event_loop(
                     &mut registry,
                     &event_tx,
                     &inner,
-                    &mut retry_queues, &mut retry_queue_warned, &ifac_configs,
+                    &mut retry_queues, &mut retry_queue_warned, &mut retry_queue_max_depth, &ifac_configs,
                 );
             }
 
@@ -1394,7 +1399,7 @@ async fn run_event_loop(
                     &mut registry,
                     &event_tx,
                     &inner,
-                    &mut retry_queues, &mut retry_queue_warned, &ifac_configs,
+                    &mut retry_queues, &mut retry_queue_warned, &mut retry_queue_max_depth, &ifac_configs,
                 );
 
                 // Advance next_poll based on next_deadline_ms
@@ -1455,7 +1460,7 @@ async fn run_event_loop(
                         let mut core = inner.lock().unwrap();
                         core.handle_interface_up(iface_idx)
                     };
-                    dispatch_output(output, &mut registry, &event_tx, &inner, &mut retry_queues, &mut retry_queue_warned, &ifac_configs);
+                    dispatch_output(output, &mut registry, &event_tx, &inner, &mut retry_queues, &mut retry_queue_warned, &mut retry_queue_max_depth, &ifac_configs);
                 }
             }
 
@@ -1476,7 +1481,7 @@ async fn run_event_loop(
                     let mut core = inner.lock().unwrap();
                     core.handle_interface_up(iface_id.0)
                 };
-                dispatch_output(output, &mut registry, &event_tx, &inner, &mut retry_queues, &mut retry_queue_warned, &ifac_configs);
+                dispatch_output(output, &mut registry, &event_tx, &inner, &mut retry_queues, &mut retry_queue_warned, &mut retry_queue_max_depth, &ifac_configs);
             }
 
             // Branch 7: Periodic storage flush (persist identities + packet hashes)
@@ -1493,6 +1498,7 @@ async fn run_event_loop(
 }
 
 /// Dispatch a TickOutput: drain retry queues, route Actions to interfaces, forward Events.
+#[allow(clippy::too_many_arguments)]
 fn dispatch_output(
     output: TickOutput,
     registry: &mut InterfaceRegistry,
@@ -1500,6 +1506,7 @@ fn dispatch_output(
     inner: &Arc<Mutex<StdNodeCore>>,
     retry_queues: &mut BTreeMap<usize, VecDeque<Vec<u8>>>,
     retry_queue_warned: &mut std::collections::BTreeSet<usize>,
+    retry_queue_max_depth: &mut BTreeMap<usize, usize>,
     ifac_configs: &BTreeMap<usize, reticulum_core::ifac::IfacConfig>,
 ) {
     // 1. Drain retry queues before dispatching new actions
@@ -1538,7 +1545,13 @@ fn dispatch_output(
                 iface_idx,
             );
         }
-        push_retry_with_warn(queue, iface_idx, retry.data, retry_queue_warned);
+        push_retry_with_warn(
+            queue,
+            iface_idx,
+            retry.data,
+            retry_queue_warned,
+            retry_queue_max_depth,
+        );
     }
 
     // 5. Update congestion flags based on queue state
@@ -1589,17 +1602,16 @@ fn dispatch_output(
     }
 }
 
-/// Append `data` to the per-interface retry queue and emit a single
-/// tracing::warn when the queue depth crosses from < 8 to exactly 8.
-/// The crossing-only semantics (tracked via `warned`) prevent spam
-/// when the queue hovers above 8. The caller clears a queue's entry
-/// from `warned` when the queue falls back below 8.
-/// Bug #3 Phase 2a (E1).
+/// Append `data` to the per-interface retry queue. Emit a single
+/// tracing::warn when the queue depth crosses from < 8 to == 8
+/// (E1); update the monotonic max-depth high-watermark and log at
+/// info! whenever it increases (E2). Bug #3 Phase 2a.
 fn push_retry_with_warn(
     queue: &mut VecDeque<Vec<u8>>,
     iface_idx: usize,
     data: Vec<u8>,
     warned: &mut std::collections::BTreeSet<usize>,
+    max_depth: &mut BTreeMap<usize, usize>,
 ) {
     let len_before = queue.len();
     queue.push_back(data);
@@ -1610,6 +1622,17 @@ fn push_retry_with_warn(
             "retry queue depth high, first-order backpressure may be mis-tuned"
         );
         warned.insert(iface_idx);
+    }
+    // E2: monotonic max-depth watermark. Log at info! only when the
+    // watermark actually advances — benchmarks can grep for this.
+    let prev = max_depth.get(&iface_idx).copied().unwrap_or(0);
+    if queue.len() > prev {
+        max_depth.insert(iface_idx, queue.len());
+        tracing::info!(
+            iface = iface_idx,
+            max_depth = queue.len(),
+            "retry_queue max depth increased"
+        );
     }
 }
 
@@ -1702,16 +1725,17 @@ mod tests {
     fn push_retry_warns_once_when_crossing_depth_8() {
         let mut q: VecDeque<Vec<u8>> = VecDeque::new();
         let mut warned: std::collections::BTreeSet<usize> = std::collections::BTreeSet::new();
+        let mut max_depth: BTreeMap<usize, usize> = BTreeMap::new();
         // Push 7 entries → never warns.
         for _ in 0..7 {
-            push_retry_with_warn(&mut q, 1, vec![0u8; 8], &mut warned);
+            push_retry_with_warn(&mut q, 1, vec![0u8; 8], &mut warned, &mut max_depth);
         }
         assert!(!warned.contains(&1), "7 packets must not trigger warn");
         // Push 8th → crosses threshold.
-        push_retry_with_warn(&mut q, 1, vec![0u8; 8], &mut warned);
+        push_retry_with_warn(&mut q, 1, vec![0u8; 8], &mut warned, &mut max_depth);
         assert!(warned.contains(&1), "8 packets must trigger warn");
         // Push 9th → already warned, set membership unchanged (idempotent).
-        push_retry_with_warn(&mut q, 1, vec![0u8; 8], &mut warned);
+        push_retry_with_warn(&mut q, 1, vec![0u8; 8], &mut warned, &mut max_depth);
         assert!(warned.contains(&1));
         assert_eq!(warned.len(), 1, "no duplicate entries");
     }
@@ -1722,8 +1746,9 @@ mod tests {
     fn push_retry_rewarns_after_queue_drains_below_8() {
         let mut q: VecDeque<Vec<u8>> = VecDeque::new();
         let mut warned: std::collections::BTreeSet<usize> = std::collections::BTreeSet::new();
+        let mut max_depth: BTreeMap<usize, usize> = BTreeMap::new();
         for _ in 0..8 {
-            push_retry_with_warn(&mut q, 2, vec![0u8; 8], &mut warned);
+            push_retry_with_warn(&mut q, 2, vec![0u8; 8], &mut warned, &mut max_depth);
         }
         assert!(warned.contains(&2));
         // Drain below 8 (simulate: clear queue, clear warned per the
@@ -1737,9 +1762,32 @@ mod tests {
         assert!(!warned.contains(&2));
         // Rebuild to 8 → warn re-emitted.
         for _ in 0..8 {
-            push_retry_with_warn(&mut q, 2, vec![0u8; 8], &mut warned);
+            push_retry_with_warn(&mut q, 2, vec![0u8; 8], &mut warned, &mut max_depth);
         }
         assert!(warned.contains(&2));
+    }
+
+    /// Bug #3 Phase 2a (E2): max_depth is monotonic and tracks the
+    /// high-watermark per interface index.
+    #[test]
+    fn push_retry_tracks_monotonic_max_depth() {
+        let mut q: VecDeque<Vec<u8>> = VecDeque::new();
+        let mut warned: std::collections::BTreeSet<usize> = std::collections::BTreeSet::new();
+        let mut max_depth: BTreeMap<usize, usize> = BTreeMap::new();
+        for _ in 0..5 {
+            push_retry_with_warn(&mut q, 3, vec![0u8; 4], &mut warned, &mut max_depth);
+        }
+        assert_eq!(max_depth.get(&3), Some(&5));
+        // Drain the queue manually; max_depth must NOT regress.
+        q.clear();
+        // A single push after drain puts len=1 — watermark stays at 5.
+        push_retry_with_warn(&mut q, 3, vec![0u8; 4], &mut warned, &mut max_depth);
+        assert_eq!(max_depth.get(&3), Some(&5), "watermark must be monotonic");
+        // Re-fill past the old watermark → grows.
+        for _ in 0..10 {
+            push_retry_with_warn(&mut q, 3, vec![0u8; 4], &mut warned, &mut max_depth);
+        }
+        assert_eq!(max_depth.get(&3), Some(&11));
     }
 
     /// Bug #3 Phase 2a (D2): drain_retry_queues honors next_slot_ms.
