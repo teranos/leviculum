@@ -1008,9 +1008,8 @@ mod tests {
 
     #[test]
     fn test_set_path_refreshes_fifo_position() {
-        // Regression test for Bug #1: set_path must move re-announced
-        // destinations to the back of the FIFO, so that active paths
-        // are not evicted by unrelated later entries.
+        // set_path must move re-announced destinations to the back of the
+        // FIFO so that active paths are not evicted by unrelated later entries.
         let mut s = EmbeddedStorage::new();
         let entry = PathEntry {
             hops: 1,
@@ -1161,10 +1160,8 @@ mod tests {
     }
 
     // ──────────────────────────────────────────────────────────────────────
-    // Bug #10 audit: Level 1 (overflow correctness) + Level 2 (semantic
-    // intent) for every map and the explicit-FIFO set. See plan
-    // `~/.claude/plans/federated-whistling-wolf.md` for the per-map
-    // semantics rationale.
+    // Overflow correctness + semantic-intent coverage for every storage map
+    // and the explicit-FIFO set.
     // ──────────────────────────────────────────────────────────────────────
 
     use rand_core::OsRng;
@@ -1235,7 +1232,7 @@ mod tests {
         PacketReceipt::new(packet_hash, DestinationHash::new(key), 1000)
     }
 
-    // ─── Map 1: path_table (already fixed in Bug #1) ────────────────────
+    // ─── Map 1: path_table ──────────────────────────────────────────────
 
     #[test]
     fn level1_path_table_overflow_correctness() {

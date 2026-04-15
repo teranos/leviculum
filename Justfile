@@ -55,8 +55,8 @@ logs:
 install-ci:
     bash scripts/install-ci.sh
 
-# Touch-free since Bug #13; double-tap RESET only if the runner prompts
-# for a crashed device. Details: reticulum-nrf/README.md §Build and flash.
+# Touch-free; double-tap RESET only if the runner prompts for a crashed
+# device. Details: reticulum-nrf/README.md §Build and flash.
 # The firmware crate is outside the workspace (cross-compiled), so we
 # invoke cargo from its own directory.
 # Flash every attached T114 with the current firmware.

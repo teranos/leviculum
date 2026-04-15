@@ -410,9 +410,9 @@ impl ReticulumNodeBuilder {
         // into its inner MemoryStorage automatically.
         let storage = Storage::new(&storage_path)?;
         let clock = SystemClock::new();
-        // Bug #3 Phase 2a: align the LoRa airtime bucket's anchor with
-        // Transport's SystemClock so try_send_prioritized's
-        // last_update_ms and push_next_slot_ms's now_ms share a frame.
+        // Align the LoRa airtime bucket's anchor with Transport's
+        // SystemClock so `try_send_prioritized`'s `last_update_ms` and
+        // `push_next_slot_ms`'s `now_ms` share a frame.
         crate::interfaces::init_clock_anchor(clock.start_instant());
 
         // Merge interface configs from file

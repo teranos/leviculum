@@ -668,7 +668,8 @@ pub struct RadioConfigWire {
     /// When true, the T114 drops every outgoing LoRa packet at the driver
     /// level — the radio stays listening but never transmits. Used by the
     /// integration-test runner to neutralize T114s the scenario does not
-    /// bind; see Bug #2 diagnosis (2026-04-13).
+    /// bind, so they cannot pollute the benchmark channel with their own
+    /// Reticulum announces.
     pub radio_silent: bool,
 }
 

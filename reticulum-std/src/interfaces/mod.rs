@@ -34,9 +34,9 @@ use self::airtime::AirtimeCredit;
 /// that `last_update_ms` values stored by the credit bucket
 /// (via try_send_prioritized) and `now_ms` values read by the retry
 /// scheduler (via interface_next_slot_ms) are in the same frame.
-/// Bug #3 Phase 2a: a drift of even a few seconds flips
-/// `earliest_fit_time` into returning "ready now" when the bucket is
-/// actually in deficit, silently defeating retry deferral.
+/// A drift of even a few seconds flips `earliest_fit_time` into
+/// returning "ready now" when the bucket is actually in deficit,
+/// silently defeating retry deferral.
 ///
 /// `init_clock_anchor` must be called from the driver with the
 /// Transport SystemClock's start instant BEFORE any `now_ms()` call.
@@ -224,8 +224,7 @@ impl reticulum_core::traits::Interface for InterfaceHandle {
     ) -> Result<(), InterfaceError> {
         // First: airtime-credit check for constrained interfaces. LoRa-Serial
         // populates `credit`; TCP/UDP/Local leave it `None` and skip the
-        // charge entirely. See `airtime.rs` for the bucket semantics; see
-        // Bug #3 Phase 2a in CLAUDE.md for the backpressure architecture.
+        // charge entirely. See `airtime.rs` for the bucket semantics.
         if let Some(credit) = &self.credit {
             let mut c = credit.lock().expect("airtime credit mutex poisoned");
             if c.try_charge(data.len() as u32, now_ms()).is_err() {

@@ -124,8 +124,7 @@ pub(crate) fn spawn_serial_interface(config: SerialInterfaceConfig) -> Interface
 /// This is test infrastructure — normal usage never calls this.
 ///
 /// On ACK, if `credit` is Some, atomically update its radio params so
-/// subsequent `try_charge` calls price airtime under the new profile
-/// (Bug #3 Phase 2a — reconfig hook).
+/// subsequent `try_charge` calls price airtime under the new profile.
 async fn send_radio_config(
     port: &mut tokio_serial::SerialStream,
     config: &SerialRadioConfig,
@@ -189,7 +188,7 @@ async fn send_radio_config(
                                 tracing::info!("Serial {}: radio config ACK received", name);
                                 // Update the host-side airtime bucket to price
                                 // subsequent charges under the newly-applied
-                                // radio profile. See Bug #3 Phase 2a (B5).
+                                // radio profile.
                                 if let Some(credit) = credit {
                                     credit
                                         .lock()

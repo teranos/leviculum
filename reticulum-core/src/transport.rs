@@ -524,8 +524,7 @@ pub enum TransportError {
     /// Target interface is pacing — retry no earlier than `ready_at_ms`.
     /// Mirrors `ChannelError::PacingDelay` / `SendError::PacingDelay` so
     /// async callers (see `driver/stream.rs:127`) can `sleep_until` to
-    /// the exact ready time instead of polling. The legacy `Busy`
-    /// variant was removed in Bug #3 Phase 2a (F4).
+    /// the exact ready time instead of polling.
     PacingDelay { ready_at_ms: u64 },
     /// Packet parsing error
     PacketError(PacketError),
@@ -632,8 +631,7 @@ pub struct Transport<C: Clock, S: Storage> {
     /// after each `dispatch_output` tick. Driver computes this via
     /// `Interface::next_slot_ms(MTU, now)` on each handle and mirrors the
     /// answer here so Transport can consult it without holding interface
-    /// trait objects (Bug #3 Phase 2a architecture; Transport stays
-    /// sans-I/O).
+    /// trait objects (Transport stays sans-I/O).
     interface_next_slot_ms: BTreeMap<usize, u64>,
 
     /// Per-interface worst-case airtime in milliseconds for a single
@@ -1136,7 +1134,7 @@ impl<C: Clock, S: Storage> Transport<C, S> {
         let is_local_link_relay =
             is_from_local_client && self.storage.has_link_entry(&packet.destination_hash);
         // Local-client link requests skip hash dedup to allow link request
-        // retries (E34). When lncp retries a link request, the daemon
+        // retries. When lncp retries a link request, the daemon
         // receives the same bytes again. Without this exemption, the daemon
         // would reject the retry as a duplicate (hash cached from first attempt).
         // This is safe: link requests from local clients are forwarded to the
@@ -1276,11 +1274,10 @@ impl<C: Clock, S: Storage> Transport<C, S> {
             (path.interface_index, path.needs_relay(), path.next_hop)
         };
 
-        // Bug #3 Phase 2a (C4): consult the next-slot backchannel instead
-        // of the binary `is_interface_congested` flag. If the interface is
-        // not yet ready for an MTU-sized packet, return PacingDelay with
-        // the exact ready-at timestamp so stream.rs:127 can sleep_until
-        // rather than the old 50ms-polling fallback.
+        // Consult the next-slot backchannel: if the interface is not yet
+        // ready for an MTU-sized packet, return PacingDelay with the exact
+        // ready-at timestamp so stream.rs can sleep_until rather than
+        // polling.
         let now_ms = self.clock.now_ms();
         let next_slot = self.next_slot_ms_for_interface(interface_index, now_ms);
         if next_slot > now_ms {
@@ -2960,7 +2957,7 @@ impl<C: Clock, S: Storage> Transport<C, S> {
     ///
     /// When `receiving_iface` is `Some(idx)` and equals `target_iface`, the
     /// packet is silently dropped instead of being transmitted. This prevents
-    /// two distinct problems on shared broadcast media like LoRa (E39):
+    /// two distinct problems on shared broadcast media like LoRa:
     ///
     /// 1. **RF collision** (primary): On a half-duplex LoRa channel with 3+
     ///    transport-enabled nodes, a bystander (C) that relays A's link request
@@ -3006,7 +3003,7 @@ impl<C: Clock, S: Storage> Transport<C, S> {
             return Ok(());
         }
 
-        // Suppress same-interface relay on shared media (E39).
+        // Suppress same-interface relay on shared media.
         if receiving_iface == Some(target_iface) {
             tracing::trace!(
                 "Suppressed same-interface relay on {}",
@@ -3926,9 +3923,9 @@ impl<C: Clock, S: Storage> Transport<C, S> {
         // Collect entries that need action
         let mut to_remove = Vec::new();
         let mut to_rebroadcast = Vec::new();
-        // Bug #3 Phase 2a (D1): retransmit_at deferrals when the target
-        // interface's next_slot_ms is in the future. Applied via
-        // set_announce after the read loop, without incrementing retries.
+        // retransmit_at deferrals when the target interface's
+        // next_slot_ms is in the future. Applied via set_announce after
+        // the read loop, without incrementing retries.
         let mut to_defer: Vec<([u8; TRUNCATED_HASHBYTES], u64)> = Vec::new();
 
         // Iterate the interface_next_slot_ms keys for broadcast deferral.
@@ -8371,7 +8368,7 @@ mod tests {
             );
         }
 
-        // ─── Bug #12: Path-table data forwarding header promotion ────────
+        // ─── Path-table data forwarding header promotion ────────────────
 
         #[test]
         fn test_path_table_forward_header2_replaces_transport_id() {
@@ -10404,7 +10401,7 @@ mod tests {
             assert_eq!(transport.hops_to(&dest_hash), Some(2));
         }
 
-        // ─── Bug #14: HEADER_2 filtering for non-own transport_id ────────
+        // ─── HEADER_2 filtering for non-own transport_id ────────────────
 
         #[test]
         fn test_header2_non_own_transport_id_dropped() {
@@ -10603,7 +10600,7 @@ mod tests {
             );
         }
 
-        // ─── Bug #15: PLAIN/GROUP hop restriction ─────────────────────────
+        // ─── PLAIN/GROUP hop restriction ────────────────────────────────
 
         #[test]
         fn test_plain_packet_with_hops_above_1_dropped() {
@@ -10882,7 +10879,7 @@ mod tests {
             );
         }
 
-        // ─── Bug #9/#10: Deferred hash caching for link-table & LRPROOF ──
+        // ─── Deferred hash caching for link-table & LRPROOF ─────────────
 
         #[test]
         fn test_link_table_data_deferred_hash_allows_retry() {
@@ -15428,7 +15425,7 @@ mod tests {
             );
 
             // Mark the interface as unavailable until a future wall-clock ms
-            // via the next-slot backchannel (Bug #3 Phase 2a).
+            // via the next-slot backchannel.
             let now_ms = transport.clock().now_ms();
             let future_slot = now_ms + 5_000;
             transport.set_interface_next_slot_ms(iface_idx, future_slot);
@@ -15443,10 +15440,10 @@ mod tests {
             );
         }
 
-        /// Bug #3 Phase 2a (D1): an announce whose retransmit_at has
-        /// fired is deferred (retransmit_at bumped, retries unchanged,
-        /// no Broadcast Action pushed) when its target interface's
-        /// next_slot_ms is in the future.
+        /// An announce whose retransmit_at has fired is deferred
+        /// (retransmit_at bumped, retries unchanged, no Broadcast Action
+        /// pushed) when its target interface's next_slot_ms is in the
+        /// future.
         #[test]
         fn retry_scheduler_defers_targeted_announce_when_iface_not_ready() {
             use crate::storage_types::AnnounceEntry;
@@ -15972,9 +15969,9 @@ mod tests {
         }
     }
 
-    /// Bug #3 Phase 2a (C1): PacingDelay Display includes the ready-at
-    /// timestamp. The exact wording is less important than (a) presence
-    /// of the variant, (b) the timestamp being visible for log grepping.
+    /// PacingDelay Display includes the ready-at timestamp. The exact
+    /// wording is less important than (a) presence of the variant,
+    /// (b) the timestamp being visible for log grepping.
     #[test]
     fn pacing_delay_display_includes_ready_at_ms() {
         use alloc::format;
@@ -15986,9 +15983,8 @@ mod tests {
         );
     }
 
-    /// Bug #3 Phase 2a (C2): setter + getter round-trip for the
-    /// interface_next_slot_ms backchannel. Driver pushes, Transport
-    /// reads.
+    /// Setter + getter round-trip for the interface_next_slot_ms
+    /// backchannel. Driver pushes, Transport reads.
     #[test]
     fn interface_next_slot_ms_round_trip() {
         use crate::test_utils::test_transport;

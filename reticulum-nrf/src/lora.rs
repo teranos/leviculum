@@ -414,7 +414,7 @@ pub async fn lora_task(mut radio: Radio, mut config: RadioConfig) {
         // Pick up a new packet to send if no TX is in flight. When
         // `radio_silent` is set, drop everything the stack hands us instead
         // of starting a TX — the radio stays listening but never transmits.
-        // See Bug #2: unused test T114s must not pollute the LoRa channel
+        // Used to keep unused test T114s from polluting the LoRa channel
         // with their own Reticulum announces.
         if pending_tx.is_none() {
             if let Ok(data) = outgoing_rx.try_receive() {

@@ -1122,9 +1122,8 @@ impl<R: CryptoRngCore, C: Clock, S: Storage> NodeCore<R, C, S> {
 
     /// Record the wall-clock ms at which the given interface will next
     /// accept an MTU-sized packet. Called by the driver after every
-    /// dispatch tick (Bug #3 Phase 2a). See
-    /// `Transport::set_interface_next_slot_ms` for the MTU-cache
-    /// trade-off rationale.
+    /// dispatch tick. See `Transport::set_interface_next_slot_ms` for
+    /// the MTU-cache trade-off rationale.
     pub fn set_interface_next_slot_ms(&mut self, iface_idx: usize, slot_ms: u64) {
         self.transport
             .set_interface_next_slot_ms(iface_idx, slot_ms);
@@ -2272,7 +2271,7 @@ mod tests {
         // Path should exist before timeout
         assert!(node.has_path(&dest_hash));
 
-        // Exhaust all link request retries (E34). Each timeout triggers a
+        // Exhaust all link request retries. Each timeout triggers a
         // retry with fresh keys; the final timeout emits LinkClosed.
         let mut final_output = node.handle_timeout(); // no-op, not timed out yet
         for _attempt in 0..=(LINK_REQUEST_MAX_RETRIES as usize) {
@@ -2319,7 +2318,7 @@ mod tests {
 
         let (mut node, dest_hash, _link_id) = setup_pending_link(true);
 
-        // Exhaust all retries (E34)
+        // Exhaust all retries
         for _attempt in 0..=(LINK_REQUEST_MAX_RETRIES as usize) {
             let now = node.transport().clock().now_ms();
             node.transport()
@@ -2931,7 +2930,7 @@ mod tests {
         use crate::constants::{LINK_PENDING_TIMEOUT_MS, LINK_REQUEST_MAX_RETRIES};
 
         // Case 1: Handshake timeout produces LinkClosed with Timeout reason
-        // Exhaust all retries first (E34)
+        // Exhaust all retries first
         let (mut node, _dest_hash, _link_id) = setup_pending_link(false);
         let mut output = node.handle_timeout();
         for _attempt in 0..=(LINK_REQUEST_MAX_RETRIES as usize) {
@@ -2998,7 +2997,7 @@ mod tests {
 
         assert!(node.has_path(&dest_hash));
 
-        // Exhaust all retries (E34)
+        // Exhaust all retries
         let mut output = node.handle_timeout();
         for _attempt in 0..=(LINK_REQUEST_MAX_RETRIES as usize) {
             let now = node.transport().clock().now_ms();
@@ -3076,7 +3075,7 @@ mod tests {
         let (_, _, _) = node.connect(hash1, &signing1);
         let (_, _, _) = node.connect(hash2, &signing2);
 
-        // Exhaust all retries for both links (E34)
+        // Exhaust all retries for both links
         let mut output = node.handle_timeout();
         for _attempt in 0..=(crate::constants::LINK_REQUEST_MAX_RETRIES as usize) {
             let now = node.transport().clock().now_ms();
@@ -5826,7 +5825,7 @@ mod tests {
         let mut pair = establish_nodecore_link_pair();
 
         // The link was established via InterfaceId(0) — push a future
-        // slot via the next-slot backchannel (Bug #3 Phase 2a (C5)).
+        // slot via the next-slot backchannel.
         let now_ms = pair.initiator.transport().clock().now_ms();
         let future_slot = now_ms + 5_000;
         pair.initiator.set_interface_next_slot_ms(0, future_slot);

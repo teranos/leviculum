@@ -1114,7 +1114,7 @@ fn resolve_and_probe_rnodes(scenario: &mut TestScenario) -> Result<(), RunnerErr
     // backs off from. Pushing the test channel's radio config with
     // csma_enabled=true tunes the idle T114 to the same frequency (so its
     // CAD actually sees the benchmark traffic) and makes it a polite
-    // neighbour. See Bug #2 diagnosis (2026-04-13 T22-31-48 capture).
+    // neighbour.
     if let Some(ref radio) = scenario.radio {
         for lnode in discovered.lnodes.iter().skip(lnode_idx) {
             silence_unused_lnode(&lnode.data_port, &lnode.usb_serial, radio);
@@ -1126,7 +1126,8 @@ fn resolve_and_probe_rnodes(scenario: &mut TestScenario) -> Result<(), RunnerErr
 
 /// Send a radio-config frame with `csma_enabled=true` to a T114 that the
 /// current scenario does not bind. Best-effort: failures warn and continue —
-/// a silent failure here only reintroduces the Bug #2 symptom.
+/// a silent failure here only reintroduces the CSMA-busy backoff on the
+/// sender.
 fn silence_unused_lnode(port_path: &str, usb_serial: &str, radio: &crate::topology::RadioConfig) {
     use reticulum_core::framing::hdlc::{frame, DeframeResult, Deframer};
     use reticulum_core::rnode::{build_radio_config_frame, RadioConfigWire, RADIO_CONFIG_ACK};
@@ -1141,10 +1142,9 @@ fn silence_unused_lnode(port_path: &str, usb_serial: &str, radio: &crate::topolo
         preamble_len: 24,
         csma_enabled: true,
         // Drop every outgoing LoRa frame at the driver level. CSMA alone
-        // still allows the idle T114 to announce between probe bursts — see
-        // Bug #2 diag Run 2 (2026-04-13 T23-14-02) alternating-timeout
-        // pattern even with csma=on. radio_silent makes the idle T114 a
-        // listen-only neighbour.
+        // still allows the idle T114 to announce between probe bursts,
+        // producing an alternating-timeout pattern even with csma=on.
+        // radio_silent makes the idle T114 a listen-only neighbour.
         radio_silent: true,
     };
     let payload = build_radio_config_frame(&wire);

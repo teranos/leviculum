@@ -300,7 +300,7 @@ async fn test_announce_rebroadcast_hop_count_accuracy() {
     // Wait for full propagation (up to 4 relays)
     let propagation_timeout = Duration::from_secs(35);
 
-    // Wait for the furthest daemon (D0) to have the path
+    // Wait for the furthest daemon to have the path
     let d0_has_path =
         wait_for_path_on_daemon(topology.entry_daemon(), &dest_hash, propagation_timeout).await;
 

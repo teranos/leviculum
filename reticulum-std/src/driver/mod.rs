@@ -1285,15 +1285,15 @@ async fn run_event_loop(
     let mut next_poll = tokio::time::Instant::now();
     let mut next_flush = tokio::time::Instant::now() + Duration::from_secs(FLUSH_INTERVAL_SECS);
     let mut retry_queues: BTreeMap<usize, VecDeque<Vec<u8>>> = BTreeMap::new();
-    // Bug #3 Phase 2a (E1): track which per-interface queues have
-    // already emitted the depth-≥-8 warning so we don't spam once the
-    // queue is deep. Cleared when the queue drops back below 8.
+    // Track which per-interface queues have already emitted the
+    // depth-≥-8 warning so we don't spam once the queue is deep.
+    // Cleared when the queue drops back below 8.
     let mut retry_queue_warned: std::collections::BTreeSet<usize> =
         std::collections::BTreeSet::new();
-    // Bug #3 Phase 2a (E2): monotonic high-watermark of each
-    // retry_queue's depth since process start. Logged at info! when
-    // it increases so hardware benchmarks can read it out of the
-    // capture without extra instrumentation.
+    // Monotonic high-watermark of each retry_queue's depth since
+    // process start. Logged at info! when it increases so hardware
+    // benchmarks can read it out of the capture without extra
+    // instrumentation.
     let mut retry_queue_max_depth: BTreeMap<usize, usize> = BTreeMap::new();
 
     // Clone IFAC configs from core so dispatch_output can apply IFAC outside the lock.
@@ -1305,12 +1305,11 @@ async fn run_event_loop(
     };
 
     loop {
-        // Bug #3 Phase 2a (E3): event-driven retry-queue drain. Any
-        // non-empty queue whose front packet is currently ineligible
-        // for a slot contributes a wake deadline; the earliest of
-        // those becomes the tokio::time::sleep_until arm below. When
-        // all queues are empty or the head is already ready, no sleep
-        // arm is activated.
+        // Event-driven retry-queue drain. Any non-empty queue whose
+        // front packet is currently ineligible for a slot contributes a
+        // wake deadline; the earliest of those becomes the
+        // tokio::time::sleep_until arm below. When all queues are empty
+        // or the head is already ready, no sleep arm is activated.
         let retry_wake_instant: Option<tokio::time::Instant> = {
             let now_ms = inner.lock().unwrap().now_ms();
             compute_retry_wake_deadline_ms(&retry_queues, &registry, now_ms)
@@ -1319,11 +1318,11 @@ async fn run_event_loop(
         };
 
         tokio::select! {
-            // Bug #3 Phase 2a (E3): fires exactly when the earliest
-            // retry-queue head becomes eligible. The arm only exists
-            // when retry_wake_instant is Some; otherwise the select
-            // skips it. Inside, we call drain + push_interface_state to
-            // get the packets out and refresh Transport's caches.
+            // Fires exactly when the earliest retry-queue head becomes
+            // eligible. The arm only exists when retry_wake_instant is
+            // Some; otherwise the select skips it. Inside, we call
+            // drain + push_interface_state to get the packets out and
+            // refresh Transport's caches.
             _ = async {
                 match retry_wake_instant {
                     Some(t) => tokio::time::sleep_until(t).await,
@@ -1589,9 +1588,9 @@ fn dispatch_output(
     // interface_next_slot_ms backchannel instead.)
     retry_queues.retain(|_, queue| !queue.is_empty());
 
-    // Bug #3 Phase 2a (E1): clear the per-queue warned flag when the
-    // queue drops back below 8 so a future re-crossing re-emits the
-    // warning. Also drop entries for queues that no longer exist.
+    // Clear the per-queue warned flag when the queue drops back
+    // below 8 so a future re-crossing re-emits the warning. Also
+    // drop entries for queues that no longer exist.
     retry_queue_warned.retain(|idx| retry_queues.get(idx).map(|q| q.len() >= 8).unwrap_or(false));
 
     // 5a. Push per-interface next_slot_ms + max_airtime_ms into the
@@ -1628,9 +1627,9 @@ fn dispatch_output(
 }
 
 /// Append `data` to the per-interface retry queue. Emit a single
-/// tracing::warn when the queue depth crosses from < 8 to == 8
-/// (E1); update the monotonic max-depth high-watermark and log at
-/// info! whenever it increases (E2). Bug #3 Phase 2a.
+/// tracing::warn when the queue depth crosses from < 8 to == 8;
+/// update the monotonic max-depth high-watermark and log at info!
+/// whenever it increases.
 fn push_retry_with_warn(
     queue: &mut VecDeque<Vec<u8>>,
     iface_idx: usize,
@@ -1668,7 +1667,7 @@ fn push_retry_with_warn(
 ///
 /// Used by run_event_loop to schedule a sleep_until arm so idle nodes
 /// with retry-queued packets still drain at the right moment — no
-/// polling, no fixed 500 ms fallback. Bug #3 Phase 2a (E3).
+/// polling, no fixed 500 ms fallback.
 fn compute_retry_wake_deadline_ms(
     retry_queues: &BTreeMap<usize, VecDeque<Vec<u8>>>,
     registry: &InterfaceRegistry,
@@ -1699,11 +1698,11 @@ fn compute_retry_wake_deadline_ms(
 }
 
 /// Drain per-interface retry queues in-place, honouring per-packet
-/// airtime gating. Bug #3 Phase 2a (D2): before calling try_send, ask
-/// the handle's next_slot_ms for the actual packet size — Transport's
-/// MTU-sized backchannel cache is conservative for smaller packets,
-/// and the drain's finer granularity recovers that headroom. Extracted
-/// so it is unit-testable without spinning up the full driver.
+/// airtime gating. Before calling try_send, ask the handle's
+/// `next_slot_ms` for the actual packet size — Transport's MTU-sized
+/// backchannel cache is conservative for smaller packets, and the
+/// drain's finer granularity recovers that headroom. Extracted so it
+/// is unit-testable without spinning up the full driver.
 fn drain_retry_queues(
     retry_queues: &mut BTreeMap<usize, VecDeque<Vec<u8>>>,
     registry: &mut InterfaceRegistry,
@@ -1795,9 +1794,9 @@ mod tests {
         assert!(node.hops_to(&fake_hash).is_none());
     }
 
-    /// Bug #3 Phase 2a (E1): push_retry_with_warn inserts an entry
-    /// into the `warned` set the first time queue depth crosses from
-    /// < 8 to == 8. Subsequent pushes beyond 8 do NOT re-insert.
+    /// push_retry_with_warn inserts an entry into the `warned` set
+    /// the first time queue depth crosses from < 8 to == 8.
+    /// Subsequent pushes beyond 8 do NOT re-insert.
     #[test]
     fn push_retry_warns_once_when_crossing_depth_8() {
         let mut q: VecDeque<Vec<u8>> = VecDeque::new();
@@ -1844,8 +1843,8 @@ mod tests {
         assert!(warned.contains(&2));
     }
 
-    /// Bug #3 Phase 2a (E2): max_depth is monotonic and tracks the
-    /// high-watermark per interface index.
+    /// max_depth is monotonic and tracks the high-watermark per
+    /// interface index.
     #[test]
     fn push_retry_tracks_monotonic_max_depth() {
         let mut q: VecDeque<Vec<u8>> = VecDeque::new();
@@ -1867,8 +1866,8 @@ mod tests {
         assert_eq!(max_depth.get(&3), Some(&11));
     }
 
-    /// Bug #3 Phase 2a (E3): compute_retry_wake_deadline_ms returns
-    /// `None` when every retry queue is empty — no wake needed.
+    /// compute_retry_wake_deadline_ms returns `None` when every retry
+    /// queue is empty — no wake needed.
     #[tokio::test(flavor = "current_thread")]
     async fn compute_retry_wake_none_when_queues_empty() {
         let registry = InterfaceRegistry::new();
@@ -1983,9 +1982,9 @@ mod tests {
         );
     }
 
-    /// Bug #3 Phase 2a (D2): drain_retry_queues honors next_slot_ms.
-    /// A ready interface drains its packet; a saturated interface
-    /// leaves the packet at the queue front.
+    /// drain_retry_queues honors next_slot_ms. A ready interface
+    /// drains its packet; a saturated interface leaves the packet at
+    /// the queue front.
     #[tokio::test(flavor = "current_thread")]
     async fn drain_retry_queues_skips_saturated_and_drains_ready() {
         use crate::interfaces::airtime::AirtimeCredit;

@@ -22,7 +22,7 @@ use super::event::NodeEvent;
 use super::send;
 use super::{LinkStats, NodeCore};
 
-/// State for link establishment retry (E34).
+/// State for link establishment retry.
 ///
 /// Stored per link_id in `NodeCore::link_retry_state`. When a link request
 /// times out, the retry state determines whether to re-attempt (with fresh
@@ -238,7 +238,7 @@ impl<R: CryptoRngCore, C: Clock, S: Storage> NodeCore<R, C, S> {
         });
         self.links.insert(link_id, link);
 
-        // Register retry state so check_timeouts() can re-attempt on failure (E34).
+        // Register retry state so check_timeouts() can re-attempt on failure.
         // Retry count is hop-aware: multi-hop paths need more attempts because
         // each hop is an independent loss opportunity. A 3-hop path has 3×
         // the chance of losing the request or proof compared to 1-hop.
@@ -413,10 +413,9 @@ impl<R: CryptoRngCore, C: Clock, S: Storage> NodeCore<R, C, S> {
         // (retransmits, proofs, keepalives) go through route_link_packet()
         // and use the driver retry queue instead.
         //
-        // Bug #3 Phase 2a (C5): use the next-slot backchannel instead of
-        // the binary is_interface_congested flag. A future slot becomes
+        // Use the next-slot backchannel: a future slot becomes
         // SendError::PacingDelay { ready_at_ms } so stream.rs can
-        // sleep_until rather than the old 50ms-polling Busy fallback.
+        // sleep_until rather than polling.
         let now_ms = self.transport.clock().now_ms();
         if let Some(iface_idx) = attached_iface {
             let next_slot = self.transport.next_slot_ms_for_interface(iface_idx, now_ms);
@@ -2156,7 +2155,7 @@ impl<R: CryptoRngCore, C: Clock, S: Storage> NodeCore<R, C, S> {
                 .map(|l| (l.is_initiator(), *l.destination_hash()))
                 .unwrap_or((false, DestinationHash::new([0; 16])));
 
-            // Link request retry (E34): if this is an initiator link and
+            // Link request retry: if this is an initiator link and
             // retries remain, resend the link request and reset the timeout.
             // The same link_id is reused so the caller's watch is unaffected.
             if is_initiator {

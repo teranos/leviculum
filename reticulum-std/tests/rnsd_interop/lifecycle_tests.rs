@@ -2,9 +2,9 @@
 //!
 //! Exercises three fixes from v0.5.5 end-to-end:
 //!
-//! - **Fix 1** (C8): Link-addressed Data packet delivery on non-transport nodes
-//! - **Fix 2** (C9): Channel ACK wiring (proof → receipt → mark_delivered)
-//! - **Fix 3** (D12): Graceful close exposed through LinkHandle
+//! - **Fix 1**: Link-addressed Data packet delivery on non-transport nodes
+//! - **Fix 2**: Channel ACK wiring (proof → receipt → mark_delivered)
+//! - **Fix 3**: Graceful close exposed through LinkHandle
 //!
 //! ## Topology
 //!

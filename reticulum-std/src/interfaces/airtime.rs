@@ -7,9 +7,9 @@
 //! flooding the host-side serial queue (which on SF10 would absorb
 //! ~14 minutes of backlog before the mpsc itself fills).
 //!
-//! See `~/.claude/instructions.md` (Bug #3 Phase 2a) + the earlier
-//! architecture dialogue in `~/.claude/report.md` for why this lives
-//! host-side (`reticulum-std`) and never leaks into `reticulum-core`.
+//! Lives host-side in `reticulum-std` and never leaks into
+//! `reticulum-core`, so the `no_std` core stays free of host-side
+//! backpressure concerns.
 
 use reticulum_core::rnode::airtime_ms;
 

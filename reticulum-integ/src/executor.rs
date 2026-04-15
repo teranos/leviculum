@@ -1679,7 +1679,7 @@ fn execute_transfer_direction(
 
             // 5b. Transfer file
             // LoRa tests need a longer sender timeout to accommodate link
-            // request retries (E34): establishment_timeout × (1 + max_retries).
+            // request retries: establishment_timeout × (1 + max_retries).
             let sender_wait = if has_rnode { "120" } else { "60" };
             let start = Instant::now();
             let send_output = if is_fetch {

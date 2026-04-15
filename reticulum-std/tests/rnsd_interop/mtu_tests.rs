@@ -19,8 +19,8 @@
 //!
 //! For UDP, Python's UDPInterface has `AUTOCONFIGURE_MTU=False` and `FIXED_MTU=False`,
 //! so `Transport.next_hop_interface_hw_mtu()` returns None and the Transport layer
-//! clamps link MTU to the base protocol MTU (500). Rust-to-Rust UDP links (B1)
-//! negotiate the full UDP HW_MTU (1064), but Python interop tests (B2, B3) negotiate 500.
+//! clamps link MTU to the base protocol MTU (500). Rust-to-Rust UDP links
+//! negotiate the full UDP HW_MTU (1064), but Python interop tests negotiate 500.
 //!
 //! ## Running These Tests
 //!
