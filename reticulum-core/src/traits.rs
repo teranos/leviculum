@@ -135,6 +135,21 @@ pub trait Interface {
         let _ = high_priority;
         self.try_send(data)
     }
+
+    /// Wall-clock time (ms) at which this interface will next accept a
+    /// packet of the given size.
+    ///
+    /// The default implementation returns `now_ms` — the interface is
+    /// always ready. LoRa/constrained interfaces override to return the
+    /// earliest-fit time computed from their airtime budget.
+    ///
+    /// Transport uses this answer to schedule retries against interface
+    /// capacity without itself knowing any radio physics (SF, BW, CR,
+    /// CSMA backoff stay entirely below this boundary). For a Gigabit LAN
+    /// interface the default is correct and zero-cost.
+    fn next_slot_ms(&self, _size: usize, now_ms: u64) -> u64 {
+        now_ms
+    }
 }
 
 /// Clock for timestamps and timeouts
@@ -810,5 +825,62 @@ mod tests {
         assert!(!clock.has_elapsed(1500));
         assert!(clock.has_elapsed(1000));
         assert!(clock.has_elapsed(500));
+    }
+
+    /// Interface trait default `next_slot_ms` returns `now_ms` verbatim,
+    /// modelling "always ready" semantics for TCP/UDP/Local.
+    #[test]
+    fn next_slot_ms_default_is_now() {
+        struct AlwaysReady;
+        impl Interface for AlwaysReady {
+            fn id(&self) -> InterfaceId {
+                InterfaceId(0)
+            }
+            fn name(&self) -> &str {
+                "always-ready"
+            }
+            fn mtu(&self) -> usize {
+                500
+            }
+            fn is_online(&self) -> bool {
+                true
+            }
+            fn try_send(&mut self, _data: &[u8]) -> Result<(), InterfaceError> {
+                Ok(())
+            }
+        }
+
+        let iface = AlwaysReady;
+        assert_eq!(iface.next_slot_ms(100, 12_345), 12_345);
+        assert_eq!(iface.next_slot_ms(0, 0), 0);
+    }
+
+    /// An override is honoured — the default is overridable per impl.
+    #[test]
+    fn next_slot_ms_override_returns_custom_value() {
+        struct DelayedByHundred;
+        impl Interface for DelayedByHundred {
+            fn id(&self) -> InterfaceId {
+                InterfaceId(1)
+            }
+            fn name(&self) -> &str {
+                "delayed"
+            }
+            fn mtu(&self) -> usize {
+                500
+            }
+            fn is_online(&self) -> bool {
+                true
+            }
+            fn try_send(&mut self, _data: &[u8]) -> Result<(), InterfaceError> {
+                Ok(())
+            }
+            fn next_slot_ms(&self, _size: usize, now_ms: u64) -> u64 {
+                now_ms + 100
+            }
+        }
+
+        let iface = DelayedByHundred;
+        assert_eq!(iface.next_slot_ms(100, 1_000), 1_100);
     }
 }
