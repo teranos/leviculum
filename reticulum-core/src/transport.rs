@@ -520,13 +520,11 @@ pub enum TransportEvent {
 pub enum TransportError {
     /// No path to destination
     NoPath,
-    /// Target interface is congested — try later
-    Busy,
     /// Target interface is pacing — retry no earlier than `ready_at_ms`.
     /// Mirrors `ChannelError::PacingDelay` / `SendError::PacingDelay` so
     /// async callers (see `driver/stream.rs:127`) can `sleep_until` to
-    /// the exact ready time instead of polling. Introduced by Bug #3
-    /// Phase 2a; the `Busy` variant is removed in Phase F.
+    /// the exact ready time instead of polling. The legacy `Busy`
+    /// variant was removed in Bug #3 Phase 2a (F4).
     PacingDelay { ready_at_ms: u64 },
     /// Packet parsing error
     PacketError(PacketError),
@@ -538,7 +536,6 @@ impl core::fmt::Display for TransportError {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         match self {
             TransportError::NoPath => write!(f, "no path to destination"),
-            TransportError::Busy => write!(f, "busy"),
             TransportError::PacingDelay { ready_at_ms } => {
                 write!(f, "pacing delay, ready at {} ms", ready_at_ms)
             }
@@ -630,12 +627,6 @@ pub struct Transport<C: Clock, S: Storage> {
     /// Removal path: removed in handle_interface_down via remove_announce_freq_tracking().
     interface_outgoing_announce_times: BTreeMap<usize, VecDeque<u64>>,
 
-    /// Set of interface indices currently congested (driver retry queue non-empty).
-    /// Written by the driver via set_interface_congested(), read by send paths
-    /// to return Err(Busy) before building packets for a full interface.
-    /// Removal path: cleared by the driver when retry queue drains or interface disconnects.
-    interface_congested: BTreeSet<usize>,
-
     /// Per-interface "earliest ready" wall-clock ms pushed by the driver
     /// after each `dispatch_output` tick. Driver computes this via
     /// `Interface::next_slot_ms(MTU, now)` on each handle and mirrors the
@@ -692,7 +683,6 @@ impl<C: Clock, S: Storage> Transport<C, S> {
             local_client_interfaces: BTreeSet::new(),
             interface_incoming_announce_times: BTreeMap::new(),
             interface_outgoing_announce_times: BTreeMap::new(),
-            interface_congested: BTreeSet::new(),
             interface_next_slot_ms: BTreeMap::new(),
             ifac_configs: BTreeMap::new(),
             pending_actions: Vec::new(),
@@ -3362,23 +3352,6 @@ impl<C: Clock, S: Storage> Transport<C, S> {
     /// Check if any local IPC clients are connected.
     fn has_local_clients(&self) -> bool {
         !self.local_client_interfaces.is_empty()
-    }
-
-    /// Mark an interface as congested or clear congestion.
-    ///
-    /// Called by the driver when a per-interface retry queue becomes non-empty
-    /// (congested=true) or is fully drained (congested=false).
-    pub fn set_interface_congested(&mut self, iface_idx: usize, congested: bool) {
-        if congested {
-            self.interface_congested.insert(iface_idx);
-        } else {
-            self.interface_congested.remove(&iface_idx);
-        }
-    }
-
-    /// Check if an interface is congested (driver retry queue non-empty).
-    pub fn is_interface_congested(&self, iface_idx: usize) -> bool {
-        self.interface_congested.contains(&iface_idx)
     }
 
     /// Test-only: flip `config.enable_transport` on a constructed
@@ -15146,33 +15119,6 @@ mod tests {
         use crate::test_utils::{test_transport, MockInterface};
         extern crate alloc;
         use alloc::vec;
-
-        #[test]
-        fn test_interface_congested_flag() {
-            let mut transport = test_transport();
-
-            // Initially not congested
-            assert!(!transport.is_interface_congested(0));
-            assert!(!transport.is_interface_congested(1));
-
-            // Set congested
-            transport.set_interface_congested(0, true);
-            assert!(transport.is_interface_congested(0));
-            assert!(!transport.is_interface_congested(1));
-
-            // Clear congested
-            transport.set_interface_congested(0, false);
-            assert!(!transport.is_interface_congested(0));
-
-            // Set and clear multiple
-            transport.set_interface_congested(0, true);
-            transport.set_interface_congested(1, true);
-            assert!(transport.is_interface_congested(0));
-            assert!(transport.is_interface_congested(1));
-            transport.set_interface_congested(0, false);
-            assert!(!transport.is_interface_congested(0));
-            assert!(transport.is_interface_congested(1));
-        }
 
         #[test]
         fn test_send_to_destination_pacing_delay_when_interface_not_ready() {

@@ -1387,12 +1387,12 @@ async fn run_event_loop(
                             &inner,
                             &mut retry_queues, &mut retry_queue_warned, &mut retry_queue_max_depth, &ifac_configs,
                         );
-                        // Clear retry queue and congested flag for disconnected interface
+                        // Clear retry queue for disconnected interface. The legacy
+                        // is_interface_congested flag was removed in Phase F;
+                        // Transport's interface_next_slot_ms falls back to
+                        // now_ms once the interface is removed from the
+                        // backchannel, which happens naturally.
                         retry_queues.remove(&iface_id.0);
-                        {
-                            let mut core = inner.lock().unwrap();
-                            core.set_interface_congested(iface_id.0, false);
-                        }
                         registry.remove(iface_id);
                         {
                             let mut stats = iface_stats_map.lock().unwrap();
@@ -1583,15 +1583,10 @@ fn dispatch_output(
         );
     }
 
-    // 5. Update congestion flags based on queue state
-    {
-        let mut core = inner.lock().unwrap();
-        // Set congested for all interfaces with non-empty queues
-        for (&iface_idx, queue) in retry_queues.iter() {
-            core.set_interface_congested(iface_idx, !queue.is_empty());
-        }
-    }
-    // Remove empty queues to avoid accumulating stale entries
+    // Remove empty queues to avoid accumulating stale entries.
+    // (The legacy set_interface_congested flag was removed in Phase F —
+    // Transport now reads per-interface readiness from the
+    // interface_next_slot_ms backchannel instead.)
     retry_queues.retain(|_, queue| !queue.is_empty());
 
     // Bug #3 Phase 2a (E1): clear the per-queue warned flag when the

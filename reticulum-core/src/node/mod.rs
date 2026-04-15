@@ -495,7 +495,6 @@ impl<R: CryptoRngCore, C: Clock, S: Storage> NodeCore<R, C, S> {
         self.transport
             .send_to_destination(dest_hash.as_bytes(), &buf[..len])
             .map_err(|e| match e {
-                crate::transport::TransportError::Busy => send::SendError::Busy,
                 crate::transport::TransportError::PacingDelay { ready_at_ms } => {
                     send::SendError::PacingDelay { ready_at_ms }
                 }
@@ -1119,14 +1118,6 @@ impl<R: CryptoRngCore, C: Clock, S: Storage> NodeCore<R, C, S> {
     /// routing from the daemon.
     pub fn set_interface_local_client(&mut self, id: usize, is_local: bool) {
         self.transport.set_local_client(id, is_local);
-    }
-
-    /// Mark an interface as congested or clear congestion.
-    ///
-    /// Called by the driver when a per-interface retry queue becomes non-empty
-    /// (congested=true) or is fully drained (congested=false).
-    pub fn set_interface_congested(&mut self, iface_idx: usize, congested: bool) {
-        self.transport.set_interface_congested(iface_idx, congested);
     }
 
     /// Record the wall-clock ms at which the given interface will next
