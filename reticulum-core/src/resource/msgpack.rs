@@ -645,15 +645,7 @@ mod tests {
 
     #[test]
     fn test_float64_roundtrip() {
-        let test_values: &[f64] = &[
-            0.0,
-            1.0,
-            -1.0,
-            3.14159,
-            1_700_000_000.123,
-            f64::MAX,
-            f64::MIN,
-        ];
+        let test_values: &[f64] = &[0.0, 1.0, -1.0, 2.5, 1_700_000_000.123, f64::MAX, f64::MIN];
         for &val in test_values {
             let mut buf = Vec::new();
             write_float64(&mut buf, val);
@@ -667,7 +659,7 @@ mod tests {
     #[test]
     fn test_float32_promotion() {
         // Manually encode a float32 value and verify read_float64 promotes it
-        let val: f32 = 3.14;
+        let val: f32 = 1.5;
         let mut buf = Vec::new();
         buf.push(0xca); // float32 tag
         buf.extend_from_slice(&val.to_be_bytes());
