@@ -12,6 +12,7 @@
 - [Overview](architecture.md)
 - [RNode Protocol](rnode-protocol.md)
 - [Storage Trait Analysis](storage-trait-analysis.md)
+- [Broadcast Python-RNS parity](architecture-broadcast-python-parity.md)
 
 # Man Pages
 
