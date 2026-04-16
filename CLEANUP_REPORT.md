@@ -287,3 +287,75 @@ In rough priority order:
    before cutting.
 5. **Doc-comment outdated audit (§7 Pass C).** Slow file-by-file walk,
    one or two modules per session.
+
+---
+
+## Round 2
+
+Closing summary for the work driven by `cleanup_instructions.md`. Two
+tasks completed inside hygiene scope; one (Task C) was implemented
+then rescoped out as not belonging to the cleanup track.
+
+### Headline metrics at round-2 HEAD
+
+| Metric | Round-1 final | Round-2 HEAD |
+|---|---|---|
+| `cargo test-core` | 1102 / 1102 green | 1102 / 1102 green |
+| `cargo test-interop` | 250 / 250 green | 250 / 250 green per single run; one pre-existing flake outside scope (see Task C) |
+| `cargo clippy --workspace --all-targets -- -D warnings` | clean | clean |
+| `cargo machete` | clean | clean |
+| `#[ignore]` policy violations | 0 | 0 |
+| `#[allow(dead_code)]` count (in-scope) | 29 (1 cfg-conditional) | 29 (1 cfg-conditional) |
+
+### Task A — Pass 3 round 2 (commit `3f81e72`)
+
+Finished stripping internal bug-tracker labels: `E34` × 8, `E39`,
+`E24`, `Phase B1`/`B4`, plus the `B0..B3 / C1..C3 / D1..D2`
+test-scenario prefixes in `mtu_tests.rs` and the `D1..D6`
+semantic-coverage prefixes in `memory_storage.rs`. Closing grep for
+`\b[EBCD]\d+\b` and `Phase 2[a-z]` returned zero internal-code-ref
+hits; remaining matches are legitimate (KISS bytes `C0`/`DB`,
+daemon-index shorthand `D0/D1/D2` mapping onto `topology.daemon(n)`).
+
+### Task B — Pass 4 round 2 (commit `ad38fe0`)
+
+85 files, +676 / −696 lines. Restored em-dashes in the ``` ```text ``` ```
+crate-hierarchy diagram in `reticulum-core/src/lib.rs`; rewrote
+first-line `//!` summaries on the five regression sites listed in
+`cleanup_instructions.md` §B.2 so rustdoc renders full sentences
+again; restored `- ` bullet markers in the SAFETY blocks of
+`compression.rs`, the two-item dedup list in `transport.rs`, and the
+data-receive lookup list in `auto_interface/orchestrator.rs`. A
+rule-aware second pass over all comment lines then mapped ` ; ` to
+`,` / `.` / `:` per context. `cargo doc --no-deps --workspace` spot-
+checked the rendered crate and transport pages; rendering is intact.
+
+### Task C — TOCTOU race fix (superseded)
+
+Implemented in commit `5c0e17a` as a counter-based port allocator
+(narrowed to 61000-65000 above the OS ephemeral ceiling). Verified at
+8 / 8 green post-fix runs before interruption; the `AddrInUse` race
+in §4.1 no longer reproduces. **Rescoped out of round 2**: the
+underlying TOCTOU is a pre-existing runtime bug, not code hygiene;
+ownership has moved to the master-repo coder. The commit stays on this
+branch as prior art and will be reconciled at main-repo merge time.
+
+### Task D — `test_auto_python_discovery` re-introduction (open question)
+
+The test was deleted in Pass 8 (round 1) under the
+`#[ignore]`-only-for-hardware policy. Option for Lew: re-introduce it
+behind a `#[cfg(feature = "multi-machine-interop")]` gate with a
+comment pointing at `scripts/test-auto-crossmachine.fish`. Feature-
+gating is mechanically distinct from `#[ignore]` (the test is absent
+from the build when the feature is off), so it preserves the
+executable documentation of cross-machine AutoInterface discovery
+without violating the policy. Open for Lew's decision; not implemented.
+
+### Outstanding round-N items (recorded only)
+
+- `#[allow(dead_code)]` follow-ups (§4.2): Codeberg issues #21 / #27 /
+  #28, serde configs in `topology.rs`, per-binary cfg gating in
+  `reticulum-cli/src/cp.rs`.
+- `transport.rs` / `node/mod.rs` split (§3 / §11.6).
+- Magic-number sweep (Pass 5 deferred).
+- Doc-comment outdated audit (Pass C).
