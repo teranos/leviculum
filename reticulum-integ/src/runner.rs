@@ -26,6 +26,7 @@ pub enum RunnerError {
     ReadinessTimeout { node: String, timeout_secs: u64 },
     Io(io::Error),
     BinaryNotFound(PathBuf),
+    StaleBinary(String),
     ConfigGeneration(String),
     ProxyError(String),
     InsufficientRNodes(String),
@@ -47,6 +48,9 @@ impl fmt::Display for RunnerError {
                     "lnsd binary not found at {}: run `cargo build --release --bin lnsd`",
                     path.display()
                 )
+            }
+            RunnerError::StaleBinary(msg) => {
+                write!(f, "stale binary: {msg}")
             }
             RunnerError::ConfigGeneration(msg) => {
                 write!(f, "config generation failed: {msg}")
@@ -135,24 +139,38 @@ impl TestRunner {
             .parent()
             .expect("CARGO_MANIFEST_DIR has no parent")
             .to_path_buf();
+        let target_dir = crate::paths::target_dir(&repo_root);
 
-        let lnsd_path = repo_root.join("target/release/lnsd");
+        let lnsd_path = crate::paths::release_bin(&target_dir, "lnsd");
         if !lnsd_path.exists() {
             return Err(RunnerError::BinaryNotFound(lnsd_path));
         }
 
-        let lns_path = repo_root.join("target/release/lns");
+        let lns_path = crate::paths::release_bin(&target_dir, "lns");
         if !lns_path.exists() {
             return Err(RunnerError::BinaryNotFound(lns_path));
         }
 
-        let has_proxy = scenario.nodes.values().any(|n| n.rnode_proxy);
-        if has_proxy {
-            let proxy_path = repo_root.join("target/release/lora-proxy");
-            if !proxy_path.exists() {
-                return Err(RunnerError::BinaryNotFound(proxy_path));
-            }
+        let lncp_path = crate::paths::release_bin(&target_dir, "lncp");
+        if !lncp_path.exists() {
+            return Err(RunnerError::BinaryNotFound(lncp_path));
         }
+
+        let has_proxy = scenario.nodes.values().any(|n| n.rnode_proxy);
+        let proxy_path = crate::paths::release_bin(&target_dir, "lora-proxy");
+        if has_proxy && !proxy_path.exists() {
+            return Err(RunnerError::BinaryNotFound(proxy_path.clone()));
+        }
+
+        // Freshness check: fail loud if any mounted binary predates HEAD.
+        // Opt-out via LEVICULUM_SKIP_FRESHNESS_CHECK=1 for local iteration.
+        let mut freshness_targets: Vec<&std::path::Path> =
+            vec![&lnsd_path, &lns_path, &lncp_path];
+        if has_proxy {
+            freshness_targets.push(&proxy_path);
+        }
+        crate::paths::check_binary_freshness(&freshness_targets, &repo_root)
+            .map_err(|e| RunnerError::StaleBinary(e.to_string()))?;
 
         // Apply env-var overrides (LORA_BANDWIDTH, LORA_SF, etc.) before
         // generating configs, so the same TOML can be run with different
@@ -169,12 +187,19 @@ impl TestRunner {
 
         // Spawn proxy processes before generating configs/compose.
         let (proxy_processes, proxy_sockets, proxy_devices) =
-            spawn_proxies(&scenario, run_id, &repo_root)?;
+            spawn_proxies(&scenario, run_id, &target_dir)?;
 
         generate_node_configs(&scenario, &base_dir)
             .map_err(|e| RunnerError::ConfigGeneration(e.to_string()))?;
 
-        let yaml = generate_compose(&scenario, run_id, &base_dir, &repo_root, &proxy_devices);
+        let yaml = generate_compose(
+            &scenario,
+            run_id,
+            &base_dir,
+            &repo_root,
+            &target_dir,
+            &proxy_devices,
+        );
         let compose_file = tempdir.path().join("docker-compose.yml");
         fs::write(&compose_file, &yaml)?;
 
@@ -1193,9 +1218,9 @@ type ProxySpawnResult = (
 fn spawn_proxies(
     scenario: &TestScenario,
     run_id: u32,
-    repo_root: &std::path::Path,
+    target_dir: &std::path::Path,
 ) -> Result<ProxySpawnResult, RunnerError> {
-    let proxy_bin = repo_root.join("target/release/lora-proxy");
+    let proxy_bin = crate::paths::release_bin(target_dir, "lora-proxy");
     let mut children = Vec::new();
     let mut sockets = BTreeMap::new();
     let mut devices = BTreeMap::new();

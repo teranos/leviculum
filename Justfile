@@ -16,6 +16,14 @@ standard: fast
     cargo test -p reticulum-proxy
     cargo test -p reticulum-std --test rnsd_interop
 
+# Build the production binaries the integ runner mounts into Docker
+# containers. Explicit per-bin list avoids `--workspace --bins` which
+# would also try to build reticulum-nrf firmware on the host. Runs on
+# the same CARGO_TARGET_DIR as the enclosing `cargo test`, so the
+# runner's CARGO_TARGET_DIR-aware path resolver finds them.
+build-integ-bins:
+    cargo build --release --bin lnsd --bin lns --bin lncp --bin lora-proxy
+
 # Default cargo test runs non-ignored tests and skips ignored ones.
 # Docker tests (#[serial(docker)]) run; LoRa tests (#[ignore] #[serial(lora)])
 # skip automatically. --test-threads=1 is required even though serial_test
@@ -23,7 +31,7 @@ standard: fast
 # groups can still overlap resource usage with unit tests in the same
 # binary on a multi-CPU harness.
 # Tier 2 (~30-90 min, 12:30 + 18:30 daily): Tier 1 + Docker integ suite.
-extensive: standard
+extensive: standard build-integ-bins
     cargo test -p reticulum-integ -- --test-threads=1
 
 # --include-ignored adds the LoRa hardware tests on top of Tier 2.
