@@ -184,7 +184,9 @@ async fn test_shared_instance_link_through_daemon() {
     init_tracing();
 
     // Phase 1: Port allocation
-    let ports = find_available_ports::<3>().expect("Failed to allocate ports");
+    let (ports, _port_alloc) = find_available_ports::<3>()
+        .await
+        .expect("Failed to allocate ports");
     let [daemon_tcp_port, py_rns_port, py_cmd_port] = ports;
     let instance_name = format!("linktest_{}", std::process::id());
 
@@ -380,7 +382,9 @@ async fn test_local_client_initiates_link_through_daemon() {
     init_tracing();
 
     // Phase 1: Port allocation
-    let ports = find_available_ports::<4>().expect("Failed to allocate ports");
+    let (ports, _port_alloc) = find_available_ports::<4>()
+        .await
+        .expect("Failed to allocate ports");
     let [daemon_tcp_port, py_b_rns_port, py_b_cmd_port, py_a_cmd_port] = ports;
     let instance_name = format!("lclink_{}", std::process::id());
 
@@ -418,7 +422,8 @@ async fn test_local_client_initiates_link_through_daemon() {
     tokio::time::sleep(Duration::from_secs(1)).await;
 
     // Phase 4: Start Python A (shared instance client, initiator)
-    let py_a_rns_port = find_available_ports::<2>().expect("ports")[0];
+    let (py_a_ports, _py_a_port_alloc) = find_available_ports::<2>().await.expect("ports");
+    let py_a_rns_port = py_a_ports[0];
     let py_a =
         TestDaemon::start_with_shared_instance_ports(py_a_rns_port, py_a_cmd_port, &instance_name)
             .await
@@ -537,7 +542,9 @@ async fn test_non_transport_daemon_relays_local_client_link() {
     init_tracing();
 
     // Phase 1: Port allocation
-    let ports = find_available_ports::<4>().expect("Failed to allocate ports");
+    let (ports, _port_alloc) = find_available_ports::<4>()
+        .await
+        .expect("Failed to allocate ports");
     let [daemon_tcp_port, py_b_rns_port, py_b_cmd_port, py_a_cmd_port] = ports;
     let instance_name = format!("notransport_{}", std::process::id());
 
@@ -577,7 +584,8 @@ async fn test_non_transport_daemon_relays_local_client_link() {
     tokio::time::sleep(Duration::from_secs(1)).await;
 
     // Phase 4: Start Python A (shared instance client)
-    let py_a_rns_port = find_available_ports::<2>().expect("ports")[0];
+    let (py_a_ports, _py_a_port_alloc) = find_available_ports::<2>().await.expect("ports");
+    let py_a_rns_port = py_a_ports[0];
     let py_a =
         TestDaemon::start_with_shared_instance_ports(py_a_rns_port, py_a_cmd_port, &instance_name)
             .await
@@ -676,7 +684,9 @@ async fn test_local_client_builder_link_through_daemon() {
     init_tracing();
 
     // Phase 1: Port allocation
-    let ports = find_available_ports::<2>().expect("Failed to allocate ports");
+    let (ports, _port_alloc) = find_available_ports::<2>()
+        .await
+        .expect("Failed to allocate ports");
     let [daemon_tcp_port, _spare] = ports;
     let instance_name = format!("clientbuilder_{}", std::process::id());
 

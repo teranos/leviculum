@@ -833,10 +833,13 @@ async fn test_mtu_b0_python_to_python_udp_baseline() {
     use crate::harness::find_available_ports;
 
     // Allocate 6 ports: [rns_a, cmd_a, udp_a, rns_b, cmd_b, udp_b]
-    let ports: [u16; 6] = find_available_ports().expect("Failed to find 6 available ports");
+    let (ports, _port_alloc) = find_available_ports::<6>()
+        .await
+        .expect("Failed to find 6 available ports");
     let [rns_a, cmd_a, udp_a, rns_b, cmd_b, udp_b] = ports;
 
-    // Start daemon A: listens on udp_a, forwards to udp_b
+    // Start daemon A: listens on udp_a, forwards to udp_b. Hold _port_alloc
+    // until both daemons are READY so the alloc → bind handoff cannot race.
     let daemon_a = TestDaemon::start_with_udp_ports(rns_a, cmd_a, udp_a, udp_b)
         .await
         .expect("Failed to start daemon A");

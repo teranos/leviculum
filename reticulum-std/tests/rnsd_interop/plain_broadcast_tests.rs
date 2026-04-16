@@ -27,7 +27,9 @@ async fn test_plain_broadcast_local_client_to_network() {
     init_tracing();
 
     // Phase 1: Port allocation
-    let ports = find_available_ports::<4>().expect("Failed to allocate ports");
+    let (ports, _port_alloc) = find_available_ports::<4>()
+        .await
+        .expect("Failed to allocate ports");
     let [daemon_tcp_port, py_b_rns_port, py_b_cmd_port, py_a_cmd_port] = ports;
     let instance_name = format!("broadcast_l2n_{}", std::process::id());
 
@@ -68,7 +70,8 @@ async fn test_plain_broadcast_local_client_to_network() {
     // Phase 4: Start Python daemon A (shared instance client)
     // Python detects the existing Unix socket and connects as client.
     // Its py_a_rns_port is unused (shared instance client skips TCP).
-    let py_a_rns_port = find_available_ports::<2>().expect("ports")[0];
+    let (py_a_ports, _py_a_port_alloc_2) = find_available_ports::<2>().await.expect("ports");
+    let py_a_rns_port = py_a_ports[0];
     let py_local =
         TestDaemon::start_with_shared_instance_ports(py_a_rns_port, py_a_cmd_port, &instance_name)
             .await
@@ -113,7 +116,9 @@ async fn test_plain_broadcast_network_to_local_client() {
     init_tracing();
 
     // Phase 1: Port allocation
-    let ports = find_available_ports::<4>().expect("Failed to allocate ports");
+    let (ports, _port_alloc) = find_available_ports::<4>()
+        .await
+        .expect("Failed to allocate ports");
     let [daemon_tcp_port, py_b_rns_port, py_b_cmd_port, py_a_cmd_port] = ports;
     let instance_name = format!("broadcast_n2l_{}", std::process::id());
 
@@ -146,7 +151,8 @@ async fn test_plain_broadcast_network_to_local_client() {
     tokio::time::sleep(Duration::from_secs(1)).await;
 
     // Phase 4: Start Python daemon A (shared instance client)
-    let py_a_rns_port = find_available_ports::<2>().expect("ports")[0];
+    let (py_a_ports, _py_a_port_alloc) = find_available_ports::<2>().await.expect("ports");
+    let py_a_rns_port = py_a_ports[0];
     let py_local =
         TestDaemon::start_with_shared_instance_ports(py_a_rns_port, py_a_cmd_port, &instance_name)
             .await

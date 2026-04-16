@@ -86,7 +86,9 @@ async fn test_rnprobe_reports_correct_hops() {
     init_tracing();
 
     // Phase 1: Setup
-    let ports = find_available_ports::<2>().expect("Failed to allocate ports");
+    let (ports, _port_alloc) = find_available_ports::<2>()
+        .await
+        .expect("Failed to allocate ports");
     let daemon_tcp_port = ports[0];
     let test_id = PROBE_TEST_COUNTER.fetch_add(1, Ordering::Relaxed);
     let instance_name = format!("probetest_{}_{}", std::process::id(), test_id);

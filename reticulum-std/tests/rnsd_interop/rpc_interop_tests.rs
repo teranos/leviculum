@@ -43,7 +43,9 @@ async fn start_rust_daemon_with_rpc() -> (
     [u8; 64],
     tempfile::TempDir,
 ) {
-    let ports = find_available_ports::<2>().expect("failed to allocate ports");
+    let (ports, _port_alloc) = find_available_ports::<2>()
+        .await
+        .expect("failed to allocate ports");
     let tcp_port = ports[0];
     let test_id = TEST_COUNTER.fetch_add(1, Ordering::Relaxed);
     let instance_name = format!("rpcinterop_{}_{}", std::process::id(), test_id);
