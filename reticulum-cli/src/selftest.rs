@@ -771,8 +771,8 @@ pub async fn run_selftest(
 
         let stream_a = node_a.connect(&dest_hash_b, &signing_key_b).await?;
 
-        // E34 retry budget: (1 + max(LINK_REQUEST_MAX_RETRIES, hops)) attempts,
-        // each up to ESTABLISHMENT_TIMEOUT_PER_HOP_MS × (hops + 1) ms.
+        // Link-request retry budget: (1 + max(LINK_REQUEST_MAX_RETRIES, hops))
+        // attempts, each up to ESTABLISHMENT_TIMEOUT_PER_HOP_MS × (hops + 1) ms.
         // Add 25% margin for scheduling jitter.
         let effective_hops = core::cmp::max(1, hops as u64);
         let effective_retries = core::cmp::max(
@@ -782,9 +782,9 @@ pub async fn run_selftest(
         let per_attempt_ms =
             reticulum_core::constants::ESTABLISHMENT_TIMEOUT_PER_HOP_MS * (effective_hops + 1);
         let total_attempts = 1 + effective_retries;
-        let e34_budget_secs = (per_attempt_ms * total_attempts * 5 / 4) / 1000;
+        let retry_budget_secs = (per_attempt_ms * total_attempts * 5 / 4) / 1000;
         // Floor at 60s for fast paths (direct TCP, 1 hop).
-        let phase3_timeout_secs = core::cmp::max(60, e34_budget_secs);
+        let phase3_timeout_secs = core::cmp::max(60, retry_budget_secs);
 
         // Wait for link request on B
         tokio::time::timeout(

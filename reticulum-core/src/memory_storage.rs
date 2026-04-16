@@ -1269,7 +1269,7 @@ mod tests {
         assert_eq!(DEFAULT_IDENTITY_CAP, 50_000);
     }
 
-    // D1: Announce table operations
+    // Announce table operations
     #[test]
     fn test_announce_table_operations() {
         let mut s = MemoryStorage::with_defaults();
@@ -1348,7 +1348,7 @@ mod tests {
         assert_eq!(rate.blocked_until_ms, 3000);
     }
 
-    // D2: earliest_link_deadline
+    // earliest_link_deadline
     #[test]
     fn test_earliest_link_deadline() {
         let mut s = MemoryStorage::with_defaults();
@@ -1394,7 +1394,7 @@ mod tests {
         assert_eq!(s.earliest_link_deadline(5000), Some(3000));
     }
 
-    // D3: Unvalidated link entry expiry
+    // Unvalidated link entry expiry
     #[test]
     fn test_link_entry_expire_unvalidated() {
         let mut s = MemoryStorage::with_defaults();
@@ -1425,7 +1425,7 @@ mod tests {
         assert_eq!(expired[0].0, h1);
     }
 
-    // D4: remove_link_entries_for_interface
+    // remove_link_entries_for_interface
     #[test]
     fn test_remove_link_entries_for_interface() {
         let mut s = MemoryStorage::with_defaults();
@@ -1460,7 +1460,7 @@ mod tests {
         assert!(s.get_link_entry(&h3).is_some());
     }
 
-    // D5: remove_paths_for_interface
+    // remove_paths_for_interface
     #[test]
     fn test_remove_paths_for_interface() {
         let mut s = MemoryStorage::with_defaults();
@@ -1489,7 +1489,7 @@ mod tests {
         assert!(s.get_path(&h3).is_none());
     }
 
-    // D6: path_request_time get/set
+    // path_request_time get/set
     #[test]
     fn test_path_request_time() {
         let mut s = MemoryStorage::with_defaults();

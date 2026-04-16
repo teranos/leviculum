@@ -430,7 +430,7 @@ pub struct Link {
     ///
     /// Set in `accept_link()` after `build_proof_packet()` returns.
     /// Read in `handle_link_request()` when a duplicate request arrives for a
-    /// link still in `PendingIncoming` phase (E34 retry: proof was lost).
+    /// link still in `PendingIncoming` phase (retry after a lost proof).
     /// Cleared when the link transitions to Active (in `process_rtt()`).
     /// ~118 bytes per pending responder link. Dropped when the link is removed.
     cached_proof: Option<Vec<u8>>,

@@ -819,7 +819,7 @@ async fn test_mtu_a0_direct_tcp_full_mtu() {
 // Group B: UDP MTU negotiation
 // =========================================================================
 
-/// B0: Python-to-Python UDP baseline ; verify two Python daemons negotiate MTU=500.
+/// Python-to-Python UDP baseline: verify two Python daemons negotiate MTU=500.
 ///
 /// Two Python daemons connected via UDP. Daemon A initiates a link to a
 /// destination on daemon B. Both sides should report MTU=500 (base protocol MTU),
@@ -907,12 +907,12 @@ async fn test_mtu_b0_python_to_python_udp_baseline() {
     }
 
     println!(
-        "SUCCESS: B0 - Python-to-Python UDP baseline: A mtu={:?}, B mtu={:?} (expected {})",
+        "SUCCESS: Python-to-Python UDP baseline: A mtu={:?}, B mtu={:?} (expected {})",
         status_a.mtu, status_b.mtu, DAEMON_UDP_NEGOTIATED_MTU
     );
 }
 
-/// B1: Rust-to-Rust over UDP ; verify negotiated MTU=1064 and data transfer.
+/// Rust-to-Rust over UDP: verify negotiated MTU=1064 and data transfer.
 ///
 /// Uses ReticulumNodeBuilder with UDP interfaces.
 #[tokio::test]
@@ -1056,7 +1056,7 @@ async fn test_mtu_b1_rust_to_rust_udp_mtu() {
     );
 
     println!(
-        "SUCCESS: B1 - UDP MTU={}, MDU={}, payload {} bytes verified",
+        "SUCCESS: Rust-to-Rust UDP MTU={}, MDU={}, payload {} bytes verified",
         UDP_HW_MTU, UDP_LINK_MDU, UDP_MAX_CHANNEL_PAYLOAD
     );
 
@@ -1064,7 +1064,7 @@ async fn test_mtu_b1_rust_to_rust_udp_mtu() {
     node_b.stop().await.ok();
 }
 
-/// B2: Rust-to-Python over UDP ; verify both sides agree on base MTU=500.
+/// Rust-to-Python over UDP: verify both sides agree on base MTU=500.
 ///
 /// Rust (initiator, UDP) → Python daemon (responder, UDP)
 ///
@@ -1189,14 +1189,14 @@ async fn test_mtu_b2_rust_to_python_udp() {
     );
 
     println!(
-        "SUCCESS: B2 - Rust-to-Python UDP MTU={}, MDU={}, payload {} bytes verified",
+        "SUCCESS: Rust-to-Python UDP MTU={}, MDU={}, payload {} bytes verified",
         DAEMON_UDP_NEGOTIATED_MTU, DAEMON_UDP_LINK_MDU, DAEMON_UDP_MAX_CHANNEL_PAYLOAD
     );
 
     node.stop().await.ok();
 }
 
-/// B3: Python-to-Rust over UDP ; verify responder side MTU=500 (base protocol MTU).
+/// Python-to-Rust over UDP: verify responder side MTU=500 (base protocol MTU).
 ///
 /// Python daemon (initiator, UDP) → Rust (responder, UDP)
 ///
@@ -1382,11 +1382,11 @@ async fn test_mtu_b3_python_to_rust_udp() {
     assert_eq!(received.len(), DAEMON_UDP_MAX_CHANNEL_PAYLOAD);
     assert!(
         verify_test_payload(&received),
-        "B3 payload integrity check failed"
+        "Python-to-Rust payload integrity check failed"
     );
 
     println!(
-        "SUCCESS: B3 - Python-to-Rust UDP MTU={}, MDU={}, payload {} bytes, Python mtu={:?}",
+        "SUCCESS: Python-to-Rust UDP MTU={}, MDU={}, payload {} bytes, Python mtu={:?}",
         DAEMON_UDP_NEGOTIATED_MTU, DAEMON_UDP_LINK_MDU, DAEMON_UDP_MAX_CHANNEL_PAYLOAD, status.mtu
     );
 
@@ -1397,7 +1397,7 @@ async fn test_mtu_b3_python_to_rust_udp() {
 // Group C: Boundary tests
 // =========================================================================
 
-/// C1: Exact MDU boundary ; send exactly DAEMON_TCP_MAX_CHANNEL_PAYLOAD bytes.
+/// Exact MDU boundary: send exactly DAEMON_TCP_MAX_CHANNEL_PAYLOAD bytes.
 ///
 /// (Covered by A1, included as explicit boundary test)
 #[tokio::test]
@@ -1470,12 +1470,12 @@ async fn test_mtu_c1_exact_mdu() {
     );
 
     println!(
-        "SUCCESS: C1 - Exact MDU ({} bytes) transfer verified",
+        "SUCCESS: Exact MDU ({} bytes) transfer verified",
         DAEMON_TCP_MAX_CHANNEL_PAYLOAD
     );
 }
 
-/// C2: Minimum payload ; send 1 byte.
+/// Minimum payload: send 1 byte.
 #[tokio::test]
 async fn test_mtu_c2_one_byte() {
     let daemon = TestDaemon::start().await.expect("Failed to start daemon");
@@ -1538,10 +1538,10 @@ async fn test_mtu_c2_one_byte() {
 
     assert_eq!(received.as_deref(), Some(&[0x42][..]));
 
-    println!("SUCCESS: C2 - 1-byte transfer verified");
+    println!("SUCCESS: 1-byte transfer verified");
 }
 
-/// C3: Over MDU ; send MDU+1 bytes, expect error.
+/// Over MDU: send MDU+1 bytes, expect error.
 #[tokio::test]
 async fn test_mtu_c3_over_mdu() {
     let daemon = TestDaemon::start().await.expect("Failed to start daemon");
@@ -1585,7 +1585,7 @@ async fn test_mtu_c3_over_mdu() {
     assert!(result.is_err(), "Sending MDU+1 bytes should fail, got Ok");
 
     println!(
-        "SUCCESS: C3 - MDU+1 ({} bytes) correctly rejected",
+        "SUCCESS: MDU+1 ({} bytes) correctly rejected",
         DAEMON_TCP_MAX_CHANNEL_PAYLOAD + 1
     );
 }
@@ -1594,7 +1594,7 @@ async fn test_mtu_c3_over_mdu() {
 // Group D: Multi-hop MTU clamping
 // =========================================================================
 
-/// D1: TCP -> RustRelay -> UDP ; verify MTU clamps to UDP bottleneck (1064).
+/// TCP -> RustRelay -> UDP: verify MTU clamps to UDP bottleneck (1064).
 ///
 /// Topology:
 ///   RustA (TCP client, initiator) <-TCP-> RustRelay (TCP server + UDP, transport=true) <-UDP-> RustB (UDP, responder)
@@ -1758,11 +1758,11 @@ async fn test_mtu_d1_tcp_relay_udp_clamp() {
     assert_eq!(received.len(), UDP_MAX_CHANNEL_PAYLOAD);
     assert!(
         verify_test_payload(&received),
-        "D1 payload integrity failed"
+        "TCP->Relay->UDP payload integrity failed"
     );
 
     println!(
-        "SUCCESS: D1 - TCP->Relay->UDP MTU={}, MDU={}, payload {} bytes verified",
+        "SUCCESS: TCP->Relay->UDP MTU={}, MDU={}, payload {} bytes verified",
         UDP_HW_MTU, UDP_LINK_MDU, UDP_MAX_CHANNEL_PAYLOAD
     );
 
@@ -1771,9 +1771,9 @@ async fn test_mtu_d1_tcp_relay_udp_clamp() {
     relay.stop().await.ok();
 }
 
-/// D2: UDP -> RustRelay -> TCP ; verify MTU stays at UDP bottleneck (1064).
+/// UDP -> RustRelay -> TCP: verify MTU stays at UDP bottleneck (1064).
 ///
-/// Topology (reverse of D1):
+/// Topology (reverse of the TCP->Relay->UDP case):
 ///   RustA (UDP, initiator) <-UDP-> RustRelay (TCP server + UDP, transport=true) <-TCP-> RustB (TCP client, responder)
 ///
 /// RustA's UDP interface has HW_MTU=1064. The link request signaling bytes
@@ -1931,11 +1931,11 @@ async fn test_mtu_d2_udp_relay_tcp() {
     assert_eq!(received.len(), UDP_MAX_CHANNEL_PAYLOAD);
     assert!(
         verify_test_payload(&received),
-        "D2 payload integrity failed"
+        "UDP->Relay->TCP payload integrity failed"
     );
 
     println!(
-        "SUCCESS: D2 - UDP->Relay->TCP MTU={}, MDU={}, payload {} bytes verified",
+        "SUCCESS: UDP->Relay->TCP MTU={}, MDU={}, payload {} bytes verified",
         UDP_HW_MTU, UDP_LINK_MDU, UDP_MAX_CHANNEL_PAYLOAD
     );
 

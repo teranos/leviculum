@@ -543,7 +543,7 @@ impl<R: CryptoRngCore, C: Clock, S: Storage> NodeCore<R, C, S> {
 
         // Check if we already have this link
         if let Some(link) = self.links.get(&link_id) {
-            // E34 retry scenario: if the link is still in PendingIncoming,
+            // Link-request retry scenario: if the link is still in PendingIncoming,
             // the original proof was likely lost. Re-send the cached proof.
             if matches!(link.phase(), LinkPhase::PendingIncoming { .. }) {
                 if let Some(proof) = link.cached_proof() {
@@ -551,7 +551,7 @@ impl<R: CryptoRngCore, C: Clock, S: Storage> NodeCore<R, C, S> {
                     if let Some(iface_idx) = link.attached_interface() {
                         tracing::debug!(
                             link = %HexShort(link_id.as_bytes()),
-                            "Re-sending proof for duplicate link request (E34 retry)"
+                            "Re-sending proof for duplicate link request"
                         );
                         if let Err(e) = self.transport.send_on_interface(iface_idx, &proof) {
                             tracing::debug!(%e, "proof re-send failed");

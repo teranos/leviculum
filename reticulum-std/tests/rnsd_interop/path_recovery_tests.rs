@@ -185,7 +185,7 @@ async fn test_rust_node_path_recovery_on_link_timeout() {
         .expect("connect() should return immediately (async link request)");
 
     // Step 12: Wait for link timeout via LinkClosed event.
-    // E34 budget: max(2, hops) retries × establishment_timeout_ms
+    // Retry budget: max(2, hops) retries × establishment_timeout_ms
     // At 2 hops with UNKNOWN_BITRATE_ASSUMPTION_BPS=300:
     // 3 attempts × ~31s = ~94s. 120s gives comfortable margin.
     assert!(

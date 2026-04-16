@@ -1133,7 +1133,7 @@ impl<C: Clock, S: Storage> Transport<C, S> {
         let is_local_client_link_request =
             is_from_local_client && packet.flags.packet_type == PacketType::LinkRequest;
         // Link requests for our own destinations (or forwarded to a local
-        // client) skip dedup so that E34 retries (proof lost → initiator
+        // client) skip dedup so that link-request retries (proof lost → initiator
         // re-sends same link request) reach handle_link_request(), which
         // re-sends the cached proof. Covers both cases:
         // Destination on this daemon (local_destinations)
@@ -1149,10 +1149,10 @@ impl<C: Clock, S: Storage> Transport<C, S> {
         // it simply re-sends the cached proof. No routing loop risk: CacheRequests
         // are link-addressed (dest_type=Link) and never forwarded via path table.
         let is_cache_request = packet.context == PacketContext::CacheRequest;
-        // LRPROOFs for our own links skip dedup: E34 retries generate
+        // LRPROOFs for our own links skip dedup: link-request retries generate
         // identical proofs (deterministic for same link_id). Without
         // this exemption, the first proof's hash is cached and all
-        // E34 retry proofs are dropped as duplicates, causing link
+        // retry proofs are dropped as duplicates, causing link
         // establishment to fail under RF contention.
         // Same rationale as is_link_request_for_us and is_cache_request.
         let is_lrproof_for_us = packet.context == PacketContext::Lrproof
@@ -2946,8 +2946,8 @@ impl<C: Clock, S: Storage> Transport<C, S> {
     ///    transport-enabled nodes, a bystander (C) that relays A's link request
     ///    back onto the same channel causes its TX to overlap with B's proof TX.
     ///    The collision corrupts both frames ; A never receives the proof, and
-    ///    the link fails. Hash-based dedup (Part 1 of the E39 fix, in
-    ///    `send_on_interface`) cannot fix this because the proof was destroyed
+    ///    the link fails. Hash-based dedup in
+    ///    `send_on_interface` cannot fix this because the proof was destroyed
     ///    in flight before reception.
     ///
     /// 2. **Duplicate processing**: Even without collision, the relayed echo
@@ -3766,7 +3766,7 @@ impl<C: Clock, S: Storage> Transport<C, S> {
             if !from_local {
                 // Python checks attached_interface.mode in DISCOVER_PATHS_FOR here,
                 // which gates discovery on the interface's operational mode. We skip
-                // this check until per-interface modes are implemented (see E24).
+                // this check until per-interface modes are implemented.
                 // Currently all our interfaces support path discovery, so this is
                 // functionally equivalent.
                 let now = self.clock.now_ms();
@@ -7563,8 +7563,8 @@ mod tests {
             );
 
             // Second identical LRPROOF ; must NOT be dropped as duplicate.
-            // Under E34, the responder re-sends the same proof. If dedup
-            // drops it, link establishment fails under RF contention.
+            // Under link-request retry, the responder re-sends the same proof.
+            // If dedup drops it, link establishment fails under RF contention.
             transport.process_incoming(0, &raw).unwrap();
             let events2: Vec<_> = transport.drain_events().collect();
             let got_event_2 = events2

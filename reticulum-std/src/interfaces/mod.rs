@@ -330,9 +330,9 @@ mod tests {
     /// the duration of any `try_send_prioritized` test, otherwise the
     /// channel closes and `try_send` returns `Disconnected`.
     ///
-    /// Phase B1 invariant: `credit` defaults to `None` ; non-LoRa
-    /// interfaces leave the bucket empty, which makes the Phase B4
-    /// `next_slot_ms` override return `now_ms` (always ready) for them.
+    /// Invariant: `credit` defaults to `None`; non-LoRa interfaces leave
+    /// the bucket empty, which makes the `next_slot_ms` override return
+    /// `now_ms` (always ready) for them.
     fn make_handle(id: usize) -> (InterfaceHandle, mpsc::Receiver<OutgoingPacket>) {
         let (_inc_tx, inc_rx) = mpsc::channel(4);
         let (out_tx, out_rx) = mpsc::channel(4);

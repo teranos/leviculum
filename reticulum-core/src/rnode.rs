@@ -1599,12 +1599,13 @@ mod tests {
         let frame_a1 = vec![0xA0 | FLAG_SPLIT, 0x11];
         let frame_b1 = vec![0xB0 | FLAG_SPLIT, 0x22];
         assert_eq!(r.feed(&frame_a1, 0), None);
-        // B1 arrives ; A is discarded, B is now buffered
+        // frame_b1 arrives, frame_a1 is discarded, frame_b1 is now buffered
         assert_eq!(r.feed(&frame_b1, 1), None);
-        // A2 arrives ; sequence mismatch with B, B is discarded, A is new buffer
+        // frame_a2 arrives, sequence mismatch with frame_b1, frame_b1 is discarded,
+        // frame_a2 becomes the new buffer
         let frame_a2 = vec![0xA0 | FLAG_SPLIT, 0x33];
         assert_eq!(r.feed(&frame_a2, 2), None);
-        // Another A arrives ; same sequence as buffered A, reassemble
+        // Another A-sequence frame arrives, same sequence as buffered frame, reassemble
         let frame_a3 = vec![0xA0 | FLAG_SPLIT, 0x44];
         let result = r.feed(&frame_a3, 3).unwrap();
         assert_eq!(result, vec![0x33, 0x44]);
