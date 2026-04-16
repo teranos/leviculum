@@ -212,16 +212,33 @@ async fn test_diamond_relay_and_failure_recovery() {
         link_attempt
     );
 
-    // Step 17: A re-announces (fresh emission triggers new path via R2)
+    // Step 17: Both endpoints re-announce. Phase-1 left a stale R1 path on
+    // BOTH daemons (A->B via R1 and B->A via R1); for step 19's LinkRequest
+    // round-trip to succeed, both sides must have a fresh R2 path to the
+    // peer, not just one. Space the two announces by 2s so Python's
+    // ingress_control (IC_BURST_FREQ_NEW=3.5/s, Interface.py:117) does not
+    // penalise the second — same subtlety documented in
+    // architecture-broadcast-python-parity.md section B1.
     daemon_a
         .announce_destination(&dest_a_info.hash, b"diamond-A-fresh")
         .await
         .expect("Failed to re-announce dest_a");
+    tokio::time::sleep(Duration::from_secs(2)).await;
+    daemon_b
+        .announce_destination(&dest_b_info.hash, b"diamond-B-fresh")
+        .await
+        .expect("Failed to re-announce dest_b");
 
     // Step 18: Wait for B to learn path via R2
     let b_sees_a_again =
         wait_for_path_on_daemon(&daemon_b, &dest_a_hash, Duration::from_secs(15)).await;
     assert!(b_sees_a_again, "B should see A again via R2");
+
+    // A must also have learned B's fresh R2 path before step 19's
+    // LinkRequest arrives, otherwise A's LRPROOF has no path to B.
+    let a_sees_b_again =
+        wait_for_path_on_daemon(&daemon_a, &dest_b_hash, Duration::from_secs(15)).await;
+    assert!(a_sees_b_again, "A should see B again via R2");
 
     // Step 19: B creates link to A via R2, should succeed
     let link_recovery = daemon_b
