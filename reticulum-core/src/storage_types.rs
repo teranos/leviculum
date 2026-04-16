@@ -17,7 +17,7 @@ use crate::identity::Identity;
 /// current path has been marked unresponsive (Python Transport.py:1672-1681).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PathState {
-    /// Default state ; no knowledge about path quality
+    /// Default state, no knowledge about path quality
     Unknown,
     /// Communication attempt failed (unvalidated link expired)
     Unresponsive,
@@ -168,7 +168,7 @@ pub struct PacketReceipt {
 impl PacketReceipt {
     /// Create a new receipt for a sent packet
     pub fn new(packet_hash: [u8; 32], destination_hash: DestinationHash, sent_at_ms: u64) -> Self {
-        // Take the first 16 bytes of the full hash directly ; do NOT re-hash.
+        // Take the first 16 bytes of the full hash directly, do NOT re-hash.
         // truncated_hash() would SHA256 the already-hashed input, producing
         // SHA256(SHA256(hashable))[0:16] instead of SHA256(hashable)[0:16].
         // Python uses packet.get_hash()[:16] which is a simple slice.

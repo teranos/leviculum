@@ -668,7 +668,7 @@ async fn test_link_proof_validation() {
 }
 
 // =========================================================================
-// Test: Link identify ; Rust identifies to Python
+// Test: Link identify. Rust identifies to Python
 // =========================================================================
 
 /// Verify that Rust's link identify is recognized by Python.

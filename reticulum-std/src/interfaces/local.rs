@@ -24,7 +24,7 @@ use super::{IncomingPacket, InterfaceCounters, InterfaceHandle, InterfaceInfo, O
 /// Default channel buffer size for local interfaces.
 pub(crate) const LOCAL_DEFAULT_BUFFER_SIZE: usize = 256;
 
-/// Hardware MTU for local interfaces (same as TCP ; local IPC).
+/// Hardware MTU for local interfaces (same as TCP, local IPC).
 const LOCAL_HW_MTU: u32 = 262_144;
 
 /// Frame buffer multiplier (accounts for HDLC escaping overhead)
@@ -140,10 +140,10 @@ fn spawn_local_interface_from_stream(
 /// from the client's perspective this is a regular interface; the daemon
 /// marks its side as `is_local_client = true`.
 ///
-/// Calls `tokio::spawn` for the I/O task ; must be called from a context
+/// Calls `tokio::spawn` for the I/O task, must be called from a context
 /// where a tokio runtime is active (same as `spawn_local_server`).
 ///
-/// No reconnection ; returns an error if the daemon is not running.
+/// No reconnection, returns an error if the daemon is not running.
 pub(crate) fn spawn_local_client(
     id: InterfaceId,
     instance_name: &str,

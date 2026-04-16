@@ -1043,7 +1043,6 @@ version = "0.6.3"
 dependencies = [
  "aes",
  "cbc",
- "curve25519-dalek",
  "ed25519-dalek",
  "heapless",
  "hex",
@@ -1057,7 +1056,6 @@ dependencies = [
  "sha2",
  "tracing",
  "x25519-dalek",
- "zeroize",
 ]
 
 [[package]]
@@ -1104,7 +1102,6 @@ dependencies = [
 name = "reticulum-std"
 version = "0.6.3"
 dependencies = [
- "bytes",
  "hex",
  "hmac",
  "if-addrs",

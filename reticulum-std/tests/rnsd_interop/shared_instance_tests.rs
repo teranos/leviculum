@@ -327,7 +327,7 @@ async fn test_shared_instance_link_through_daemon() {
         "Python should receive channel message from Rust A"
     );
 
-    // Python → Rust A (echo via Channel ; Python echoes the channel message back)
+    // Python → Rust A (echo via Channel. Python echoes the channel message back)
     let echo = wait_for_data_event(&mut event_rx, &link_id, Duration::from_secs(10)).await;
     assert!(echo.is_some(), "Should receive echo from Python");
     assert_eq!(
@@ -551,7 +551,7 @@ async fn test_non_transport_daemon_relays_local_client_link() {
         .await
         .expect("Failed to register destination on Python B");
 
-    // Phase 3: Start Rust daemon ; transport DISABLED
+    // Phase 3: Start Rust daemon, transport DISABLED
     let py_b_addr: SocketAddr = format!("127.0.0.1:{}", py_b_rns_port).parse().unwrap();
     let daemon_tcp_addr: SocketAddr = format!("127.0.0.1:{}", daemon_tcp_port).parse().unwrap();
 

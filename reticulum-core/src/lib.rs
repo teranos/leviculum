@@ -4,7 +4,7 @@
 //! `reticulum-core` implements all protocol logic as `no_std + alloc`, making it
 //! suitable for both full operating systems (Linux, macOS, Windows) and bare-metal
 //! embedded targets (ESP32, nRF52, STM32). Platform-specific I/O is injected via
-//! the [`Clock`] and [`Storage`] traits ; see the [`traits`] module.
+//! the [`Clock`] and [`Storage`] traits. See the [`traits`] module.
 //!
 //! # Core Concepts
 //!
@@ -41,13 +41,13 @@
 //! # Crate Hierarchy
 //!
 //! ```text
-//! reticulum-core   (no_std + alloc)  ; all protocol logic
+//! reticulum-core   (no_std + alloc)  — all protocol logic
 //!     │
 //!     ▼
-//! reticulum-std    (std)             ; platform impls: SystemClock, TcpInterface, FileStorage
+//! reticulum-std    (std)             — platform impls: SystemClock, TcpInterface, FileStorage
 //!     │
 //!     ▼
-//! reticulum-cli / reticulum-ffi     ; binaries and C-API
+//! reticulum-cli / reticulum-ffi     — binaries and C-API
 //! ```
 //!
 //! # Feature Flags

@@ -54,7 +54,7 @@ pub const RESOURCE_MAX_EFFICIENT_SIZE: usize = 1_048_575;
 
 /// Maximum incoming resource size in bytes. Resources larger than this
 /// are rejected at advertisement time, before any allocation.
-/// Default: usize::MAX (no limit ; preserves Python-parity behavior).
+/// Default: usize::MAX (no limit, preserves Python-parity behavior).
 /// Set lower on embedded via NodeCoreBuilder::max_incoming_resource_size().
 pub const RESOURCE_MAX_INCOMING_SIZE: usize = usize::MAX;
 
@@ -116,7 +116,7 @@ pub const HASHMAP_IS_EXHAUSTED: u8 = 0xFF;
 /// `floor((MTU - IFAC_MIN_SIZE - HEADER_MINSIZE - TOKEN_OVERHEAD) / AES_BLOCK_SIZE)
 ///  * AES_BLOCK_SIZE - 1 = floor(432/16)*16 - 1 = 431`
 ///
-/// Python computes this as `Link.MDU` ; a class constant that never changes,
+/// Python computes this as `Link.MDU`, a class constant that never changes,
 /// even when Link MTU Discovery negotiates a higher MTU.
 /// Resource hashmap segmentation MUST use this standard MDU, not the
 /// negotiated link MDU, because Python's `ResourceAdvertisement.HASHMAP_MAX_LEN`
@@ -129,7 +129,7 @@ pub const STANDARD_LINK_MDU: usize = {
 
 /// Maximum number of hashmap entries per segment.
 ///
-/// This is a protocol constant ; Python's `ResourceAdvertisement.HASHMAP_MAX_LEN`
+/// This is a protocol constant. Python's `ResourceAdvertisement.HASHMAP_MAX_LEN`
 /// is a class constant `floor((Link.MDU - 134) / 4) = 74`.
 /// Both sender and receiver MUST use the same value for segment boundary
 /// alignment. Using the negotiated link_mdu instead of STANDARD_LINK_MDU
@@ -282,27 +282,27 @@ impl core::fmt::Display for ResourceError {
 /// keys matching the Python implementation.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ResourceAdvertisement {
-    /// "t" ; encrypted data size in bytes.
+    /// "t", encrypted data size in bytes.
     pub transfer_size: u64,
-    /// "d" ; uncompressed data size in bytes.
+    /// "d", uncompressed data size in bytes.
     pub data_size: u64,
-    /// "n" ; number of data parts.
+    /// "n", number of data parts.
     pub num_parts: u32,
-    /// "h" ; SHA-256 hash of the resource data.
+    /// "h". SHA-256 hash of the resource data.
     pub resource_hash: [u8; 32],
-    /// "r" ; random hash unique to this transfer.
+    /// "r", random hash unique to this transfer.
     pub random_hash: [u8; RESOURCE_RANDOM_HASH_SIZE],
-    /// "o" ; original hash (before encryption/compression).
+    /// "o", original hash (before encryption/compression).
     pub original_hash: [u8; 32],
-    /// "i" ; segment index (1-based).
+    /// "i", segment index (1-based).
     pub segment_index: u32,
-    /// "l" ; total number of segments.
+    /// "l", total number of segments.
     pub total_segments: u32,
-    /// "q" ; request ID (None encodes as msgpack nil).
+    /// "q", request ID (None encodes as msgpack nil).
     pub request_id: Option<Vec<u8>>,
-    /// "f" ; resource flags.
+    /// "f", resource flags.
     pub flags: ResourceFlags,
-    /// "m" ; first segment of the hashmap (4 bytes per entry).
+    /// "m", first segment of the hashmap (4 bytes per entry).
     pub hashmap_data: Vec<u8>,
 }
 
@@ -458,7 +458,7 @@ impl ResourceAdvertisement {
                     hashmap_data = Some(bin.to_vec());
                 }
                 _ => {
-                    // Unknown key ; skip value for forward compatibility
+                    // Unknown key, skip value for forward compatibility
                     msgpack::skip_msgpack_value(data, &mut pos)
                         .ok_or(ResourceError::InvalidAdvertisement)?;
                 }

@@ -41,7 +41,7 @@ use self::airtime::AirtimeCredit;
 /// `init_clock_anchor` must be called from the driver with the
 /// Transport SystemClock's start instant BEFORE any `now_ms()` call.
 /// If `init_clock_anchor` was never called, we fall back to anchoring
-/// at first `now_ms()` invocation ; this is safe for unit tests that
+/// at first `now_ms()` invocation, this is safe for unit tests that
 /// never touch Transport's clock.
 static CLOCK_ANCHOR: OnceLock<Instant> = OnceLock::new();
 
@@ -49,7 +49,7 @@ pub(crate) fn init_clock_anchor(anchor: Instant) {
     // First writer wins. If the driver calls this before any TX,
     // Transport and the bucket share a frame. If the bucket saw a
     // try_send BEFORE the driver called this, the OnceLock already
-    // holds the bucket's fallback anchor ; the driver's call is a
+    // holds the bucket's fallback anchor, the driver's call is a
     // no-op. That's a programming error (driver must init first) but
     // does no harm: both frames are still self-consistent, just
     // offset by <1s.
@@ -191,7 +191,7 @@ pub(crate) struct InterfaceHandle {
     pub counters: Arc<InterfaceCounters>,
     /// Airtime budget for interfaces whose capacity is constrained by the
     /// radio physics (currently only LoRa-Serial). `None` for TCP, UDP,
-    /// Local, RNode, AutoInterface ; those are "always ready" from the
+    /// Local, RNode, AutoInterface, those are "always ready" from the
     /// backpressure-layer's perspective. Consumed by
     /// `try_send_prioritized` (credit-charge) and by Phase B4's
     /// `next_slot_ms` override. See `airtime.rs` for the bucket model.
@@ -368,7 +368,7 @@ mod tests {
     }
 
     /// try_send_prioritized on a handle without a credit bucket behaves
-    /// identically to the pre-B3 code path ; pure mpsc dispatch.
+    /// identically to the pre-B3 code path, pure mpsc dispatch.
     #[test]
     fn try_send_without_credit_goes_straight_to_mpsc() {
         use reticulum_core::traits::Interface;
@@ -431,8 +431,7 @@ mod tests {
         );
     }
 
-    /// Non-LoRa handle (credit == None) returns now_ms verbatim ;
-    /// the Interface trait's default semantic.
+    /// Non-LoRa handle (credit == None) returns now_ms verbatim.    /// the Interface trait's default semantic.
     #[test]
     fn next_slot_ms_non_lora_returns_now() {
         use reticulum_core::traits::Interface;

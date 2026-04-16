@@ -37,7 +37,7 @@ use embedded_alloc::LlffHeap as Heap;
 #[global_allocator]
 static HEAP: Heap = Heap::empty();
 
-/// Heap size in bytes (96 KiB ; leaves ~136 KiB of 232 KiB app RAM for stack + BSS)
+/// Heap size in bytes (96 KiB, leaves ~136 KiB of 232 KiB app RAM for stack + BSS)
 const HEAP_SIZE: usize = 96 * 1024;
 
 /// Return (used, free) heap bytes at this instant.
@@ -124,7 +124,7 @@ mod panic_handler {
             core::ptr::write_volatile(DIRSET as *mut u32, PIN03);
         }
 
-        // Rapid blink loop ; visible panic indicator
+        // Rapid blink loop, visible panic indicator
         loop {
             unsafe {
                 core::ptr::write_volatile(OUTCLR as *mut u32, PIN03); // LED on

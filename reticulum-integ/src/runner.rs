@@ -127,7 +127,7 @@ impl TestRunner {
     pub fn new(mut scenario: TestScenario) -> Result<Self, RunnerError> {
         // First thing: acquire the process-wide integ lock so a colliding
         // `cargo test` aborts before any Docker/USB work. Subsequent
-        // TestRunners in the same process are no-ops ; the `OnceLock`
+        // TestRunners in the same process are no-ops, the `OnceLock`
         // holds the fd for the process lifetime.
         crate::lock::acquire_integ_lock();
 
@@ -377,7 +377,7 @@ impl TestRunner {
 
     /// Collect container logs to a timestamped file under `reticulum-integ/logs/`.
     ///
-    /// Filename: `{test_name}_{timestamp}.log` ; never overwrites.
+    /// Filename: `{test_name}_{timestamp}.log`, never overwrites.
     pub fn collect_logs(&self) -> Result<PathBuf, RunnerError> {
         let logs_dir = Self::logs_dir();
         fs::create_dir_all(&logs_dir)?;
@@ -573,7 +573,7 @@ impl TestRunner {
                                                 continue
                                             }
                                             Err(_) => {
-                                                // Port lost ; try to reconnect
+                                                // Port lost, try to reconnect
                                                 thread::sleep(Duration::from_secs(1));
                                                 match serialport::new(&port_path, 115_200)
                                                     .timeout(Duration::from_secs(2))
@@ -618,7 +618,7 @@ impl TestRunner {
 
     /// Save exec step stdout/stderr to a timestamped file under `reticulum-integ/logs/`.
     ///
-    /// Filename: `{test_name}_{label}_{timestamp}.log` ; never overwrites.
+    /// Filename: `{test_name}_{label}_{timestamp}.log`, never overwrites.
     pub fn save_exec_output(
         &self,
         step_label: &str,
@@ -643,7 +643,7 @@ impl TestRunner {
 
     /// Execute a command inside a node's container.
     ///
-    /// Returns raw `Output` ; the caller interprets success/failure.
+    /// Returns raw `Output`, the caller interprets success/failure.
     pub fn docker_exec(&self, node: &str, args: &[&str]) -> Result<Output, RunnerError> {
         let container = self.container_name(node);
         let mut cmd = Command::new("docker");
@@ -665,7 +665,7 @@ impl TestRunner {
 
     /// Execute a command inside a node's container with extra environment variables.
     ///
-    /// Returns raw `Output` ; the caller interprets success/failure.
+    /// Returns raw `Output`, the caller interprets success/failure.
     pub fn docker_exec_with_env(
         &self,
         node: &str,
@@ -771,7 +771,7 @@ fn discover_devices() -> DiscoveredDevices {
                 _ => {}
             }
         } else {
-            // Potential RNode ; will be confirmed by CMD_DETECT probe
+            // Potential RNode, will be confirmed by CMD_DETECT probe
             rnode_candidates.push(path.clone());
         }
     }
@@ -797,7 +797,7 @@ fn discover_devices() -> DiscoveredDevices {
     // Probe RNode candidates with CMD_DETECT
     let mut confirmed_rnodes: Vec<String> = Vec::new();
     for path in &rnode_candidates {
-        // Err means "not an RNode" ; silently skip.
+        // Err means "not an RNode", silently skip.
         if probe_rnode(path).is_ok() {
             confirmed_rnodes.push(path.clone());
         }
@@ -976,7 +976,7 @@ fn check_stale_resources(scenario: &TestScenario) {
 /// Kill all `integ-*` Docker containers left over from previous test runs.
 ///
 /// Called at the start of every test to ensure no zombie containers hold
-/// USB devices or ports. Logs what it kills but never fails ; stale
+/// USB devices or ports. Logs what it kills but never fails, stale
 /// containers are best-effort cleanup.
 fn cleanup_stale_containers() {
     let output = Command::new("docker")
@@ -1121,8 +1121,7 @@ fn resolve_and_probe_rnodes(scenario: &mut TestScenario) -> Result<(), RunnerErr
 }
 
 /// Send a radio-config frame with `csma_enabled=true` to a T114 that the
-/// current scenario does not bind. Best-effort: failures warn and continue ;
-/// a silent failure here only reintroduces the CSMA-busy backoff on the
+/// current scenario does not bind. Best-effort: failures warn and continue./// a silent failure here only reintroduces the CSMA-busy backoff on the
 /// sender.
 fn silence_unused_lnode(port_path: &str, usb_serial: &str, radio: &crate::topology::RadioConfig) {
     use reticulum_core::framing::hdlc::{frame, DeframeResult, Deframer};

@@ -317,7 +317,7 @@ async fn test_announce_rebroadcast_hop_count_accuracy() {
         }
     }
 
-    // Propagation to D0 must succeed ; fail hard if it didn't
+    // Propagation to D0 must succeed, fail hard if it didn't
     assert!(
         d0_has_path,
         "D0 should have received announce propagated from D4 through 4 relays"

@@ -112,7 +112,7 @@ pub struct Sx1262<SPI> {
 }
 
 impl<SPI: SpiDeviceTrait> Sx1262<SPI> {
-    /// Create a new SX1262 driver. Does NOT initialize the radio ; call `reset()` + init_radio() first.
+    /// Create a new SX1262 driver. Does NOT initialize the radio, call `reset()` + init_radio() first.
     pub fn new(spi: SPI, reset: Output<'static>, busy: Input<'static>, dio1: Input<'static>) -> Self {
         Self { spi, reset, busy, dio1, preamble_len: 24 }
     }
@@ -339,7 +339,7 @@ impl<SPI: SpiDeviceTrait> Sx1262<SPI> {
         }).await?;
         self.write_command(opcode::CLEAR_IRQ_STATUS, &[0xFF, 0xFF]).await?;
 
-        // Write payload ; use two SPI operations to avoid 258-byte stack buffer
+        // Write payload, use two SPI operations to avoid 258-byte stack buffer
         self.wait_busy().await?;
         let header = [opcode::WRITE_BUFFER, 0x00];
         self.spi.transaction(&mut [
@@ -347,7 +347,7 @@ impl<SPI: SpiDeviceTrait> Sx1262<SPI> {
             Operation::Write(data),
         ]).await.map_err(|_| Error::Spi)?;
 
-        // Start TX (no hardware timeout ; we use our own)
+        // Start TX (no hardware timeout, we use our own)
         let t = u24_be(0);
         self.write_command(opcode::SET_TX, &t).await?;
 

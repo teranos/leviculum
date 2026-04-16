@@ -13,9 +13,9 @@ pub enum ChannelError {
     EnvelopeTruncated,
     /// Invalid stream_id (> STREAM_ID_MAX)
     InvalidStreamId,
-    /// Send path is occupied ; try later
+    /// Send path is occupied, try later
     Busy,
-    /// Channel is pacing sends ; retry at the given time
+    /// Channel is pacing sends, retry at the given time
     PacingDelay { ready_at_ms: u64 },
     /// Receive ring is full (message dropped)
     RxRingFull,

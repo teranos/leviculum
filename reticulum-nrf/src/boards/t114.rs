@@ -107,7 +107,7 @@ pub type QspiIo0 = peripherals::P1_12;
 pub type QspiIo1 = peripherals::P1_13;
 /// QSPI flash IO2
 pub type QspiIo2 = peripherals::P1_00;
-/// QSPI flash IO3 (HOLD# ; must be HIGH before QSPI activation)
+/// QSPI flash IO3 (HOLD#, must be HIGH before QSPI activation)
 pub type QspiIo3 = peripherals::P1_01;
 
 // Battery / ADC
@@ -130,6 +130,6 @@ pub type UserButton = peripherals::P1_10;
 
 /// Create the green LED output (active low)
 pub fn led(pin: Peri<'static, LedPin>) -> Output<'static> {
-    // LED is active LOW ; start with Level::High (LED off)
+    // LED is active LOW, start with Level::High (LED off)
     Output::new(pin, Level::High, OutputDrive::Standard)
 }

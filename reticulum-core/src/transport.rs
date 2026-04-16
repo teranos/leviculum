@@ -77,7 +77,7 @@ const ANNOUNCE_FREQ_SAMPLES: usize = 6;
 // Sans-I/O Types
 /// Opaque interface identifier
 ///
-/// Core never inspects what an `InterfaceId` refers to ; it stores and returns
+/// Core never inspects what an `InterfaceId` refers to, it stores and returns
 /// them so the driver can map them back to actual interface objects.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct InterfaceId(pub usize);
@@ -106,7 +106,7 @@ impl core::fmt::Display for IfaceName<'_> {
 
 /// I/O action for the driver to execute
 ///
-/// Core never performs I/O directly ; instead it returns `Action` values that
+/// Core never performs I/O directly, instead it returns `Action` values that
 /// describe what the driver should do. The driver matches on these and
 /// dispatches to the appropriate interface.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -131,7 +131,7 @@ pub enum Action {
 ///
 /// Returned by `handle_packet()`, `handle_timeout()`, and other methods that
 /// may trigger outbound I/O or application-visible events. The returned
-/// `TickOutput` **must** be dispatched to interfaces by the driver ; dropping
+/// `TickOutput` **must** be dispatched to interfaces by the driver, dropping
 /// it silently loses outbound packets and application events.
 #[derive(Default)]
 #[must_use = "TickOutput contains actions that must be dispatched to interfaces"]
@@ -183,7 +183,7 @@ impl core::fmt::Debug for TickOutput {
 /// Dispatch actions to interfaces (protocol logic)
 ///
 /// Routes each [`Action`] to the correct interface(s) via [`Interface::try_send()`].
-/// This is protocol knowledge ; broadcast-exclusion, interface selection ; that
+/// This is protocol knowledge, broadcast-exclusion, interface selection, that
 /// belongs in core so every driver (tokio, Embassy, bare-metal) gets it for free.
 ///
 /// Returns errors from `try_send()` so the driver can react:
@@ -192,7 +192,7 @@ impl core::fmt::Debug for TickOutput {
 ///
 /// The driver calls this after every `handle_packet()`, `handle_timeout()`,
 /// or deferred operation (connect, send, close, announce).
-/// A SendPacket that failed with BufferFull ; driver must queue for retry.
+/// A SendPacket that failed with BufferFull, driver must queue for retry.
 pub struct SendRetry {
     /// Interface index (iface_id.0) for the retry queue key.
     pub iface_idx: usize,
@@ -202,7 +202,7 @@ pub struct SendRetry {
 
 /// Result of dispatching actions to interfaces.
 pub struct DispatchResult {
-    /// Failed SendPacket actions ; driver must queue these for retry.
+    /// Failed SendPacket actions, driver must queue these for retry.
     pub retries: Vec<SendRetry>,
     /// All errors (SendPacket and Broadcast) for logging.
     pub errors: Vec<(InterfaceId, crate::traits::InterfaceError)>,
@@ -517,7 +517,7 @@ pub enum TransportEvent {
 pub enum TransportError {
     /// No path to destination
     NoPath,
-    /// Target interface is pacing ; retry no earlier than `ready_at_ms`.
+    /// Target interface is pacing, retry no earlier than `ready_at_ms`.
     /// Mirrors `ChannelError::PacingDelay` / `SendError::PacingDelay` so
     /// async callers (see `driver/stream.rs:127`) can `sleep_until` to
     /// the exact ready time instead of polling.
@@ -551,7 +551,7 @@ impl From<PacketError> for TransportError {
 /// The Transport layer (sans-I/O state machine)
 ///
 /// Generic over platform traits so the same protocol logic runs everywhere.
-/// Transport never performs I/O directly ; all outbound data is expressed as
+/// Transport never performs I/O directly, all outbound data is expressed as
 /// `Action` values that the driver dispatches to actual network interfaces.
 ///
 /// - `C`: Clock implementation for timestamps
@@ -1136,8 +1136,8 @@ impl<C: Clock, S: Storage> Transport<C, S> {
         // client) skip dedup so that link-request retries (proof lost → initiator
         // re-sends same link request) reach handle_link_request(), which
         // re-sends the cached proof. Covers both cases:
-        // Destination on this daemon (local_destinations)
-        // Destination on a local client (lncp receiver behind this daemon)
+        // - Destination on this daemon (local_destinations)
+        // - Destination on a local client (lncp receiver behind this daemon)
         // The link management layer handles its own dedup via links.contains_key().
         let is_link_request_for_us = packet.flags.packet_type == PacketType::LinkRequest
             && (self.local_destinations.contains(&packet.destination_hash)
@@ -1145,8 +1145,7 @@ impl<C: Clock, S: Storage> Transport<C, S> {
         // CacheRequest packets skip dedup unconditionally: the sender retries
         // CacheRequest on timeout with identical bytes (deterministic packet_hash).
         // Without this exemption, both the daemon and the lncp client would reject
-        // retries as duplicates. The handler (handle_cache_request) is idempotent ;
-        // it simply re-sends the cached proof. No routing loop risk: CacheRequests
+        // retries as duplicates. The handler (handle_cache_request) is idempotent.        // it simply re-sends the cached proof. No routing loop risk: CacheRequests
         // are link-addressed (dest_type=Link) and never forwarded via path table.
         let is_cache_request = packet.context == PacketContext::CacheRequest;
         // LRPROOFs for our own links skip dedup: link-request retries generate
@@ -1287,7 +1286,7 @@ impl<C: Clock, S: Storage> Transport<C, S> {
 
         // Only convert Type1 packets to Type2 for relay routing.
         // Type2 packets (e.g., link requests from initiate_with_path) are
-        // already correctly formatted ; pass them through unchanged.
+        // already correctly formatted, pass them through unchanged.
         let is_type1 = data.len() >= 2 && (data[0] & 0x40) == 0;
 
         if needs_relay && is_type1 {
@@ -1429,10 +1428,9 @@ impl<C: Clock, S: Storage> Transport<C, S> {
             update(self.last_discovery_retry_ms + DISCOVERY_RETRY_INTERVAL_MS);
         }
 
-        // Packet cache rotation and reverse table cleanup are background ;
-        // use a fixed interval rather than scanning every entry
+        // Packet cache rotation and reverse table cleanup are background.        // use a fixed interval rather than scanning every entry
         if self.config.enable_transport {
-            // Reverse table cleanup ; only needed when transport is enabled
+            // Reverse table cleanup, only needed when transport is enabled
             // (only transport nodes populate the reverse table)
             let cleanup_interval = 60_000; // Check every 60s
             update(now.saturating_add(cleanup_interval));
@@ -1454,7 +1452,7 @@ impl<C: Clock, S: Storage> Transport<C, S> {
         let mut total = 0u64;
         let _ = writeln!(s, "--- Transport ---");
 
-        // announce_queues: per-interface VecDeque<QueuedAnnounce> ; 1x
+        // announce_queues: per-interface VecDeque<QueuedAnnounce>, 1x
         let n_ifaces = self.interface_announce_caps.len();
         let mut n_queued = 0usize;
         let mut raw = 0u64;
@@ -1473,7 +1471,7 @@ impl<C: Clock, S: Storage> Transport<C, S> {
             n_ifaces, n_queued, raw, est
         );
 
-        // local_destinations: BTreeSet<[u8; 16]> ; 3x
+        // local_destinations: BTreeSet<[u8; 16]>, 3x
         let n = self.local_destinations.len();
         let raw_ld = (n * TRUNCATED_HASHBYTES) as u64;
         let est_ld = raw_ld * 3;
@@ -1606,7 +1604,7 @@ impl<C: Clock, S: Storage> Transport<C, S> {
 
         let dest_hash = announce.destination_hash().into_bytes();
 
-        // Don't process announces for our own destinations ; these are echoes
+        // Don't process announces for our own destinations, these are echoes
         // from neighbors rebroadcasting our announce back to us.
         if self.local_destinations.contains(&dest_hash) {
             tracing::trace!(
@@ -1711,7 +1709,7 @@ impl<C: Clock, S: Storage> Transport<C, S> {
             if packet.hops <= existing.hops {
                 // Equal or fewer hops: accept if emission is newer, or if
                 // same emission but strictly fewer hops (same announce via
-                // a shorter path ; e.g. direct vs relayed path response).
+                // a shorter path, e.g. direct vs relayed path response).
                 if announce_emitted > path_timebase
                     || (announce_emitted == path_timebase && packet.hops < existing.hops)
                 {
@@ -1734,7 +1732,7 @@ impl<C: Clock, S: Storage> Transport<C, S> {
                 {
                     // Same emission but path is unresponsive: accept worse-hop
                     // announce as alternative route (Python Transport.py:1677-1679).
-                    // do NOT call mark_path_unknown_state() here ; state
+                    // do NOT call mark_path_unknown_state() here, state
                     // stays UNRESPONSIVE until a fresh announce resets it.
                     true
                 } else {
@@ -1763,7 +1761,7 @@ impl<C: Clock, S: Storage> Transport<C, S> {
 
         // If rate-limited and the path table wouldn't improve, drop early.
         // But if the path WOULD improve (e.g. fewer hops via shorter route),
-        // allow the update ; only suppress the rebroadcast.
+        // allow the update, only suppress the rebroadcast.
         if rate_limited && !should_update {
             tracing::trace!(
                 dest = %HexShort(&dest_hash),
@@ -1962,14 +1960,13 @@ impl<C: Clock, S: Storage> Transport<C, S> {
             }
 
             // Cache raw announce for path responses. Always cache regardless of
-            // transport mode ; local clients may connect later and issue path
+            // transport mode, local clients may connect later and issue path
             // requests for destinations announced before the client connected.
             self.storage.set_announce_cache(dest_hash, raw.to_vec());
 
             // Forward announce to local client interfaces (Python Transport.py:1788-1833).
             // Convert to Header2 with the daemon's own transport_id and receipt-incremented
-            // hops. The client uses transport_id to construct outbound Header2 packets ;
-            // if we forward raw network bytes, the client sets the relay's transport_id
+            // hops. The client uses transport_id to construct outbound Header2 packets.            // if we forward raw network bytes, the client sets the relay's transport_id
             // instead of ours, and our transport_id filter rejects the client's packets.
             if self.has_local_clients() {
                 if let Ok(mut local_announce) = Packet::unpack(raw) {
@@ -1995,7 +1992,7 @@ impl<C: Clock, S: Storage> Transport<C, S> {
 
             self.stats.announces_processed += 1;
 
-            // Emit events ; PathFound on every update (not just new paths)
+            // Emit events. PathFound on every update (not just new paths)
             // so consumers always see current hop counts
             self.events.push(TransportEvent::PathFound {
                 destination_hash: dest_hash,
@@ -2234,12 +2231,12 @@ impl<C: Clock, S: Storage> Transport<C, S> {
         // Check if this is a proof for a receipt we're tracking.
         // Two proof formats (Python defaults to implicit):
         //   Explicit: [packet_hash (32)] + [signature (64)] = 96 bytes
-        //   Implicit: [signature (64)] only ; destination_hash IS the truncated_packet_hash
+        //   Implicit: [signature (64)] only, destination_hash IS the truncated_packet_hash
         if proof_data.len() == crate::constants::PROOF_DATA_SIZE {
             // Explicit proof: extract packet hash from proof data
             let mut proof_packet_hash = [0u8; 32];
             proof_packet_hash.copy_from_slice(&proof_data[..32]);
-            // Simple truncation ; first 16 bytes of the full hash.
+            // Simple truncation, first 16 bytes of the full hash.
             // Do NOT use truncated_hash() which would SHA256 it again.
             let mut truncated = [0u8; TRUNCATED_HASHBYTES];
             truncated.copy_from_slice(&proof_packet_hash[..TRUNCATED_HASHBYTES]);
@@ -2431,7 +2428,7 @@ impl<C: Clock, S: Storage> Transport<C, S> {
                                     dest = %HexShort(&dest_hash),
                                     "Dropped LRPROOF, malformed Ed25519 key"
                                 );
-                                // Malformed key bytes ; drop
+                                // Malformed key bytes, drop
                                 self.stats.packets_dropped += 1;
                                 return Ok(());
                             }
@@ -2533,7 +2530,7 @@ impl<C: Clock, S: Storage> Transport<C, S> {
         // Not in Transport::receipts (receipt check at line 1404 failed)
         // Not for a registered destination (check at line 1435 failed)
         // Not forwarded by transport (enable_transport is false, or link_id
-        //   not in our link_table ; initiator's own links are never in link_table)
+        //   not in our link_table, initiator's own links are never in link_table)
         //
         // The node layer routes Proof packets to process_link_packet(),
         // which distinguishes LRPROOF (link establishment) from data proofs
@@ -2580,9 +2577,9 @@ impl<C: Clock, S: Storage> Transport<C, S> {
 
         // Plain broadcast forwarding through shared instance
         // (Python Transport.py:1384-1398). Plain broadcasts bypass transport
-        // routing ; they are forwarded directly between local clients and
+        // routing, they are forwarded directly between local clients and
         // network interfaces. Control destinations (path requests, tunnel
-        // synthesis) are excluded ; they have their own handlers.
+        // synthesis) are excluded, they have their own handlers.
         // Codeberg issue #24.
         let is_control_dest =
             dest_hash == self.path_request_hash || dest_hash == self.tunnel_synthesize_hash;
@@ -2641,8 +2638,7 @@ impl<C: Clock, S: Storage> Transport<C, S> {
                 });
             }
             // Early return: Python falls through to "general transport handling"
-            // (Transport.py:1404) but that path is a no-op for PLAIN broadcasts ;
-            // for_local_client is always False (no path table entry for PLAIN dests).
+            // (Transport.py:1404) but that path is a no-op for PLAIN broadcasts.            // for_local_client is always False (no path table entry for PLAIN dests).
             return Ok(());
         }
 
@@ -2660,7 +2656,7 @@ impl<C: Clock, S: Storage> Transport<C, S> {
                 raw_hash: Some(full_packet_hash),
             });
 
-            // Always emit ProofRequested ; NodeCore decides based on strategy
+            // Always emit ProofRequested. NodeCore decides based on strategy
             self.events.push(TransportEvent::ProofRequested {
                 packet_hash: full_packet_hash,
                 destination_hash: dest_hash,
@@ -2728,7 +2724,7 @@ impl<C: Clock, S: Storage> Transport<C, S> {
                     //    identical raw bytes, caching would block future retransmits.
                     // 2. Link-table-routed data: relay nodes must forward retransmitted
                     //    resource segments (identical bytes) to the other side of the
-                    //    link. No dedup needed ; link-addressed packets follow a fixed
+                    //    link. No dedup needed, link-addressed packets follow a fixed
                     //    link_table path with no routing loop risk.
                     let is_link_routed = self.storage.has_link_entry(&dest_hash)
                         && packet.flags.dest_type == DestinationType::Link;
@@ -2753,7 +2749,7 @@ impl<C: Clock, S: Storage> Transport<C, S> {
 
             // Non-link-addressed packets: forward via path table.
             // Link-addressed packets not in link_table are for our own local
-            // links (link_ids never appear in path_table) ; fall through to
+            // links (link_ids never appear in path_table), fall through to
             // the delivery code below.
             if packet.flags.dest_type != DestinationType::Link {
                 tracing::trace!(
@@ -2945,7 +2941,7 @@ impl<C: Clock, S: Storage> Transport<C, S> {
     /// 1. **RF collision** (primary): On a half-duplex LoRa channel with 3+
     ///    transport-enabled nodes, a bystander (C) that relays A's link request
     ///    back onto the same channel causes its TX to overlap with B's proof TX.
-    ///    The collision corrupts both frames ; A never receives the proof, and
+    ///    The collision corrupts both frames. A never receives the proof, and
     ///    the link fails. Hash-based dedup in
     ///    `send_on_interface` cannot fix this because the proof was destroyed
     ///    in flight before reception.
@@ -2967,7 +2963,7 @@ impl<C: Clock, S: Storage> Transport<C, S> {
     /// **Safe for multi-hop**: When `target_iface != receiving_iface` (e.g.,
     /// a bridge node with two RNodes on different frequencies), forwarding
     /// proceeds normally. The suppression only fires when both interfaces
-    /// are the same object ; i.e., the packet would be relayed back onto the
+    /// are the same object, i.e., the packet would be relayed back onto the
     /// exact medium it was received from.
     fn forward_on_interface_from(
         &mut self,
@@ -3366,7 +3362,7 @@ impl<C: Clock, S: Storage> Transport<C, S> {
 
     /// Read the earliest wall-clock ms at which the given interface will
     /// accept a packet, or `now_ms` if no value was pushed (unknown ⇒
-    /// always ready ; matches the `Interface::next_slot_ms` trait default).
+    /// always ready, matches the `Interface::next_slot_ms` trait default).
     ///
     /// Slot is computed for MTU-sized packets. Smaller packets may fit
     /// earlier than the cached value reports; over-estimation is
@@ -3662,7 +3658,7 @@ impl<C: Clock, S: Storage> Transport<C, S> {
                 requesting_interface: interface_index,
             });
             // Schedule deferred path response only if we have a cached announce.
-            // Without a cache, there's nothing to rebroadcast ; NodeCore will
+            // Without a cache, there's nothing to rebroadcast. NodeCore will
             // generate a fresh announce in response to the PathRequestReceived
             // event, which populates the cache for future requests.
             if let Some(cached_raw) = self.storage.get_announce_cache(&requested_hash).cloned() {
@@ -3905,8 +3901,7 @@ impl<C: Clock, S: Storage> Transport<C, S> {
         // Broadcast defers iff EVERY known interface is future. We use
         // interface_hw_mtus as the authoritative "known interfaces" set
         // (populated at driver registration), falling back through the
-        // getter's unwrap_or(now) for interfaces without a pushed slot ;
-        // those count as "ready now" and prevent deferral.
+        // getter's unwrap_or(now) for interfaces without a pushed slot.        // those count as "ready now" and prevent deferral.
         let keys = self.storage.announce_keys();
         for dest_hash in keys {
             if let Some(entry) = self.storage.get_announce(&dest_hash) {
@@ -3931,7 +3926,7 @@ impl<C: Clock, S: Storage> Transport<C, S> {
                             None => {
                                 // Broadcast: defer only if every registered
                                 // interface reports a future slot. If any is
-                                // ready now, push ; the dispatcher filters
+                                // ready now, push, the dispatcher filters
                                 // per-interface via try_send_prioritized.
                                 let mut all_future = true;
                                 let mut min_slot = u64::MAX;
@@ -4058,7 +4053,7 @@ impl<C: Clock, S: Storage> Transport<C, S> {
                 }
             }
 
-            // Update announce table entry ; schedule next retransmit with
+            // Update announce table entry, schedule next retransmit with
             // exponential backoff: retry 1 → 0-500ms, retry 2 → 0-1000ms,
             // retry 3 → 0-2000ms jitter window. Wider windows on later retries
             // break deterministic collision patterns between nodes.
@@ -4148,7 +4143,7 @@ impl<C: Clock, S: Storage> Transport<C, S> {
             // else: queue full, drop silently
         }
 
-        // Send to uncapped interfaces individually ; capped ones were handled
+        // Send to uncapped interfaces individually, capped ones were handled
         // above (either sent immediately or queued). A plain Broadcast would
         // double-send to capped interfaces that already got a SendPacket.
         for &iface_idx in self.interface_names.keys() {
@@ -4236,7 +4231,7 @@ impl<C: Clock, S: Storage> Transport<C, S> {
             let mut should_request_path = false;
 
             if !self.storage.has_path(&dest_hash) {
-                // Sub-case 1: Path missing ; unconditionally try to rediscover
+                // Sub-case 1: Path missing, unconditionally try to rediscover
                 // (no throttle check). Python Transport.py:644.
                 should_request_path = true;
             } else if !path_request_throttled
@@ -4245,7 +4240,7 @@ impl<C: Clock, S: Storage> Transport<C, S> {
                     .get_path(&dest_hash)
                     .is_some_and(|p| p.is_direct())
             {
-                // Sub-case 2: Destination directly connected ; may have roamed.
+                // Sub-case 2: Destination directly connected, may have roamed.
                 // is_direct() checks hops == 1, matching Python Transport.py:660-676.
                 should_request_path = true;
                 if self.config.enable_transport {
@@ -4268,7 +4263,7 @@ impl<C: Clock, S: Storage> Transport<C, S> {
                     self.expire_path(&dest_hash);
                 }
 
-                // Request path directly ; deterministic tag from clock + dest_hash
+                // Request path directly, deterministic tag from clock + dest_hash
                 // ensures uniqueness per (destination, time) for dedup.
                 let mut tag = [0u8; TRUNCATED_HASHBYTES];
                 let now_bytes = now.to_be_bytes();
@@ -4405,7 +4400,7 @@ impl<C: Clock, S: Storage> Transport<C, S> {
         };
 
         if now >= timeout {
-            // Expired ; clean up
+            // Expired, clean up
             self.storage.remove_discovery_path_request(dest_hash);
             return;
         }
@@ -4454,7 +4449,7 @@ impl<C: Clock, S: Storage> Transport<C, S> {
                 return true;
             }
 
-            // Check rate ; clone the entry to modify it
+            // Check rate, clone the entry to modify it
             let mut entry = *entry;
             let current_rate = now.saturating_sub(entry.last_ms);
             if current_rate < rate_target {
@@ -4470,12 +4465,12 @@ impl<C: Clock, S: Storage> Transport<C, S> {
                 return true;
             }
 
-            // Good ; update last timestamp
+            // Good, update last timestamp
             entry.last_ms = now;
             self.storage.set_announce_rate(*dest_hash, entry);
             false
         } else {
-            // First time seeing this destination ; create entry, not blocked
+            // First time seeing this destination, create entry, not blocked
             self.storage.set_announce_rate(
                 *dest_hash,
                 AnnounceRateEntry {
@@ -5683,7 +5678,7 @@ mod tests {
 
             transport.handle_path_request(packet, 0).unwrap();
 
-            // No immediate actions ; response is deferred
+            // No immediate actions, response is deferred
             let actions = transport.drain_actions();
             assert!(
                 actions
@@ -5718,7 +5713,7 @@ mod tests {
                 "Path response must target the requesting interface (0)"
             );
 
-            // No Broadcast actions ; path response is targeted, not broadcast
+            // No Broadcast actions, path response is targeted, not broadcast
             let broadcasts: Vec<_> = actions
                 .iter()
                 .filter(|a| matches!(a, Action::Broadcast { .. }))
@@ -6867,8 +6862,7 @@ mod tests {
         // Gap 3: Per-interface announce bandwidth caps
         #[test]
         fn test_announce_cap_delays_second_announce() {
-            // Register a low-bitrate interface, process two announces fast ;
-            // the second should be queued (not immediately sent) on the capped interface.
+            // Register a low-bitrate interface, process two announces fast.            // the second should be queued (not immediately sent) on the capped interface.
             let mut transport = make_transport_enabled();
             let _idx0 = transport.register_interface(Box::new(MockInterface::new("if0", 1)));
             let _idx1 = transport.register_interface(Box::new(MockInterface::new("if1", 2)));
@@ -6939,7 +6933,7 @@ mod tests {
                 queued_at_ms: transport.clock.now_ms(),
             });
 
-            // Poll before holdoff expires ; nothing should drain
+            // Poll before holdoff expires, nothing should drain
             transport.poll();
             let actions_before = transport.drain_actions();
             let sent_before = actions_before
@@ -7111,8 +7105,7 @@ mod tests {
         fn test_local_announce_skips_cap() {
             // Locally-originated announces (hops == 0 after local client adjust) should
             // bypass caps entirely (Python Transport.py:1086-1089).
-            // Since Block B, the first local client announce is delayed by 250ms ;
-            // caps are still bypassed when the deferred rebroadcast fires.
+            // Since Block B, the first local client announce is delayed by 250ms.            // caps are still bypassed when the deferred rebroadcast fires.
             let mut transport = make_transport_enabled();
             let _idx0 = transport.register_interface(Box::new(MockInterface::new("if0", 1)));
             let _idx1 = transport.register_interface(Box::new(MockInterface::new("if1", 2)));
@@ -7365,7 +7358,7 @@ mod tests {
 
             let dest_hash = [0x42; TRUNCATED_HASHBYTES];
             transport.register_destination(dest_hash);
-            // NO announce cache set ; this is the bug trigger
+            // NO announce cache set, this is the bug trigger
 
             // Build path request
             let path_req_hash = transport.path_request_hash;
@@ -7503,7 +7496,7 @@ mod tests {
                 },
             );
 
-            // Advance clock and poll ; must not panic or emit broadcast
+            // Advance clock and poll, must not panic or emit broadcast
             transport.clock.advance(1);
             transport.poll();
 
@@ -7551,7 +7544,7 @@ mod tests {
             let len = packet.pack(&mut buf).unwrap();
             let raw = buf[..len].to_vec();
 
-            // First LRPROOF ; must produce a PacketReceived event
+            // First LRPROOF, must produce a PacketReceived event
             transport.process_incoming(0, &raw).unwrap();
             let events1: Vec<_> = transport.drain_events().collect();
             let got_event_1 = events1
@@ -7562,7 +7555,7 @@ mod tests {
                 "First LRPROOF must produce PacketReceived event"
             );
 
-            // Second identical LRPROOF ; must NOT be dropped as duplicate.
+            // Second identical LRPROOF, must NOT be dropped as duplicate.
             // Under link-request retry, the responder re-sends the same proof.
             // If dedup drops it, link establishment fails under RF contention.
             transport.process_incoming(0, &raw).unwrap();
@@ -7581,7 +7574,7 @@ mod tests {
         fn test_relay_forwards_retransmitted_link_data() {
             // Simulate a relay node with two interfaces (Ch.A = if0, Ch.B = if1).
             // A link-addressed data packet arrives on if0 and is forwarded to if1.
-            // The same packet arrives again (resource retransmit) ; must NOT be
+            // The same packet arrives again (resource retransmit), must NOT be
             // dropped by dedup. Link-addressed packets follow a fixed link_table
             // path with no routing loop risk.
             let mut transport = make_transport_enabled();
@@ -7631,7 +7624,7 @@ mod tests {
             let len = packet.pack(&mut buf).unwrap();
             let raw = buf[..len].to_vec();
 
-            // First arrival on if0 ; must be forwarded (produces SendPacket to if1)
+            // First arrival on if0, must be forwarded (produces SendPacket to if1)
             transport.process_incoming(0, &raw).unwrap();
             let actions1 = transport.drain_actions();
             let forwarded_1 = actions1
@@ -7642,7 +7635,7 @@ mod tests {
                 "First data packet must be forwarded via link table"
             );
 
-            // Second arrival (retransmit) on if0 ; must also be forwarded
+            // Second arrival (retransmit) on if0, must also be forwarded
             transport.process_incoming(0, &raw).unwrap();
             let actions2 = transport.drain_actions();
             let forwarded_2 = actions2
@@ -8415,7 +8408,7 @@ mod tests {
             // with no transport_id.
             //
             // Rust stores raw wire hops (no increment on receipt), so hops == 0
-            // means directly connected ; the Python equivalent of hops == 1
+            // means directly connected, the Python equivalent of hops == 1
             // (Python increments on receipt, Transport.py:1319).
             use crate::destination::DestinationType;
             use crate::packet::{HeaderType, PacketData, PacketFlags, TransportType};
@@ -8912,7 +8905,7 @@ mod tests {
             let actions = transport.drain_actions();
             assert_eq!(actions.len(), 1);
             if let Action::SendPacket { data, .. } = &actions[0] {
-                // Should NOT grow ; Type2 packets are passed through unchanged
+                // Should NOT grow. Type2 packets are passed through unchanged
                 assert_eq!(
                     data.len(),
                     original_len,
@@ -9608,8 +9601,8 @@ mod tests {
         #[test]
         fn test_rate_limited_announce_still_updates_path_when_fewer_hops() {
             // Fix 1: When the same announce arrives via two paths in a ring
-            // topology ; long path (3 hops) first, then short path (2 hops)
-            // within the rate limit window ; the path table must update to
+            // topology, long path (3 hops) first, then short path (2 hops)
+            // within the rate limit window, the path table must update to
             // the shorter route. Previously the rate limiter did a hard
             // `return Ok(())` that blocked path table updates.
             use crate::destination::{Destination, DestinationType, Direction};
@@ -9647,7 +9640,7 @@ mod tests {
             );
 
             // Second: 2-hop announce arrives on if1 within the rate window
-            // (no clock advance ; same millisecond)
+            // (no clock advance, same millisecond)
             let _ = transport.process_incoming(1, &raw_2hops);
             let _ = transport.drain_actions();
 
@@ -9756,7 +9749,7 @@ mod tests {
 
             let dropped_before = transport.stats.packets_dropped;
 
-            // 4-hop announce within rate window ; worse hops, should be dropped
+            // 4-hop announce within rate window, worse hops, should be dropped
             let _ = transport.process_incoming(1, &raw_4hops);
             let _ = transport.drain_actions();
 
@@ -9930,7 +9923,7 @@ mod tests {
                 .clock
                 .advance(expiry_ms + ANNOUNCE_RATE_LIMIT_MS + 1);
 
-            // Inject announce at wire hops=3 (worse, stored as 4) ; accepted because expired
+            // Inject announce at wire hops=3 (worse, stored as 4), accepted because expired
             let now2 = transport.clock.now_ms();
             let a2 = make_announce_raw_for_dest(&dest, 3, now2);
             transport.process_incoming(0, &a2).unwrap();
@@ -10019,7 +10012,7 @@ mod tests {
             let a2 = make_announce_raw_for_dest(&dest, 2, now); // same now_ms!
             transport.process_incoming(1, &a2).unwrap();
 
-            // Path should NOT update ; emission is not newer
+            // Path should NOT update, emission is not newer
             assert_eq!(
                 transport.path(&dest_hash).unwrap().interface_index,
                 0,
@@ -10315,7 +10308,7 @@ mod tests {
             transport.storage_mut().clear_packet_hashes();
             transport.process_incoming(1, &first_buf[..flen]).unwrap();
 
-            // Path unchanged ; still on interface 0
+            // Path unchanged, still on interface 0
             assert_eq!(
                 transport.path(&dest_hash).unwrap().interface_index,
                 0,
@@ -10397,7 +10390,7 @@ mod tests {
                 dropped_before + 1,
                 "Foreign transport_id HEADER_2 data packet should be dropped"
             );
-            // Must NOT be forwarded ; the packet is not for us
+            // Must NOT be forwarded, the packet is not for us
             assert_eq!(
                 transport.stats().packets_forwarded,
                 0,
@@ -10474,8 +10467,7 @@ mod tests {
 
         #[test]
         fn test_header2_announce_not_filtered_by_transport_id() {
-            // HEADER_2 announce with a foreign transport_id should NOT be dropped ;
-            // announces are exempt from the transport_id filter.
+            // HEADER_2 announce with a foreign transport_id should NOT be dropped.            // announces are exempt from the transport_id filter.
             // Python Transport.py:1193-1196
             use crate::announce::build_announce_payload;
             use crate::destination::{Destination, DestinationType, Direction};
@@ -10542,7 +10534,7 @@ mod tests {
         // PLAIN/GROUP hop restriction
         #[test]
         fn test_plain_packet_with_hops_above_1_dropped() {
-            // PLAIN data packets with hops > 0 must be dropped ; PLAIN destinations
+            // PLAIN data packets with hops > 0 must be dropped. PLAIN destinations
             // are for direct neighbors only. Python Transport.py:1205-1213
             use crate::destination::DestinationType;
             use crate::packet::{HeaderType, PacketData, PacketFlags, TransportType};
@@ -10634,7 +10626,7 @@ mod tests {
 
         #[test]
         fn test_plain_packet_with_hops_1_dropped() {
-            // PLAIN data packets with hops=1 must be dropped ; PLAIN destinations
+            // PLAIN data packets with hops=1 must be dropped. PLAIN destinations
             // are for direct neighbors only (hops == 0). Python checks hops > 1
             // after increment; Rust equivalent without increment: hops > 0.
             use crate::destination::DestinationType;
@@ -10680,7 +10672,7 @@ mod tests {
 
         #[test]
         fn test_plain_announce_always_dropped() {
-            // PLAIN announces are always invalid ; dropped unconditionally
+            // PLAIN announces are always invalid, dropped unconditionally
             // regardless of hop count. Python Transport.py:1211-1213
             use crate::destination::DestinationType;
             use crate::packet::{HeaderType, PacketData, PacketFlags, TransportType};
@@ -10725,7 +10717,7 @@ mod tests {
 
         #[test]
         fn test_group_packet_with_hops_above_1_dropped() {
-            // GROUP data packets with hops > 0 must be dropped ; GROUP destinations
+            // GROUP data packets with hops > 0 must be dropped. GROUP destinations
             // are for direct neighbors only. Python Transport.py:1215-1225
             use crate::destination::DestinationType;
             use crate::packet::{HeaderType, PacketData, PacketFlags, TransportType};
@@ -10774,7 +10766,7 @@ mod tests {
 
         #[test]
         fn test_group_announce_always_dropped() {
-            // GROUP announces are always invalid ; dropped unconditionally
+            // GROUP announces are always invalid, dropped unconditionally
             // regardless of hop count. Python Transport.py:1223-1225
             use crate::destination::DestinationType;
             use crate::packet::{HeaderType, PacketData, PacketFlags, TransportType};
@@ -10849,7 +10841,7 @@ mod tests {
             let mut buf = [0u8; 500];
             let len = pkt.pack(&mut buf).unwrap();
 
-            // Step 1: arrives on if1 (destination side) ; receipt hops=2 != remaining_hops=3 → dropped
+            // Step 1: arrives on if1 (destination side), receipt hops=2 != remaining_hops=3 → dropped
             transport.process_incoming(1, &buf[..len]).unwrap();
             assert_eq!(transport.stats().packets_forwarded, 0);
             assert!(
@@ -10857,7 +10849,7 @@ mod tests {
                 "Hash must NOT be cached when link-table hop check fails"
             );
 
-            // Step 2: same packet arrives on if0 (initiator side) ; receipt hops=2 == hops=2 → forwarded
+            // Step 2: same packet arrives on if0 (initiator side), receipt hops=2 == hops=2 → forwarded
             transport.process_incoming(0, &buf[..len]).unwrap();
             assert_eq!(
                 transport.stats().packets_forwarded,
@@ -11012,7 +11004,7 @@ mod tests {
                 transport.stats().packets_forwarded > 0,
                 "LRPROOF should be forwarded"
             );
-            // Forwarding path does NOT cache hashes ; only origination paths do.
+            // Forwarding path does NOT cache hashes, only origination paths do.
             // This matches Python where Transport.transmit() doesn't call
             // add_packet_hash(), only Transport.outbound() does.
             assert!(
@@ -11216,7 +11208,7 @@ mod tests {
             // Poll should clean up orphaned state
             transport.poll();
 
-            // Re-insert path ; state should be gone (not unresponsive)
+            // Re-insert path, state should be gone (not unresponsive)
             transport.insert_path(
                 dest_hash,
                 PathEntry {
@@ -11254,7 +11246,7 @@ mod tests {
             // Advance past rate limit
             transport.clock.advance(ANNOUNCE_RATE_LIMIT_MS + 1);
 
-            // Process newer announce (same dest, newer emission) ; should reset state
+            // Process newer announce (same dest, newer emission), should reset state
             let rh2 = make_random_hash([0x0A, 0x0B, 0x0C, 0x0D, 0x0E], 2000);
             let a2 = make_announce_raw_with_random_hash(&dest, 1, &rh2);
             transport.process_incoming(0, &a2).unwrap();
@@ -11285,7 +11277,7 @@ mod tests {
             transport.clock.advance(ANNOUNCE_RATE_LIMIT_MS + 1);
 
             // Process announce B (wire hops=3, same emission, different random)
-            // WITHOUT marking unresponsive ; should be REJECTED
+            // WITHOUT marking unresponsive, should be REJECTED
             let rh_b = make_random_hash([0x0A, 0x0B, 0x0C, 0x0D, 0x0E], emission);
             let a2 = make_announce_raw_with_random_hash(&dest, 3, &rh_b);
             transport.process_incoming(1, &a2).unwrap();
@@ -11302,7 +11294,7 @@ mod tests {
             transport.storage_mut().clear_packet_hashes();
             transport.clock.advance(ANNOUNCE_RATE_LIMIT_MS + 1);
 
-            // Re-process announce B ; should be ACCEPTED now (wire hops=3, stored as 4)
+            // Re-process announce B, should be ACCEPTED now (wire hops=3, stored as 4)
             let rh_c = make_random_hash([0x0F, 0x10, 0x11, 0x12, 0x13], emission);
             let a3 = make_announce_raw_with_random_hash(&dest, 3, &rh_c);
             transport.process_incoming(1, &a3).unwrap();
@@ -11487,7 +11479,7 @@ mod tests {
             transport.clock.advance(1001);
             transport.poll();
 
-            // Neither sub-case 3 nor 4 applies ; should NOT be marked
+            // Neither sub-case 3 nor 4 applies, should NOT be marked
             assert!(
                 !transport.path_is_unresponsive(&dest_hash),
                 "Path should NOT be marked unresponsive when dest and initiator are far"
@@ -11506,7 +11498,7 @@ mod tests {
             let dest_hash = [0xDD; TRUNCATED_HASHBYTES];
             let now = transport.clock.now_ms();
 
-            // Path with hops=1 (directly connected, receipt-incremented ; sub-case 2)
+            // Path with hops=1 (directly connected, receipt-incremented, sub-case 2)
             transport.insert_path(
                 dest_hash,
                 PathEntry {
@@ -11557,7 +11549,7 @@ mod tests {
             let dest_hash = [0xDD; TRUNCATED_HASHBYTES];
             let now = transport.clock.now_ms();
 
-            // NO path entry ; sub-case 1
+            // NO path entry, sub-case 1
             let link_id = [0xAA; TRUNCATED_HASHBYTES];
             transport.storage_mut().set_link_entry(
                 link_id,
@@ -11703,7 +11695,7 @@ mod tests {
             transport.storage_mut().clear_packet_hashes();
             transport.clock.advance(ANNOUNCE_RATE_LIMIT_MS + 1);
 
-            // Process announce B (hops=5) ; should be accepted (no existing path)
+            // Process announce B (hops=5), should be accepted (no existing path)
             let rh_b = make_random_hash([0x0A, 0x0B, 0x0C, 0x0D, 0x0E], 2000);
             let a2 = make_announce_raw_with_random_hash(&dest, 5, &rh_b);
             transport.process_incoming(0, &a2).unwrap();
@@ -11918,7 +11910,7 @@ mod tests {
             transport.clock.advance(ANNOUNCE_RATE_LIMIT_MS + 5_001);
             transport.storage_mut().clear_packet_hashes();
 
-            // Second announce ; spaced well beyond target
+            // Second announce, spaced well beyond target
             let now2 = transport.clock.now_ms();
             let raw2 = make_announce_raw_for_dest(&dest, 1, now2);
             transport.process_incoming(0, &raw2).unwrap();
@@ -11948,7 +11940,7 @@ mod tests {
             .unwrap();
             let dest_hash = dest.hash().into_bytes();
 
-            // First announce ; creates rate entry
+            // First announce, creates rate entry
             let now1 = transport.clock.now_ms();
             let raw1 = make_announce_raw_for_dest(&dest, 1, now1);
             transport.process_incoming(0, &raw1).unwrap();
@@ -11959,7 +11951,7 @@ mod tests {
             transport.clock.advance(ANNOUNCE_RATE_LIMIT_MS + 1);
             transport.storage_mut().clear_packet_hashes();
 
-            // Second announce ; too fast (2s < 10s target)
+            // Second announce, too fast (2s < 10s target)
             let now2 = transport.clock.now_ms();
             let raw2 = make_announce_raw_for_dest(&dest, 1, now2);
             transport.process_incoming(0, &raw2).unwrap();
@@ -12013,7 +12005,7 @@ mod tests {
             let rate_entry = transport.storage().get_announce_rate(&dest_hash).unwrap();
             assert_eq!(rate_entry.blocked_until_ms, t0 + 10_000 + 5_000);
 
-            // At t0 + 14_999 ; still blocked
+            // At t0 + 14_999, still blocked
             transport.clock.set(t0 + 14_999);
             transport.storage_mut().clear_packet_hashes();
             let now3 = transport.clock.now_ms();
@@ -12025,7 +12017,7 @@ mod tests {
                 "Should still be blocked at t0 + 14_999"
             );
 
-            // At t0 + 15_001 ; block expired
+            // At t0 + 15_001, block expired
             transport.clock.set(t0 + 15_001);
             transport.storage_mut().clear_packet_hashes();
             let now4 = transport.clock.now_ms();
@@ -12357,14 +12349,14 @@ mod tests {
             let rate_entry = transport.storage().get_announce_rate(&dest_hash).unwrap();
             assert_eq!(rate_entry.last_ms, t0);
 
-            // Violation: too fast (3s < 10s target) ; triggers blocking (grace=0)
+            // Violation: too fast (3s < 10s target), triggers blocking (grace=0)
             transport.clock.advance(3_000);
             transport.storage_mut().clear_packet_hashes();
             let now2 = transport.clock.now_ms();
             let raw2 = make_announce_raw_for_dest(&dest, 1, now2);
             transport.process_incoming(0, &raw2).unwrap();
 
-            // last_ms should NOT be updated ; blocking was triggered
+            // last_ms should NOT be updated, blocking was triggered
             let rate_entry = transport.storage().get_announce_rate(&dest_hash).unwrap();
             assert_eq!(
                 rate_entry.last_ms, t0,
@@ -12376,7 +12368,7 @@ mod tests {
                 "Should be blocked after violation with grace=0"
             );
 
-            // Another too-fast announce while blocked ; last_ms still anchored
+            // Another too-fast announce while blocked, last_ms still anchored
             transport.clock.advance(3_000);
             transport.storage_mut().clear_packet_hashes();
             let now3 = transport.clock.now_ms();
@@ -12412,7 +12404,7 @@ mod tests {
             );
 
             // Register as a local destination so process_incoming doesn't just
-            // drop it as unregistered ; but we need it to go through forwarding.
+            // drop it as unregistered, but we need it to go through forwarding.
             // Actually: for forwarding, the destination must NOT be local but
             // must have a path. Also need enable_transport=true (done above).
 
@@ -12458,8 +12450,7 @@ mod tests {
             let tamper_idx = raw.len() - 10;
             raw[tamper_idx] ^= 0xFF;
 
-            // process_incoming returns an error for invalid signatures ;
-            // the important thing is that no path is created
+            // process_incoming returns an error for invalid signatures.            // the important thing is that no path is created
             let _ = transport.process_incoming(0, &raw);
 
             assert!(
@@ -12517,7 +12508,7 @@ mod tests {
         fn test_receipt_timeout_no_path_uses_default() {
             let transport = test_transport();
             let dest_hash = [0xAA; TRUNCATED_HASHBYTES];
-            // No path registered ; should fall back to default
+            // No path registered, should fall back to default
             assert_eq!(
                 transport.compute_receipt_timeout(&dest_hash),
                 RECEIPT_TIMEOUT_DEFAULT_MS,
@@ -12571,7 +12562,7 @@ mod tests {
             let mut transport = test_transport();
             transport.set_enable_transport_for_tests(true);
             let dest_hash = [0xDD; TRUNCATED_HASHBYTES];
-            // Multi-hop but no bitrate registered ; uses UNKNOWN_BITRATE_ASSUMPTION
+            // Multi-hop but no bitrate registered, uses UNKNOWN_BITRATE_ASSUMPTION
             transport.storage.set_path(
                 dest_hash,
                 crate::storage_types::PathEntry {
@@ -12676,7 +12667,7 @@ mod tests {
 
         #[test]
         fn test_no_clamp_same_mtu() {
-            // Both interfaces same MTU ; no clamping needed
+            // Both interfaces same MTU, no clamping needed
             let mut hw_mtus = BTreeMap::new();
             hw_mtus.insert(0, 1064);
             hw_mtus.insert(1, 1064);
@@ -12690,7 +12681,7 @@ mod tests {
 
         #[test]
         fn test_no_clamp_next_hop_larger() {
-            // Next-hop MTU is larger than signaled ; no clamping
+            // Next-hop MTU is larger than signaled, no clamping
             let mut hw_mtus = BTreeMap::new();
             hw_mtus.insert(0, 1064);
             hw_mtus.insert(1, 262144);
@@ -12707,7 +12698,7 @@ mod tests {
 
         #[test]
         fn test_no_signaling_bytes_passthrough() {
-            // 64-byte request (no signaling) ; should pass through unchanged
+            // 64-byte request (no signaling), should pass through unchanged
             let mut hw_mtus = BTreeMap::new();
             hw_mtus.insert(0, 262144);
             hw_mtus.insert(1, 1064);
@@ -12721,7 +12712,7 @@ mod tests {
 
         #[test]
         fn test_no_next_hop_mtu_passthrough() {
-            // Next-hop HW_MTU not registered ; should pass through
+            // Next-hop HW_MTU not registered, should pass through
             let mut hw_mtus = BTreeMap::new();
             hw_mtus.insert(0, 262144);
             // iface 1 not registered
@@ -12776,7 +12767,7 @@ mod tests {
 
         #[test]
         fn test_clamp_unknown_prev_hop_only_uses_next_hop() {
-            // prev-hop HW_MTU not registered ; defaults to MAX, only next-hop matters
+            // prev-hop HW_MTU not registered, defaults to MAX, only next-hop matters
             let mut hw_mtus = BTreeMap::new();
             // iface 0 not registered
             hw_mtus.insert(1, 1064);
@@ -13033,7 +13024,7 @@ mod tests {
         #[test]
         fn test_announce_cache_always_populated() {
             // Announce cache is always populated regardless of transport mode or
-            // local client presence ; local clients may connect later and issue
+            // local client presence, local clients may connect later and issue
             // path requests for destinations announced before they connected.
             let clock = MockClock::new(TEST_TIME_MS);
             let identity = Identity::generate(&mut OsRng);
@@ -13044,7 +13035,7 @@ mod tests {
             let mut transport =
                 Transport::new(config, clock, MemoryStorage::with_defaults(), identity);
             transport.set_interface_name(NETWORK_IFACE, "tcp".into());
-            // No local clients registered ; cache should still be populated
+            // No local clients registered, cache should still be populated
 
             let (raw, dest_hash) = make_announce_raw(0, crate::packet::PacketContext::None);
             let packet = Packet::unpack(&raw).unwrap();
@@ -13706,7 +13697,7 @@ mod tests {
             let result = transport.process_incoming(LOCAL_CLIENT_IFACE, &raw);
             assert!(result.is_ok());
 
-            // Drain actions ; there should be NO immediate Broadcast for this announce
+            // Drain actions, there should be NO immediate Broadcast for this announce
             // (because it's a new local client destination, 250ms delay applies)
             let actions = transport.drain_actions();
             let _ = transport.drain_events();
@@ -13771,7 +13762,7 @@ mod tests {
             // should NOT be delayed (only the first registration triggers the delay).
             let mut transport = make_transport_with_local_client();
 
-            // First announce ; gets 250ms delay
+            // First announce, gets 250ms delay
             let (raw, dest_hash) = make_announce_raw(0, PacketContext::None);
             transport
                 .process_incoming(LOCAL_CLIENT_IFACE, &raw)
@@ -13849,7 +13840,7 @@ mod tests {
                 "Known dests should persist across disconnect for reconnect"
             );
 
-            // Run cleanup ; announce_cache should be preserved because
+            // Run cleanup, announce_cache should be preserved because
             // dest_hash is in local_client_known_dests
             transport.clean_path_states();
             assert!(
@@ -13861,7 +13852,7 @@ mod tests {
             transport.set_interface_name(RECONNECTED_IFACE, "Local[rns/default]/1".into());
             transport.set_local_client(RECONNECTED_IFACE, true);
 
-            // 4. Client sends fresh announce (new random_hash) ; simulate by
+            // 4. Client sends fresh announce (new random_hash), simulate by
             // creating a new announce from a new Identity for a different dest.
             // In practice, same dest_hash with new random_hash; for test simplicity,
             // we use a different dest entirely and verify the mechanism works.
@@ -13928,7 +13919,7 @@ mod tests {
             transport.remove_paths_for_interface(LOCAL_CLIENT_IFACE);
             transport.set_local_client(LOCAL_CLIENT_IFACE, false);
 
-            // Run cleanup multiple times ; cache should persist
+            // Run cleanup multiple times, cache should persist
             for _ in 0..3 {
                 transport.clean_path_states();
             }
@@ -14095,7 +14086,7 @@ mod tests {
             let two_hours_ms = 2 * 60 * 60 * 1000;
             transport.clock.advance(two_hours_ms);
 
-            // Cleanup ; dest should survive because refresh was only ~2h ago
+            // Cleanup, dest should survive because refresh was only ~2h ago
             transport.clean_path_states();
 
             assert!(
@@ -15089,7 +15080,7 @@ mod tests {
                 now + PATH_REQUEST_TIMEOUT_MS,
             );
 
-            // Second request from iface_b ; should be ignored
+            // Second request from iface_b, should be ignored
             transport.storage.set_discovery_path_request(
                 dest_hash,
                 IFACE_B,
@@ -15150,7 +15141,7 @@ mod tests {
             // Advance past timeout
             transport.clock.advance(PATH_REQUEST_TIMEOUT_MS + 1);
 
-            // Process a matching announce ; should NOT trigger a discovery response
+            // Process a matching announce, should NOT trigger a discovery response
             let packet = Packet::unpack(&raw).unwrap();
             let result = transport.handle_announce(packet, IFACE_B, &raw);
             assert!(result.is_ok());
@@ -15445,7 +15436,7 @@ mod tests {
                     block_rebroadcasts: false,
                 },
             );
-            // Interface 3 ready at now ; no deferral.
+            // Interface 3 ready at now, no deferral.
             transport.set_interface_next_slot_ms(3, now);
             transport.check_announce_rebroadcasts(now);
             // Deferral path leaves retries == 0; push path increments to 1
@@ -15712,7 +15703,7 @@ mod tests {
             let cfg = IfacConfig::new(Some("testnet"), Some("secret"), 16).unwrap();
             transport.set_ifac_config(iface_idx, cfg);
 
-            // Send raw packet without IFAC wrapping ; should be dropped
+            // Send raw packet without IFAC wrapping, should be dropped
             let (raw, _dest_hash) = make_test_announce();
             let result = transport.process_incoming(iface_idx, &raw);
             assert!(result.is_ok(), "Silently drop, no error");
@@ -15730,7 +15721,7 @@ mod tests {
             let (raw, _dest_hash) = make_test_announce();
             let wrapped = cfg.apply_ifac(&raw).unwrap();
 
-            // Feed IFAC-tagged packet to non-IFAC interface ; should drop
+            // Feed IFAC-tagged packet to non-IFAC interface, should drop
             let result = transport.process_incoming(iface_idx, &wrapped);
             assert!(result.is_ok(), "Silently drop, no error");
             assert_eq!(transport.stats().packets_dropped, 1);
@@ -15922,7 +15913,7 @@ mod tests {
         assert_eq!(t.next_slot_ms_for_interface(3, 0), 5_000);
     }
 
-    /// Absent key returns the caller's `now_ms` ; unknown interfaces
+    /// Absent key returns the caller's `now_ms`, unknown interfaces
     /// are treated as "always ready", matching the trait-level
     /// next_slot_ms default.
     #[test]
@@ -15993,7 +15984,7 @@ mod tests {
     }
 
     /// With no interfaces registered, the jitter window matches the
-    /// legacy floor ; pre-airtime behaviour preserved.
+    /// legacy floor, pre-airtime behaviour preserved.
     #[test]
     fn announce_retry_jitter_no_interfaces_uses_legacy_floor() {
         use crate::test_utils::test_transport;
@@ -16045,7 +16036,7 @@ mod tests {
 
     /// Two nodes with distinct identities and the same airtime
     /// configuration must compute different jitter values for the
-    /// same destination ; that is the whole point of folding identity
+    /// same destination, that is the whole point of folding identity
     /// into `deterministic_jitter_ms`. Without this, synchronous
     /// startups would still collide on every retry.
     #[test]

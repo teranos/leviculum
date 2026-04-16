@@ -191,7 +191,7 @@ async fn test_full_link_lifecycle_through_relay() {
         .expect("Failed to get link status");
     eprintln!("Python link state before close: {:?}", link_status.state);
 
-    // Step 13: Graceful close ; sends LINKCLOSE packet
+    // Step 13: Graceful close, sends LINKCLOSE packet
     // Before Fix 3, close() only set a local flag. No LINKCLOSE was sent.
     stream.close().await.expect("Failed to close stream");
 

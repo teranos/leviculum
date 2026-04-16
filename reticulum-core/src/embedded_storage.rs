@@ -2,10 +2,10 @@
 //!
 //! Uses `heapless::FnvIndexMap` and `heapless::IndexSet` with compile-time
 //! capacities instead of `BTreeMap`/`BTreeSet`. Eliminates allocator overhead
-//! for map containers ; only variable-size data fields (`Vec<u8>` in announce
+//! for map containers, only variable-size data fields (`Vec<u8>` in announce
 //! cache and ratchet keys) still use the heap allocator.
 //!
-//! Local client (shared-instance) methods are no-ops ; embedded nodes are the
+//! Local client (shared-instance) methods are no-ops, embedded nodes are the
 //! daemon, not a client of a daemon.
 
 extern crate alloc;
@@ -30,8 +30,7 @@ use crate::traits::Storage;
 /// analysis: path_table=32, announce_table=8, link_table=8, etc.
 ///
 /// When a collection is full, insert operations evict the oldest entry
-/// rather than panicking. This matches the MemoryStorage overflow behavior ;
-/// the protocol handles missing entries gracefully via timeouts and retransmits.
+/// rather than panicking. This matches the MemoryStorage overflow behavior./// the protocol handles missing entries gracefully via timeouts and retransmits.
 ///
 /// **Size note**: This struct is ~20-30 KB (heapless collections are inline).
 /// On Cortex-M4, it must be placed in a `static` or `Box`, not on the stack.
@@ -56,7 +55,7 @@ pub struct EmbeddedStorage {
     /// Previous-generation packet dedup ring (see `packet_cache`).
     ///
     /// Holds hashes from the prior rotation. Read on every dedup check;
-    /// not written to directly ; gets the contents of `packet_cache` on
+    /// not written to directly, gets the contents of `packet_cache` on
     /// rotation and is cleared when the next rotation promotes it again.
     ///
     /// **Capacity:** 256.
@@ -198,7 +197,7 @@ pub struct EmbeddedStorage {
     ///
     /// **Re-insert semantics:** FIFO-by-insertion. The setter
     /// (`set_discovery_path_request`) has an explicit
-    /// `if !contains_key` guard ; only the first request per key is
+    /// `if !contains_key` guard, only the first request per key is
     /// recorded, mirroring Python behavior. Subsequent requests for
     /// the same destination are dropped, NOT used to refresh the
     /// position.
@@ -221,7 +220,7 @@ pub struct EmbeddedStorage {
     /// `PATH_REQUEST_MIN_INTERVAL_MS`).
     ///
     /// **Re-insert semantics:** refresh-on-re-insert. Surviving the
-    /// eviction race is the whole point of the table ; if the rate-
+    /// eviction race is the whole point of the table, if the rate-
     /// limit timestamp gets evicted, the next request is treated as
     /// fresh and the rate limit is bypassed.
     ///
@@ -276,7 +275,7 @@ pub struct EmbeddedStorage {
     /// packets sent under the sender's current ratchet.
     ///
     /// **Re-insert semantics:** refresh-on-re-insert. Refreshed on
-    /// every announce containing the ratchet ; exactly the
+    /// every announce containing the ratchet, exactly the
     /// `path_table` pattern, and an active sender's ratchet must
     /// outlive an unrelated burst.
     ///
@@ -317,11 +316,11 @@ pub struct EmbeddedStorage {
     /// receipts must outlive newer ones submitted just after them.
     ///
     /// **Insert paths:**
-    /// - `transport.rs:885` ; `create_receipt`: fresh-key (truncated
+    /// - `transport.rs:885`: `create_receipt`: fresh-key (truncated
     ///   hash of the just-sent packet).
-    /// - `transport.rs:905` ; `create_receipt_with_timeout`: fresh-key
+    /// - `transport.rs:905`: `create_receipt_with_timeout`: fresh-key
     ///   (same shape as `create_receipt`).
-    /// - `transport.rs:925` ; `mark_receipt_delivered`: re-insert
+    /// - `transport.rs:925`: `mark_receipt_delivered`: re-insert
     ///   (read existing receipt, clone, mutate `status` to
     ///   `Delivered`, write back under same hash). This is the only
     ///   re-insert path; it benefits from the refresh because an
@@ -384,7 +383,7 @@ impl Default for EmbeddedStorage {
 // We can't use `map.remove(&oldest_key)` directly: heapless's `remove` is
 // `swap_remove`, which moves the last entry into the freed slot. After the
 // first overflow, `keys().next()` would no longer be the longest-resident
-// entry ; it would be whichever key was last when the previous eviction
+// entry, it would be whichever key was last when the previous eviction
 // happened. Strict FIFO requires rebuilding the map: snapshot the keys in
 // insertion order, drop the head, then re-insert the rest plus the new
 // entry. Cost is O(N) per overflow; N ≤ 32 so this is microseconds even
@@ -666,7 +665,7 @@ impl Storage for EmbeddedStorage {
         }
         // If full, evict the truly-oldest tag. heapless's `remove` is
         // `swap_remove`, so we rebuild to preserve insertion order across
-        // repeated overflows (same reason map_set rebuilds ; see comment
+        // repeated overflows (same reason map_set rebuilds, see comment
         // there).
         if self.path_request_tag_set.len() >= self.path_request_tag_set.capacity() {
             let keys: Vec<[u8; 32]> = self.path_request_tag_set.iter().copied().collect();
@@ -945,11 +944,11 @@ mod tests {
         //
         // Heapless FnvIndexMap:
         // insert(existing_key, …) updates in place WITHOUT moving the
-        //     entry ; the FIFO position is unchanged.
+        //     entry, the FIFO position is unchanged.
         // remove(&K) uses swap_remove: the last entry is moved to K's
         //     old slot, then the tail is truncated. This means keys().next()
         //     after a front-removal is NOT the key that was second in
-        //     insertion order ; it's whatever was last.
+        //     insertion order, it's whatever was last.
         // insert(new_key) appends at the back.
         //
         // Consequence for the fix: remove(K) + insert(K) guarantees K ends
@@ -970,7 +969,7 @@ mod tests {
             "in-place insert keeps position"
         );
 
-        // remove(1) + insert(1) ; 1 must end up at the back.
+        // remove(1) + insert(1), 1 must end up at the back.
         m.remove(&1);
         m.insert(1, 12).unwrap();
         assert_eq!(
@@ -979,8 +978,7 @@ mod tests {
             "remove+insert lands the key at the back"
         );
         // Per-heapless swap_remove: the entry that was last BEFORE the
-        // remove (3) now sits at the front. Documented, not intended ;
-        // for the fix, only the "back" invariant matters.
+        // remove (3) now sits at the front. Documented, not intended.        // for the fix, only the "back" invariant matters.
         assert_eq!(
             *m.keys().next().unwrap(),
             3,
@@ -1065,7 +1063,7 @@ mod tests {
         }
         assert_eq!(s.path_count(), 32);
 
-        // Insert one more ; should evict the first
+        // Insert one more, should evict the first
         let mut new_hash = [0xFFu8; TRUNCATED_HASHBYTES];
         new_hash[0] = 0xFF;
         s.set_path(

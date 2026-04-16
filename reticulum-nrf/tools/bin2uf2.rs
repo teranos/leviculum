@@ -1,4 +1,4 @@
-// bin2uf2 ; Convert a flat binary to UF2 format.
+// bin2uf2. Convert a flat binary to UF2 format.
 // Zero crate dependencies. Compile with: rustc tools/bin2uf2.rs -o target/bin2uf2 --edition 2021
 
 use std::env;

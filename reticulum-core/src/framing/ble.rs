@@ -226,13 +226,13 @@ impl BleDefragmenter {
             return DefragResult::Error;
         }
 
-        // LONE fragment ; complete packet in one piece
+        // LONE fragment, complete packet in one piece
         if ftype == FRAGMENT_TYPE_LONE {
             self.reset();
             return DefragResult::Complete(payload.to_vec());
         }
 
-        // New multi-fragment sequence starting ; reset any previous partial
+        // New multi-fragment sequence starting, reset any previous partial
         if ftype == FRAGMENT_TYPE_START && seq == 0 {
             self.fragments.clear();
             self.expected_total = total;
@@ -240,7 +240,7 @@ impl BleDefragmenter {
 
         // Check consistency with current reassembly
         if total != self.expected_total {
-            // Fragment from a different packet or corrupted ; discard
+            // Fragment from a different packet or corrupted, discard
             self.reset();
             return DefragResult::Error;
         }
@@ -257,7 +257,7 @@ impl BleDefragmenter {
                 match self.fragments.get(&i) {
                     Some(p) => packet.extend_from_slice(p),
                     None => {
-                        // Should not happen ; len check passed but gap found
+                        // Should not happen, len check passed but gap found
                         self.reset();
                         return DefragResult::Error;
                     }

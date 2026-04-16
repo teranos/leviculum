@@ -60,7 +60,7 @@ fn serial_number() -> &'static str {
     let buf = SERIAL.init([0u8; 16]);
     hex_u32(&mut buf[0..8], id0);
     hex_u32(&mut buf[8..16], id1);
-    // buf contains only ASCII hex digits ; always valid UTF-8
+    // buf contains only ASCII hex digits, always valid UTF-8
     match core::str::from_utf8(buf) {
         Ok(s) => s,
         Err(_) => "0000000000000000",
@@ -156,7 +156,7 @@ const REQ_SET_LINE_CODING: u8 = 0x20;
 /// on next boot and stays in UF2 mass-storage mode for flashing.
 ///
 /// All non-1200 SET_LINE_CODING requests fall through to the CdcAcm handler
-/// untouched. Strict equality only ; fuzzy matching would risk spurious
+/// untouched. Strict equality only, fuzzy matching would risk spurious
 /// resets when terminal apps round 1215 → 1200.
 struct BaudTouchHandler;
 

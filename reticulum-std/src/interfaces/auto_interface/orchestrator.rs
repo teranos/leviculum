@@ -1,4 +1,4 @@
-//! AutoInterface orchestrator ; manages peer discovery and lifecycle
+//! AutoInterface orchestrator: peer discovery and lifecycle management
 //!
 //! Single tokio task that handles multicast discovery, peer management,
 //! and data socket demultiplexing for AutoInterface.
@@ -94,7 +94,7 @@ pub(crate) fn build_active_nics_and_tokens(
 ///
 /// The token must be verifiable by the peer using the sender's source IP.
 /// Looks up the peer's NIC in `active_nics` to find OUR link-local address
-/// on that NIC ; the peer will verify `hash(group_id + our_source_ip)`.
+/// on that NIC, the peer will verify `hash(group_id + our_source_ip)`.
 ///
 /// Returns `None` if the NIC is not found in `active_nics`.
 pub(crate) fn compute_reverse_peering_token(
@@ -197,7 +197,7 @@ async fn run_auto_interface(
                     nic.name,
                     e
                 );
-                // Remove the multicast socket we just pushed ; can't function without unicast
+                // Remove the multicast socket we just pushed, can't function without unicast
                 mcast_sockets.pop();
                 bind_results.push(false);
                 continue;
@@ -227,8 +227,8 @@ async fn run_auto_interface(
     // Per-peer state: keyed by peer's (IPv6 link-local, data_port).
     // Data receive does a two-tier lookup: try exact (ip, port) first,
     // then fall back to ip-only. This handles both:
-    // Same-machine Rust peers (send from data_port → exact match)
-    // Cross-machine Python peers (send from ephemeral port → ip-only)
+    // - Same-machine Rust peers (send from data_port → exact match)
+    // - Cross-machine Python peers (send from ephemeral port → ip-only)
     // Removal path: peers are removed on timeout in the peer_job_timer branch.
     let mut peers: HashMap<(Ipv6Addr, u16), PeerInfo> = HashMap::new();
 
@@ -366,9 +366,9 @@ async fn run_auto_interface(
                 }
 
                 // Two-tier peer lookup:
-                // 1. Try exact (ip, src_port) ; works for same-machine Rust peers
+                // 1. Try exact (ip, src_port), works for same-machine Rust peers
                 //    that send from their data_port via the NIC data socket.
-                // 2. Fall back to ip-only ; works for cross-machine Python peers
+                // 2. Fall back to ip-only, works for cross-machine Python peers
                 //    that send from ephemeral ports.
                 let src_ip = *recv.source.ip();
                 let src_port = recv.source.port();
@@ -579,7 +579,7 @@ fn handle_discovery_packet(
     // 32-byte packets (Python) are NEVER self-echo because we only send 40-byte.
     if let Some(nonce) = parsed.nonce {
         if nonce == *instance_nonce {
-            // Our own 40-byte packet echoed back ; carrier detection
+            // Our own 40-byte packet echoed back, carrier detection
             if let Some(state) = nic_states.get_mut(&nic.name) {
                 state.last_echo = Some(Instant::now());
             }
@@ -593,20 +593,20 @@ fn handle_discovery_packet(
     let peer_data_port = parsed.data_port.unwrap_or(config.data_port);
     let peer_key = (src_addr, peer_data_port);
 
-    // Known peer ; refresh
+    // Known peer, refresh
     if let Some(peer) = peers.get_mut(&peer_key) {
         peer.last_heard = Instant::now();
         return;
     }
 
-    // New peer ; register
+    // New peer, register
     let id = InterfaceId(next_id.fetch_add(1, Ordering::Relaxed));
     let (incoming_tx, incoming_rx) = mpsc::channel(PEER_CHANNEL_BUFFER);
     let (outgoing_tx, outgoing_rx) = mpsc::channel(PEER_CHANNEL_BUFFER);
 
     let counters = Arc::new(InterfaceCounters::new());
 
-    // Spawn per-peer send task ; sends via NIC data socket to peer's
+    // Spawn per-peer send task, sends via NIC data socket to peer's
     // (IP, data_port). Using the NIC data socket means our source port =
     // our data_port, which the peer matches against its peer map key.
     let peer_dest = SocketAddrV6::new(src_addr, peer_data_port, 0, nic.index);
@@ -704,7 +704,7 @@ async fn peer_send_task(
             }
             Err(e) => {
                 tracing::debug!("AutoInterface: send to {} failed: {}", peer_addr.ip(), e);
-                // Don't break ; send errors are transient for UDP
+                // Don't break, send errors are transient for UDP
             }
         }
     }
@@ -830,7 +830,7 @@ mod tests {
 
     #[test]
     fn test_peer_info_fields() {
-        // Basic construction test ; verifies the struct layout compiles
+        // Basic construction test, verifies the struct layout compiles
         let (tx, _rx) = mpsc::channel(1);
         let _peer = PeerInfo {
             nic_name: "eth0".to_string(),
@@ -855,7 +855,7 @@ mod tests {
     async fn test_peer_send_task_exits_on_channel_close() {
         let (outgoing_tx, outgoing_rx) = mpsc::channel(8);
         let socket = Arc::new(bind_test_socket());
-        // Use a dummy address ; we won't actually receive
+        // Use a dummy address, we won't actually receive
         let peer_addr = SocketAddrV6::new("::1".parse().unwrap(), 9999, 0, 0);
 
         let counters = Arc::new(InterfaceCounters::new());
@@ -863,7 +863,7 @@ mod tests {
             peer_send_task(outgoing_rx, socket, peer_addr, counters).await;
         });
 
-        // Drop the sender ; task should exit
+        // Drop the sender, task should exit
         drop(outgoing_tx);
         tokio::time::timeout(Duration::from_secs(2), handle)
             .await
@@ -1041,7 +1041,7 @@ mod tests {
         // Brief delay
         tokio::time::sleep(Duration::from_millis(10)).await;
 
-        // Second discovery ; should refresh, not add new
+        // Second discovery, should refresh, not add new
         ctx.call(&pkt, peer_addr);
 
         assert_eq!(ctx.peers.len(), 1, "should still have one peer");

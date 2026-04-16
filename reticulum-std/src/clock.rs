@@ -22,7 +22,7 @@ impl SystemClock {
 
     /// Expose the start anchor so the interface layer's backpressure
     /// clock can align with ours. The airtime bucket's `last_update_ms`
-    /// and `Transport::now_ms` must share a frame ; otherwise the
+    /// and `Transport::now_ms` must share a frame, otherwise the
     /// retry-scheduler's deferral math breaks.
     pub(crate) fn start_instant(&self) -> Instant {
         self.start

@@ -1,4 +1,4 @@
-//! RNode serial interface ; detection, configuration, and data path
+//! RNode serial interface, detection, configuration, and data path
 //!
 //! Implements the full RNode lifecycle: detect → configure radio → validate →
 //! go online → bidirectional data → reconnect on failure → graceful shutdown.
@@ -132,7 +132,7 @@ struct QueuedFrame {
 /// The jitter window must exceed the maximum packet airtime so that two nodes
 /// transmitting simultaneously have a chance to desynchronize. Uses 2x the
 /// worst-case airtime (500-byte packet, CR=5), minimum 500ms for fast links.
-/// No upper cap ; slow links (SF10+) need wide jitter to avoid collisions
+/// No upper cap, slow links (SF10+) need wide jitter to avoid collisions
 /// when airtime exceeds several seconds.
 fn compute_jitter_max_ms(sf: u8, bandwidth_hz: u32) -> u64 {
     let bitrate = rnode::compute_bitrate(sf, 5, bandwidth_hz);
@@ -473,7 +473,7 @@ async fn rnode_io_task(
 
     // Periodic heartbeat: send CMD_DETECT every 5 minutes to keep the
     // serial link alive and verify the RNode firmware is responsive.
-    // This does NOT transmit over LoRa ; it's a serial-only ping.
+    // This does NOT transmit over LoRa, it's a serial-only ping.
     const HEARTBEAT_INTERVAL: Duration = Duration::from_secs(300);
     let mut heartbeat_timer = Box::pin(tokio::time::sleep(HEARTBEAT_INTERVAL));
     let mut heartbeat_pending = false;
@@ -560,10 +560,10 @@ async fn rnode_io_task(
                                             }
                                         }
                                     }
-                                    // Statistics ; log at trace level
+                                    // Statistics, log at trace level
                                     // TODO: Parse stat values (RSSI, SNR, channel time,
                                     // battery, temperature) and store for rnstatus reporting
-                                    // ; see Codeberg issue #25
+                                    //, see Codeberg issue #25
                                     rnode::CMD_STAT_RSSI
                                     | rnode::CMD_STAT_SNR
                                     | rnode::CMD_STAT_CHTM
@@ -623,10 +623,10 @@ async fn rnode_io_task(
                         }
                         // High-priority packet at front of queue: bypass initial jitter
                         // ONLY if no CSMA spacing timer is active. The jitter timer
-                        // desynchronizes announce rebroadcasts ; directed traffic
+                        // desynchronizes announce rebroadcasts, directed traffic
                         // (proofs, link requests, data) should not wait for that.
                         // But the CSMA spacing timer (set after a TX) must NOT be
-                        // bypassed ; it ensures the firmware queue stays at depth 1
+                        // bypassed, it ensures the firmware queue stays at depth 1
                         // so flush_queue() sends one frame per CSMA contest.
                         if high_priority
                             && send_queue.front().map(|f| f.high_priority).unwrap_or(false)
@@ -666,7 +666,7 @@ async fn rnode_io_task(
                 timer_ready = true;
             }
 
-            // Branch 4: Periodic heartbeat ; CMD_DETECT ping to verify firmware
+            // Branch 4: Periodic heartbeat. CMD_DETECT ping to verify firmware
             _ = &mut heartbeat_timer => {
                 let detect_frame = [kiss::FEND, rnode::CMD_DETECT, rnode::DETECT_REQ, kiss::FEND];
                 if let Err(e) = port.write_all(&detect_frame).await {
@@ -690,7 +690,7 @@ async fn rnode_io_task(
                 }
                 // tcdrain: block until firmware has received all bytes.
                 // Without this, write_all() returns as soon as bytes enter
-                // the OS serial buffer ; multiple frames accumulate in the
+                // the OS serial buffer, multiple frames accumulate in the
                 // firmware queue and flush_queue() sends them all in one
                 // burst without CSMA between them.
                 if let Err(e) = port.flush().await {
@@ -711,7 +711,7 @@ async fn rnode_io_task(
                 // ensures the firmware has received this frame before we proceed.
                 // MIN_SPACING_MS gives the firmware time to move the frame from
                 // its serial buffer into the TX queue. The firmware's own CSMA
-                // handles radio-level collision avoidance ; we don't simulate
+                // handles radio-level collision avoidance, we don't simulate
                 // airtime in software.
                 {
                     send_timer = Some(Box::pin(tokio::time::sleep(Duration::from_millis(

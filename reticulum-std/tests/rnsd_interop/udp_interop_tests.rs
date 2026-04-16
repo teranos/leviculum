@@ -229,7 +229,7 @@ async fn test_rust_to_python_link_over_udp() {
     let payload = generate_test_payload(128);
     link_handle.send(&payload).await.expect("Send failed");
 
-    // Wait for Python to receive ; verify via get_received_packets
+    // Wait for Python to receive, verify via get_received_packets
     tokio::time::sleep(Duration::from_secs(1)).await;
     let packets = daemon.get_received_packets().await.unwrap_or_default();
     assert!(

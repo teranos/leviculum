@@ -1,8 +1,9 @@
 //! Interop tests for path system gaps (Gaps 1, 3, 4).
 //!
-//! Gap 1: Path timestamp refresh on forward ; active paths stay alive.
-//! Gap 3: Announce bandwidth caps ; regression that cap subsystem doesn't break forwarding.
-//! Gap 4: 32-byte path requests ; non-transport nodes send shorter requests.
+//! Gap 1: Path timestamp refresh on forward, so active paths stay alive.
+//! Gap 3: Announce bandwidth caps, regression that the cap subsystem
+//! doesn't break forwarding.
+//! Gap 4: 32-byte path requests, non-transport nodes send shorter requests.
 //!
 //! Gap 2 (LRPROOF validation) is covered by the existing
 //! `test_rust_relay_announce_and_link_data` test in `rust_relay_tests.rs`.
@@ -72,7 +73,7 @@ async fn test_path_refresh_keeps_route_alive() {
     // Wait 15 seconds (close to expiry but not past it)
     tokio::time::sleep(Duration::from_secs(15)).await;
 
-    // Create a link from B to A ; the link request forward refreshes the path
+    // Create a link from B to A, the link request forward refreshes the path
     let link_b_to_a = daemon_b
         .create_link(&dest_a_info.hash, &dest_a_info.public_key, 30)
         .await
@@ -257,7 +258,7 @@ async fn test_path_request_for_unknown_destination() {
         "should not have path to unknown dest"
     );
 
-    // Wait a reasonable time ; should not crash, should not get a path
+    // Wait a reasonable time, should not crash, should not get a path
     tokio::time::sleep(Duration::from_secs(5)).await;
     assert!(
         !rust_node.has_path(&fake_dest),

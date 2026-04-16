@@ -1,4 +1,4 @@
-//! Responder Node interop tests ; Rust as link responder via high-level API
+//! Responder Node interop tests: Rust as link responder via high-level API
 //!
 //! These tests verify the full responder path using `ReticulumNode::accept_link()`,
 //! proving that:
@@ -146,7 +146,7 @@ async fn test_rust_node_as_responder() {
         "Should receive LinkEstablished(is_initiator=false) within 15s"
     );
 
-    // Join the create_link background task ; it should have succeeded by now
+    // Join the create_link background task, it should have succeeded by now
     let link_hash = create_link_handle
         .await
         .expect("create_link task panicked")
@@ -154,7 +154,7 @@ async fn test_rust_node_as_responder() {
     eprintln!("Python link established: {}", link_hash);
 
     // Phase 4: Bidirectional Data
-    // Python → Rust (raw data via send_on_link ; produces LinkDataReceived)
+    // Python → Rust (raw data via send_on_link, produces LinkDataReceived)
     py_initiator
         .send_on_link(&link_hash, b"hello-from-python-initiator")
         .await
@@ -169,7 +169,7 @@ async fn test_rust_node_as_responder() {
     );
     eprintln!("Rust received Python→Rust data: OK");
 
-    // Rust → Python (via Channel / send() ; produces MessageReceived on receiver)
+    // Rust → Python (via Channel / send(), produces MessageReceived on receiver)
     // This is the key test for the MessageReceived routing fix: LinkHandle::try_send()
     // uses Channel internally, which produces MessageReceived events, not LinkDataReceived.
     stream

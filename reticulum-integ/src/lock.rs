@@ -16,13 +16,12 @@
 //! `~/.local/state/leviculum-ci/lock-contention`, print a multi-line
 //! `[leviculum]` error to stderr naming the current holder, and exit with
 //! code 2. The marker file decouples the "this was a SKIPPED-not-RED" signal
-//! from the exact prose of the error message ; the Tier 2/3 runner scripts
+//! from the exact prose of the error message, the Tier 2/3 runner scripts
 //! look for the marker, not a grep on the log.
 //!
 //! OS-managed release: when the holding process exits (clean, panic,
-//! SIGINT, SIGKILL ; all of them), the kernel closes the fd and releases
-//! the flock. Stale lock files on disk after a reboot are self-healing ;
-//! flock state is kernel-held, not file-content-held.
+//! SIGINT, SIGKILL, all of them), the kernel closes the fd and releases
+//! the flock. Stale lock files on disk after a reboot are self-healing.//! flock state is kernel-held, not file-content-held.
 
 use std::fs::{File, OpenOptions};
 use std::io::Write;
@@ -33,7 +32,7 @@ use std::sync::OnceLock;
 /// Process-wide holder for the integ lock. Kept here (not inside
 /// `TestRunner`) so the fd outlives every `TestRunner` instance in the
 /// process and is only released by OS close-on-exit. Must stay
-/// `OnceLock<File>` ; switching to `OnceLock<RwLock<_>>` or similar would
+/// `OnceLock<File>`, switching to `OnceLock<RwLock<_>>` or similar would
 /// break the release-on-panic invariant. See the `#[should_panic]` test in
 /// `executor.rs` that guards this.
 static LOCK_GUARD: OnceLock<File> = OnceLock::new();
@@ -138,8 +137,7 @@ fn argv0_basename() -> String {
 
 /// Best-effort sniff of the test-name filter the user passed. Covers the
 /// common `--exact NAME`, `-- NAME`, and `cargo test -- NAME` shapes.
-/// Returns None if no likely filter is present; false positives are fine ;
-/// this is just a debugging aid in the lock file, not load-bearing.
+/// Returns None if no likely filter is present; false positives are fine./// this is just a debugging aid in the lock file, not load-bearing.
 fn test_filter_hint() -> Option<String> {
     let mut args = std::env::args().skip(1);
     let mut saw_double_dash = false;

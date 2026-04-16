@@ -90,13 +90,13 @@ pub(crate) type StdNodeCore = NodeCore<rand_core::OsRng, SystemClock, Storage>;
 
 /// Event channel capacity for NodeEvent delivery to the application.
 /// Must be large enough that slow consumers don't block the event loop.
-/// Not yet tuned ; chosen empirically during initial development.
+/// Not yet tuned, chosen empirically during initial development.
 const EVENT_CHANNEL_CAPACITY: usize = 256;
 
 /// Interval between periodic storage flushes (seconds).
-/// Crash protection only ; normal shutdown calls flush() via signal handler.
+/// Crash protection only, normal shutdown calls flush() via signal handler.
 /// Lost data from a crash is recovered via fresh announces.
-/// Hardcoded ; see E12 for making this configurable.
+/// Hardcoded, see E12 for making this configurable.
 const FLUSH_INTERVAL_SECS: u64 = 3600;
 
 /// Maximum packets per interface in the retry queue.
@@ -231,7 +231,7 @@ impl ReticulumNode {
         // to re-announce destinations on the recovered link.
         let (reconnect_tx, reconnect_rx) = mpsc::channel::<InterfaceId>(16);
 
-        // Initialize interfaces ; the driver owns them, NOT NodeCore
+        // Initialize interfaces, the driver owns them, NOT NodeCore
         let registry = self.initialize_interfaces(&next_id, &new_iface_tx, &reconnect_tx)?;
 
         {
@@ -254,7 +254,7 @@ impl ReticulumNode {
 
             // Register IFAC configurations for static interfaces (TCP client, UDP, RNode).
             // TCPServerInterface IFAC is handled via spawn_tcp_server → InterfaceInfo.ifac,
-            // because the server listener itself doesn't register as an interface ; only
+            // because the server listener itself doesn't register as an interface, only
             // accepted connections do, and they get dynamic interface IDs.
             for (idx, iface_config) in self.interfaces.iter().enumerate() {
                 if !iface_config.enabled {
@@ -294,7 +294,7 @@ impl ReticulumNode {
         // Channel for dispatching TickOutput from outside the event loop.
         // connect(), send_on_link(), close_link(), and
         // announce_destination() produce actions that must reach the event loop
-        // for interface dispatch.  Capacity 256 is generous ; each call
+        // for interface dispatch.  Capacity 256 is generous, each call
         // produces exactly one TickOutput, and the event loop drains them on
         // every iteration, so the queue only backs up if the event loop is
         // blocked (which also stalls all other I/O).
@@ -761,7 +761,7 @@ impl ReticulumNode {
     ///
     /// Sends a link request to the destination and returns a `LinkHandle`
     /// for async read/write operations. The returned handle is usable
-    /// immediately, but the link is not yet established ; watch for
+    /// immediately, but the link is not yet established, watch for
     /// `NodeEvent::LinkEstablished` on the event channel before sending data.
     ///
     /// Returns `Err` only if the event loop is down (the request could not
@@ -780,7 +780,7 @@ impl ReticulumNode {
             let mut inner = self.inner.lock().unwrap();
             inner.connect(*dest_hash, dest_signing_key)
         };
-        // Send output to event loop for dispatch (backpressure ; waits if full)
+        // Send output to event loop for dispatch (backpressure, waits if full)
         self.action_dispatch_tx
             .send(output)
             .await
@@ -861,8 +861,7 @@ impl ReticulumNode {
 
     /// Register a known identity for a destination
     ///
-    /// Identities learned from received announces are cached automatically ;
-    /// call this only for out-of-band identity registration or testing.
+    /// Identities learned from received announces are cached automatically.    /// call this only for out-of-band identity registration or testing.
     pub fn remember_identity(
         &self,
         dest_hash: DestinationHash,
@@ -975,7 +974,7 @@ impl ReticulumNode {
             .lock()
             .unwrap()
             .announce_destination(dest_hash, app_data)?;
-        // Send output to event loop for dispatch (backpressure ; waits if full)
+        // Send output to event loop for dispatch (backpressure, waits if full)
         self.action_dispatch_tx
             .send(output)
             .await
@@ -1191,7 +1190,7 @@ impl ReticulumNode {
     /// Create a PacketSender for a destination
     ///
     /// Returns a self-contained handle for sending single packets.
-    /// No path or destination validation ; errors are reported on send().
+    /// No path or destination validation, errors are reported on send().
     pub fn packet_sender(&self, dest_hash: &DestinationHash) -> PacketSender {
         PacketSender::new(
             *dest_hash,
@@ -1233,7 +1232,7 @@ impl ReticulumNode {
 /// Returns `Poll::Pending` when no interface has data ready.
 async fn recv_any(registry: &mut InterfaceRegistry) -> RecvEvent {
     if registry.is_empty() {
-        // No interfaces ; pend forever (timer branch will still fire)
+        // No interfaces, pend forever (timer branch will still fire)
         std::future::pending().await
     } else {
         std::future::poll_fn(|cx| {
@@ -1353,7 +1352,7 @@ async fn run_event_loop(
                             output.events.len(),
                         );
                         // Packet handling may schedule new deadlines (e.g. announce
-                        // rebroadcast retries) ; advance next_poll if sooner.
+                        // rebroadcast retries), advance next_poll if sooner.
                         if let Some(deadline_ms) = output.next_deadline_ms {
                             let delta = deadline_ms.saturating_sub(now_ms);
                             let wake_at = tokio::time::Instant::now()
@@ -1410,7 +1409,7 @@ async fn run_event_loop(
                 );
             }
 
-            // Branch 3: Timer ; persistent deadline, not recomputed per iteration
+            // Branch 3: Timer, persistent deadline, not recomputed per iteration
             _ = tokio::time::sleep_until(next_poll) => {
                 let (output, now_ms) = {
                     let mut core = inner.lock().unwrap();
@@ -1580,8 +1579,7 @@ fn dispatch_output(
     }
 
     // Remove empty queues to avoid accumulating stale entries.
-    // (The legacy set_interface_congested flag was removed in Phase F ;
-    // Transport now reads per-interface readiness from the
+    // (The legacy set_interface_congested flag was removed in Phase F.    // Transport now reads per-interface readiness from the
     // interface_next_slot_ms backchannel instead.)
     retry_queues.retain(|_, queue| !queue.is_empty());
 
@@ -1599,7 +1597,7 @@ fn dispatch_output(
     //     airtime.
     push_interface_state(registry, inner);
 
-    // 6. Forward events to application (best effort ; drop if full)
+    // 6. Forward events to application (best effort, drop if full)
     for event in output.events {
         if let NodeEvent::LinkEstablished { link_id, .. } = &event {
             tracing::debug!("Link established: {:?}", link_id);
@@ -1645,7 +1643,7 @@ fn push_retry_with_warn(
         warned.insert(iface_idx);
     }
     // E2: monotonic max-depth watermark. Log at info! only when the
-    // watermark actually advances ; benchmarks can grep for this.
+    // watermark actually advances, benchmarks can grep for this.
     let prev = max_depth.get(&iface_idx).copied().unwrap_or(0);
     if queue.len() > prev {
         max_depth.insert(iface_idx, queue.len());
@@ -1663,7 +1661,7 @@ fn push_retry_with_warn(
 /// `None` iff every retry queue is empty.
 ///
 /// Used by run_event_loop to schedule a sleep_until arm so idle nodes
-/// with retry-queued packets still drain at the right moment ; no
+/// with retry-queued packets still drain at the right moment, no
 /// polling, no fixed 500 ms fallback.
 fn compute_retry_wake_deadline_ms(
     retry_queues: &BTreeMap<usize, VecDeque<Vec<u8>>>,
@@ -1677,7 +1675,7 @@ fn compute_retry_wake_deadline_ms(
         if let Some(handle) = registry.handles().iter().find(|h| h.id().0 == iface_idx) {
             let slot = handle.next_slot_ms(front.len(), now_ms);
             // Only count slots strictly in the future; ready slots don't
-            // need waking ; they'd drain at the next normal dispatch tick.
+            // need waking, they'd drain at the next normal dispatch tick.
             if slot > now_ms {
                 match min_slot {
                     Some(current) if slot < current => min_slot = Some(slot),
@@ -1685,7 +1683,7 @@ fn compute_retry_wake_deadline_ms(
                     _ => {}
                 }
             } else {
-                // A ready queue head means we can drain NOW ; return
+                // A ready queue head means we can drain NOW, return
                 // None so the caller doesn't sleep at all.
                 return None;
             }
@@ -1696,7 +1694,7 @@ fn compute_retry_wake_deadline_ms(
 
 /// Drain per-interface retry queues in-place, honouring per-packet
 /// airtime gating. Before calling try_send, ask the handle's
-/// `next_slot_ms` for the actual packet size ; Transport's MTU-sized
+/// `next_slot_ms` for the actual packet size. Transport's MTU-sized
 /// backchannel cache is conservative for smaller packets, and the
 /// drain's finer granularity recovers that headroom. Extracted so it
 /// is unit-testable without spinning up the full driver.
@@ -1715,7 +1713,7 @@ fn drain_retry_queues(
                 .find(|h| h.id() == iface_id)
             {
                 if handle.next_slot_ms(data.len(), now_ms) > now_ms {
-                    // Interface not yet ready for THIS packet size ; leave
+                    // Interface not yet ready for THIS packet size, leave
                     // it at the front, try next dispatch tick (driver-local
                     // wake in E3 will fire at the computed slot).
                     break;
@@ -1733,7 +1731,7 @@ fn drain_retry_queues(
                     }
                 }
             } else {
-                // Interface removed ; clear queue
+                // Interface removed, clear queue
                 queue.clear();
                 break;
             }
@@ -1853,7 +1851,7 @@ mod tests {
         assert_eq!(max_depth.get(&3), Some(&5));
         // Drain the queue manually; max_depth must NOT regress.
         q.clear();
-        // A single push after drain puts len=1 ; watermark stays at 5.
+        // A single push after drain puts len=1, watermark stays at 5.
         push_retry_with_warn(&mut q, 3, vec![0u8; 4], &mut warned, &mut max_depth);
         assert_eq!(max_depth.get(&3), Some(&5), "watermark must be monotonic");
         // Re-fill past the old watermark → grows.
@@ -1864,7 +1862,7 @@ mod tests {
     }
 
     /// compute_retry_wake_deadline_ms returns `None` when every retry
-    /// queue is empty ; no wake needed.
+    /// queue is empty, no wake needed.
     #[tokio::test(flavor = "current_thread")]
     async fn compute_retry_wake_none_when_queues_empty() {
         let registry = InterfaceRegistry::new();
@@ -1925,7 +1923,7 @@ mod tests {
         let mut registry = InterfaceRegistry::new();
         let now_ms = 1_000;
 
-        // Two LoRa handles with different saturation ; both have
+        // Two LoRa handles with different saturation, both have
         // not-ready heads; the earlier slot should win.
         for (idx, payload_charge) in [(0usize, 500u32), (1usize, 100u32)] {
             let mut credit = AirtimeCredit::new(125_000, 10, 8, 500);
@@ -1947,7 +1945,7 @@ mod tests {
                 credit: Some(Arc::new(Mutex::new(credit))),
             });
         }
-        // Both queues carry a full-MTU packet ; both heads are
+        // Both queues carry a full-MTU packet, both heads are
         // definitely not-ready because the buckets were charged at
         // different magnitudes.
         let mut retry_queues = BTreeMap::new();
@@ -2117,7 +2115,7 @@ mod tests {
         };
 
         // Construct two synthetic handles directly. Channel receivers
-        // are dropped at end of test ; that's fine since we don't call
+        // are dropped at end of test, that's fine since we don't call
         // try_send here, only next_slot_ms (which is &self).
         let mut registry = InterfaceRegistry::new();
 

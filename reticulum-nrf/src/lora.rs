@@ -21,7 +21,7 @@ use static_cell::StaticCell;
 use crate::boards::t114;
 use crate::sx1262::Sx1262;
 
-// SPIM2 ; works on T114 (SPIM3 has a MISO read bug)
+// SPIM2, works on T114 (SPIM3 has a MISO read bug)
 bind_interrupts!(pub struct SpiIrqs {
     SPI2 => spim::InterruptHandler<peripherals::SPI2>;
 });
@@ -93,8 +93,7 @@ pub struct RadioConfig {
     pub bw_hz: u32,       // human-readable bandwidth in Hz (for logging)
     pub cr_denom: u8,     // human-readable coding rate denominator 5-8 (for logging)
     pub csma_enabled: bool,
-    /// When true, drop every outgoing LoRa packet at the driver boundary ;
-    /// the radio keeps listening but never transmits. Used by the
+    /// When true, drop every outgoing LoRa packet at the driver boundary.    /// the radio keeps listening but never transmits. Used by the
     /// integration-test runner to neutralize T114s it does not bind, so the
     /// test channel is not polluted by their Reticulum announces.
     pub radio_silent: bool,
@@ -165,7 +164,7 @@ const CSMA_MAX_RETRIES: u8 = 8;
 const CSMA_CW_INITIAL: u8 = 2;
 /// Maximum contention window (slots) after exponential back-off.
 const CSMA_CW_MAX: u8 = 64;
-/// Floor for slot time ; matches the 24ms slot used by the RNode firmware.
+/// Floor for slot time, matches the 24ms slot used by the RNode firmware.
 const CSMA_SLOT_MS_MIN: u64 = 24;
 
 /// xorshift32 PRNG step. Mutates state and returns the updated value.
@@ -177,7 +176,7 @@ fn xorshift32(state: &mut u32) -> u32 {
 }
 
 /// Compute CSMA slot time in ms from the current radio profile.
-/// `max(24, airtime(500) / 10)` ; scales with spreading factor so SF10/SF12
+/// `max(24, airtime(500) / 10)`, scales with spreading factor so SF10/SF12
 /// don't keep retrying inside the same airtime window.
 fn compute_slot_ms(cfg: &RadioConfig) -> u64 {
     let airtime = reticulum_core::rnode::airtime_ms(500, cfg.bw_hz, cfg.sf, cfg.cr_denom);
@@ -185,7 +184,7 @@ fn compute_slot_ms(cfg: &RadioConfig) -> u64 {
 }
 
 /// Transmit one or two LoRa frames back-to-back. For split packets, both
-/// frames go out without any CSMA/CAD between them ; the receiver's
+/// frames go out without any CSMA/CAD between them, the receiver's
 /// SplitReassembler expects this.
 async fn transmit_all_frames(
     radio: &mut Radio,
@@ -406,7 +405,7 @@ pub async fn lora_task(mut radio: Radio, mut config: RadioConfig) {
 
         // Pick up a new packet to send if no TX is in flight. When
         // `radio_silent` is set, drop everything the stack hands us instead
-        // of starting a TX ; the radio stays listening but never transmits.
+        // of starting a TX, the radio stays listening but never transmits.
         // Used to keep unused test T114s from polluting the LoRa channel
         // with their own Reticulum announces.
         if pending_tx.is_none() {
@@ -428,7 +427,7 @@ pub async fn lora_task(mut radio: Radio, mut config: RadioConfig) {
             } else {
                 match radio.cad(config.sf).await {
                     Ok(false) => {
-                        // Channel clear ; send the whole packet (both split
+                        // Channel clear, send the whole packet (both split
                         // frames back-to-back, no CAD between them).
                         crate::log::log_fmt("[LORA_CAD] ", format_args!(
                             "busy=false attempt={}", csma_attempt
@@ -455,7 +454,7 @@ pub async fn lora_task(mut radio: Radio, mut config: RadioConfig) {
                             let backoff_ms = slots * slot_ms;
                             csma_cw = core::cmp::min(csma_cw.saturating_mul(2), CSMA_CW_MAX);
                             // RX during the backoff so incoming packets aren't lost.
-                            // Clamp to >=1ms ; the SX1262 needs a non-zero timeout.
+                            // Clamp to >=1ms, the SX1262 needs a non-zero timeout.
                             let rx_ms = backoff_ms.max(1).min(10_000) as u32;
                             reassembler.check_timeout(rx_timeout_count, 10);
                             rx_once(
@@ -481,14 +480,14 @@ pub async fn lora_task(mut radio: Radio, mut config: RadioConfig) {
                     }
                 }
             }
-            // TX just completed ; go back to the top of the loop to drain
+            // TX just completed, go back to the top of the loop to drain
             // the next pending packet immediately. This matches the original
             // tight-drain behavior and avoids an extra 500ms RX gap between
             // back-to-back outbound packets (e.g. announce rebroadcasts).
             continue;
         }
 
-        // Queue empty ; timeout stale split reassembly buffers and RX.
+        // Queue empty, timeout stale split reassembly buffers and RX.
         reassembler.check_timeout(rx_timeout_count, 10);
         rx_once(
             &mut radio, &mut rx_buf, 500,

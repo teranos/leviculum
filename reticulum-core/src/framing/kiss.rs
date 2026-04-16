@@ -8,7 +8,7 @@
 //! [FEND 0xC0] [command] [escaped payload] [FEND 0xC0]
 //! ```
 //!
-//! The command byte is stored raw ; no port nibble masking is applied. This
+//! The command byte is stored raw, no port nibble masking is applied. This
 //! preserves RNode multi-interface commands (CMD_INT1_DATA=0x10, etc.).
 //!
 //! # no_std Support
@@ -570,7 +570,7 @@ mod tests {
 
     #[test]
     fn test_deframe_invalid_escape() {
-        // FESC followed by neither TFEND nor TFESC ; accept byte as-is
+        // FESC followed by neither TFEND nor TFESC, accept byte as-is
         let mut deframer = KissDeframer::with_max_payload(508);
         let results = deframer.process(&[FEND, 0x00, FESC, 0x42, FEND]);
 

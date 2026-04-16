@@ -127,7 +127,7 @@ pub const PATHFINDER_RW_MS: u64 = 500;
 /// retries drift apart by more than one transmit duration, otherwise
 /// every retry collides at the same air-time and the announce burst
 /// fails as a whole. A factor of 3 means each retry's window spans
-/// roughly three packet airtimes ; sufficient drift on slow LoRa modes
+/// roughly three packet airtimes, sufficient drift on slow LoRa modes
 /// where a single transmit takes several seconds.
 pub const JITTER_AIRTIME_FACTOR: u64 = 3;
 
@@ -207,7 +207,7 @@ pub const ESTABLISHMENT_RESPONDER_BONUS_MS: u64 = 54_000;
 pub const RTT_RETRY_MAX_ATTEMPTS: u8 = 5;
 
 /// Link request retry: minimum number of retries after the initial attempt.
-/// The actual retry count is `max(this, hops)` ; multi-hop paths get more
+/// The actual retry count is `max(this, hops)`, multi-hop paths get more
 /// retries because each hop is an independent loss opportunity.
 /// Total attempts = 1 + effective_retries.
 /// Python Reticulum has no link request retry (single attempt only).
@@ -349,7 +349,7 @@ pub const CHANNEL_DEFAULT_RTT_MS: u64 = 500;
 
 /// Minimum base RTO. 25ms was unreachably low for any
 /// real Reticulum link (LoRa: ~365ms/frame, BLE: ~20ms, LAN: ~1ms).
-/// 100ms is defense-in-depth ; the measured RTT * 2.5 always
+/// 100ms is defense-in-depth, the measured RTT * 2.5 always
 /// dominates on any non-loopback link.
 pub const CHANNEL_MIN_TIMEOUT_BASE_MS: f64 = 100.0;
 

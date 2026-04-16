@@ -3,10 +3,10 @@
 //! Wraps `MemoryStorage` for all runtime collections (paths, reverses, links,
 //! announces, etc.) and adds disk persistence for four Python-compatible
 //! collections:
-//! - `known_destinations` ; msgpack map of identity data (flush-on-shutdown)
-//! - `packet_hashlist` ; msgpack array of 32-byte dedup hashes (flush-on-shutdown)
-//! - `ratchets/{hex_hash}` ; receiver-side known ratchets (write-through)
-//! - `ratchetkeys/{hex_hash}` ; sender-side ratchet private keys (write-through)
+//! - `known_destinations`: msgpack map of identity data (flush-on-shutdown)
+//! - `packet_hashlist`: msgpack array of 32-byte dedup hashes (flush-on-shutdown)
+//! - `ratchets/{hex_hash}`: receiver-side known ratchets (write-through)
+//! - `ratchetkeys/{hex_hash}`: sender-side ratchet private keys (write-through)
 //!
 //! All non-persistent collections live in the inner `MemoryStorage` and are
 //! lost on process exit. Flush-on-shutdown data is written by [`Storage::flush()`]
@@ -577,7 +577,7 @@ impl reticulum_core::traits::Storage for Storage {
             // New identities get a minimal entry; existing entries get their
             // timestamp and public_key refreshed (the runtime version was just
             // validated from a live announce, so it takes precedence over the
-            // disk version). app_data and packet_hash are preserved ; they
+            // disk version). app_data and packet_hash are preserved, they
             // come from the original announce and are not available here.
             for (hash, identity) in self.inner.known_identity_iter() {
                 self.known_dest_entries
@@ -640,7 +640,7 @@ impl reticulum_core::traits::Storage for Storage {
         let mut s = String::new();
         let mut total = 0u64;
 
-        // packet_cache: HashSet<[u8; 32]> ; 1.5x overhead
+        // packet_cache: HashSet<[u8; 32]>, 1.5x overhead
         let n = self.packet_cache.len();
         let raw = (n * 32) as u64;
         let est = raw * 3 / 2;
@@ -651,7 +651,7 @@ impl reticulum_core::traits::Storage for Storage {
             n, raw, est
         );
 
-        // packet_cache_prev: HashSet<[u8; 32]> ; 1.5x
+        // packet_cache_prev: HashSet<[u8; 32]>, 1.5x
         let n = self.packet_cache_prev.len();
         let raw = (n * 32) as u64;
         let est = raw * 3 / 2;
@@ -920,7 +920,7 @@ mod tests {
             CoreStorage::flush(&mut storage);
         }
 
-        // Re-open storage ; identity should be loaded from disk
+        // Re-open storage, identity should be loaded from disk
         {
             let storage = Storage::new(&path).unwrap();
             assert!(
@@ -948,7 +948,7 @@ mod tests {
             CoreStorage::flush(&mut storage);
         }
 
-        // Re-open storage ; hash should be loaded from disk
+        // Re-open storage, hash should be loaded from disk
         {
             let storage = Storage::new(&path).unwrap();
             assert!(
@@ -1025,7 +1025,7 @@ mod tests {
         let (encoded, _) = encode_packet_hashlist(hashes.iter()).unwrap();
         std::fs::write(path.join(PACKET_HASHLIST_FILE), &encoded).unwrap();
 
-        // Create storage ; should load both automatically
+        // Create storage, should load both automatically
         let storage = Storage::new(&path).unwrap();
 
         use reticulum_core::traits::Storage as CoreStorage;
@@ -1072,7 +1072,7 @@ mod tests {
             // Add the same identity to runtime storage (simulates a fresh announce)
             CoreStorage::set_identity(&mut storage, dest_hash, id);
 
-            // Flush ; should update timestamp but preserve app_data and packet_hash
+            // Flush, should update timestamp but preserve app_data and packet_hash
             CoreStorage::flush(&mut storage);
         }
 
@@ -1151,7 +1151,7 @@ mod tests {
         }
 
         // Current should have 1 entry (the 6th hash, after rotation cleared current)
-        // Wait ; 6th hash triggers rotation, then gets inserted? No:
+        // Wait, 6th hash triggers rotation, then gets inserted? No:
         // add_packet_hash inserts first, then checks. So after inserting 6th:
         // current has 6, exceeds 5, rotation happens: current(6) -> prev, current cleared.
         // So current=0, prev=6. The 6th hash is in prev.
@@ -1181,7 +1181,7 @@ mod tests {
 
             CoreStorage::add_packet_hash(&mut storage, hash_a);
             CoreStorage::add_packet_hash(&mut storage, hash_b);
-            // After 2 inserts: current has 2, but cap/2=2, so 2 > 2 is false ; no rotation yet
+            // After 2 inserts: current has 2, but cap/2=2, so 2 > 2 is false, no rotation yet
             // Actually: len() > cap/2 means 2 > 2 which is false, no rotation
             // Add a third to trigger rotation
             let hash_c = [0xCC; 32];
@@ -1191,7 +1191,7 @@ mod tests {
             CoreStorage::flush(&mut storage);
         }
 
-        // Re-open ; all hashes should be loaded
+        // Re-open, all hashes should be loaded
         {
             let storage = Storage::new(&path).unwrap();
             assert!(
@@ -1328,7 +1328,7 @@ mod tests {
         let hex = hex_encode(&[0x33; TRUNCATED_HASHBYTES]);
         std::fs::write(ratchets_dir.join(&hex), b"garbage data").unwrap();
 
-        // Recreate storage ; should load without panic, skip corrupted file
+        // Recreate storage, should load without panic, skip corrupted file
         let storage = Storage::new(&path).unwrap();
         let loaded = CoreStorage::get_known_ratchet(&storage, &[0x33; TRUNCATED_HASHBYTES]);
         assert!(loaded.is_none(), "Corrupted ratchet should not be loaded");

@@ -114,7 +114,7 @@ async fn mpsl_task(mpsl: &'static MultiprotocolServiceLayer<'static>) -> ! {
 
 #[embassy_executor::task]
 async fn ble_task(sdc: sdc::SoftdeviceController<'static>, identity_hash: [u8; 16]) {
-    // Derive BLE address from identity hash ; new identity per flash = new address
+    // Derive BLE address from identity hash, new identity per flash = new address
     // = clean GATT discovery on Android (no stale cache from previous firmware)
     let mut addr = [0u8; 6];
     addr.copy_from_slice(&identity_hash[2..8]);
@@ -283,12 +283,12 @@ async fn gatt_events(
                                         Ok(reply) => reply.send().await,
                                         Err(_) => {}
                                     }
-                                    // Don't send keepalive immediately ; Columba needs
+                                    // Don't send keepalive immediately. Columba needs
                                     // time to finish its handshake. The keepalive timer
                                     // will fire after KEEPALIVE_INTERVAL_MS.
                                     continue;
                                 } else if data.len() < FRAGMENT_HEADER_SIZE {
-                                    // Keepalive (1-byte 0x00) ; accept and skip
+                                    // Keepalive (1-byte 0x00), accept and skip
                                 } else {
                                     // Data fragment
                                     let now = Instant::now().as_millis();
@@ -312,7 +312,7 @@ async fn gatt_events(
                 }
             }
             Either3::Second(packet) => {
-                // Outgoing packet ; fragment and notify
+                // Outgoing packet, fragment and notify
                 let fragments = ble_framing::fragment_packet(&packet, ble_framing::DEFAULT_MTU);
                 for frag in &fragments {
                     if let Ok(hv) = heapless::Vec::<u8, 251>::from_slice(frag) {

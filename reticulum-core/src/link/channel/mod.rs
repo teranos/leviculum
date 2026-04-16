@@ -186,7 +186,7 @@ pub enum ReceiveOutcome {
     /// Caller should send proof so sender stops retransmitting.
     AlreadyDelivered,
     /// Duplicate of message already in rx_ring buffer.
-    /// Do NOT send proof ; the gap is still open.
+    /// Do NOT send proof, the gap is still open.
     DuplicateBuffered,
 }
 
@@ -497,7 +497,7 @@ impl Channel {
             return Err(ChannelError::TooLarge);
         }
 
-        // 1. Window check FIRST ; no point pacing if there's no slot
+        // 1. Window check FIRST, no point pacing if there's no slot
         if !self.is_ready_to_send() {
             tracing::debug!(
                 tx_ring = self.tx_ring.len(),
@@ -507,7 +507,7 @@ impl Channel {
             );
             return Err(ChannelError::Busy);
         }
-        // 2. Pacing check SECOND ; only when window has room
+        // 2. Pacing check SECOND, only when window has room
         if now_ms < self.next_send_at_ms {
             return Err(ChannelError::PacingDelay {
                 ready_at_ms: self.next_send_at_ms,
@@ -546,9 +546,9 @@ impl Channel {
     ///
     /// Returns a `ReceiveOutcome` indicating what happened:
     /// - `Delivered`: in-order message, caller should prove and emit event
-    /// - `Buffered`: out-of-order, stored for later delivery ; do NOT prove yet
-    /// - `AlreadyDelivered`: duplicate of delivered message ; re-prove so sender clears retransmit
-    /// - `DuplicateBuffered`: duplicate of buffered message ; do NOT prove
+    /// - `Buffered`: out-of-order, stored for later delivery, do NOT prove yet
+    /// - `AlreadyDelivered`: duplicate of delivered message, re-prove so sender clears retransmit
+    /// - `DuplicateBuffered`: duplicate of buffered message, do NOT prove
     ///
     /// # Arguments
     /// * `data` - Decrypted envelope data from the link
@@ -579,7 +579,7 @@ impl Channel {
         // Backward sequence (retransmit of already-delivered message).
         // sequence_offset() wraps around for backward sequences, producing
         // values in the upper half of the sequence space (>= 32768).
-        // Return AlreadyDelivered so the caller generates a proof ; the original
+        // Return AlreadyDelivered so the caller generates a proof, the original
         // proof was likely lost on the return path.
         if offset >= CHANNEL_SEQ_MODULUS as usize / 2 {
             tracing::debug!(
@@ -662,7 +662,7 @@ impl Channel {
     /// }
     /// ```
     pub fn receive_message<M: Message>(&mut self, data: &[u8]) -> Result<Option<M>, ChannelError> {
-        // First receive the envelope (test convenience ; no real proof hash needed)
+        // First receive the envelope (test convenience, no real proof hash needed)
         let envelope = match self.receive(data, [0u8; 32])? {
             ReceiveOutcome::Delivered(env) => env,
             _ => return Ok(None), // Buffered, duplicate, or already delivered
@@ -857,8 +857,8 @@ impl Channel {
 
         // Multiplicative decrease: double pacing per retransmit, capped at eff_rtt.
         // adjust_window() already called recalculate_pacing(), so pacing_interval_ms > 0
-        // (assuming RTT is known). If still 0 (no RTT yet), skip ; no timing data to pace with.
-        // Only 2nd+ retransmits trigger MD ; first retransmit may be spurious (jitter).
+        // (assuming RTT is known). If still 0 (no RTT yet), skip, no timing data to pace with.
+        // Only 2nd+ retransmits trigger MD, first retransmit may be spurious (jitter).
         if pacing_doublings > 0 && self.pacing_interval_ms > 0 {
             let doublings = pacing_doublings.min(10); // safety cap against overflow
             self.pacing_interval_ms = self
@@ -1206,7 +1206,7 @@ mod tests {
 
     #[test]
     fn test_timeout_window_floor() {
-        // window=0 must not panic or produce infinity ; clamped to 1
+        // window=0 must not panic or produce infinity, clamped to 1
         let t = calculate_timeout(1, 1000, 5, 0);
         // base_rto=2500, queue_delay=5*1000=5000
         assert_eq!(t, 7500);
@@ -1495,7 +1495,7 @@ mod tests {
         // Retransmit seq=128 (the scenario from the bug report)
         let env_retx = Envelope::new(0x0001, 128, vec![128]);
         let result = channel.receive(&env_retx.pack(), [0u8; 32]);
-        // Must be AlreadyDelivered ; backward sequence re-proved
+        // Must be AlreadyDelivered, backward sequence re-proved
         assert_eq!(result, Ok(ReceiveOutcome::AlreadyDelivered));
     }
 
@@ -1508,7 +1508,7 @@ mod tests {
         // Set next_rx_sequence near the modulus boundary
         channel.set_next_rx_sequence_for_test(5);
 
-        // Receive seq=65534 ; behind next_rx=5 across the wraparound boundary
+        // Receive seq=65534, behind next_rx=5 across the wraparound boundary
         // offset = (65536 - 5 + 65534) % 65536 = 65529, which is >= 32768
         let env = Envelope::new(0x0001, 65534, vec![1]);
         let result = channel.receive(&env.pack(), [0u8; 32]);
@@ -1844,7 +1844,7 @@ mod tests {
         assert!(!actions.is_empty());
         assert!(matches!(&actions[0], ChannelAction::Retransmit { .. }));
 
-        // Now deliver ; tries > 1, so Karn's algorithm skips SRTT update
+        // Now deliver, tries > 1, so Karn's algorithm skips SRTT update
         channel.mark_delivered(0, 200_000, rtt_ms);
 
         assert_eq!(
@@ -1911,7 +1911,7 @@ mod tests {
             );
         }
 
-        // 8th timeout ; tries=8 >= max_tries=8 → TearDownLink
+        // 8th timeout, tries=8 >= max_tries=8 → TearDownLink
         t += 1_000_000;
         let actions = channel.poll(t, rtt_ms);
         assert_eq!(actions.len(), 1);
@@ -2006,7 +2006,7 @@ mod tests {
     #[test]
     fn test_poll_empty_tx_ring() {
         let mut channel = Channel::new();
-        // Poll on empty channel ; should return no actions
+        // Poll on empty channel, should return no actions
         let actions = channel.poll(1000, 500);
         assert!(actions.is_empty());
     }
@@ -2052,7 +2052,7 @@ mod tests {
         channel.adjust_window(true, 1999);
         assert_eq!(channel.window(), 5);
 
-        // At max ; should not go higher
+        // At max, should not go higher
         channel.adjust_window(true, 1999);
         assert_eq!(channel.window(), 5, "window should not exceed window_max");
     }
@@ -2119,7 +2119,7 @@ mod tests {
     fn test_receive_buffered_no_proof() {
         let mut channel = Channel::new();
 
-        // Send seq 1 (skip 0) ; out of order
+        // Send seq 1 (skip 0), out of order
         let env1 = Envelope::new(0x0001, 1, vec![42]);
         let result = channel.receive(&env1.pack(), [1u8; 32]);
         assert_eq!(result, Ok(ReceiveOutcome::Buffered));
@@ -2152,7 +2152,7 @@ mod tests {
         let result = channel.receive(&env0.pack(), [0u8; 32]);
         assert!(matches!(result, Ok(ReceiveOutcome::Delivered(_))));
 
-        // Send seq 0 again ; already delivered, should re-prove
+        // Send seq 0 again, already delivered, should re-prove
         let env0_dup = Envelope::new(0x0001, 0, vec![1]);
         let result = channel.receive(&env0_dup.pack(), [0u8; 32]);
         assert_eq!(result, Ok(ReceiveOutcome::AlreadyDelivered));
@@ -2167,7 +2167,7 @@ mod tests {
         let result = channel.receive(&env2.pack(), [2u8; 32]);
         assert_eq!(result, Ok(ReceiveOutcome::Buffered));
 
-        // Send seq 2 again ; duplicate of buffered
+        // Send seq 2 again, duplicate of buffered
         let env2_dup = Envelope::new(0x0001, 2, vec![42]);
         let result = channel.receive(&env2_dup.pack(), [22u8; 32]);
         assert_eq!(result, Ok(ReceiveOutcome::DuplicateBuffered));

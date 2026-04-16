@@ -119,7 +119,7 @@ impl LinkStats {
     }
 }
 
-/// The unified Reticulum node ; owns all protocol state
+/// The unified Reticulum node, owns all protocol state
 ///
 /// NodeCore is generic over RNG, Clock, and Storage traits, allowing it to run
 /// on both std and no_std environments.
@@ -231,7 +231,7 @@ impl<R: CryptoRngCore, C: Clock, S: Storage> NodeCore<R, C, S> {
         // Only Direction::In destinations are locally reachable and should
         // be registered with transport for routing. Direction::Out destinations
         // are remote peer references (for encryption/proof verification) and
-        // must NOT appear in local_destinations ; otherwise their announces
+        // must NOT appear in local_destinations, otherwise their announces
         // would be dropped as self-echoes.
         if dest.direction() == Direction::In {
             self.transport.register_destination(hash.into_bytes());
@@ -254,7 +254,7 @@ impl<R: CryptoRngCore, C: Clock, S: Storage> NodeCore<R, C, S> {
                             e
                         );
                     }
-                    // Reset rotation timer ; loaded timestamps are from a previous
+                    // Reset rotation timer, loaded timestamps are from a previous
                     // session's monotonic domain and would block rotation.
                     dest.set_last_ratchet_time(0);
                 }
@@ -281,7 +281,7 @@ impl<R: CryptoRngCore, C: Clock, S: Storage> NodeCore<R, C, S> {
     /// Reconstructs the transport identity from private key bytes, creates
     /// a `Destination(identity, IN, SINGLE, "rnstransport", "probe")` with
     /// `ProofStrategy::All`, registers it, and schedules periodic announces
-    /// (15s after startup, then every 2 hours ; matching Python rnsd).
+    /// (15s after startup, then every 2 hours, matching Python rnsd).
     fn enable_probe_responder(&mut self) {
         // Reconstruct identity for the probe destination (Transport owns the original)
         let identity_bytes = match self.transport.identity().private_key_bytes() {
@@ -340,8 +340,7 @@ impl<R: CryptoRngCore, C: Clock, S: Storage> NodeCore<R, C, S> {
 
     /// Register a remote identity for single-packet encryption.
     ///
-    /// Identities learned from received announces are cached automatically ;
-    /// call this only for out-of-band identity registration or testing.
+    /// Identities learned from received announces are cached automatically.    /// call this only for out-of-band identity registration or testing.
     pub fn remember_identity(&mut self, dest_hash: DestinationHash, identity: Identity) {
         self.storage_mut()
             .set_identity(dest_hash.into_bytes(), identity);
@@ -782,7 +781,7 @@ impl<R: CryptoRngCore, C: Clock, S: Storage> NodeCore<R, C, S> {
     /// * `data` - The data to transfer
     /// * `metadata` - Optional metadata bytes. Must be msgpack-encoded by the caller
     ///   (e.g., via `rmpv::encode::write_value`). Python's Resource constructor
-    ///   calls `umsgpack.packb(metadata)` ; the caller must do the equivalent.
+    ///   calls `umsgpack.packb(metadata)`, the caller must do the equivalent.
     pub fn send_resource(
         &mut self,
         link_id: &LinkId,
@@ -834,7 +833,7 @@ impl<R: CryptoRngCore, C: Clock, S: Storage> NodeCore<R, C, S> {
                 self.route_link_packet(link_id, &pkt);
             }
             Err(e) => {
-                // Failed to build ADV ; clean up
+                // Failed to build ADV, clean up
                 if let Some(link) = self.links.get_mut(link_id) {
                     link.clear_outgoing_resource();
                 }
@@ -917,7 +916,7 @@ impl<R: CryptoRngCore, C: Clock, S: Storage> NodeCore<R, C, S> {
             .take_pending_resource_adv()
             .ok_or(ResourceError::NoPendingResource)?;
 
-        // Send RCL (receiver cancel ; we are rejecting the sender's ADV)
+        // Send RCL (receiver cancel, we are rejecting the sender's ADV)
         let cancel_data = adv.resource_hash.to_vec();
         if let Ok(pkt) = link.build_data_packet_with_context(
             &cancel_data,
@@ -977,7 +976,7 @@ impl<R: CryptoRngCore, C: Clock, S: Storage> NodeCore<R, C, S> {
     ///
     /// Announces each destination in `mgmt_destinations` (probe, etc.)
     /// and reschedules the next announce 2 hours later.
-    /// Queues broadcast actions internally ; they are drained by the
+    /// Queues broadcast actions internally, they are drained by the
     /// `process_events_and_actions()` call at the end of `handle_timeout()`.
     fn check_mgmt_announces(&mut self, now_ms: u64) {
         let deadline = match self.next_mgmt_announce_ms {
@@ -1553,7 +1552,7 @@ impl<R: CryptoRngCore, C: Clock, S: Storage> NodeCore<R, C, S> {
                     let now_ms = self.transport.clock().now_ms();
                     self.process_link_packet(&packet, &raw, now_ms, interface_index);
                 } else {
-                    // Regular packet ; decrypt if Single destination
+                    // Regular packet, decrypt if Single destination
                     let dest_hash_typed = DestinationHash::new(destination_hash);
                     let plaintext = if let Some(dest) = self.destinations.get(&dest_hash_typed) {
                         if dest.dest_type() == crate::destination::DestinationType::Single {
@@ -1568,7 +1567,7 @@ impl<R: CryptoRngCore, C: Clock, S: Storage> NodeCore<R, C, S> {
                                 }
                             }
                         } else {
-                            // Plain destination ; pass through
+                            // Plain destination, pass through
                             packet.data.as_slice().to_vec()
                         }
                     } else {
@@ -1667,7 +1666,7 @@ impl<R: CryptoRngCore, C: Clock, S: Storage> NodeCore<R, C, S> {
             } => {
                 // Block A: Generate a fresh announce (new signature, current app_data)
                 // instead of serving cached bytes. Transport set up a deferred AnnounceEntry
-                // with the 400ms grace period ; we replace its raw_packet with fresh bytes.
+                // with the 400ms grace period, we replace its raw_packet with fresh bytes.
                 let now_ms = self.transport.clock().now_ms();
                 if let Some(dest) = self
                     .destinations
@@ -2105,7 +2104,7 @@ mod tests {
         let dest_hash = *remote_dest.hash();
         assert!(node.has_path(&dest_hash), "should have path from announce");
 
-        // Call connect() ; actions are returned immediately in TickOutput
+        // Call connect(), actions are returned immediately in TickOutput
         let (link_id, _, output) = node.connect(dest_hash, &remote_signing_key);
 
         // The link request should have been returned as an Action (SendPacket
@@ -2142,7 +2141,7 @@ mod tests {
         .unwrap();
         let dest_hash = *dest.hash();
 
-        // Connect without any path ; should broadcast
+        // Connect without any path, should broadcast
         let (_link_id, was_routed, output) = node.connect(dest_hash, &signing_key);
         assert!(!was_routed, "should not be routed without a path");
 
@@ -2187,7 +2186,7 @@ mod tests {
         let dest_hash = *remote_dest.hash();
         assert!(node.has_path(&dest_hash), "should have path from announce");
 
-        // Connect with path ; should be routed
+        // Connect with path, should be routed
         let (_link_id, was_routed, output) = node.connect(dest_hash, &signing_key);
         assert!(was_routed, "should be routed with a known path");
 
@@ -2244,7 +2243,7 @@ mod tests {
         let dest_hash = *remote_dest.hash();
         assert!(node.has_path(&dest_hash), "should have path from announce");
 
-        // Initiate connection ; actions returned in output
+        // Initiate connection, actions returned in output
         let (link_id, _, _output) = node.connect(dest_hash, &remote_signing_key);
 
         (node, dest_hash, link_id)
@@ -2316,7 +2315,7 @@ mod tests {
             let _output = node.handle_timeout();
         }
 
-        // Transport nodes should NOT expire the path ; they handle recovery
+        // Transport nodes should NOT expire the path, they handle recovery
         // via clean_link_table() instead
         assert!(
             node.has_path(&dest_hash),
@@ -2335,7 +2334,7 @@ mod tests {
         node.transport().clock().set(TEST_TIME_MS + 5_000);
         let _output = node.handle_timeout();
 
-        // Path should still exist ; normal close doesn't trigger recovery
+        // Path should still exist, normal close doesn't trigger recovery
         assert!(
             node.has_path(&dest_hash),
             "path should NOT be expired after normal close"
@@ -2444,7 +2443,7 @@ mod tests {
             "responder should get LinkEstablished"
         );
 
-        // Mark RTT confirmed on the initiator ; the RTT was delivered (step 7
+        // Mark RTT confirmed on the initiator, the RTT was delivered (step 7
         // verified it), so in a real scenario the first inbound packet from the
         // responder would confirm it. Prevents RTT retry from firing in tests
         // that advance time after establishment.
@@ -2517,7 +2516,7 @@ mod tests {
             "responder should get LinkEstablished"
         );
 
-        // Mark RTT confirmed ; same as the _with_strategy variant above.
+        // Mark RTT confirmed, same as the _with_strategy variant above.
         initiator.link_mut(&init_link_id).unwrap().confirm_rtt();
 
         NodeCoreLinkPair {
@@ -2944,7 +2943,7 @@ mod tests {
 
         // Case 2: Stale closure produces LinkClosed with Stale reason
         // (tested via establish_nodecore_link_pair, then advancing time)
-        // This is more involved ; the key point is that the reason values are different
+        // This is more involved, the key point is that the reason values are different
     }
 
     #[test]
@@ -3563,7 +3562,7 @@ mod tests {
         // With RTT≈0, stale_time=10s. Keep under that to avoid stale close.
         // Channel timeout for tries=1 at default RTT=500ms: ~3125ms.
 
-        // Phase 1: first retransmit (tries=2 ; first send was try 1)
+        // Phase 1: first retransmit (tries=2, first send was try 1)
         pair.initiator.transport().clock().set(TEST_TIME_MS + 4_000);
         let output = pair.initiator.handle_timeout();
         let has_retransmit = output
@@ -3617,7 +3616,7 @@ mod tests {
 
         // Advance time past both stale close and receipt timeout.
         // The receipt is cleaned either by link close (remove_for_link) or
-        // by time-based expiry ; both paths converge to receipt_count == 0.
+        // by time-based expiry, both paths converge to receipt_count == 0.
         pair.initiator
             .transport()
             .clock()
@@ -4057,8 +4056,7 @@ mod tests {
         assert_eq!(pair.initiator.receipt_count(), 1);
 
         // Advance time past DATA_RECEIPT_TIMEOUT_MS → handle_timeout cleans up
-        // (link will also close due to stale timeout, but that's fine ;
-        // the point is that no receipt entries survive)
+        // (link will also close due to stale timeout, but that's fine.        // the point is that no receipt entries survive)
         pair.initiator
             .transport()
             .clock()
@@ -4103,7 +4101,7 @@ mod tests {
             "receipt should have expired"
         );
 
-        // Deliver the valid proof ; receipt is gone, link still alive
+        // Deliver the valid proof, receipt is gone, link still alive
         let output = pair.initiator.handle_packet(InterfaceId(0), &proof);
         let has_confirmed = output
             .events
@@ -4145,7 +4143,7 @@ mod tests {
             .transport
             .register_interface(alloc::boxed::Box::new(MockInterface::new("recv_if", 2)));
 
-        // 2. Create sender ; MemoryStorage needed for receipt persistence
+        // 2. Create sender. MemoryStorage needed for receipt persistence
         let send_clock = MockClock::new(TEST_TIME_MS);
         let mut sender =
             NodeCoreBuilder::new().build(OsRng, send_clock, MemoryStorage::with_defaults());
@@ -4474,7 +4472,7 @@ mod tests {
             .transport
             .register_interface(alloc::boxed::Box::new(MockInterface::new("recv_if", 1)));
 
-        // Create a sender ; MemoryStorage needed for receipt persistence
+        // Create a sender. MemoryStorage needed for receipt persistence
         let send_clock = MockClock::new(TEST_TIME_MS);
         let mut sender =
             NodeCoreBuilder::new().build(OsRng, send_clock, MemoryStorage::with_defaults());
@@ -4517,7 +4515,7 @@ mod tests {
             .unwrap();
         let sent_raw = extract_broadcast_data(&output);
 
-        // Feed packet to receiver ; should get ProofRequested event (App strategy)
+        // Feed packet to receiver, should get ProofRequested event (App strategy)
         let recv_output = receiver.handle_packet(InterfaceId(0), &sent_raw);
 
         let proof_req = recv_output
@@ -4556,7 +4554,7 @@ mod tests {
             },
         );
 
-        // Call send_proof() ; Bug 2 fix: this method now exists
+        // Call send_proof(). Bug 2 fix: this method now exists
         let proof_output = receiver
             .send_proof(&packet_hash, &req_dest_hash)
             .expect("send_proof should succeed");
@@ -4718,7 +4716,7 @@ mod tests {
         let (_receipt_hash, output) = sender.send_single_packet(&dest_hash, payload).unwrap();
         let sent_raw = extract_broadcast_data(&output);
 
-        // Receiver processes the packet ; should decrypt and emit plaintext
+        // Receiver processes the packet, should decrypt and emit plaintext
         let recv_output = receiver.handle_packet(InterfaceId(0), &sent_raw);
         let received_data = recv_output
             .events
@@ -4739,7 +4737,7 @@ mod tests {
     fn test_send_single_packet_uses_ratchet_key() {
         // Verify that send_single_packet uses the ratchet key when available.
         // The receiver enforces ratchets, so packets encrypted without the
-        // ratchet key are silently dropped ; proving the sender used it.
+        // ratchet key are silently dropped, proving the sender used it.
         use crate::transport::{InterfaceId, PathEntry};
 
         let recv_identity = Identity::generate(&mut OsRng);
@@ -4757,7 +4755,7 @@ mod tests {
         .unwrap();
         let dest_hash = *dest.hash();
 
-        // Enable and enforce ratchets ; receiver drops packets not using a ratchet
+        // Enable and enforce ratchets, receiver drops packets not using a ratchet
         dest.enable_ratchets(&mut OsRng, TEST_TIME_MS).unwrap();
         dest.set_enforce_ratchets(true);
         let ratchet_pub = dest.current_ratchet_public().unwrap();
@@ -4796,12 +4794,12 @@ mod tests {
             TEST_TIME_MS,
         );
 
-        // Send encrypted packet ; should use ratchet key
+        // Send encrypted packet, should use ratchet key
         let payload = b"ratchet encrypted hello";
         let (_receipt_hash, output) = sender.send_single_packet(&dest_hash, payload).unwrap();
         let sent_raw = extract_broadcast_data(&output);
 
-        // Receiver processes the packet ; enforce_ratchets means it drops non-ratcheted packets
+        // Receiver processes the packet, enforce_ratchets means it drops non-ratcheted packets
         let recv_output = receiver.handle_packet(InterfaceId(0), &sent_raw);
         let received_data = recv_output
             .events
@@ -5029,7 +5027,7 @@ mod tests {
 
         let result = node.send_single_packet(&dest_hash, b"should fail");
         assert_eq!(result.unwrap_err(), send::SendError::EncryptionFailed);
-        // No actions should be emitted ; no plaintext leak
+        // No actions should be emitted, no plaintext leak
     }
 
     #[test]
@@ -5245,7 +5243,7 @@ mod tests {
     #[test]
     fn test_send_single_packet_never_sends_plaintext_on_missing_identity() {
         // Verify that EncryptionFailed path produces zero Actions
-        // (this is a security test ; no plaintext leak even on error)
+        // (this is a security test, no plaintext leak even on error)
         let clock = MockClock::new(TEST_TIME_MS);
         let mut node = NodeCoreBuilder::new().build(OsRng, clock, NoStorage);
 
@@ -5798,7 +5796,7 @@ mod tests {
     fn test_send_on_link_pacing_delay_when_interface_not_ready() {
         let mut pair = establish_nodecore_link_pair();
 
-        // The link was established via InterfaceId(0) ; push a future
+        // The link was established via InterfaceId(0), push a future
         // slot via the next-slot backchannel.
         let now_ms = pair.initiator.transport().clock().now_ms();
         let future_slot = now_ms + 5_000;
@@ -5879,7 +5877,7 @@ mod tests {
         );
         let rtt_data = extract_broadcast_data(&output);
 
-        // DO NOT deliver rtt_data to responder ; that's the point of this helper
+        // DO NOT deliver rtt_data to responder, that's the point of this helper
 
         (initiator, responder, init_link_id, resp_link_id, rtt_data)
     }
@@ -5927,7 +5925,7 @@ mod tests {
         let _ = responder.handle_packet(InterfaceId(0), &rtt_data);
 
         // Simulate an inbound packet on the initiator to confirm RTT.
-        // Use a keepalive from the responder ; we need the responder link
+        // Use a keepalive from the responder, we need the responder link
         // to build a keepalive, but it might not have one because keepalives
         // are only built by initiators. Instead, just call confirm_rtt directly.
         initiator.link_mut(&init_link_id).unwrap().confirm_rtt();
@@ -5981,7 +5979,7 @@ mod tests {
             "link should still exist at retry limit"
         );
 
-        // One more tick ; should tear down
+        // One more tick, should tear down
         initiator.transport().clock().set(
             TEST_TIME_MS + (RTT_RETRY_MAX_ATTEMPTS as u64 + 1) * (RTT_RETRY_MIN_INTERVAL_MS + 1),
         );
@@ -6027,7 +6025,7 @@ mod tests {
             timeout
         );
 
-        // Advance past the timeout ; responder should clean up
+        // Advance past the timeout, responder should clean up
         responder
             .transport()
             .clock()
@@ -6057,7 +6055,7 @@ mod tests {
         let (mut _initiator, mut responder, _init_link_id, resp_link_id, rtt_data) =
             establish_link_pair_without_rtt();
 
-        // Deliver RTT ; responder becomes Active
+        // Deliver RTT, responder becomes Active
         let output = responder.handle_packet(InterfaceId(0), &rtt_data);
         assert!(
             output
@@ -6070,7 +6068,7 @@ mod tests {
         assert_eq!(link.state(), LinkState::Active);
         let rtt_us = link.rtt_us();
 
-        // Deliver the same RTT packet again ; should be silently ignored
+        // Deliver the same RTT packet again, should be silently ignored
         let output = responder.handle_packet(InterfaceId(0), &rtt_data);
         assert!(
             !output
@@ -6554,7 +6552,7 @@ mod tests {
             request::RequestPolicy::AllowList(alloc::vec![some_hash]),
         );
 
-        // Don't identify ; send request directly
+        // Don't identify, send request directly
         let mut data = Vec::new();
         crate::resource::msgpack::write_uint(&mut data, 1);
         let (_, output) = pair

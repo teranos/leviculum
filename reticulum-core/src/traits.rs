@@ -49,9 +49,9 @@ use crate::transport::InterfaceId;
 /// Error type for interface send operations
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum InterfaceError {
-    /// Outbound buffer full ; packet dropped (non-fatal)
+    /// Outbound buffer full, packet dropped (non-fatal)
     BufferFull,
-    /// Interface disconnected ; driver must call handle_interface_down()
+    /// Interface disconnected, driver must call handle_interface_down()
     Disconnected,
 }
 
@@ -81,7 +81,7 @@ pub struct InterfaceMode {
 /// implements it on whatever holds the outbound channel (e.g., a tokio mpsc
 /// sender, an Embassy SPI handle, a LoRa radio driver).
 ///
-/// The **receive side** is intentionally absent ; receiving is async and
+/// The **receive side** is intentionally absent, receiving is async and
 /// driver-specific (tokio channels, hardware interrupts, DMA). The driver
 /// feeds received packets into core via `handle_packet()`.
 ///
@@ -92,7 +92,7 @@ pub struct InterfaceMode {
 ///
 /// # Error handling
 ///
-/// - `BufferFull`: non-fatal, packet dropped ; Reticulum is best-effort
+/// - `BufferFull`: non-fatal, packet dropped. Reticulum is best-effort
 /// - `Disconnected`: driver must call `handle_interface_down()` for cleanup
 pub trait Interface {
     /// Opaque identifier used by core for routing tables
@@ -115,7 +115,7 @@ pub trait Interface {
     /// Try to send a packet (non-blocking, fire-and-forget)
     ///
     /// Returns `Ok(())` if the packet was accepted for delivery.
-    /// Returns `Err(BufferFull)` if the outbound buffer is full ; packet is dropped.
+    /// Returns `Err(BufferFull)` if the outbound buffer is full, packet is dropped.
     /// Returns `Err(Disconnected)` if the interface is dead.
     ///
     /// The implementation handles framing internally (e.g., HDLC for TCP).
@@ -139,7 +139,7 @@ pub trait Interface {
     /// Wall-clock time (ms) at which this interface will next accept a
     /// packet of the given size.
     ///
-    /// The default implementation returns `now_ms` ; the interface is
+    /// The default implementation returns `now_ms`, the interface is
     /// always ready. LoRa/constrained interfaces override to return the
     /// earliest-fit time computed from their airtime budget.
     ///
@@ -326,7 +326,7 @@ pub trait Storage {
     fn set_identity(&mut self, dest_hash: [u8; TRUNCATED_HASHBYTES], identity: Identity);
 
     // Known Ratchets (sender-side cache)
-    /// Get the known ratchet public key for a destination (owned, not ref ; disk-backed
+    /// Get the known ratchet public key for a destination (owned, not ref, disk-backed
     /// Storage can't return references to deserialized data).
     fn get_known_ratchet(
         &self,
@@ -835,7 +835,7 @@ mod tests {
         assert_eq!(iface.next_slot_ms(0, 0), 0);
     }
 
-    /// An override is honoured ; the default is overridable per impl.
+    /// An override is honoured, the default is overridable per impl.
     #[test]
     fn next_slot_ms_override_returns_custom_value() {
         struct DelayedByHundred;

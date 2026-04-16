@@ -250,7 +250,7 @@ async fn test_rnpath_table_against_rust_daemon() {
         panic!("rnpath -t exited with code {:?}", output.status.code());
     }
 
-    // Empty path table ; rnpath should still exit successfully.
+    // Empty path table, rnpath should still exit successfully.
     // It may print a header or "No paths" message, or nothing at all.
 
     cleanup_config_dir(&config_dir);

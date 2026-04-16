@@ -1,4 +1,4 @@
-//! `lns selftest` ; real-network integration self-test
+//! `lns selftest`: real-network integration self-test
 //!
 //! Two ephemeral nodes in one process, both connected to a public relay,
 //! establishing a link through it and exchanging messages bidirectionally.
@@ -314,7 +314,7 @@ fn compute_sp_verdict(stats: &SelftestStats, warnings: &[String]) -> Verdict {
     let total_sent = stats.sp_sent_a + stats.sp_sent_b;
     let total_recv = stats.sp_recv_a + stats.sp_recv_b;
 
-    // FAIL conditions ; relaxed for unreliable single packets
+    // FAIL conditions, relaxed for unreliable single packets
     if total_sent > 0 && total_recv == 0 {
         return Verdict::Fail;
     }
@@ -597,7 +597,7 @@ pub async fn run_selftest(
         .map_err(|e| format!("cannot connect to {addr_b}: {e}"))?;
     }
 
-    // Two ephemeral identities ; need two instances each (Identity is not Clone)
+    // Two ephemeral identities, need two instances each (Identity is not Clone)
     use rand_core::OsRng;
     let id_a = Identity::generate(&mut OsRng);
     let pk_a = id_a.private_key_bytes().map_err(|e| e.to_string())?;
@@ -754,7 +754,7 @@ pub async fn run_selftest(
         1000
     };
 
-    // Variables used by the report ; assigned by the link phases or defaulted
+    // Variables used by the report, assigned by the link phases or defaulted
     let mut link_warnings: Vec<String> = Vec::new();
     let mut final_win = 0usize;
     let mut final_win_max = 0usize;

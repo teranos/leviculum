@@ -140,7 +140,7 @@ fn build_proof_signed_data(
     signed_data
 }
 
-/// Handshake phase ; tracks which side we're on and when we started waiting.
+/// Handshake phase, tracks which side we're on and when we started waiting.
 /// Consumed by `check_timeouts()` to detect stalled handshakes.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum LinkPhase {
@@ -188,9 +188,9 @@ pub enum LinkError {
     NotFound,
     /// Unsupported link encryption mode signaled by the peer
     UnsupportedMode,
-    /// Send path is occupied ; try later (mirrors [`ChannelError::Busy`])
+    /// Send path is occupied, try later (mirrors [`ChannelError::Busy`])
     Busy,
-    /// Channel is pacing sends ; retry at the given time (mirrors [`ChannelError::PacingDelay`])
+    /// Channel is pacing sends, retry at the given time (mirrors [`ChannelError::PacingDelay`])
     PacingDelay { ready_at_ms: u64 },
     /// Destination not registered on this node
     DestinationNotRegistered,
@@ -735,7 +735,7 @@ impl Link {
             "link: handshake RTT measured"
         );
 
-        // Link is now active ; clear cached proof (no longer needed for re-send)
+        // Link is now active, clear cached proof (no longer needed for re-send)
         self.state = LinkState::Active;
         self.cached_proof = None;
 
@@ -1023,7 +1023,7 @@ impl Link {
     ///
     /// **Note:** Proof validation is directional. The initiator can validate proofs
     /// from the responder (destination owner) because `peer_verifying_key` is set to
-    /// the destination's identity key. The reverse direction is not supported ; the
+    /// the destination's identity key. The reverse direction is not supported, the
     /// responder's `peer_verifying_key` is the initiator's ephemeral key, not their
     /// identity key.
     ///
@@ -3719,7 +3719,7 @@ mod tests {
         let (initiator, responder) = setup_active_link_pair();
         let link_id = *initiator.id();
 
-        // Create two identities ; sign with one, claim to be the other
+        // Create two identities, sign with one, claim to be the other
         let real_identity = Identity::generate(&mut OsRng);
         let fake_identity = Identity::generate(&mut OsRng);
 

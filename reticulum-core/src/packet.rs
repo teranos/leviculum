@@ -460,7 +460,7 @@ pub fn packet_hash(raw: &[u8]) -> [u8; 32] {
 /// Compute the truncated packet hash (16 bytes)
 ///
 /// Returns the first 16 bytes of the packet hash, used for reverse_table
-/// routing and proof routing. Not used for deduplication ; the full 32-byte
+/// routing and proof routing. Not used for deduplication, the full 32-byte
 /// hash is used for that (matching Python Transport.py:1227).
 pub fn truncated_packet_hash(raw: &[u8]) -> [u8; TRUNCATED_HASHBYTES] {
     let hash = packet_hash(raw);

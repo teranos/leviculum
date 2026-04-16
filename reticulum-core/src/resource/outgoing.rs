@@ -34,7 +34,7 @@ pub(crate) enum ResourcePollResult {
     /// Send CacheRequest for the expected proof.
     /// Contains proof_data: [resource_hash:32][expected_proof:32].
     RequestProof { proof_data: Vec<u8> },
-    /// Transfer has timed out ; should be failed.
+    /// Transfer has timed out, should be failed.
     TimedOut,
 }
 
@@ -165,7 +165,7 @@ impl OutgoingResource {
         let mut random_hash = [0u8; RESOURCE_RANDOM_HASH_SIZE];
         rng.fill_bytes(&mut random_hash);
 
-        // resource_hash = full_hash(combined + random_hash) ; uses UNENCRYPTED combined
+        // resource_hash = full_hash(combined + random_hash), uses UNENCRYPTED combined
         let mut hash_input = Vec::with_capacity(combined.len() + RESOURCE_RANDOM_HASH_SIZE);
         hash_input.extend_from_slice(&combined);
         hash_input.extend_from_slice(&random_hash);
@@ -173,7 +173,7 @@ impl OutgoingResource {
         let mut resource_hash = [0u8; 32];
         resource_hash.copy_from_slice(&resource_hash_full);
 
-        // expected_proof = full_hash(combined + resource_hash) ; precomputed
+        // expected_proof = full_hash(combined + resource_hash), precomputed
         let mut proof_input = Vec::with_capacity(combined.len() + 32);
         proof_input.extend_from_slice(&combined);
         proof_input.extend_from_slice(&resource_hash);
@@ -206,7 +206,7 @@ impl OutgoingResource {
                 let mh = map_hash(part_data, &random_hash);
 
                 if collision_guard.contains(&mh) {
-                    // Collision ; regenerate random_hash and retry
+                    // Collision, regenerate random_hash and retry
                     rng.fill_bytes(&mut random_hash);
 
                     // Recompute resource_hash and expected_proof with new random_hash
@@ -382,7 +382,7 @@ impl OutgoingResource {
             }
         }
 
-        // Handle hashmap exhaustion ; send next HMU segment
+        // Handle hashmap exhaustion, send next HMU segment
         if wants_more_hashmap {
             let last_map_hash = &req_data[1..1 + RESOURCE_HASHMAP_LEN];
             let hashmap_max = HASHMAP_MAX_LEN;
@@ -658,7 +658,7 @@ mod tests {
         let dest_hash2 = crate::destination::DestinationHash::new([0xBB; 16]);
         let _responder = Link::new_outgoing(dest_hash2, &mut OsRng);
 
-        // We need an active link for encryption ; use the test helper
+        // We need an active link for encryption, use the test helper
         // that sets link_key directly.
         let link_key = [0x42u8; 64];
         initiator.set_link_key_for_test(link_key);
@@ -806,7 +806,7 @@ mod tests {
         // = 2000 + 10000 = 12000ms (0 retries)
         let rtt_ms = 1000;
 
-        // First poll just after the REQ ; should NOT time out.
+        // First poll just after the REQ, should NOT time out.
         let result = res.poll(2500, rtt_ms);
         assert!(matches!(result, ResourcePollResult::Nothing));
 
@@ -845,7 +845,7 @@ mod tests {
     fn test_awaiting_proof_retries() {
         let (link, _) = make_test_link();
         let mut rng = rand_core::OsRng;
-        // Small data ; fits in few parts so all get sent in one REQ
+        // Small data, fits in few parts so all get sent in one REQ
         let data = vec![0x42u8; 200];
 
         let mut res =
@@ -870,7 +870,7 @@ mod tests {
         let result = res.poll(14999, rtt_ms);
         assert!(matches!(result, ResourcePollResult::Nothing));
 
-        // First timeout fires at 2000 + 13000 = 15000 ; sends CacheRequest
+        // First timeout fires at 2000 + 13000 = 15000, sends CacheRequest
         let result = res.poll(15001, rtt_ms);
         assert!(matches!(result, ResourcePollResult::RequestProof { .. }));
         assert_eq!(res.retries, 1);

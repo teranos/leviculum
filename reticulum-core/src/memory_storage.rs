@@ -1,7 +1,7 @@
 //! In-memory Storage implementation backed by BTreeMaps with configurable caps.
 //!
 //! `MemoryStorage` is the production Storage implementation for embedded targets
-//! and the default test storage for core tests. It is NOT `#[cfg(test)]` ; it is
+//! and the default test storage for core tests. It is NOT `#[cfg(test)]`, it is
 //! always available.
 
 extern crate alloc;
@@ -34,7 +34,7 @@ const COMPACT_IDENTITY_CAP: usize = 1_000;
 
 /// In-memory storage with configurable per-collection capacity limits.
 ///
-/// Uses BTreeMap/BTreeSet for all collections. Not persistent ; all data is
+/// Uses BTreeMap/BTreeSet for all collections. Not persistent, all data is
 /// lost when the process exits. For persistent storage, use `FileStorage`
 /// in `reticulum-std`.
 pub struct MemoryStorage {
@@ -220,7 +220,7 @@ impl MemoryStorage {
         let mut s = String::new();
         let mut total = 0u64;
 
-        // packet_cache: BTreeSet<[u8; 32]> ; 3x overhead
+        // packet_cache: BTreeSet<[u8; 32]>, 3x overhead
         let n = self.packet_cache.len();
         let raw = (n * 32) as u64;
         let est = raw * 3;
@@ -231,7 +231,7 @@ impl MemoryStorage {
             n, raw, est
         );
 
-        // packet_cache_prev: BTreeSet<[u8; 32]> ; 3x
+        // packet_cache_prev: BTreeSet<[u8; 32]>, 3x
         let n = self.packet_cache_prev.len();
         let raw = (n * 32) as u64;
         let est = raw * 3;
@@ -253,7 +253,7 @@ impl MemoryStorage {
         let mut s = String::new();
         let mut total = 0u64;
 
-        // path_table: BTreeMap<[u8; 16], PathEntry> ; 3x
+        // path_table: BTreeMap<[u8; 16], PathEntry>, 3x
         let n = self.path_table.len();
         let mut raw = 0u64;
         for entry in self.path_table.values() {
@@ -267,7 +267,7 @@ impl MemoryStorage {
             n, raw, est
         );
 
-        // path_states: BTreeMap<[u8; 16], PathState> ; 3x
+        // path_states: BTreeMap<[u8; 16], PathState>, 3x
         let n = self.path_states.len();
         let raw = (n * (TRUNCATED_HASHBYTES + 1)) as u64;
         let est = raw * 3;
@@ -278,7 +278,7 @@ impl MemoryStorage {
             n, raw, est
         );
 
-        // reverse_table: BTreeMap<[u8; 16], ReverseEntry> ; 3x
+        // reverse_table: BTreeMap<[u8; 16], ReverseEntry>, 3x
         let n = self.reverse_table.len();
         let raw = (n * (TRUNCATED_HASHBYTES + 24)) as u64;
         let est = raw * 3;
@@ -289,7 +289,7 @@ impl MemoryStorage {
             n, raw, est
         );
 
-        // link_table: BTreeMap<[u8; 16], LinkEntry> ; 3x
+        // link_table: BTreeMap<[u8; 16], LinkEntry>, 3x
         let n = self.link_table.len();
         let mut raw = 0u64;
         for entry in self.link_table.values() {
@@ -306,7 +306,7 @@ impl MemoryStorage {
             n, raw, est
         );
 
-        // announce_table: BTreeMap<[u8; 16], AnnounceEntry> ; 3x
+        // announce_table: BTreeMap<[u8; 16], AnnounceEntry>, 3x
         let n = self.announce_table.len();
         let mut raw = 0u64;
         for entry in self.announce_table.values() {
@@ -320,7 +320,7 @@ impl MemoryStorage {
             n, raw, est
         );
 
-        // announce_cache: BTreeMap<[u8; 16], Vec<u8>> ; 3x
+        // announce_cache: BTreeMap<[u8; 16], Vec<u8>>, 3x
         let n = self.announce_cache.len();
         let mut raw = 0u64;
         for v in self.announce_cache.values() {
@@ -334,7 +334,7 @@ impl MemoryStorage {
             n, raw, est
         );
 
-        // announce_rate_table: BTreeMap<[u8; 16], AnnounceRateEntry> ; 3x
+        // announce_rate_table: BTreeMap<[u8; 16], AnnounceRateEntry>, 3x
         let n = self.announce_rate_table.len();
         let raw = (n * (TRUNCATED_HASHBYTES + 17)) as u64;
         let est = raw * 3;
@@ -345,7 +345,7 @@ impl MemoryStorage {
             n, raw, est
         );
 
-        // receipts: BTreeMap<[u8; 16], PacketReceipt> ; 3x
+        // receipts: BTreeMap<[u8; 16], PacketReceipt>, 3x
         let n = self.receipts.len();
         let raw = (n * (TRUNCATED_HASHBYTES + 81)) as u64;
         let est = raw * 3;
@@ -356,7 +356,7 @@ impl MemoryStorage {
             n, raw, est
         );
 
-        // path_requests: BTreeMap<[u8; 16], u64> ; 3x
+        // path_requests: BTreeMap<[u8; 16], u64>, 3x
         let n = self.path_requests.len();
         let raw = (n * (TRUNCATED_HASHBYTES + 8)) as u64;
         let est = raw * 3;
@@ -367,7 +367,7 @@ impl MemoryStorage {
             n, raw, est
         );
 
-        // path_request_tags: VecDeque<[u8; 32]> ; 1x
+        // path_request_tags: VecDeque<[u8; 32]>, 1x
         let n = self.path_request_tags.len();
         let raw = (n * 32) as u64;
         let est = raw;
@@ -378,7 +378,7 @@ impl MemoryStorage {
             n, raw, est
         );
 
-        // path_request_tag_set: BTreeSet<[u8; 32]> ; 3x
+        // path_request_tag_set: BTreeSet<[u8; 32]>, 3x
         let n = self.path_request_tag_set.len();
         let raw = (n * 32) as u64;
         let est = raw * 3;
@@ -389,7 +389,7 @@ impl MemoryStorage {
             n, raw, est
         );
 
-        // known_identities: BTreeMap<[u8; 16], Identity> ; 3x
+        // known_identities: BTreeMap<[u8; 16], Identity>, 3x
         let n = self.known_identities.len();
         let raw = (n * (TRUNCATED_HASHBYTES + 128)) as u64;
         let est = raw * 3;
@@ -400,7 +400,7 @@ impl MemoryStorage {
             n, raw, est
         );
 
-        // known_ratchets: BTreeMap<[u8; 16], ([u8; 32], u64)> ; 3x
+        // known_ratchets: BTreeMap<[u8; 16], ([u8; 32], u64)>, 3x
         let n = self.known_ratchets.len();
         let raw = (n * (TRUNCATED_HASHBYTES + RATCHET_SIZE + 8)) as u64;
         let est = raw * 3;
@@ -411,7 +411,7 @@ impl MemoryStorage {
             n, raw, est
         );
 
-        // local_client_dest_map: BTreeMap<usize, BTreeSet<[u8; 16]>> ; 3x
+        // local_client_dest_map: BTreeMap<usize, BTreeSet<[u8; 16]>>, 3x
         let n: usize = self.local_client_dest_map.values().map(|s| s.len()).sum();
         let raw = (n * TRUNCATED_HASHBYTES + self.local_client_dest_map.len() * 8) as u64;
         let est = raw * 3;
@@ -422,7 +422,7 @@ impl MemoryStorage {
             self.local_client_dest_map.len(), n, raw, est
         );
 
-        // local_client_known_dests: BTreeMap<[u8; 16], u64> ; 3x
+        // local_client_known_dests: BTreeMap<[u8; 16], u64>, 3x
         let n = self.local_client_known_dests.len();
         let raw = (n * (TRUNCATED_HASHBYTES + 8)) as u64;
         let est = raw * 3;
@@ -433,7 +433,7 @@ impl MemoryStorage {
             n, raw, est
         );
 
-        // discovery_path_requests: BTreeMap<[u8; 16], (usize, u64)> ; 3x
+        // discovery_path_requests: BTreeMap<[u8; 16], (usize, u64)>, 3x
         let n = self.discovery_path_requests.len();
         let raw = (n * (TRUNCATED_HASHBYTES + 8 + 8)) as u64;
         let est = raw * 3;
@@ -444,7 +444,7 @@ impl MemoryStorage {
             n, raw, est
         );
 
-        // dest_ratchet_keys: BTreeMap<[u8; 16], Vec<u8>> ; 3x
+        // dest_ratchet_keys: BTreeMap<[u8; 16], Vec<u8>>, 3x
         let n = self.dest_ratchet_keys.len();
         let mut raw = 0u64;
         for v in self.dest_ratchet_keys.values() {
@@ -674,7 +674,7 @@ impl Storage for MemoryStorage {
 
     fn set_identity(&mut self, dest_hash: [u8; TRUNCATED_HASHBYTES], identity: Identity) {
         // Evict oldest when at cap (BTreeMap has no insertion order,
-        // so we just remove the first key ; deterministic but arbitrary)
+        // so we just remove the first key, deterministic but arbitrary)
         if self.known_identities.len() >= self.identity_cap
             && !self.known_identities.contains_key(&dest_hash)
         {

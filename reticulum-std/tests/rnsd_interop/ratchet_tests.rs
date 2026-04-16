@@ -526,7 +526,7 @@ async fn setup_ratcheted_python_dest(
         .await
         .expect("Failed to set proof strategy");
 
-    // Enable and enforce ratchets ; Python drops packets not using a ratchet
+    // Enable and enforce ratchets. Python drops packets not using a ratchet
     daemon
         .enable_ratchets(&dest_info.hash)
         .await
@@ -581,7 +581,7 @@ async fn test_python_decrypts_ratcheted_packet_from_rust() {
         setup_ratcheted_python_dest(&daemon, &rust_node, "ratchet_enc", &["r2p"], b"ratchet-r2p")
             .await;
 
-    // Send encrypted single packet ; sender should use ratchet key
+    // Send encrypted single packet, sender should use ratchet key
     let payload = b"ratchet encrypted from rust";
     rust_node
         .send_single_packet(&py_dest_hash, payload)
@@ -656,7 +656,7 @@ async fn test_rust_decrypts_ratcheted_packet_from_python() {
         "Python daemon should learn path to Rust destination"
     );
 
-    // Python sends single packet ; should use ratchet key from Rust's announce
+    // Python sends single packet, should use ratchet key from Rust's announce
     let payload = b"ratchet encrypted from python";
     daemon
         .send_single_packet(&dest_hash_hex, payload)
@@ -722,7 +722,7 @@ async fn test_ratcheted_packet_through_relay() {
         .await
         .expect("Failed to enforce ratchets");
 
-    // Announce from exit daemon ; propagates through relay (entry daemon)
+    // Announce from exit daemon, propagates through relay (entry daemon)
     exit_daemon
         .announce_destination(&dest_info.hash, b"ratchet-relay")
         .await

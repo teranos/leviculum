@@ -1,4 +1,4 @@
-//! Serial interface ; HDLC-framed bidirectional serial port
+//! Serial interface. HDLC-framed bidirectional serial port
 //!
 //! Implements a plain serial interface matching Python Reticulum's
 //! `SerialInterface`. Uses HDLC simplified framing (same as TCP and
@@ -121,7 +121,7 @@ pub(crate) fn spawn_serial_interface(config: SerialInterfaceConfig) -> Interface
 /// Send a radio config frame to the LNode firmware and wait for ACK.
 ///
 /// Retries up to 3 times with 2-second ACK timeout each. Returns true on success.
-/// This is test infrastructure ; normal usage never calls this.
+/// This is test infrastructure, normal usage never calls this.
 ///
 /// On ACK, if `credit` is Some, atomically update its radio params so
 /// subsequent `try_charge` calls price airtime under the new profile.
@@ -328,7 +328,7 @@ async fn serial_io_task(
         let timeout = if deframer.is_in_frame() {
             let elapsed = last_read_at.elapsed();
             if elapsed >= FRAME_TIMEOUT {
-                // Already expired ; reset immediately
+                // Already expired, reset immediately
                 tracing::trace!("Serial {}: frame timeout, discarding partial frame", name);
                 deframer.reset();
                 tokio::time::sleep(Duration::from_millis(1)).await;
@@ -493,7 +493,7 @@ mod tests {
     /// grows in magnitude (MTU airtime at SF10 is ~10× SF7), so the same
     /// carried-over deficit now leaves room for the small follow-up.
     /// The change in accept/reject is observable only if update_radio_params
-    /// actually ran ; so this asserts the wiring.
+    /// actually ran, so this asserts the wiring.
     ///
     /// End-to-end send_radio_config coverage requires a T114 and lives
     /// in Phase G hardware verification; this test locks down the

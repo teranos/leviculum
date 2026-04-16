@@ -1,4 +1,4 @@
-//! RPC command dispatch ; maps requests to node state queries
+//! RPC command dispatch: maps requests to node state queries
 
 use std::sync::atomic::Ordering;
 
@@ -237,7 +237,7 @@ fn build_path_table(
                     // Relayed: next_hop is the relay's transport ID
                     Some(h) => pickle_bytes(h),
                     // Direct: Python uses the destination hash as received_from
-                    // (Transport.py:1600), never None ; rnpath crashes on None.
+                    // (Transport.py:1600), never None, rnpath crashes on None.
                     None => pickle_bytes(&entry.hash),
                 },
             ),

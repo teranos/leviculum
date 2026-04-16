@@ -40,7 +40,7 @@ pub enum NodeEvent {
 
     /// A remote node requested the path to one of our local destinations
     ///
-    /// This is informational ; the transport layer already handles
+    /// This is informational, the transport layer already handles
     /// auto-re-announce internally (Transport.py:1843-1853).
     /// No application action is required.
     PathRequestReceived {
@@ -116,7 +116,7 @@ pub enum NodeEvent {
     /// Raw data received on a link without Channel framing
     ///
     /// Emitted when the peer sends a plain link data packet (not via Channel).
-    /// This is the lower-level variant ; use [`MessageReceived`](NodeEvent::MessageReceived)
+    /// This is the lower-level variant, use [`MessageReceived`](NodeEvent::MessageReceived)
     /// for channel-multiplexed messaging.
     LinkDataReceived {
         /// The link ID
@@ -137,7 +137,7 @@ pub enum NodeEvent {
         link_id: LinkId,
     },
 
-    /// Observability event ; a channel message was retransmitted due to timeout.
+    /// Observability event, a channel message was retransmitted due to timeout.
     ///
     /// No application action is required. Useful for logging and diagnostics.
     ChannelRetransmit {

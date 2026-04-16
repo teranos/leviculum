@@ -1,7 +1,7 @@
 //! UDP interface
 //!
 //! Point-to-point or broadcast UDP with fixed addresses.
-//! No discovery, no peer management, no framing ; each datagram is one
+//! No discovery, no peer management, no framing, each datagram is one
 //! Reticulum packet. Matches Python's `UDPInterface`.
 
 use std::io;
@@ -86,7 +86,7 @@ pub(crate) fn spawn_udp_interface(
 /// - Write path: `outgoing_rx.recv()` → `send_to(forward_addr)`
 ///
 /// Recv errors break the loop (dropping `incoming_tx` signals interface-down).
-/// Send errors are logged but do not kill the interface ; UDP send errors
+/// Send errors are logged but do not kill the interface. UDP send errors
 /// (network unreachable, host unreachable) are transient.
 async fn udp_io_task(
     name: String,
@@ -134,12 +134,12 @@ async fn udp_io_task(
                             }
                             Err(e) => {
                                 tracing::warn!("UDP {} send error: {}", name, e);
-                                // Don't break ; send errors are transient for UDP
+                                // Don't break, send errors are transient for UDP
                             }
                         }
                     }
                     None => {
-                        // Event loop dropped its sender ; shut down
+                        // Event loop dropped its sender, shut down
                         tracing::debug!("UDP {} outgoing channel closed", name);
                         break;
                     }
@@ -227,7 +227,7 @@ mod tests {
             spawn_udp_interface(InterfaceId(0), "udp_unreachable".into(), bound, unreachable)
                 .unwrap();
 
-        // Send to unreachable ; should not crash
+        // Send to unreachable, should not crash
         handle
             .outgoing
             .send(OutgoingPacket {
@@ -280,7 +280,7 @@ mod tests {
 
         // The I/O task should exit soon (outgoing channel closed)
         tokio::time::sleep(Duration::from_millis(100)).await;
-        // No assertion needed ; if the task doesn't exit, it would leak,
+        // No assertion needed, if the task doesn't exit, it would leak,
         // but tokio cleans up on runtime drop. This test verifies no panic.
     }
 }
