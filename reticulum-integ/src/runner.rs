@@ -161,8 +161,7 @@ impl TestRunner {
 
         // Freshness check: fail loud if any mounted binary predates HEAD.
         // Opt-out via LEVICULUM_SKIP_FRESHNESS_CHECK=1 for local iteration.
-        let mut freshness_targets: Vec<&std::path::Path> =
-            vec![&lnsd_path, &lns_path, &lncp_path];
+        let mut freshness_targets: Vec<&std::path::Path> = vec![&lnsd_path, &lns_path, &lncp_path];
         if has_proxy {
             freshness_targets.push(&proxy_path);
         }

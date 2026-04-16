@@ -82,10 +82,7 @@ impl From<std::io::Error> for FreshnessError {
 /// binary strictly older than HEAD fails the check.
 ///
 /// Skipped entirely when `LEVICULUM_SKIP_FRESHNESS_CHECK` is set.
-pub fn check_binary_freshness(
-    binaries: &[&Path],
-    repo_root: &Path,
-) -> Result<(), FreshnessError> {
+pub fn check_binary_freshness(binaries: &[&Path], repo_root: &Path) -> Result<(), FreshnessError> {
     if std::env::var_os("LEVICULUM_SKIP_FRESHNESS_CHECK").is_some() {
         return Ok(());
     }
