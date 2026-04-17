@@ -466,6 +466,286 @@ fn lncp_fetch_rust_responder_over_tcp() {
     );
 }
 
+// ---------------------------------------------------------------------------
+// Bug #26 latency-sweep mvr
+// ---------------------------------------------------------------------------
+//
+// The base test above passes over a TCP link with millisecond-level
+// latency, matching the "lncp fetch works on fast transports" arm of
+// Bug #26 hypothesis H4. The test below reuses the same daemon/lncp
+// setup but inserts a per-frame-delay TCP proxy between daemon A and
+// daemon B, so we can sweep the per-chunk latency until the fetch
+// starts timing out. The threshold is the internal-timer signature
+// the Bug #26 ledger is chasing.
+//
+// The proxy is intentionally thin: two threads per accepted connection
+// (A→B and B→A), each does blocking `read` / `sleep(delay_ms)` /
+// `write` so the delay applies per read-return. TCP tends to surface
+// one KISS frame per read when writes are small, so this naturally
+// separates frames. Larger reads coalesce frames; for the threshold
+// search this undercounts the delay, which biases the threshold
+// conservatively (i.e., if we find a threshold here, the real LoRa
+// per-chunk latency needed to trigger it is ≤ this number).
+
+use std::io::Read;
+use std::net::{TcpListener as StdTcpListener, TcpStream};
+use std::sync::atomic::AtomicBool;
+use std::sync::Arc;
+use std::thread;
+
+fn spawn_latency_proxy(
+    listen_port: u16,
+    upstream_port: u16,
+    delay: Duration,
+    stop: Arc<AtomicBool>,
+) -> thread::JoinHandle<()> {
+    thread::spawn(move || {
+        let listener = match StdTcpListener::bind(("127.0.0.1", listen_port)) {
+            Ok(l) => l,
+            Err(e) => panic!("latency proxy bind {listen_port} failed: {e}"),
+        };
+        listener
+            .set_nonblocking(true)
+            .expect("set proxy nonblocking");
+
+        while !stop.load(Ordering::Relaxed) {
+            match listener.accept() {
+                Ok((client, _addr)) => {
+                    let upstream = match TcpStream::connect(("127.0.0.1", upstream_port)) {
+                        Ok(s) => s,
+                        Err(_) => {
+                            thread::sleep(Duration::from_millis(50));
+                            continue;
+                        }
+                    };
+                    client.set_nodelay(true).ok();
+                    upstream.set_nodelay(true).ok();
+                    let c2u_stop = Arc::clone(&stop);
+                    let u2c_stop = Arc::clone(&stop);
+                    let client_r = client.try_clone().unwrap();
+                    let client_w = client;
+                    let upstream_r = upstream.try_clone().unwrap();
+                    let upstream_w = upstream;
+                    thread::spawn(move || copy_with_delay(client_r, upstream_w, delay, c2u_stop));
+                    thread::spawn(move || copy_with_delay(upstream_r, client_w, delay, u2c_stop));
+                }
+                Err(ref e) if e.kind() == std::io::ErrorKind::WouldBlock => {
+                    thread::sleep(Duration::from_millis(10));
+                }
+                Err(e) => {
+                    eprintln!("latency proxy accept error: {e}");
+                    thread::sleep(Duration::from_millis(50));
+                }
+            }
+        }
+    })
+}
+
+fn copy_with_delay(mut src: TcpStream, mut dst: TcpStream, delay: Duration, stop: Arc<AtomicBool>) {
+    src.set_read_timeout(Some(Duration::from_millis(200))).ok();
+    let mut buf = [0u8; 4096];
+    while !stop.load(Ordering::Relaxed) {
+        match src.read(&mut buf) {
+            Ok(0) => break,
+            Ok(n) => {
+                if !delay.is_zero() {
+                    thread::sleep(delay);
+                }
+                if dst.write_all(&buf[..n]).is_err() {
+                    break;
+                }
+            }
+            Err(ref e)
+                if e.kind() == std::io::ErrorKind::WouldBlock
+                    || e.kind() == std::io::ErrorKind::TimedOut =>
+            {
+                continue;
+            }
+            Err(_) => break,
+        }
+    }
+    let _ = src.shutdown(std::net::Shutdown::Read);
+    let _ = dst.shutdown(std::net::Shutdown::Write);
+}
+
+/// One fetch run through a latency-injection proxy. Returns
+/// (success, elapsed_seconds) so a sweep wrapper can tabulate.
+fn run_fetch_with_latency(delay_ms: u64) -> (bool, u64) {
+    let t0 = Instant::now();
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let base = tmp.path();
+    let dir_a = base.join("A");
+    let dir_b = base.join("B");
+    let daemon_port = next_port();
+    let proxy_port = next_port();
+    let instance_a = format!("mvr-lat-a-{daemon_port}");
+    let instance_b = format!("mvr-lat-b-{daemon_port}");
+    write_config(
+        &dir_a,
+        &instance_a,
+        &format!(
+            "  [[Peer]]\n    type = TCPClientInterface\n    enabled = yes\n    \
+             target_host = 127.0.0.1\n    target_port = {proxy_port}\n    \
+             ingress_control = false\n"
+        ),
+    )
+    .unwrap();
+    write_config(
+        &dir_b,
+        &instance_b,
+        &format!(
+            "  [[Peer]]\n    type = TCPServerInterface\n    enabled = yes\n    \
+             listen_ip = 127.0.0.1\n    listen_port = {daemon_port}\n    \
+             ingress_control = false\n"
+        ),
+    )
+    .unwrap();
+
+    let stop = Arc::new(AtomicBool::new(false));
+    let _proxy = spawn_latency_proxy(
+        proxy_port,
+        daemon_port,
+        Duration::from_millis(delay_ms),
+        Arc::clone(&stop),
+    );
+
+    let fetch_jail = dir_b.join("files");
+    fs::create_dir_all(&fetch_jail).unwrap();
+    let payload: Vec<u8> = (0..1024u32).map(|i| (i & 0xff) as u8).collect();
+    let file_b = fetch_jail.join("test_transfer.bin");
+    fs::write(&file_b, &payload).unwrap();
+
+    let mut lnsd_a = spawn_lnsd(&dir_a, "lnsd").expect("spawn lnsd A");
+    let mut lnsd_b = spawn_lnsd(&dir_b, "lnsd").expect("spawn lnsd B");
+    // Daemons + proxy need a moment to link up.
+    thread::sleep(Duration::from_secs(2));
+
+    let lncp_b = spawn_lncp(
+        &dir_b,
+        "lncp-listener",
+        &[
+            "-l",
+            "-F",
+            "-n",
+            "-j",
+            fetch_jail.to_str().unwrap(),
+            "-b",
+            "0",
+        ],
+    )
+    .expect("spawn lncp B");
+    let listening_line = wait_for_stderr_line(
+        &dir_b.join("lncp-listener-stderr.log"),
+        |l| l.contains("lncp listening on"),
+        Duration::from_secs(15),
+    );
+    let dest_hash = match listening_line.as_deref().and_then(parse_listening_hash) {
+        Some(h) => h,
+        None => {
+            stop.store(true, Ordering::Relaxed);
+            let _ = lnsd_a.kill();
+            let _ = lnsd_b.kill();
+            return (false, t0.elapsed().as_secs());
+        }
+    };
+    // Give the announce one full delay window to propagate via the
+    // laggy proxy before the initiator starts fetching.
+    thread::sleep(Duration::from_millis(2000 + 4 * delay_ms));
+
+    let save_dir = dir_a.join("fetched");
+    fs::create_dir_all(&save_dir).unwrap();
+    let remote_path = file_b.to_str().unwrap().to_string();
+    let lncp_a = spawn_lncp(
+        &dir_a,
+        "lncp-fetcher",
+        &[
+            "-f",
+            &remote_path,
+            &dest_hash,
+            "-s",
+            save_dir.to_str().unwrap(),
+            "-w",
+            "60",
+        ],
+    )
+    .expect("spawn lncp A");
+
+    let deadline = Instant::now() + Duration::from_secs(90);
+    let mut child = lncp_a.child;
+    let mut exit_code: Option<i32> = None;
+    while Instant::now() < deadline {
+        match child.try_wait() {
+            Ok(Some(status)) => {
+                exit_code = status.code();
+                break;
+            }
+            Ok(None) => thread::sleep(Duration::from_millis(200)),
+            Err(_) => break,
+        }
+    }
+    if exit_code.is_none() {
+        let _ = child.kill();
+        let _ = child.wait();
+    }
+    let _ = lncp_b.kill_and_collect();
+    let _ = lnsd_a.kill();
+    let _ = lnsd_a.wait();
+    let _ = lnsd_b.kill();
+    let _ = lnsd_b.wait();
+    stop.store(true, Ordering::Relaxed);
+
+    let fetched_path = save_dir.join("test_transfer.bin");
+    let fetched_bytes = fs::read(&fetched_path).ok();
+    let ok = exit_code == Some(0) && fetched_bytes.as_deref() == Some(&payload[..]);
+    (ok, t0.elapsed().as_secs())
+}
+
+/// Env-var driven single-shot: `BUG26_LATENCY_MS=500 cargo test
+/// lncp_fetch_latency_injection --ignored`. Prints the result with
+/// a structured event line so an external shell sweep can grep it.
+#[test]
+#[ignore = "Bug #26 latency injection; read BUG26_LATENCY_MS env var"]
+fn lncp_fetch_latency_injection() {
+    let delay_ms: u64 = std::env::var("BUG26_LATENCY_MS")
+        .ok()
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(0);
+    let (ok, elapsed) = run_fetch_with_latency(delay_ms);
+    println!("FETCH_RESULT delay_ms={delay_ms} ok={ok} elapsed_s={elapsed}");
+    assert!(
+        ok,
+        "fetch failed at delay_ms={delay_ms} elapsed_s={elapsed} (Bug #26 threshold candidate)"
+    );
+}
+
+/// In-test sweep that runs the full latency set in one `cargo test`
+/// invocation. Prints a structured summary for the report.
+#[test]
+#[ignore = "Bug #26 latency sweep (~5 minutes runtime)"]
+fn lncp_fetch_latency_sweep() {
+    let delays_ms: &[u64] = &[0, 100, 250, 500, 1000, 2000, 5000];
+    let mut results: Vec<(u64, bool, u64)> = Vec::with_capacity(delays_ms.len());
+    for &d in delays_ms {
+        let (ok, elapsed) = run_fetch_with_latency(d);
+        println!("LATENCY_SWEEP delay_ms={d} ok={ok} elapsed_s={elapsed}");
+        results.push((d, ok, elapsed));
+    }
+    println!("\n# Bug #26 latency-sweep summary");
+    println!("# {:>8} | {:>6} | {:>12}", "delay_ms", "ok", "elapsed_s");
+    for (d, ok, e) in &results {
+        println!("# {:>8} | {:>6} | {:>12}", d, ok, e);
+    }
+    let first_fail = results.iter().find(|(_, ok, _)| !ok);
+    if let Some((d, _, _)) = first_fail {
+        println!(
+            "# THRESHOLD: first failure at delay_ms={d} — that is Bug #26's \
+             latency sensitivity for the TCP path."
+        );
+    } else {
+        println!("# No delay in the sweep triggered a failure. Threshold > 5000 ms.");
+    }
+}
+
 fn copy_dir(src: &Path, dst: &Path) -> std::io::Result<()> {
     fs::create_dir_all(dst)?;
     for entry in fs::read_dir(src)? {
