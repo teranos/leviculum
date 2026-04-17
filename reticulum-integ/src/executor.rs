@@ -2627,6 +2627,27 @@ mod tests {
 
     #[test]
     #[ignore]
+    // Python-RNS counterpart to `lora_link_rust`, for Bug #25
+    // baseline measurement. Both nodes run Python rnsd; the
+    // `scripts/python_link_selftest.py` driver reproduces the Rust
+    // selftest's traffic shape (announce → path → Link establishment
+    // → 60 s of channel messages at 1/s).
+    #[serial(lora)]
+    fn lora_link_python() {
+        let toml_str = std::fs::read_to_string(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/tests/lora_link_python.toml"
+        ))
+        .expect("lora_link_python.toml not found");
+        let scenario = crate::topology::parse_scenario(&toml_str).expect("parse failed");
+
+        let mut runner = require_runner!(scenario);
+
+        run_test(&mut runner).expect("test failed");
+    }
+
+    #[test]
+    #[ignore]
     // Requires RNode hardware at /dev/ttyACM0 and /dev/ttyACM1.
     // Build lnsd with: cargo build --release --bin lnsd --features serial
     // Build lns with: cargo build --release --bin lns
