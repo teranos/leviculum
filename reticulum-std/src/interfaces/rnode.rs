@@ -560,6 +560,53 @@ async fn rnode_io_task(
                                             }
                                         }
                                     }
+                                    // Bug #25 investigation telemetry: explicit parsers
+                                    // for the two CSMA-related stat frames the firmware
+                                    // emits unsolicited. Structured events under the
+                                    // `reticulum_std::interfaces::rnode::csma_probe`
+                                    // tracing target let the debugger correlate
+                                    // firmware CSMA state with on-air TX behaviour.
+                                    // Measurement-only; no TX-path change.
+                                    rnode::CMD_STAT_CSMA if payload.len() >= 3 => {
+                                        let cw_band = payload[0];
+                                        let cw_min = payload[1];
+                                        let cw_max = payload[2];
+                                        tracing::debug!(
+                                            target: "reticulum_std::interfaces::rnode::csma_probe",
+                                            "CSMA_STAT iface={name} cw_band={cw_band} \
+                                             cw_min={cw_min} cw_max={cw_max}"
+                                        );
+                                    }
+                                    rnode::CMD_STAT_PHYPRM => {
+                                        tracing::debug!(
+                                            target: "reticulum_std::interfaces::rnode::csma_probe",
+                                            "CSMA_PHY_RAW iface={name} payload_len={} bytes={:?}",
+                                            payload.len(), payload
+                                        );
+                                        if payload.len() >= 12 {
+                                            let symbol_time_ms =
+                                                u16::from_be_bytes([payload[0], payload[1]]) as f32
+                                                    / 1000.0;
+                                            let symbol_rate =
+                                                u16::from_be_bytes([payload[2], payload[3]]);
+                                            let preamble_symbols =
+                                                u16::from_be_bytes([payload[4], payload[5]]);
+                                            let preamble_time_ms =
+                                                u16::from_be_bytes([payload[6], payload[7]]);
+                                            let csma_slot_time_ms =
+                                                u16::from_be_bytes([payload[8], payload[9]]);
+                                            let csma_difs_ms =
+                                                u16::from_be_bytes([payload[10], payload[11]]);
+                                            tracing::debug!(
+                                                target: "reticulum_std::interfaces::rnode::csma_probe",
+                                                "CSMA_PHY iface={name} symbol_time_ms={symbol_time_ms:.3} \
+                                                 symbol_rate={symbol_rate} preamble_symbols={preamble_symbols} \
+                                                 preamble_time_ms={preamble_time_ms} \
+                                                 csma_slot_time_ms={csma_slot_time_ms} \
+                                                 csma_difs_ms={csma_difs_ms}"
+                                            );
+                                        }
+                                    }
                                     // Statistics, log at trace level
                                     // TODO: Parse stat values (RSSI, SNR, channel time,
                                     // battery, temperature) and store for rnstatus reporting
@@ -567,7 +614,6 @@ async fn rnode_io_task(
                                     rnode::CMD_STAT_RSSI
                                     | rnode::CMD_STAT_SNR
                                     | rnode::CMD_STAT_CHTM
-                                    | rnode::CMD_STAT_PHYPRM
                                     | rnode::CMD_STAT_BAT
                                     | rnode::CMD_STAT_TEMP => {
                                         tracing::trace!(

@@ -53,6 +53,48 @@ Python does. They are useful for engineers implementing
 compatibility; they are NOT policy commitments to maintain
 exact internal parity.
 
+## Architecture: interface isolation
+
+**Only the interface has awareness of the quirks of its carrier
+medium, and adapts its behaviour accordingly. The core, the
+transport, and the daemon are media-agnostic.**
+
+Concretely:
+
+- A half-duplex LoRa interface knows it cannot simultaneously TX
+  and RX, knows its RadioSettings (bandwidth, spreading factor,
+  coding rate), knows the per-packet airtime budget. It holds
+  packets back, spaces TX events, does its own randomised pre-TX
+  jitter on top of the RNode firmware's CSMA, and chooses smart
+  strategies to avoid collisions.
+- A TCP/IP interface has none of that. It just writes bytes; the
+  OS stack handles everything below.
+- A serial/KISS interface sits in between.
+
+The core and transport pass packets to interfaces without caring
+what medium they're on. An announce, a LinkRequest, a data
+packet, a resource chunk — all just bytes at the interface
+boundary. A packet is a packet. **No type-awareness in
+collision-avoidance logic.** Whatever strategy the interface
+uses to get packets onto the wire without loss applies
+uniformly.
+
+### How this binds you when writing a fix
+
+If a proposed fix for a collision / contention / duplex problem
+introduces an awareness flag or counter in `transport.rs`,
+`node/`, or the daemon ("is a link in flight?", "am I forwarding
+a LinkRequest?"), **it is at the wrong layer — redirect it to the
+interface**. The interface-level fix is type-agnostic: it applies
+to every outgoing packet regardless of what protocol logic
+produced it.
+
+Interface implementations can and should diverge from Python-
+Reticulum's interface code where the divergence improves
+Priority 1 and satisfies the deviation rule above. Python's
+interface layer (see `vendor/Reticulum/RNS/Interfaces/`) is
+mostly a thin serial writer; ours can be smarter.
+
 ## Test discipline
 
 After every task, run all tests that fit a ~15 minute time budget:
