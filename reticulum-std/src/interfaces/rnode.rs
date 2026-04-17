@@ -494,6 +494,17 @@ async fn rnode_io_task(
                                 match command {
                                     rnode::CMD_DATA => {
                                         tracing::debug!("{}: RX {} bytes from radio", name, payload.len());
+                                        // Bug #25 capture-compare: structured
+                                        // event at the RNode → host serial
+                                        // boundary. Mirrors `LORA_TX` on the
+                                        // send side; together they let the
+                                        // analysis align TX on one node with
+                                        // RX on the other.
+                                        tracing::debug!(
+                                            target: "reticulum_std::interfaces::rnode::rx_trace",
+                                            "LORA_RX iface={name} len={}",
+                                            payload.len()
+                                        );
                                         counters.rx_bytes.fetch_add(
                                             payload.len() as u64,
                                             std::sync::atomic::Ordering::Relaxed,
@@ -747,6 +758,15 @@ async fn rnode_io_task(
                     .tx_bytes
                     .fetch_add(queued.payload_len, std::sync::atomic::Ordering::Relaxed);
                 tracing::debug!("{}: TX {} bytes to serial", name, queued.payload_len);
+                // Bug #25 capture-compare: structured event at the host →
+                // RNode serial boundary. Measurement-only; DEBUG-level under
+                // the dedicated target so it can be filtered independently
+                // of the rest of the rnode logs.
+                tracing::debug!(
+                    target: "reticulum_std::interfaces::rnode::tx_trace",
+                    "LORA_TX iface={name} len={}",
+                    queued.payload_len
+                );
 
                 timer_ready = false;
                 if flow_control {

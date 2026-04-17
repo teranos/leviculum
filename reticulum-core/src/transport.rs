@@ -3996,6 +3996,20 @@ impl<C: Clock, S: Storage> Transport<C, S> {
                 retry_num,
                 target,
             );
+            // Bug #25 capture-compare: structured event at the moment the
+            // retry scheduler decides to emit an announce. Pairs with
+            // `LORA_TX` at the interface layer so the analysis can count
+            // scheduler-driven announces-per-second vs driver-level bytes-
+            // to-serial events. Measurement-only; DEBUG-level under a
+            // dedicated target so it filters independently.
+            tracing::debug!(
+                target: "reticulum_core::transport::announce_trace",
+                "ANNOUNCE_EMIT dest={} retries={} hops={} target={:?}",
+                HexShort(&dest_hash),
+                retry_num,
+                original_hops,
+                target,
+            );
 
             // Rebuild packet for retransmission
             if let Ok(mut parsed) = Packet::unpack(&raw) {
