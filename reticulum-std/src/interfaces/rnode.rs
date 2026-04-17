@@ -146,15 +146,16 @@ fn compute_jitter_max_ms(sf: u8, bandwidth_hz: u32) -> u64 {
 
 /// Post-TX spacing duration for a packet of `payload_len` bytes at the given
 /// radio parameters. Called once per successful serial-write to arm the
-/// send-queue gate before the next packet can leave the host. Thin indirection
-/// over `rnode::compute_spacing_ms` so the TX gate and the Bug #25 mvr
-/// share the exact same decision under test.
+/// send-queue gate before the next packet can leave the host.
+///
+/// Returns `airtime(payload) + DIFS + MAX_CW + margin`, floored at
+/// `MIN_SPACING_MS`. This is the F-A Path α formula from
+/// `~/.claude/bugs/25.md`: gate the host on the actual on-air cost of
+/// the previous frame, not on a fixed serial-buffer number. The helper
+/// delegates to `rnode::compute_spacing_ms` which implements the same
+/// formula and is unit-tested in reticulum-core.
 pub fn post_tx_spacing_ms(payload_len: u64, bandwidth_hz: u32, sf: u8, cr: u8) -> u64 {
-    // Pre-F-A placeholder: returns the serial-buffer floor, not the
-    // airtime-fair spacing. The Bug #25 F-A fix replaces this body with
-    // `rnode::compute_spacing_ms(...)`. See `tests/mvr/interface_tx_spacing.rs`.
-    let _ = (payload_len, bandwidth_hz, sf, cr);
-    rnode::MIN_SPACING_MS
+    rnode::compute_spacing_ms(payload_len as u32, bandwidth_hz, sf, cr)
 }
 
 /// Default channel buffer size for RNode interfaces.
@@ -460,10 +461,14 @@ async fn validate_radio_config(
 /// Returns the `outgoing_rx` on disconnect so the reconnect wrapper can
 /// reuse the same channel (matching TCP interface pattern).
 ///
-/// Send-side jitter: packets are not sent immediately. The first packet after
-/// idle gets a random 0–500ms delay (desynchronizes rebroadcasts from multiple
-/// nodes). Subsequent queued packets use a fixed 50ms spacing to avoid serial
-/// buffer overrun. RNode firmware CSMA handles radio-level collision avoidance.
+/// Send-side pacing: packets are not sent immediately. The first packet after
+/// idle gets a random 0..jitter_max_ms delay (airtime-scaled, desynchronises
+/// rebroadcasts from multiple nodes). Subsequent queued packets are gated by
+/// `post_tx_spacing_ms(previous_payload, bw, sf, cr)` — airtime + DIFS +
+/// CSMA_MAX_CW + PACING_MARGIN, floored at MIN_SPACING_MS. RNode firmware
+/// CSMA still handles the radio-level contention; host pacing keeps the
+/// firmware TX queue depth at 1 so its CSMA actually runs between every
+/// frame instead of back-to-back dumping a burst.
 #[allow(clippy::too_many_arguments)]
 async fn rnode_io_task(
     name: String,
@@ -794,12 +799,7 @@ async fn rnode_io_task(
                 // + CSMA contention window + margin) without re-touching this
                 // call site.
                 {
-                    let spacing_ms = post_tx_spacing_ms(
-                        queued.payload_len,
-                        bandwidth_hz,
-                        sf,
-                        cr,
-                    );
+                    let spacing_ms = post_tx_spacing_ms(queued.payload_len, bandwidth_hz, sf, cr);
                     send_timer = Some(Box::pin(tokio::time::sleep(Duration::from_millis(
                         spacing_ms,
                     ))));

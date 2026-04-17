@@ -31,7 +31,9 @@
 //! No tokio, no hardware, < 100 ms. Pure-function mvr matching the
 //! pattern of `scheduler_alignment.rs`.
 
-use reticulum_core::rnode::{airtime_ms, CSMA_DIFS_MS, CSMA_MAX_CW_MS, MIN_SPACING_MS, PACING_MARGIN_MS};
+use reticulum_core::rnode::{
+    airtime_ms, CSMA_DIFS_MS, CSMA_MAX_CW_MS, MIN_SPACING_MS, PACING_MARGIN_MS,
+};
 use reticulum_std::interfaces::post_tx_spacing_ms;
 
 /// Radio profile that `lora_link_rust` uses on the integ fixture.
@@ -46,10 +48,7 @@ const PAYLOAD_ANNOUNCE: u64 = 193;
 const PAYLOAD_PROOF: u64 = 118;
 
 fn expected_airtime_spacing(payload: u64) -> u64 {
-    airtime_ms(payload as u32, BW_HZ, SF, CR)
-        + CSMA_DIFS_MS
-        + CSMA_MAX_CW_MS
-        + PACING_MARGIN_MS
+    airtime_ms(payload as u32, BW_HZ, SF, CR) + CSMA_DIFS_MS + CSMA_MAX_CW_MS + PACING_MARGIN_MS
 }
 
 /// Core property under test: at SF7/BW62500 a 102-byte LinkRequest TX
@@ -58,7 +57,6 @@ fn expected_airtime_spacing(payload: u64) -> u64 {
 /// F-A Path α fix routes the decision through `rnode::compute_spacing_ms`
 /// and pushes the return value to ~950 ms.
 #[test]
-#[ignore = "red mvr: remove once Bug #25 F-A Path α lands"]
 fn post_tx_spacing_lr_at_sf7_bw62500_exceeds_airtime_floor() {
     let expected = expected_airtime_spacing(PAYLOAD_LINK_REQUEST);
     let got = post_tx_spacing_ms(PAYLOAD_LINK_REQUEST, BW_HZ, SF, CR);
@@ -76,7 +74,6 @@ fn post_tx_spacing_lr_at_sf7_bw62500_exceeds_airtime_floor() {
 /// captured in run-01) must also be airtime-gated, not fall through the
 /// floor. 193-byte announce has ~840 ms airtime.
 #[test]
-#[ignore = "red mvr: remove once Bug #25 F-A Path α lands"]
 fn post_tx_spacing_announce_at_sf7_bw62500_exceeds_airtime_floor() {
     let expected = expected_airtime_spacing(PAYLOAD_ANNOUNCE);
     let got = post_tx_spacing_ms(PAYLOAD_ANNOUNCE, BW_HZ, SF, CR);
@@ -93,7 +90,6 @@ fn post_tx_spacing_announce_at_sf7_bw62500_exceeds_airtime_floor() {
 /// Proof-frame spacing (118 bytes, the LRPROOF that collided in run-01)
 /// is the third representative size. At SF7/BW62500 airtime ~480 ms.
 #[test]
-#[ignore = "red mvr: remove once Bug #25 F-A Path α lands"]
 fn post_tx_spacing_proof_at_sf7_bw62500_exceeds_airtime_floor() {
     let expected = expected_airtime_spacing(PAYLOAD_PROOF);
     let got = post_tx_spacing_ms(PAYLOAD_PROOF, BW_HZ, SF, CR);
@@ -110,7 +106,6 @@ fn post_tx_spacing_proof_at_sf7_bw62500_exceeds_airtime_floor() {
 /// scale with it, not stay pinned at the fast-mode floor. Hand-computed
 /// airtime ~3 s for 500 B → spacing ≥ 3 s + DIFS + CW + margin.
 #[test]
-#[ignore = "red mvr: remove once Bug #25 F-A Path α lands"]
 fn post_tx_spacing_sf10_bw125k_worst_case() {
     let expected = expected_airtime_spacing(500);
     let got = post_tx_spacing_ms(500, 125_000, 10, 5);
