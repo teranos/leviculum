@@ -144,6 +144,19 @@ fn compute_jitter_max_ms(sf: u8, bandwidth_hz: u32) -> u64 {
     (airtime_ms * 2).max(500)
 }
 
+/// Post-TX spacing duration for a packet of `payload_len` bytes at the given
+/// radio parameters. Called once per successful serial-write to arm the
+/// send-queue gate before the next packet can leave the host. Thin indirection
+/// over `rnode::compute_spacing_ms` so the TX gate and the Bug #25 mvr
+/// share the exact same decision under test.
+pub fn post_tx_spacing_ms(payload_len: u64, bandwidth_hz: u32, sf: u8, cr: u8) -> u64 {
+    // Pre-F-A placeholder: returns the serial-buffer floor, not the
+    // airtime-fair spacing. The Bug #25 F-A fix replaces this body with
+    // `rnode::compute_spacing_ms(...)`. See `tests/mvr/interface_tx_spacing.rs`.
+    let _ = (payload_len, bandwidth_hz, sf, cr);
+    rnode::MIN_SPACING_MS
+}
+
 /// Default channel buffer size for RNode interfaces.
 /// Smaller than TCP because LoRa bitrates are orders of magnitude lower.
 pub(crate) const RNODE_DEFAULT_BUFFER_SIZE: usize = 64;
@@ -460,9 +473,9 @@ async fn rnode_io_task(
     counters: Arc<InterfaceCounters>,
     flow_control: bool,
     jitter_max_ms: u64,
-    _bandwidth_hz: u32,
-    _sf: u8,
-    _cr: u8,
+    bandwidth_hz: u32,
+    sf: u8,
+    cr: u8,
 ) -> mpsc::Receiver<OutgoingPacket> {
     let mut deframer = KissDeframer::with_max_payload(rnode::HW_MTU);
     let mut buf = [0u8; IO_READ_BUF];
@@ -774,14 +787,21 @@ async fn rnode_io_task(
                 }
 
                 // Schedule spacing timer after every TX. The flush() above
-                // ensures the firmware has received this frame before we proceed.
-                // MIN_SPACING_MS gives the firmware time to move the frame from
-                // its serial buffer into the TX queue. The firmware's own CSMA
-                // handles radio-level collision avoidance, we don't simulate
-                // airtime in software.
+                // ensures the firmware has received this frame before we
+                // proceed. The duration is routed through `post_tx_spacing_ms`
+                // so the Bug #25 F-A fix can swap the body from the fixed
+                // serial-buffer floor to `compute_spacing_ms` (airtime + DIFS
+                // + CSMA contention window + margin) without re-touching this
+                // call site.
                 {
+                    let spacing_ms = post_tx_spacing_ms(
+                        queued.payload_len,
+                        bandwidth_hz,
+                        sf,
+                        cr,
+                    );
                     send_timer = Some(Box::pin(tokio::time::sleep(Duration::from_millis(
-                        rnode::MIN_SPACING_MS,
+                        spacing_ms,
                     ))));
                 }
             } else {

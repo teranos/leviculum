@@ -18,6 +18,12 @@ pub(crate) mod serial;
 pub(crate) mod tcp;
 pub(crate) mod udp;
 
+/// Host-side pacing helper: post-TX spacing timer duration. Exposed so
+/// the Bug #25 Tier-2 mvr can exercise the same decision under test
+/// without spinning up the full rnode_io_task. See
+/// `reticulum-std/tests/mvr/interface_tx_spacing.rs`.
+pub use self::rnode::post_tx_spacing_ms;
+
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
 use std::time::Instant;
