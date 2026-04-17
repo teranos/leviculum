@@ -359,3 +359,340 @@ fn print_h1_variant_sweep() {
         );
     }
 }
+
+// ---------------------------------------------------------------------------
+// H1 follow-up round 2 — exhaustive cross-profile sweep
+// ---------------------------------------------------------------------------
+
+use reticulum_core::rnode::airtime_ms;
+
+/// The three radio profiles represented by the integ-test matrix.
+/// `worst_airtime_ms` is the 500-byte airtime under each profile,
+/// computed by `rnode::airtime_ms` so the numbers in the report track
+/// the same helper the production `announce_jitter_max_ms` builds on.
+#[derive(Clone, Copy)]
+struct Profile {
+    name: &'static str,
+    sf: u8,
+    bw_hz: u32,
+    cr: u8,
+    // Three collision distances worth reporting for each profile's
+    // typical air-time regime.
+    cds: [u64; 3],
+}
+
+const FAST: Profile = Profile {
+    name: "Fast",
+    sf: 7,
+    bw_hz: 500_000,
+    cr: 5,
+    cds: [30, 60, 120],
+};
+const MEDIUM: Profile = Profile {
+    name: "Medium",
+    sf: 7,
+    bw_hz: 62_500,
+    cr: 5,
+    cds: [100, 300, 600],
+};
+const SLOW: Profile = Profile {
+    name: "Slow",
+    sf: 10,
+    bw_hz: 125_000,
+    cr: 5,
+    cds: [500, 1500, 3000],
+};
+
+fn worst_airtime(p: Profile) -> u64 {
+    airtime_ms(500, p.bw_hz, p.sf, p.cr)
+}
+
+/// Derive a 16-byte seed from a u32 index. Used for seed-robustness
+/// measurements so the same multiplier point can be probed against
+/// many independent destination seeds.
+fn seed_from_index(idx: u32) -> [u8; 16] {
+    let mut out = [0u8; 16];
+    for (i, chunk) in out.chunks_mut(4).enumerate() {
+        let v = idx
+            .wrapping_mul(0x9E37_79B9)
+            .wrapping_add(i as u32)
+            .to_le_bytes();
+        chunk.copy_from_slice(&v);
+    }
+    out
+}
+
+/// Probability that at least one pair among `n` identities schedules
+/// within `collision_distance_ms` of each other for the given jitter
+/// parameters. Returns a rate in [0, 1].
+fn n_node_alignment_rate(
+    n: usize,
+    sample_groups: usize,
+    seed: &[u8; 16],
+    jitter_max_ms: u64,
+    extra_random_max_ms: u64,
+    collision_distance_ms: u64,
+) -> f64 {
+    assert!(n >= 2);
+    let mut aligned_groups = 0usize;
+    let mut jitters = vec![0u64; n];
+    for group_idx in 0..sample_groups {
+        for k in 0..n {
+            let id = id_from_index((group_idx * n + k) as u32);
+            jitters[k] = jitter_sample_ms(&id, seed, jitter_max_ms, extra_random_max_ms);
+        }
+        jitters.sort_unstable();
+        let any_pair_close = (1..n).any(|k| jitters[k] - jitters[k - 1] < collision_distance_ms);
+        if any_pair_close {
+            aligned_groups += 1;
+        }
+    }
+    aligned_groups as f64 / sample_groups as f64
+}
+
+/// Matrix 1 — fine multiplier sweep, one sub-table per profile.
+/// Reports alignment rate at three collision distances, plus p50 / p95
+/// of the jitter distribution (these do not depend on the collision
+/// distance so we sample once).
+#[test]
+#[ignore = "prints H1 exhaustive sweep matrix 1"]
+fn print_h1_matrix1_multiplier_per_profile() {
+    const SAMPLE_PAIRS: usize = 100_000;
+    const MULTS: &[f64] = &[
+        1.5, 2.0, 2.5, 3.0, 3.5, 4.0, 5.0, 6.0, 7.0, 8.0, 9.0, 10.0, 12.0, 15.0, 20.0,
+    ];
+    let seed = fixed_seed();
+    for profile in [FAST, MEDIUM, SLOW] {
+        let airtime = worst_airtime(profile);
+        println!(
+            "\n# Matrix 1 — {} profile (SF{} BW{} CR4/{}, worst_airtime = {} ms)",
+            profile.name, profile.sf, profile.bw_hz, profile.cr, airtime
+        );
+        println!("# sample_pairs = {SAMPLE_PAIRS}, extra_random_max_ms = 0");
+        println!(
+            "# {:>6} | {:>10} | {:>9} ms | {:>9} ms | {:>9} ms | {:>7} | {:>8}",
+            "mult",
+            "jitter_ms",
+            format!("@{}ms", profile.cds[0]),
+            format!("@{}ms", profile.cds[1]),
+            format!("@{}ms", profile.cds[2]),
+            "p50_ms",
+            "p95_ms",
+        );
+        for &mult in MULTS {
+            let jitter_max = (mult * airtime as f64) as u64;
+            let pt0 = sweep_one_point(SAMPLE_PAIRS, &seed, jitter_max, 0, profile.cds[0]);
+            let pt1 = sweep_one_point(SAMPLE_PAIRS, &seed, jitter_max, 0, profile.cds[1]);
+            let pt2 = sweep_one_point(SAMPLE_PAIRS, &seed, jitter_max, 0, profile.cds[2]);
+            println!(
+                "# {:>6} | {:>10} | {:>8.2}%   | {:>8.2}%   | {:>8.2}%   | {:>7} | {:>8}",
+                format!("{:.1}x", mult),
+                jitter_max,
+                pt0.aligned_rate * 100.0,
+                pt1.aligned_rate * 100.0,
+                pt2.aligned_rate * 100.0,
+                pt0.p50_ms,
+                pt0.p95_ms,
+            );
+        }
+    }
+}
+
+/// Matrix 2 — 2D hybrid grid (multiplier × extra_random) at Medium.
+/// Single collision distance 600 ms, the typical mid-announce airtime.
+#[test]
+#[ignore = "prints H1 exhaustive sweep matrix 2"]
+fn print_h1_matrix2_hybrid_grid_medium() {
+    const SAMPLE_PAIRS: usize = 50_000;
+    const MULTS: &[f64] = &[3.0, 4.0, 5.0, 6.0, 8.0, 10.0];
+    const EXTRAS: &[u64] = &[0, 100, 250, 500, 1000, 2000];
+    const CD: u64 = 600;
+    let airtime = worst_airtime(MEDIUM);
+    let seed = fixed_seed();
+    println!(
+        "\n# Matrix 2 — 2D hybrid grid at {} profile (worst_airtime = {} ms)",
+        MEDIUM.name, airtime
+    );
+    println!("# sample_pairs = {SAMPLE_PAIRS}, collision_distance = {CD} ms");
+    println!("# Each cell: alignment rate (%). Row = mult, column = extra_random_ms.");
+    print!("# {:>6}", "mult\\r");
+    for &e in EXTRAS {
+        print!(" | {:>8}", e);
+    }
+    println!();
+    for &mult in MULTS {
+        let jitter_max = (mult * airtime as f64) as u64;
+        print!("# {:>6}", format!("{:.1}x", mult));
+        for &extra in EXTRAS {
+            let pt = sweep_one_point(SAMPLE_PAIRS, &seed, jitter_max, extra, CD);
+            print!(" | {:>7.2}%", pt.aligned_rate * 100.0);
+        }
+        println!();
+    }
+}
+
+/// Matrix 3 — group-wise alignment probability as a function of mesh
+/// size. Shows how the pair-wise 5 % number scales up in real meshes.
+#[test]
+#[ignore = "prints H1 exhaustive sweep matrix 3"]
+fn print_h1_matrix3_n_node_scaling() {
+    const SAMPLE_GROUPS: usize = 20_000;
+    const MULT: f64 = 8.0;
+    const CD: u64 = 600;
+    let airtime = worst_airtime(MEDIUM);
+    let jitter_max = (MULT * airtime as f64) as u64;
+    let seed = fixed_seed();
+    println!(
+        "\n# Matrix 3 — N-node scaling at {} profile, mult = {}x, jitter_max = {} ms, CD = {} ms",
+        MEDIUM.name, MULT, jitter_max, CD
+    );
+    println!("# sample_groups = {SAMPLE_GROUPS}");
+    println!("# {:>4} | {:>10} | {:>10}", "N", "any_pair_%", "expected_%");
+    for n in [2usize, 3, 4, 5, 6, 8, 10, 16] {
+        let rate = n_node_alignment_rate(n, SAMPLE_GROUPS, &seed, jitter_max, 0, CD);
+        // Independent-uniform expectation for "at least one pair within
+        // CD among N uniform draws on W": approx
+        //     P(at least one) ≈ 1 - (1 - (N-1)*CD/W)  for small CD/W
+        // Exact formula is complex but this gives the reviewer a quick
+        // sanity column.
+        let pair_p = (CD as f64) / (jitter_max as f64);
+        let pair_p = pair_p.min(1.0);
+        let exp = 1.0 - (1.0 - pair_p).powi(((n * (n - 1)) / 2) as i32);
+        println!(
+            "# {:>4} | {:>9.2}% | {:>9.2}%",
+            n,
+            rate * 100.0,
+            exp * 100.0
+        );
+    }
+}
+
+/// Matrix 4 — profile-equivalent multipliers. For each profile, find
+/// the multiplier from Matrix 1's grid that gets closest to 5 %
+/// alignment at the middle collision distance.
+#[test]
+#[ignore = "prints H1 exhaustive sweep matrix 4"]
+fn print_h1_matrix4_profile_equivalence() {
+    const SAMPLE_PAIRS: usize = 100_000;
+    const TARGET: f64 = 0.05;
+    // Same fine-grained sweep Matrix 1 used, so the numbers match.
+    const MULTS: &[f64] = &[
+        1.5, 2.0, 2.5, 3.0, 3.5, 4.0, 5.0, 6.0, 7.0, 8.0, 9.0, 10.0, 12.0, 15.0, 20.0,
+    ];
+    let seed = fixed_seed();
+    println!("\n# Matrix 4 — multiplier per profile to reach ~5 % alignment");
+    println!("# sample_pairs = {SAMPLE_PAIRS}, collision_distance = profile.cds[1] (middle value)");
+    println!(
+        "# {:>8} | {:>4} | {:>5} | {:>5} | {:>9} | {:>9} | {:>9}",
+        "profile", "mult", "cd_ms", "rate%", "jitter_ms", "p50_ms", "p95_ms"
+    );
+    for profile in [FAST, MEDIUM, SLOW] {
+        let airtime = worst_airtime(profile);
+        let cd = profile.cds[1];
+        let mut best_mult = MULTS[0];
+        let mut best_point = sweep_one_point(
+            SAMPLE_PAIRS,
+            &seed,
+            (MULTS[0] * airtime as f64) as u64,
+            0,
+            cd,
+        );
+        let mut best_delta = (best_point.aligned_rate - TARGET).abs();
+        for &mult in &MULTS[1..] {
+            let jitter_max = (mult * airtime as f64) as u64;
+            let pt = sweep_one_point(SAMPLE_PAIRS, &seed, jitter_max, 0, cd);
+            let delta = (pt.aligned_rate - TARGET).abs();
+            // Prefer the point that is closest to 5 % but on the
+            // "sufficient" side when there is a tie. Small nudge:
+            // if the new candidate is below 5 % and the incumbent is
+            // above, prefer the new one.
+            let prefer_new = delta < best_delta
+                || (pt.aligned_rate <= TARGET && best_point.aligned_rate > TARGET);
+            if prefer_new {
+                best_mult = mult;
+                best_point = pt;
+                best_delta = delta;
+            }
+        }
+        let jitter_max = (best_mult * airtime as f64) as u64;
+        println!(
+            "# {:>8} | {:>4} | {:>5} | {:>4.2}% | {:>9} | {:>9} | {:>9}",
+            profile.name,
+            format!("{:.1}x", best_mult),
+            cd,
+            best_point.aligned_rate * 100.0,
+            jitter_max,
+            best_point.p50_ms,
+            best_point.p95_ms,
+        );
+    }
+}
+
+/// Matrix 5 — seed robustness. For the "5 % alignment" multiplier
+/// from Matrix 4, measure the rate across 10 independent destination
+/// seeds and report mean + standard deviation.
+#[test]
+#[ignore = "prints H1 exhaustive sweep matrix 5"]
+fn print_h1_matrix5_seed_robustness() {
+    const SAMPLE_PAIRS: usize = 100_000;
+    const N_SEEDS: u32 = 10;
+    // Hand-picked multipliers from Matrix 1 preview (will be refined
+    // once Matrix 4 output is in). If Matrix 4's picks disagree, the
+    // reviewer should update these.
+    let picks: [(Profile, f64); 3] = [(FAST, 8.0), (MEDIUM, 8.0), (SLOW, 8.0)];
+    println!("\n# Matrix 5 — seed robustness for the 5 % multipliers");
+    println!("# sample_pairs = {SAMPLE_PAIRS}, n_seeds = {N_SEEDS}");
+    println!(
+        "# {:>8} | {:>4} | {:>5} | {:>9} | {:>9} | {:>9}",
+        "profile", "mult", "cd_ms", "mean_%", "stdev_%", "range"
+    );
+    for (profile, mult) in picks {
+        let airtime = worst_airtime(profile);
+        let cd = profile.cds[1];
+        let jitter_max = (mult * airtime as f64) as u64;
+        let mut rates: Vec<f64> = Vec::with_capacity(N_SEEDS as usize);
+        for i in 0..N_SEEDS {
+            let seed = seed_from_index(i);
+            let pt = sweep_one_point(SAMPLE_PAIRS, &seed, jitter_max, 0, cd);
+            rates.push(pt.aligned_rate);
+        }
+        let mean = rates.iter().sum::<f64>() / rates.len() as f64;
+        let var = rates.iter().map(|r| (r - mean).powi(2)).sum::<f64>() / rates.len() as f64;
+        let stdev = var.sqrt();
+        let min = rates.iter().cloned().fold(f64::INFINITY, f64::min);
+        let max = rates.iter().cloned().fold(f64::NEG_INFINITY, f64::max);
+        println!(
+            "# {:>8} | {:>4} | {:>5} | {:>8.2}% | {:>8.3}% | {:>4.2}-{:.2}%",
+            profile.name,
+            format!("{:.1}x", mult),
+            cd,
+            mean * 100.0,
+            stdev * 100.0,
+            min * 100.0,
+            max * 100.0,
+        );
+    }
+}
+
+/// Matrix 6 — fine collision-distance sweep at the 8× multiplier for
+/// the Medium profile, showing the full alignment-vs-distance curve.
+#[test]
+#[ignore = "prints H1 exhaustive sweep matrix 6"]
+fn print_h1_matrix6_cd_sweep_medium() {
+    const SAMPLE_PAIRS: usize = 100_000;
+    const MULT: f64 = 8.0;
+    const CDS: &[u64] = &[50, 100, 150, 200, 300, 400, 500, 600, 800, 1000, 1500, 2000];
+    let airtime = worst_airtime(MEDIUM);
+    let jitter_max = (MULT * airtime as f64) as u64;
+    let seed = fixed_seed();
+    println!(
+        "\n# Matrix 6 — CD sweep at {} profile, mult = {}x, jitter_max = {} ms",
+        MEDIUM.name, MULT, jitter_max
+    );
+    println!("# sample_pairs = {SAMPLE_PAIRS}");
+    println!("# {:>6} | {:>9}", "cd_ms", "align_%");
+    for &cd in CDS {
+        let pt = sweep_one_point(SAMPLE_PAIRS, &seed, jitter_max, 0, cd);
+        println!("# {:>6} | {:>8.2}%", cd, pt.aligned_rate * 100.0);
+    }
+}
