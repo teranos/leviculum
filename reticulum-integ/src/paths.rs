@@ -78,16 +78,27 @@ impl From<std::io::Error> for FreshnessError {
     }
 }
 
-/// Compare every binary's mtime against the commit time of `HEAD`. Any
-/// binary strictly older than HEAD fails the check.
+/// Compare every binary's mtime against the most recent commit that
+/// modified code contributing to the binaries. Any binary strictly older
+/// than that commit fails the check.
 ///
 /// Skipped entirely when `LEVICULUM_SKIP_FRESHNESS_CHECK` is set.
+///
+/// The path-specific variant (introduced after the 2026-04-17 batch
+/// burned hardware time on unrelated test-file commits) asks git for the
+/// last commit that touched any Rust source or manifest under the
+/// production crates. A commit that only modifies files under any
+/// `tests/` directory or `~/.claude/` does not invalidate previously-built
+/// binaries, because those files are not linked into the integ
+/// artefacts. Falls back to plain HEAD if the path-restricted query
+/// fails for any reason so the check stays conservative.
 pub fn check_binary_freshness(binaries: &[&Path], repo_root: &Path) -> Result<(), FreshnessError> {
     if std::env::var_os("LEVICULUM_SKIP_FRESHNESS_CHECK").is_some() {
         return Ok(());
     }
 
-    let head_time = git_head_commit_time(repo_root)?;
+    let head_time =
+        git_production_source_commit_time(repo_root).or_else(|_| git_head_commit_time(repo_root))?;
 
     for bin in binaries {
         let mtime = fs::metadata(bin)?
@@ -108,9 +119,44 @@ pub fn check_binary_freshness(binaries: &[&Path], repo_root: &Path) -> Result<()
     Ok(())
 }
 
+/// Paths that contribute to the integ binaries. Listed explicitly so a
+/// commit touching `tests/` or docs or `.claude/` does not invalidate
+/// artefacts. `Cargo.lock` is included because dependency-version
+/// changes do rebuild.
+const PRODUCTION_SOURCE_PATHS: &[&str] = &[
+    "reticulum-core/src",
+    "reticulum-core/Cargo.toml",
+    "reticulum-std/src",
+    "reticulum-std/Cargo.toml",
+    "reticulum-cli/src",
+    "reticulum-cli/Cargo.toml",
+    "reticulum-proxy/src",
+    "reticulum-proxy/Cargo.toml",
+    "reticulum-nrf/src",
+    "reticulum-nrf/Cargo.toml",
+    "Cargo.toml",
+    "Cargo.lock",
+];
+
 fn git_head_commit_time(repo_root: &Path) -> Result<i64, FreshnessError> {
+    git_commit_time_for_paths(repo_root, &[])
+}
+
+fn git_production_source_commit_time(repo_root: &Path) -> Result<i64, FreshnessError> {
+    git_commit_time_for_paths(repo_root, PRODUCTION_SOURCE_PATHS)
+}
+
+fn git_commit_time_for_paths(
+    repo_root: &Path,
+    paths: &[&str],
+) -> Result<i64, FreshnessError> {
+    let mut args: Vec<&str> = vec!["log", "-1", "--format=%ct", "HEAD"];
+    if !paths.is_empty() {
+        args.push("--");
+        args.extend(paths);
+    }
     let output = Command::new("git")
-        .args(["log", "-1", "--format=%ct", "HEAD"])
+        .args(args)
         .current_dir(repo_root)
         .output()
         .map_err(|e| FreshnessError::GitFailed(format!("spawn git: {e}")))?;
@@ -122,6 +168,11 @@ fn git_head_commit_time(repo_root: &Path) -> Result<i64, FreshnessError> {
     }
 
     let ts_str = String::from_utf8_lossy(&output.stdout).trim().to_string();
+    if ts_str.is_empty() {
+        return Err(FreshnessError::GitFailed(
+            "no matching commit for production source paths".to_string(),
+        ));
+    }
     ts_str
         .parse::<i64>()
         .map_err(|e| FreshnessError::GitFailed(format!("parse '{ts_str}': {e}")))
