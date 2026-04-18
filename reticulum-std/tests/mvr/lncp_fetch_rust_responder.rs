@@ -779,11 +779,7 @@ fn spawn_latency_proxy_asymmetric(
 /// forwarded first, then the first. Applied only to the upstream→client
 /// direction (server→initiator) since that is where the fetch resource
 /// chunks flow.
-fn copy_with_reorder(
-    mut src: TcpStream,
-    mut dst: TcpStream,
-    stop: Arc<AtomicBool>,
-) {
+fn copy_with_reorder(mut src: TcpStream, mut dst: TcpStream, stop: Arc<AtomicBool>) {
     src.set_read_timeout(Some(Duration::from_millis(200))).ok();
     let mut buf = [0u8; 4096];
     let mut held: Option<Vec<u8>> = None;
@@ -856,7 +852,9 @@ fn spawn_reorder_proxy(
                     // Forward c2u with zero delay; apply reorder only to
                     // the u2c (server → initiator) direction, which is
                     // where the fetch chunks flow.
-                    thread::spawn(move || copy_with_delay(client_r, upstream, Duration::ZERO, c2u_stop));
+                    thread::spawn(move || {
+                        copy_with_delay(client_r, upstream, Duration::ZERO, c2u_stop)
+                    });
                     thread::spawn(move || copy_with_reorder(upstream_r, client, u2c_stop));
                 }
                 Err(ref e) if e.kind() == std::io::ErrorKind::WouldBlock => {
@@ -932,7 +930,15 @@ fn run_fetch_variant(
     let lncp_b = spawn_lncp(
         &dir_b,
         "lncp-listener",
-        &["-l", "-F", "-n", "-j", fetch_jail.to_str().unwrap(), "-b", "0"],
+        &[
+            "-l",
+            "-F",
+            "-n",
+            "-j",
+            fetch_jail.to_str().unwrap(),
+            "-b",
+            "0",
+        ],
     )
     .expect("spawn lncp B");
     let listening_line = wait_for_stderr_line(
@@ -1023,9 +1029,7 @@ fn lncp_fetch_latency_sweep_extended() {
         // margin.
         let budget = ((24 * d) / 1000) + 120;
         let (ok, elapsed) = run_fetch_variant(d, d, false, budget);
-        println!(
-            "LATENCY_SWEEP_EXT delay_ms={d} fetcher_w={budget} ok={ok} elapsed_s={elapsed}"
-        );
+        println!("LATENCY_SWEEP_EXT delay_ms={d} fetcher_w={budget} ok={ok} elapsed_s={elapsed}");
         results.push((d, ok, elapsed));
     }
     println!("\n# Bug #26 extended latency sweep summary");
@@ -1083,7 +1087,11 @@ fn lncp_fetch_reorder_injection() {
     // reproduction.
     println!(
         "# outcome: {} (ok={}) elapsed={} s",
-        if ok { "fetch succeeded despite reorder" } else { "fetch failed on reorder" },
+        if ok {
+            "fetch succeeded despite reorder"
+        } else {
+            "fetch failed on reorder"
+        },
         ok,
         elapsed
     );

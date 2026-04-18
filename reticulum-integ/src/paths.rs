@@ -97,8 +97,8 @@ pub fn check_binary_freshness(binaries: &[&Path], repo_root: &Path) -> Result<()
         return Ok(());
     }
 
-    let head_time =
-        git_production_source_commit_time(repo_root).or_else(|_| git_head_commit_time(repo_root))?;
+    let head_time = git_production_source_commit_time(repo_root)
+        .or_else(|_| git_head_commit_time(repo_root))?;
 
     for bin in binaries {
         let mtime = fs::metadata(bin)?
@@ -146,10 +146,7 @@ fn git_production_source_commit_time(repo_root: &Path) -> Result<i64, FreshnessE
     git_commit_time_for_paths(repo_root, PRODUCTION_SOURCE_PATHS)
 }
 
-fn git_commit_time_for_paths(
-    repo_root: &Path,
-    paths: &[&str],
-) -> Result<i64, FreshnessError> {
+fn git_commit_time_for_paths(repo_root: &Path, paths: &[&str]) -> Result<i64, FreshnessError> {
     let mut args: Vec<&str> = vec!["log", "-1", "--format=%ct", "HEAD"];
     if !paths.is_empty() {
         args.push("--");

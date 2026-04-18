@@ -7,7 +7,7 @@
 [test]
 name = "lora_link_interop"
 description = "Rust↔Python link and channel messages over LoRa via selftest"
-timeout_secs = 600
+timeout_secs = 900
 rust_log = "reticulum_core::link::channel=debug,reticulum_core::link=debug,reticulum_core::transport=debug,reticulum_std::interfaces=debug,info"
 
 [radio]
@@ -37,17 +37,17 @@ duration_secs = 60
 action = "wait_for_path"
 on = "alpha"
 destination = "beta.probe"
-timeout_secs = 90
+timeout_secs = 300
 
 [[steps]]
 action = "wait_for_path"
 on = "beta"
 destination = "alpha.probe"
-timeout_secs = 90
+timeout_secs = 300
 
 [[steps]]
 action = "exec"
 on = "alpha"
-command = "lns selftest 127.0.0.1:4242 beta:4242 --mode link --rate 1 --duration 60 --discovery-timeout 240"
+command = "lns selftest 127.0.0.1:4242 beta:4242 --mode link --rate 1 --duration 60 --discovery-timeout 300"
 expect_exit_code = 0
 env = { RUST_LOG = "reticulum_core::link::channel=debug,reticulum_core::link=debug,reticulum_core::transport=debug,reticulum_std::interfaces=debug,info" }

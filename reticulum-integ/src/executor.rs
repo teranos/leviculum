@@ -2628,10 +2628,10 @@ mod tests {
     #[test]
     #[ignore]
     // Python-RNS counterpart to `lora_link_rust`, for Bug #25
-    // baseline measurement. Both nodes run Python rnsd; the
-    // `scripts/python_link_selftest.py` driver reproduces the Rust
-    // selftest's traffic shape (announce → path → Link establishment
-    // → 60 s of channel messages at 1/s).
+    // controlled A/B/A comparison. Both nodes run Python rnsd; the
+    // driver is the same `lns selftest` binary as `lora_link_rust` —
+    // the only difference between the three LoRa link-test TOMLs is
+    // the `[nodes.*].type` field.
     #[serial(lora)]
     fn lora_link_python() {
         let toml_str = std::fs::read_to_string(concat!(
