@@ -122,8 +122,11 @@ def run_responder(args):
 
     # Initial announce — the initiator waits for this. Also re-announce
     # periodically in case the first one is lost on the lossy LoRa link.
+    # Cadence matches Rust's `PATHFINDER_G = 5 s` so the Bug #25
+    # volume-hypothesis comparison is apples-to-apples; see
+    # ~/.claude/report.md 2026-04-17.
     dest.announce(app_data=b"mvr-responder")
-    announce_interval = 15.0
+    announce_interval = 5.0
 
     start = time.time()
     max_life = args.duration + args.discovery_timeout + args.link_timeout + 60.0
