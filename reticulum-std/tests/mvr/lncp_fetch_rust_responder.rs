@@ -718,6 +718,377 @@ fn lncp_fetch_latency_injection() {
     );
 }
 
+/// Extended, asymmetric, and reorder variants of the latency proxy.
+///
+/// The 2026-04-17 batch ran the symmetric sweep up to 5 000 ms and
+/// found no threshold; the extensions here cover:
+///   * Higher symmetric delay up to 30 000 ms (partly past the
+///     fetcher's wall-clock budget — we set `-w` accordingly so the
+///     caller budget is not the thing that fails).
+///   * Asymmetric delay: one direction laggy, the other fast.
+///     Models LoRa half-duplex where one hop's airtime dominates.
+///   * Packet reordering: swap two adjacent incoming frames in one
+///     direction. Models the Bug #26 H5 "resource-strategy
+///     registration race" hypothesis.
+
+fn spawn_latency_proxy_asymmetric(
+    listen_port: u16,
+    upstream_port: u16,
+    delay_c2u: Duration,
+    delay_u2c: Duration,
+    stop: Arc<AtomicBool>,
+) -> thread::JoinHandle<()> {
+    thread::spawn(move || {
+        let listener = match StdTcpListener::bind(("127.0.0.1", listen_port)) {
+            Ok(l) => l,
+            Err(e) => panic!("async latency proxy bind {listen_port} failed: {e}"),
+        };
+        listener
+            .set_nonblocking(true)
+            .expect("set proxy nonblocking");
+        while !stop.load(Ordering::Relaxed) {
+            match listener.accept() {
+                Ok((client, _addr)) => {
+                    let upstream = match TcpStream::connect(("127.0.0.1", upstream_port)) {
+                        Ok(s) => s,
+                        Err(_) => {
+                            thread::sleep(Duration::from_millis(50));
+                            continue;
+                        }
+                    };
+                    client.set_nodelay(true).ok();
+                    upstream.set_nodelay(true).ok();
+                    let c2u_stop = Arc::clone(&stop);
+                    let u2c_stop = Arc::clone(&stop);
+                    let client_r = client.try_clone().unwrap();
+                    let upstream_r = upstream.try_clone().unwrap();
+                    thread::spawn(move || copy_with_delay(client_r, upstream, delay_c2u, c2u_stop));
+                    thread::spawn(move || copy_with_delay(upstream_r, client, delay_u2c, u2c_stop));
+                }
+                Err(ref e) if e.kind() == std::io::ErrorKind::WouldBlock => {
+                    thread::sleep(Duration::from_millis(10));
+                }
+                Err(_) => thread::sleep(Duration::from_millis(50)),
+            }
+        }
+    })
+}
+
+/// Swap every other pair of reads so adjacent frames arrive in reverse
+/// order. The first read in each pair is held back; the second is
+/// forwarded first, then the first. Applied only to the upstream→client
+/// direction (server→initiator) since that is where the fetch resource
+/// chunks flow.
+fn copy_with_reorder(
+    mut src: TcpStream,
+    mut dst: TcpStream,
+    stop: Arc<AtomicBool>,
+) {
+    src.set_read_timeout(Some(Duration::from_millis(200))).ok();
+    let mut buf = [0u8; 4096];
+    let mut held: Option<Vec<u8>> = None;
+    while !stop.load(Ordering::Relaxed) {
+        match src.read(&mut buf) {
+            Ok(0) => break,
+            Ok(n) => {
+                let chunk = buf[..n].to_vec();
+                if let Some(prev) = held.take() {
+                    // Send the just-arrived chunk FIRST, then the held one.
+                    if dst.write_all(&chunk).is_err() || dst.write_all(&prev).is_err() {
+                        break;
+                    }
+                } else {
+                    held = Some(chunk);
+                }
+            }
+            Err(ref e)
+                if e.kind() == std::io::ErrorKind::WouldBlock
+                    || e.kind() == std::io::ErrorKind::TimedOut =>
+            {
+                // Flush any held chunk after 200 ms of idle so we don't
+                // stall when the scenario produces an odd number of
+                // reads.
+                if let Some(prev) = held.take() {
+                    if dst.write_all(&prev).is_err() {
+                        break;
+                    }
+                }
+            }
+            Err(_) => break,
+        }
+    }
+    if let Some(prev) = held.take() {
+        let _ = dst.write_all(&prev);
+    }
+    let _ = src.shutdown(std::net::Shutdown::Read);
+    let _ = dst.shutdown(std::net::Shutdown::Write);
+}
+
+fn spawn_reorder_proxy(
+    listen_port: u16,
+    upstream_port: u16,
+    stop: Arc<AtomicBool>,
+) -> thread::JoinHandle<()> {
+    thread::spawn(move || {
+        let listener = match StdTcpListener::bind(("127.0.0.1", listen_port)) {
+            Ok(l) => l,
+            Err(e) => panic!("reorder proxy bind {listen_port} failed: {e}"),
+        };
+        listener
+            .set_nonblocking(true)
+            .expect("set proxy nonblocking");
+        while !stop.load(Ordering::Relaxed) {
+            match listener.accept() {
+                Ok((client, _addr)) => {
+                    let upstream = match TcpStream::connect(("127.0.0.1", upstream_port)) {
+                        Ok(s) => s,
+                        Err(_) => {
+                            thread::sleep(Duration::from_millis(50));
+                            continue;
+                        }
+                    };
+                    client.set_nodelay(true).ok();
+                    upstream.set_nodelay(true).ok();
+                    let c2u_stop = Arc::clone(&stop);
+                    let u2c_stop = Arc::clone(&stop);
+                    let client_r = client.try_clone().unwrap();
+                    let upstream_r = upstream.try_clone().unwrap();
+                    // Forward c2u with zero delay; apply reorder only to
+                    // the u2c (server → initiator) direction, which is
+                    // where the fetch chunks flow.
+                    thread::spawn(move || copy_with_delay(client_r, upstream, Duration::ZERO, c2u_stop));
+                    thread::spawn(move || copy_with_reorder(upstream_r, client, u2c_stop));
+                }
+                Err(ref e) if e.kind() == std::io::ErrorKind::WouldBlock => {
+                    thread::sleep(Duration::from_millis(10));
+                }
+                Err(_) => thread::sleep(Duration::from_millis(50)),
+            }
+        }
+    })
+}
+
+/// Parameterised variant of `run_fetch_with_latency` that lets the
+/// caller pick asymmetric direction delays and a per-run `-w` budget.
+fn run_fetch_variant(
+    delay_c2u_ms: u64,
+    delay_u2c_ms: u64,
+    reorder_u2c: bool,
+    fetcher_budget_s: u64,
+) -> (bool, u64) {
+    let t0 = Instant::now();
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let base = tmp.path();
+    let dir_a = base.join("A");
+    let dir_b = base.join("B");
+    let daemon_port = next_port();
+    let proxy_port = next_port();
+    let instance_a = format!("mvr-var-a-{daemon_port}");
+    let instance_b = format!("mvr-var-b-{daemon_port}");
+    write_config(
+        &dir_a,
+        &instance_a,
+        &format!(
+            "  [[Peer]]\n    type = TCPClientInterface\n    enabled = yes\n    \
+             target_host = 127.0.0.1\n    target_port = {proxy_port}\n    \
+             ingress_control = false\n"
+        ),
+    )
+    .unwrap();
+    write_config(
+        &dir_b,
+        &instance_b,
+        &format!(
+            "  [[Peer]]\n    type = TCPServerInterface\n    enabled = yes\n    \
+             listen_ip = 127.0.0.1\n    listen_port = {daemon_port}\n    \
+             ingress_control = false\n"
+        ),
+    )
+    .unwrap();
+
+    let stop = Arc::new(AtomicBool::new(false));
+    let _proxy = if reorder_u2c {
+        spawn_reorder_proxy(proxy_port, daemon_port, Arc::clone(&stop))
+    } else {
+        spawn_latency_proxy_asymmetric(
+            proxy_port,
+            daemon_port,
+            Duration::from_millis(delay_c2u_ms),
+            Duration::from_millis(delay_u2c_ms),
+            Arc::clone(&stop),
+        )
+    };
+
+    let fetch_jail = dir_b.join("files");
+    fs::create_dir_all(&fetch_jail).unwrap();
+    let payload: Vec<u8> = (0..1024u32).map(|i| (i & 0xff) as u8).collect();
+    let file_b = fetch_jail.join("test_transfer.bin");
+    fs::write(&file_b, &payload).unwrap();
+
+    let mut lnsd_a = spawn_lnsd(&dir_a, "lnsd").expect("spawn lnsd A");
+    let mut lnsd_b = spawn_lnsd(&dir_b, "lnsd").expect("spawn lnsd B");
+    thread::sleep(Duration::from_secs(2));
+
+    let lncp_b = spawn_lncp(
+        &dir_b,
+        "lncp-listener",
+        &["-l", "-F", "-n", "-j", fetch_jail.to_str().unwrap(), "-b", "0"],
+    )
+    .expect("spawn lncp B");
+    let listening_line = wait_for_stderr_line(
+        &dir_b.join("lncp-listener-stderr.log"),
+        |l| l.contains("lncp listening on"),
+        Duration::from_secs(15),
+    );
+    let dest_hash = match listening_line.as_deref().and_then(parse_listening_hash) {
+        Some(h) => h,
+        None => {
+            stop.store(true, Ordering::Relaxed);
+            let _ = lnsd_a.kill();
+            let _ = lnsd_b.kill();
+            return (false, t0.elapsed().as_secs());
+        }
+    };
+    // Let the announce propagate through the (potentially laggy or
+    // reordering) proxy. Worst-case: `4 × max(delay)` is enough for a
+    // handful of retries through the proxy even at 30 s one-way.
+    let max_delay = delay_c2u_ms.max(delay_u2c_ms);
+    thread::sleep(Duration::from_millis(2000 + 4 * max_delay));
+
+    let save_dir = dir_a.join("fetched");
+    fs::create_dir_all(&save_dir).unwrap();
+    let remote_path = file_b.to_str().unwrap().to_string();
+    let budget_str = fetcher_budget_s.to_string();
+    let lncp_a = spawn_lncp(
+        &dir_a,
+        "lncp-fetcher",
+        &[
+            "-f",
+            &remote_path,
+            &dest_hash,
+            "-s",
+            save_dir.to_str().unwrap(),
+            "-w",
+            &budget_str,
+        ],
+    )
+    .expect("spawn lncp A");
+
+    // Overall kill deadline: fetcher budget plus margin.
+    let deadline = Instant::now() + Duration::from_secs(fetcher_budget_s + 30);
+    let mut child = lncp_a.child;
+    let mut exit_code: Option<i32> = None;
+    while Instant::now() < deadline {
+        match child.try_wait() {
+            Ok(Some(status)) => {
+                exit_code = status.code();
+                break;
+            }
+            Ok(None) => thread::sleep(Duration::from_millis(200)),
+            Err(_) => break,
+        }
+    }
+    if exit_code.is_none() {
+        let _ = child.kill();
+        let _ = child.wait();
+    }
+    let _ = lncp_b.kill_and_collect();
+    let _ = lnsd_a.kill();
+    let _ = lnsd_a.wait();
+    let _ = lnsd_b.kill();
+    let _ = lnsd_b.wait();
+    stop.store(true, Ordering::Relaxed);
+
+    let fetched_path = save_dir.join("test_transfer.bin");
+    let fetched_bytes = fs::read(&fetched_path).ok();
+    let ok = exit_code == Some(0) && fetched_bytes.as_deref() == Some(&payload[..]);
+    (ok, t0.elapsed().as_secs())
+}
+
+/// Extended symmetric latency sweep: {7 500, 10 000, 15 000, 30 000}
+/// ms per-direction. Caller budget scaled so the fetcher does not
+/// time out on its own `-w` before the proxy-induced delay can finish
+/// the transfer. The interesting question is whether any of these
+/// points shows an *unexpectedly early* failure — one that is below
+/// the delay × chunk-count × 2 product, which would indicate a Bug #26
+/// internal-timer threshold distinct from the caller budget.
+#[test]
+#[ignore = "Bug #26 extended latency sweep (~15 minutes runtime)"]
+fn lncp_fetch_latency_sweep_extended() {
+    let delays_ms: &[u64] = &[7_500, 10_000, 15_000, 30_000];
+    let mut results: Vec<(u64, bool, u64)> = Vec::with_capacity(delays_ms.len());
+    for &d in delays_ms {
+        // Generous caller budget: each direction carries ~12 chunks, so
+        // ~24 × d ms of pure proxy latency plus overhead. Add 120 s
+        // margin.
+        let budget = ((24 * d) / 1000) + 120;
+        let (ok, elapsed) = run_fetch_variant(d, d, false, budget);
+        println!(
+            "LATENCY_SWEEP_EXT delay_ms={d} fetcher_w={budget} ok={ok} elapsed_s={elapsed}"
+        );
+        results.push((d, ok, elapsed));
+    }
+    println!("\n# Bug #26 extended latency sweep summary");
+    println!(
+        "# {:>8} | {:>8} | {:>6} | {:>12}",
+        "delay_ms", "fetch_w", "ok", "elapsed_s"
+    );
+    for (d, ok, e) in &results {
+        let budget = ((24 * d) / 1000) + 120;
+        println!("# {:>8} | {:>8} | {:>6} | {:>12}", d, budget, ok, e);
+    }
+}
+
+/// Asymmetric latency sweep: one direction laggy, the other fast.
+/// The client → server direction is small (LinkRequest, resource
+/// strategy acks). The server → client direction carries the fetch
+/// payload chunks. LoRa half-duplex can make one direction wait for
+/// the other's TX to clear; we model that here.
+#[test]
+#[ignore = "Bug #26 asymmetric latency sweep (~8 minutes runtime)"]
+fn lncp_fetch_latency_asymmetric() {
+    // (c2u_ms, u2c_ms) pairs — always 0 in one direction.
+    let pairs: &[(u64, u64)] = &[
+        (2_000, 0),
+        (5_000, 0),
+        (0, 2_000),
+        (0, 5_000),
+        (10_000, 0),
+        (0, 10_000),
+    ];
+    println!("\n# Bug #26 asymmetric latency sweep");
+    println!(
+        "# {:>8} | {:>8} | {:>6} | {:>12}",
+        "c2u_ms", "u2c_ms", "ok", "elapsed_s"
+    );
+    for &(c, u) in pairs {
+        let max_d = c.max(u);
+        let budget = ((24 * max_d) / 1000) + 120;
+        let (ok, elapsed) = run_fetch_variant(c, u, false, budget);
+        println!("# {:>8} | {:>8} | {:>6} | {:>12}", c, u, ok, elapsed);
+    }
+}
+
+/// Packet-reordering injection on the server → client direction.
+/// Adjacent chunks arrive in swapped order. If the receiver's
+/// resource-state machine cannot tolerate an out-of-order chunk, this
+/// will produce the Bug #26 failure signature without any latency.
+#[test]
+#[ignore = "Bug #26 reorder injection (~1 minute runtime)"]
+fn lncp_fetch_reorder_injection() {
+    let (ok, elapsed) = run_fetch_variant(0, 0, true, 60);
+    println!("REORDER_FETCH ok={ok} elapsed_s={elapsed}");
+    // Not an assertion: we want to observe the outcome regardless.
+    // If `ok=false`, Bug #26 H5 (resource-strategy race) has TCP
+    // reproduction.
+    println!(
+        "# outcome: {} (ok={}) elapsed={} s",
+        if ok { "fetch succeeded despite reorder" } else { "fetch failed on reorder" },
+        ok,
+        elapsed
+    );
+}
+
 /// In-test sweep that runs the full latency set in one `cargo test`
 /// invocation. Prints a structured summary for the report.
 #[test]
