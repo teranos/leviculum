@@ -10,6 +10,5 @@
 //! transport from process primitives and holds the rest of the protocol
 //! stack (daemon, client tools, resource machinery) unchanged.
 
-mod interface_tx_spacing;
 mod lncp_fetch_rust_responder;
 mod scheduler_alignment;
