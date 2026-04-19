@@ -4,7 +4,8 @@ version.workspace = true
 edition.workspace = true
 authors.workspace = true
 license.workspace = true
-description = "Command-line tools for reticulum"
+homepage.workspace = true
+description = "Reticulum network stack daemon (lnsd) and client tools (lns, lncp)"
 
 [[bin]]
 name = "lnsd"
@@ -62,7 +63,12 @@ and connect to the shared-instance socket without extra flags.
 """
 section = "net"
 priority = "optional"
-depends = "$auto, adduser"
+# The binaries are musl-static, so they have no NEEDED shared-library
+# deps for cargo-deb's `$auto` to discover. Declaring `$auto` here
+# would just emit a warning per binary on every build. adduser is the
+# only real runtime dependency (postinst calls it to create the
+# leviculum system user).
+depends = "adduser"
 assets = [
     # cargo-deb only recognises "target/release/..." exactly as a Cargo
     # target path and auto-substitutes the --target triple into it.

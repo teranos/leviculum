@@ -20,6 +20,7 @@ edition = "2021"
 authors = ["Lew Palm"]
 license = "AGPL-3.0-or-later"
 repository = "https://codeberg.org/Lew_Palm/leviculum"
+homepage = "https://codeberg.org/Lew_Palm/leviculum"
 description = "Rust implementation of the Reticulum network stack"
 
 [workspace.dependencies]

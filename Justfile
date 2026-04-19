@@ -68,7 +68,7 @@ build-deb-arm64: (_require-cargo-deb)
     cargo deb -p reticulum-cli --target aarch64-unknown-linux-musl --no-build
 
 _require-cargo-deb:
-    @command -v cargo-deb >/dev/null || (echo "cargo-deb not found — run: cargo install cargo-deb" && exit 1)
+    @cargo deb --version >/dev/null 2>&1 || (echo "cargo-deb not found — run: cargo install cargo-deb" && exit 1)
 
 # Status of last runs across all tiers
 status:
