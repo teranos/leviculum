@@ -11,3 +11,7 @@
 //! stack (daemon, client tools, resource machinery) unchanged.
 
 mod lncp_fetch_rust_responder;
+mod rust_client_path_install_from_python;
+mod rust_client_path_install_loop_race;
+mod rust_client_path_install_via_relay;
+mod rust_client_path_install_with_own_echo;
