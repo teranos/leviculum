@@ -1,5 +1,10 @@
 [toolchain]
 channel = "stable"
+# musl is the default host target (see .cargo/config.toml). Listed here
+# so rustup auto-installs it on checkout. The linker (musl-gcc) is not
+# managed by rustup — developers need `sudo apt install musl-tools`
+# (or the equivalent on their distro).
+targets = ["x86_64-unknown-linux-musl"]
 # Embedded targets (nRF52840, RP2040) are not listed here to avoid
 # forcing downloads on every developer. Add them manually:
 #   rustup target add thumbv7em-none-eabihf thumbv6m-none-eabi

@@ -160,6 +160,10 @@ fn test_filter_hint() -> Option<String> {
 /// context makes that acceptable and avoids pulling `chrono`/`time` just
 /// for formatting. Uses `libc::localtime_r` on a `SystemTime` → epoch
 /// seconds conversion.
+// `libc::time_t` is deprecated under musl targets — the libc crate is
+// mid-migration to 64-bit time_t. The function signature still demands
+// the alias, so a local allow is correct until libc ships the new type.
+#[allow(deprecated)]
 fn format_local_iso8601() -> String {
     let secs = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)

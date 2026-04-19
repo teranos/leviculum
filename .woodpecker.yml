@@ -16,6 +16,7 @@ steps:
   check:
     image: rust:bookworm
     commands:
+      - apt-get update && apt-get install -y musl-tools
       - cargo fmt --all -- --check
       - cargo clippy --all -- -D warnings
       - cargo test -p reticulum-core --lib
@@ -23,7 +24,7 @@ steps:
   interop:
     image: rust:bookworm
     commands:
-      - apt-get update && apt-get install -y python3
+      - apt-get update && apt-get install -y python3 musl-tools
       - git submodule update --init vendor/Reticulum
       - cargo test -p reticulum-std --test rnsd_interop
 

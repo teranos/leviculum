@@ -39,6 +39,19 @@ extensive: standard build-integ-bins
 nightly: extensive
     cargo test -p reticulum-integ -- --include-ignored --test-threads=1
 
+# Build reticulum-ffi as a real glibc-dynamic cdylib + staticlib for
+# C-API consumers ("apt install libreticulum-dev" ergonomics). This
+# deliberately overrides the workspace musl default — see the comment
+# in .cargo/config.toml. cbindgen regenerates reticulum.h as a side
+# effect of the build.rs.
+build-ffi:
+    cargo build-ffi
+
+# Same for ARM64. Requires `sudo apt install gcc-aarch64-linux-gnu` and
+# `rustup target add aarch64-unknown-linux-gnu` on the build host.
+build-ffi-arm64:
+    cargo build-ffi-arm64
+
 # Status of last runs across all tiers
 status:
     @bash scripts/ci-status.sh

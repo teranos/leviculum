@@ -1,3 +1,22 @@
+# Default all host builds to musl-static. Gives us "runs on any Linux,
+# no libc dependency" for free (binary size delta ~1.5% vs glibc-dynamic).
+# Requires `musl-tools` on Debian/Ubuntu (provides musl-gcc as linker).
+#
+# reticulum-ffi is the exception — see the `build-ffi*` aliases below.
+# It is the C-API surface (cdylib + staticlib) meant to feel like a
+# native Unix library for glibc-host consumers (Python ctypes, C apps
+# on stock Debian, `apt install libreticulum-dev`). A musl-cdylib
+# dlopen'd into a glibc host gives you two libcs in one process —
+# malloc/pthread/TLS state gets corrupted — so the release artefacts
+# MUST be built against glibc. During `cargo check --workspace` the
+# FFI crate rides the workspace musl default as staticlib-only; that
+# is harmless for CI coverage and does not produce a shippable .so.
+[build]
+target = "x86_64-unknown-linux-musl"
+
+[target.x86_64-unknown-linux-musl]
+linker = "musl-gcc"
+
 [alias]
 # Development workflow
 test-core = "test -p reticulum-core --lib"
@@ -5,6 +24,13 @@ test-std = "test -p reticulum-std --lib"
 test-interop = "test -p reticulum-std --test rnsd_interop"
 test-integ = "test -p reticulum-integ -- --nocapture"
 lint = "clippy --all"
+
+# C-API library builds — explicitly glibc, overriding the workspace
+# musl default. Outputs a real .so/.a under target/<arch>-unknown-linux-gnu/.
+# arm64 cross-compile needs `gcc-aarch64-linux-gnu` on Debian/Ubuntu.
+build-ffi = "build -p reticulum-ffi --release --target x86_64-unknown-linux-gnu"
+build-ffi-arm64 = "build -p reticulum-ffi --release --target aarch64-unknown-linux-gnu"
+test-ffi = "test -p reticulum-ffi --target x86_64-unknown-linux-gnu"
 
 # Embedded cross-compilation (requires: rustup target add <target>)
 check-nrf52 = "build -p reticulum-core --target thumbv7em-none-eabihf"
