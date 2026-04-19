@@ -218,17 +218,48 @@ impl Config {
             .map_err(|e| Error::Config(format!("Failed to write config: {e}")))
     }
 
-    /// Get the default config directory path
+    /// Resolve the default config directory using the same lookup
+    /// order as Python-Reticulum (RNS/Reticulum.py:230-237):
+    ///   1. `/etc/reticulum`          — if `/etc/reticulum/config` exists
+    ///   2. `$HOME/.config/reticulum` — if that dir's `config` exists
+    ///   3. `$HOME/.reticulum`        — fallback, returned even if absent
+    ///
+    /// Matching this order keeps lnsd drop-in compatible with rnsd:
+    /// when the Debian package installs a system-wide config under
+    /// `/etc/reticulum`, Python clients (rnstatus, rncp, Sideband,
+    /// Nomadnet) connect to the live daemon's shared-instance socket
+    /// without any extra flags or env vars.
     pub fn default_config_dir() -> PathBuf {
-        dirs::home_dir()
-            .unwrap_or_else(|| PathBuf::from("."))
-            .join(".reticulum")
+        resolve_config_dir(
+            Path::new("/etc/reticulum"),
+            dirs::home_dir().as_deref(),
+            |p| p.is_file(),
+        )
     }
 
     /// Get the default config file path
     pub fn default_config_path() -> PathBuf {
         Self::default_config_dir().join("config")
     }
+}
+
+/// Pure resolver for the Python-Reticulum config-dir lookup, factored
+/// out so tests can drive it without touching the real filesystem or
+/// mutating `$HOME`.
+fn resolve_config_dir<F: Fn(&Path) -> bool>(
+    system_dir: &Path,
+    home_dir: Option<&Path>,
+    config_file_exists: F,
+) -> PathBuf {
+    if config_file_exists(&system_dir.join("config")) {
+        return system_dir.to_path_buf();
+    }
+    let home = home_dir.unwrap_or(Path::new("."));
+    let xdg = home.join(".config/reticulum");
+    if config_file_exists(&xdg.join("config")) {
+        return xdg;
+    }
+    home.join(".reticulum")
 }
 
 // Minimal home_dir implementation to avoid dirs crate dependency
@@ -280,5 +311,53 @@ mod tests {
             parsed.reticulum.enable_transport,
             config.reticulum.enable_transport
         );
+    }
+
+    // Mirror Python-Reticulum's RNS/Reticulum.py:230-237 lookup order.
+
+    #[test]
+    fn resolve_prefers_system_dir_when_config_present() {
+        let r = resolve_config_dir(
+            Path::new("/etc/reticulum"),
+            Some(Path::new("/home/alice")),
+            |p| p == Path::new("/etc/reticulum/config"),
+        );
+        assert_eq!(r, PathBuf::from("/etc/reticulum"));
+    }
+
+    #[test]
+    fn resolve_falls_through_to_xdg_when_system_missing() {
+        let r = resolve_config_dir(
+            Path::new("/etc/reticulum"),
+            Some(Path::new("/home/alice")),
+            |p| p == Path::new("/home/alice/.config/reticulum/config"),
+        );
+        assert_eq!(r, PathBuf::from("/home/alice/.config/reticulum"));
+    }
+
+    #[test]
+    fn resolve_final_fallback_is_dot_reticulum() {
+        let r = resolve_config_dir(
+            Path::new("/etc/reticulum"),
+            Some(Path::new("/home/alice")),
+            |_| false,
+        );
+        assert_eq!(r, PathBuf::from("/home/alice/.reticulum"));
+    }
+
+    #[test]
+    fn resolve_prefers_system_over_xdg_when_both_present() {
+        let r = resolve_config_dir(
+            Path::new("/etc/reticulum"),
+            Some(Path::new("/home/alice")),
+            |_| true,
+        );
+        assert_eq!(r, PathBuf::from("/etc/reticulum"));
+    }
+
+    #[test]
+    fn resolve_without_home_uses_current_dir_fallback() {
+        let r = resolve_config_dir(Path::new("/etc/reticulum"), None, |_| false);
+        assert_eq!(r, PathBuf::from("./.reticulum"));
     }
 }
