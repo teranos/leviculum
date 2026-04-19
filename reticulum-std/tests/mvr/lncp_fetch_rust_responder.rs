@@ -759,6 +759,11 @@ fn run_fetch_with_latency(delay_ms: u64) -> (bool, u64) {
     let fetched_path = save_dir.join("test_transfer.bin");
     let fetched_bytes = fs::read(&fetched_path).ok();
     let ok = exit_code == Some(0) && fetched_bytes.as_deref() == Some(&payload[..]);
+    if !ok {
+        if let Ok(text) = fs::read_to_string(dir_a.join("lncp-fetcher-stderr.log")) {
+            eprintln!("--- lncp fetcher stderr ---\n{text}\n--- end stderr ---");
+        }
+    }
     (ok, t0.elapsed().as_secs())
 }
 

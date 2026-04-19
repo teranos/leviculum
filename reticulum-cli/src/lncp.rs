@@ -60,7 +60,8 @@ struct Args {
     #[arg(short, long)]
     listen: bool,
 
-    /// Sender timeout before giving up (seconds)
+    /// Fetch / transfer phase timeout in seconds. Counts after the
+    /// link is established; link establishment has its own budget.
     #[arg(short = 'w', default_value = "15.0")]
     timeout: f64,
 

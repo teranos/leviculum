@@ -40,16 +40,19 @@ pub fn load_or_generate_identity(path: &Path) -> Result<Identity, Box<dyn std::e
 
 /// Establish a link to a remote destination and optionally identify.
 /// Shared between run_send() (push) and run_fetch() (pull).
-#[allow(clippy::too_many_arguments)]
 async fn establish_link(
     node: &ReticulumNode,
     events: &mut mpsc::Receiver<NodeEvent>,
     destination: &str,
     identity: Option<&Identity>,
-    timeout_secs: f64,
     verbose: u8,
     quiet: bool,
 ) -> Result<LinkId, Box<dyn std::error::Error>> {
+    // PathRequest has no retry: if the first one is lost, recovery
+    // depends on another announce. Budget covers LoRa's slowest
+    // realistic announce cadence plus margin.
+    const PATH_REQUEST_BUDGET: Duration = Duration::from_secs(120);
+
     // Parse destination hash
     let dest_bytes_vec = crate::hex_decode(destination).map_err(err)?;
     if dest_bytes_vec.len() != 16 {
@@ -63,14 +66,14 @@ async fn establish_link(
 
     // Wait for path
     let dest_hash = DestinationHash::new(dest_bytes);
-    let deadline = Instant::now() + Duration::from_secs_f64(timeout_secs);
     if !node.has_path(&dest_hash) {
         if !quiet {
             eprintln!("Path to {} requested", destination);
         }
         node.request_path(&dest_hash).await?;
+        let path_deadline = Instant::now() + PATH_REQUEST_BUDGET;
         while !node.has_path(&dest_hash) {
-            if Instant::now() > deadline {
+            if Instant::now() > path_deadline {
                 return Err(err(format!("Could not find a path to {}", destination)));
             }
             tokio::time::sleep(Duration::from_millis(200)).await;
@@ -88,31 +91,22 @@ async fn establish_link(
     let mut signing_key = [0u8; 32];
     signing_key.copy_from_slice(&pk[32..64]);
 
-    // Connect and wait for LinkEstablished
+    // No outer timer: the core emits LinkClosed{Timeout} when its
+    // own retry budget exhausts, which terminates the loop below.
     if !quiet {
         eprintln!("Establishing link with {}...", destination);
     }
     let _stream = node.connect(&dest_hash, &signing_key).await?;
     let link_id = loop {
-        tokio::select! {
-            event = events.recv() => {
-                match event {
-                    Some(NodeEvent::LinkEstablished { link_id, .. }) => break link_id,
-                    Some(NodeEvent::LinkClosed { .. }) => {
-                        return Err(err(format!(
-                            "Could not establish link to {}", destination)));
-                    }
-                    None => {
-                        return Err(err("Event channel closed"));
-                    }
-                    _ => {}
-                }
+        match events.recv().await {
+            Some(NodeEvent::LinkEstablished { link_id, .. }) => break link_id,
+            Some(NodeEvent::LinkClosed { .. }) => {
+                return Err(err(format!("Could not establish link to {}", destination)));
             }
-            _ = tokio::time::sleep_until(
-                tokio::time::Instant::from_std(deadline)) => {
-                return Err(err(format!(
-                    "Could not establish link to {}", destination)));
+            None => {
+                return Err(err("Event channel closed"));
             }
+            _ => {}
         }
     };
 
@@ -156,19 +150,9 @@ pub async fn run_send(
     // Encode metadata matching Python's umsgpack.packb({"name": b"..."})
     let metadata_bytes = encode_metadata(filename.as_bytes());
 
-    // Establish link
-    let link_id = establish_link(
-        node,
-        events,
-        destination,
-        sender_identity,
-        timeout_secs,
-        verbose,
-        quiet,
-    )
-    .await?;
+    let link_id =
+        establish_link(node, events, destination, sender_identity, verbose, quiet).await?;
 
-    // Send resource
     if !quiet {
         eprintln!("Sending {} ({} bytes)...", file_path.display(), data.len());
     }
@@ -176,8 +160,7 @@ pub async fn run_send(
     node.send_resource(&link_id, &data, Some(&metadata_bytes), !no_compress)
         .await?;
 
-    // Wait for completion
-    let transfer_deadline = Instant::now() + Duration::from_secs(300);
+    let transfer_deadline = Instant::now() + Duration::from_secs_f64(timeout_secs);
     let mut speed_tracker = SpeedTracker::new();
     loop {
         tokio::select! {
@@ -604,17 +587,8 @@ pub async fn run_fetch(
 ) -> Result<(), Box<dyn std::error::Error>> {
     let _ = no_compress; // fetch compression is controlled by the server
 
-    // Establish link
-    let link_id = establish_link(
-        node,
-        events,
-        destination,
-        sender_identity,
-        timeout_secs,
-        verbose,
-        quiet,
-    )
-    .await?;
+    let link_id =
+        establish_link(node, events, destination, sender_identity, verbose, quiet).await?;
 
     // Set AcceptAll BEFORE sending request, the server starts the Resource
     // transfer as a side-effect, so we must be ready to accept it.
@@ -623,7 +597,6 @@ pub async fn run_fetch(
         reticulum_core::resource::ResourceStrategy::AcceptAll,
     )?;
 
-    // Send fetch request
     let request_data = encode_msgpack_string(remote_path);
     let request_id = node
         .send_request(&link_id, "fetch_file", Some(&request_data), None)
@@ -634,8 +607,7 @@ pub async fn run_fetch(
         eprintln!("Fetch requested: {}", remote_path);
     }
 
-    // Wait for response and resource
-    let transfer_deadline = Instant::now() + Duration::from_secs(300);
+    let transfer_deadline = Instant::now() + Duration::from_secs_f64(timeout_secs);
     let mut got_response = false;
     let mut segment_buffer: Vec<u8> = Vec::new();
     let mut segment_metadata: Option<Vec<u8>> = None;
