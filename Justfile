@@ -60,9 +60,14 @@ build-deb: (_require-cargo-deb)
     cargo build --release --bin lnsd --bin lns --bin lncp
     cargo deb -p reticulum-cli --target x86_64-unknown-linux-musl --no-build
 
-# ARM64 .deb via cargo-zigbuild (Zig as cross-linker). Requires
-# `pip install cargo-zigbuild ziglang` and
-# `rustup target add aarch64-unknown-linux-musl`.
+# ARM64 .deb via cargo-zigbuild (Zig as cross-linker). Requires:
+#   cargo install cargo-zigbuild
+#   rustup target add aarch64-unknown-linux-musl
+#   Zig installed as a full distribution (binary + lib/ directory),
+#   e.g.  tar xf zig-x86_64-linux-<ver>.tar.xz -C /opt/  and
+#   ln -sf /opt/zig-.../zig /usr/local/bin/zig. A bare zig binary
+#   without its sibling lib/ fails at `zig cc` with "unable to find
+#   zig installation directory".
 build-deb-arm64: (_require-cargo-deb)
     cargo zigbuild --release --target aarch64-unknown-linux-musl --bin lnsd --bin lns --bin lncp
     cargo deb -p reticulum-cli --target aarch64-unknown-linux-musl --no-build
