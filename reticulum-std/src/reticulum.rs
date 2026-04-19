@@ -102,7 +102,9 @@ mod tests {
 
     #[tokio::test]
     async fn test_create_instance() {
-        let config = Config::default();
+        let td = tempfile::tempdir().expect("tempdir");
+        let mut config = Config::default();
+        config.reticulum.storage_path = Some(td.path().to_path_buf());
         let mut rns = Reticulum::with_config(config).unwrap();
 
         // Start the node
@@ -121,8 +123,10 @@ mod tests {
 
     #[tokio::test]
     async fn test_transport_disabled_via_config() {
+        let td = tempfile::tempdir().expect("tempdir");
         let mut config = Config::default();
         config.reticulum.enable_transport = false;
+        config.reticulum.storage_path = Some(td.path().to_path_buf());
         let rns = Reticulum::with_config(config).unwrap();
         assert!(!rns.is_transport_enabled());
     }

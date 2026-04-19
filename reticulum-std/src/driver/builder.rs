@@ -557,7 +557,9 @@ mod tests {
     #[test]
     fn test_builder_defaults_transport_enabled_from_config() {
         // No explicit enable_transport call, should use config default (true)
+        let td = tempfile::tempdir().expect("tempdir");
         let node = ReticulumNodeBuilder::new()
+            .storage_path(td.path().to_path_buf())
             .build_sync()
             .expect("build_sync failed");
         assert!(
@@ -568,8 +570,10 @@ mod tests {
 
     #[test]
     fn test_builder_explicit_false_overrides_config() {
+        let td = tempfile::tempdir().expect("tempdir");
         let node = ReticulumNodeBuilder::new()
             .enable_transport(false)
+            .storage_path(td.path().to_path_buf())
             .build_sync()
             .expect("build_sync failed");
         assert!(
@@ -580,10 +584,12 @@ mod tests {
 
     #[test]
     fn test_builder_config_false_respected() {
+        let td = tempfile::tempdir().expect("tempdir");
         let mut config = Config::default();
         config.reticulum.enable_transport = false;
         let node = ReticulumNodeBuilder::new()
             .config(config)
+            .storage_path(td.path().to_path_buf())
             .build_sync()
             .expect("build_sync failed");
         assert!(
@@ -594,11 +600,13 @@ mod tests {
 
     #[test]
     fn test_builder_explicit_true_overrides_config_false() {
+        let td = tempfile::tempdir().expect("tempdir");
         let mut config = Config::default();
         config.reticulum.enable_transport = false;
         let node = ReticulumNodeBuilder::new()
             .config(config)
             .enable_transport(true)
+            .storage_path(td.path().to_path_buf())
             .build_sync()
             .expect("build_sync failed");
         assert!(
@@ -761,10 +769,12 @@ mod tests {
 
     #[test]
     fn test_respond_to_probes_registers_destination() {
+        let td = tempfile::tempdir().expect("tempdir");
         let mut config = Config::default();
         config.reticulum.respond_to_probes = true;
         let node = ReticulumNodeBuilder::new()
             .config(config)
+            .storage_path(td.path().to_path_buf())
             .build_sync()
             .expect("build_sync with respond_to_probes failed");
         // Core should have the probe destination hash
@@ -777,7 +787,9 @@ mod tests {
 
     #[test]
     fn test_respond_to_probes_disabled_by_default() {
+        let td = tempfile::tempdir().expect("tempdir");
         let node = ReticulumNodeBuilder::new()
+            .storage_path(td.path().to_path_buf())
             .build_sync()
             .expect("build_sync failed");
         let inner = node.inner.lock().unwrap();

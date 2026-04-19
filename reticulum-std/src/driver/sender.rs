@@ -90,18 +90,27 @@ mod tests {
 
     use super::super::ReticulumNodeBuilder;
 
-    fn make_node_and_inner() -> (Arc<Mutex<StdNodeCore>>, mpsc::Sender<TickOutput>) {
+    // Returns a TempDir as the third tuple element; callers must bind
+    // it to a live variable (e.g. `_td`) so its RAII drop doesn't
+    // delete the storage directory out from under the node.
+    fn make_node_and_inner() -> (
+        Arc<Mutex<StdNodeCore>>,
+        mpsc::Sender<TickOutput>,
+        tempfile::TempDir,
+    ) {
+        let td = tempfile::tempdir().expect("tempdir");
         let node = ReticulumNodeBuilder::new()
+            .storage_path(td.path().to_path_buf())
             .build_sync()
             .expect("build_sync");
         let inner = node.inner();
         let (tx, _rx) = mpsc::channel(16);
-        (inner, tx)
+        (inner, tx, td)
     }
 
     #[tokio::test]
     async fn test_packet_sender_dest_hash() {
-        let (inner, tx) = make_node_and_inner();
+        let (inner, tx, _td) = make_node_and_inner();
         let dest_hash = DestinationHash::new([0xAB; 16]);
         let ep = PacketSender::new(dest_hash, inner, tx);
 
@@ -110,7 +119,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_packet_sender_send_no_path_returns_error() {
-        let (inner, tx) = make_node_and_inner();
+        let (inner, tx, _td) = make_node_and_inner();
         let dest_hash = DestinationHash::new([0xAB; 16]);
         let ep = PacketSender::new(dest_hash, inner, tx);
 
@@ -120,7 +129,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_packet_sender_send_closed_channel() {
-        let (inner, _) = make_node_and_inner();
+        let (inner, _, _td) = make_node_and_inner();
 
         // Register a destination and announce so a path exists
         let id = reticulum_core::Identity::generate(&mut rand_core::OsRng);

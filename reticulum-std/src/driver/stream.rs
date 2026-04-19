@@ -167,22 +167,28 @@ mod tests {
 
     use super::super::ReticulumNodeBuilder;
 
+    // TempDir is the fourth tuple element; callers must bind it to a
+    // live variable so RAII drop doesn't delete the storage directory
+    // out from under the node.
     fn make_node_and_inner() -> (
         Arc<Mutex<StdNodeCore>>,
         mpsc::Sender<TickOutput>,
         mpsc::Receiver<TickOutput>,
+        tempfile::TempDir,
     ) {
+        let td = tempfile::tempdir().expect("tempdir");
         let node = ReticulumNodeBuilder::new()
+            .storage_path(td.path().to_path_buf())
             .build_sync()
             .expect("build_sync");
         let inner = node.inner();
         let (tx, rx) = mpsc::channel(16);
-        (inner, tx, rx)
+        (inner, tx, rx, td)
     }
 
     #[tokio::test]
     async fn test_link_handle_send_no_link() {
-        let (inner, tx, _rx) = make_node_and_inner();
+        let (inner, tx, _rx, _td) = make_node_and_inner();
         let link_id = LinkId::from([0u8; 16]);
 
         let handle = LinkHandle::new(link_id, inner, tx);
@@ -199,7 +205,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_link_handle_close() {
-        let (inner, tx, _rx) = make_node_and_inner();
+        let (inner, tx, _rx, _td) = make_node_and_inner();
         let link_id = LinkId::from([0u8; 16]);
 
         let mut handle = LinkHandle::new(link_id, inner, tx);
@@ -217,7 +223,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_link_handle_close_idempotent() {
-        let (inner, tx, _rx) = make_node_and_inner();
+        let (inner, tx, _rx, _td) = make_node_and_inner();
         let link_id = LinkId::from([0u8; 16]);
 
         let mut handle = LinkHandle::new(link_id, inner, tx);
@@ -230,7 +236,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_link_handle_send_closed_dispatch_channel() {
-        let (inner, _, _) = make_node_and_inner();
+        let (inner, _, _, _td) = make_node_and_inner();
         let link_id = LinkId::from([0u8; 16]);
 
         // Create with a channel whose receiver is dropped

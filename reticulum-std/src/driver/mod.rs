@@ -1775,8 +1775,10 @@ mod tests {
 
     #[test]
     fn test_reticulum_node_builder_creates_node() {
+        let td = tempfile::tempdir().expect("tempdir");
         let node = ReticulumNodeBuilder::new()
             .enable_transport(true)
+            .storage_path(td.path().to_path_buf())
             .build_sync()
             .expect("build_sync failed");
 
