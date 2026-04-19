@@ -23,9 +23,18 @@ steps:
     image: rust:bookworm
     commands:
       - apt-get update && apt-get install -y musl-tools
+      - cargo install --locked cargo-deb
       - export LEVICULUM_BUILD_ID="nightly.$(date -u +%Y%m%d)-${CI_COMMIT_SHA:0:7}"
       - echo "$LEVICULUM_BUILD_ID" >.build-id
+      # `cargo clean -p reticulum-cli` avoids a Cargo incremental quirk
+      # where repeated builds with the same LEVICULUM_BUILD_ID skip
+      # relinking some binaries, leaving them with a stale version
+      # string. Fresh containers rarely hit this, but the clean is
+      # cheap insurance.
+      - cargo clean -p reticulum-cli
       - cargo build --release --bin lnsd --bin lns --bin lncp
+      - export DEB_VERSION="0.6.3~nightly.$(date -u +%Y%m%d).${CI_COMMIT_SHA:0:7}"
+      - cargo deb -p reticulum-cli --target x86_64-unknown-linux-musl --no-build --deb-version "$DEB_VERSION"
 
   build-arm64:
     image: rust:bookworm
@@ -36,9 +45,13 @@ steps:
       - apt-get update && apt-get install -y python3 python3-pip python3-venv xz-utils curl
       - python3 -m venv /opt/zigvenv && /opt/zigvenv/bin/pip install cargo-zigbuild ziglang
       - export PATH="/opt/zigvenv/bin:$PATH"
+      - cargo install --locked cargo-deb
       - rustup target add aarch64-unknown-linux-musl
       - export LEVICULUM_BUILD_ID="nightly.$(date -u +%Y%m%d)-${CI_COMMIT_SHA:0:7}"
+      - cargo clean -p reticulum-cli
       - cargo zigbuild --release --target aarch64-unknown-linux-musl --bin lnsd --bin lns --bin lncp
+      - export DEB_VERSION="0.6.3~nightly.$(date -u +%Y%m%d).${CI_COMMIT_SHA:0:7}"
+      - cargo deb -p reticulum-cli --target aarch64-unknown-linux-musl --no-build --deb-version "$DEB_VERSION"
 
   package:
     image: debian:bookworm-slim

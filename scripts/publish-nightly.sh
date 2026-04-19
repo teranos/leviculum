@@ -30,16 +30,25 @@ DIST="$(cd "$(dirname "$0")/.." && pwd)/dist"
 RELEASE_BODY=$(cat <<EOF
 Rolling nightly build. The assets under this release are **replaced on every CI run** — this tag always points at the latest nightly.
 
-Stable download URLs (same URL every night):
+**Tarballs** (statically linked, drop anywhere and run):
 
 \`\`\`
 https://codeberg.org/${CI_REPO}/releases/download/nightly/leviculum-nightly-linux-amd64.tar.gz
 https://codeberg.org/${CI_REPO}/releases/download/nightly/leviculum-nightly-linux-arm64.tar.gz
 \`\`\`
 
+**Debian / Ubuntu packages** (installs lnsd as a system service, sets up /etc/reticulum for Python-RNS client drop-in compatibility):
+
+\`\`\`
+https://codeberg.org/${CI_REPO}/releases/download/nightly/leviculum-nightly-amd64.deb
+https://codeberg.org/${CI_REPO}/releases/download/nightly/leviculum-nightly-arm64.deb
+\`\`\`
+
+\`sudo apt install ./leviculum-nightly-amd64.deb\` — no other system packages required, binaries are static musl. Tested against Debian 9+ / Ubuntu 16.04+.
+
 Current build: \`${BUILD_ID}\` (commit \`${CI_COMMIT_SHA}\`)
 
-Check the embedded version string with \`lnsd --version\` after extracting.
+Verify with \`lnsd --version\` after install.
 EOF
 )
 

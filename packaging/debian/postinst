@@ -1,0 +1,54 @@
+#!/bin/sh
+# postinst for leviculum — provisions the service user, group, and the
+# /etc/reticulum directory layout. Idempotent; safe to re-run on
+# upgrade (case=configure with a $2 previous version).
+
+set -e
+
+case "$1" in
+    configure)
+        # System group for socket access (clients join this group).
+        if ! getent group leviculum >/dev/null; then
+            addgroup --quiet --system leviculum
+        fi
+
+        # System user owning the daemon and its state.
+        if ! getent passwd leviculum >/dev/null; then
+            adduser --quiet --system \
+                --ingroup leviculum \
+                --home /etc/reticulum --no-create-home \
+                --gecos "Leviculum Reticulum daemon" \
+                --shell /usr/sbin/nologin \
+                leviculum
+        fi
+
+        # LoRa RNode/T114 USB devices typically belong to `dialout`.
+        if getent group dialout >/dev/null; then
+            adduser --quiet leviculum dialout || true
+        fi
+
+        # Ensure the state directory exists and is writable by the
+        # daemon. The daemon also writes its shared-instance socket
+        # here on startup.
+        mkdir -p /etc/reticulum/storage
+        chown -R leviculum:leviculum /etc/reticulum
+        chmod 0755 /etc/reticulum
+        chmod 0775 /etc/reticulum/storage
+
+        # First-install hint only (skip on upgrade, when $2 is set).
+        if [ -z "$2" ]; then
+            echo ""
+            echo "leviculum: to use lns / lncp / rnstatus / rncp as a non-root user,"
+            echo "add the user to the 'leviculum' group, then log out and back in:"
+            echo "    sudo usermod -aG leviculum \$USER"
+            echo ""
+        fi
+        ;;
+
+    abort-upgrade|abort-remove|abort-deconfigure)
+        ;;
+esac
+
+#DEBHELPER#
+
+exit 0

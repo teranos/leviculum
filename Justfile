@@ -52,6 +52,24 @@ build-ffi:
 build-ffi-arm64:
     cargo build-ffi-arm64
 
+# Build the leviculum .deb package for amd64. Binaries come from the
+# workspace musl target, so the .deb is fully static and runs on
+# Debian ≥ 9 / Ubuntu ≥ 16.04 regardless of host glibc. Requires
+# `cargo install cargo-deb`. Output: target/debian/leviculum_*.deb.
+build-deb: (_require-cargo-deb)
+    cargo build --release --bin lnsd --bin lns --bin lncp
+    cargo deb -p reticulum-cli --target x86_64-unknown-linux-musl --no-build
+
+# ARM64 .deb via cargo-zigbuild (Zig as cross-linker). Requires
+# `pip install cargo-zigbuild ziglang` and
+# `rustup target add aarch64-unknown-linux-musl`.
+build-deb-arm64: (_require-cargo-deb)
+    cargo zigbuild --release --target aarch64-unknown-linux-musl --bin lnsd --bin lns --bin lncp
+    cargo deb -p reticulum-cli --target aarch64-unknown-linux-musl --no-build
+
+_require-cargo-deb:
+    @command -v cargo-deb >/dev/null || (echo "cargo-deb not found — run: cargo install cargo-deb" && exit 1)
+
 # Status of last runs across all tiers
 status:
     @bash scripts/ci-status.sh

@@ -1,0 +1,9 @@
+#!/bin/sh
+# prerm for leviculum — stopping the service is handled by the
+# #DEBHELPER# token cargo-deb expands from the systemd-units metadata.
+
+set -e
+
+#DEBHELPER#
+
+exit 0
