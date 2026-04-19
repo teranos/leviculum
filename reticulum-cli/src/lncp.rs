@@ -36,7 +36,7 @@ fn hex_decode(s: &str) -> Result<Vec<u8>, String> {
 }
 
 #[derive(Parser, Debug)]
-#[command(name = "lncp", version, about = "Reticulum File Transfer Utility")]
+#[command(name = "lncp", version = env!("LEVICULUM_VERSION"), about = "Reticulum File Transfer Utility")]
 struct Args {
     /// File to send (send mode)
     file: Option<String>,

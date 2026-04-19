@@ -338,7 +338,7 @@ fn skip_msgpack_element(data: &[u8]) -> Option<&[u8]> {
 
 #[derive(Parser, Debug)]
 #[command(name = "lns")]
-#[command(author, version, about = "Reticulum command-line utility")]
+#[command(author, version = env!("LEVICULUM_VERSION"), about = "Reticulum command-line utility")]
 struct Args {
     /// Configuration file path
     #[arg(short, long, global = true)]

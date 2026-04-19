@@ -1,5 +1,6 @@
 # Build artifacts
 /target/
+/dist/
 reticulum-nrf/target/
 reticulum-nrf/Cargo.lock
 rust_out

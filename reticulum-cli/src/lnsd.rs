@@ -14,7 +14,7 @@ use reticulum_std::Reticulum;
 
 #[derive(Parser, Debug)]
 #[command(name = "lnsd")]
-#[command(author, version, about = "Reticulum network daemon")]
+#[command(author, version = env!("LEVICULUM_VERSION"), about = "Reticulum network daemon")]
 struct Args {
     /// Path to Reticulum config directory (like Python rnsd --config)
     #[arg(short, long)]

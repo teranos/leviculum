@@ -1,0 +1,58 @@
+# Nightly build pipeline for leviculum.
+#
+# Publishes statically-linked linux-amd64 and linux-arm64 tarballs to a
+# rolling `nightly` release on Codeberg. Assets are overwritten each
+# run, so these download URLs are stable:
+#
+#   https://codeberg.org/Lew_Palm/leviculum/releases/download/nightly/leviculum-nightly-linux-amd64.tar.gz
+#   https://codeberg.org/Lew_Palm/leviculum/releases/download/nightly/leviculum-nightly-linux-arm64.tar.gz
+#
+# ONE-TIME SETUP — configure a cron schedule in the Woodpecker web UI
+# (Repo → Settings → Crons). YAML cannot declare the cron itself; this
+# file only reacts to the `event: cron` trigger. Suggested schedule:
+# `0 2 * * *` (02:00 UTC daily).
+#
+# Secrets (Repo → Settings → Secrets on ci.codeberg.org):
+#   codeberg_token — Codeberg access token, scope write:repository
+
+when:
+  event: cron
+
+steps:
+  build-amd64:
+    image: rust:bookworm
+    commands:
+      - apt-get update && apt-get install -y musl-tools
+      - export LEVICULUM_BUILD_ID="nightly.$(date -u +%Y%m%d)-${CI_COMMIT_SHA:0:7}"
+      - echo "$LEVICULUM_BUILD_ID" >.build-id
+      - cargo build --release --bin lnsd --bin lns --bin lncp
+
+  build-arm64:
+    image: rust:bookworm
+    commands:
+      # cargo-zigbuild uses Zig as the C compiler/linker — the only way
+      # to cross-compile to aarch64-musl from an amd64 rust:bookworm
+      # image without docker-in-docker or a dedicated arm64 runner.
+      - apt-get update && apt-get install -y python3 python3-pip python3-venv xz-utils curl
+      - python3 -m venv /opt/zigvenv && /opt/zigvenv/bin/pip install cargo-zigbuild ziglang
+      - export PATH="/opt/zigvenv/bin:$PATH"
+      - rustup target add aarch64-unknown-linux-musl
+      - export LEVICULUM_BUILD_ID="nightly.$(date -u +%Y%m%d)-${CI_COMMIT_SHA:0:7}"
+      - cargo zigbuild --release --target aarch64-unknown-linux-musl --bin lnsd --bin lns --bin lncp
+
+  package:
+    image: debian:bookworm-slim
+    commands:
+      - apt-get update && apt-get install -y binutils coreutils tar
+      - export LEVICULUM_BUILD_ID="$(cat .build-id)"
+      - bash scripts/build-nightly-tarballs.sh
+
+  publish:
+    image: debian:bookworm-slim
+    environment:
+      CODEBERG_TOKEN:
+        from_secret: codeberg_token
+    commands:
+      - apt-get update && apt-get install -y curl jq
+      - export LEVICULUM_BUILD_ID="$(cat .build-id)"
+      - bash scripts/publish-nightly.sh

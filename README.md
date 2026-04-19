@@ -18,6 +18,24 @@ Leviculum is in active development. The protocol implementation is functionally 
 
 ## Getting started
 
+### Nightly binary builds
+
+Prebuilt, statically-linked binaries (no libc dependency, runs on any Linux ≥ 3.2) are published nightly. The download URLs are stable — the same URL always points at the latest nightly:
+
+```sh
+# amd64
+wget https://codeberg.org/Lew_Palm/leviculum/releases/download/nightly/leviculum-nightly-linux-amd64.tar.gz
+# arm64
+wget https://codeberg.org/Lew_Palm/leviculum/releases/download/nightly/leviculum-nightly-linux-arm64.tar.gz
+
+tar xzf leviculum-nightly-linux-*.tar.gz
+./leviculum-nightly-linux-*/bin/lnsd --version
+```
+
+Each tarball contains `bin/{lnsd,lns,lncp}` plus `README.md`, `LICENSE`, `CHANGELOG.md`, and a `VERSION` file. The exact build is embedded in the binaries (`lnsd --version` prints e.g. `0.6.3-nightly.20260419-5a5df20`). SHA-256 checksums are published alongside the tarballs with the suffix `.sha256`.
+
+### Build from source
+
 ```sh
 git clone https://codeberg.org/Lew_Palm/leviculum.git
 cd leviculum
