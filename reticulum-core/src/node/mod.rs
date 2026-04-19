@@ -6719,4 +6719,92 @@ mod tests {
             "pending request should have been cleaned up on link close"
         );
     }
+
+    /// Bug #26: `reset_pending_request_deadline` pushes the effective
+    /// timeout forward so `check_request_timeouts` does not fire while
+    /// the peer is still making progress on the associated resource.
+    #[test]
+    fn test_request_timeout_reset_on_progress_defers_firing() {
+        let mut pair = establish_nodecore_link_pair();
+        let dest_hash = *pair
+            .responder
+            .link(&pair.responder_link_id)
+            .unwrap()
+            .destination_hash();
+        register_echo_handler(
+            &mut pair.responder,
+            dest_hash,
+            request::RequestPolicy::AllowAll,
+        );
+
+        // Initial timeout = 100 ms from whatever the test clock's
+        // current now_ms is when send_request runs.
+        let (request_id, _output) = pair
+            .initiator
+            .send_request(&pair.initiator_link_id, "/echo", None, Some(100))
+            .unwrap();
+
+        // At send + 50 ms, simulate an incoming resource-part that
+        // reaches `handle_resource_data` on the client side. Call the
+        // reset helper directly — the outer `handle_resource_data`
+        // wiring is covered by the hardware test and the production
+        // call sites in link_management.rs.
+        pair.initiator.transport().clock().advance(50);
+        let reset_at = pair.initiator.transport().clock().now_ms();
+        let link_id_for_reset = pair.initiator_link_id;
+        pair.initiator
+            .reset_pending_requests_on_link(&link_id_for_reset, reset_at);
+        let _ = request_id; // kept for the final assertion below
+
+        // Advance to reset_at + 70 ms (which is the original deadline
+        // of reset_at - 50 + 100 = reset_at + 50 PASSED by 20 ms, but
+        // the reset-extended deadline reset_at + 100 is still 30 ms
+        // away). Timer must NOT fire yet.
+        pair.initiator.transport().clock().advance(70);
+        let output = pair.initiator.handle_timeout();
+        let fired_early = output
+            .events
+            .iter()
+            .any(|e| matches!(e, NodeEvent::RequestTimedOut { .. }));
+        assert!(
+            !fired_early,
+            "request timeout must NOT fire before the reset-extended \
+             deadline (original 100ms timeout was extended by 50ms via \
+             reset_pending_request_deadline)"
+        );
+
+        // Advance another 40 ms (total reset_at + 110 ms, past the
+        // reset-extended deadline of reset_at + 100). The timer fires
+        // — the fix only defers, it does not remove the timeout.
+        pair.initiator.transport().clock().advance(40);
+        let output = pair.initiator.handle_timeout();
+        let fired_late = output.events.iter().find_map(|e| match e {
+            NodeEvent::RequestTimedOut {
+                request_id: rid, ..
+            } => Some(*rid),
+            _ => None,
+        });
+        assert_eq!(
+            fired_late,
+            Some(request_id),
+            "request timeout must fire once the reset-extended deadline also passes"
+        );
+    }
+
+    /// Bug #26: resetting on a link with no pending requests is a
+    /// safe no-op.
+    #[test]
+    fn test_reset_pending_requests_on_link_no_requests_is_noop() {
+        let mut pair = establish_nodecore_link_pair();
+        let link_id = pair.initiator_link_id;
+        // Must not panic — no pending_requests on this link.
+        pair.initiator
+            .reset_pending_requests_on_link(&link_id, 999_999);
+        let output = pair.initiator.handle_timeout();
+        let has_timeout = output
+            .events
+            .iter()
+            .any(|e| matches!(e, NodeEvent::RequestTimedOut { .. }));
+        assert!(!has_timeout);
+    }
 }

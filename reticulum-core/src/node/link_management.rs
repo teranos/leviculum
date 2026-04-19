@@ -1607,6 +1607,23 @@ impl<R: CryptoRngCore, C: Clock, S: Storage> NodeCore<R, C, S> {
         self.route_link_packet(&link_id, &proof_bytes);
     }
 
+    /// Reset the pending-request deadline for every pending request
+    /// on `link_id` to `now_ms`. Bug #26 fix: the rtt-derived timeout
+    /// set at `send_request` (mod.rs) would otherwise fire while a
+    /// resource transfer is still actively delivering chunks, because
+    /// the Response packet queues behind the resource data on slow
+    /// links (LoRa airtime). Any observed inbound traffic on the same
+    /// link counts as peer progress — reset the timer so it reflects
+    /// "is the peer still answering?" rather than "how long will the
+    /// transfer take?".
+    pub(super) fn reset_pending_requests_on_link(&mut self, link_id: &LinkId, now_ms: u64) {
+        for pr in self.pending_requests.values_mut() {
+            if pr.link_id == *link_id {
+                pr.sent_at_ms = now_ms;
+            }
+        }
+    }
+
     /// Check for request timeouts and emit RequestTimedOut events.
     pub(super) fn check_request_timeouts(&mut self, now_ms: u64) {
         let expired: Vec<[u8; crate::constants::TRUNCATED_HASHBYTES]> = self
@@ -1752,6 +1769,13 @@ impl<R: CryptoRngCore, C: Clock, S: Storage> NodeCore<R, C, S> {
                 tracing::trace!("Resource ADV rejected (strategy=AcceptNone)");
             }
         }
+
+        // Bug #26: ADV arrival is peer progress — reset the
+        // pending-request deadline for any in-flight request on this
+        // link. The Response packet for a fetch_file request is
+        // queued behind the resource data on slow links; resetting
+        // here prevents the timer from firing mid-transfer.
+        self.reset_pending_requests_on_link(&link_id, now_ms);
     }
 
     /// Handle a ResourceReq packet (sender receives receiver's request).
@@ -1982,6 +2006,12 @@ impl<R: CryptoRngCore, C: Clock, S: Storage> NodeCore<R, C, S> {
                 tracing::trace!("Received resource part with no matching hash");
             }
         }
+
+        // Bug #26: any resource-part arrival on this link means the
+        // peer is answering. Reset the pending-request deadline so
+        // the rtt-derived timer (mod.rs:694) does not fire mid-
+        // transfer.
+        self.reset_pending_requests_on_link(&link_id, now_ms);
     }
 
     /// Handle a ResourceHmu packet (hashmap update).
