@@ -15,42 +15,34 @@
 
 **NOT a priority:** Strict Python-RNS *implementation* parity
 (same algorithms, same retry timings, same state-machine
-internals).
+internals). Compatibility means our stacks interoperate at the
+wire and semantic level; parity means our internals mirror
+Python's. We need the first, not the second — though in
+practice they often align.
 
-### Compatibility is not parity
-
-- **Compatibility:** Leviculum and Python-RNS nodes in the
-  same mesh interoperate. Bytes on the radio are parseable by
-  both sides; behaviour each side expects from a neighbour is
-  delivered by the other.
-- **Parity:** Leviculum's internal implementation mirrors
-  Python's — same algorithms, same retry cadence, same
-  scheduler internals.
-
-We need the first. We do not need the second. In practice they
-often align — doing it the Python way is frequently the
-fastest path to compatibility — but they are distinct.
+Compatibility here extends beyond the radio: **`lnsd` and
+Python-RNS `rnsd` share the shared-instance IPC and config-
+file format**, so client tools (`lns selftest`, `rnstatus`,
+`rnprobe`, `rncp`) drive either daemon transparently. This
+drop-in property is a design goal, not incidental. In
+comparison tests between the two stacks, exploit it: the
+test harness points the same driver at either daemon, never
+a parallel per-stack driver.
 
 ### Deviation rule
 
 A deviation from Python-RNS implementation is acceptable iff
 all three hold:
 
-1. Wire-format compatibility is preserved (packets we emit are
-   parseable by Python-RNS; and vice versa).
+1. Wire-format compatibility is preserved.
 2. Semantic compatibility is preserved (behaviours Python
-   neighbours expect from us are still delivered; behaviours
-   we expect from Python neighbours are still accepted).
+   peers expect from a neighbour are still delivered).
 3. The deviation measurably improves Priority 1.
 
 "Because Python does it differently" is not a counter-argument
 on its own; only "this breaks wire or semantic compatibility"
-is.
-
-`docs/src/architecture-broadcast-python-parity.md` and similar
-documents are historical reference material cataloguing what
-Python does. They are useful for engineers implementing
-compatibility; they are NOT policy commitments to maintain
+is. Docs under `docs/src/architecture-*-python-parity.md` are
+historical reference material — not commitments to maintain
 exact internal parity.
 
 ## Architecture: interface isolation
@@ -59,157 +51,152 @@ exact internal parity.
 medium, and adapts its behaviour accordingly. The core, the
 transport, and the daemon are media-agnostic.**
 
-Concretely:
+A half-duplex LoRa interface knows it cannot simultaneously TX
+and RX, knows its RadioSettings (bandwidth, spreading factor,
+coding rate), knows the per-packet airtime budget. It holds
+packets back, spaces TX events, does its own randomised pre-TX
+jitter on top of the RNode firmware's CSMA. A TCP/IP interface
+has none of that; it just writes bytes.
 
-- A half-duplex LoRa interface knows it cannot simultaneously TX
-  and RX, knows its RadioSettings (bandwidth, spreading factor,
-  coding rate), knows the per-packet airtime budget. It holds
-  packets back, spaces TX events, does its own randomised pre-TX
-  jitter on top of the RNode firmware's CSMA, and chooses smart
-  strategies to avoid collisions.
-- A TCP/IP interface has none of that. It just writes bytes; the
-  OS stack handles everything below.
-- A serial/KISS interface sits in between.
-
-The core and transport pass packets to interfaces without caring
-what medium they're on. An announce, a LinkRequest, a data
-packet, a resource chunk — all just bytes at the interface
+The core and transport pass packets to interfaces without
+caring what medium they're on. An announce, a LinkRequest, a
+data packet, a resource chunk — all just bytes at the interface
 boundary. A packet is a packet. **No type-awareness in
-collision-avoidance logic.** Whatever strategy the interface
-uses to get packets onto the wire without loss applies
-uniformly.
+collision-avoidance logic.**
 
-### How this binds you when writing a fix
-
-If a proposed fix for a collision / contention / duplex problem
-introduces an awareness flag or counter in `transport.rs`,
-`node/`, or the daemon ("is a link in flight?", "am I forwarding
-a LinkRequest?"), **it is at the wrong layer — redirect it to the
-interface**. The interface-level fix is type-agnostic: it applies
-to every outgoing packet regardless of what protocol logic
-produced it.
-
-Interface implementations can and should diverge from Python-
-Reticulum's interface code where the divergence improves
-Priority 1 and satisfies the deviation rule above. Python's
-interface layer (see `vendor/Reticulum/RNS/Interfaces/`) is
-mostly a thin serial writer; ours can be smarter.
+**How this binds you when writing a fix:** if a proposed fix
+for a collision / contention / duplex problem introduces an
+awareness flag or counter in `transport.rs`, `node/`, or the
+daemon ("is a link in flight?", "am I forwarding a
+LinkRequest?"), **it is at the wrong layer — redirect it to the
+interface**. Interface implementations can diverge from Python-
+Reticulum's thin-serial-writer style where the divergence
+satisfies the deviation rule above.
 
 ## Test discipline
 
-After every task, run all tests that fit a ~15 minute time budget:
-- Unit tests
-- Interop tests
-- Integration tests (excluding LoRa hardware scenarios)
+After every task, run all tests that fit a ~15 minute time
+budget (unit + interop + integration, excluding LoRa hardware).
+LoRa hardware tests run nightly.
 
-LoRa hardware tests run nightly because they take hours.
+**Zero tolerance for flaky tests.** A test failure is a real
+bug. Re-running until green is forbidden. Every failure must
+be root-caused, fixed at the root, and verified to address the
+cause rather than mask it.
 
-**Zero tolerance for flaky tests.** If a test fails, it is a real bug.
-Re-running a test until it passes is forbidden. "Flaky" is not an
-acceptable diagnosis or status. Every failure must be:
-
-1. Root-caused — understand the underlying problem completely
-2. Fixed at the root, not worked around
-3. Verified the fix actually addresses the cause, not just masks it
-
-**"Pre-existing fail" is not an excuse for not fixing.** Tests that
-were red before this task still have to be diagnosed and fixed. We do
-not accumulate broken tests as "known issues" — they hide regressions
-and erode trust in the test suite.
+**"Pre-existing fail" is not an excuse.** Tests red before this
+task still have to be diagnosed and fixed. We do not accumulate
+broken tests as "known issues".
 
 Do not commit a task while tests are red.
 
-## Why
+## Debugging discipline
 
-Test discipline was neglected during one development sprint, leading
-to bug accumulation that took multiple debugging sessions to resolve.
-Tests are the early-warning system; if they don't run, regressions
-slip in unnoticed.
+When fixing a bug whose mechanism is not obvious on sight,
+write a minimal reproducing test first, then the fix. Default
+is minimal-test-first; skipping requires a justified reason.
+
+1. **Default: minimal reproducing test before fix.** A minimal
+   test reproduces exactly the failure mode and nothing more.
+   Canonical home: `reticulum-std/tests/mvr/`. An existing
+   test reliably made red for this bug also counts. Write it
+   before the fix; writing the fix first lets you stop at
+   "seems to work".
+
+2. **When skipping is acceptable.** Trivial fixes (typo,
+   obvious null deref, vacuous off-by-one) do not need a
+   dedicated test. An equivalent reproducer already in the
+   suite counts as the minimal test. **"I already know the
+   fix" is NOT a valid skip reason** — that is precisely where
+   a test prevents wishful thinking.
+
+3. **Green minimal test alone is not closure.** Close the bug
+   only when BOTH (a) the minimal test is green AND (b) the
+   full end-to-end scenario is also green. Isolation
+   characterises one mechanism; real context may contain more.
+   Past sessions showed this directly: isolated tests went
+   green while hardware stayed red.
+
+4. **Hypotheses get tested, not implemented.** Suspect X?
+   Write the test that would confirm or refute X. If refuted,
+   try the next hypothesis. Do not ship a fix for a hypothesis
+   not first shown by measurement to be the actual cause.
+
+5. **Reference-first for compatibility-bound bugs.** When
+   failing behaviour is something we match to a reference
+   (Python-RNS for protocol mechanics, RNode firmware for LoRa
+   CSMA), measure the reference on the same failing scenario
+   BEFORE committing to a fix direction.
+
+   **"Same scenario" is strict: all inputs equal except the
+   stack under test.** Exploit the `lnsd`/`rnsd` drop-in
+   compatibility — the test harness must be literally the
+   same client code (e.g. `lns selftest`) pointed at either
+   daemon, never a parallel per-stack driver. A parallel
+   driver vitiates the A/B contract by smuggling config
+   differences (cadences, phases, timeouts) into what claims
+   to be a stack comparison. **Before interpreting any A/B
+   result, count event volumes on both sides.** If volumes
+   differ by more than a few percent, the comparison is
+   invalid and any downstream timing analysis is meaningless
+   — fix the test, not the hypothesis.
 
 ## Protocol debugging discipline
 
-Mesh-protocol bugs — packet loss, path-discovery failures, link
-establishment timeouts, relay misbehaviour, announce propagation
-issues — require stricter discipline than ordinary bugs. The
-observation surface is wide (6+ stack layers, multiple nodes) and
-the noise floor is high (timers, RF, scheduler jitter). Past
-sessions have burned multi-day work on pattern-matched fixes that
-missed the real cause. The rules below are mandatory when touching
-any protocol-level behaviour.
+Mesh-protocol bugs (packet loss, path-discovery failures, link
+timeouts, relay misbehaviour, announce propagation) add
+requirements on top of §Debugging discipline. The observation
+surface is wide (6+ stack layers, multiple nodes) and the
+noise floor is high (timers, RF, scheduler jitter).
+
+The general minimal-test-first and green-minimal-alone-is-not-
+closure rules apply with these specifics:
+
+- **mvr constraints for protocol bugs:** 1-2 nodes,
+  deterministic, < 5 seconds, single named failure mode, full
+  structured event logs from all sides.
+- **Acceptance bar at closure:** minimal test green AND full
+  scenario green at 20 × N.
+
+Additional mandatory rules:
 
 1. **Read the bug ledger first.** Every actively-investigated
-   protocol bug has a per-bug context file at `~/.claude/bugs/<N>.md`.
-   Before any debug work on bug N, read that file. It carries the
-   current hypothesis, what has been tried, what the next
-   distinguishing experiment is. See `~/.claude/bugs/README.md`
-   for the schema.
+   protocol bug has a context file at `~/.claude/bugs/<N>.md`.
+   Read it before any debug work. Schema at
+   `~/.claude/bugs/README.md`.
 
-2. **mvr-test-first rule.** Before investigating a multi-node
-   protocol failure, the first step is a minimum viable
-   reproduction: 1-2 nodes, deterministic, < 5 seconds, a single
-   named failure mode, full structured event logs from all sides.
-   If an mvr test does not yet exist for the failure, **build it
-   first**. Do not debug in the full Tier-3 scenario — the
-   signal-to-noise ratio is too low to make progress.
+2. **Baseline-before-debug.** Every "X is broken"
+   investigation opens with a HEAD~N run to establish where
+   the break happened. Without it, regression-vs-pre-existing
+   is unknowable.
 
-3. **Baseline-before-debug.** Every "X is broken" investigation
-   opens with a HEAD~N run to establish where the break happened.
-   Without it, "regression vs pre-existing" is unknowable.
+3. **No environmental variance, no statistical noise.** Any
+   lab benchmark below 100 % PDR is a bug. Any flake is a
+   deterministic bug with a flaky symptom. These framings are
+   not valid closing diagnoses in the controlled lab.
 
-4. **No environmental variance, no statistical noise.** Any lab
-   benchmark run below 100 % PDR is a bug. Any test flake is a
-   deterministic bug with a flaky symptom. "Environmental
-   variance" and "statistical noise" are not valid closing
-   diagnoses in the controlled lab. See the local roadmap Bug #24
-   umbrella.
+4. **One hypothesis at a time.** The ledger's CURRENT field
+   holds exactly one hypothesis. Multiple in parallel = under-
+   scoped bug, split into sub-bugs with their own ledger
+   files.
 
-5. **No inferential closure.** A protocol bug is closed only
-   when (a) its mvr test passes at 100 %, and (b) the
-   full-scenario test passes at the acceptance bar (usually
-   20 × N green). "Mechanism X would explain the symptom" is a
-   hypothesis, not a closure.
-
-6. **One hypothesis at a time.** The ledger's CURRENT field
-   holds exactly one hypothesis. Multiple hypotheses pursued in
-   parallel means the bug is under-scoped; split it into
-   sub-bugs with their own ledger files.
+5. **Null-hypothesis before external hypothesis.** When an
+   unexpected entity appears in logs — unknown hash, packet
+   from an unplaceable source, unexpected state — first check
+   "is this us from a different angle?" Compare the mysterious
+   identifier against every known identity of every node in
+   the scenario. The `b2a8bea1`-as-T114's-own-transport-hash
+   episode (2026-04-15/16) cost two days that five minutes of
+   self-check would have prevented.
 
 ### Structured event-log format
 
-Protocol-stack events should be emitted in a parseable form:
+Protocol events should be emitted as:
 
 ```
 EVENT_NAME key1=val1 key2=val2 t=<ms>
 ```
 
-One event per line, stable identifiers as keys, scalar values.
-Grep and awk become debug tools. Tests spanning multiple nodes
-should produce a unified timeline file merging all nodes' events
-in timestamp order. This format is a work-in-progress: use it for
-new instrumentation; when debugging, correlate event timestamps
-across nodes.
-
-### Why
-
-Past session failure modes this discipline is designed to prevent,
-all observed in 2026-04:
-
-- A "mystery relay" `b2a8bea1…` was chased for two days as
-  external RF contamination before being identified as the T114
-  receiver's own transport hash under MIXED topology.
-- The broadcast-parity investigation required six iterations
-  because each pass inferred a plausible cause without measurement;
-  only the fifth pass discovered Python's `ingress_control` as the
-  real mechanism.
-- The interop-test suite carried a latent TOCTOU port-allocation
-  race for weeks, masked as sporadic `249/250 passed` runs.
-
-The rules above are the structural response: isolation before
-analysis, deterministic repro before hypothesis, ledger before
-debug session.
-
-Note also: rule 4 ("no flaky") and rule 5 ("no inferential
-closure") express Priority 1 concretely. A test that succeeds
-99 % of the time is a mesh that delivers 99 % of packets — one in
-a hundred lost. For Priority 1 that is not success, it is a bug
-under investigation.
+One event per line, stable keys, scalar values. Grep and awk
+become debug tools. Multi-node tests produce a unified
+timeline merging all nodes' events in timestamp order.
