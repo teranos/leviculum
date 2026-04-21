@@ -21,6 +21,46 @@ use tokio::sync::mpsc;
 
 use super::{IncomingPacket, InterfaceCounters, InterfaceHandle, InterfaceInfo, OutgoingPacket};
 
+/// Bind a Unix listener to the given abstract name.
+///
+/// On Linux, uses abstract sockets (`\0name`). On other Unix systems,
+/// falls back to filesystem sockets in the temp directory.
+fn bind_local_listener(abstract_name: &str) -> Result<std::os::unix::net::UnixListener, io::Error> {
+    #[cfg(target_os = "linux")]
+    {
+        use std::os::linux::net::SocketAddrExt;
+        let addr = std::os::unix::net::SocketAddr::from_abstract_name(abstract_name.as_bytes())
+            .map_err(|e| io::Error::new(io::ErrorKind::InvalidInput, e))?;
+        std::os::unix::net::UnixListener::bind_addr(&addr)
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        let path = std::env::temp_dir().join(format!("leviculum-{}", abstract_name.replace('/', "-")));
+        // Remove stale socket file if it exists
+        let _ = std::fs::remove_file(&path);
+        std::os::unix::net::UnixListener::bind(&path)
+    }
+}
+
+/// Connect to a Unix socket by abstract name.
+///
+/// On Linux, uses abstract sockets. On other Unix systems,
+/// falls back to filesystem sockets in the temp directory.
+fn connect_local(abstract_name: &str) -> Result<std::os::unix::net::UnixStream, io::Error> {
+    #[cfg(target_os = "linux")]
+    {
+        use std::os::linux::net::SocketAddrExt;
+        let addr = std::os::unix::net::SocketAddr::from_abstract_name(abstract_name.as_bytes())
+            .map_err(|e| io::Error::new(io::ErrorKind::InvalidInput, e))?;
+        std::os::unix::net::UnixStream::connect_addr(&addr)
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        let path = std::env::temp_dir().join(format!("leviculum-{}", abstract_name.replace('/', "-")));
+        std::os::unix::net::UnixStream::connect(&path)
+    }
+}
+
 /// Default channel buffer size for local interfaces.
 pub(crate) const LOCAL_DEFAULT_BUFFER_SIZE: usize = 256;
 
@@ -50,17 +90,11 @@ pub(crate) fn spawn_local_server(
     // Build abstract socket name: "rns/{instance_name}"
     let abstract_name = format!("rns/{}", instance_name);
 
-    use std::os::linux::net::SocketAddrExt;
-    let addr = std::os::unix::net::SocketAddr::from_abstract_name(abstract_name.as_bytes())
-        .map_err(|e| io::Error::new(io::ErrorKind::InvalidInput, e))?;
-    let std_listener = std::os::unix::net::UnixListener::bind_addr(&addr)?;
+    let std_listener = bind_local_listener(&abstract_name)?;
     std_listener.set_nonblocking(true)?;
     let listener = tokio::net::UnixListener::from_std(std_listener)?;
 
-    tracing::info!(
-        "Local server listening on abstract socket \\0{}",
-        abstract_name
-    );
+    tracing::info!("Local server listening on socket {}", abstract_name);
 
     let client_counter = Arc::new(AtomicUsize::new(0));
     let instance_name_owned = abstract_name.clone();
@@ -151,10 +185,7 @@ pub(crate) fn spawn_local_client(
 ) -> Result<InterfaceHandle, io::Error> {
     let abstract_name = format!("rns/{}", instance_name);
 
-    use std::os::linux::net::SocketAddrExt;
-    let addr = std::os::unix::net::SocketAddr::from_abstract_name(abstract_name.as_bytes())
-        .map_err(|e| io::Error::new(io::ErrorKind::InvalidInput, e))?;
-    let std_stream = std::os::unix::net::UnixStream::connect_addr(&addr)?;
+    let std_stream = connect_local(&abstract_name)?;
     std_stream.set_nonblocking(true)?;
     let stream = tokio::net::UnixStream::from_std(std_stream)?;
 
@@ -267,24 +298,24 @@ async fn local_interface_task(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::os::linux::net::SocketAddrExt;
     use std::time::Duration;
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+    /// Connect to a local server in tests, using the platform-appropriate socket.
+    fn test_connect(instance_name: &str) -> std::os::unix::net::UnixStream {
+        let abstract_name = format!("rns/{}", instance_name);
+        connect_local(&abstract_name).unwrap()
+    }
 
     #[tokio::test]
     async fn test_local_server_accepts_connection() {
         let next_id = Arc::new(AtomicUsize::new(100));
         let (tx, mut rx) = mpsc::channel::<InterfaceHandle>(4);
 
-        // Use a unique instance name to avoid conflicts
         let instance_name = format!("test_{}", std::process::id());
         spawn_local_server(&instance_name, next_id.clone(), tx, 16).unwrap();
 
-        // Connect as a local client via abstract socket
-        let abstract_name = format!("rns/{}", instance_name);
-        let addr =
-            std::os::unix::net::SocketAddr::from_abstract_name(abstract_name.as_bytes()).unwrap();
-        let std_stream = std::os::unix::net::UnixStream::connect_addr(&addr).unwrap();
+        let std_stream = test_connect(&instance_name);
         std_stream.set_nonblocking(true).unwrap();
         let _client = tokio::net::UnixStream::from_std(std_stream).unwrap();
 
@@ -308,11 +339,7 @@ mod tests {
         let instance_name = format!("test_rt_{}", std::process::id());
         spawn_local_server(&instance_name, next_id.clone(), tx, 16).unwrap();
 
-        // Connect
-        let abstract_name = format!("rns/{}", instance_name);
-        let addr =
-            std::os::unix::net::SocketAddr::from_abstract_name(abstract_name.as_bytes()).unwrap();
-        let std_stream = std::os::unix::net::UnixStream::connect_addr(&addr).unwrap();
+        let std_stream = test_connect(&instance_name);
         std_stream.set_nonblocking(true).unwrap();
         let mut client = tokio::net::UnixStream::from_std(std_stream).unwrap();
 
@@ -374,11 +401,7 @@ mod tests {
         let instance_name = format!("test_disc_{}", std::process::id());
         spawn_local_server(&instance_name, next_id.clone(), tx, 16).unwrap();
 
-        // Connect and immediately drop
-        let abstract_name = format!("rns/{}", instance_name);
-        let addr =
-            std::os::unix::net::SocketAddr::from_abstract_name(abstract_name.as_bytes()).unwrap();
-        let std_stream = std::os::unix::net::UnixStream::connect_addr(&addr).unwrap();
+        let std_stream = test_connect(&instance_name);
         std_stream.set_nonblocking(true).unwrap();
         let client = tokio::net::UnixStream::from_std(std_stream).unwrap();
 
@@ -407,16 +430,12 @@ mod tests {
         let instance_name = format!("test_multi_{}", std::process::id());
         spawn_local_server(&instance_name, next_id.clone(), tx, 16).unwrap();
 
-        let abstract_name = format!("rns/{}", instance_name);
-        let addr =
-            std::os::unix::net::SocketAddr::from_abstract_name(abstract_name.as_bytes()).unwrap();
-
         // Connect two clients
-        let std1 = std::os::unix::net::UnixStream::connect_addr(&addr).unwrap();
+        let std1 = test_connect(&instance_name);
         std1.set_nonblocking(true).unwrap();
         let _client1 = tokio::net::UnixStream::from_std(std1).unwrap();
 
-        let std2 = std::os::unix::net::UnixStream::connect_addr(&addr).unwrap();
+        let std2 = test_connect(&instance_name);
         std2.set_nonblocking(true).unwrap();
         let _client2 = tokio::net::UnixStream::from_std(std2).unwrap();
 

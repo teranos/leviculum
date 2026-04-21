@@ -17,6 +17,43 @@ pub(crate) mod pickle;
 use std::sync::{Arc, Mutex};
 
 use tokio::net::UnixListener;
+
+/// Bind a Unix listener for the RPC socket.
+///
+/// On Linux, uses abstract sockets. On other Unix systems,
+/// falls back to filesystem sockets in the temp directory.
+fn bind_rpc_listener(abstract_name: &str) -> Result<std::os::unix::net::UnixListener, std::io::Error> {
+    #[cfg(target_os = "linux")]
+    {
+        use std::os::linux::net::SocketAddrExt;
+        let addr = std::os::unix::net::SocketAddr::from_abstract_name(abstract_name.as_bytes())
+            .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidInput, e))?;
+        std::os::unix::net::UnixListener::bind_addr(&addr)
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        let path = std::env::temp_dir().join(format!("leviculum-{}", abstract_name.replace('/', "-")));
+        let _ = std::fs::remove_file(&path);
+        std::os::unix::net::UnixListener::bind(&path)
+    }
+}
+
+/// Connect to an RPC socket by abstract name.
+#[cfg(test)]
+fn connect_rpc(abstract_name: &str) -> Result<std::os::unix::net::UnixStream, std::io::Error> {
+    #[cfg(target_os = "linux")]
+    {
+        use std::os::linux::net::SocketAddrExt;
+        let addr = std::os::unix::net::SocketAddr::from_abstract_name(abstract_name.as_bytes())
+            .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidInput, e))?;
+        std::os::unix::net::UnixStream::connect_addr(&addr)
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        let path = std::env::temp_dir().join(format!("leviculum-{}", abstract_name.replace('/', "-")));
+        std::os::unix::net::UnixStream::connect(&path)
+    }
+}
 use tokio::sync::watch;
 
 use crate::driver::StdNodeCore;
@@ -40,17 +77,11 @@ pub(crate) fn spawn_rpc_server(
 ) -> Result<(), std::io::Error> {
     let abstract_name = format!("rns/{}/rpc", instance_name);
 
-    use std::os::linux::net::SocketAddrExt;
-    let addr = std::os::unix::net::SocketAddr::from_abstract_name(abstract_name.as_bytes())
-        .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidInput, e))?;
-    let std_listener = std::os::unix::net::UnixListener::bind_addr(&addr)?;
+    let std_listener = bind_rpc_listener(&abstract_name)?;
     std_listener.set_nonblocking(true)?;
     let listener = UnixListener::from_std(std_listener)?;
 
-    tracing::info!(
-        "RPC server listening on abstract socket \\0{}",
-        abstract_name
-    );
+    tracing::info!("RPC server listening on socket {}", abstract_name);
 
     tokio::spawn(async move {
         rpc_accept_loop(
@@ -143,13 +174,9 @@ pub(crate) async fn rpc_client_call(
     authkey: &[u8; 32],
     request: &serde_pickle::value::Value,
 ) -> Result<serde_pickle::value::Value, RpcError> {
-    use std::os::linux::net::SocketAddrExt;
     use tokio::net::UnixStream;
 
-    let addr = std::os::unix::net::SocketAddr::from_abstract_name(abstract_name.as_bytes())
-        .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidInput, e))?;
-
-    let std_stream = std::os::unix::net::UnixStream::connect_addr(&addr)?;
+    let std_stream = connect_rpc(abstract_name)?;
     std_stream.set_nonblocking(true)?;
     let mut stream = UnixStream::from_std(std_stream)?;
 
