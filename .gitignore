@@ -12,6 +12,7 @@ reticulum-ffi/*.h
 # Markdown files
 IMPLEMENTATION_PLAN.md
 CLAUDE.md
+HOWTO.md
 
 # Generated docs (mdbook output)
 docs/book/
