@@ -404,9 +404,7 @@ impl OutgoingResource {
             self.receiver_min_consecutive_height =
                 part_index.saturating_sub(1 + RESOURCE_WINDOW_MAX_FAST);
 
-            if hashmap_max > 0 {
-                let segment = part_index / hashmap_max;
-
+            if let Some(segment) = part_index.checked_div(hashmap_max) {
                 let hashmap_start = segment * hashmap_max;
                 let hashmap_end = core::cmp::min((segment + 1) * hashmap_max, self.hashmap.len());
 
