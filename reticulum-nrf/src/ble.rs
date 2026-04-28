@@ -121,11 +121,16 @@ async fn ble_task(sdc: sdc::SoftdeviceController<'static>, identity_hash: [u8; 1
     addr[5] |= 0xC0; // bits 7:6 = 11 → valid random static address
     let address = Address::random(addr);
 
-    static RESOURCES: StaticCell<HostResources<DefaultPacketPool, 1, 2, 1>> = StaticCell::new();
-    let resources = RESOURCES.init(HostResources::new());
-
-    let stack = trouble_host::new(sdc, resources).set_random_address(address);
-    let Host { mut peripheral, mut runner, .. } = stack.build();
+    // Embassy task frame lives in static task storage, so a local HostResources
+    // here is effectively in BSS and avoids the StaticCell+concrete-type dance
+    // the new generic-over-Controller HostResources signature would otherwise
+    // require.
+    let mut resources: HostResources<_, DefaultPacketPool, 1, 2> = HostResources::new();
+    let stack = trouble_host::new(sdc, &mut resources)
+        .set_random_address(address)
+        .build();
+    let mut runner = stack.runner();
+    let mut peripheral = stack.peripheral();
 
     let server = ReticulumServer::new_with_config(GapConfig::Peripheral(PeripheralConfig {
         name: "leviculum",
