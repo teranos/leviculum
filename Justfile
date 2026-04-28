@@ -105,3 +105,26 @@ flash:
 # Flash a single T114 by port path or udev symlink.
 flash-one PORT:
     cd reticulum-nrf && LEVICULUM_FLASH_ONLY={{PORT}} cargo run --release --bin t114
+
+# First flash from Meshtastic / blank firmware needs a manual RESET
+# double-tap (the stock app has no 1200-baud-touch handler). Subsequent
+# flashes use the touch path automatically.
+# Flash every attached RAK4631 (WisMesh Pocket V2) with the current firmware.
+flash-rak4631:
+    cd reticulum-nrf && LEVICULUM_USB_PID=0002 LEVICULUM_BOARD_NAME=RAK4631 LEVICULUM_UF2_BOARD_ID=WisBlock-RAK4631-Board cargo run --release --bin rak4631
+
+# Flash a single RAK4631 by port path or udev symlink.
+#   just flash-rak4631-one /dev/ttyACM0
+#   just flash-rak4631-one /dev/leviculum-rak-transport
+flash-rak4631-one PORT:
+    cd reticulum-nrf && LEVICULUM_FLASH_ONLY={{PORT}} LEVICULUM_USB_PID=0002 LEVICULUM_BOARD_NAME=RAK4631 LEVICULUM_UF2_BOARD_ID=WisBlock-RAK4631-Board cargo run --release --bin rak4631
+
+# Trigger Adafruit-UF2-bootloader on a stock-Meshtastic WisMesh Pocket V2.
+# Stock Meshtastic has no 1200-bps-touch handler and the device has no
+# externally accessible RESET pin, so the firmware-side admin command is the
+# only software-only DFU entry. After our firmware lands, just-flash-rak4631
+# uses the touch handler from src/usb.rs and this recipe is no longer needed.
+# Requires meshtastic CLI: /home/lew/pythonenvironment/bin/pip install meshtastic
+# Usage: just dfu-rak4631 /dev/ttyACM0
+dfu-rak4631 PORT:
+    /home/lew/pythonenvironment/bin/meshtastic --port {{PORT}} --enter-dfu

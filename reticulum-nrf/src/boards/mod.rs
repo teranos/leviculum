@@ -1,5 +1,6 @@
 //! Board-specific pin mappings and shared board metadata.
 
+pub mod rak4631;
 pub mod t114;
 
 /// Runtime board metadata consumed by shared init code (USB, flash, LoRa).

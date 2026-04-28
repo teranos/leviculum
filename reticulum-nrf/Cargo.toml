@@ -56,7 +56,11 @@ lto = true           # link-time optimization across all crates
 codegen-units = 1    # single codegen unit for maximum LTO
 strip = "symbols"    # strip debug symbols from binary
 
-# Firmware binary
+# Firmware binaries
 [[bin]]
 name = "t114"
 path = "src/bin/t114.rs"
+
+[[bin]]
+name = "rak4631"
+path = "src/bin/rak4631.rs"
