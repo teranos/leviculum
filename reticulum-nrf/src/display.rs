@@ -26,6 +26,7 @@ use embedded_graphics::{
     mono_font::{ascii::FONT_6X10, MonoTextStyleBuilder},
     pixelcolor::BinaryColor,
     prelude::*,
+    primitives::{PrimitiveStyle, Rectangle},
     text::{Baseline, Text},
 };
 use ssd1306::{prelude::*, I2CDisplayInterface, Ssd1306};
@@ -178,33 +179,130 @@ pub async fn display_task(
         .build();
     let id_short = ident_short(&identity_hash);
 
+    // Receiver for the GNSS watch — held outside the loop so we keep the
+    // most recent value even between sentence updates.
+    #[cfg(feature = "gnss")]
+    let mut gnss_rx = crate::baseboard::GNSS_FIX.receiver().expect("gnss watch capacity");
+
+    // Frame key — when nothing relevant has changed since last render, we
+    // skip the I²C flush entirely. lat/lon are quantized to 5 decimal
+    // places (≈1 m); receiver-jitter below that level no longer flips the
+    // frame. The heartbeat phase bumps the key every 5 s so the screen
+    // refreshes itself slowly (lifetime indicator).
+    #[derive(PartialEq, Eq)]
+    struct FrameKey {
+        rx: u32,
+        tx: u32,
+        sat: u8,
+        valid: bool,
+        // Latitude/longitude quantized to 5dp via int(round(value * 1e5)).
+        // Option<i64> survives the no-fix transition.
+        lat_e5: Option<i64>,
+        lon_e5: Option<i64>,
+        heartbeat: bool,
+    }
+
+    let mut last_key: Option<FrameKey> = None;
+    let mut tick: u32 = 0;
+
     loop {
+        tick = tick.wrapping_add(1);
+        let heartbeat = (tick / 5) & 1 != 0; // toggles every 5 seconds
+
         let rx = crate::lora::LORA_RX_COUNT.load(Ordering::Relaxed);
         let tx = crate::lora::LORA_TX_COUNT.load(Ordering::Relaxed);
 
-        // Five-line status. FONT_6X10 → ~10 px/line, 64 px tall = up to 6
-        // lines; we render 5 with one blank for breathing room.
-        let _ = display.clear(BinaryColor::Off);
-
-        let mut line2 = heapless::String::<22>::new();
+        let mut line2 = heapless::String::<24>::new();
         let _ = core::fmt::write(&mut line2, format_args!("ID: {}", id_short));
 
-        let mut line3 = heapless::String::<22>::new();
+        let mut line3 = heapless::String::<24>::new();
         let _ = core::fmt::write(&mut line3, format_args!("RX: {:<5} TX: {:<5}", rx, tx));
 
         let line4 = "Bat: -- (pending D5)";
-        let line5 = "GPS: -- (pending D4)";
 
-        let lines: [&str; 5] = ["leviculum RAK4631", line2.as_str(), line3.as_str(), line4, line5];
+        // Defaults — overwritten if `gnss` is on.
+        let mut line5_buf = heapless::String::<24>::new();
+        let mut line6_buf = heapless::String::<24>::new();
+        #[allow(unused_assignments, unused_mut)]
+        let mut sat: u8 = 0;
+        #[allow(unused_assignments, unused_mut)]
+        let mut valid = false;
+        #[allow(unused_assignments, unused_mut)]
+        let mut lat_e5: Option<i64> = None;
+        #[allow(unused_assignments, unused_mut)]
+        let mut lon_e5: Option<i64> = None;
+
+        #[cfg(feature = "gnss")]
+        {
+            let fix_opt = gnss_rx.try_get();
+            let (label, sats) = match fix_opt {
+                Some(f) if f.valid => ("fix", f.sat_in_use),
+                Some(f) => ("search", f.sat_in_use),
+                None => ("init", 0),
+            };
+            sat = sats;
+            valid = matches!(fix_opt, Some(f) if f.valid);
+            let _ = core::fmt::write(&mut line5_buf, format_args!("GPS: {} sat {}", sats, label));
+            match fix_opt.and_then(|f| f.latitude.zip(f.longitude)) {
+                Some((lat, lon)) => {
+                    // 5dp in the displayed string and the frame key.
+                    // `as i64` truncates toward zero; that's fine for change
+                    // detection — a single LSB flip from rounding semantics
+                    // would just trigger one extra render, and at 5dp each
+                    // unit equals ~1.1 m so coordinate jitter rarely flips
+                    // the truncated key at all.
+                    let _ = core::fmt::write(&mut line6_buf, format_args!("{:.5},{:.5}", lat, lon));
+                    lat_e5 = Some((lat * 1e5) as i64);
+                    lon_e5 = Some((lon * 1e5) as i64);
+                }
+                None => {
+                    let _ = core::fmt::write(&mut line6_buf, format_args!("(no fix)"));
+                }
+            }
+        }
+        #[cfg(not(feature = "gnss"))]
+        {
+            let _ = core::fmt::write(&mut line5_buf, format_args!("GPS: -- (no feature)"));
+            let _ = core::fmt::write(&mut line6_buf, format_args!(""));
+        }
+
+        let key = FrameKey { rx, tx, sat, valid, lat_e5, lon_e5, heartbeat };
+        if last_key.as_ref() == Some(&key) {
+            // Nothing meaningful changed since last render and the
+            // heartbeat phase is the same. Skip the I²C flush entirely.
+            Timer::after(Duration::from_secs(1)).await;
+            continue;
+        }
+
+        let _ = display.clear(BinaryColor::Off);
+
+        let lines: [&str; 6] = [
+            "leviculum RAK4631",
+            line2.as_str(),
+            line3.as_str(),
+            line4,
+            line5_buf.as_str(),
+            line6_buf.as_str(),
+        ];
         for (i, s) in lines.iter().enumerate() {
-            let y = (i as i32) * 12;
+            let y = (i as i32) * 10;
             let _ = Text::with_baseline(s, Point::new(0, y), text_style, Baseline::Top)
+                .draw(&mut display);
+        }
+
+        // Heartbeat marker — a 2×2 dot in the top-right corner, drawn only
+        // during the "on" phase. Tells you "the firmware loop is alive"
+        // without redrawing the rest of the screen at any visible rate.
+        if heartbeat {
+            let _ = Rectangle::new(Point::new(125, 0), Size::new(2, 2))
+                .into_styled(PrimitiveStyle::with_fill(BinaryColor::On))
                 .draw(&mut display);
         }
 
         if let Err(e) = display.flush() {
             crate::log::log_fmt("[DISP] ", format_args!("flush failed: {:?}", e));
         }
+        last_key = Some(key);
 
         Timer::after(Duration::from_secs(1)).await;
     }

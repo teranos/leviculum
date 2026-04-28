@@ -174,6 +174,17 @@ async fn main(spawner: Spawner) {
         reticulum_nrf::display::init(&spawner, p.TWISPI0, p.P0_13, p.P0_14, identity_hash);
         info!("display task spawned");
     }
+    #[cfg(feature = "gnss")]
+    {
+        reticulum_nrf::gnss::init(
+            &spawner,
+            p.UARTE0,
+            p.P0_15.into(),  // RX from ZOE-M8Q TX
+            p.P0_16.into(),  // TX to ZOE-M8Q RX
+            p.P0_17.into(),  // PPS (configured but unused)
+        );
+        info!("gnss task spawned");
+    }
 
     let (hu, hf) = reticulum_nrf::heap_stats();
     let sf = reticulum_nrf::stack_free();

@@ -25,6 +25,8 @@ pub mod usb;
 pub mod baseboard;
 #[cfg(feature = "display")]
 pub mod display;
+#[cfg(feature = "gnss")]
+pub mod gnss;
 
 /// Install the tracing subscriber that routes `reticulum-core` log events
 /// to the CDC-ACM debug port via LOG_CHANNEL.
