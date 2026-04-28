@@ -8,7 +8,7 @@ extern crate alloc;
 
 use alloc::vec::Vec;
 use embassy_embedded_hal::shared_bus::asynch::spi::SpiDevice;
-use embassy_nrf::gpio::{Input, Level, Output, OutputDrive, Pull};
+use embassy_nrf::gpio::{AnyPin, Input, Level, Output, OutputDrive, Pull};
 use embassy_nrf::spim::{self, Spim};
 use embassy_nrf::{bind_interrupts, peripherals, Peri};
 use embassy_sync::blocking_mutex::raw::{CriticalSectionRawMutex, NoopRawMutex};
@@ -18,7 +18,6 @@ use reticulum_core::traits::{Interface, InterfaceError};
 use reticulum_core::InterfaceId;
 use static_cell::StaticCell;
 
-use crate::boards::t114;
 use crate::sx1262::Sx1262;
 
 // SPIM2, works on T114 (SPIM3 has a MISO read bug)
@@ -304,18 +303,27 @@ async fn rx_once(
 }
 
 // Init
+//
+// Board-agnostic: GPIO pins arrive as AnyPin (degraded in the bin file)
+// and the SX1262-specific knobs (SPI clock, TCXO voltage) come from
+// `BoardConfig`. SPI peripheral is still typed because embassy-nrf does
+// not expose an erased-instance Spim. SPI2 is used on both T114 (SPI3
+// has a MISO read bug there) and RAK4631 — same instance keeps the
+// shared Spim<'static> type stable.
 pub async fn init(
     spi_periph: Peri<'static, peripherals::SPI2>,
-    sck: Peri<'static, t114::LoRaSck>,
-    mosi: Peri<'static, t114::LoRaMosi>,
-    miso: Peri<'static, t114::LoRaMiso>,
-    cs: Peri<'static, t114::LoRaCs>,
-    reset: Peri<'static, t114::LoRaReset>,
-    busy: Peri<'static, t114::LoRaBusy>,
-    dio1: Peri<'static, t114::LoRaDio1>,
+    sck: Peri<'static, AnyPin>,
+    mosi: Peri<'static, AnyPin>,
+    miso: Peri<'static, AnyPin>,
+    cs: Peri<'static, AnyPin>,
+    reset: Peri<'static, AnyPin>,
+    busy: Peri<'static, AnyPin>,
+    dio1: Peri<'static, AnyPin>,
+    spi_freq: spim::Frequency,
+    tcxo_voltage_reg: u8,
 ) -> Radio {
     let mut spi_config = spim::Config::default();
-    spi_config.frequency = spim::Frequency::M4;
+    spi_config.frequency = spi_freq;
 
     let spi = Spim::new(spi_periph, SpiIrqs, sck, miso, mosi, spi_config);
 
@@ -329,7 +337,7 @@ pub async fn init(
     let busy_pin = Input::new(busy, Pull::None);
     let dio1_pin = Input::new(dio1, Pull::Down);
 
-    Sx1262::new(spi_device, reset_pin, busy_pin, dio1_pin)
+    Sx1262::new(spi_device, reset_pin, busy_pin, dio1_pin, tcxo_voltage_reg)
 }
 
 // LoRa async task

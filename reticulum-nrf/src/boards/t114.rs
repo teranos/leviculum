@@ -133,3 +133,22 @@ pub fn led(pin: Peri<'static, LedPin>) -> Output<'static> {
     // LED is active LOW, start with Level::High (LED off)
     Output::new(pin, Level::High, OutputDrive::Standard)
 }
+
+/// Runtime board metadata for shared init code (USB / flash / LoRa).
+pub const CONFIG: super::BoardConfig = super::BoardConfig {
+    usb_vid: 0x1209,
+    usb_pid: 0x0001,
+    usb_manufacturer: "leviculum",
+    usb_product: "leviculum T114",
+    log_prefix: "T114",
+    identity_flash_page: 0xEC000,
+    lora_tcxo_voltage_reg: 0x02, // 1.8 V
+    lora_spi_freq_hz: LORA_SPI_FREQ_HZ,
+    lora_max_power_dbm: LORA_MAX_POWER_DBM,
+};
+
+/// Panic-LED descriptor — port, pin, active-low flag — for `set_panic_led`.
+/// LED1 (green) on P1.03, active low.
+pub const PANIC_LED_PORT: u8 = 1;
+pub const PANIC_LED_PIN: u8 = 3;
+pub const PANIC_LED_ACTIVE_LOW: bool = true;

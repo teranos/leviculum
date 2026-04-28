@@ -1,19 +1,29 @@
 #!/usr/bin/env bash
-# Cargo runner for T114 — builds UF2 from ELF and deploys to bootloader.
+# Cargo runner — builds UF2 from ELF and deploys to bootloader.
 # Invoked automatically by `cargo run` via .cargo/config.toml.
 #
-# Default behaviour: flash EVERY attached T114 (matched by VID/PID 1209:0001)
-# sequentially. Touch-free for healthy firmware (1200-baud-touch triggers the
-# Adafruit bootloader); falls back to manual double-tap RESET prompt per
-# device if touch fails (e.g. crashed firmware, old firmware without the
-# handler).
+# Default behaviour: flash EVERY attached device matching the configured
+# USB VID/PID, sequentially. Touch-free for healthy firmware (1200-baud-touch
+# triggers the Adafruit bootloader); falls back to manual double-tap RESET
+# prompt per device if touch fails (crashed firmware, missing handler).
+#
+# Per-board parameters (defaults match the T114):
+#   LEVICULUM_USB_VID         USB Vendor ID hex w/o 0x prefix (default: 1209)
+#   LEVICULUM_USB_PID         USB Product ID hex w/o 0x prefix (default: 0001)
+#   LEVICULUM_BOARD_NAME      Human-readable board name in messages
+#                             (default: T114)
+#   LEVICULUM_UF2_BOARD_ID    Board-ID string in INFO_UF2.TXT, used to confirm
+#                             the right bootloader is mounted
+#                             (default: HT-n5262)
 #
 # Selective flashing: set LEVICULUM_FLASH_ONLY=<port-or-symlink> to target
-# exactly one T114. Useful for A/B firmware testing.
+# exactly one device. Useful for A/B firmware testing.
 #
 # Pipeline: ELF → flat binary (objcopy) → UF2 (bin2uf2) → copy to UF2 drive
 #
-# NOTE: --base must match FLASH ORIGIN in memory.x (currently 0x26000 for S140 v6)
+# NOTE: --base must match FLASH ORIGIN in memory.x (currently 0x26000 for S140 v6).
+# Both T114 and RAK4631 share this layout, so FLASH_BASE / FAMILY_ID are not
+# parameterized — they are fixed properties of the Adafruit nRF52 UF2 family.
 
 set -euo pipefail
 
@@ -27,6 +37,12 @@ UF2_TIMEOUT="${UF2_TIMEOUT:-30}"
 
 FLASH_BASE=0x26000
 FAMILY_ID=0xADA52840
+
+# Per-board parameters (default to T114 values for backward compatibility).
+BOARD_VID="${LEVICULUM_USB_VID:-1209}"
+BOARD_PID="${LEVICULUM_USB_PID:-0001}"
+BOARD_NAME="${LEVICULUM_BOARD_NAME:-T114}"
+BOOTLOADER_BOARD_ID="${LEVICULUM_UF2_BOARD_ID:-HT-n5262}"
 
 # --- Step 1: Find objcopy ---------------------------------------------------
 
@@ -161,11 +177,11 @@ find_uf2_drive() {
     echo ""
 }
 
-# --- Helper: enumerate all attached T114 transport ports --------------------
+# --- Helper: enumerate all attached transport ports for the current board --
 # Prints one path per line, sorted by ID_SERIAL_SHORT (deterministic order).
-# Empty output means no T114 with the leviculum VID/PID + interface 02 found.
-# Single udevadm call per port (cached output grepped four times) — saves
-# ~75% of subprocess calls vs. a four-call form.
+# Empty output means no device matching $BOARD_VID:$BOARD_PID with interface
+# 02 was found.  Single udevadm call per port (cached output grepped four
+# times) — saves ~75% of subprocess calls vs. a four-call form.
 
 find_all_t114_transport_ports() {
     local port props vid pid iface serial out=""
@@ -175,7 +191,7 @@ find_all_t114_transport_ports() {
         vid="$(   echo "$props" | grep '^ID_VENDOR_ID='         | cut -d= -f2)"
         pid="$(   echo "$props" | grep '^ID_MODEL_ID='          | cut -d= -f2)"
         iface="$( echo "$props" | grep '^ID_USB_INTERFACE_NUM=' | cut -d= -f2)"
-        if [ "$vid" = "1209" ] && [ "$pid" = "0001" ] && [ "$iface" = "02" ]; then
+        if [ "$vid" = "$BOARD_VID" ] && [ "$pid" = "$BOARD_PID" ] && [ "$iface" = "02" ]; then
             serial="$(echo "$props" | grep '^ID_SERIAL_SHORT='  | cut -d= -f2)"
             out="$out$serial $port"$'\n'
         fi
@@ -218,7 +234,7 @@ flash_one_uf2() {
         # and continue polling for the remaining UF2_TIMEOUT.
         echo "==> $hint: looking for UF2 drive..."
         echo "    ┌──────────────────────────────────────────────────┐"
-        echo "    │  Double-tap RESET on T114 to enter bootloader.   │"
+        printf  "    │  Double-tap RESET on %-6s to enter bootloader. │\n" "$BOARD_NAME"
         echo "    └──────────────────────────────────────────────────┘"
         echo "==> Waiting for UF2 drive (${UF2_TIMEOUT}s)..."
 
@@ -299,10 +315,10 @@ FAILED_PORTS=""
 FLASHED_SERIALS=""
 
 if [ -z "$PORTS" ]; then
-    # No T114 visible on VID/PID — either none attached, all already in
+    # No board visible on VID/PID — either none attached, all already in
     # bootloader mode (UF2 drive only), or all crashed. Run one round of the
     # legacy fallback (manual prompt + UF2-drive polling).
-    echo "[uf2-runner] no T114 transport port detected; awaiting manual double-tap"
+    echo "[uf2-runner] no $BOARD_NAME transport port detected; awaiting manual double-tap"
     if flash_one_uf2 "(unknown device)"; then
         FLASHED_PORTS="(unknown)"
     else
@@ -310,7 +326,7 @@ if [ -z "$PORTS" ]; then
     fi
 else
     NUM=$(echo "$PORTS" | wc -l)
-    echo "==> Flashing $NUM T114(s)"
+    echo "==> Flashing $NUM $BOARD_NAME(s)"
     INDEX=0
     while IFS= read -r PORT; do
         [ -n "$PORT" ] || continue
@@ -320,9 +336,9 @@ else
         PORT_SERIAL="$(udevadm info -q property "$PORT" 2>/dev/null | grep '^ID_SERIAL_SHORT=' | cut -d= -f2 || true)"
         echo ""
         if [ -n "$PORT_SERIAL" ]; then
-            echo "==> ($INDEX/$NUM) trying T114 at $PORT (serial=$PORT_SERIAL)"
+            echo "==> ($INDEX/$NUM) trying $BOARD_NAME at $PORT (serial=$PORT_SERIAL)"
         else
-            echo "==> ($INDEX/$NUM) trying T114 at $PORT"
+            echo "==> ($INDEX/$NUM) trying $BOARD_NAME at $PORT"
         fi
         # 1200-baud-touch. Old firmware ignores; new firmware writes the
         # GPREGRET magic and resets into the UF2 bootloader. stty errors are
@@ -332,7 +348,7 @@ else
             FLASHED_PORTS="$FLASHED_PORTS"$'\n'"$PORT"
             [ -n "$PORT_SERIAL" ] && FLASHED_SERIALS="$FLASHED_SERIALS"$'\n'"$PORT_SERIAL"
         else
-            echo "[uf2-runner] ($INDEX/$NUM) FAILED — continuing with next T114" >&2
+            echo "[uf2-runner] ($INDEX/$NUM) FAILED — continuing with next $BOARD_NAME" >&2
             FAILED_PORTS="$FAILED_PORTS"$'\n'"$PORT"
         fi
     done <<< "$PORTS"
@@ -341,20 +357,21 @@ fi
 # Strip leading newlines.
 FLASHED_SERIALS="$(echo -n "$FLASHED_SERIALS" | sed '/^$/d')"
 
-# Crashed-firmware recovery pass: a T114 with crashed app firmware never
+# Crashed-firmware recovery pass: a board with crashed app firmware never
 # enumerates as a transport CDC port — invisible to the main touch loop.
-# If the user double-taps the crashed T114 BEFORE running this script (or
+# If the user double-taps the crashed device BEFORE running this script (or
 # between flashes), its Adafruit bootloader appears as a UF2 mass-storage
 # drive. Flash whatever's still mounted after the touch loop. Filtered by
-# Board-ID "HT-n5262" so only genuine T114 bootloaders are touched.
+# the board-specific INFO_UF2.TXT Board-ID so only the configured bootloader
+# is touched.
 while true; do
     EXTRA_DRIVE="$(find_uf2_drive)"
     [ -n "$EXTRA_DRIVE" ] || break
-    if [ ! -f "$EXTRA_DRIVE/INFO_UF2.TXT" ] || ! grep -q "HT-n5262" "$EXTRA_DRIVE/INFO_UF2.TXT" 2>/dev/null; then
+    if [ ! -f "$EXTRA_DRIVE/INFO_UF2.TXT" ] || ! grep -q "$BOOTLOADER_BOARD_ID" "$EXTRA_DRIVE/INFO_UF2.TXT" 2>/dev/null; then
         break
     fi
     echo ""
-    echo "==> Extra UF2 drive at $EXTRA_DRIVE — flashing crashed-firmware T114 (no transport port)"
+    echo "==> Extra UF2 drive at $EXTRA_DRIVE — flashing crashed-firmware $BOARD_NAME (no transport port)"
     if [ -w "$EXTRA_DRIVE" ]; then
         if cp "$UF2_FILE" "$EXTRA_DRIVE/NEW.UF2" 2>/dev/null; then
             sync 2>/dev/null || true
@@ -608,13 +625,13 @@ fi
 
 rm -f "$BIN_FILE"
 
-# Exit code: non-zero if any targeted T114 ended up "failed to flash".
+# Exit code: non-zero if any targeted device ended up "failed to flash".
 # "Flashed but not booted" still counts as exit 0 — the bits made it onto
 # the device; if the firmware crashes that's a build problem, not a
 # tooling problem.
 if [ "$NUM_FAILED" -gt 0 ]; then
     echo ""
-    echo "==> Exit 1: $NUM_FAILED of $((NUM_FLASHED + NUM_FAILED)) T114(s) did not get flashed."
+    echo "==> Exit 1: $NUM_FAILED of $((NUM_FLASHED + NUM_FAILED)) $BOARD_NAME(s) did not get flashed."
     exit 1
 fi
 

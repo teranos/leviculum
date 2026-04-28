@@ -109,12 +109,24 @@ pub struct Sx1262<SPI> {
     busy: Input<'static>,
     dio1: Input<'static>,
     preamble_len: u16,
+    /// SetDIO3AsTcxoCtrl voltage select byte (0x02 = 1.8 V).
+    /// Board-specific; stored at construction so `init_radio` is parameter-free.
+    tcxo_voltage_reg: u8,
 }
 
 impl<SPI: SpiDeviceTrait> Sx1262<SPI> {
     /// Create a new SX1262 driver. Does NOT initialize the radio, call `reset()` + init_radio() first.
-    pub fn new(spi: SPI, reset: Output<'static>, busy: Input<'static>, dio1: Input<'static>) -> Self {
-        Self { spi, reset, busy, dio1, preamble_len: 24 }
+    ///
+    /// `tcxo_voltage_reg` is the SetDIO3AsTcxoCtrl voltage select byte (0x02 = 1.8 V
+    /// on T114 and RAK4631; see datasheet §13.3.6 Table 13-35).
+    pub fn new(
+        spi: SPI,
+        reset: Output<'static>,
+        busy: Input<'static>,
+        dio1: Input<'static>,
+        tcxo_voltage_reg: u8,
+    ) -> Self {
+        Self { spi, reset, busy, dio1, preamble_len: 24, tcxo_voltage_reg }
     }
 
     /// Wait for BUSY pin LOW via GPIOTE interrupt, with timeout.
@@ -225,7 +237,7 @@ impl<SPI: SpiDeviceTrait> Sx1262<SPI> {
         self.wait_busy_ms(500).await
     }
 
-    /// Full initialization sequence for T114 (SX1262 + TCXO + DCDC).
+    /// Full initialization sequence (SX1262 + TCXO + DCDC).
     /// Order follows the datasheet init summary (§9.2.1, §13).
     /// Call after reset().
     pub async fn init_radio(&mut self, freq_hz: u32) -> Result<ChipStatus, Error> {
@@ -233,9 +245,9 @@ impl<SPI: SpiDeviceTrait> Sx1262<SPI> {
         self.write_command(opcode::SET_REGULATOR_MODE, &[0x01]).await?; // DCDC
         self.write_command(opcode::SET_DIO2_AS_RF_SWITCH, &[0x01]).await?;
         self.clear_device_errors().await?;
-        // TCXO 1.8V, timeout 0x0000FF (~4ms). Datasheet §9.2.1:
-        // calibration must be done AFTER SetDIO3AsTcxoCtrl.
-        self.set_dio3_as_tcxo_ctrl(0x02, 0x0000FF).await?;
+        // Datasheet §9.2.1: calibration must be done AFTER SetDIO3AsTcxoCtrl.
+        // Timeout 0x0000FF (~4 ms) is the value RNode firmware uses.
+        self.set_dio3_as_tcxo_ctrl(self.tcxo_voltage_reg, 0x0000FF).await?;
         self.calibrate(0x7F).await?;
         self.calibrate_image(freq_hz).await?;
         self.write_command(opcode::SET_PACKET_TYPE, &[0x01]).await?; // LoRa

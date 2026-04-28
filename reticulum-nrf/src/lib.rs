@@ -99,9 +99,29 @@ pub fn init_heap() {
     }
 }
 
+use core::sync::atomic::{AtomicBool, AtomicU8, Ordering};
+
+static PANIC_LED_ARMED: AtomicBool = AtomicBool::new(false);
+static PANIC_LED_PORT: AtomicU8 = AtomicU8::new(0);
+static PANIC_LED_PIN: AtomicU8 = AtomicU8::new(0);
+static PANIC_LED_ACTIVE_LOW: AtomicBool = AtomicBool::new(false);
+
+/// Arm the panic-handler LED. Until this is called, a panic skips GPIO
+/// and just halts.
+///
+/// `port` is 0 (P0) or 1 (P1). `pin` is 0..=31. `active_low` is true if
+/// the LED lights when the GPIO is driven low.
+pub fn set_panic_led(port: u8, pin: u8, active_low: bool) {
+    PANIC_LED_PORT.store(port, Ordering::Relaxed);
+    PANIC_LED_PIN.store(pin, Ordering::Relaxed);
+    PANIC_LED_ACTIVE_LOW.store(active_low, Ordering::Relaxed);
+    PANIC_LED_ARMED.store(true, Ordering::Relaxed);
+}
+
 #[cfg(not(test))]
 mod panic_handler {
     use core::panic::PanicInfo;
+    use core::sync::atomic::Ordering;
 
     #[panic_handler]
     fn panic(info: &PanicInfo) -> ! {
@@ -110,30 +130,39 @@ mod panic_handler {
         // the message is preserved in channel memory for post-mortem.
         crate::log::log_fmt("[PANIC] ", format_args!("{}", info));
 
-        // Also try: toggle LED rapidly as visual indicator.
-        // P1.03 is the T114 LED (active low).
-        // Write directly to GPIO registers to avoid any alloc.
-        const P1_BASE: u32 = 0x5000_0300;
-        const PIN03: u32 = 1 << 3;
-        const DIRSET: u32 = P1_BASE + 0x518;
-        const OUTSET: u32 = P1_BASE + 0x508;
-        const OUTCLR: u32 = P1_BASE + 0x50C;
-
-        unsafe {
-            // Set P1.03 as output
-            core::ptr::write_volatile(DIRSET as *mut u32, PIN03);
+        if !super::PANIC_LED_ARMED.load(Ordering::Relaxed) {
+            // No LED configured — nothing to blink, just halt.
+            loop {
+                cortex_m::asm::wfi();
+            }
         }
 
-        // Rapid blink loop, visible panic indicator
+        // Direct register pokes to avoid any allocation or HAL state.
+        // P0_BASE = 0x5000_0000, P1_BASE = 0x5000_0300.
+        let port = super::PANIC_LED_PORT.load(Ordering::Relaxed);
+        let pin = super::PANIC_LED_PIN.load(Ordering::Relaxed);
+        let active_low = super::PANIC_LED_ACTIVE_LOW.load(Ordering::Relaxed);
+        let port_base: u32 = if port == 1 { 0x5000_0300 } else { 0x5000_0000 };
+        let pin_mask: u32 = 1u32 << (pin & 31);
+        let dirset = port_base + 0x518;
+        let outset = port_base + 0x508;
+        let outclr = port_base + 0x50C;
+        // (set_on, set_off): write to OUTCLR to drive low, OUTSET to drive high
+        let (reg_on, reg_off) = if active_low { (outclr, outset) } else { (outset, outclr) };
+
+        unsafe {
+            core::ptr::write_volatile(dirset as *mut u32, pin_mask);
+        }
+
         loop {
             unsafe {
-                core::ptr::write_volatile(OUTCLR as *mut u32, PIN03); // LED on
+                core::ptr::write_volatile(reg_on as *mut u32, pin_mask);
             }
             for _ in 0..2_000_000u32 {
                 cortex_m::asm::nop();
             }
             unsafe {
-                core::ptr::write_volatile(OUTSET as *mut u32, PIN03); // LED off
+                core::ptr::write_volatile(reg_off as *mut u32, pin_mask);
             }
             for _ in 0..2_000_000u32 {
                 cortex_m::asm::nop();

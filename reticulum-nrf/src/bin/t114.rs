@@ -17,6 +17,7 @@ use alloc::collections::BTreeMap;
 use embassy_executor::Spawner;
 use embassy_futures::select::{select4, Either4};
 use embassy_nrf::gpio::{Level, Output, OutputDrive};
+use embassy_nrf::spim;
 use embassy_time::{Duration, Instant, Timer};
 
 use reticulum_core::embedded_storage::EmbeddedStorage;
@@ -46,7 +47,9 @@ async fn main(spawner: Spawner) {
     // SAFETY: called once before any complex work or concurrent tasks
     unsafe { reticulum_nrf::paint_stack(); }
 
-    let serial = reticulum_nrf::usb::init(&spawner, p.USBD);
+    reticulum_nrf::set_panic_led(t114::PANIC_LED_PORT, t114::PANIC_LED_PIN, t114::PANIC_LED_ACTIVE_LOW);
+
+    let serial = reticulum_nrf::usb::init(&spawner, p.USBD, &t114::CONFIG);
 
     info!("leviculum T114 booting");
 
@@ -58,6 +61,7 @@ async fn main(spawner: Spawner) {
     // Load or generate persistent identity from internal flash
     let mut id_store = reticulum_nrf::flash::NvmcIdentityStore::new(
         embassy_nrf::nvmc::Nvmc::new(p.NVMC),
+        t114::CONFIG.identity_flash_page,
     );
 
     let mut builder = NodeCoreBuilder::new()
@@ -121,7 +125,16 @@ async fn main(spawner: Spawner) {
 
     // LoRa (SPIM2. SPIM3 has a MISO read bug on T114)
     let lora = reticulum_nrf::lora::init(
-        p.SPI2, p.P0_19, p.P0_22, p.P0_23, p.P0_24, p.P0_25, p.P0_17, p.P0_20,
+        p.SPI2,
+        p.P0_19.into(),
+        p.P0_22.into(),
+        p.P0_23.into(),
+        p.P0_24.into(),
+        p.P0_25.into(),
+        p.P0_17.into(),
+        p.P0_20.into(),
+        spim::Frequency::M4,
+        t114::CONFIG.lora_tcxo_voltage_reg,
     ).await;
     info!("SX1262 ready");
 

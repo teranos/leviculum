@@ -9,19 +9,20 @@ use embedded_storage::nor_flash::{NorFlash, ReadNorFlash};
 use reticulum_core::identity::Identity;
 use reticulum_core::identity_store::{self, IdentityStore, ENCODED_SIZE_ALIGNED};
 
-/// Internal flash page reserved for identity storage.
-/// Just below Heltec's reserved area (0xED000).
-/// Protected from linker by reducing FLASH length in memory.x.
-const IDENTITY_PAGE: u32 = 0xEC000;
-
 /// NVMC-backed identity store for the T114.
+///
+/// The flash page address is supplied by the bin file (typically from
+/// `BoardConfig::identity_flash_page`). On T114 it is 0xEC000, just below
+/// Heltec's reserved area (0xED000); on RAK4631 the same address falls
+/// in unused application flash.
 pub struct NvmcIdentityStore<'d> {
     nvmc: Nvmc<'d>,
+    page: u32,
 }
 
 impl<'d> NvmcIdentityStore<'d> {
-    pub fn new(nvmc: Nvmc<'d>) -> Self {
-        Self { nvmc }
+    pub fn new(nvmc: Nvmc<'d>, page: u32) -> Self {
+        Self { nvmc, page }
     }
 }
 
@@ -30,7 +31,7 @@ impl IdentityStore for NvmcIdentityStore<'_> {
 
     fn load(&mut self) -> Result<Option<Identity>, Self::Error> {
         let mut buf = [0u8; ENCODED_SIZE_ALIGNED];
-        self.nvmc.read(IDENTITY_PAGE, &mut buf)?;
+        self.nvmc.read(self.page, &mut buf)?;
         Ok(identity_store::decode_identity(&buf))
     }
 
@@ -39,8 +40,8 @@ impl IdentityStore for NvmcIdentityStore<'_> {
             Some(b) => b,
             None => return Ok(()),
         };
-        self.nvmc.erase(IDENTITY_PAGE, IDENTITY_PAGE + 4096)?;
-        self.nvmc.write(IDENTITY_PAGE, &buf)?;
+        self.nvmc.erase(self.page, self.page + 4096)?;
+        self.nvmc.write(self.page, &buf)?;
         Ok(())
     }
 }

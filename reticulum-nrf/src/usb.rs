@@ -24,6 +24,7 @@ use embassy_usb::{Builder, Config, Handler, UsbDevice};
 use reticulum_core::framing::hdlc::{frame, DeframeResult, Deframer};
 use static_cell::StaticCell;
 
+use crate::boards::BoardConfig;
 use crate::log::{log_fmt, LOG_RING, LOG_SIGNAL};
 
 // Interrupt bindings are centralized in ble.rs (CLOCK_POWER shared with MPSL)
@@ -93,13 +94,14 @@ pub struct SerialChannels {
 pub fn init(
     spawner: &Spawner,
     usbd: Peri<'static, peripherals::USBD>,
+    board: &'static BoardConfig,
 ) -> SerialChannels {
     let driver = usb::Driver::new(usbd, Irqs, HardwareVbusDetect::new(Irqs));
 
     // TODO: register a proper PID at https://pid.codes/
-    let mut config = Config::new(0x1209, 0x0001);
-    config.manufacturer = Some("leviculum");
-    config.product = Some("leviculum T114");
+    let mut config = Config::new(board.usb_vid, board.usb_pid);
+    config.manufacturer = Some(board.usb_manufacturer);
+    config.product = Some(board.usb_product);
     config.serial_number = Some(serial_number());
     config.max_power = 100;
     config.composite_with_iads = true;
