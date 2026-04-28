@@ -33,8 +33,40 @@ pub fn target_dir(repo_root: &Path) -> PathBuf {
 }
 
 /// Absolute path to a release binary under the resolved target dir.
+///
+/// Cargo writes release artefacts to `<target_dir>/release/` when no
+/// build target is configured and to `<target_dir>/<target_tuple>/release/`
+/// when `[build] target` is set in `.cargo/config.toml` or `--target` is
+/// passed. Both layouts can coexist on disk — leftover artefacts from a
+/// previous toolchain or a one-off non-default build sit alongside the
+/// current one. The resolver collects every candidate matching either
+/// layout and returns the most recently modified, which is the artefact
+/// cargo produced on the latest build. When no candidate exists at all,
+/// the canonical top-level path is returned so the downstream freshness
+/// or existence check surfaces a clear error.
 pub fn release_bin(target_dir: &Path, name: &str) -> PathBuf {
-    target_dir.join("release").join(name)
+    let canonical = target_dir.join("release").join(name);
+    let mut candidates = vec![canonical.clone()];
+    if let Ok(entries) = fs::read_dir(target_dir) {
+        for entry in entries.flatten() {
+            let dir = entry.path();
+            if dir.file_name().is_some_and(|n| n == "release") {
+                continue;
+            }
+            candidates.push(dir.join("release").join(name));
+        }
+    }
+    candidates
+        .into_iter()
+        .filter_map(|p| {
+            fs::metadata(&p)
+                .and_then(|m| m.modified())
+                .ok()
+                .map(|t| (p, t))
+        })
+        .max_by_key(|(_, t)| *t)
+        .map(|(p, _)| p)
+        .unwrap_or(canonical)
 }
 
 #[derive(Debug)]
@@ -209,6 +241,48 @@ mod tests {
             release_bin(td, "lnsd"),
             PathBuf::from("/tmp/build/release/lnsd")
         );
+    }
+
+    #[test]
+    fn release_bin_falls_back_to_target_subdir_when_top_level_missing() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let musl = tmp.path().join("x86_64-unknown-linux-musl").join("release");
+        std::fs::create_dir_all(&musl).expect("create_dir_all");
+        let bin = musl.join("lnsd");
+        std::fs::write(&bin, b"#!/bin/sh\nexit 0\n").expect("write fake binary");
+        assert_eq!(release_bin(tmp.path(), "lnsd"), bin);
+    }
+
+    #[test]
+    fn release_bin_prefers_more_recently_modified_candidate() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let top = tmp.path().join("release");
+        let musl = tmp.path().join("x86_64-unknown-linux-musl").join("release");
+        std::fs::create_dir_all(&top).expect("create_dir_all top");
+        std::fs::create_dir_all(&musl).expect("create_dir_all musl");
+        let top_bin = top.join("lnsd");
+        let musl_bin = musl.join("lnsd");
+        std::fs::write(&top_bin, b"top older").expect("write top");
+        // Filesystem mtime resolution is 1 s on some filesystems; sleep
+        // strictly more than that to make the relative ordering reliable.
+        std::thread::sleep(std::time::Duration::from_millis(1100));
+        std::fs::write(&musl_bin, b"musl newer").expect("write musl");
+        assert_eq!(release_bin(tmp.path(), "lnsd"), musl_bin);
+    }
+
+    #[test]
+    fn release_bin_picks_top_level_when_top_level_is_newer() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let top = tmp.path().join("release");
+        let musl = tmp.path().join("x86_64-unknown-linux-musl").join("release");
+        std::fs::create_dir_all(&top).expect("create_dir_all top");
+        std::fs::create_dir_all(&musl).expect("create_dir_all musl");
+        let top_bin = top.join("lnsd");
+        let musl_bin = musl.join("lnsd");
+        std::fs::write(&musl_bin, b"musl older").expect("write musl");
+        std::thread::sleep(std::time::Duration::from_millis(1100));
+        std::fs::write(&top_bin, b"top newer").expect("write top");
+        assert_eq!(release_bin(tmp.path(), "lnsd"), top_bin);
     }
 
     #[test]
