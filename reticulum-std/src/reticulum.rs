@@ -47,6 +47,26 @@ impl Reticulum {
         })
     }
 
+    /// Create a new Reticulum instance in daemon-mode.
+    ///
+    /// Identical to `with_config` except the application event channel
+    /// is not constructed. Use this for daemon-style processes (`lnsd`)
+    /// that have no application code consuming `NodeEvent`s. Forwarding
+    /// (broadcasts, directed sends, local-client routing) is unaffected,
+    /// it runs entirely on `output.actions`.
+    ///
+    /// After this constructor, `take_event_receiver()` returns `None`.
+    pub fn with_config_daemon(config: Config) -> Result<Self> {
+        let builder = ReticulumNodeBuilder::new()
+            .config(config.clone())
+            .without_events();
+
+        Ok(Self {
+            config,
+            node: builder.build_sync()?,
+        })
+    }
+
     /// Start the Reticulum instance (spawns the event loop)
     pub async fn start(&mut self) -> Result<()> {
         self.node.start().await?;

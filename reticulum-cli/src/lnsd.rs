@@ -71,7 +71,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     };
     config.reticulum.storage_path = Some(storage_path);
 
-    let mut rns = Reticulum::with_config(config)?;
+    let mut rns = Reticulum::with_config_daemon(config)?;
     rns.start().await?;
 
     info!("Reticulum daemon running");

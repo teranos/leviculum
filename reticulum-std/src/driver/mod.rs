@@ -128,7 +128,11 @@ fn build_ifac_config(config: &InterfaceConfig) -> Option<reticulum_core::ifac::I
 
 /// Channels consumed by the event loop.
 struct EventLoopChannels {
-    event_tx: mpsc::Sender<NodeEvent>,
+    /// Application event sender. `None` when the node was built with
+    /// `without_events()`; in that case `dispatch_output` skips
+    /// event-forwarding and `output.events` falls out of scope, exactly
+    /// like the `reticulum-nrf` daemon binaries.
+    event_tx: Option<mpsc::Sender<NodeEvent>>,
     action_dispatch_rx: mpsc::Receiver<TickOutput>,
     new_interface_rx: mpsc::Receiver<InterfaceHandle>,
     reconnect_rx: mpsc::Receiver<InterfaceId>,
@@ -153,9 +157,13 @@ pub struct ReticulumNode {
     inner: Arc<Mutex<StdNodeCore>>,
     /// Interface configurations
     interfaces: Vec<InterfaceConfig>,
-    /// Event sender for the runner
-    event_tx: mpsc::Sender<NodeEvent>,
-    /// Event receiver for consuming events
+    /// Event sender for the runner. `None` when built with
+    /// `without_events()` (daemon-mode); the loop then never forwards
+    /// `NodeEvent`s.
+    event_tx: Option<mpsc::Sender<NodeEvent>>,
+    /// Event receiver for consuming events. `None` either because the
+    /// node was built with `without_events()`, or because
+    /// `take_event_receiver()` already handed it out.
     event_rx: Option<mpsc::Receiver<NodeEvent>>,
     /// Shutdown sender
     shutdown_tx: Option<watch::Sender<bool>>,
@@ -187,8 +195,19 @@ impl ReticulumNode {
         core: StdNodeCore,
         interfaces: Vec<InterfaceConfig>,
         corrupt_every: Option<u64>,
+        events_enabled: bool,
     ) -> Self {
-        let (event_tx, event_rx) = mpsc::channel(EVENT_CHANNEL_CAPACITY);
+        // When events are disabled (daemon-mode), no channel is constructed
+        // at all — neither sender nor receiver. The event loop's
+        // `dispatch_output` then skips its event-forwarding branch and
+        // `output.events` falls out of scope unread, mirroring the NRF
+        // daemon binaries.
+        let (event_tx, event_rx) = if events_enabled {
+            let (tx, rx) = mpsc::channel(EVENT_CHANNEL_CAPACITY);
+            (Some(tx), Some(rx))
+        } else {
+            (None, None)
+        };
         // Create dummy channel; real one is created in start()
         let (action_dispatch_tx, _) = mpsc::channel(1);
 
@@ -196,7 +215,7 @@ impl ReticulumNode {
             inner: Arc::new(Mutex::new(core)),
             interfaces,
             event_tx,
-            event_rx: Some(event_rx),
+            event_rx,
             shutdown_tx: None,
             runner_handle: None,
             action_dispatch_tx,
@@ -1364,7 +1383,7 @@ async fn run_event_loop(
                         dispatch_output(
                             output,
                             &mut registry,
-                            &event_tx,
+                            event_tx.as_ref(),
                             &inner,
                             &mut retry_queues, &mut retry_queue_warned, &mut retry_queue_max_depth, &ifac_configs,
                         );
@@ -1378,7 +1397,7 @@ async fn run_event_loop(
                         dispatch_output(
                             output,
                             &mut registry,
-                            &event_tx,
+                            event_tx.as_ref(),
                             &inner,
                             &mut retry_queues, &mut retry_queue_warned, &mut retry_queue_max_depth, &ifac_configs,
                         );
@@ -1403,7 +1422,7 @@ async fn run_event_loop(
                 dispatch_output(
                     output,
                     &mut registry,
-                    &event_tx,
+                    event_tx.as_ref(),
                     &inner,
                     &mut retry_queues, &mut retry_queue_warned, &mut retry_queue_max_depth, &ifac_configs,
                 );
@@ -1421,7 +1440,7 @@ async fn run_event_loop(
                 dispatch_output(
                     output,
                     &mut registry,
-                    &event_tx,
+                    event_tx.as_ref(),
                     &inner,
                     &mut retry_queues, &mut retry_queue_warned, &mut retry_queue_max_depth, &ifac_configs,
                 );
@@ -1484,7 +1503,7 @@ async fn run_event_loop(
                         let mut core = inner.lock().unwrap();
                         core.handle_interface_up(iface_idx)
                     };
-                    dispatch_output(output, &mut registry, &event_tx, &inner, &mut retry_queues, &mut retry_queue_warned, &mut retry_queue_max_depth, &ifac_configs);
+                    dispatch_output(output, &mut registry, event_tx.as_ref(), &inner, &mut retry_queues, &mut retry_queue_warned, &mut retry_queue_max_depth, &ifac_configs);
                 }
             }
 
@@ -1505,7 +1524,7 @@ async fn run_event_loop(
                     let mut core = inner.lock().unwrap();
                     core.handle_interface_up(iface_id.0)
                 };
-                dispatch_output(output, &mut registry, &event_tx, &inner, &mut retry_queues, &mut retry_queue_warned, &mut retry_queue_max_depth, &ifac_configs);
+                dispatch_output(output, &mut registry, event_tx.as_ref(), &inner, &mut retry_queues, &mut retry_queue_warned, &mut retry_queue_max_depth, &ifac_configs);
             }
 
             // Branch 7: Periodic storage flush (persist identities + packet hashes)
@@ -1522,22 +1541,27 @@ async fn run_event_loop(
 }
 
 /// Dispatch a TickOutput: drain retry queues, route Actions to interfaces, forward Events.
+///
+/// `event_tx` is `None` when the node was built with `without_events()`;
+/// in that case, `output.events` is dropped at the end of this function
+/// without being forwarded — identical to the NRF daemon path, where
+/// the events vector simply falls out of scope.
 #[allow(clippy::too_many_arguments)]
 fn dispatch_output(
     output: TickOutput,
     registry: &mut InterfaceRegistry,
-    event_tx: &mpsc::Sender<NodeEvent>,
+    event_tx: Option<&mpsc::Sender<NodeEvent>>,
     inner: &Arc<Mutex<StdNodeCore>>,
     retry_queues: &mut BTreeMap<usize, VecDeque<Vec<u8>>>,
     retry_queue_warned: &mut std::collections::BTreeSet<usize>,
     retry_queue_max_depth: &mut BTreeMap<usize, usize>,
     ifac_configs: &BTreeMap<usize, reticulum_core::ifac::IfacConfig>,
 ) {
-    // 1. Drain retry queues before dispatching new actions
+    // Drain retry queues before dispatching new actions
     let drain_now_ms = inner.lock().unwrap().now_ms();
     drain_retry_queues(retry_queues, registry, drain_now_ms);
 
-    // 2. Dispatch new actions to interfaces (protocol logic in core)
+    // Dispatch new actions to interfaces (protocol logic in core)
     let mut ifaces: Vec<&mut dyn reticulum_core::traits::Interface> = registry
         .handles_mut_slice()
         .iter_mut()
@@ -1546,7 +1570,7 @@ fn dispatch_output(
     let result =
         reticulum_core::transport::dispatch_actions(&mut ifaces, output.actions, ifac_configs);
 
-    // 3. Log dispatch errors
+    // Log dispatch errors
     for (iface_id, error) in &result.errors {
         match error {
             InterfaceError::BufferFull => {
@@ -1558,7 +1582,7 @@ fn dispatch_output(
         }
     }
 
-    // 4. Queue SendPacket retries (with cap enforcement)
+    // Queue SendPacket retries (with cap enforcement)
     for retry in result.retries {
         let iface_idx = retry.iface_idx;
         let queue = retry_queues.entry(iface_idx).or_default();
@@ -1579,8 +1603,8 @@ fn dispatch_output(
     }
 
     // Remove empty queues to avoid accumulating stale entries.
-    // (The legacy set_interface_congested flag was removed in Phase F.    // Transport now reads per-interface readiness from the
-    // interface_next_slot_ms backchannel instead.)
+    // Transport reads per-interface readiness from the
+    // interface_next_slot_ms backchannel.
     retry_queues.retain(|_, queue| !queue.is_empty());
 
     // Clear the per-queue warned flag when the queue drops back
@@ -1588,34 +1612,39 @@ fn dispatch_output(
     // drop entries for queues that no longer exist.
     retry_queue_warned.retain(|idx| retry_queues.get(idx).map(|q| q.len() >= 8).unwrap_or(false));
 
-    // 5a. Push per-interface next_slot_ms + max_airtime_ms into the
-    //     Transport backchannels. Transport can't hold handles
-    //     (sans-I/O), so the driver mirrors both quantities here.
-    //     next_slot_ms is read by the announce-retry / direct-send
-    //     path; max_airtime_ms feeds the jitter-window helper that
-    //     scales announce retry randomness with the slowest link's
-    //     airtime.
+    // Push per-interface next_slot_ms + max_airtime_ms into the
+    // Transport backchannels. Transport can't hold handles
+    // sans-I/O), so the driver mirrors both quantities here.
+    // next_slot_ms is read by the announce-retry / direct-send
+    // path; max_airtime_ms feeds the jitter-window helper that
+    // scales announce retry randomness with the slowest link's
+    // airtime.
     push_interface_state(registry, inner);
 
-    // 6. Forward events to application (best effort, drop if full)
-    for event in output.events {
-        if let NodeEvent::LinkEstablished { link_id, .. } = &event {
-            tracing::debug!("Link established: {:?}", link_id);
-        }
-        match event_tx.try_send(event) {
-            Ok(()) => {}
-            Err(TrySendError::Full(ev)) => {
-                tracing::warn!(
-                    "Event channel full (capacity {}), dropping: {:?}",
-                    EVENT_CHANNEL_CAPACITY,
-                    ev
-                );
+    // Forward events to application (best effort, drop if full).
+    // When event_tx is None (daemon-mode, built via `without_events()`),
+    // events are dropped here without forwarding — the events vector
+    // simply falls out of scope at the end of this function.
+    if let Some(event_tx) = event_tx {
+        for event in output.events {
+            if let NodeEvent::LinkEstablished { link_id, .. } = &event {
+                tracing::debug!("Link established: {:?}", link_id);
             }
-            Err(TrySendError::Closed(ev)) => {
-                tracing::warn!(
-                    "Event channel closed (receiver dropped), dropping: {:?}",
-                    ev
-                );
+            match event_tx.try_send(event) {
+                Ok(()) => {}
+                Err(TrySendError::Full(ev)) => {
+                    tracing::warn!(
+                        "Event channel full (capacity {}), dropping: {:?}",
+                        EVENT_CHANNEL_CAPACITY,
+                        ev
+                    );
+                }
+                Err(TrySendError::Closed(ev)) => {
+                    tracing::warn!(
+                        "Event channel closed (receiver dropped), dropping: {:?}",
+                        ev
+                    );
+                }
             }
         }
     }
@@ -1772,6 +1801,101 @@ fn push_interface_state(registry: &mut InterfaceRegistry, inner: &Arc<Mutex<StdN
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Default builder leaves the event channel enabled. The first
+    /// `take_event_receiver()` returns the receiver; second call returns
+    /// `None` (already taken).
+    #[test]
+    fn builder_default_events_enabled() {
+        let td = tempfile::tempdir().expect("tempdir");
+        let mut node = ReticulumNodeBuilder::new()
+            .storage_path(td.path().to_path_buf())
+            .build_sync()
+            .expect("build_sync failed");
+
+        assert!(node.event_tx.is_some(), "default build must keep events on");
+        assert!(
+            node.take_event_receiver().is_some(),
+            "default build must hand out a receiver"
+        );
+        assert!(
+            node.take_event_receiver().is_none(),
+            "second take must return None"
+        );
+    }
+
+    /// `without_events()` skips construction of the event channel; the
+    /// node has neither sender nor receiver, so daemon-mode build never
+    /// queues `NodeEvent`s.
+    #[test]
+    fn builder_without_events_disables_event_channel() {
+        let td = tempfile::tempdir().expect("tempdir");
+        let mut node = ReticulumNodeBuilder::new()
+            .storage_path(td.path().to_path_buf())
+            .without_events()
+            .build_sync()
+            .expect("build_sync failed");
+
+        assert!(
+            node.event_tx.is_none(),
+            "daemon-mode build must not have an event sender"
+        );
+        assert!(
+            node.take_event_receiver().is_none(),
+            "daemon-mode build must not hand out a receiver"
+        );
+    }
+
+    /// `dispatch_output` with `event_tx = None` accepts a TickOutput
+    /// containing events and consumes them silently (no panic, no try_send,
+    /// no warn). Mirrors the NRF daemon path where `output.events` simply
+    /// falls out of scope.
+    #[tokio::test(flavor = "current_thread")]
+    async fn dispatch_output_skips_event_forwarding_when_disabled() {
+        use reticulum_core::node::{NodeCoreBuilder, NodeEvent};
+        use reticulum_core::transport::TickOutput;
+        use reticulum_core::DestinationHash;
+
+        let tmp = std::env::temp_dir().join(format!(
+            "without-events-dispatch-{}",
+            std::process::id()
+        ));
+        std::fs::create_dir_all(&tmp).unwrap();
+        let core: Arc<Mutex<StdNodeCore>> = {
+            let node = NodeCoreBuilder::new().enable_transport(true).build(
+                rand_core::OsRng,
+                SystemClock::new(),
+                crate::storage::Storage::new(&tmp).unwrap(),
+            );
+            Arc::new(Mutex::new(node))
+        };
+
+        let mut registry = InterfaceRegistry::new();
+        let mut retry_queues: BTreeMap<usize, VecDeque<Vec<u8>>> = BTreeMap::new();
+        let mut retry_queue_warned: std::collections::BTreeSet<usize> =
+            std::collections::BTreeSet::new();
+        let mut retry_queue_max_depth: BTreeMap<usize, usize> = BTreeMap::new();
+        let ifac_configs: BTreeMap<usize, reticulum_core::ifac::IfacConfig> = BTreeMap::new();
+
+        let mut output = TickOutput::empty();
+        output.events.push(NodeEvent::PathLost {
+            destination_hash: DestinationHash::new([0xAA; 16]),
+        });
+        output.events.push(NodeEvent::InterfaceDown(7));
+
+        // event_tx = None, the function must accept this and simply drop
+        // the events. No panic, no channel send.
+        dispatch_output(
+            output,
+            &mut registry,
+            None,
+            &core,
+            &mut retry_queues,
+            &mut retry_queue_warned,
+            &mut retry_queue_max_depth,
+            &ifac_configs,
+        );
+    }
 
     #[test]
     fn test_reticulum_node_builder_creates_node() {

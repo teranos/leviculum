@@ -48,6 +48,11 @@ pub struct ReticulumNodeBuilder {
     /// Instance name to connect to as a shared instance client.
     /// Mutually exclusive with share_instance.
     connect_instance_name: Option<String>,
+    /// Whether the application event channel is constructed at all.
+    /// Default true. Daemon-style nodes that have no application code
+    /// to consume `NodeEvent`s should set this to false via
+    /// `without_events()`.
+    events_enabled: bool,
 }
 
 impl Default for ReticulumNodeBuilder {
@@ -70,7 +75,24 @@ impl ReticulumNodeBuilder {
             share_instance_explicit: None,
             instance_name_explicit: None,
             connect_instance_name: None,
+            events_enabled: true,
         }
+    }
+
+    /// Disable the application event channel.
+    ///
+    /// Use this for daemon-style nodes that have no application code
+    /// to consume `NodeEvent`s (e.g. `lnsd`, where local clients are
+    /// served via the shared-instance Unix socket and the RPC server
+    /// reads directly from `NodeCore`). Forwarding (broadcasts,
+    /// directed sends, local-client routing) is unaffected — it runs
+    /// entirely on `output.actions`. Mirrors the `reticulum-nrf`
+    /// daemon binaries, which never construct an event channel.
+    ///
+    /// After `without_events()`, `take_event_receiver()` returns `None`.
+    pub fn without_events(mut self) -> Self {
+        self.events_enabled = false;
+        self
     }
 
     /// Set the identity for the node
@@ -456,7 +478,8 @@ impl ReticulumNodeBuilder {
         // Build NodeCore (consumes storage, persistent data already loaded)
         let node_core = core_builder.build(rand_core::OsRng, clock, storage);
 
-        let mut node = ReticulumNode::new(node_core, interfaces, self.corrupt_every);
+        let mut node =
+            ReticulumNode::new(node_core, interfaces, self.corrupt_every, self.events_enabled);
         if share_instance {
             node.set_share_instance(instance_name);
         }
