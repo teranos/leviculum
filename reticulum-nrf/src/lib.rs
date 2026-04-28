@@ -23,6 +23,8 @@ pub mod usb;
 // stays unchanged.
 #[cfg(any(feature = "display", feature = "gnss", feature = "battery"))]
 pub mod baseboard;
+#[cfg(feature = "battery")]
+pub mod battery;
 #[cfg(feature = "display")]
 pub mod display;
 #[cfg(feature = "gnss")]

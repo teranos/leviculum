@@ -7,9 +7,9 @@
 
 #![allow(dead_code)]
 
-#[cfg(feature = "gnss")]
+#[cfg(any(feature = "gnss", feature = "battery"))]
 use embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex;
-#[cfg(feature = "gnss")]
+#[cfg(any(feature = "gnss", feature = "battery"))]
 use embassy_sync::watch::Watch;
 
 /// Compact GNSS fix snapshot — what the display task needs and nothing
@@ -46,3 +46,31 @@ impl GnssFix {
 /// one for the display consumer.
 #[cfg(feature = "gnss")]
 pub static GNSS_FIX: Watch<CriticalSectionRawMutex, GnssFix, 2> = Watch::new();
+
+/// Battery snapshot published by the SAADC task and consumed by the display.
+///
+/// `voltage_mv` is the pack voltage in millivolts at the battery terminal
+/// (already multiplied by the 1.73 hardware divider compensation).
+/// `percent` is mapped from `voltage_mv` via the per-cell LiPo OCV curve
+/// in `battery.rs`, scaled by the detected cell count.
+/// `cell_count` is 1 or 2; on the WisMesh Pocket V2 the value is detected
+/// at first boot from the read voltage and persisted, so subsequent
+/// boots get a stable result.
+#[cfg(feature = "battery")]
+#[derive(Clone, Copy, Debug)]
+pub struct BatteryState {
+    pub voltage_mv: u16,
+    pub percent: u8,
+    pub cell_count: u8,
+}
+
+#[cfg(feature = "battery")]
+impl BatteryState {
+    pub const fn empty() -> Self {
+        Self { voltage_mv: 0, percent: 0, cell_count: 1 }
+    }
+}
+
+/// Latest battery snapshot. Same capacity-2 watch shape as `GNSS_FIX`.
+#[cfg(feature = "battery")]
+pub static BATTERY_STATE: Watch<CriticalSectionRawMutex, BatteryState, 2> = Watch::new();

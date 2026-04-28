@@ -179,10 +179,12 @@ pub async fn display_task(
         .build();
     let id_short = ident_short(&identity_hash);
 
-    // Receiver for the GNSS watch — held outside the loop so we keep the
-    // most recent value even between sentence updates.
+    // Receivers for shared baseboard state — held outside the loop so the
+    // last value survives between producer updates.
     #[cfg(feature = "gnss")]
     let mut gnss_rx = crate::baseboard::GNSS_FIX.receiver().expect("gnss watch capacity");
+    #[cfg(feature = "battery")]
+    let mut bat_rx = crate::baseboard::BATTERY_STATE.receiver().expect("battery watch capacity");
 
     // Frame key — when nothing relevant has changed since last render, we
     // skip the I²C flush entirely. lat/lon are quantized to 5 decimal
@@ -199,6 +201,12 @@ pub async fn display_task(
         // Option<i64> survives the no-fix transition.
         lat_e5: Option<i64>,
         lon_e5: Option<i64>,
+        // Battery percent — None when feature off; quantized to 1 % so
+        // ADC-noise doesn't trigger every-render flushes.
+        bat_pct: Option<u8>,
+        // Pack voltage rounded to 100 mV so noise on the LSDigit doesn't
+        // wake the renderer. Same Option-treatment as bat_pct.
+        bat_dv: Option<u16>,
         heartbeat: bool,
     }
 
@@ -218,7 +226,35 @@ pub async fn display_task(
         let mut line3 = heapless::String::<24>::new();
         let _ = core::fmt::write(&mut line3, format_args!("RX: {:<5} TX: {:<5}", rx, tx));
 
-        let line4 = "Bat: -- (pending D5)";
+        let mut line4_buf = heapless::String::<24>::new();
+        #[allow(unused_assignments, unused_mut)]
+        let mut bat_pct: Option<u8> = None;
+        #[allow(unused_assignments, unused_mut)]
+        let mut bat_dv: Option<u16> = None;
+        #[cfg(feature = "battery")]
+        {
+            match bat_rx.try_get() {
+                Some(b) if b.voltage_mv > 0 => {
+                    bat_pct = Some(b.percent);
+                    // Voltage in deci-volts (e.g. 3.92 V → 39 dV) so the
+                    // frame key only flips on visible 100 mV changes.
+                    bat_dv = Some(b.voltage_mv / 100);
+                    let v_int = b.voltage_mv / 1000;
+                    let v_frac = (b.voltage_mv % 1000) / 10;
+                    let _ = core::fmt::write(
+                        &mut line4_buf,
+                        format_args!("Bat: {:>3}% {}.{:02}V", b.percent, v_int, v_frac),
+                    );
+                }
+                _ => {
+                    let _ = core::fmt::write(&mut line4_buf, format_args!("Bat: --"));
+                }
+            }
+        }
+        #[cfg(not(feature = "battery"))]
+        {
+            let _ = core::fmt::write(&mut line4_buf, format_args!("Bat: -- (no feature)"));
+        }
 
         // Defaults — overwritten if `gnss` is on.
         let mut line5_buf = heapless::String::<24>::new();
@@ -266,7 +302,9 @@ pub async fn display_task(
             let _ = core::fmt::write(&mut line6_buf, format_args!(""));
         }
 
-        let key = FrameKey { rx, tx, sat, valid, lat_e5, lon_e5, heartbeat };
+        let key = FrameKey {
+            rx, tx, sat, valid, lat_e5, lon_e5, bat_pct, bat_dv, heartbeat,
+        };
         if last_key.as_ref() == Some(&key) {
             // Nothing meaningful changed since last render and the
             // heartbeat phase is the same. Skip the I²C flush entirely.
@@ -280,7 +318,7 @@ pub async fn display_task(
             "leviculum RAK4631",
             line2.as_str(),
             line3.as_str(),
-            line4,
+            line4_buf.as_str(),
             line5_buf.as_str(),
             line6_buf.as_str(),
         ];

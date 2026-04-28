@@ -120,11 +120,10 @@ flash-rak4631-one PORT:
     cd reticulum-nrf && LEVICULUM_FLASH_ONLY={{PORT}} LEVICULUM_USB_PID=0002 LEVICULUM_BOARD_NAME=RAK4631 LEVICULUM_UF2_BOARD_ID=WisBlock-RAK4631-Board cargo run --release --bin rak4631
 
 # Flash with all RAK19026 baseboard peripherals enabled — the WisMesh
-# Pocket V2 build. As Phase 3 lands, the feature set grows: today this is
-# `display + gnss`; the next commit adds `battery`, ultimately becoming
-# `--features rak-baseboard`.
+# Pocket V2 build. `--features rak-baseboard` aggregates the three
+# baseboard features (display, gnss, battery).
 flash-rak4631-pocket:
-    cd reticulum-nrf && LEVICULUM_USB_PID=0002 LEVICULUM_BOARD_NAME=RAK4631 LEVICULUM_UF2_BOARD_ID=WisBlock-RAK4631-Board cargo run --release --bin rak4631 --features display,gnss
+    cd reticulum-nrf && LEVICULUM_USB_PID=0002 LEVICULUM_BOARD_NAME=RAK4631 LEVICULUM_UF2_BOARD_ID=WisBlock-RAK4631-Board cargo run --release --bin rak4631 --features rak-baseboard
 
 # Trigger Adafruit-UF2-bootloader on a stock-Meshtastic WisMesh Pocket V2.
 # Stock Meshtastic has no 1200-bps-touch handler and the device has no

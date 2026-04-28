@@ -185,6 +185,11 @@ async fn main(spawner: Spawner) {
         );
         info!("gnss task spawned");
     }
+    #[cfg(feature = "battery")]
+    {
+        reticulum_nrf::battery::init(&spawner, p.SAADC, p.P0_05);
+        info!("battery task spawned");
+    }
 
     let (hu, hf) = reticulum_nrf::heap_stats();
     let sf = reticulum_nrf::stack_free();
