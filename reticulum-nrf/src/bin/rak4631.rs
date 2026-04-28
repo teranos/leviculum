@@ -1,13 +1,12 @@
 //! Firmware entry point for RAKwireless WisMesh Pocket V2 (RAK4631 module).
 //!
-//! Phase 1 skeleton: USB CDC-ACM serial up, LED1 (P1.03, active high) heartbeat,
-//! identity loaded/persisted in internal flash, no LoRa, no BLE, no baseboard
-//! peripherals. Tracked under Codeberg #42.
-//!
-//! The board exposes one Reticulum interface in this build:
+//! Three Reticulum interfaces:
 //! - Interface 0: USB CDC-ACM serial (HDLC framing) to host
+//! - Interface 1: SX1262 LoRa radio (module-internal SPI on P1.10–P1.15+P1.06)
+//! - Interface 2: BLE peripheral (Columba v2.2 protocol)
 //!
-//! LoRa (Phase 2) and OLED/GNSS/battery (Phase 3) will hook in here.
+//! Baseboard peripherals (display, GNSS, battery telemetry) land in Phase 3.
+//! Tracked under Codeberg #42.
 
 #![no_std]
 #![no_main]
@@ -17,8 +16,9 @@ extern crate alloc;
 use alloc::boxed::Box;
 use alloc::collections::BTreeMap;
 use embassy_executor::Spawner;
-use embassy_futures::select::{select, Either};
+use embassy_futures::select::{select4, Either4};
 use embassy_nrf::gpio::{Level, Output, OutputDrive};
+use embassy_nrf::spim;
 use embassy_time::{Duration, Instant, Timer};
 
 use reticulum_core::embedded_storage::EmbeddedStorage;
@@ -28,9 +28,11 @@ use reticulum_core::traits::Interface;
 use reticulum_core::transport::dispatch_actions;
 use reticulum_core::InterfaceId;
 
+use reticulum_nrf::ble::BleInterface;
 use reticulum_nrf::boards::rak4631;
 use reticulum_nrf::clock::EmbassyClock;
 use reticulum_nrf::interface::EmbeddedInterface;
+use reticulum_nrf::lora::LoRaInterface;
 use reticulum_nrf::{info, init_heap};
 
 #[embassy_executor::main]
@@ -52,9 +54,14 @@ async fn main(spawner: Spawner) {
 
     info!("leviculum RAK4631 booting");
 
-    // Phase 1: keep the baseboard 3V3-S rail OFF (no OLED/GNSS/sensors yet).
-    // Phase 2 will drive this HIGH before powering up the LoRa front-end.
-    let _periph_3v3 = Output::new(p.P1_02, Level::Low, OutputDrive::Standard);
+    // Power up baseboard peripherals (OLED, GNSS, LIS3DH, NCP5623). Driven
+    // before LoRa init for consistency with Phase 3, even though only the
+    // SX1262 is exercised in Phase 2.
+    let _periph_3v3 = Output::new(p.P1_02, Level::High, OutputDrive::Standard);
+    // SX1262 LoRa front-end power. Must be HIGH before any SPI traffic to
+    // the radio. The chip itself sits on the module, not the baseboard, so
+    // this is independent of the 3V3-S rail above.
+    let _lora_pa = Output::new(p.P1_05, Level::High, OutputDrive::Standard);
     let led = rak4631::led(p.P1_03);
 
     let rng = reticulum_nrf::rng::RawHwRng::new();
@@ -96,9 +103,13 @@ async fn main(spawner: Spawner) {
         info!("Identity saved to flash");
     }
 
-    // Register the serial interface only — Phase 1 is a single-interface skeleton.
+    // Register all three interfaces
     node.set_interface_name(0, alloc::string::String::from("serial_usb"));
     node.set_interface_hw_mtu(0, 564);
+    node.set_interface_name(1, alloc::string::String::from("lora_sx1262"));
+    node.set_interface_hw_mtu(1, 255);
+    node.set_interface_name(2, alloc::string::String::from("ble"));
+    node.set_interface_hw_mtu(2, 564);
 
     let hash = node.identity().hash();
     info!(
@@ -120,40 +131,104 @@ async fn main(spawner: Spawner) {
         ));
     }
 
+    // LoRa (SPIM2; same instance the T114 uses, dictated by the shared
+    // lora::init signature). Pin map is RAK4631-module-internal.
+    let lora = reticulum_nrf::lora::init(
+        p.SPI2,
+        p.P1_11.into(),  // SCK
+        p.P1_12.into(),  // MOSI
+        p.P1_13.into(),  // MISO
+        p.P1_10.into(),  // NSS / CS
+        p.P1_06.into(),  // RESET
+        p.P1_14.into(),  // BUSY
+        p.P1_15.into(),  // DIO1
+        spim::Frequency::M4,
+        rak4631::CONFIG.lora_tcxo_voltage_reg,
+    ).await;
+    info!("SX1262 ready");
+
+    let radio_cfg = reticulum_nrf::lora::RadioConfig::eu_medium();
+    let lora_channels = reticulum_nrf::lora::channels();
+    spawner.must_spawn(reticulum_nrf::lora::lora_task(lora, radio_cfg));
+
+    // BLE — same Columba v2.2 service the T114 exposes.
+    let identity_hash = *node.identity().hash();
+    reticulum_nrf::ble::init(
+        &spawner, identity_hash,
+        p.RTC0, p.TIMER0, p.TEMP, p.PPI_CH19, p.PPI_CH30, p.PPI_CH31,
+        p.PPI_CH17, p.PPI_CH18, p.PPI_CH20, p.PPI_CH21, p.PPI_CH22, p.PPI_CH23,
+        p.PPI_CH24, p.PPI_CH25, p.PPI_CH26, p.PPI_CH27, p.PPI_CH28, p.PPI_CH29,
+        p.RNG,
+    );
+    let ble_channels = reticulum_nrf::ble::channels();
+    info!("BLE ready");
+
     let (hu, hf) = reticulum_nrf::heap_stats();
     let sf = reticulum_nrf::stack_free();
     info!("heap u={} f={} stack f={}", hu, hf, sf);
 
     // Interface adapters
     let mut serial_iface = EmbeddedInterface::new(serial.outgoing_tx);
+    let mut lora_iface = LoRaInterface::new(lora_channels.outgoing_tx);
+    let mut ble_iface = BleInterface::new(ble_channels.outgoing_tx);
     let ifac_configs: BTreeMap<usize, IfacConfig> = BTreeMap::new();
 
     // Heartbeat task — visible "alive" indicator on LED1.
     spawner.must_spawn(led_heartbeat(led));
 
-    // Event-driven main loop, two event sources:
+    // Event-driven main loop, four event sources:
     // 1. Serial incoming (USB)
-    // 2. Timer deadline (protocol maintenance, announces)
+    // 2. LoRa incoming (radio)
+    // 3. BLE incoming (defragmented Reticulum packets from phone)
+    // 4. Timer deadline (protocol maintenance, announces)
     loop {
         let deadline = node
             .next_deadline()
             .map(Instant::from_millis)
             .unwrap_or(Instant::MAX);
 
-        match select(serial.incoming_rx.receive(), Timer::at(deadline)).await {
-            Either::First(data) => {
+        match select4(
+            serial.incoming_rx.receive(),
+            lora_channels.incoming_rx.receive(),
+            ble_channels.incoming_rx.receive(),
+            Timer::at(deadline),
+        )
+        .await
+        {
+            Either4::First(data) => {
                 info!("SER RX {} bytes", data.len());
                 let output = node.handle_packet(InterfaceId(0), &data);
                 info!("SER RX -> {} actions", output.actions.len());
-                let mut ifaces: [&mut dyn Interface; 1] = [&mut serial_iface];
+                let mut ifaces: [&mut dyn Interface; 3] =
+                    [&mut serial_iface, &mut lora_iface, &mut ble_iface];
                 dispatch_actions(&mut ifaces, output.actions, &ifac_configs);
             }
-            Either::Second(()) => {
+            Either4::Second(data) => {
+                let output = node.handle_packet(InterfaceId(1), &data);
+                if !output.actions.is_empty() {
+                    info!("LORA RX -> {} actions", output.actions.len());
+                }
+                let mut ifaces: [&mut dyn Interface; 3] =
+                    [&mut serial_iface, &mut lora_iface, &mut ble_iface];
+                dispatch_actions(&mut ifaces, output.actions, &ifac_configs);
+            }
+            Either4::Third(data) => {
+                info!("BLE RX {} bytes", data.len());
+                let output = node.handle_packet(InterfaceId(2), &data);
+                if !output.actions.is_empty() {
+                    info!("BLE RX -> {} actions", output.actions.len());
+                }
+                let mut ifaces: [&mut dyn Interface; 3] =
+                    [&mut serial_iface, &mut lora_iface, &mut ble_iface];
+                dispatch_actions(&mut ifaces, output.actions, &ifac_configs);
+            }
+            Either4::Fourth(()) => {
                 let output = node.handle_timeout();
                 if !output.actions.is_empty() {
                     info!("timeout: {} actions", output.actions.len());
                 }
-                let mut ifaces: [&mut dyn Interface; 1] = [&mut serial_iface];
+                let mut ifaces: [&mut dyn Interface; 3] =
+                    [&mut serial_iface, &mut lora_iface, &mut ble_iface];
                 dispatch_actions(&mut ifaces, output.actions, &ifac_configs);
             }
         }
