@@ -18,6 +18,14 @@ pub mod rng;
 pub mod sx1262;
 pub mod usb;
 
+// RAK19026 baseboard peripherals — each gated on its own feature so the
+// bare nRF52840 + SX1262 build (T114, RAK4631 module without baseboard)
+// stays unchanged.
+#[cfg(any(feature = "display", feature = "gnss", feature = "battery"))]
+pub mod baseboard;
+#[cfg(feature = "display")]
+pub mod display;
+
 /// Install the tracing subscriber that routes `reticulum-core` log events
 /// to the CDC-ACM debug port via LOG_CHANNEL.
 ///

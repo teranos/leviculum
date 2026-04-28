@@ -37,6 +37,18 @@ rand_core = { version = "0.6", default-features = false }
 heapless = { version = "0.9", default-features = false }
 embedded-storage = "0.3"
 
+# Optional baseboard peripherals (RAK19026 VC on the WisMesh Pocket V2).
+# All gated behind features so the bare nRF52840 + SX1262 build (T114, or a
+# RAK4631 module without the baseboard) stays unchanged.
+#
+# Note: only SSD1306 is wired up today. The sh1106 crate (v0.5.x) still
+# pins embedded-hal 0.2.3 which would require an embedded-hal-compat shim
+# against our embassy-nrf 0.9 Twim (which speaks embedded-hal 1.0 only).
+# If the WisMesh Pocket V2's OLED probes as SH1106, the display task will
+# log a warning and stay idle — adding SH1106 support is a separate task.
+ssd1306 = { version = "0.10", default-features = false, features = ["graphics"], optional = true }
+embedded-graphics = { version = "0.8", optional = true }
+
 # BLE stack — pinned to trouble's known-working combination for embassy-nrf 0.9 + bt-hci 0.8
 nrf-mpsl = { git = "https://github.com/alexmoon/nrf-sdc", rev = "df7e3b4", features = ["nrf52840", "critical-section-impl"] }
 nrf-sdc = { git = "https://github.com/alexmoon/nrf-sdc", rev = "df7e3b4", features = ["nrf52840", "peripheral"] }
@@ -49,6 +61,16 @@ trouble-host = { git = "https://github.com/embassy-rs/trouble", branch = "main",
 # nrf-sdc re-exports.
 [package.metadata.cargo-machete]
 ignored = ["cortex-m-rt", "nrf-mpsl"]
+
+# Optional baseboard peripherals on the RAK19026 VC (WisMesh Pocket V2).
+# Each is independent. `rak-baseboard` is the convenience aggregate built
+# by the `flash-rak4631-pocket` recipe.
+[features]
+default = []
+display = ["dep:ssd1306", "dep:embedded-graphics"]
+gnss = []
+battery = []
+rak-baseboard = ["display", "gnss", "battery"]
 
 [profile.release]
 opt-level = "z"      # optimize for size

@@ -54,9 +54,13 @@ async fn main(spawner: Spawner) {
 
     info!("leviculum RAK4631 booting");
 
-    // Power up baseboard peripherals (OLED, GNSS, LIS3DH, NCP5623). Driven
-    // before LoRa init for consistency with Phase 3, even though only the
-    // SX1262 is exercised in Phase 2.
+    // Power up baseboard peripherals (OLED, GNSS, LIS3DH, NCP5623).
+    //
+    // Per Meshtastic's RAK4631 init (`variants/.../variant.cpp:initVariant`
+    // and `src/platform/nrf52/main-nrf52.cpp:453` which drives this LOW
+    // exclusively at shutdown), HIGH = peripherals powered. The display
+    // task sleeps 500 ms after creating the TWIM so the OLED's internal
+    // POR has finished by the first probe.
     let _periph_3v3 = Output::new(p.P1_02, Level::High, OutputDrive::Standard);
     // SX1262 LoRa front-end power. Must be HIGH before any SPI traffic to
     // the radio. The chip itself sits on the module, not the baseboard, so
@@ -162,6 +166,14 @@ async fn main(spawner: Spawner) {
     );
     let ble_channels = reticulum_nrf::ble::channels();
     info!("BLE ready");
+
+    // Optional baseboard peripherals (RAK19026 VC). Each spawn is gated on
+    // its own feature; absent features leave the bare-module build clean.
+    #[cfg(feature = "display")]
+    {
+        reticulum_nrf::display::init(&spawner, p.TWISPI0, p.P0_13, p.P0_14, identity_hash);
+        info!("display task spawned");
+    }
 
     let (hu, hf) = reticulum_nrf::heap_stats();
     let sf = reticulum_nrf::stack_free();
