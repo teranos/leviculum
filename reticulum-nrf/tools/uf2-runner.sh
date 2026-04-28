@@ -177,6 +177,17 @@ find_uf2_drive() {
     echo ""
 }
 
+# Validate that the given UF2 drive belongs to the configured board.
+# Without this check `flash_one_uf2` would clobber whatever bootloader
+# happens to be mounted — if a T114 sits in UF2 mode while we are flashing
+# a RAK4631, the wrong UF2 lands on the wrong silicon.
+uf2_drive_matches_board() {
+    local d="$1"
+    [ -n "$d" ] || return 1
+    [ -f "$d/INFO_UF2.TXT" ] || return 1
+    grep -q "$BOOTLOADER_BOARD_ID" "$d/INFO_UF2.TXT" 2>/dev/null
+}
+
 # --- Helper: enumerate all attached transport ports for the current board --
 # Prints one path per line, sorted by ID_SERIAL_SHORT (deterministic order).
 # Empty output means no device matching $BOARD_VID:$BOARD_PID with interface
@@ -213,6 +224,33 @@ find_all_t114_transport_ports() {
 flash_one_uf2() {
     local hint="${1:-(unknown device)}"
     local drive
+    # Track which mismatched drives we have already warned about so the log
+    # does not flood while we keep polling for the right one.
+    local warned_about=""
+
+    # Inline helper: poll once, returning a drive only if it matches the
+    # configured Board-ID. Mismatched drives (e.g. a T114 bootloader while we
+    # are flashing a RAK4631) are skipped with a one-shot warning.
+    poll_one() {
+        local d
+        d="$(find_uf2_drive)"
+        if [ -n "$d" ] && ! uf2_drive_matches_board "$d"; then
+            case "$warned_about" in
+                *"|$d|"*) ;;
+                *)
+                    local seen_id="(missing)"
+                    if [ -f "$d/INFO_UF2.TXT" ]; then
+                        seen_id="$(grep -m1 -oE 'Board-ID: [^[:space:]]+' "$d/INFO_UF2.TXT" 2>/dev/null | cut -d' ' -f2)"
+                        [ -z "$seen_id" ] && seen_id="(unknown)"
+                    fi
+                    echo "[uf2-runner] $hint: ignoring UF2 drive at $d — Board-ID '$seen_id' does not match expected '$BOOTLOADER_BOARD_ID'" >&2
+                    warned_about="$warned_about|$d|"
+                    ;;
+            esac
+            d=""
+        fi
+        echo "$d"
+    }
 
     # Quick silent grace period: if 1200-baud-touch worked the firmware will
     # have rebooted into the UF2 bootloader within ~1-2 s. Polling silently
@@ -221,12 +259,12 @@ flash_one_uf2() {
     # succeeded.
     local QUIET_GRACE=4
     local quiet_ticks=$((QUIET_GRACE * 2))   # 0.5s per tick
-    drive="$(find_uf2_drive)"
+    drive="$(poll_one)"
     local tick=0
     while [ -z "$drive" ] && [ "$tick" -lt "$quiet_ticks" ]; do
         sleep 0.5
         tick=$((tick + 1))
-        drive="$(find_uf2_drive)"
+        drive="$(poll_one)"
     done
 
     if [ -z "$drive" ]; then
@@ -244,7 +282,7 @@ flash_one_uf2() {
         while [ "$tick" -lt "$remaining_ticks" ]; do
             sleep 0.5
             tick=$((tick + 1))
-            drive="$(find_uf2_drive)"
+            drive="$(poll_one)"
             if [ -n "$drive" ]; then
                 break
             fi
