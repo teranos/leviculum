@@ -10,6 +10,7 @@
 //! transport from process primitives and holds the rest of the protocol
 //! stack (daemon, client tools, resource machinery) unchanged.
 
+mod link_failure_recovery_silent_resume;
 mod lncp_fetch_rust_responder;
 mod rust_client_path_install_from_python;
 mod rust_client_path_install_loop_race;
