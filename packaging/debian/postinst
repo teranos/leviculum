@@ -38,9 +38,17 @@ case "$1" in
         # First-install hint only (skip on upgrade, when $2 is set).
         if [ -z "$2" ]; then
             echo ""
-            echo "leviculum: to use lns / lncp / rnstatus / rncp as a non-root user,"
-            echo "add the user to the 'leviculum' group, then log out and back in:"
-            echo "    sudo usermod -aG leviculum \$USER"
+            echo "leviculum: to use lns / lncp / rnstatus / rncp as a non-root user:"
+            echo ""
+            echo "  1. Join the 'leviculum' group (for shared-instance socket access):"
+            echo "         sudo usermod -aG leviculum \$USER"
+            echo "         (log out and back in)"
+            echo ""
+            echo "  2. For Python tools (rnstatus, rncp, Sideband, …), initialise"
+            echo "     a per-user config that targets the daemon's instance_name:"
+            echo "         /usr/share/leviculum/setup-user-config.sh"
+            echo ""
+            echo "  The native Rust client (lns) needs no per-user setup."
             echo ""
         fi
         ;;

@@ -4,15 +4,27 @@
 # this file via `lnsd -c /etc/reticulum`. After editing:
 #     sudo systemctl restart lnsd
 #
-# To run lns / lncp / rnstatus / rncp / Sideband / etc. as a normal
-# user against this daemon, join the `leviculum` group:
-#     sudo usermod -aG leviculum <username>
-#     (log out and back in)
+# This is the *daemon-side* configuration. It is owned by the
+# `leviculum` system user and is not intended for direct use by
+# Python-Reticulum tools (rnstatus, rncp, Sideband, Nomadnet …).
+# Those tools always start their own RNS.Reticulum() instance, which
+# requires a writable config directory of its own (it persists
+# identities, caches, and known-destinations under the configdir).
 #
-# The rest of this file is Python-Reticulum's stock default config
-# verbatim — see RNS/Reticulum.py's __default_rns_config__. Keeping
-# the shape identical means Python tooling that already knows how
-# to read /etc/reticulum/config behaves exactly as expected.
+# To use Python-Reticulum tools with this daemon, configure them on
+# a per-user basis:
+#
+#   1. Add the user to the `leviculum` group (for socket access):
+#          sudo usermod -aG leviculum <username>
+#          (log out and back in)
+#
+#   2. Initialise the user's `~/.reticulum/config` with a matching
+#      `instance_name`, so the shared-instance socket lookup
+#      (\0rns/<instance_name>) hits the daemon's listener:
+#          /usr/share/leviculum/setup-user-config.sh
+#
+# The native Rust client (`lns`) talks to lnsd directly via the
+# shared-instance socket and does not need any per-user setup.
 # ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
 # This is the default Reticulum config file.

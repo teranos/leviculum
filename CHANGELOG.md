@@ -7,6 +7,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+RNode `flow_control = true` no longer deadlocks the send path. The
+I/O task previously waited for a `CMD_READY` from the firmware that
+only arrives after a TX, producing a chicken-and-egg stall (no TX
+ever fires, the send queue saturates and emits "send queue full,
+dropping oldest" until the upstream traffic source goes away).
+`interface_ready` is now `true` at io-task start, mirroring Python
+`RNodeInterface.py` after `validateRadioState()`.
+
+### Changed
+
+The Debian-package documentation for Python-Reticulum tool compatibility
+is corrected: Python's `RNS.Reticulum()` always boots its own instance
+and needs a writable configdir of its own — it cannot share
+`/etc/reticulum` with the daemon. A new helper script
+`/usr/share/leviculum/setup-user-config.sh` initialises (idempotently)
+a `~/.reticulum/config` whose `instance_name` matches the daemon's, so
+Python tools (`rnstatus`, `rncp`, Sideband, Nomadnet, …) attach to
+lnsd's shared-instance socket. The native `lns` client is unaffected.
+
 ### Added
 
 Radio-config wire format gained a `radio_silent` flag (byte 15 of
