@@ -1856,10 +1856,8 @@ mod tests {
         use reticulum_core::transport::TickOutput;
         use reticulum_core::DestinationHash;
 
-        let tmp = std::env::temp_dir().join(format!(
-            "without-events-dispatch-{}",
-            std::process::id()
-        ));
+        let tmp =
+            std::env::temp_dir().join(format!("without-events-dispatch-{}", std::process::id()));
         std::fs::create_dir_all(&tmp).unwrap();
         let core: Arc<Mutex<StdNodeCore>> = {
             let node = NodeCoreBuilder::new().enable_transport(true).build(

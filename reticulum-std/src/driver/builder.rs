@@ -478,8 +478,12 @@ impl ReticulumNodeBuilder {
         // Build NodeCore (consumes storage, persistent data already loaded)
         let node_core = core_builder.build(rand_core::OsRng, clock, storage);
 
-        let mut node =
-            ReticulumNode::new(node_core, interfaces, self.corrupt_every, self.events_enabled);
+        let mut node = ReticulumNode::new(
+            node_core,
+            interfaces,
+            self.corrupt_every,
+            self.events_enabled,
+        );
         if share_instance {
             node.set_share_instance(instance_name);
         }
