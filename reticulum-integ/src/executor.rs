@@ -394,6 +394,7 @@ fn execute_step(
             from,
             to,
             expect_hops,
+            expect_hops_max,
             expect_result,
             timeout_secs,
         } => {
@@ -404,6 +405,7 @@ fn execute_step(
                 from,
                 to,
                 expect_hops.as_ref().copied(),
+                expect_hops_max.as_ref().copied(),
                 expect_result,
                 scale_timeout(*timeout_secs),
                 cache,
@@ -1002,10 +1004,19 @@ fn execute_rnprobe(
     from: &str,
     to: &str,
     expect_hops: Option<u32>,
+    expect_hops_max: Option<u32>,
     expect_result: &str,
     timeout_secs: u64,
     cache: &mut BTreeMap<String, String>,
 ) -> Result<(), StepError> {
+    if expect_hops.is_some() && expect_hops_max.is_some() {
+        return Err(StepError::StepFailed {
+            step_index: index,
+            action: "rnprobe".into(),
+            detail: "expect_hops and expect_hops_max are mutually exclusive".into(),
+        });
+    }
+
     let hash = resolve_destination(runner, to, cache)?;
     let timeout_str = timeout_secs.to_string();
     let expect_fail = expect_result == "failure" || expect_result == "fail";
@@ -1044,7 +1055,7 @@ fn execute_rnprobe(
 
         if output.status.success() {
             // Success, check hops and return
-            return check_probe_hops(index, expect_hops, &last_stdout, &hash);
+            return check_probe_hops(index, expect_hops, expect_hops_max, &last_stdout, &hash);
         }
 
         if attempt < max_attempts {
@@ -1077,6 +1088,7 @@ fn execute_rnprobe(
 fn check_probe_hops(
     index: usize,
     expect_hops: Option<u32>,
+    expect_hops_max: Option<u32>,
     stdout: &str,
     hash: &str,
 ) -> Result<(), StepError> {
@@ -1091,6 +1103,27 @@ fn check_probe_hops(
                     step_index: index,
                     action: "rnprobe".into(),
                     detail: format!("expected {expected} hop(s) but got {hops}"),
+                });
+            }
+            None => {
+                return Err(StepError::StepFailed {
+                    step_index: index,
+                    action: "rnprobe".into(),
+                    detail: format!("could not parse hop count from output: {stdout}"),
+                });
+            }
+        }
+    } else if let Some(max) = expect_hops_max {
+        let actual = parse_hops_from_output(stdout);
+        match actual {
+            Some(hops) if hops <= max => {
+                println!("  probe ok: {hops} hop(s) (≤ {max}) to {hash}");
+            }
+            Some(hops) => {
+                return Err(StepError::StepFailed {
+                    step_index: index,
+                    action: "rnprobe".into(),
+                    detail: format!("expected at most {max} hop(s) but got {hops}"),
                 });
             }
             None => {

@@ -185,6 +185,8 @@ pub enum Step {
         to: String,
         #[serde(default)]
         expect_hops: Option<u32>,
+        #[serde(default)]
+        expect_hops_max: Option<u32>,
         #[serde(default = "default_expect_success")]
         expect_result: String,
         #[serde(default = "default_step_timeout")]

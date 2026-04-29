@@ -48,9 +48,27 @@ to = "n4.probe"
 expect_hops = 2
 expect_result = "success"
 
+# Tolerated: hops ∈ {2, 3}.
+#
+# n2 is a python rnsd. Python-RNS's path-update logic at
+# vendor/Reticulum/RNS/Transport.py:1620-1632 caches a
+# random_blob per emission and rejects re-arrivals with
+# the same blob, even when they offer a shorter path.
+# Under this multi-path topology (ring 2-hop vs chain
+# 3-hop, both arrivals carrying the same random_blob),
+# whichever copy arrives at n2 first wins. Race is
+# intermittent (~7%).
+#
+# The other rnprobe steps in this file (n1->n3, n1->n4)
+# probe from n1, which is a rust node — rust's path-update
+# has no random_blob check, so shorter paths always win.
+# They keep their exact expect_hops = 2.
+#
+# 3 is the topology's longest sensible route. > 3 would
+# mean a routing loop. See ~/.claude/bugs/closed/30.md.
 [[steps]]
 action = "rnprobe"
 from = "n2"
 to = "n5.probe"
-expect_hops = 2
+expect_hops_max = 3
 expect_result = "success"
