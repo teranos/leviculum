@@ -450,9 +450,9 @@ async fn validate_radio_config(
 /// nodes). Subsequent queued packets use a fixed 50ms spacing to avoid serial
 /// buffer overrun. RNode firmware CSMA handles radio-level collision avoidance.
 #[allow(clippy::too_many_arguments)]
-async fn rnode_io_task(
+async fn rnode_io_task<S>(
     name: String,
-    mut port: tokio_serial::SerialStream,
+    mut port: S,
     incoming_tx: mpsc::Sender<IncomingPacket>,
     mut outgoing_rx: mpsc::Receiver<OutgoingPacket>,
     counters: Arc<InterfaceCounters>,
@@ -461,10 +461,18 @@ async fn rnode_io_task(
     _bandwidth_hz: u32,
     _sf: u8,
     _cr: u8,
-) -> mpsc::Receiver<OutgoingPacket> {
+) -> mpsc::Receiver<OutgoingPacket>
+where
+    S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin,
+{
     let mut deframer = KissDeframer::with_max_payload(rnode::HW_MTU);
     let mut buf = [0u8; IO_READ_BUF];
-    let mut interface_ready = !flow_control; // If no flow control, always ready
+    // The RNode firmware emits CMD_READY only *after* a TX as a "next frame
+    // welcome" signal — never spontaneously after init. Starting at false
+    // when flow_control is on would deadlock: no TX ⇒ no CMD_READY ⇒ no
+    // TX, ever. Mirrors Python RNodeInterface.py:459 which sets
+    // interface_ready = True directly after validateRadioState() succeeds.
+    let mut interface_ready = true;
     let mut send_queue: VecDeque<QueuedFrame> = VecDeque::new();
     let mut send_timer: Option<Pin<Box<tokio::time::Sleep>>> = None;
     let mut timer_ready = false;
@@ -790,7 +798,10 @@ async fn rnode_io_task(
 }
 
 /// Best-effort send radio-off + leave commands on shutdown
-async fn send_goodbye(port: &mut tokio_serial::SerialStream, name: &str) {
+async fn send_goodbye<S>(port: &mut S, name: &str)
+where
+    S: tokio::io::AsyncWrite + Unpin,
+{
     let mut goodbye = rnode::build_set_radio_state(rnode::RADIO_STATE_OFF);
     goodbye.extend_from_slice(&rnode::build_leave());
     if let Err(e) = port.write_all(&goodbye).await {
@@ -1024,5 +1035,84 @@ mod tests {
         }
 
         println!("Interface lifecycle test complete");
+    }
+
+    /// Reproduce the flow-control startup deadlock without hardware.
+    ///
+    /// With `flow_control = true`, the io task historically initialised
+    /// `interface_ready = false` and only flipped it on receipt of a
+    /// `CMD_READY` (0x0F) frame. The RNode firmware sends `CMD_READY`
+    /// **after** each TX as a "I can accept the next frame" signal — never
+    /// spontaneously after init. That produced a chicken-and-egg stall: no
+    /// TX ⇒ no `CMD_READY` ⇒ no TX, ever. Observed on miauhaus 2026-04-29
+    /// as 0 bytes TX in 24 minutes uptime while the send queue spammed
+    /// "send queue full, dropping oldest".
+    ///
+    /// Test fails (timeout) before the fix, passes after.
+    #[tokio::test]
+    async fn test_flow_control_initial_ready_no_stall() {
+        // tokio::io::duplex gives us a pair of in-memory streams: `port` is
+        // what the io task drives; `peer` simulates the RNode-side serial
+        // endpoint that we read TX bytes from. The peer never sends
+        // CMD_READY — the test's whole point is that the first TX must go
+        // through *without* one.
+        let (port, mut peer) = tokio::io::duplex(8192);
+
+        let (incoming_tx, _incoming_rx) = mpsc::channel::<IncomingPacket>(16);
+        let (outgoing_tx, outgoing_rx) = mpsc::channel::<OutgoingPacket>(16);
+        let counters = Arc::new(InterfaceCounters::new());
+
+        // jitter_max_ms = 1 so the random pre-TX jitter is effectively zero
+        // and the test does not depend on a long tail.
+        let task_counters = Arc::clone(&counters);
+        let task = tokio::spawn(async move {
+            rnode_io_task(
+                "test_rnode".to_string(),
+                port,
+                incoming_tx,
+                outgoing_rx,
+                task_counters,
+                /* flow_control = */ true,
+                /* jitter_max_ms = */ 1,
+                125_000,
+                7,
+                5,
+            )
+            .await;
+        });
+
+        // Submit one outgoing packet. With flow_control = true and the
+        // fixed initial-ready bug, this must reach `peer` within a short
+        // timeout. With the bug, the io task stalls waiting for
+        // CMD_READY and `peer.read` times out.
+        let payload = b"hello";
+        outgoing_tx
+            .send(OutgoingPacket {
+                data: payload.to_vec(),
+                high_priority: false,
+            })
+            .await
+            .expect("send to io task");
+
+        let mut buf = [0u8; 64];
+        let n = tokio::time::timeout(Duration::from_secs(1), peer.read(&mut buf))
+            .await
+            .expect("io task must send first frame within 1s (would deadlock if interface_ready stayed false)")
+            .expect("read from duplex");
+
+        assert!(n >= 3, "expected at least a 3-byte KISS frame, got {n}");
+        // KISS data frame: FEND CMD_DATA payload FEND
+        assert_eq!(buf[0], kiss::FEND, "first byte should be KISS FEND");
+        assert_eq!(buf[1], rnode::CMD_DATA, "second byte should be CMD_DATA");
+
+        let tx_bytes = counters.tx_bytes.load(std::sync::atomic::Ordering::Relaxed);
+        assert_eq!(
+            tx_bytes,
+            payload.len() as u64,
+            "tx_bytes counter must reflect the dispatched payload"
+        );
+
+        drop(outgoing_tx);
+        let _ = tokio::time::timeout(Duration::from_secs(1), task).await;
     }
 }
