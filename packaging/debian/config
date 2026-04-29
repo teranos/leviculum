@@ -1,30 +1,28 @@
 # ~~~ Installed by the leviculum Debian package ~~~
 #
-# lnsd runs as a system service under the `leviculum` user and reads
-# this file via `lnsd -c /etc/reticulum`. After editing:
+# This is the single configuration file for Reticulum on this system,
+# shared by:
+#   * lnsd (the leviculum daemon, runs as the `leviculum` user)
+#   * lns / lncp (native Rust clients)
+#   * rnstatus / rncp / rnpath / rnprobe / Sideband / Nomadnet
+#     (Python-Reticulum tools)
+#   * rnsd itself, if you ever swap lnsd out for the Python daemon
+#
+# Python's RNS.Reticulum() picks /etc/reticulum automatically when this
+# file is present (RNS.Reticulum.__init__ checks /etc/reticulum/config
+# before falling back to ~/.config/reticulum or ~/.reticulum). Both
+# lnsd and Python-RNS need write access to the configdir at runtime
+# (storage, identities, caches, etc.), so the directory is owned by
+# `leviculum:leviculum` with mode 2775 (g+w + setgid). Any user in the
+# `leviculum` group inherits write access, and new files created here
+# inherit the group.
+#
+# After editing this file, restart the daemon:
 #     sudo systemctl restart lnsd
 #
-# This is the *daemon-side* configuration. It is owned by the
-# `leviculum` system user and is not intended for direct use by
-# Python-Reticulum tools (rnstatus, rncp, Sideband, Nomadnet …).
-# Those tools always start their own RNS.Reticulum() instance, which
-# requires a writable config directory of its own (it persists
-# identities, caches, and known-destinations under the configdir).
-#
-# To use Python-Reticulum tools with this daemon, configure them on
-# a per-user basis:
-#
-#   1. Add the user to the `leviculum` group (for socket access):
-#          sudo usermod -aG leviculum <username>
-#          (log out and back in)
-#
-#   2. Initialise the user's `~/.reticulum/config` with a matching
-#      `instance_name`, so the shared-instance socket lookup
-#      (\0rns/<instance_name>) hits the daemon's listener:
-#          /usr/share/leviculum/setup-user-config.sh
-#
-# The native Rust client (`lns`) talks to lnsd directly via the
-# shared-instance socket and does not need any per-user setup.
+# To use the tools as a non-root user, join the `leviculum` group:
+#     sudo usermod -aG leviculum <username>
+#     (log out and back in)
 # ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
 # This is the default Reticulum config file.

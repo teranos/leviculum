@@ -79,7 +79,6 @@ assets = [
     ["target/release/lns", "usr/bin/", "755"],
     ["target/release/lncp", "usr/bin/", "755"],
     ["../packaging/debian/config", "etc/reticulum/config", "644"],
-    ["../packaging/debian/setup-user-config.sh", "usr/share/leviculum/setup-user-config.sh", "755"],
     ["../README.md", "usr/share/doc/leviculum/README.md", "644"],
     ["../CHANGELOG.md", "usr/share/doc/leviculum/CHANGELOG.md", "644"],
 ]

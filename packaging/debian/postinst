@@ -27,28 +27,26 @@ case "$1" in
             adduser --quiet leviculum dialout || true
         fi
 
-        # Ensure the state directory exists and is writable by the
-        # daemon. The daemon also writes its shared-instance socket
-        # here on startup.
+        # /etc/reticulum is the single config + state directory shared
+        # between lnsd and any Reticulum tooling the user runs against
+        # it (lns, rnstatus, rncp, Sideband, Nomadnet, …). Mode 2775
+        # gives the `leviculum` group write access (so non-root members
+        # can persist Python-side state under storage/cache, identities,
+        # interfaces, …) and setgid makes new files inherit the group.
         mkdir -p /etc/reticulum/storage
         chown -R leviculum:leviculum /etc/reticulum
-        chmod 0755 /etc/reticulum
-        chmod 0775 /etc/reticulum/storage
+        chmod 2775 /etc/reticulum
+        chmod 2775 /etc/reticulum/storage
 
         # First-install hint only (skip on upgrade, when $2 is set).
         if [ -z "$2" ]; then
             echo ""
-            echo "leviculum: to use lns / lncp / rnstatus / rncp as a non-root user:"
+            echo "leviculum: to use lns / lncp / rnstatus / rncp as a non-root user,"
+            echo "add the user to the 'leviculum' group, then log out and back in:"
+            echo "    sudo usermod -aG leviculum \$USER"
             echo ""
-            echo "  1. Join the 'leviculum' group (for shared-instance socket access):"
-            echo "         sudo usermod -aG leviculum \$USER"
-            echo "         (log out and back in)"
-            echo ""
-            echo "  2. For Python tools (rnstatus, rncp, Sideband, …), initialise"
-            echo "     a per-user config that targets the daemon's instance_name:"
-            echo "         /usr/share/leviculum/setup-user-config.sh"
-            echo ""
-            echo "  The native Rust client (lns) needs no per-user setup."
+            echo "Python tools (rnstatus, rncp, Sideband, Nomadnet) auto-detect"
+            echo "/etc/reticulum and reach lnsd via the shared-instance socket."
             echo ""
         fi
         ;;

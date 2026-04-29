@@ -30,20 +30,14 @@ wget https://codeberg.org/Lew_Palm/leviculum/releases/download/nightly/leviculum
 sudo apt install ./leviculum-nightly-arm64.deb
 ```
 
-Sets up `lnsd` as a systemd service under a dedicated `leviculum` user, with its config directory at `/etc/reticulum`. To use `lns`/`lncp` as a non-root user, add that user to the `leviculum` group:
+Sets up `lnsd` as a systemd service under a dedicated `leviculum` user, with its config directory at `/etc/reticulum`. The directory is mode 2775 (group-writable, setgid), so any user in the `leviculum` group shares it as a single source of truth — no per-user config or extra flags. To opt in:
 
 ```sh
 sudo usermod -aG leviculum "$USER"
 # log out and back in for the group to apply
 ```
 
-Python Reticulum tools (`rnstatus`, `rncp`, Sideband, Nomadnet, …) need a per-user setup step. `RNS.Reticulum()` always starts its own instance and writes identities, caches, and known-destinations into its configdir, so it cannot share `/etc/reticulum` with the daemon. Instead, run the helper script once per user to initialise a `~/.reticulum/config` whose `instance_name` matches the daemon's:
-
-```sh
-/usr/share/leviculum/setup-user-config.sh
-```
-
-The script is idempotent — if the user already has a `~/.reticulum/config`, it only checks that `instance_name` matches and otherwise prints the change to make. With the matching `instance_name`, Python tools attach to lnsd's shared-instance socket (`\0rns/<name>`) instead of starting a standalone Reticulum instance. The native Rust client (`lns`) talks to lnsd directly and needs no per-user config.
+That covers everything: the native Rust clients (`lns`, `lncp`) talk to lnsd via the shared-instance socket, and Python Reticulum tools (`rnstatus`, `rncp`, `rnpath`, `rnprobe`, Sideband, Nomadnet, …) auto-detect `/etc/reticulum` (per `RNS.Reticulum.__init__`'s standard lookup) and connect through the same socket. If you ever swap lnsd out for the Python `rnsd` daemon, the same configdir keeps working — `lnsd` and `rnsd` are wire- and config-compatible.
 
 The binaries are statically linked against musl, so the package installs on Debian ≥ 9 and Ubuntu ≥ 16.04 (amd64 + arm64) regardless of host glibc.
 

@@ -19,14 +19,16 @@ dropping oldest" until the upstream traffic source goes away).
 
 ### Changed
 
-The Debian-package documentation for Python-Reticulum tool compatibility
-is corrected: Python's `RNS.Reticulum()` always boots its own instance
-and needs a writable configdir of its own — it cannot share
-`/etc/reticulum` with the daemon. A new helper script
-`/usr/share/leviculum/setup-user-config.sh` initialises (idempotently)
-a `~/.reticulum/config` whose `instance_name` matches the daemon's, so
-Python tools (`rnstatus`, `rncp`, Sideband, Nomadnet, …) attach to
-lnsd's shared-instance socket. The native `lns` client is unaffected.
+The Debian package now installs `/etc/reticulum/` and
+`/etc/reticulum/storage/` with mode 2775 (group-writable + setgid).
+This makes the directory a true single source of truth shared by
+lnsd, the native `lns`/`lncp` clients, the Python tooling
+(`rnstatus`, `rncp`, `rnpath`, `rnprobe`, Sideband, Nomadnet, …)
+and — if the operator ever swaps daemons — Python's `rnsd`. Any
+user in the `leviculum` group can persist Reticulum state under
+the shared configdir, and Python's `RNS.Reticulum()` auto-detect
+of `/etc/reticulum` then completes without permission errors. No
+per-user configuration step is needed.
 
 ### Added
 
