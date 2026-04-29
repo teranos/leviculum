@@ -1115,4 +1115,276 @@ mod tests {
         drop(outgoing_tx);
         let _ = tokio::time::timeout(Duration::from_secs(1), task).await;
     }
+
+    /// Read KISS frames from `peer` until `timeout` elapses or no more bytes
+    /// arrive. Returns every successfully deframed `(command, payload)` pair
+    /// in arrival order. Used by the multi-frame send tests below.
+    async fn drain_kiss_frames<S: tokio::io::AsyncReadExt + Unpin>(
+        peer: &mut S,
+        timeout: Duration,
+    ) -> Vec<(u8, Vec<u8>)> {
+        let mut deframer = KissDeframer::with_max_payload(rnode::HW_MTU);
+        let mut frames: Vec<(u8, Vec<u8>)> = Vec::new();
+        let mut buf = [0u8; 256];
+        let deadline = tokio::time::Instant::now() + timeout;
+        loop {
+            let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
+            if remaining.is_zero() {
+                break;
+            }
+            match tokio::time::timeout(remaining, peer.read(&mut buf)).await {
+                Ok(Ok(0)) => break,
+                Ok(Ok(n)) => {
+                    for f in deframer.process(&buf[..n]) {
+                        if let KissDeframeResult::Frame { command, payload } = f {
+                            frames.push((command, payload.to_vec()));
+                        }
+                    }
+                }
+                Ok(Err(_)) | Err(_) => break,
+            }
+        }
+        frames
+    }
+
+    /// Steady-state throughput sanity for the default `flow_control = false`
+    /// path: pushed packets must all reach `peer` without anyone feeding
+    /// CMD_READY back. This is the configuration that lnsd (and Python-RNS)
+    /// actually defaults to and that miauhaus runs after the 2026-04-30
+    /// flow_control flip. Guards against a regression where someone
+    /// reintroduces a hidden CMD_READY-gate on the non-flow-control path.
+    #[tokio::test]
+    async fn test_no_flow_control_multi_frame_throughput() {
+        let (port, mut peer) = tokio::io::duplex(8192);
+        let (incoming_tx, _incoming_rx) = mpsc::channel::<IncomingPacket>(16);
+        let (outgoing_tx, outgoing_rx) = mpsc::channel::<OutgoingPacket>(16);
+        let counters = Arc::new(InterfaceCounters::new());
+
+        let task_counters = Arc::clone(&counters);
+        let task = tokio::spawn(async move {
+            rnode_io_task(
+                "test_rnode".to_string(),
+                port,
+                incoming_tx,
+                outgoing_rx,
+                task_counters,
+                /* flow_control = */ false,
+                /* jitter_max_ms = */ 1,
+                125_000,
+                7,
+                5,
+            )
+            .await;
+        });
+
+        let payloads: [&[u8]; 3] = [b"alpha", b"bravo", b"charlie"];
+        for p in payloads.iter() {
+            outgoing_tx
+                .send(OutgoingPacket {
+                    data: p.to_vec(),
+                    high_priority: false,
+                })
+                .await
+                .expect("send to io task");
+        }
+
+        // 3 × MIN_SPACING_MS (50ms) + jitter (~1ms) + serial latency.
+        // 1s is generous; the io task should drain all three within ~150ms.
+        let frames = drain_kiss_frames(&mut peer, Duration::from_secs(1)).await;
+        let data_frames: Vec<&Vec<u8>> = frames
+            .iter()
+            .filter(|(c, _)| *c == rnode::CMD_DATA)
+            .map(|(_, p)| p)
+            .collect();
+
+        assert_eq!(
+            data_frames.len(),
+            3,
+            "all three frames must reach the peer; got {} CMD_DATA frames out of {} total",
+            data_frames.len(),
+            frames.len()
+        );
+        for (i, p) in payloads.iter().enumerate() {
+            assert_eq!(
+                data_frames[i].as_slice(),
+                *p,
+                "frame {} payload mismatch",
+                i
+            );
+        }
+
+        let tx_bytes = counters.tx_bytes.load(std::sync::atomic::Ordering::Relaxed);
+        let total_payload: usize = payloads.iter().map(|p| p.len()).sum();
+        assert_eq!(
+            tx_bytes, total_payload as u64,
+            "tx_bytes counter must sum payloads"
+        );
+
+        drop(outgoing_tx);
+        let _ = tokio::time::timeout(Duration::from_secs(1), task).await;
+    }
+
+    /// Steady-state throughput when the firmware DOES emit CMD_READY after
+    /// every TX (the contract `flow_control = true` was designed for):
+    /// each TX is followed by a `CMD_READY` (0x0F) on the peer side, which
+    /// re-arms `interface_ready` and lets the next queued packet ship.
+    /// Documents the intended `flow_control = true` round-trip. If a future
+    /// firmware delivers CMD_READY reliably and we want to flip the default
+    /// back, this test guards the wire-side handshake.
+    #[tokio::test]
+    async fn test_flow_control_with_cmd_ready_multi_frame_throughput() {
+        let (port, mut peer) = tokio::io::duplex(8192);
+        let (incoming_tx, _incoming_rx) = mpsc::channel::<IncomingPacket>(16);
+        let (outgoing_tx, outgoing_rx) = mpsc::channel::<OutgoingPacket>(16);
+        let counters = Arc::new(InterfaceCounters::new());
+
+        let task_counters = Arc::clone(&counters);
+        let task = tokio::spawn(async move {
+            rnode_io_task(
+                "test_rnode".to_string(),
+                port,
+                incoming_tx,
+                outgoing_rx,
+                task_counters,
+                /* flow_control = */ true,
+                /* jitter_max_ms = */ 1,
+                125_000,
+                7,
+                5,
+            )
+            .await;
+        });
+
+        let payloads: [&[u8]; 3] = [b"alpha", b"bravo", b"charlie"];
+
+        // Push frame, read it, write CMD_READY, repeat. Sequencing one at
+        // a time keeps the queue depth at 1 and guarantees each frame is
+        // gated on its own CMD_READY (no race between enqueue and the
+        // ready-flag flip).
+        let cmd_ready_frame = [kiss::FEND, rnode::CMD_READY, kiss::FEND];
+        for (i, p) in payloads.iter().enumerate() {
+            outgoing_tx
+                .send(OutgoingPacket {
+                    data: p.to_vec(),
+                    high_priority: false,
+                })
+                .await
+                .expect("send to io task");
+
+            let frames = drain_kiss_frames(&mut peer, Duration::from_millis(500)).await;
+            let data_frames: Vec<&Vec<u8>> = frames
+                .iter()
+                .filter(|(c, _)| *c == rnode::CMD_DATA)
+                .map(|(_, p)| p)
+                .collect();
+            assert_eq!(
+                data_frames.len(),
+                1,
+                "iteration {}: expected exactly one TX frame on the wire, got {}",
+                i,
+                data_frames.len()
+            );
+            assert_eq!(
+                data_frames[0].as_slice(),
+                *p,
+                "iteration {} payload mismatch",
+                i
+            );
+
+            // Re-arm the io task by feeding CMD_READY back over the duplex.
+            // Without this, iteration i+1 would stall (proven by the next
+            // test below).
+            peer.write_all(&cmd_ready_frame)
+                .await
+                .expect("write CMD_READY");
+        }
+
+        let tx_bytes = counters.tx_bytes.load(std::sync::atomic::Ordering::Relaxed);
+        let total_payload: usize = payloads.iter().map(|p| p.len()).sum();
+        assert_eq!(
+            tx_bytes, total_payload as u64,
+            "tx_bytes counter must reflect all three payloads"
+        );
+
+        drop(outgoing_tx);
+        let _ = tokio::time::timeout(Duration::from_secs(1), task).await;
+    }
+
+    /// Document the per-frame stall that hits `flow_control = true` against
+    /// firmware that does not emit CMD_READY after TX (observed on RNode
+    /// FW 1.85, miauhaus 2026-04-30): the io task ships exactly one frame,
+    /// then waits forever for a re-arming CMD_READY that never arrives.
+    ///
+    /// This test pins the current behaviour as a documented contract.
+    /// If someone later adds a recovery mechanism (timeout-based re-arm,
+    /// auto-disable of flow_control on CMD_READY-silence, or removing the
+    /// flow_control gate altogether), this test must be updated to reflect
+    /// the new contract — its existence forces a deliberate decision.
+    #[tokio::test]
+    async fn test_flow_control_without_cmd_ready_stalls_after_first_frame() {
+        let (port, mut peer) = tokio::io::duplex(8192);
+        let (incoming_tx, _incoming_rx) = mpsc::channel::<IncomingPacket>(16);
+        let (outgoing_tx, outgoing_rx) = mpsc::channel::<OutgoingPacket>(16);
+        let counters = Arc::new(InterfaceCounters::new());
+
+        let task_counters = Arc::clone(&counters);
+        let task = tokio::spawn(async move {
+            rnode_io_task(
+                "test_rnode".to_string(),
+                port,
+                incoming_tx,
+                outgoing_rx,
+                task_counters,
+                /* flow_control = */ true,
+                /* jitter_max_ms = */ 1,
+                125_000,
+                7,
+                5,
+            )
+            .await;
+        });
+
+        let payloads: [&[u8]; 3] = [b"alpha", b"bravo", b"charlie"];
+        for p in payloads.iter() {
+            outgoing_tx
+                .send(OutgoingPacket {
+                    data: p.to_vec(),
+                    high_priority: false,
+                })
+                .await
+                .expect("send to io task");
+        }
+
+        // Generous read window. The first frame must arrive; any later frames
+        // would only show up if the stall bug were silently fixed.
+        let frames = drain_kiss_frames(&mut peer, Duration::from_millis(500)).await;
+        let data_frames: Vec<&Vec<u8>> = frames
+            .iter()
+            .filter(|(c, _)| *c == rnode::CMD_DATA)
+            .map(|(_, p)| p)
+            .collect();
+
+        assert_eq!(
+            data_frames.len(),
+            1,
+            "exactly one frame must reach the wire; the others must remain queued \
+             waiting for CMD_READY (got {} CMD_DATA frames)",
+            data_frames.len()
+        );
+        assert_eq!(
+            data_frames[0].as_slice(),
+            payloads[0],
+            "the single TX must be the first queued payload"
+        );
+
+        let tx_bytes = counters.tx_bytes.load(std::sync::atomic::Ordering::Relaxed);
+        assert_eq!(
+            tx_bytes,
+            payloads[0].len() as u64,
+            "tx_bytes must reflect exactly the first payload"
+        );
+
+        drop(outgoing_tx);
+        let _ = tokio::time::timeout(Duration::from_secs(1), task).await;
+    }
 }
