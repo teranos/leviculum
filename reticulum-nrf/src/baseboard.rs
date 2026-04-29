@@ -7,9 +7,9 @@
 
 #![allow(dead_code)]
 
-#[cfg(any(feature = "gnss", feature = "battery"))]
+#[cfg(any(feature = "display", feature = "gnss", feature = "battery"))]
 use embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex;
-#[cfg(any(feature = "gnss", feature = "battery"))]
+#[cfg(any(feature = "display", feature = "gnss", feature = "battery"))]
 use embassy_sync::watch::Watch;
 
 /// Compact GNSS fix snapshot — what the display task needs and nothing
@@ -74,3 +74,12 @@ impl BatteryState {
 /// Latest battery snapshot. Same capacity-2 watch shape as `GNSS_FIX`.
 #[cfg(feature = "battery")]
 pub static BATTERY_STATE: Watch<CriticalSectionRawMutex, BatteryState, 2> = Watch::new();
+
+/// Requested display power state, written by the user-button task and read
+/// by both the display task (to drive `set_display_on`) and the button task
+/// itself (to know what the next press should do).
+///
+/// Capacity-3 watch: button-writer + button-reader (current-state lookup) +
+/// display-reader.
+#[cfg(feature = "display")]
+pub static DISPLAY_ON_REQ: Watch<CriticalSectionRawMutex, bool, 3> = Watch::new();

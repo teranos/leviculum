@@ -173,6 +173,10 @@ async fn main(spawner: Spawner) {
     {
         reticulum_nrf::display::init(&spawner, p.TWISPI0, p.P0_13, p.P0_14, identity_hash);
         info!("display task spawned");
+        // The user button shares the same `display` feature gate — it has
+        // no purpose without something to switch on/off.
+        reticulum_nrf::button::init(&spawner, p.P0_09.into());
+        info!("button task spawned");
     }
     #[cfg(feature = "gnss")]
     {

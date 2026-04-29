@@ -186,6 +186,16 @@ pub async fn display_task(
     #[cfg(feature = "battery")]
     let mut bat_rx = crate::baseboard::BATTERY_STATE.receiver().expect("battery watch capacity");
 
+    // Display power state, controlled by `crate::button` via DISPLAY_ON_REQ.
+    // We seed the watch to `true` so the button task can read the current
+    // state before the user has ever pressed anything.
+    let display_req_sender = crate::baseboard::DISPLAY_ON_REQ.sender();
+    display_req_sender.send(true);
+    let mut display_req_rx = crate::baseboard::DISPLAY_ON_REQ
+        .receiver()
+        .expect("DISPLAY_ON_REQ watch capacity (display reader)");
+    let mut display_on = true;
+
     // Frame key — when nothing relevant has changed since last render, we
     // skip the I²C flush entirely. lat/lon are quantized to 5 decimal
     // places (≈1 m); receiver-jitter below that level no longer flips the
@@ -216,6 +226,34 @@ pub async fn display_task(
     loop {
         tick = tick.wrapping_add(1);
         let heartbeat = (tick / 5) & 1 != 0; // toggles every 5 seconds
+
+        // Honour the latest power-state request from the button task. We
+        // only act on actual changes — `try_changed()` returns `Some(_)`
+        // exactly once per new value.
+        if let Some(req) = display_req_rx.try_changed() {
+            if req != display_on {
+                if let Err(e) = display.set_display_on(req) {
+                    crate::log::log_fmt(
+                        "[DISP] ",
+                        format_args!("set_display_on({}) failed: {:?}", req, e),
+                    );
+                } else {
+                    crate::log::log_fmt(
+                        "[DISP] ",
+                        format_args!("display power → {}", if req { "on" } else { "off" }),
+                    );
+                    display_on = req;
+                }
+            }
+        }
+
+        // While the screen is off there is no point computing or flushing
+        // a frame. Tick at the same 1 Hz cadence so the request poll above
+        // still runs.
+        if !display_on {
+            Timer::after(Duration::from_secs(1)).await;
+            continue;
+        }
 
         let rx = crate::lora::LORA_RX_COUNT.load(Ordering::Relaxed);
         let tx = crate::lora::LORA_TX_COUNT.load(Ordering::Relaxed);

@@ -26,6 +26,8 @@ pub mod baseboard;
 #[cfg(feature = "battery")]
 pub mod battery;
 #[cfg(feature = "display")]
+pub mod button;
+#[cfg(feature = "display")]
 pub mod display;
 #[cfg(feature = "gnss")]
 pub mod gnss;
