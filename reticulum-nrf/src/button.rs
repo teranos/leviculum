@@ -41,12 +41,9 @@ pub async fn button_task(button_pin: Peri<'static, AnyPin>) {
         .receiver()
         .expect("DISPLAY_ON_REQ watch capacity (button reader)");
 
-    crate::log::log_fmt("[BTN] ", format_args!("button_task alive"));
-
     loop {
         // Press start: GPIO falls low (active-low button).
         button.wait_for_falling_edge().await;
-        crate::log::log_fmt("[BTN] ", format_args!("falling edge"));
         let press_start = Instant::now();
 
         // Press end. embassy-nrf's GPIOTE-backed wait reliably catches

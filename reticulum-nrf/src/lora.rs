@@ -48,14 +48,6 @@ static LORA_INCOMING: Channel<CriticalSectionRawMutex, Vec<u8>, 4> = Channel::ne
 static LORA_OUTGOING: Channel<CriticalSectionRawMutex, Vec<u8>, 4> = Channel::new();
 static LORA_CONFIG: Channel<CriticalSectionRawMutex, RadioConfig, 1> = Channel::new();
 
-// Diagnostic counters (atomic, no log-ring dependency). Printed periodically
-// from inside the lora_task. Used to isolate where forwarding stalls when
-// our debug log buffer overflows.
-pub static DIAG_IFACE_TRY_SEND_OK: core::sync::atomic::AtomicU32 = core::sync::atomic::AtomicU32::new(0);
-pub static DIAG_IFACE_TRY_SEND_ERR: core::sync::atomic::AtomicU32 = core::sync::atomic::AtomicU32::new(0);
-pub static DIAG_TASK_DRAINED: core::sync::atomic::AtomicU32 = core::sync::atomic::AtomicU32::new(0);
-pub static DIAG_TASK_TX_SUBMITTED: core::sync::atomic::AtomicU32 = core::sync::atomic::AtomicU32::new(0);
-
 pub struct LoRaChannels {
     pub incoming_rx: Receiver<'static, CriticalSectionRawMutex, Vec<u8>, 4>,
     pub outgoing_tx: Sender<'static, CriticalSectionRawMutex, Vec<u8>, 4>,
@@ -90,16 +82,7 @@ impl Interface for LoRaInterface {
     fn mtu(&self) -> usize { 500 }
     fn is_online(&self) -> bool { true }
     fn try_send(&mut self, data: &[u8]) -> Result<(), InterfaceError> {
-        match self.sender.try_send(data.to_vec()) {
-            Ok(()) => {
-                DIAG_IFACE_TRY_SEND_OK.fetch_add(1, core::sync::atomic::Ordering::Relaxed);
-                Ok(())
-            }
-            Err(_) => {
-                DIAG_IFACE_TRY_SEND_ERR.fetch_add(1, core::sync::atomic::Ordering::Relaxed);
-                Err(InterfaceError::BufferFull)
-            }
-        }
+        self.sender.try_send(data.to_vec()).map_err(|_| InterfaceError::BufferFull)
     }
 }
 
@@ -428,9 +411,6 @@ pub async fn lora_task(mut radio: Radio, mut config: RadioConfig) {
     let mut csma_cw: u8 = CSMA_CW_INITIAL;
     let mut slot_ms: u64 = compute_slot_ms(&config);
 
-    // Wall-clock anchor for the periodic LORA_DIAG line.
-    let mut last_diag_ms: u64 = embassy_time::Instant::now().as_millis();
-
     loop {
         // Check for runtime radio config override (test infrastructure)
         if let Ok(new_cfg) = config_rx.try_receive() {
@@ -460,34 +440,14 @@ pub async fn lora_task(mut radio: Radio, mut config: RadioConfig) {
         // with their own Reticulum announces.
         if pending_tx.is_none() {
             if let Ok(data) = outgoing_rx.try_receive() {
-                DIAG_TASK_DRAINED.fetch_add(1, core::sync::atomic::Ordering::Relaxed);
                 if config.radio_silent {
                     drop(data);
                 } else {
                     pending_tx = Some(data);
-                    DIAG_TASK_TX_SUBMITTED.fetch_add(1, core::sync::atomic::Ordering::Relaxed);
                     csma_attempt = 0;
                     csma_cw = CSMA_CW_INITIAL;
                 }
             }
-        }
-
-        // Diagnostic snapshot every ~5 s. The four counters together let us
-        // pinpoint forwarding stalls even when the log ring is dropping
-        // events: try_send_ok bumps when dispatch_actions succeeds at the
-        // interface boundary, drained bumps when this task picks up a
-        // queued packet, tx_submitted bumps when CSMA actually starts.
-        let now_ms = embassy_time::Instant::now().as_millis();
-        if now_ms.saturating_sub(last_diag_ms) >= 5000 {
-            let s = DIAG_IFACE_TRY_SEND_OK.load(core::sync::atomic::Ordering::Relaxed);
-            let e = DIAG_IFACE_TRY_SEND_ERR.load(core::sync::atomic::Ordering::Relaxed);
-            let d = DIAG_TASK_DRAINED.load(core::sync::atomic::Ordering::Relaxed);
-            let t = DIAG_TASK_TX_SUBMITTED.load(core::sync::atomic::Ordering::Relaxed);
-            crate::log::log_fmt(
-                "[LORA_DIAG] ",
-                format_args!("try_send ok={} err={} drained={} submitted={}", s, e, d, t),
-            );
-            last_diag_ms = now_ms;
         }
 
         if let Some(data) = pending_tx.as_ref() {
