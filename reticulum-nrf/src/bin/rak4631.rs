@@ -25,7 +25,7 @@ use reticulum_core::embedded_storage::EmbeddedStorage;
 use reticulum_core::ifac::IfacConfig;
 use reticulum_core::node::NodeCoreBuilder;
 use reticulum_core::traits::Interface;
-use reticulum_core::transport::dispatch_actions;
+use reticulum_core::transport::{dispatch_actions, Action};
 use reticulum_core::InterfaceId;
 
 use reticulum_nrf::ble::BleInterface;
@@ -45,14 +45,36 @@ async fn main(spawner: Spawner) {
 
     init_heap();
     reticulum_nrf::init_tracing();
+
+    // Read post-mortems BEFORE paint_stack runs — `.uninit` is above
+    // `__ebss` and paint_stack walks upward, so it would otherwise
+    // overwrite the captured data with the `0xDEADBEEF` canary.
+    let hardfault_pm = reticulum_nrf::take_hardfault_postmortem();
+    let panic_pm = reticulum_nrf::take_panic_postmortem();
+
     // SAFETY: called once before any complex work or concurrent tasks
     unsafe { reticulum_nrf::paint_stack(); }
 
     reticulum_nrf::set_panic_led(rak4631::PANIC_LED_PORT, rak4631::PANIC_LED_PIN, rak4631::PANIC_LED_ACTIVE_LOW);
+    // Distinct LED for HardFault — blue (P1.04) so it's visually
+    // distinct from the green panic LED. Diagnostic for the executor-
+    // hang investigation.
+    reticulum_nrf::set_hardfault_led(1, 4, false);
 
     let serial = reticulum_nrf::usb::init(&spawner, p.USBD, &rak4631::CONFIG);
 
     info!("leviculum RAK4631 booting");
+
+    if let Some(pm) = hardfault_pm {
+        info!(
+            "[HARDFAULT_PMRT] pc=0x{:08x} lr=0x{:08x} r0=0x{:08x} r1=0x{:08x} r2=0x{:08x} r3=0x{:08x} r12=0x{:08x} xpsr=0x{:08x}",
+            pm.pc, pm.lr, pm.r0, pm.r1, pm.r2, pm.r3, pm.r12, pm.xpsr
+        );
+    }
+    if let Some(pm) = panic_pm {
+        let msg = core::str::from_utf8(&pm.bytes[..pm.len]).unwrap_or("<non-utf8 panic msg>");
+        info!("[PANIC_PMRT] len={} msg={}", pm.len, msg);
+    }
 
     // Power up baseboard peripherals (OLED, GNSS, LIS3DH, NCP5623).
     //
@@ -66,7 +88,15 @@ async fn main(spawner: Spawner) {
     // the radio. The chip itself sits on the module, not the baseboard, so
     // this is independent of the 3V3-S rail above.
     let _lora_pa = Output::new(p.P1_05, Level::High, OutputDrive::Standard);
+    // Two on-module LEDs are owned by the LED tasks (under `display`) when
+    // that feature is on; for the bare-module build the green LED is taken
+    // by the heartbeat task as before.
+    #[cfg(not(feature = "display"))]
     let led = rak4631::led(p.P1_03);
+    #[cfg(feature = "display")]
+    let led_tx = rak4631::led(p.P1_03);
+    #[cfg(feature = "display")]
+    let led_rx = rak4631::led_notification(p.P1_04);
 
     let rng = reticulum_nrf::rng::RawHwRng::new();
 
@@ -100,6 +130,7 @@ async fn main(spawner: Spawner) {
     let initial_path_len = node.path_count();
     info!("[BOOT] path_table_initial_len={}", initial_path_len);
     spawner.must_spawn(boot_log_repeater(initial_path_len));
+    spawner.must_spawn(diag_mem_log());
 
     if !identity_loaded {
         use reticulum_core::identity_store::IdentityStore;
@@ -205,7 +236,14 @@ async fn main(spawner: Spawner) {
     let mut ble_iface = BleInterface::new(ble_channels.outgoing_tx);
     let ifac_configs: BTreeMap<usize, IfacConfig> = BTreeMap::new();
 
-    // Heartbeat task — visible "alive" indicator on LED1.
+    // LED activity. With `display`: green LED1 = TX activity, blue LED2
+    // = RX activity, driven by the lora task's flash signals. Without
+    // `display`: a plain 1 Hz heartbeat on LED1 as a basic alive
+    // indicator (kept so the bare-module build still has a visible
+    // sign of life).
+    #[cfg(feature = "display")]
+    reticulum_nrf::led::init(&spawner, led_tx, led_rx);
+    #[cfg(not(feature = "display"))]
     spawner.must_spawn(led_heartbeat(led));
 
     // Event-driven main loop, four event sources:
@@ -258,6 +296,21 @@ async fn main(spawner: Spawner) {
                 let output = node.handle_timeout();
                 if !output.actions.is_empty() {
                     info!("timeout: {} actions", output.actions.len());
+                    // Diagnostic: log each action's discriminant + target
+                    // so we can tell whether a rebroadcast actually emits
+                    // a Broadcast (hits all interfaces) or a SendPacket
+                    // (single interface only).
+                    for act in &output.actions {
+                        match act {
+                            Action::SendPacket { iface, data } => {
+                                info!("ACT SendPacket iface={} len={}", iface.0, data.len());
+                            }
+                            Action::Broadcast { exclude_iface, data } => {
+                                let excl = exclude_iface.map(|i| i.0 as i16).unwrap_or(-1);
+                                info!("ACT Broadcast excl={} len={}", excl, data.len());
+                            }
+                        }
+                    }
                 }
                 let mut ifaces: [&mut dyn Interface; 3] =
                     [&mut serial_iface, &mut lora_iface, &mut ble_iface];
@@ -275,6 +328,21 @@ async fn boot_log_repeater(initial_len: usize) {
     }
 }
 
+/// Diagnostic: log stack and heap headroom every 5 s. Lets us see if
+/// the executor-hang under load correlates with stack creeping toward
+/// zero (overflow → HardFault) or heap exhaustion. Logs once per period
+/// regardless; cheap.
+#[embassy_executor::task]
+async fn diag_mem_log() {
+    loop {
+        Timer::after(Duration::from_secs(5)).await;
+        let stack = reticulum_nrf::stack_free();
+        let (hu, hf) = reticulum_nrf::heap_stats();
+        info!("[DIAG_MEM] stack_free={} heap_used={} heap_free={}", stack, hu, hf);
+    }
+}
+
+#[cfg(not(feature = "display"))]
 #[embassy_executor::task]
 async fn led_heartbeat(mut led: Output<'static>) {
     loop {

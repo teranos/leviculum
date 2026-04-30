@@ -77,7 +77,13 @@ rak-baseboard = ["display", "gnss", "battery"]
 opt-level = "z"      # optimize for size
 lto = true           # link-time optimization across all crates
 codegen-units = 1    # single codegen unit for maximum LTO
-strip = "symbols"    # strip debug symbols from binary
+strip = "none"       # was "symbols" — kept off so DWARF survives in
+                     # the .elf for addr2line / objdump on HardFault
+                     # post-mortem PCs. Does NOT bloat the UF2: the
+                     # .bin used to build the UF2 only includes
+                     # loadable sections, debug info stays in the .elf.
+debug = true         # emit DWARF in the first place; required even
+                     # with strip=none, otherwise compiler omits it
 
 # Firmware binaries
 [[bin]]

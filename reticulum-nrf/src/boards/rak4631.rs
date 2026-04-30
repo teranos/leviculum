@@ -106,9 +106,15 @@ pub type QspiIo2 = peripherals::P0_28;
 /// QSPI flash IO3.
 pub type QspiIo3 = peripherals::P0_02;
 
-/// Create the green LED output. **Active HIGH** — opposite of the T114.
-/// Start with Level::Low so the LED is off at boot.
+/// Create the green LED1 output. **Active HIGH**. Start with Level::Low
+/// so the LED is off at boot.
 pub fn led(pin: Peri<'static, LedPin>) -> Output<'static> {
+    Output::new(pin, Level::Low, OutputDrive::Standard)
+}
+
+/// Create the blue LED2 output. **Active HIGH**, identical electrical
+/// shape to LED1. Off at boot.
+pub fn led_notification(pin: Peri<'static, LedNotificationPin>) -> Output<'static> {
     Output::new(pin, Level::Low, OutputDrive::Standard)
 }
 

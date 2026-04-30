@@ -193,7 +193,14 @@ pub fn init(
     );
     static RNG: StaticCell<rng::Rng<'static, embassy_nrf::mode::Async>> = StaticCell::new();
     let rng = RNG.init(rng::Rng::new(rng_periph, Irqs));
-    static SDC_MEM: StaticCell<sdc::Mem<4720>> = StaticCell::new();
+    // 4720 was the previously tuned minimum that satisfied
+    // `Builder::required_memory()`. Bumped to 16384 as a buffer-overrun
+    // hypothesis test for the MPSL_IRQ_RTC0_Handler HardFault under
+    // lnsd burst load — the corrupted-callback symptom at *(0x20026060)
+    // would be consistent with SDC writing past a too-small pool.
+    // `build()` warns but accepts an oversized buffer; only undersized
+    // returns EINVAL.
+    static SDC_MEM: StaticCell<sdc::Mem<16384>> = StaticCell::new();
     let sdc = build_sdc(sdc_p, rng, mpsl, SDC_MEM.init(sdc::Mem::new())).expect("SDC");
     crate::info!("BLE: SDC ok");
 

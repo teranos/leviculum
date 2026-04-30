@@ -5,16 +5,17 @@
 //! needed). It is wired active-low with no external pull-up, so we enable
 //! the internal pull-up.
 //!
-//! Behaviour (variant A — "long press wakes up"):
+//! Behaviour:
 //!
 //! | Display state | Press duration | Action |
 //! |---|---|---|
-//! | on  | any           | off |
+//! | on  | any           | display off |
 //! | off | < 2 s         | ignore |
-//! | off | ≥ 2 s         | on |
+//! | off | ≥ 2 s         | display on |
 //!
-//! Rationale: a short press in the user's pocket can't accidentally wake
-//! the screen and burn battery; turning it off is one quick tap.
+//! Rationale for the asymmetric display logic: a short press in the
+//! user's pocket can't accidentally wake the screen and burn battery;
+//! turning it off is one quick tap.
 //!
 //! The actual display power-cycling happens in `display::display_task`,
 //! which subscribes to `DISPLAY_ON_REQ` and translates a transition into
@@ -27,7 +28,7 @@ use embassy_time::{Duration, Instant};
 
 use crate::baseboard::DISPLAY_ON_REQ;
 
-/// Anything below this counts as a short press.
+/// Anything below this counts as a short press (display-on gesture).
 const LONG_PRESS_MIN: Duration = Duration::from_millis(2000);
 
 #[embassy_executor::task]
@@ -40,9 +41,12 @@ pub async fn button_task(button_pin: Peri<'static, AnyPin>) {
         .receiver()
         .expect("DISPLAY_ON_REQ watch capacity (button reader)");
 
+    crate::log::log_fmt("[BTN] ", format_args!("button_task alive"));
+
     loop {
         // Press start: GPIO falls low (active-low button).
         button.wait_for_falling_edge().await;
+        crate::log::log_fmt("[BTN] ", format_args!("falling edge"));
         let press_start = Instant::now();
 
         // Press end. embassy-nrf's GPIOTE-backed wait reliably catches
@@ -55,13 +59,13 @@ pub async fn button_task(button_pin: Peri<'static, AnyPin>) {
         let currently_on = state_rx.try_get().unwrap_or(true);
 
         let target = if currently_on {
-            // Variant A row 1+2: any press while on → off.
+            // Display on + any press → off.
             false
         } else if duration >= LONG_PRESS_MIN {
-            // Variant A row 4: long press while off → on.
+            // Display off + ≥ 2 s → on.
             true
         } else {
-            // Variant A row 3: short press while off → ignore.
+            // Display off + < 2 s → ignore (pocket-press protection).
             crate::log::log_fmt(
                 "[BTN] ",
                 format_args!("short press ignored (display off, {} ms)", duration.as_millis()),

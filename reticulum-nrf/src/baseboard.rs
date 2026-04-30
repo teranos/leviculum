@@ -83,3 +83,17 @@ pub static BATTERY_STATE: Watch<CriticalSectionRawMutex, BatteryState, 2> = Watc
 /// display-reader.
 #[cfg(feature = "display")]
 pub static DISPLAY_ON_REQ: Watch<CriticalSectionRawMutex, bool, 3> = Watch::new();
+
+/// One-shot signals raised by `lora.rs` whenever a packet boundary
+/// completes. The LED pulse tasks in `led.rs` block on these and emit a
+/// short flash each time. Coalescing is intentional — a Signal stores at
+/// most one pending event, so a burst of TX-completes inside an 80 ms
+/// window collapses to a single flash. That matches what the eye can
+/// resolve anyway.
+#[cfg(feature = "display")]
+pub static LORA_TX_FLASH: embassy_sync::signal::Signal<CriticalSectionRawMutex, ()> =
+    embassy_sync::signal::Signal::new();
+
+#[cfg(feature = "display")]
+pub static LORA_RX_FLASH: embassy_sync::signal::Signal<CriticalSectionRawMutex, ()> =
+    embassy_sync::signal::Signal::new();

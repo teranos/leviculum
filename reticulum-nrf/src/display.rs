@@ -217,6 +217,11 @@ pub async fn display_task(
         // Pack voltage rounded to 100 mV so noise on the LSDigit doesn't
         // wake the renderer. Same Option-treatment as bat_pct.
         bat_dv: Option<u16>,
+        // Diagnostic LoRa-forwarding counters — kept in the key so the
+        // OLED re-renders the moment they tick.
+        diag_s: u32,
+        diag_e: u32,
+        diag_d: u32,
         heartbeat: bool,
     }
 
@@ -261,8 +266,18 @@ pub async fn display_task(
         let mut line2 = heapless::String::<24>::new();
         let _ = core::fmt::write(&mut line2, format_args!("ID: {}", id_short));
 
+        // DIAGNOSTIC override: line 3 shows LoRa forwarding counters
+        // instead of plain RX/TX. Lets us verify whether
+        // `lora_iface.try_send` is actually called when an announce
+        // arrives on serial. Revert when forwarding bug is fixed.
+        let s = crate::lora::DIAG_IFACE_TRY_SEND_OK.load(Ordering::Relaxed);
+        let e = crate::lora::DIAG_IFACE_TRY_SEND_ERR.load(Ordering::Relaxed);
+        let d = crate::lora::DIAG_TASK_DRAINED.load(Ordering::Relaxed);
         let mut line3 = heapless::String::<24>::new();
-        let _ = core::fmt::write(&mut line3, format_args!("RX: {:<5} TX: {:<5}", rx, tx));
+        let _ = core::fmt::write(
+            &mut line3,
+            format_args!("S{} E{} D{} R{}T{}", s, e, d, rx, tx),
+        );
 
         let mut line4_buf = heapless::String::<24>::new();
         #[allow(unused_assignments, unused_mut)]
@@ -341,7 +356,9 @@ pub async fn display_task(
         }
 
         let key = FrameKey {
-            rx, tx, sat, valid, lat_e5, lon_e5, bat_pct, bat_dv, heartbeat,
+            rx, tx, sat, valid, lat_e5, lon_e5, bat_pct, bat_dv,
+            diag_s: s, diag_e: e, diag_d: d,
+            heartbeat,
         };
         if last_key.as_ref() == Some(&key) {
             // Nothing meaningful changed since last render and the
