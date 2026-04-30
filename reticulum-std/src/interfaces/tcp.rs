@@ -10,7 +10,7 @@ use std::io;
 use std::net::SocketAddr;
 #[cfg(test)]
 use std::net::ToSocketAddrs;
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -28,6 +28,25 @@ use super::InterfaceHandle;
 /// Used for both incoming and outgoing channels.
 /// Must be large enough to absorb short bursts during reconnection.
 pub(crate) const TCP_DEFAULT_BUFFER_SIZE: usize = 256;
+
+/// Process-global gate for fault injection (`--corrupt-every`).
+/// Default `true` so existing invocations are unaffected.
+static CORRUPT_ACTIVE: AtomicBool = AtomicBool::new(true);
+
+/// Re-enable byte-flip fault injection on TCP writes.
+/// Counterpart of [`disable_fault_injection`].
+pub fn enable_fault_injection() {
+    CORRUPT_ACTIVE.store(true, Ordering::Relaxed);
+}
+
+/// Disable byte-flip fault injection on TCP writes without
+/// changing per-iface `corrupt_every` configuration. Used by
+/// `lns selftest` during Phase-2 mutual discovery so announces
+/// cross a clean stream (otherwise a corrupted announce yields
+/// a deterministic 60 s Phase-2 timeout — Bug #31).
+pub fn disable_fault_injection() {
+    CORRUPT_ACTIVE.store(false, Ordering::Relaxed);
+}
 
 /// Configuration for a reconnecting TCP client interface.
 pub(crate) struct TcpClientConfig {
@@ -431,12 +450,14 @@ async fn tcp_interface_task(
                     Some(pkt) => {
                         frame(&pkt.data, &mut frame_buf);
                         if let Some(n) = corrupt_every {
-                            let count = maybe_corrupt(&mut frame_buf, n, &mut corrupt_rng);
-                            if count > 0 {
-                                tracing::trace!(
-                                    "TCP {} corrupted {} byte(s) in {} byte frame",
-                                    name, count, frame_buf.len()
-                                );
+                            if CORRUPT_ACTIVE.load(Ordering::Relaxed) {
+                                let count = maybe_corrupt(&mut frame_buf, n, &mut corrupt_rng);
+                                if count > 0 {
+                                    tracing::trace!(
+                                        "TCP {} corrupted {} byte(s) in {} byte frame",
+                                        name, count, frame_buf.len()
+                                    );
+                                }
                             }
                         }
                         if let Err(e) = writer.write_all(&frame_buf).await {

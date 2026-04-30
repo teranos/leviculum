@@ -15,6 +15,7 @@ use sha2::{Digest, Sha256};
 use tokio::sync::Notify;
 
 use reticulum_std::driver::{LinkHandle, PacketSender, ReticulumNodeBuilder};
+use reticulum_std::interfaces::{disable_fault_injection, enable_fault_injection};
 use reticulum_std::{
     Destination, DestinationHash, DestinationType, Direction, Identity, LinkId, NodeEvent,
 };
@@ -575,7 +576,8 @@ pub async fn run_selftest(
         println!("[selftest] Both clients -> {addr_a} (mode: {mode})");
     }
     if let Some(n) = corrupt_every {
-        println!("[selftest] Fault injection: --corrupt-every {n}");
+        println!("[selftest] Fault injection: --corrupt-every {n} (deferred until after Phase 2)");
+        disable_fault_injection();
     }
 
     // TCP pre-check
@@ -747,6 +749,11 @@ pub async fn run_selftest(
         discovery_time.as_secs_f64(),
         hops,
     );
+
+    if corrupt_every.is_some() {
+        enable_fault_injection();
+        println!("[selftest] Fault injection: activated post-Phase-2");
+    }
 
     let interval_ms = if rate > 0.0 {
         (1000.0 / rate) as u64

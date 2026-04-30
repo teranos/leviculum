@@ -16,6 +16,7 @@ pub(crate) mod local;
 pub(crate) mod rnode;
 pub(crate) mod serial;
 pub(crate) mod tcp;
+pub use tcp::{disable_fault_injection, enable_fault_injection};
 pub(crate) mod udp;
 
 use std::sync::atomic::{AtomicU64, Ordering};

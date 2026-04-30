@@ -348,7 +348,9 @@ struct Args {
     #[arg(short, long, global = true)]
     verbose: bool,
 
-    /// Corrupt ~1 byte per N bytes on TCP write (fault injection)
+    /// Corrupt ~1 byte per N bytes on TCP write (fault injection).
+    /// For `selftest`, corruption is deferred until after Phase-2
+    /// mutual discovery completes, so announces cross a clean stream.
     #[arg(long, global = true)]
     corrupt_every: Option<u64>,
 
