@@ -63,9 +63,9 @@ nmea0183 = { version = "0.6", default-features = false, optional = true }
 # combination is preserved on bsp-rak4631 so the rak4631 build still
 # cargo-checks; Day 2-3 replaces these with nrf-softdevice. T114 (bsp-t114)
 # does not pull these — its `bin/t114.rs` BLE init code is gated out.
-nrf-mpsl = { git = "https://github.com/alexmoon/nrf-sdc", rev = "df7e3b4", features = ["nrf52840", "critical-section-impl"], optional = true }
-nrf-sdc = { git = "https://github.com/alexmoon/nrf-sdc", rev = "df7e3b4", features = ["nrf52840", "peripheral"], optional = true }
-trouble-host = { git = "https://github.com/embassy-rs/trouble", branch = "main", default-features = false, features = ["peripheral", "derive", "gatt", "default-packet-pool"], optional = true }
+nrf-mpsl = { git = "https://github.com/alexmoon/nrf-sdc", rev = "df7e3b4", features = ["nrf52840", "critical-section-impl"] }
+nrf-sdc = { git = "https://github.com/alexmoon/nrf-sdc", rev = "df7e3b4", features = ["nrf52840", "peripheral"] }
+trouble-host = { git = "https://github.com/embassy-rs/trouble", branch = "main", default-features = false, features = ["peripheral", "derive", "gatt", "default-packet-pool"] }
 
 # nrf-softdevice deps are added on Day 2-3 of the spike. Slot reserved here
 # for clarity; commented out so the Day-1 cargo-check doesn't try to fetch
@@ -92,14 +92,13 @@ default = []
 # critical-section impl that's appropriate for that board's runtime
 # (cortex-m's full-mask single-core impl on T114; SoftDevice-aware impl
 # on Pocket V2, added Day 2-3 of bug32-softdevice-spike).
-bsp-rak4631 = [
-    "dep:nrf-mpsl",
-    "dep:nrf-sdc",
-    "dep:trouble-host",
-]
-bsp-t114 = [
-    "cortex-m/critical-section-single-core",
-]
+# Day-1 plumbing only — both boards run BLE today, both use the same
+# nrf-mpsl/nrf-sdc/trouble-host stack. The features exist so per-board
+# memory.x / pin-map gating (added Day 2-3 alongside the nrf-softdevice
+# migration) has a stable hook. compile_error! guards in lib.rs already
+# enforce exactly-one-must-be-selected.
+bsp-rak4631 = []
+bsp-t114 = []
 
 display = ["dep:ssd1306", "dep:embedded-graphics"]
 gnss = ["dep:nmea0183"]

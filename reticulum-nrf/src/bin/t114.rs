@@ -15,7 +15,6 @@ extern crate alloc;
 use alloc::boxed::Box;
 use alloc::collections::BTreeMap;
 use embassy_executor::Spawner;
-#[cfg(feature = "bsp-rak4631")]
 use embassy_futures::select::{select4, Either4};
 use embassy_nrf::gpio::{Level, Output, OutputDrive};
 use embassy_nrf::spim;
@@ -28,13 +27,6 @@ use reticulum_core::traits::Interface;
 use reticulum_core::transport::dispatch_actions;
 use reticulum_core::InterfaceId;
 
-// BLE was previously initialized at runtime on T114, but the T114 hardware
-// has no BLE-friendly antenna and there's no documented use case for it.
-// As part of the bug32-softdevice-spike, the T114 build (`bsp-t114`) drops
-// BLE entirely — using cortex-m's full-PRIMASK single-core CS impl, which
-// is incompatible with running MPSL/SDC, is the matching change. The
-// rak4631 build retains BLE via `bsp-rak4631`.
-#[cfg(feature = "bsp-rak4631")]
 use reticulum_nrf::ble::BleInterface;
 use reticulum_nrf::boards::t114;
 use reticulum_nrf::clock::EmbassyClock;
@@ -150,24 +142,17 @@ async fn main(spawner: Spawner) {
     let lora_channels = reticulum_nrf::lora::channels();
     spawner.must_spawn(reticulum_nrf::lora::lora_task(lora, radio_cfg));
 
-    // BLE — Pocket V2 only. T114 drops BLE entirely as part of the
-    // bug32-softdevice-spike BSP separation (see lib.rs `compile_error!`
-    // guards). The peripherals that BLE used to claim (RTC0, TIMER0, TEMP,
-    // many PPI channels, RNG) are simply unused on T114 today; can be
-    // re-claimed for future use without conflicting with anything.
-    #[cfg(feature = "bsp-rak4631")]
-    let ble_channels = {
-        let identity_hash = *node.identity().hash();
-        reticulum_nrf::ble::init(
-            &spawner, identity_hash,
-            p.RTC0, p.TIMER0, p.TEMP, p.PPI_CH19, p.PPI_CH30, p.PPI_CH31,
-            p.PPI_CH17, p.PPI_CH18, p.PPI_CH20, p.PPI_CH21, p.PPI_CH22, p.PPI_CH23,
-            p.PPI_CH24, p.PPI_CH25, p.PPI_CH26, p.PPI_CH27, p.PPI_CH28, p.PPI_CH29,
-            p.RNG,
-        );
-        info!("BLE ready");
-        reticulum_nrf::ble::channels()
-    };
+    // BLE
+    let identity_hash = *node.identity().hash();
+    reticulum_nrf::ble::init(
+        &spawner, identity_hash,
+        p.RTC0, p.TIMER0, p.TEMP, p.PPI_CH19, p.PPI_CH30, p.PPI_CH31,
+        p.PPI_CH17, p.PPI_CH18, p.PPI_CH20, p.PPI_CH21, p.PPI_CH22, p.PPI_CH23,
+        p.PPI_CH24, p.PPI_CH25, p.PPI_CH26, p.PPI_CH27, p.PPI_CH28, p.PPI_CH29,
+        p.RNG,
+    );
+    let ble_channels = reticulum_nrf::ble::channels();
+    info!("BLE ready");
 
     let (hu, hf) = reticulum_nrf::heap_stats();
     let sf = reticulum_nrf::stack_free();
@@ -176,7 +161,6 @@ async fn main(spawner: Spawner) {
     // Interface adapters
     let mut serial_iface = EmbeddedInterface::new(serial.outgoing_tx);
     let mut lora_iface = LoRaInterface::new(lora_channels.outgoing_tx);
-    #[cfg(feature = "bsp-rak4631")]
     let mut ble_iface = BleInterface::new(ble_channels.outgoing_tx);
     let ifac_configs: BTreeMap<usize, IfacConfig> = BTreeMap::new();
 
@@ -198,10 +182,6 @@ async fn main(spawner: Spawner) {
             .map(Instant::from_millis)
             .unwrap_or(Instant::MAX);
 
-        // bsp-rak4631: full select4 over serial + lora + ble + deadline.
-        // bsp-t114: BLE is gated out, so we use select3 over serial + lora
-        // + deadline and shrink the iface array to two entries.
-        #[cfg(feature = "bsp-rak4631")]
         match select4(
             serial.incoming_rx.receive(),
             lora_channels.incoming_rx.receive(),
@@ -244,42 +224,6 @@ async fn main(spawner: Spawner) {
                 }
                 let mut ifaces: [&mut dyn Interface; 3] =
                     [&mut serial_iface, &mut lora_iface, &mut ble_iface];
-                dispatch_actions(&mut ifaces, output.actions, &ifac_configs);
-            }
-        }
-
-        #[cfg(feature = "bsp-t114")]
-        match embassy_futures::select::select3(
-            serial.incoming_rx.receive(),
-            lora_channels.incoming_rx.receive(),
-            Timer::at(deadline),
-        )
-        .await
-        {
-            embassy_futures::select::Either3::First(data) => {
-                info!("SER RX {} bytes", data.len());
-                let output = node.handle_packet(InterfaceId(0), &data);
-                info!("SER RX -> {} actions", output.actions.len());
-                let mut ifaces: [&mut dyn Interface; 2] =
-                    [&mut serial_iface, &mut lora_iface];
-                dispatch_actions(&mut ifaces, output.actions, &ifac_configs);
-            }
-            embassy_futures::select::Either3::Second(data) => {
-                let output = node.handle_packet(InterfaceId(1), &data);
-                if !output.actions.is_empty() {
-                    info!("LORA RX -> {} actions", output.actions.len());
-                }
-                let mut ifaces: [&mut dyn Interface; 2] =
-                    [&mut serial_iface, &mut lora_iface];
-                dispatch_actions(&mut ifaces, output.actions, &ifac_configs);
-            }
-            embassy_futures::select::Either3::Third(()) => {
-                let output = node.handle_timeout();
-                if !output.actions.is_empty() {
-                    info!("timeout: {} actions", output.actions.len());
-                }
-                let mut ifaces: [&mut dyn Interface; 2] =
-                    [&mut serial_iface, &mut lora_iface];
                 dispatch_actions(&mut ifaces, output.actions, &ifac_configs);
             }
         }
