@@ -15,9 +15,11 @@ MEMORY
     FLASH : ORIGIN = 0x00027000, LENGTH = 0xC5000
 
     /* SoftDevice S140 v7.3.0 reserves the bottom RAM region for BLE stack   */
-    /* state. Bumped to 48K (0x2000C000) — 40K still triggered a boot-loop   */
-    /* on T114, suggesting Softdevice::enable's actual config requires more  */
-    /* than the example's minimum. Leaves 256K-48K = 208K (0x34000) for      */
-    /* application.                                                          */
+    /* state. 48K is the smallest tested value that boots T114 cleanly       */
+    /* (5-min smoke). 64K introduces a "Softdevice memory access violation"  */
+    /* fault — likely linker-layout-related, not a RAM-size issue, since     */
+    /* the SD's actual reservation should be < 48K. Sticking with 48K        */
+    /* until we identify the specific peripheral access that the SD blocks.  */
+    /* Leaves 256K-48K = 208K (0x34000) for application.                     */
     RAM   : ORIGIN = 0x2000C000, LENGTH = 0x34000
 }

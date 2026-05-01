@@ -252,7 +252,11 @@ pub fn set_hardfault_led(port: u8, pin: u8, active_low: bool) {
 }
 
 /// Maximum bytes of panic message preserved across the post-mortem soft-reset.
-pub const PANIC_MSG_MAX: usize = 256;
+/// Bumped to 1024 (was 256) so the SoftDevice's "memory access violation"
+/// message — which encodes PC + PREGION at the END of the string — survives
+/// the buffer cap. The 256-char limit was cutting off precisely the
+/// diagnostic data we need to pinpoint the offending instruction.
+pub const PANIC_MSG_MAX: usize = 1024;
 
 /// Snapshot returned by `take_panic_postmortem()`.
 #[derive(Clone, Copy)]
