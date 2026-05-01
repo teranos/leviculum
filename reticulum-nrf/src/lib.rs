@@ -49,6 +49,66 @@ pub fn init_vbus() -> &'static SoftwareVbusDetect {
     VBUS_CELL.init(SoftwareVbusDetect::new(false, false))
 }
 
+/// Set the eight peripheral-IRQ priorities to non-SoftDevice-reserved
+/// values before `Softdevice::enable`. The Nordic S140 reserves
+/// architectural priorities 0, 1, and 4 for its own use; using any of
+/// those for an application IRQ causes UB at runtime (silent fault or
+/// hang) once the SoftDevice is active.
+///
+/// We pick P5 for everything — well below the SoftDevice's reserved
+/// band, plenty of headroom above the SoftDevice's lowest priority (7).
+/// GPIOTE and RTC1 are already set to P2 via `embassy_nrf::config::Config`
+/// in main(); they are *also* re-asserted here for symmetry and to give
+/// the boot log a single source of truth.
+///
+/// Call once early in main(), before `Softdevice::enable`.
+///
+/// nRF52840 has only 3 priority bits; cortex-m's `set_priority` takes
+/// the priority in the upper-3-bits encoding (so P5 → `5 << 5 = 0xA0`).
+/// On most cortex-m crate versions `set_priority(irq, n)` accepts the
+/// raw priority byte and shifts internally; we pass the priority value
+/// 0..=7 directly.
+pub fn set_irq_priorities() {
+    use embassy_nrf::interrupt::{Interrupt, InterruptExt, Priority};
+
+    // P5: well below the SoftDevice's reserved 0/1/4 band, well above
+    // its highest application priority (7).
+    Interrupt::RNG.set_priority(Priority::P5);
+    Interrupt::USBD.set_priority(Priority::P5);
+    Interrupt::TWISPI0.set_priority(Priority::P5);
+    Interrupt::SAADC.set_priority(Priority::P5);
+    Interrupt::SPI2.set_priority(Priority::P5);
+    Interrupt::UARTE0.set_priority(Priority::P5);
+
+    // GPIOTE + RTC1 already at P2 via embassy_nrf config; assert
+    // explicitly so the [NVIC_PRIO] log line reflects the same state
+    // regardless of who set them last.
+    Interrupt::GPIOTE.set_priority(Priority::P2);
+    Interrupt::RTC1.set_priority(Priority::P2);
+}
+
+/// Read the NVIC priority registers for the eight IRQs we manage and
+/// emit a single `[NVIC_PRIO]` log line. Call once after
+/// `set_irq_priorities()` for verification.
+pub fn log_irq_priorities() {
+    use embassy_nrf::interrupt::{Interrupt, InterruptExt};
+
+    log::log_fmt(
+        "[NVIC_PRIO] ",
+        format_args!(
+            "rng={:?} usbd={:?} twispi0={:?} saadc={:?} spi2={:?} uarte0={:?} gpiote={:?} rtc1={:?}",
+            Interrupt::RNG.get_priority(),
+            Interrupt::USBD.get_priority(),
+            Interrupt::TWISPI0.get_priority(),
+            Interrupt::SAADC.get_priority(),
+            Interrupt::SPI2.get_priority(),
+            Interrupt::UARTE0.get_priority(),
+            Interrupt::GPIOTE.get_priority(),
+            Interrupt::RTC1.get_priority(),
+        ),
+    );
+}
+
 // RAK19026 baseboard peripherals — each gated on its own feature so the
 // bare nRF52840 + SX1262 build (T114, RAK4631 module without baseboard)
 // stays unchanged.

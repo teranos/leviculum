@@ -42,6 +42,11 @@ static_cell = "2"
 tracing-core = { version = "0.1", default-features = false }
 rand_core = { version = "0.6", default-features = false }
 heapless = { version = "0.9", default-features = false }
+# nrf-softdevice's gatt_service macro generates `FixedGattValue` impls
+# that target heapless 0.8 specifically (the version nrf-softdevice itself
+# uses). Our own code uses 0.9; we keep both in the tree and import the
+# 0.8 one only inside ble.rs for the characteristic value types.
+heapless_v8 = { package = "heapless", version = "0.8", default-features = false }
 embedded-storage = "0.3"
 
 # Optional baseboard peripherals (RAK19026 VC on the WisMesh Pocket V2).

@@ -1,52 +1,71 @@
-//! BLE Peripheral interface — Day-2 SANITY-BUILD STUB.
+//! BLE Peripheral interface — Day-3 nrf-softdevice + Columba v2.2.
 //!
-//! On Day 2 of bug32-softdevice-spike this module is a deliberate
-//! minimum: it brings up the Nordic S140 SoftDevice via `nrf-softdevice`
-//! and runs its event loop, but does not yet expose the Columba v2.2
-//! GATT service (RX/TX characteristics, defragmentation, keepalives,
-//! identity handshake). The full GATT rewrite happens in Day 3 once
-//! we've verified that nrf-softdevice + embassy-nrf 0.9 link cleanly
-//! against our existing toolchain.
+//! GATT service rewritten on top of `nrf-softdevice::gatt_service` /
+//! `gatt_server` macros. The Columba v2.2 protocol layer (defrag,
+//! keepalive, identity handshake) carries over from the prior
+//! trouble-host implementation as type renames over the same byte-
+//! level operations — same wire format, same characteristic UUIDs,
+//! same fragment header / keepalive byte semantics.
 //!
-//! The public API (`init`, `BleChannels`, `BleInterface`) is preserved
-//! at the same shape `bin/rak4631.rs` and `bin/t114.rs` currently call,
-//! so the binaries don't need a behavior-change diff alongside this
-//! library swap. The new `init()` ignores all the peripheral handles
-//! the binaries pass in (RTC0/TIMER0/RADIO/PPI/RNG) — those peripherals
-//! are owned by the SoftDevice C blob via its own ABI, not via Embassy
-//! type-state. Embassy's claim of them at `embassy_nrf::init` is a
-//! no-op for this purpose: the SoftDevice never goes through Embassy.
+//! Architecture differences from trouble-host:
+//! - Single-task model: `peripheral::advertise_connectable` produces a
+//!   Connection, then `gatt_server::run(&conn, &server, |evt| { ... })`
+//!   drives a callback closure for incoming writes. Outgoing
+//!   notifications use `gatt_server::notify_value(conn, handle, &data)`
+//!   sync — no async send-loop. Concurrent inbound + outbound is via
+//!   embassy_futures::select inside the connection lifetime.
+//! - SoftDevice owns RADIO/TIMER0/RTC0/etc.; we don't bind those.
+//!   USB VBUS detect goes via `SoftwareVbusDetect` fed by SoC events.
 
 extern crate alloc;
 
 use alloc::vec::Vec;
+use core::cell::Cell;
 use core::mem;
 use embassy_executor::Spawner;
+use embassy_futures::select::{select, Either};
 use embassy_nrf::peripherals;
 use embassy_nrf::usb::vbus_detect::SoftwareVbusDetect;
 use embassy_nrf::{bind_interrupts, Peri};
 use embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex;
 use embassy_sync::channel::{Channel, Receiver, Sender};
+use embassy_time::{Duration, Instant, Timer};
+use nrf_softdevice::ble::advertisement_builder::{
+    Flag, LegacyAdvertisementBuilder, LegacyAdvertisementPayload,
+};
+use nrf_softdevice::ble::{gatt_server, peripheral, Connection};
 use nrf_softdevice::{raw, SocEvent, Softdevice};
+use reticulum_core::framing::ble::{
+    self as ble_framing, BleDefragmenter, DefragResult, FRAGMENT_HEADER_SIZE, KEEPALIVE_BYTE,
+    KEEPALIVE_INTERVAL_MS,
+};
 use reticulum_core::traits::{Interface, InterfaceError};
 use reticulum_core::InterfaceId;
+use static_cell::StaticCell;
 
-// Interrupt bindings — only USBD here. The SoftDevice owns RADIO,
-// TIMER0, RTC0, EGU0_SWI0, EGU1_SWI1, EGU5_SWI5, CLOCK_POWER and a
-// few SPI* / TWI* slots reserved at compile time of S140; we bind
-// none of those. CLOCK_POWER's USB-VBUS-detect half is now serviced
-// inside the SoftDevice's POWER_CLOCK handler — embassy-nrf-0.9's
-// `HardwareVbusDetect` accepts any `Binding`-implementing Irqs, so
-// the binding still works through nrf-softdevice's interrupt taps
-// once the SoftDevice is enabled.
+// USBD only. SoftDevice owns the rest of the IRQs we used to bind.
 bind_interrupts!(pub struct Irqs {
     USBD => embassy_nrf::usb::InterruptHandler<peripherals::USBD>;
 });
 
-// Channels — kept identical to the prior implementation so the
-// binaries' `node.set_interface_*` plus `select4` over the BLE channel
-// keep working unchanged. They will carry real BLE traffic once Day 3
-// adds the GATT layer; for now they receive no producer.
+#[nrf_softdevice::gatt_service(uuid = "37145b00-442d-4a94-917f-8f42c5da28e3")]
+pub struct ReticulumService {
+    #[characteristic(uuid = "37145b00-442d-4a94-917f-8f42c5da28e5", write, write_without_response)]
+    rx: heapless_v8::Vec<u8, 251>,
+
+    #[characteristic(uuid = "37145b00-442d-4a94-917f-8f42c5da28e4", read, notify)]
+    tx: heapless_v8::Vec<u8, 251>,
+
+    #[characteristic(uuid = "37145b00-442d-4a94-917f-8f42c5da28e6", read)]
+    identity: [u8; 16],
+}
+
+#[nrf_softdevice::gatt_server]
+pub struct ReticulumServer {
+    pub reticulum_service: ReticulumService,
+}
+
+// Channels between BLE task and the binaries' main loop.
 static BLE_INCOMING: Channel<CriticalSectionRawMutex, Vec<u8>, 4> = Channel::new();
 static BLE_OUTGOING: Channel<CriticalSectionRawMutex, Vec<u8>, 4> = Channel::new();
 
@@ -62,11 +81,6 @@ pub fn channels() -> BleChannels {
     }
 }
 
-/// Reticulum `Interface` adapter for outgoing BLE frames. With the Day-2
-/// stub the sink Channel has no consumer task, so packets queued here
-/// quietly pile up until the channel is full (4 frames), at which point
-/// `try_send` reports `BufferFull`. That's deliberate — the Day-3 GATT
-/// layer will plug a real consumer.
 pub struct BleInterface {
     sender: Sender<'static, CriticalSectionRawMutex, Vec<u8>, 4>,
 }
@@ -89,9 +103,6 @@ impl Interface for BleInterface {
 
 #[embassy_executor::task]
 async fn softdevice_task(sd: &'static Softdevice, vbus: &'static SoftwareVbusDetect) -> ! {
-    // run_with_callback runs the BLE event loop AND the SoC event loop;
-    // we forward power/USB events to the embassy-nrf SoftwareVbusDetect
-    // so the USB driver can enumerate when VBUS appears.
     sd.run_with_callback(|evt| match evt {
         SocEvent::PowerUsbDetected => vbus.detected(true),
         SocEvent::PowerUsbRemoved => vbus.detected(false),
@@ -101,14 +112,159 @@ async fn softdevice_task(sd: &'static Softdevice, vbus: &'static SoftwareVbusDet
     .await
 }
 
-/// Bring up S140 with a peripheral-only configuration. No advertising,
-/// no GATT in this stub — Day 3 expands the Config and adds the
-/// ReticulumService / ReticulumServer pair.
-///
-/// The peripheral parameters in the signature are left over from the
-/// prior MPSL+SDC API for ABI compatibility with the binaries; they are
-/// not used here and can be re-claimed for application use once the
-/// binaries get cleaned up in Day 3.
+// Static advertising payload. 16-byte service UUID in little-endian.
+//
+// Same UUID as the GATT service: 37145b00-442d-4a94-917f-8f42c5da28e3,
+// reversed to LE: e3 28 da c5 42 8f 7f 91 94 4a 2d 44 00 5b 14 37
+const RETICULUM_SVC_UUID_LE: [u8; 16] = [
+    0xe3, 0x28, 0xda, 0xc5, 0x42, 0x8f, 0x7f, 0x91,
+    0x94, 0x4a, 0x2d, 0x44, 0x00, 0x5b, 0x14, 0x37,
+];
+
+#[embassy_executor::task]
+async fn ble_task(sd: &'static Softdevice, server: &'static ReticulumServer, identity_hash: [u8; 16]) {
+    // Publish the identity characteristic value so a connecting peer can
+    // read it before exchanging frames over rx/tx.
+    let _ = server.reticulum_service.identity_set(&identity_hash);
+
+    // Static-lifetime advertising / scan payloads — nrf-softdevice's
+    // peripheral::advertise_connectable wants &'static slices.
+    static ADV_DATA: StaticCell<LegacyAdvertisementPayload> = StaticCell::new();
+    static SCAN_DATA: StaticCell<LegacyAdvertisementPayload> = StaticCell::new();
+    let adv = ADV_DATA.init(
+        LegacyAdvertisementBuilder::new()
+            .flags(&[Flag::GeneralDiscovery, Flag::LE_Only])
+            .services_128(
+                nrf_softdevice::ble::advertisement_builder::ServiceList::Complete,
+                &[RETICULUM_SVC_UUID_LE],
+            )
+            .build(),
+    );
+    let scan = SCAN_DATA.init(
+        LegacyAdvertisementBuilder::new()
+            .full_name("leviculum")
+            .build(),
+    );
+
+    let outgoing_rx = BLE_OUTGOING.receiver();
+    let incoming_tx = BLE_INCOMING.sender();
+
+    loop {
+        let config = peripheral::Config::default();
+        let advertisement = peripheral::ConnectableAdvertisement::ScannableUndirected {
+            adv_data: adv.as_ref(),
+            scan_data: scan.as_ref(),
+        };
+        match peripheral::advertise_connectable(sd, advertisement, &config).await {
+            Ok(conn) => {
+                crate::info!("BLE: connected");
+                gatt_events(&conn, server, &incoming_tx, &outgoing_rx).await;
+                crate::info!("BLE: disconnected");
+            }
+            Err(_) => {
+                Timer::after_millis(1000).await;
+            }
+        }
+    }
+}
+
+/// Per-connection event-loop. Inbound writes drive `gatt_server::run`'s
+/// closure (Columba defrag + handshake state); outbound BLE_OUTGOING and
+/// keepalive timer feed `gatt_server::notify_value`. The two halves run
+/// concurrently via `embassy_futures::select`.
+async fn gatt_events(
+    conn: &Connection,
+    server: &ReticulumServer,
+    incoming_tx: &Sender<'static, CriticalSectionRawMutex, Vec<u8>, 4>,
+    outgoing_rx: &Receiver<'static, CriticalSectionRawMutex, Vec<u8>, 4>,
+) {
+    // Per-connection state. `Cell` lets the closure inside
+    // `gatt_server::run` mutate handshake_done while the outbound branch
+    // reads it. Single-task context (the executor polls one future at a
+    // time), so no Mutex is needed.
+    let defrag: Cell<BleDefragmenter> = Cell::new(BleDefragmenter::new());
+    let handshake_done: Cell<bool> = Cell::new(false);
+    let last_keepalive: Cell<Instant> = Cell::new(Instant::now());
+
+    // Drain stale outgoing packets from before this connection.
+    while outgoing_rx.try_receive().is_ok() {}
+
+    let tx_handle = server.reticulum_service.tx_value_handle;
+
+    let inbound = gatt_server::run(conn, server, |evt| match evt {
+        ReticulumServerEvent::ReticulumService(service_evt) => match service_evt {
+            ReticulumServiceEvent::RxWrite(data) => {
+                if !handshake_done.get() && data.len() == 16 {
+                    // Identity handshake — peer's first write is its 16-byte identity.
+                    crate::log::log_fmt("[BLE ] ", format_args!(
+                        "peer id: {:02x}{:02x}{:02x}{:02x}",
+                        data[0], data[1], data[2], data[3]
+                    ));
+                    handshake_done.set(true);
+                    last_keepalive.set(Instant::now());
+                } else if data.len() < FRAGMENT_HEADER_SIZE {
+                    // Single-byte keepalive (0x00); nothing to defragment.
+                } else {
+                    let now = Instant::now().as_millis();
+                    let mut d = defrag.replace(BleDefragmenter::new());
+                    let result = d.process(&data, now);
+                    defrag.set(d);
+                    match result {
+                        DefragResult::Complete(packet) => {
+                            crate::info!("BLE: RX {}B", packet.len());
+                            // try_send: if the consumer is slow and the 4-deep
+                            // channel is full, drop the packet rather than block
+                            // here (we're in a sync closure, can't await).
+                            let _ = incoming_tx.try_send(packet);
+                        }
+                        DefragResult::NeedMore => {}
+                        DefragResult::Error => {
+                            let mut d = defrag.replace(BleDefragmenter::new());
+                            d.reset();
+                            defrag.set(d);
+                        }
+                    }
+                }
+            }
+            // tx is notify-only; CCCD writes from the peer would land here,
+            // but the macro variant naming depends on whether `notify` was
+            // declared. For our purposes any unhandled variant is a no-op.
+            #[allow(unreachable_patterns)]
+            _ => {}
+        },
+    });
+
+    let outbound = async {
+        loop {
+            let keepalive_deadline = if handshake_done.get() {
+                Timer::at(last_keepalive.get() + Duration::from_millis(KEEPALIVE_INTERVAL_MS))
+            } else {
+                Timer::at(Instant::MAX)
+            };
+
+            match select(outgoing_rx.receive(), keepalive_deadline).await {
+                Either::First(packet) => {
+                    let fragments = ble_framing::fragment_packet(&packet, ble_framing::DEFAULT_MTU);
+                    for frag in &fragments {
+                        let _ = gatt_server::notify_value(conn, tx_handle, frag);
+                    }
+                }
+                Either::Second(()) => {
+                    let kv = [KEEPALIVE_BYTE];
+                    let _ = gatt_server::notify_value(conn, tx_handle, &kv);
+                    last_keepalive.set(Instant::now());
+                }
+            }
+        }
+    };
+
+    let _ = select(inbound, outbound).await;
+}
+
+/// Bring up S140 + start the BLE peripheral task. Peripherals previously
+/// owned by MPSL/SDC (RTC0/TIMER0/PPI/RNG/etc.) are kept in the signature
+/// for ABI compatibility with the binaries; the SoftDevice claims them
+/// internally.
 #[allow(clippy::too_many_arguments)]
 pub fn init(
     spawner: &Spawner,
@@ -134,14 +290,11 @@ pub fn init(
     _ppi_ch29: Peri<'static, peripherals::PPI_CH29>,
     _rng_periph: Peri<'static, peripherals::RNG>,
 ) {
-    let _ = identity_hash; // Day-3 uses this for the BLE address derivation.
-
     let config = nrf_softdevice::Config {
         clock: Some(raw::nrf_clock_lf_cfg_t {
-            // RAK4631 and T114 both have a 32 MHz HF crystal but no
-            // separate 32.768 kHz LF crystal — use the synthesized LF
-            // clock from the HF crystal (RC-based with periodic re-cal).
-            // Same setting Heltec / RAK / Adafruit-Bootloader use.
+            // Synthesized LF from HF crystal; matches Heltec/RAK/Adafruit
+            // factory bootloaders' expectation. RAK4631 + T114 have no
+            // dedicated 32.768 kHz LF crystal.
             source: raw::NRF_CLOCK_LF_SRC_RC as u8,
             rc_ctiv: 16,
             rc_temp_ctiv: 2,
@@ -175,5 +328,10 @@ pub fn init(
     };
 
     let sd = Softdevice::enable(&config);
+
+    static SERVER: StaticCell<ReticulumServer> = StaticCell::new();
+    let server = SERVER.init(ReticulumServer::new(sd).expect("GATT server"));
+
     spawner.must_spawn(softdevice_task(sd, vbus));
+    spawner.must_spawn(ble_task(sd, server, identity_hash));
 }

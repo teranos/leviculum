@@ -61,10 +61,16 @@ async fn main(spawner: Spawner) {
     // hang investigation.
     reticulum_nrf::set_hardfault_led(1, 4, false);
 
+    // Set NVIC priorities before SoftDevice enable. S140 reserves
+    // P0/P1/P4; everything else goes to P5 (RNG, USBD, TWISPI0, SAADC,
+    // SPI2, UARTE0). GPIOTE + RTC1 stay P2 per embassy_nrf::config.
+    reticulum_nrf::set_irq_priorities();
+
     let vbus = reticulum_nrf::init_vbus();
     let serial = reticulum_nrf::usb::init(&spawner, p.USBD, vbus, &rak4631::CONFIG);
 
     info!("leviculum RAK4631 booting");
+    reticulum_nrf::log_irq_priorities();
 
     if let Some(pm) = hardfault_pm {
         info!(
