@@ -27,8 +27,19 @@ use static_cell::StaticCell;
 use crate::boards::BoardConfig;
 use crate::log::{log_fmt, LOG_RING, LOG_SIGNAL};
 
-// Interrupt bindings are centralized in ble.rs (CLOCK_POWER shared with MPSL)
+// Interrupt bindings:
+// - bsp-rak4631: shared with ble.rs (CLOCK_POWER multiplexed with MPSL)
+// - bsp-t114: local, USB-only bindings (CLOCK_POWER claimed by VBUS detect alone)
+#[cfg(feature = "bsp-rak4631")]
 use crate::ble::Irqs;
+
+#[cfg(feature = "bsp-t114")]
+use embassy_nrf::bind_interrupts;
+#[cfg(feature = "bsp-t114")]
+bind_interrupts!(pub struct Irqs {
+    USBD => usb::InterruptHandler<peripherals::USBD>;
+    CLOCK_POWER => usb::vbus_detect::InterruptHandler;
+});
 
 static CONFIG_DESC: StaticCell<[u8; 256]> = StaticCell::new();
 static BOS_DESC: StaticCell<[u8; 256]> = StaticCell::new();

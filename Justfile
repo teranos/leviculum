@@ -97,33 +97,33 @@ install-ci:
 # invoke cargo from its own directory.
 # Flash every attached T114 with the current firmware.
 flash:
-    cd reticulum-nrf && cargo run --release --bin t114
+    cd reticulum-nrf && cargo run --release --bin t114 --features bsp-t114
 
 # Useful for A/B testing (one T114 on new firmware, one on old).
 #   just flash-one /dev/ttyACM3
 #   just flash-one /dev/leviculum-transport
 # Flash a single T114 by port path or udev symlink.
 flash-one PORT:
-    cd reticulum-nrf && LEVICULUM_FLASH_ONLY={{PORT}} cargo run --release --bin t114
+    cd reticulum-nrf && LEVICULUM_FLASH_ONLY={{PORT}} cargo run --release --bin t114 --features bsp-t114
 
 # First flash from Meshtastic / blank firmware needs a manual RESET
 # double-tap (the stock app has no 1200-baud-touch handler). Subsequent
 # flashes use the touch path automatically.
 # Flash every attached RAK4631 (WisMesh Pocket V2) with the current firmware.
 flash-rak4631:
-    cd reticulum-nrf && LEVICULUM_USB_PID=0002 LEVICULUM_BOARD_NAME=RAK4631 LEVICULUM_UF2_BOARD_ID=WisBlock-RAK4631-Board cargo run --release --bin rak4631
+    cd reticulum-nrf && LEVICULUM_USB_PID=0002 LEVICULUM_BOARD_NAME=RAK4631 LEVICULUM_UF2_BOARD_ID=WisBlock-RAK4631-Board cargo run --release --bin rak4631 --features bsp-rak4631
 
 # Flash a single RAK4631 by port path or udev symlink.
 #   just flash-rak4631-one /dev/ttyACM0
 #   just flash-rak4631-one /dev/leviculum-rak-transport
 flash-rak4631-one PORT:
-    cd reticulum-nrf && LEVICULUM_FLASH_ONLY={{PORT}} LEVICULUM_USB_PID=0002 LEVICULUM_BOARD_NAME=RAK4631 LEVICULUM_UF2_BOARD_ID=WisBlock-RAK4631-Board cargo run --release --bin rak4631
+    cd reticulum-nrf && LEVICULUM_FLASH_ONLY={{PORT}} LEVICULUM_USB_PID=0002 LEVICULUM_BOARD_NAME=RAK4631 LEVICULUM_UF2_BOARD_ID=WisBlock-RAK4631-Board cargo run --release --bin rak4631 --features bsp-rak4631
 
 # Flash with all RAK19026 baseboard peripherals enabled — the WisMesh
 # Pocket V2 build. `--features rak-baseboard` aggregates the three
 # baseboard features (display, gnss, battery).
 flash-rak4631-pocket:
-    cd reticulum-nrf && LEVICULUM_USB_PID=0002 LEVICULUM_BOARD_NAME=RAK4631 LEVICULUM_UF2_BOARD_ID=WisBlock-RAK4631-Board cargo run --release --bin rak4631 --features rak-baseboard
+    cd reticulum-nrf && LEVICULUM_USB_PID=0002 LEVICULUM_BOARD_NAME=RAK4631 LEVICULUM_UF2_BOARD_ID=WisBlock-RAK4631-Board cargo run --release --bin rak4631 --features bsp-rak4631,rak-baseboard
 
 # Trigger Adafruit-UF2-bootloader on a stock-Meshtastic WisMesh Pocket V2.
 # Stock Meshtastic has no 1200-bps-touch handler and the device has no

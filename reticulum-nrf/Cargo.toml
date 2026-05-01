@@ -19,10 +19,17 @@ embassy-futures = "0.1"
 embassy-embedded-hal = "0.5"
 embedded-hal-async = "1"
 
-# Cortex-M support
-# critical-section-single-core REMOVED: it uses cpsid/cpsie which blocks
-# MPSL's high-priority radio interrupts. nrf-mpsl provides its own
-# critical-section impl that masks only application-priority interrupts.
+# Cortex-M support.
+#
+# `critical-section-single-core` is opt-in via the `bsp-t114` feature
+# (T114 has no BLE; full PRIMASK-based IRQ mask in CS is the standard
+# cortex-m idiom). The Pocket V2 build pulls a SoftDevice-aware impl
+# from `nrf-softdevice` instead via the `bsp-rak4631` feature. Both
+# build paths arrive at exactly one `critical_section::Impl` in the
+# linked binary; mutex enforced by `compile_error!` in `lib.rs`.
+# Bug #32 history: the prior `nrf-mpsl/critical-section-impl` (selective
+# mask, kept BLE-priority IRQs running during app CS) caused
+# Mutex<RefCell<…>> reentrance panics; resolved by SoftDevice migration.
 cortex-m = "0.7"
 cortex-m-rt = "0.7"
 
@@ -50,16 +57,27 @@ ssd1306 = { version = "0.10", default-features = false, features = ["graphics"],
 embedded-graphics = { version = "0.8", optional = true }
 nmea0183 = { version = "0.6", default-features = false, optional = true }
 
-# BLE stack — pinned to trouble's known-working combination for embassy-nrf 0.9 + bt-hci 0.8
-nrf-mpsl = { git = "https://github.com/alexmoon/nrf-sdc", rev = "df7e3b4", features = ["nrf52840", "critical-section-impl"] }
-nrf-sdc = { git = "https://github.com/alexmoon/nrf-sdc", rev = "df7e3b4", features = ["nrf52840", "peripheral"] }
-trouble-host = { git = "https://github.com/embassy-rs/trouble", branch = "main", default-features = false, features = ["peripheral", "derive", "gatt", "default-packet-pool"] }
+# BLE stack — Pocket V2 only (bsp-rak4631).
+#
+# Day-1 of bug32-softdevice-spike: the existing nrf-mpsl/nrf-sdc/trouble-host
+# combination is preserved on bsp-rak4631 so the rak4631 build still
+# cargo-checks; Day 2-3 replaces these with nrf-softdevice. T114 (bsp-t114)
+# does not pull these — its `bin/t114.rs` BLE init code is gated out.
+nrf-mpsl = { git = "https://github.com/alexmoon/nrf-sdc", rev = "df7e3b4", features = ["nrf52840", "critical-section-impl"], optional = true }
+nrf-sdc = { git = "https://github.com/alexmoon/nrf-sdc", rev = "df7e3b4", features = ["nrf52840", "peripheral"], optional = true }
+trouble-host = { git = "https://github.com/embassy-rs/trouble", branch = "main", default-features = false, features = ["peripheral", "derive", "gatt", "default-packet-pool"], optional = true }
+
+# nrf-softdevice deps are added on Day 2-3 of the spike. Slot reserved here
+# for clarity; commented out so the Day-1 cargo-check doesn't try to fetch
+# them yet.
+# nrf-softdevice = { git = "...", rev = "5949a5b", optional = true }
+# nrf-softdevice-s140 = { git = "...", rev = "5949a5b", optional = true }
 
 # cortex-m-rt supplies the startup runtime, panic handler, and vector
 # table that the linker needs for a no_std no_main firmware image, even
-# though no Rust module imports it directly. nrf-mpsl is pulled in for
-# its `critical-section-impl` feature; the actual API is reached via the
-# nrf-sdc re-exports.
+# though no Rust module imports it directly. nrf-mpsl/nrf-sdc/trouble-host
+# are conditionally pulled via `bsp-rak4631`; cargo-machete still flags them
+# as "not directly imported" because their effect is feature-driven.
 [package.metadata.cargo-machete]
 ignored = ["cortex-m-rt", "nrf-mpsl"]
 
@@ -68,6 +86,21 @@ ignored = ["cortex-m-rt", "nrf-mpsl"]
 # by the `flash-rak4631-pocket` recipe.
 [features]
 default = []
+
+# BSP selection — exactly one must be enabled. Mutex enforced via
+# `compile_error!` in `lib.rs`. Each BSP feature also selects the
+# critical-section impl that's appropriate for that board's runtime
+# (cortex-m's full-mask single-core impl on T114; SoftDevice-aware impl
+# on Pocket V2, added Day 2-3 of bug32-softdevice-spike).
+bsp-rak4631 = [
+    "dep:nrf-mpsl",
+    "dep:nrf-sdc",
+    "dep:trouble-host",
+]
+bsp-t114 = [
+    "cortex-m/critical-section-single-core",
+]
+
 display = ["dep:ssd1306", "dep:embedded-graphics"]
 gnss = ["dep:nmea0183"]
 battery = []
