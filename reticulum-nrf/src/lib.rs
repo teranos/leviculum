@@ -42,11 +42,19 @@ use static_cell::StaticCell;
 static VBUS_CELL: StaticCell<SoftwareVbusDetect> = StaticCell::new();
 
 /// Initialize and return a reference to the shared `SoftwareVbusDetect`.
-/// Initial state is "no VBUS detected" — the SoftDevice's first
-/// `PowerUsbDetected` event will flip it to true on cable-already-in
-/// boot scenarios. Call once.
+///
+/// **Diagnostic workaround:** initial state is `(true, true)` so the USB
+/// driver enumerates immediately at boot without waiting for the
+/// SoftDevice's first `PowerUsbDetected` SoC event. Reason: while the
+/// nrf-softdevice integration is being debugged, `Softdevice::enable`
+/// sometimes panics before any SoC event fires, leaving USB stuck
+/// waiting and hiding the panic message from our logs. With
+/// `(true, true)` the cable-already-plugged-in case (which is our
+/// flash workflow) just works; cable-removed scenarios will show a
+/// stale "USB connected" state until the SD events kick in. Revert
+/// to `(false, false)` once boot is reliable.
 pub fn init_vbus() -> &'static SoftwareVbusDetect {
-    VBUS_CELL.init(SoftwareVbusDetect::new(false, false))
+    VBUS_CELL.init(SoftwareVbusDetect::new(true, true))
 }
 
 /// Set the eight peripheral-IRQ priorities to non-SoftDevice-reserved

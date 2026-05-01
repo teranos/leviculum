@@ -21,7 +21,8 @@
 #
 # Pipeline: ELF → flat binary (objcopy) → UF2 (bin2uf2) → copy to UF2 drive
 #
-# NOTE: --base must match FLASH ORIGIN in memory.x (currently 0x26000 for S140 v6).
+# NOTE: --base must match FLASH ORIGIN in memory.x (currently 0x27000 for S140 v7.3.0,
+# bumped from 0x26000 for v6.1.1 in bug32-softdevice-spike Day 3).
 # Both T114 and RAK4631 share this layout, so FLASH_BASE / FAMILY_ID are not
 # parameterized — they are fixed properties of the Adafruit nRF52 UF2 family.
 
@@ -35,7 +36,7 @@ BIN_FILE="$ELF.bin"
 UF2_FILE="$ELF.uf2"
 UF2_TIMEOUT="${UF2_TIMEOUT:-30}"
 
-FLASH_BASE=0x26000
+FLASH_BASE=0x27000
 FAMILY_ID=0xADA52840
 
 # Per-board parameters (default to T114 values for backward compatibility).

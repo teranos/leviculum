@@ -48,12 +48,7 @@ async fn main(spawner: Spawner) {
     unsafe { reticulum_nrf::paint_stack(); }
 
     reticulum_nrf::set_panic_led(t114::PANIC_LED_PORT, t114::PANIC_LED_PIN, t114::PANIC_LED_ACTIVE_LOW);
-
-    // Set NVIC priorities before SoftDevice enable. S140 reserves
-    // P0/P1/P4; everything else goes to P5 (RNG, USBD, TWISPI0, SAADC,
-    // SPI2, UARTE0). GPIOTE + RTC1 stay P2 per embassy_nrf::config.
     reticulum_nrf::set_irq_priorities();
-
     let vbus = reticulum_nrf::init_vbus();
     let serial = reticulum_nrf::usb::init(&spawner, p.USBD, vbus, &t114::CONFIG);
 
@@ -149,7 +144,8 @@ async fn main(spawner: Spawner) {
     let lora_channels = reticulum_nrf::lora::channels();
     spawner.must_spawn(reticulum_nrf::lora::lora_task(lora, radio_cfg));
 
-    // BLE
+    // BLE — full init restored. RAM ORIGIN bumped to 40K (memory.x) to give
+    // Softdevice::enable headroom for our config (att_mtu=256, …).
     let identity_hash = *node.identity().hash();
     reticulum_nrf::ble::init(
         &spawner, identity_hash, vbus,
