@@ -27,6 +27,28 @@ pub mod rng;
 pub mod sx1262;
 pub mod usb;
 
+// Shared SoftwareVbusDetect, fed by the SoftDevice's SoC POWER events
+// from `ble::softdevice_task` and read by `embassy_nrf::usb::Driver` via
+// `usb::init`. We use the software variant because the SoftDevice
+// reserves exclusive access to the POWER peripheral and embassy-nrf's
+// HardwareVbusDetect would conflict (per
+// `embassy_nrf::usb::vbus_detect::HardwareVbusDetect` doc comment).
+//
+// The static is initialized lazily by `init_vbus()` — call once early
+// in `main()` before either `usb::init` or `ble::init`.
+pub use embassy_nrf::usb::vbus_detect::SoftwareVbusDetect;
+use static_cell::StaticCell;
+
+static VBUS_CELL: StaticCell<SoftwareVbusDetect> = StaticCell::new();
+
+/// Initialize and return a reference to the shared `SoftwareVbusDetect`.
+/// Initial state is "no VBUS detected" — the SoftDevice's first
+/// `PowerUsbDetected` event will flip it to true on cable-already-in
+/// boot scenarios. Call once.
+pub fn init_vbus() -> &'static SoftwareVbusDetect {
+    VBUS_CELL.init(SoftwareVbusDetect::new(false, false))
+}
+
 // RAK19026 baseboard peripherals — each gated on its own feature so the
 // bare nRF52840 + SX1262 build (T114, RAK4631 module without baseboard)
 // stays unchanged.

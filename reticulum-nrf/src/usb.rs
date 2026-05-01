@@ -13,7 +13,7 @@ use embassy_time::Duration;
 
 use embassy_executor::Spawner;
 use embassy_futures::select::{select, Either};
-use embassy_nrf::usb::vbus_detect::HardwareVbusDetect;
+use embassy_nrf::usb::vbus_detect::SoftwareVbusDetect;
 use embassy_nrf::{Peri, peripherals, usb};
 use embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex;
 use embassy_sync::channel::{Channel, Receiver, Sender};
@@ -94,9 +94,10 @@ pub struct SerialChannels {
 pub fn init(
     spawner: &Spawner,
     usbd: Peri<'static, peripherals::USBD>,
+    vbus: &'static SoftwareVbusDetect,
     board: &'static BoardConfig,
 ) -> SerialChannels {
-    let driver = usb::Driver::new(usbd, Irqs, HardwareVbusDetect::new(Irqs));
+    let driver = usb::Driver::new(usbd, Irqs, vbus);
 
     // TODO: register a proper PID at https://pid.codes/
     let mut config = Config::new(board.usb_vid, board.usb_pid);
@@ -143,7 +144,7 @@ pub fn init(
     }
 }
 
-type UsbDriver = usb::Driver<'static, HardwareVbusDetect>;
+type UsbDriver = usb::Driver<'static, &'static SoftwareVbusDetect>;
 
 /// CDC PSTN spec §6.3.10: SET_LINE_CODING is class request 0x20,
 /// addressed to the CDC communication interface. Payload is the 7-byte

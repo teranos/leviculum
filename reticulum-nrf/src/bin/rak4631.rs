@@ -61,7 +61,8 @@ async fn main(spawner: Spawner) {
     // hang investigation.
     reticulum_nrf::set_hardfault_led(1, 4, false);
 
-    let serial = reticulum_nrf::usb::init(&spawner, p.USBD, &rak4631::CONFIG);
+    let vbus = reticulum_nrf::init_vbus();
+    let serial = reticulum_nrf::usb::init(&spawner, p.USBD, vbus, &rak4631::CONFIG);
 
     info!("leviculum RAK4631 booting");
 
@@ -189,7 +190,7 @@ async fn main(spawner: Spawner) {
     // BLE — same Columba v2.2 service the T114 exposes.
     let identity_hash = *node.identity().hash();
     reticulum_nrf::ble::init(
-        &spawner, identity_hash,
+        &spawner, identity_hash, vbus,
         p.RTC0, p.TIMER0, p.TEMP, p.PPI_CH19, p.PPI_CH30, p.PPI_CH31,
         p.PPI_CH17, p.PPI_CH18, p.PPI_CH20, p.PPI_CH21, p.PPI_CH22, p.PPI_CH23,
         p.PPI_CH24, p.PPI_CH25, p.PPI_CH26, p.PPI_CH27, p.PPI_CH28, p.PPI_CH29,
