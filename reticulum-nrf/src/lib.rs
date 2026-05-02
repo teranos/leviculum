@@ -152,8 +152,25 @@ use embedded_alloc::LlffHeap as Heap;
 #[global_allocator]
 static HEAP: Heap = Heap::empty();
 
-/// Heap size in bytes (96 KiB, leaves ~136 KiB of 232 KiB app RAM for stack + BSS)
-const HEAP_SIZE: usize = 96 * 1024;
+/// Heap size in bytes (64 KiB).
+///
+/// Bumped DOWN from 96 KiB after the Bug #32 RNG fix. Sequence:
+/// 1. Direct-RNG-access panic (~26 s cycle) was the dominant fault.
+/// 2. RNG fix landed (commit f093099) → device runs longer, exposing
+///    a SECOND failure mode: stack overflow into BSS, manifesting as
+///    HardFault in `embassy_sync::AtomicWaker::wake` (Cell::replace
+///    on corrupted memory), `embedded_alloc::llff:78` allocator
+///    panic, or PC=0x0 jumps. Stack peak runs into __ebss territory.
+/// 3. Reducing heap from 96 KiB to 64 KiB shifts __ebss DOWN by 32
+///    KiB, giving stack 32 KiB more headroom. Observed `heap_used`
+///    peak is ~50 KiB (78% of 64 KiB pool); fits with 14 KiB margin.
+///    With 96 KiB pool, stack peak crashed into BSS within ~25 s.
+///
+/// Earlier "stack_free=0 was a measurement artifact" diagnosis (in
+/// Stage 1B's commit message) was WRONG — the artifact was real
+/// for the OLD stack_free implementation (commit 42f05e2 fixes that),
+/// but stack overflow at HEAP=96K is also real. Both bugs coexist.
+const HEAP_SIZE: usize = 64 * 1024;
 
 /// Return (used, free) heap bytes at this instant.
 pub fn heap_stats() -> (usize, usize) {
