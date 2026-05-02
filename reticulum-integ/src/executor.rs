@@ -1402,11 +1402,15 @@ fn execute_file_transfer(
         None
     };
 
+    // Treat any node attached to LoRa hardware (RNode OR LNode firmware
+    // over USB-Serial) as "has_rnode" for sender-timeout purposes — both
+    // pump packets over the same low-bandwidth LoRa link and need the
+    // longer establishment + retry budget.
     let has_rnode = runner
         .scenario()
         .nodes
         .values()
-        .any(|n| n.rnode || n.rnode_interfaces.is_some());
+        .any(|n| n.rnode || n.rnode_interfaces.is_some() || n.serial);
     let mut results = Vec::new();
 
     match direction {
@@ -1874,11 +1878,15 @@ fn execute_parallel_file_transfers(
     }
 
     let deadline = Instant::now() + Duration::from_secs(timeout_secs);
+    // Treat any node attached to LoRa hardware (RNode OR LNode firmware
+    // over USB-Serial) as "has_rnode" for sender-timeout purposes — both
+    // pump packets over the same low-bandwidth LoRa link and need the
+    // longer establishment + retry budget.
     let has_rnode = runner
         .scenario()
         .nodes
         .values()
-        .any(|n| n.rnode || n.rnode_interfaces.is_some());
+        .any(|n| n.rnode || n.rnode_interfaces.is_some() || n.serial);
     let n = transfers.len();
     let (tx, rx) = mpsc::channel();
 
@@ -3299,6 +3307,22 @@ mod tests {
             "/tests/lora_lncp_bidir.toml"
         ))
         .expect("lora_lncp_bidir.toml not found");
+        let scenario = crate::topology::parse_scenario(&toml_str).expect("parse failed");
+
+        let mut runner = require_runner!(scenario);
+
+        run_test(&mut runner).expect("test failed");
+    }
+
+    #[test]
+    #[ignore] // Requires two LNode-firmware boards (T114 + RAK4631 or similar)
+    #[serial(lora)]
+    fn lora_lnode_lncp_bidir() {
+        let toml_str = std::fs::read_to_string(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/tests/lora_lnode_lncp_bidir.toml"
+        ))
+        .expect("lora_lnode_lncp_bidir.toml not found");
         let scenario = crate::topology::parse_scenario(&toml_str).expect("parse failed");
 
         let mut runner = require_runner!(scenario);
