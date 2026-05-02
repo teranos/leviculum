@@ -1,58 +1,97 @@
-//! Hardware RNG access for NodeCore via the SoftDevice's RNG syscall.
+//! Hardware RNG access for NodeCore.
 //!
-//! The Nordic S140 SoftDevice owns the RNG peripheral exclusively (PREGION-1
-//! protected); any direct register access at 0x4000_D000 traps as an
-//! `NRF_FAULT_ID_APP_MEMACC` peripheral-violation and panics via
-//! `nrf_softdevice::softdevice::fault_handler`. Use the SD's
-//! `sd_rand_application_vector_get` syscall instead. NodeCore uses this
-//! `RawHwRng` for identity generation, signing nonces, and announce random
-//! hashes.
+//! The Nordic S140 SoftDevice owns the RNG peripheral exclusively at
+//! runtime (PREGION-protected); any direct register access at 0x4000_D000
+//! traps as `NRF_FAULT_ID_APP_MEMACC` and panics via
+//! `nrf_softdevice::softdevice::fault_handler`. Post-`Softdevice::enable`,
+//! we MUST use `sd_rand_application_vector_get`. **Pre**-enable, the
+//! peripheral is unprotected and direct register access works — and we
+//! need it to, because identity generation on a fresh device runs in
+//! `NodeCoreBuilder::build` which is called before `ble::init`.
 //!
-//! Constraint: callers must wait until `ble::init` has enabled the SoftDevice
-//! before invoking the RNG. Pre-enable calls return zeros (the syscall errors
-//! out before the SD is up).
+//! Strategy: call the SD syscall first. If it returns success, use it.
+//! If it fails (SD not yet enabled → `NRF_ERROR_INVALID_STATE`), fall
+//! back to direct register access. The fallback is only ever exercised
+//! pre-enable; once SD is up, the syscall never returns INVALID_STATE.
+//!
+//! Bug #32 spike: the previous unconditional direct-register-access
+//! version cycled the device every ~26 s with a SoftDevice MEMACC panic.
 
 use rand_core::{CryptoRng, RngCore};
 
-/// Hardware RNG that calls into the SoftDevice's CSPRNG via SVC.
+/// Hardware RNG that prefers the SoftDevice's CSPRNG syscall, with a
+/// pre-enable fallback to direct register access.
 pub struct RawHwRng;
+
+const RNG_BASE: u32 = 0x4000_D000;
+const RNG_TASKS_START: *mut u32 = (RNG_BASE + 0x000) as *mut u32;
+const RNG_TASKS_STOP: *mut u32 = (RNG_BASE + 0x004) as *mut u32;
+const RNG_EVENTS_VALRDY: *mut u32 = (RNG_BASE + 0x100) as *mut u32;
+const RNG_VALUE: *const u32 = (RNG_BASE + 0x508) as *const u32;
+const RNG_CONFIG: *mut u32 = (RNG_BASE + 0x504) as *mut u32;
 
 impl RawHwRng {
     pub fn new() -> Self { Self }
 
-    /// Call `sd_rand_application_vector_get` once for `dest`, retrying on
-    /// `NRF_ERROR_SOC_RAND_NOT_ENOUGH_VALUES` (the SD's RNG pool can be
-    /// drained briefly by BLE's own use; it refills off the hardware TRNG).
-    /// Returns `false` if the syscall consistently errors (e.g. SD not yet
-    /// enabled), in which case `dest` is left as zeros — callers don't get
-    /// good entropy but also don't fault.
-    fn fill(dest: &mut [u8]) -> bool {
-        if dest.is_empty() { return true; }
+    /// Direct hardware register read — safe ONLY pre-`Softdevice::enable`.
+    /// Used as the fallback when the SD syscall returns INVALID_STATE
+    /// because identity generation happens in `NodeCoreBuilder::build`
+    /// before `ble::init` runs. Post-enable, this would fault the SD.
+    fn direct_byte() -> u8 {
+        unsafe {
+            // Enable bias correction once, idempotent.
+            core::ptr::write_volatile(RNG_CONFIG, 1);
+            core::ptr::write_volatile(RNG_EVENTS_VALRDY, 0);
+            core::ptr::write_volatile(RNG_TASKS_START, 1);
+            while core::ptr::read_volatile(RNG_EVENTS_VALRDY) == 0 {}
+            let val = core::ptr::read_volatile(RNG_VALUE) as u8;
+            core::ptr::write_volatile(RNG_TASKS_STOP, 1);
+            val
+        }
+    }
+
+    /// Try `sd_rand_application_vector_get` for one chunk of up to 255 bytes.
+    /// Returns `Some(())` on success, `None` if SD is not enabled
+    /// (NRF_ERROR_INVALID_STATE = 8). Other errors retry up to 10 000
+    /// times for SocRandNotEnoughValues; any persistent non-zero return
+    /// also yields `None`.
+    fn try_syscall_chunk(buf: *mut u8, len: u8) -> Option<()> {
+        let mut retries = 0u32;
+        loop {
+            let ret = unsafe {
+                nrf_softdevice_s140::sd_rand_application_vector_get(buf, len)
+            };
+            match ret {
+                0 => return Some(()),                    // NRF_SUCCESS
+                8 => return None,                        // NRF_ERROR_INVALID_STATE — SD not enabled
+                _ => {
+                    retries += 1;
+                    if retries > 10_000 { return None; }
+                    cortex_m::asm::nop();
+                }
+            }
+        }
+    }
+
+    fn fill(dest: &mut [u8]) {
+        if dest.is_empty() { return; }
         let mut offset = 0usize;
-        // Syscall takes u8 length, so chunk by 255.
         while offset < dest.len() {
             let chunk_len = (dest.len() - offset).min(u8::MAX as usize);
-            let mut retries = 0u32;
-            loop {
-                let ret = unsafe {
-                    nrf_softdevice_s140::sd_rand_application_vector_get(
-                        dest[offset..].as_mut_ptr(),
-                        chunk_len as u8,
-                    )
-                };
-                if ret == 0 { break; }
-                // NRF_ERROR_SOC_RAND_NOT_ENOUGH_VALUES = 0x1300 + 1 typically;
-                // any non-zero return means try again until pool refills.
-                retries += 1;
-                if retries > 10_000 {
-                    // SD not enabled or persistent failure — return as-is.
-                    return false;
+            match Self::try_syscall_chunk(dest[offset..].as_mut_ptr(), chunk_len as u8) {
+                Some(()) => {
+                    offset += chunk_len;
                 }
-                cortex_m::asm::nop();
+                None => {
+                    // Pre-SD-enable fallback: direct register access.
+                    // Works because no PREGION protection yet.
+                    for byte in &mut dest[offset..offset + chunk_len] {
+                        *byte = Self::direct_byte();
+                    }
+                    offset += chunk_len;
+                }
             }
-            offset += chunk_len;
         }
-        true
     }
 }
 
@@ -69,7 +108,7 @@ impl RngCore for RawHwRng {
         u64::from_le_bytes(buf)
     }
 
-    fn fill_bytes(&mut self, dest: &mut [u8]) { let _ = Self::fill(dest); }
+    fn fill_bytes(&mut self, dest: &mut [u8]) { Self::fill(dest); }
 
     fn try_fill_bytes(&mut self, dest: &mut [u8]) -> Result<(), rand_core::Error> {
         Self::fill(dest);
