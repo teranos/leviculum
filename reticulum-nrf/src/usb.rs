@@ -131,6 +131,7 @@ pub fn init(
 
     spawner.must_spawn(usb_task(usb_dev));
     spawner.must_spawn(debug_writer_task(cdc_debug));
+    spawner.must_spawn(runtime_drain_open_timeout_task());
     spawner.must_spawn(retic_serial_task(
         cdc_retic,
         INCOMING_CHANNEL.sender(),
@@ -211,6 +212,9 @@ async fn debug_writer_task(mut cdc: CdcAcmClass<'static, UsbDriver>) {
         if !cdc.dtr() {
             continue;
         }
+        // First DTR-assert observation opens the runtime-drain gate so
+        // the LoRa task / tracing subscriber stop dropping their output.
+        crate::log::open_runtime_drain();
 
         // Drain ring buffer to USB
         loop {
@@ -224,6 +228,17 @@ async fn debug_writer_task(mut cdc: CdcAcmClass<'static, UsbDriver>) {
             }
         }
     }
+}
+
+/// Headless-fallback opener for the runtime-drain gate. If no host
+/// asserts DTR within 30 s of boot, open the gate anyway so field
+/// deployments without a debug host don't accumulate dropped output
+/// indefinitely.
+#[embassy_executor::task]
+pub(crate) async fn runtime_drain_open_timeout_task() {
+    use embassy_time::{Duration, Timer};
+    Timer::after(Duration::from_secs(30)).await;
+    crate::log::open_runtime_drain();
 }
 
 /// Lightweight log helpers for serial task diagnostics (no format_args overhead)

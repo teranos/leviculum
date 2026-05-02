@@ -33,7 +33,7 @@ use reticulum_nrf::boards::rak4631;
 use reticulum_nrf::clock::EmbassyClock;
 use reticulum_nrf::interface::EmbeddedInterface;
 use reticulum_nrf::lora::LoRaInterface;
-use reticulum_nrf::{info, init_heap};
+use reticulum_nrf::{info, init_heap, log_critical};
 
 #[embassy_executor::main]
 async fn main(spawner: Spawner) {
@@ -51,6 +51,7 @@ async fn main(spawner: Spawner) {
     // overwrite the captured data with the `0xDEADBEEF` canary.
     let hardfault_pm = reticulum_nrf::take_hardfault_postmortem();
     let panic_pm = reticulum_nrf::take_panic_postmortem();
+    let persistent_log = reticulum_nrf::log::take_persistent_log();
 
     // SAFETY: called once before any complex work or concurrent tasks
     unsafe { reticulum_nrf::paint_stack(); }
@@ -69,18 +70,47 @@ async fn main(spawner: Spawner) {
     let vbus = reticulum_nrf::init_vbus();
     let serial = reticulum_nrf::usb::init(&spawner, p.USBD, vbus, &rak4631::CONFIG);
 
-    info!("leviculum RAK4631 booting");
+    log_critical!("leviculum RAK4631 booting");
     reticulum_nrf::log_irq_priorities();
 
     if let Some(pm) = hardfault_pm {
-        info!(
+        log_critical!(
             "[HARDFAULT_PMRT] pc=0x{:08x} lr=0x{:08x} r0=0x{:08x} r1=0x{:08x} r2=0x{:08x} r3=0x{:08x} r12=0x{:08x} xpsr=0x{:08x}",
             pm.pc, pm.lr, pm.r0, pm.r1, pm.r2, pm.r3, pm.r12, pm.xpsr
         );
     }
     if let Some(pm) = panic_pm {
         let msg = core::str::from_utf8(&pm.bytes[..pm.len]).unwrap_or("<non-utf8 panic msg>");
-        info!("[PANIC_PMRT] len={} msg={}", pm.len, msg);
+        log_critical!("[PANIC_PMRT] len={} msg={}", pm.len, msg);
+    }
+    // Persistent-log replay from previous boot's last ~2 KiB. Each
+    // line is emitted as a `[PERSISTENT_LOG]`-prefixed critical line
+    // so it lands ahead of the runtime flood. After this block, the
+    // PERSISTENT_TAIL ring is implicitly cleared (the tail mirror's
+    // first write of THIS boot will reset it).
+    if let Some(snap) = persistent_log {
+        let mut start = 0usize;
+        while start < snap.len {
+            let end = snap.bytes[start..snap.len]
+                .iter()
+                .position(|&b| b == b'\n')
+                .map(|p| start + p + 1)
+                .unwrap_or(snap.len);
+            // skip the leading partial line (we wrap around inside lines)
+            if start == 0 && end == snap.len {
+                // single-line case, emit as-is
+            } else if start == 0 {
+                // first chunk likely a partial line — skip it
+                start = end;
+                continue;
+            }
+            let raw = &snap.bytes[start..end];
+            let trimmed = core::str::from_utf8(raw).unwrap_or("<non-utf8>").trim_end_matches(['\r','\n']);
+            if !trimmed.is_empty() {
+                log_critical!("[PERSISTENT_LOG] {}", trimmed);
+            }
+            start = end;
+        }
     }
 
     // Power up baseboard peripherals (OLED, GNSS, LIS3DH, NCP5623).

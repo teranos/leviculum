@@ -101,7 +101,7 @@ pub fn set_irq_priorities() {
 pub fn log_irq_priorities() {
     use embassy_nrf::interrupt::{Interrupt, InterruptExt};
 
-    log::log_fmt(
+    log::log_fmt_critical(
         "[NVIC_PRIO] ",
         format_args!(
             "rng={:?} usbd={:?} twispi0={:?} saadc={:?} spi2={:?} uarte0={:?} gpiote={:?} rtc1={:?}",

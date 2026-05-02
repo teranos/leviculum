@@ -32,7 +32,7 @@ use reticulum_nrf::boards::t114;
 use reticulum_nrf::clock::EmbassyClock;
 use reticulum_nrf::interface::EmbeddedInterface;
 use reticulum_nrf::lora::LoRaInterface;
-use reticulum_nrf::{info, init_heap};
+use reticulum_nrf::{info, init_heap, log_critical};
 
 #[embassy_executor::main]
 async fn main(spawner: Spawner) {
@@ -44,6 +44,13 @@ async fn main(spawner: Spawner) {
 
     init_heap();
     reticulum_nrf::init_tracing();
+
+    // Boot diagnostics from previous run — read BEFORE paint_stack
+    // (the canary fill walks `.uninit` upward and would clobber).
+    let hardfault_pm = reticulum_nrf::take_hardfault_postmortem();
+    let panic_pm = reticulum_nrf::take_panic_postmortem();
+    let persistent_log = reticulum_nrf::log::take_persistent_log();
+
     // SAFETY: called once before any complex work or concurrent tasks
     unsafe { reticulum_nrf::paint_stack(); }
 
@@ -52,8 +59,41 @@ async fn main(spawner: Spawner) {
     let vbus = reticulum_nrf::init_vbus();
     let serial = reticulum_nrf::usb::init(&spawner, p.USBD, vbus, &t114::CONFIG);
 
-    info!("leviculum T114 booting");
+    log_critical!("leviculum T114 booting");
     reticulum_nrf::log_irq_priorities();
+
+    if let Some(pm) = hardfault_pm {
+        log_critical!(
+            "[HARDFAULT_PMRT] pc=0x{:08x} lr=0x{:08x} r0=0x{:08x} r1=0x{:08x} r2=0x{:08x} r3=0x{:08x} r12=0x{:08x} xpsr=0x{:08x}",
+            pm.pc, pm.lr, pm.r0, pm.r1, pm.r2, pm.r3, pm.r12, pm.xpsr
+        );
+    }
+    if let Some(pm) = panic_pm {
+        let msg = core::str::from_utf8(&pm.bytes[..pm.len]).unwrap_or("<non-utf8>");
+        log_critical!("[PANIC_PMRT] len={} msg={}", pm.len, msg);
+    }
+    if let Some(snap) = persistent_log {
+        let mut start = 0usize;
+        while start < snap.len {
+            let end = snap.bytes[start..snap.len]
+                .iter()
+                .position(|&b| b == b'\n')
+                .map(|p| start + p + 1)
+                .unwrap_or(snap.len);
+            if start == 0 && end == snap.len {
+                // single-line case
+            } else if start == 0 {
+                start = end;
+                continue;
+            }
+            let raw = &snap.bytes[start..end];
+            let trimmed = core::str::from_utf8(raw).unwrap_or("<non-utf8>").trim_end_matches(['\r','\n']);
+            if !trimmed.is_empty() {
+                log_critical!("[PERSISTENT_LOG] {}", trimmed);
+            }
+            start = end;
+        }
+    }
 
     let _vext = Output::new(p.P0_21, Level::Low, OutputDrive::Standard);
     let mut led = t114::led(p.P1_03);

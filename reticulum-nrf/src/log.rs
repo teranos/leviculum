@@ -7,12 +7,40 @@
 //! regardless of when the host opens the port. Old data is overwritten when
 //! the ring buffer is full (like Linux `dmesg` / `printk`).
 
-use core::sync::atomic::{AtomicUsize, Ordering};
+use core::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex;
 use embassy_sync::signal::Signal;
 
-// Ring buffer
-const LOG_RING_SIZE: usize = 4096; // 4 KB — fits ~15-20 log lines
+// Ring buffer — 8 KiB. Boot-critical output is ~1-2 KiB; runtime
+// output is gated on RUNTIME_DRAIN_OPEN so it doesn't lap the
+// scrollback before the host attaches. Started at 32 KiB during the
+// Stage 1B refactor but BSS-pressure forced it down: stack_free
+// dropped to 36 bytes at 96-KiB-heap+32-KiB-ring, ~16 KiB stack
+// headroom now (with HEAP_SIZE=64 KiB and the 8 KiB ring) — measured.
+const LOG_RING_SIZE: usize = 8 * 1024;
+// Persistent log tail kept in `.uninit` RAM that survives `sys_reset`.
+// 2 KiB ring written in parallel to the main LOG_RING by every
+// `log_fmt*` call. Read once at boot-startup so a board that crashed
+// can replay the last ~2 KiB of its log before the crash. Best-effort
+// — a HardFault that hits between `LOG_RING.write` and the parallel
+// `PERSISTENT_TAIL.write` loses that line.
+const PERSISTENT_TAIL_SIZE: usize = 2048;
+const PERSISTENT_TAIL_MAGIC: u32 = 0x10A9_11A1;
+
+/// True once the host has DTR-asserted on the debug CDC port (or
+/// after the 30 s headless-fallback timeout). Producer-side runtime
+/// log calls (`log_fmt`, `info!`, `warn!`) silently drop their output
+/// until this flips, so the LOG_RING isn't lapped by LoRa traffic
+/// before the host gets a chance to read the boot-critical lines.
+/// Boot-critical paths use `log_fmt_critical` / `log_critical!` and
+/// bypass this gate. Set by `usb::debug_writer_task` on first
+/// DTR-assert observation, or by `runtime_drain_open_timeout_task`
+/// after 30 s.
+pub static RUNTIME_DRAIN_OPEN: AtomicBool = AtomicBool::new(false);
+/// Counter for runtime log lines dropped because RUNTIME_DRAIN_OPEN
+/// was still false. Logged once at gate-open so the field operator
+/// knows how many lines were lost while waiting.
+pub static RUNTIME_DROPPED: AtomicUsize = AtomicUsize::new(0);
 
 /// Lock-free ring buffer for log output.
 /// Single producer (log_fmt / tracing subscriber), single consumer (USB debug writer).
@@ -75,12 +103,10 @@ pub static LOG_RING: LogRing = LogRing::new();
 pub static LOG_SIGNAL: Signal<CriticalSectionRawMutex, ()> = Signal::new();
 
 // Log formatting
-/// Format and write a log message to the ring buffer. Never blocks.
-pub fn log_fmt(prefix: &str, args: core::fmt::Arguments) {
-    let mut buf = [0u8; 256];
+/// Format a log message into a 256-byte stack buffer with the given prefix
+/// and a trailing CRLF. Returns the slice of valid bytes.
+fn fmt_into<'a>(buf: &'a mut [u8; 1024], prefix: &str, args: core::fmt::Arguments) -> &'a [u8] {
     let mut len = 0usize;
-
-    // Format prefix + message + \r\n into stack buffer
     struct BufWriter<'a> { buf: &'a mut [u8], len: &'a mut usize }
     impl core::fmt::Write for BufWriter<'_> {
         fn write_str(&mut self, s: &str) -> core::fmt::Result {
@@ -91,13 +117,39 @@ pub fn log_fmt(prefix: &str, args: core::fmt::Arguments) {
             Ok(())
         }
     }
-
-    let mut w = BufWriter { buf: &mut buf, len: &mut len };
+    let mut w = BufWriter { buf: buf.as_mut_slice(), len: &mut len };
     let _ = core::fmt::Write::write_str(&mut w, prefix);
     let _ = core::fmt::Write::write_fmt(&mut w, args);
     let _ = core::fmt::Write::write_str(&mut w, "\r\n");
+    &buf[..len]
+}
 
-    LOG_RING.write(&buf[..len]);
+/// Format and write a log message to the ring buffer. Never blocks.
+///
+/// **Runtime-gated:** silently drops if `RUNTIME_DRAIN_OPEN == false`.
+/// Use `log_fmt_critical` for boot/panic/init-phase output that must
+/// reach the host even before DTR-assert.
+pub fn log_fmt(prefix: &str, args: core::fmt::Arguments) {
+    if !RUNTIME_DRAIN_OPEN.load(Ordering::Relaxed) {
+        RUNTIME_DROPPED.fetch_add(1, Ordering::Relaxed);
+        return;
+    }
+    let mut buf = [0u8; 1024];
+    let bytes = fmt_into(&mut buf, prefix, args);
+    LOG_RING.write(bytes);
+    PERSISTENT_TAIL.write(bytes);
+    LOG_SIGNAL.signal(());
+}
+
+/// Format and write a log message bypassing the runtime-drain gate.
+/// Used for boot-phase logs, panic-PMRT replay, NVIC priority dump,
+/// `[BUG32_RAM]` capture, and anything that must survive a slow-
+/// attaching host or a board that crashes before DTR-assert.
+pub fn log_fmt_critical(prefix: &str, args: core::fmt::Arguments) {
+    let mut buf = [0u8; 1024];
+    let bytes = fmt_into(&mut buf, prefix, args);
+    LOG_RING.write(bytes);
+    PERSISTENT_TAIL.write(bytes);
     LOG_SIGNAL.signal(());
 }
 
@@ -116,6 +168,109 @@ macro_rules! warn {
     ($($arg:tt)*) => {
         $crate::log::log_fmt("[WARN] ", core::format_args!($($arg)*))
     };
+}
+
+/// Log a boot/panic-critical message that bypasses the
+/// `RUNTIME_DRAIN_OPEN` gate. Use only for output that must reach
+/// the host before DTR-assert (boot banners, NVIC dump, PMRT replay,
+/// `[BUG32_RAM]`-style probes); routine info!/warn!/tracing-debug
+/// stays gated.
+#[macro_export]
+macro_rules! log_critical {
+    ($($arg:tt)*) => {
+        $crate::log::log_fmt_critical("[INFO!] ", core::format_args!($($arg)*))
+    };
+}
+
+// Persistent log tail in `.uninit` — survives sys_reset.
+#[repr(C)]
+pub struct PersistentTail {
+    pub magic: u32,
+    pub write_pos: u32,
+    pub buf: [u8; PERSISTENT_TAIL_SIZE],
+}
+
+#[link_section = ".uninit"]
+static mut PERSISTENT_TAIL_RAW: core::mem::MaybeUninit<PersistentTail> =
+    core::mem::MaybeUninit::uninit();
+
+/// Single-producer mirror ring written in parallel to LOG_RING by every
+/// `log_fmt*` call. Read once at boot via `take_persistent_log_lines`.
+pub struct PersistentTailMirror;
+pub static PERSISTENT_TAIL: PersistentTailMirror = PersistentTailMirror;
+
+impl PersistentTailMirror {
+    pub fn write(&self, data: &[u8]) {
+        unsafe {
+            let p = core::ptr::addr_of_mut!(PERSISTENT_TAIL_RAW).cast::<PersistentTail>();
+            // Initialize on first write per boot if magic isn't ours yet.
+            // (After take_persistent_log_lines clears the magic, we
+            // re-initialize — that's intentional: the tail captures the
+            // *current* boot's tail, not the previous boot's.)
+            let magic = core::ptr::read_volatile(core::ptr::addr_of!((*p).magic));
+            if magic != PERSISTENT_TAIL_MAGIC {
+                core::ptr::write_volatile(core::ptr::addr_of_mut!((*p).write_pos), 0);
+                let buf_ptr = core::ptr::addr_of_mut!((*p).buf).cast::<u8>();
+                for i in 0..PERSISTENT_TAIL_SIZE {
+                    core::ptr::write_volatile(buf_ptr.add(i), 0);
+                }
+                core::ptr::write_volatile(core::ptr::addr_of_mut!((*p).magic), PERSISTENT_TAIL_MAGIC);
+            }
+            let mut wp = core::ptr::read_volatile(core::ptr::addr_of!((*p).write_pos)) as usize;
+            let buf_ptr = core::ptr::addr_of_mut!((*p).buf).cast::<u8>();
+            for &b in data {
+                core::ptr::write_volatile(buf_ptr.add(wp % PERSISTENT_TAIL_SIZE), b);
+                wp = wp.wrapping_add(1);
+            }
+            core::ptr::write_volatile(core::ptr::addr_of_mut!((*p).write_pos), wp as u32);
+        }
+    }
+}
+
+/// Snapshot the persistent log tail from the previous boot, if any,
+/// then clear the magic so the next call returns None until the
+/// current boot starts writing again.
+pub struct PersistentLogSnapshot {
+    pub bytes: [u8; PERSISTENT_TAIL_SIZE],
+    pub len: usize,
+}
+
+pub fn take_persistent_log() -> Option<PersistentLogSnapshot> {
+    unsafe {
+        let p = core::ptr::addr_of_mut!(PERSISTENT_TAIL_RAW).cast::<PersistentTail>();
+        let magic = core::ptr::read_volatile(core::ptr::addr_of!((*p).magic));
+        if magic != PERSISTENT_TAIL_MAGIC {
+            return None;
+        }
+        let wp = core::ptr::read_volatile(core::ptr::addr_of!((*p).write_pos)) as usize;
+        let mut out = [0u8; PERSISTENT_TAIL_SIZE];
+        let buf_ptr = core::ptr::addr_of!((*p).buf).cast::<u8>();
+        let (start, len) = if wp >= PERSISTENT_TAIL_SIZE {
+            (wp - PERSISTENT_TAIL_SIZE, PERSISTENT_TAIL_SIZE)
+        } else {
+            (0usize, wp)
+        };
+        for i in 0..len {
+            out[i] = core::ptr::read_volatile(buf_ptr.add((start + i) % PERSISTENT_TAIL_SIZE));
+        }
+        // Clear so subsequent calls return None.
+        core::ptr::write_volatile(core::ptr::addr_of_mut!((*p).magic), 0);
+        Some(PersistentLogSnapshot { bytes: out, len })
+    }
+}
+
+/// Marks the runtime-drain gate as open so subsequent `log_fmt`
+/// (and `info!`/`warn!`) calls land in LOG_RING. Idempotent. Called
+/// by `usb::debug_writer_task` on first DTR-assert observation, and
+/// by `usb::runtime_drain_open_timeout_task` after 30 s.
+pub fn open_runtime_drain() {
+    if !RUNTIME_DRAIN_OPEN.swap(true, Ordering::Relaxed) {
+        let dropped = RUNTIME_DROPPED.load(Ordering::Relaxed);
+        log_fmt_critical(
+            "[LOG_GATE] ",
+            format_args!("opened, dropped {} runtime lines pre-attach", dropped),
+        );
+    }
 }
 
 // Tracing subscriber
@@ -138,6 +293,13 @@ impl tracing_core::Subscriber for TracingSubscriber {
     fn exit(&self, _: &tracing_core::span::Id) {}
 
     fn event(&self, event: &tracing_core::Event<'_>) {
+        // Tracing events are runtime-class (reticulum-core's transport
+        // layer). Gate them on the RUNTIME_DRAIN_OPEN flag so they
+        // don't lap the boot-critical scrollback before the host attaches.
+        if !RUNTIME_DRAIN_OPEN.load(Ordering::Relaxed) {
+            RUNTIME_DROPPED.fetch_add(1, Ordering::Relaxed);
+            return;
+        }
         let metadata = event.metadata();
         let level = match *metadata.level() {
             tracing_core::Level::ERROR => "ERROR",
@@ -147,7 +309,7 @@ impl tracing_core::Subscriber for TracingSubscriber {
             tracing_core::Level::TRACE => "TRACE",
         };
 
-        let mut buf = [0u8; 256];
+        let mut buf = [0u8; 1024];
         let mut len = 0usize;
 
         struct BufWriter<'a> { buf: &'a mut [u8], len: &'a mut usize }
@@ -175,6 +337,7 @@ impl tracing_core::Subscriber for TracingSubscriber {
         }
 
         LOG_RING.write(&buf[..len]);
+        PERSISTENT_TAIL.write(&buf[..len]);
         LOG_SIGNAL.signal(());
     }
 }
