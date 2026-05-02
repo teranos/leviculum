@@ -14,51 +14,32 @@ MEMORY
     /* Safe app space = 0xEC000 - 0x27000 = 0xC5000 (788K).                 */
     FLASH : ORIGIN = 0x00027000, LENGTH = 0xC5000
 
-    /* SoftDevice S140 v7.3.0 RAM reservation: 48 KiB (conservative,        */
-    /* empirically clean on both T114 and Pocket V2; was the pre-batch      */
-    /* committed value). The pre-Day-4 reviewer batch (2026-05-02)          */
-    /* attempted to pin a tighter canonical and could not, hence this       */
-    /* over-reservation is intentional. Details:                            */
-    /*                                                                      */
-    /*   * Stage 1 (`nrf-softdevice/log` feature): destabilized the build  */
-    /*     with attribution uncertain (possibly correlated with the 64K    */
-    /*     peripheral-MEMACC layout-shift bug rather than the log feature  */
-    /*     itself). Reverted.                                               */
-    /*                                                                      */
-    /*   * Stage 2 (deliberate undersize → NoMem panic): blocked by S140   */
-    /*     v7's unconditional 8 KiB MBR + master-init RAM reservation at   */
-    /*     0x20000000-0x20001FFF; any RAM ORIGIN ≤ 0x20002000 HardFaults    */
-    /*     before `sd_ble_enable` can return its helpful NoMem panic.       */
-    /*                                                                      */
-    /*   * Option C (local Cargo `[patch]` of nrf-softdevice's              */
-    /*     `softdevice.rs:243` to expose `wanted_app_ram_base` via an       */
-    /*     `extern "Rust"` callback): set up cleanly (cargo tree confirmed */
-    /*     the patched paths), but the patched build entered a panic-loop  */
-    /*     on T114 at 16 KiB before USB enumerated, so the [BUG32_RAM]     */
-    /*     line was never captured. Root cause not isolated within the     */
-    /*     reviewer's 30-minute Option-C time-box; spec said fall back.   */
-    /*                                                                      */
-    /*   * Option A 16 KiB fallback: smoke-tested on this branch HEAD;     */
-    /*     T114 enumerated briefly then disconnected (port disappeared    */
-    /*     mid-smoke, host re-enumerated it), confirming 16 KiB is in     */
-    /*     fact too tight for our config — the reviewer's spec assumed    */
-    /*     "16 K is sure to be too small" was *correct*; our earlier       */
-    /*     "16 K boots clean" observation was a brief partial-boot, not   */
-    /*     a sustained-running state. Bumped to 48 KiB.                   */
-    /*                                                                      */
-    /* Canonical bound: 16 KiB < canonical ≤ 48 KiB. Exact value unpinned. */
-    /*                                                                      */
-    /* T114 has a separate per-binary instability at 48 KiB on this HEAD:  */
-    /* both T114-A (today's many panic-loop cycles) AND a freshly-attached */
-    /* T114-B exhibit "USB CDC port appears for milliseconds then drops".  */
-    /* RAK4631 is stable at the same 48 KiB build. Per reviewer's          */
-    /* decision rule, Day 4 proceeds on RAK4631 only; T114 issue tracked  */
-    /* as separate post-spike investigation.                               */
-    /*                                                                      */
-    /* Stay below the 0x20010000 (64 KiB) boundary; that triggers a        */
-    /* peripheral-register MEMACC fault distinct from this RAM-NoMem path  */
-    /* and is tracked separately as a follow-up item.                       */
-    /*                                                                      */
-    /* Leaves 256K - 48K = 208K (0x34000) for application.                  */
-    RAM   : ORIGIN = 0x2000C000, LENGTH = 0x34000
+    /*
+     * RAM ORIGIN derived empirically via local Cargo [patch] on
+     * nrf-softdevice's softdevice.rs:243 — captured wanted_app_ram_base
+     * value sd_ble_enable returns for our config (BleGapConfig:
+     * periph=1, central=0; default att_mtu=251; default attr_tab_size).
+     *
+     * Captured value: wanted_app_ram_base = 0x20002CE0
+     *                 softdevice_ram      = 11488 bytes (~11.2 KiB)
+     *                 board               = RAK4631 (Pocket V2)
+     *                 date                = 2026-05-02
+     * Margin: +0x400 (1 KiB) → final RAM ORIGIN = 0x200030E0
+     *                          (already 32-byte aligned: 0xE0 / 0x20 = 7)
+     * SD reservation: 12512 bytes (= 0x30E0)
+     *
+     * Lower bound: S140 v7 reserves the bottom 8 KiB (0x20000000-
+     * 0x20001FFF) for MBR + master-init scratch; cannot probe below
+     * that via deliberate undersize.
+     *
+     * Note: 0x20010000 (64 KiB reservation) regresses with a
+     * peripheral-register MEMACC fault (info != 0); root cause now
+     * believed to be a layout-driven re-trigger of the same
+     * SoftDevice-PREGION violation that caused Bug #32 (direct RNG
+     * register access from RawHwRng, fixed in commit f093099). Worth
+     * re-running 64 KiB with the f093099 build to confirm.
+     *
+     * Leaves 256K - 12.2K = 243.8K (0x3CF20) for application.
+     */
+    RAM   : ORIGIN = 0x200030E0, LENGTH = 0x3CF20
 }
