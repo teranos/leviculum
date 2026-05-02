@@ -160,16 +160,30 @@ pub fn heap_stats() -> (usize, usize) {
     (HEAP.used(), HEAP.free())
 }
 
-/// Returns approximate unused stack bytes.
+/// Returns approximate unused stack bytes (in 4-byte units, summed).
 /// Requires `paint_stack()` to have been called at boot.
+///
+/// Scans 0xDEADBEEF canary words upward starting `UNINIT_SKIP` bytes
+/// above `__ebss`. The skip is needed because `.uninit` lives just
+/// above `__ebss` and several of our `.uninit` statics
+/// (`PERSISTENT_TAIL_RAW`, `PANIC_PM`, `HARDFAULT_PM`) are written by
+/// the running app immediately after boot — overwriting the canary
+/// `paint_stack` had placed there. Without the skip, this function
+/// always returned ~36 bytes regardless of actual stack usage.
+///
+/// Bug #32 spike: the persistent-log infrastructure added in Stage 1B
+/// (commit `12d1206`) pushed `.uninit` to ~3.1 KiB; we round up to
+/// 4 KiB (`UNINIT_SKIP`) to keep a margin and avoid coincidental
+/// `0xDEADBEEF` words in `.uninit` data being mis-counted as stack.
 pub fn stack_free() -> usize {
+    const UNINIT_SKIP: usize = 4096;
     extern "C" {
         static __ebss: u8;
     }
-    let stack_bottom = core::ptr::addr_of!(__ebss) as *const u32;
+    let scan_start = (core::ptr::addr_of!(__ebss) as usize + UNINIT_SKIP) as *const u32;
     let stack_top = 0x2004_0000 as *const u32; // RAM end
     let mut untouched = 0usize;
-    let mut p = stack_bottom;
+    let mut p = scan_start;
     while (p as usize) < (stack_top as usize) {
         if unsafe { core::ptr::read_volatile(p) } != 0xDEAD_BEEF {
             break;
